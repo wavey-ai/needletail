@@ -1,0 +1,28 @@
+[package]
+name = "media-capability"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT"
+description = "Strict Ed25519 media-capability v1 verifier for Needletail media services"
+readme = "README.md"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+# Keep Cargo 1.81 able to parse the optional PKCS#8 dependency graph recorded
+# for ed25519-dalek; base64ct 1.8 switched its manifest to edition 2024.
+base64ct = { version = "=1.7.3", default-features = false, optional = true }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+media-object = { path = "../../../media-object" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same MSRV lock for ed25519-dalek's key-material hygiene dependency.
+zeroize = { version = "=1.8.1", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -106,6 +106,7 @@ required_alerts = %w[
   AvMeshRelayDeadlineDrops
   AvMeshRelayObjectsExpiring
   AvMeshRelayDuplicateRatioHigh
+  AvMeshCanonicalEpochDivergence
   AvMeshCanonicalPublicationGap
   AvMeshPublicationToAvailableP95High
   AvMeshPublicationClockErrorHigh
@@ -143,6 +144,7 @@ raise "required dashboard panels missing: #{missing_panels.join(', ')}" unless m
 service_metrics = Set.new(%w[
   av_contrib_last_seen_age_seconds
   av_contrib_media_object_clock_estimated_error_seconds
+  av_contrib_media_object_source_epoch
   av_contrib_mesh_forward_duration_seconds_bucket
   av_contrib_mesh_forward_stage_duration_seconds_bucket
   av_contrib_relay_session_carrier_configured
@@ -178,6 +180,7 @@ service_metrics = Set.new(%w[
   av_mesh_edge_requests_total
   av_mesh_edge_response_duration_seconds_bucket
   av_mesh_edge_responses_total
+  av_mesh_canonical_epoch_divergent_streams
   av_mesh_relay_session_active_object_bytes
   av_mesh_relay_session_active_objects
   av_mesh_relay_session_buffered_datagrams
@@ -200,6 +203,7 @@ service_metrics = Set.new(%w[
   av_mesh_relay_failover_state
   av_mesh_relay_failover_transitions_total
   av_mesh_stream_last_ingest_age_seconds
+  av_mesh_stream_canonical_epoch
   av_mesh_stream_canonical_head_object
   av_mesh_stream_contiguous_object
   av_mesh_stream_known_gap_count

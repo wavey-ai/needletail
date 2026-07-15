@@ -8,6 +8,11 @@ description = "Product-level orchestration for the Needletail realtime media con
 repository = "https://github.com/wavey-ai/needletail"
 readme = "README.md"
 
+[workspace]
+members = [".", "crates/media-capability"]
+exclude = ["mission-control"]
+resolver = "2"
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env"] }

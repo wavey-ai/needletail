@@ -610,6 +610,17 @@ groups:
           description: '{{ $labels.instance }} retains incomplete objects without a completion in the last two minutes.'
           runbook: Inspect source and repair arrival, buffered datagrams, parent sessions, deadline drops, and object expiry.
 
+      - alert: AvMeshCanonicalEpochDivergence
+        expr: av_mesh_canonical_epoch_divergent_streams > 0
+        for: 15s
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Relay nodes disagree on the active canonical source epoch
+          description: '{{ $value }} stream(s) remain split across contributor source incarnations on {{ $labels.instance }}.'
+          runbook: Verify contributor restart propagation, reject stale-epoch objects, and confirm every relay atomically switched its stream publication window.
+
       - alert: AvMeshCanonicalPublicationGap
         expr: av_mesh_stream_known_gap_count > 0
         for: 15s

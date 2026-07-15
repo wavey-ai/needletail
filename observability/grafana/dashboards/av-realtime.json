@@ -390,7 +390,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Canonical media-object head, contiguous LL-HLS publication watermark, known retained-window gaps, and comparable node lag. Process-local counters are intentionally excluded.",
+      "description": "Canonical source epoch, media-object head, contiguous LL-HLS publication watermark, known retained-window gaps, and comparable node lag. Process-local counters are intentionally excluded.",
       "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 98 },
       "id": 26,
@@ -399,7 +399,8 @@
         { "editorMode": "code", "expr": "av_mesh_stream_canonical_head_object", "legendFormat": "{{node_id}} · {{stream_id}} head", "range": true, "refId": "A" },
         { "editorMode": "code", "expr": "av_mesh_stream_contiguous_object", "legendFormat": "{{node_id}} · {{stream_id}} contiguous", "range": true, "refId": "B" },
         { "editorMode": "code", "expr": "av_mesh_stream_known_gap_count", "legendFormat": "{{node_id}} · {{stream_id}} known gaps", "range": true, "refId": "C" },
-        { "editorMode": "code", "expr": "av_mesh_stream_lag_parts", "legendFormat": "{{node_id}} · {{stream_id}} canonical lag", "range": true, "refId": "D" }
+        { "editorMode": "code", "expr": "av_mesh_stream_lag_parts", "legendFormat": "{{node_id}} · {{stream_id}} canonical lag", "range": true, "refId": "D" },
+        { "editorMode": "code", "expr": "av_mesh_stream_canonical_epoch", "legendFormat": "{{node_id}} · {{stream_id}} source epoch", "range": true, "refId": "E" }
       ],
       "title": "Canonical publication continuity",
       "type": "timeseries"

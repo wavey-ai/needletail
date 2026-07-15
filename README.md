@@ -90,6 +90,9 @@ bounded warm-parent promotion, uninterrupted decoding, and make-before-break
 recovery. A restarted relay must establish its live subscription at the first
 canonical media object it observes, restore a gap-free contiguous LL-HLS
 watermark, and reconverge within four canonical objects of the stream head.
+Contributor restarts advance the canonical source epoch; every relay must
+atomically converge on that epoch and reject delayed objects from an older
+incarnation before the publication gate can pass.
 The gate then injects controlled loss on the primary source path and
 requires repair-assisted RaptorQ completion with no expiry, rejection, or
 deadline-drop regression. Evidence is written below

@@ -267,23 +267,29 @@ capture_recovered() {
 
 capture_publication_recovered() {
   local deadline=$((SECONDS + RECOVERY_TIMEOUT_SECONDS))
-  local edge
+  local contributor edge source_epoch
   while ((SECONDS < deadline)); do
-    if edge="$(fetch_edge 2>/dev/null)" && jq -e \
-      --argjson maximum_lag "${PUBLICATION_MAX_LAG_OBJECTS}" '
+    if contributor="$(fetch_contributor 2>/dev/null)" \
+      && source_epoch="$(jq -er '.mesh.media_object_source_epoch | select(. > 0)' <<<"${contributor}")" \
+      && edge="$(fetch_edge 2>/dev/null)" && jq -e \
+      --argjson maximum_lag "${PUBLICATION_MAX_LAG_OBJECTS}" \
+      --argjson source_epoch "${source_epoch}" '
         [.streams[]
           | select(.stream_id_text == "1")
           | select(.node_id == "edge" or .node_id == "relay-primary" or .node_id == "relay-secondary")
         ] as $streams
         | ($streams | length) == 3
+        and ([$streams[].canonical_epoch] | unique) == [$source_epoch]
         and all($streams[];
-          .head_object != null
+          .canonical_epoch == $source_epoch
+          and .head_object != null
           and .contiguous_object != null
           and .gap_count == 0
           and .mesh_lag_parts != null
           and .mesh_lag_parts <= $maximum_lag
         )
       ' <<<"${edge}" >/dev/null; then
+      printf '%s\n' "${contributor}" >"${RESULT_DIR}/publication-recovered-contributor.json"
       printf '%s\n' "${edge}" >"${RESULT_DIR}/publication-recovered-edge.json"
       return
     fi
@@ -430,6 +436,8 @@ publication_min_contiguous="$(jq '[.streams[] | select(.stream_id_text == "1") |
   "${RESULT_DIR}/publication-recovered-edge.json")"
 publication_max_head="$(jq '[.streams[] | select(.stream_id_text == "1") | .head_object] | max' \
   "${RESULT_DIR}/publication-recovered-edge.json")"
+publication_epoch="$(jq '[.streams[] | select(.stream_id_text == "1") | .canonical_epoch] | unique | first' \
+  "${RESULT_DIR}/publication-recovered-edge.json")"
 
 if ((detection_us <= 0 || detection_us > FAILOVER_DETECTION_BUDGET_MS * 1000)); then
   echo "failover detection ${detection_us}us exceeded ${FAILOVER_DETECTION_BUDGET_MS}ms" >&2
@@ -459,8 +467,8 @@ fi
 printf '%-25s detection=%sus activation=%sus gap=%sus decoded=%s expired=%s\n' \
   "dual-parent failover" "${detection_us}" "${activation_us}" "${media_gap_us}" \
   "${decoded_delta}" "${expired_delta}"
-printf '%-25s head=%s contiguous>=%s max-lag=%s gaps=0\n' \
-  "canonical publication" "${publication_max_head}" "${publication_min_contiguous}" \
+printf '%-25s epoch=%s head=%s contiguous>=%s max-lag=%s gaps=0\n' \
+  "canonical publication" "${publication_epoch}" "${publication_max_head}" "${publication_min_contiguous}" \
   "${publication_max_lag}"
 
 fetch_edge >"${RESULT_DIR}/loss-before-edge.json"
@@ -530,6 +538,7 @@ jq -n \
   --argjson publication_max_lag "${publication_max_lag}" \
   --argjson publication_min_contiguous "${publication_min_contiguous}" \
   --argjson publication_max_head "${publication_max_head}" \
+  --argjson publication_epoch "${publication_epoch}" \
   --argjson publication_max_lag_objects "${PUBLICATION_MAX_LAG_OBJECTS}" \
   --argjson loss_probability "${RAPTORQ_LOSS_PROBABILITY}" \
   --argjson reported_loss_fraction "${reported_loss_fraction}" \
@@ -584,6 +593,7 @@ jq -n \
       make_before_break_demotions: $demotions
     },
     canonical_publication_recovery: {
+      source_epoch: $publication_epoch,
       maximum_allowed_lag_objects: $publication_max_lag_objects,
       maximum_observed_lag_objects: $publication_max_lag,
       minimum_contiguous_object: $publication_min_contiguous,
