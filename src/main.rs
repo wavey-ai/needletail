@@ -575,6 +575,7 @@ fn local_relay_program(args: &Args) -> RelayProgram {
         subscription_id: args.relay_subscription_id,
         media_deadline_ms: args.relay_deadline_ms,
         source_path_observation: None,
+        secondary_path_observation: None,
         failover_policy: Some(FailoverPolicy {
             // Keep the warm lane active and sample it often enough that a 50 ms
             // media cadence can recover within the 250 ms interruption budget.

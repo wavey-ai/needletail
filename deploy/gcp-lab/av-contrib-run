@@ -52,4 +52,19 @@ if jq -e '.source_path_observation != null' <<<"${SERVICE}" >/dev/null; then
   fi
 fi
 
+if jq -e '.secondary_path_observation != null' <<<"${SERVICE}" >/dev/null; then
+  args+=(
+    --relay-secondary-path-loss-fraction "$(jq -r '.secondary_path_observation.loss_ppm / 1000000' <<<"${SERVICE}")"
+    --relay-secondary-path-best-direct-rtt-ms "$(jq -r '.secondary_path_observation.best_direct_rtt_us / 1000' <<<"${SERVICE}")"
+    --relay-secondary-path-rtt-ms "$(jq -r '.secondary_path_observation.rtt_us / 1000' <<<"${SERVICE}")"
+    --relay-secondary-path-jitter-ms "$(jq -r '.secondary_path_observation.jitter_us / 1000' <<<"${SERVICE}")"
+    --relay-secondary-path-queue-delay-ms "$(jq -r '.secondary_path_observation.queue_delay_us / 1000' <<<"${SERVICE}")"
+  )
+  if jq -e '.secondary_path_observation.observed_at_unix_ms != null' <<<"${SERVICE}" >/dev/null; then
+    args+=(
+      --relay-secondary-path-observed-at-unix-ms "$(jq -r '.secondary_path_observation.observed_at_unix_ms' <<<"${SERVICE}")"
+    )
+  fi
+fi
+
 exec "${args[@]}"

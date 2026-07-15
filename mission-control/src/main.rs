@@ -890,6 +890,7 @@ mod app {
                     <span>"Carrier"</span><b>{move || lane.get_value()().and_then(|lane| lane.carrier).unwrap_or_else(|| "pending".to_owned())}</b>
                     <span>"Trust"</span><b>{move || lane.get_value()().and_then(|lane| lane.trust).unwrap_or_else(|| "pending".to_owned())}</b>
                     <span>"Lane state"</span><b>{move || lane.get_value()().and_then(|lane| lane.state).unwrap_or_else(|| "pending".to_owned())}</b>
+                    <span>"Observation"</span><b>{move || lane.get_value()().and_then(|lane| lane.observation_source).unwrap_or_else(|| "pending".to_owned())}</b>
                     <span>"RTT / jitter"</span><b>{move || lane.get_value()().map(|lane| format!("{} / {}", format_optional_duration(lane.rtt_us), format_optional_duration(lane.jitter_us))).unwrap_or_else(|| "pending".to_owned())}</b>
                     <span>"Loss / deadline miss"</span><b>{move || lane.get_value()().map(|lane| format!("{} / {}", format_optional_ppm(lane.loss_ppm), format_optional_ppm(lane.deadline_miss_ppm))).unwrap_or_else(|| "pending".to_owned())}</b>
                 </div>

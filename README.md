@@ -77,6 +77,28 @@ more mesh edges. `make realtime-qualification` owns the local controlled-loss
 topology. Both preserve `wavey.realtime-*.v1` artifact schemas and `av_*` metric
 names across the orchestration extraction.
 
+The short-lived GCP lab has a deployed gate for the London contributor,
+Amsterdam and Osaka parents, and Tokyo playback edge:
+
+```sh
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/google-cloud-key.json \
+  make gcp-intercontinental-qualification
+```
+
+It stops and restores the primary relay to prove stable lane-health reporting,
+bounded warm-parent promotion, uninterrupted decoding, and make-before-break
+recovery. It then injects controlled loss on the primary source path and
+requires repair-assisted RaptorQ completion with no expiry, rejection, or
+deadline-drop regression. Evidence is written below
+`target/gcp-qualification/runs/`; cleanup restores the relay and packet filter
+even when a gate fails. The deployed qualification plan seeds that same
+controlled-loss profile into the adaptive RaptorQ policy; the gate rejects a
+plan whose observed loss input does not match the injected condition.
+Both relay routes are measured from the deployed hosts. Their RTT and jitter
+feed the compiled parent observations, Mission Control, and the qualification
+artifact; either route exceeding the default `1.15x` direct-path stretch gate
+fails qualification.
+
 For an authorized deployed canary only:
 
 ```sh

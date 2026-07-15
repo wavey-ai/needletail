@@ -57,6 +57,7 @@ gcp_scp_to() {
     --zone="$(node_zone "${role}")" \
     --project="${PROJECT}" \
     --quiet \
+    --scp-flag=-C \
     "$@" "$(node_name "${role}"):/tmp/needletail-deploy/"
 }
 
@@ -66,17 +67,67 @@ SECONDARY_IP="$(node_ip secondary)"
 EDGE_IP="$(node_ip edge)"
 EDGE_EXTERNAL_IP="$(node_external_ip edge)"
 SKIP_BUILD="${NEEDLETAIL_GCP_SKIP_BUILD:-0}"
+PATH_PROBE_COUNT="${NEEDLETAIL_GCP_PATH_PROBE_COUNT:-7}"
 PATH_RTT_US="${NEEDLETAIL_GCP_PATH_RTT_US:-0}"
 BEST_DIRECT_RTT_US="${NEEDLETAIL_GCP_BEST_DIRECT_RTT_US:-0}"
 PATH_JITTER_US="${NEEDLETAIL_GCP_PATH_JITTER_US:-0}"
-PATH_LOSS_PPM="${NEEDLETAIL_GCP_PATH_LOSS_PPM:-0}"
+# The controlled qualification profile injects two percent primary-path loss.
+# Seed the same observation into the adaptive RaptorQ controller so the lab
+# measures the selected policy rather than an unrelated zero-loss policy.
+PATH_LOSS_PPM="${NEEDLETAIL_GCP_PATH_LOSS_PPM:-20000}"
 PATH_QUEUE_DELAY_US="${NEEDLETAIL_GCP_PATH_QUEUE_DELAY_US:-0}"
+SECONDARY_PATH_RTT_US="${NEEDLETAIL_GCP_SECONDARY_PATH_RTT_US:-0}"
+SECONDARY_PATH_JITTER_US="${NEEDLETAIL_GCP_SECONDARY_PATH_JITTER_US:-0}"
+SECONDARY_PATH_LOSS_PPM="${NEEDLETAIL_GCP_SECONDARY_PATH_LOSS_PPM:-0}"
+SECONDARY_PATH_QUEUE_DELAY_US="${NEEDLETAIL_GCP_SECONDARY_PATH_QUEUE_DELAY_US:-0}"
 PATH_OBSERVED_AT_UNIX_MS="$(( $(date +%s) * 1000 ))"
 FAILOVER_PRIMARY_SILENCE_MS="${NEEDLETAIL_GCP_FAILOVER_PRIMARY_SILENCE_MS:-100}"
 FAILOVER_PRIMARY_RECOVERY_MS="${NEEDLETAIL_GCP_FAILOVER_PRIMARY_RECOVERY_MS:-500}"
 FAILOVER_SECONDARY_WARM_MS="${NEEDLETAIL_GCP_FAILOVER_SECONDARY_WARM_MS:-300}"
 FAILOVER_HEARTBEAT_MS="${NEEDLETAIL_GCP_FAILOVER_HEARTBEAT_MS:-25}"
 FAILOVER_LEASE_MS="${NEEDLETAIL_GCP_FAILOVER_LEASE_MS:-300}"
+
+probe_path_us() {
+  local role="$1" target="$2" output measurement
+  output="$(gcp_ssh "${role}" --command="ping -q -c ${PATH_PROBE_COUNT} -i 0.2 -W 2 ${target}")"
+  measurement="$(awk -F'[/ ]+' '/^rtt / { printf "%.0f %.0f", $8 * 1000, $10 * 1000 }' <<<"${output}")"
+  [[ "${measurement}" =~ ^[0-9]+\ [0-9]+$ ]] || {
+    echo "could not measure ${role} path to ${target}" >&2
+    exit 1
+  }
+  printf '%s\n' "${measurement}"
+}
+
+if [[ "${BEST_DIRECT_RTT_US}" == 0 || "${PATH_RTT_US}" == 0 || \
+  "${PATH_JITTER_US}" == 0 || "${SECONDARY_PATH_RTT_US}" == 0 || \
+  "${SECONDARY_PATH_JITTER_US}" == 0 ]]; then
+  read -r measured_direct_rtt_us _ < <(probe_path_us contributor "${EDGE_IP}")
+  read -r measured_primary_ingress_rtt_us measured_primary_ingress_jitter_us \
+    < <(probe_path_us contributor "${PRIMARY_IP}")
+  read -r measured_primary_edge_rtt_us measured_primary_edge_jitter_us \
+    < <(probe_path_us primary "${EDGE_IP}")
+  read -r measured_secondary_ingress_rtt_us measured_secondary_ingress_jitter_us \
+    < <(probe_path_us contributor "${SECONDARY_IP}")
+  read -r measured_secondary_edge_rtt_us measured_secondary_edge_jitter_us \
+    < <(probe_path_us secondary "${EDGE_IP}")
+
+  [[ "${BEST_DIRECT_RTT_US}" != 0 ]] || BEST_DIRECT_RTT_US="${measured_direct_rtt_us}"
+  [[ "${PATH_RTT_US}" != 0 ]] || PATH_RTT_US="$((
+    measured_primary_ingress_rtt_us + measured_primary_edge_rtt_us
+  ))"
+  [[ "${PATH_JITTER_US}" != 0 ]] || PATH_JITTER_US="$((
+    measured_primary_ingress_jitter_us + measured_primary_edge_jitter_us
+  ))"
+  [[ "${SECONDARY_PATH_RTT_US}" != 0 ]] || SECONDARY_PATH_RTT_US="$((
+    measured_secondary_ingress_rtt_us + measured_secondary_edge_rtt_us
+  ))"
+  [[ "${SECONDARY_PATH_JITTER_US}" != 0 ]] || SECONDARY_PATH_JITTER_US="$((
+    measured_secondary_ingress_jitter_us + measured_secondary_edge_jitter_us
+  ))"
+fi
+
+printf 'Measured relay routes: direct=%sus primary=%sus secondary=%sus\n' \
+  "${BEST_DIRECT_RTT_US}" "${PATH_RTT_US}" "${SECONDARY_PATH_RTT_US}"
 
 PROGRAM="${ARTIFACT_DIR}/relay-program.json"
 PLAN="${ARTIFACT_DIR}/compiled-plan.json"
@@ -91,6 +142,10 @@ jq -n \
   --argjson path_jitter_us "${PATH_JITTER_US}" \
   --argjson path_loss_ppm "${PATH_LOSS_PPM}" \
   --argjson path_queue_delay_us "${PATH_QUEUE_DELAY_US}" \
+  --argjson secondary_path_rtt_us "${SECONDARY_PATH_RTT_US}" \
+  --argjson secondary_path_jitter_us "${SECONDARY_PATH_JITTER_US}" \
+  --argjson secondary_path_loss_ppm "${SECONDARY_PATH_LOSS_PPM}" \
+  --argjson secondary_path_queue_delay_us "${SECONDARY_PATH_QUEUE_DELAY_US}" \
   --argjson path_observed_at_unix_ms "${PATH_OBSERVED_AT_UNIX_MS}" \
   --argjson failover_primary_silence_ms "${FAILOVER_PRIMARY_SILENCE_MS}" \
   --argjson failover_primary_recovery_ms "${FAILOVER_PRIMARY_RECOVERY_MS}" \
@@ -105,13 +160,27 @@ jq -n \
     source_path_observation:(
       if (($best_direct_rtt_us + $path_rtt_us + $path_jitter_us + $path_loss_ppm + $path_queue_delay_us) > 0)
       then {
-        source:"gcp-qualification-probe",
+        source:"gcp-icmp-route-probe+controlled-loss-profile",
         observed_at_unix_ms:$path_observed_at_unix_ms,
         best_direct_rtt_us:$best_direct_rtt_us,
         rtt_us:$path_rtt_us,
         jitter_us:$path_jitter_us,
         loss_ppm:$path_loss_ppm,
         queue_delay_us:$path_queue_delay_us
+      }
+      else null
+      end
+    ),
+    secondary_path_observation:(
+      if (($best_direct_rtt_us + $secondary_path_rtt_us + $secondary_path_jitter_us + $secondary_path_loss_ppm + $secondary_path_queue_delay_us) > 0)
+      then {
+        source:"gcp-icmp-route-probe+controlled-loss-profile",
+        observed_at_unix_ms:$path_observed_at_unix_ms,
+        best_direct_rtt_us:$best_direct_rtt_us,
+        rtt_us:$secondary_path_rtt_us,
+        jitter_us:$secondary_path_jitter_us,
+        loss_ppm:$secondary_path_loss_ppm,
+        queue_delay_us:$secondary_path_queue_delay_us
       }
       else null
       end
@@ -164,6 +233,7 @@ jq -e '
   and .carrier == "controlled_private_udp"
   and (.services | length == 4)
   and ([.services[] | select(.service == "av_mesh" and .node_id == "edge")][0].failover_controller != null)
+  and ([.services[] | select(.service == "av_contrib")][0].secondary_path_observation != null)
   and ([.services[] | select(.service == "av_mesh" and .node_id == "relay-secondary")][0].failover_listeners | length == 1)
   and (.production_readiness_gaps | index("provider_asn_diversity_pending") != null)
 ' "${PLAN}" >/dev/null
@@ -200,18 +270,18 @@ else
 
   gcloud compute scp "${SOURCE_ARCHIVE}" \
     "$(node_name contributor):/tmp/needletail-source.tar.gz" \
-    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet
+    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet --scp-flag=-C
   gcloud compute scp "${DEPLOY_DIR}/build-components.sh" \
     "$(node_name contributor):/tmp/build-components.sh" \
-    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet
+    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet --scp-flag=-C
   gcp_ssh contributor --command='chmod +x /tmp/build-components.sh && /tmp/build-components.sh'
 
   gcloud compute scp "$(node_name contributor):/tmp/av-mesh" \
     "${ARTIFACT_DIR}/av-mesh" \
-    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet
+    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet --scp-flag=-C
   gcloud compute scp "$(node_name contributor):/tmp/av-contrib" \
     "${ARTIFACT_DIR}/av-contrib" \
-    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet
+    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet --scp-flag=-C
   chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/av-contrib"
 fi
 
@@ -269,7 +339,7 @@ gcp_scp_to edge \
   "${PLAN}" "${ARTIFACT_DIR}/fullchain.pem" "${ARTIFACT_DIR}/privkey.pem" "${ARTIFACT_DIR}/edge.env"
 gcloud compute scp --recurse "${ROOT}/mission-control/dist" \
   "$(node_name edge):/tmp/needletail-deploy/mission-control" \
-  --zone="$(node_zone edge)" --project="${PROJECT}" --quiet
+  --zone="$(node_zone edge)" --project="${PROJECT}" --quiet --scp-flag=-C
 gcp_ssh edge --command="mv /tmp/needletail-deploy/edge.env /tmp/needletail-deploy/node.env; chmod +x /tmp/needletail-deploy/install-node.sh; /tmp/needletail-deploy/install-node.sh mesh"
 
 gcp_ssh contributor --command='rm -rf /tmp/needletail-deploy && mkdir -p /tmp/needletail-deploy'

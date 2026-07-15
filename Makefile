@@ -11,7 +11,7 @@ STACK_ARGS ?=
 
 .PHONY: help local local-debug local-fast build build-release check test fmt \
 	mission-control-build mission-control-serve mission-control-check mission-control-test \
-	realtime-benchmark realtime-qualification realtime-soak two-region-smoke \
+	realtime-benchmark realtime-qualification realtime-soak gcp-intercontinental-qualification two-region-smoke \
 	observability-check observability-up observability-down
 
 help:
@@ -24,6 +24,7 @@ help:
 	@printf '%s\n' '  make mission-control-check Check product UI models and WASM'
 	@printf '%s\n' '  make realtime-benchmark     Benchmark an already-running constellation'
 	@printf '%s\n' '  make realtime-qualification Run local baseline + controlled-loss qualification'
+	@printf '%s\n' '  make gcp-intercontinental-qualification Qualify the deployed four-region relay DAG'
 	@printf '%s\n' '  make realtime-soak          Run an explicitly targeted deployed canary soak'
 	@printf '%s\n' '  make two-region-smoke       Run the development two-region propagation smoke'
 	@printf '%s\n' '  make observability-check    Validate product Prometheus/Alertmanager/Grafana assets'
@@ -66,6 +67,9 @@ realtime-benchmark:
 
 realtime-qualification:
 	./scripts/realtime-qualification.sh
+
+gcp-intercontinental-qualification:
+	./scripts/gcp-intercontinental-qualification.sh
 
 realtime-soak:
 	./scripts/realtime-soak.sh

@@ -74,6 +74,13 @@ pub struct ContribRelayConfig {
     pub relay_path_jitter_ms: f64,
     pub relay_path_queue_delay_ms: f64,
     pub relay_path_observed_at_unix_ms: Option<u64>,
+    pub relay_secondary_path_observation_source: String,
+    pub relay_secondary_path_loss_fraction: f64,
+    pub relay_secondary_path_best_direct_rtt_ms: f64,
+    pub relay_secondary_path_rtt_ms: f64,
+    pub relay_secondary_path_jitter_ms: f64,
+    pub relay_secondary_path_queue_delay_ms: f64,
+    pub relay_secondary_path_observed_at_unix_ms: Option<u64>,
     pub media_object_clock_id: String,
     pub media_object_clock_confidence: String,
     pub media_object_clock_estimated_error_ms: u64,
@@ -758,6 +765,7 @@ pub struct RouteLane {
     pub carrier: Option<String>,
     pub trust: Option<String>,
     pub state: Option<String>,
+    pub observation_source: Option<String>,
     pub rtt_us: Option<u64>,
     pub jitter_us: Option<u64>,
     pub loss_ppm: Option<u64>,
@@ -956,6 +964,7 @@ pub fn effective_delivery(
             carrier: carrier.clone(),
             trust: trust.clone(),
             state: Some("active source".to_owned()),
+            observation_source: nonempty_string(&status.mesh.relay_path_observation_source),
             rtt_us: finite_positive_milliseconds_to_us(status.mesh.relay_path_rtt_ms),
             jitter_us: finite_positive_milliseconds_to_us(status.mesh.relay_path_jitter_ms),
             loss_ppm: finite_fraction_to_ppm(status.mesh.relay_path_loss_fraction),
@@ -969,10 +978,22 @@ pub fn effective_delivery(
             carrier,
             trust,
             state: Some("warm repair".to_owned()),
+            observation_source: nonempty_string(
+                &status.mesh.relay_secondary_path_observation_source,
+            ),
+            rtt_us: finite_positive_milliseconds_to_us(status.mesh.relay_secondary_path_rtt_ms),
+            jitter_us: finite_positive_milliseconds_to_us(
+                status.mesh.relay_secondary_path_jitter_ms,
+            ),
+            loss_ppm: finite_fraction_to_ppm(status.mesh.relay_secondary_path_loss_fraction),
             ..RouteLane::default()
         }),
         ..DeliverySnapshot::default()
     }
+}
+
+fn nonempty_string(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_owned())
 }
 
 fn finite_positive_milliseconds_to_us(value: f64) -> Option<u64> {
@@ -1251,6 +1272,10 @@ mod tests {
         "relay_path_observation_source":"controller-seeded","relay_path_loss_fraction":0.01,
         "relay_path_best_direct_rtt_ms":12.0,"relay_path_rtt_ms":13.5,"relay_path_jitter_ms":0.3,"relay_path_queue_delay_ms":1.0,
         "relay_path_observed_at_unix_ms":1784102400000,
+        "relay_secondary_path_observation_source":"controller-seeded","relay_secondary_path_loss_fraction":0.002,
+        "relay_secondary_path_best_direct_rtt_ms":12.0,"relay_secondary_path_rtt_ms":13.9,
+        "relay_secondary_path_jitter_ms":0.2,"relay_secondary_path_queue_delay_ms":0.5,
+        "relay_secondary_path_observed_at_unix_ms":1784102400000,
         "media_object_clock_id":"av-contrib-wall-v1","media_object_clock_confidence":"estimated",
         "media_object_clock_estimated_error_ms":1000},
       "listeners":[
@@ -1340,6 +1365,14 @@ mod tests {
         assert_eq!(
             route.primary.as_ref().and_then(|lane| lane.loss_ppm),
             Some(10_000)
+        );
+        assert_eq!(
+            route.secondary.as_ref().and_then(|lane| lane.rtt_us),
+            Some(13_900)
+        );
+        assert_eq!(
+            route.secondary.as_ref().and_then(|lane| lane.loss_ppm),
+            Some(2_000)
         );
 
         let edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();

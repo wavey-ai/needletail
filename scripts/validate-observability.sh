@@ -129,7 +129,7 @@ required_panel_titles = [
   "Edge RaptorQ symbol outcomes",
   "Edge RelaySession drops",
   "Publication to verified cache p50 / p95 / p99",
-  "Adaptive RaptorQ path observation",
+  "Adaptive RaptorQ parent-path observations",
   "Automatic warm-secondary state",
   "Failover detection and interruption latency",
   "Failover transitions and control health",
@@ -161,6 +161,14 @@ service_metrics = Set.new(%w[
   av_contrib_relay_session_path_queue_delay_seconds
   av_contrib_relay_session_path_rtt_seconds
   av_contrib_relay_session_path_stretch_ratio
+  av_contrib_relay_session_route_observation_info
+  av_contrib_relay_session_route_loss_fraction
+  av_contrib_relay_session_route_rtt_seconds
+  av_contrib_relay_session_route_best_direct_rtt_seconds
+  av_contrib_relay_session_route_jitter_seconds
+  av_contrib_relay_session_route_queue_delay_seconds
+  av_contrib_relay_session_route_stretch_ratio
+  av_contrib_relay_session_route_observation_age_seconds
   av_contrib_relay_session_repair_primary_fallback_objects_total
   av_contrib_relay_session_send_errors_total
   av_contrib_relay_session_expired_symbols_total

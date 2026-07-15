@@ -152,6 +152,8 @@ pub struct RelayProgram {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path_observation: Option<SourcePathObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_path_observation: Option<SourcePathObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failover_policy: Option<FailoverPolicy>,
     #[serde(default)]
     pub failover_control_links: Vec<FailoverControlLink>,
@@ -198,6 +200,8 @@ pub struct ContribRelayService {
     pub media_deadline_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path_observation: Option<SourcePathObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_path_observation: Option<SourcePathObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,26 +271,37 @@ impl ContribRelayService {
             self.media_deadline_ms.to_string(),
         ];
         if let Some(observation) = &self.source_path_observation {
-            args.extend([
-                "--relay-path-loss-fraction".to_owned(),
-                format!("{:.6}", observation.loss_ppm as f64 / 1_000_000.0),
-                "--relay-path-best-direct-rtt-ms".to_owned(),
-                format!("{:.3}", observation.best_direct_rtt_us as f64 / 1_000.0),
-                "--relay-path-rtt-ms".to_owned(),
-                format!("{:.3}", observation.rtt_us as f64 / 1_000.0),
-                "--relay-path-jitter-ms".to_owned(),
-                format!("{:.3}", observation.jitter_us as f64 / 1_000.0),
-                "--relay-path-queue-delay-ms".to_owned(),
-                format!("{:.3}", observation.queue_delay_us as f64 / 1_000.0),
-            ]);
-            if let Some(observed_at_unix_ms) = observation.observed_at_unix_ms {
-                args.extend([
-                    "--relay-path-observed-at-unix-ms".to_owned(),
-                    observed_at_unix_ms.to_string(),
-                ]);
-            }
+            append_path_observation_arguments(&mut args, "--relay-path", observation);
+        }
+        if let Some(observation) = &self.secondary_path_observation {
+            append_path_observation_arguments(&mut args, "--relay-secondary-path", observation);
         }
         args
+    }
+}
+
+fn append_path_observation_arguments(
+    args: &mut Vec<String>,
+    prefix: &str,
+    observation: &SourcePathObservation,
+) {
+    args.extend([
+        format!("{prefix}-loss-fraction"),
+        format!("{:.6}", observation.loss_ppm as f64 / 1_000_000.0),
+        format!("{prefix}-best-direct-rtt-ms"),
+        format!("{:.3}", observation.best_direct_rtt_us as f64 / 1_000.0),
+        format!("{prefix}-rtt-ms"),
+        format!("{:.3}", observation.rtt_us as f64 / 1_000.0),
+        format!("{prefix}-jitter-ms"),
+        format!("{:.3}", observation.jitter_us as f64 / 1_000.0),
+        format!("{prefix}-queue-delay-ms"),
+        format!("{:.3}", observation.queue_delay_us as f64 / 1_000.0),
+    ]);
+    if let Some(observed_at_unix_ms) = observation.observed_at_unix_ms {
+        args.extend([
+            format!("{prefix}-observed-at-unix-ms"),
+            observed_at_unix_ms.to_string(),
+        ]);
     }
 }
 
@@ -425,33 +440,18 @@ impl RelayProgram {
         if self.media_deadline_ms == 0 {
             violations.push("media_deadline_ms must be positive".to_owned());
         }
-        if let Some(observation) = &self.source_path_observation {
-            if observation.source.trim().is_empty() || observation.source.len() > 64 {
-                violations.push(
-                    "source_path_observation.source must contain 1 through 64 bytes".to_owned(),
-                );
+        for (field, observation) in [
+            ("source_path_observation", &self.source_path_observation),
+            (
+                "secondary_path_observation",
+                &self.secondary_path_observation,
+            ),
+        ] {
+            if let Some(observation) = observation {
+                validate_path_observation(field, observation, &mut violations);
+            } else if self.purpose == DeploymentPurpose::Production {
+                violations.push(format!("production requires {field}"));
             }
-            if observation.loss_ppm > 1_000_000 {
-                violations.push("source_path_observation.loss_ppm exceeds 1000000".to_owned());
-            }
-            for (field, value) in [
-                ("best_direct_rtt_us", observation.best_direct_rtt_us),
-                ("rtt_us", observation.rtt_us),
-                ("jitter_us", observation.jitter_us),
-                ("queue_delay_us", observation.queue_delay_us),
-            ] {
-                if value > 60_000_000 {
-                    violations.push(format!("source_path_observation.{field} exceeds 60000000"));
-                }
-            }
-            if observation.rtt_us > 0 && observation.best_direct_rtt_us == 0 {
-                violations.push(
-                    "source_path_observation.best_direct_rtt_us must be positive when rtt_us is observed"
-                        .to_owned(),
-                );
-            }
-        } else if self.purpose == DeploymentPurpose::Production {
-            violations.push("production requires a source path observation".to_owned());
         }
         if let Some(policy) = &self.failover_policy {
             if policy.primary_silence_ms == 0
@@ -732,6 +732,7 @@ impl RelayProgram {
             subscription_id: self.subscription_id,
             media_deadline_ms: self.media_deadline_ms,
             source_path_observation: self.source_path_observation.clone(),
+            secondary_path_observation: self.secondary_path_observation.clone(),
         });
 
         let mut services = vec![contrib];
@@ -818,6 +819,34 @@ impl RelayProgram {
             production_readiness_gaps: self.purpose.readiness_gaps(),
             services,
         })
+    }
+}
+
+fn validate_path_observation(
+    field: &str,
+    observation: &SourcePathObservation,
+    violations: &mut Vec<String>,
+) {
+    if observation.source.trim().is_empty() || observation.source.len() > 64 {
+        violations.push(format!("{field}.source must contain 1 through 64 bytes"));
+    }
+    if observation.loss_ppm > 1_000_000 {
+        violations.push(format!("{field}.loss_ppm exceeds 1000000"));
+    }
+    for (metric, value) in [
+        ("best_direct_rtt_us", observation.best_direct_rtt_us),
+        ("rtt_us", observation.rtt_us),
+        ("jitter_us", observation.jitter_us),
+        ("queue_delay_us", observation.queue_delay_us),
+    ] {
+        if value > 60_000_000 {
+            violations.push(format!("{field}.{metric} exceeds 60000000"));
+        }
+    }
+    if observation.rtt_us > 0 && observation.best_direct_rtt_us == 0 {
+        violations.push(format!(
+            "{field}.best_direct_rtt_us must be positive when rtt_us is observed"
+        ));
     }
 }
 
@@ -919,6 +948,15 @@ mod tests {
                 loss_ppm: 10_000,
                 queue_delay_us: 2_000,
             }),
+            secondary_path_observation: Some(SourcePathObservation {
+                source: "qualification-probe".to_owned(),
+                observed_at_unix_ms: Some(1_784_102_400_000),
+                best_direct_rtt_us: 246_727,
+                rtt_us: 261_500,
+                jitter_us: 620,
+                loss_ppm: 2_000,
+                queue_delay_us: 1_000,
+            }),
             failover_policy: Some(FailoverPolicy {
                 primary_silence_ms: 250,
                 primary_recovery_ms: 2_000,
@@ -1010,6 +1048,12 @@ mod tests {
             pair == [
                 "--relay-path-loss-fraction".to_owned(),
                 "0.010000".to_owned(),
+            ]
+        }));
+        assert!(contrib_args.windows(2).any(|pair| {
+            pair == [
+                "--relay-secondary-path-rtt-ms".to_owned(),
+                "261.500".to_owned(),
             ]
         }));
         assert!(contrib_args
@@ -1107,5 +1151,23 @@ mod tests {
         assert!(violations
             .iter()
             .any(|violation| violation.contains("loss_ppm exceeds 1000000")));
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_secondary_path_observation() {
+        let mut program = qualification_program();
+        program
+            .secondary_path_observation
+            .as_mut()
+            .expect("secondary path observation")
+            .loss_ppm = 1_000_001;
+
+        let error = program.compile().expect_err("invalid path observation");
+        let ServicePlanError::InvalidProgram(violations) = error else {
+            panic!("expected service program violations");
+        };
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("secondary_path_observation.loss_ppm")));
     }
 }

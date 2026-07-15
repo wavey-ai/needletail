@@ -325,21 +325,21 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Controller observation currently driving adaptive RaptorQ protection and route choice. Loss is a fraction; stretch is selected RTT divided by fastest direct RTT.",
+      "description": "Independent primary and warm-secondary controller observations driving adaptive RaptorQ protection and route choice. Loss is a fraction; stretch is route RTT divided by fastest direct RTT.",
       "fieldConfig": { "defaults": { "decimals": 4, "unit": "short" }, "overrides": [] },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 72 },
       "id": 22,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_loss_fraction", "legendFormat": "{{instance}} · loss fraction", "range": true, "refId": "A" },
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_rtt_seconds", "legendFormat": "{{instance}} · RTT seconds", "range": true, "refId": "B" },
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_jitter_seconds", "legendFormat": "{{instance}} · jitter seconds", "range": true, "refId": "C" },
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_queue_delay_seconds", "legendFormat": "{{instance}} · queue seconds", "range": true, "refId": "D" },
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_observation_age_seconds", "legendFormat": "{{instance}} · observation age", "range": true, "refId": "E" },
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_best_direct_rtt_seconds", "legendFormat": "{{instance}} · best direct RTT", "range": true, "refId": "F" },
-        { "editorMode": "code", "expr": "av_contrib_relay_session_path_stretch_ratio", "legendFormat": "{{instance}} · path stretch", "range": true, "refId": "G" }
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_loss_fraction", "legendFormat": "{{instance}} · {{path}} loss fraction", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_rtt_seconds", "legendFormat": "{{instance}} · {{path}} RTT seconds", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_jitter_seconds", "legendFormat": "{{instance}} · {{path}} jitter seconds", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_queue_delay_seconds", "legendFormat": "{{instance}} · {{path}} queue seconds", "range": true, "refId": "D" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_observation_age_seconds", "legendFormat": "{{instance}} · {{path}} observation age", "range": true, "refId": "E" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_best_direct_rtt_seconds", "legendFormat": "{{instance}} · {{path}} best direct RTT", "range": true, "refId": "F" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_route_stretch_ratio", "legendFormat": "{{instance}} · {{path}} path stretch", "range": true, "refId": "G" }
       ],
-      "title": "Adaptive RaptorQ path observation",
+      "title": "Adaptive RaptorQ parent-path observations",
       "type": "timeseries"
     },
     {

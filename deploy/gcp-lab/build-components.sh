@@ -6,11 +6,14 @@ sudo apt-get update
 sudo apt-get install -y \
   build-essential ca-certificates clang cmake curl git libssl-dev pkg-config
 
+if [[ -f "${HOME}/.cargo/env" ]]; then
+  . "${HOME}/.cargo/env"
+fi
 if ! command -v cargo >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal
+  . "${HOME}/.cargo/env"
 fi
-. "${HOME}/.cargo/env"
 git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 mkdir -p "${HOME}/.cargo"
 cat >"${HOME}/.cargo/config.toml" <<'EOF'
