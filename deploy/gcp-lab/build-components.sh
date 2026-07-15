@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential ca-certificates clang cmake curl git libssl-dev pkg-config
+
+if ! command -v cargo >/dev/null 2>&1; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal
+fi
+. "${HOME}/.cargo/env"
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+mkdir -p "${HOME}/.cargo"
+cat >"${HOME}/.cargo/config.toml" <<'EOF'
+[net]
+git-fetch-with-cli = true
+EOF
+
+sudo install -d -o "${USER}" -g "$(id -gn)" /opt/needletail-build
+rm -rf /opt/needletail-build/source
+mkdir -p /opt/needletail-build/source
+tar -xzf /tmp/needletail-source.tar.gz -C /opt/needletail-build/source
+
+CARGO_TARGET_DIR=/opt/needletail-build/target \
+CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
+  --manifest-path /opt/needletail-build/source/av-mesh/Cargo.toml \
+  --bin av-mesh
+CARGO_TARGET_DIR=/opt/needletail-build/target \
+CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
+  --manifest-path /opt/needletail-build/source/av-contrib/Cargo.toml \
+  --bin av-contrib
+
+install -m 755 \
+  /opt/needletail-build/target/release/av-mesh \
+  /tmp/av-mesh
+install -m 755 \
+  /opt/needletail-build/target/release/av-contrib \
+  /tmp/av-contrib
+sha256sum /tmp/av-mesh /tmp/av-contrib > /tmp/needletail-binaries.sha256

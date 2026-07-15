@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${NEEDLETAIL_NODE_ID:=contrib}"
+PLAN="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
+SERVICE="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
+  '.services[] | select(.service == "av_contrib" and .node_id == $node)' "${PLAN}")"
+
+exec /usr/local/bin/av-contrib \
+  --cert /etc/needletail/tls/fullchain.pem \
+  --key /etc/needletail/tls/privkey.pem \
+  --http-port "${NEEDLETAIL_HTTP_PORT:-19443}" \
+  --mesh-fec-target "$(jq -r '.primary.target' <<<"${SERVICE}")" \
+  --mesh-media-fec-target "$(jq -r '.primary.target' <<<"${SERVICE}")" \
+  --stream-id 1 \
+  --rist-stream-id 1 \
+  --srt-stream-id 1 \
+  --rtmp-stream-id 1 \
+  --fmp4-part-ms "${NEEDLETAIL_PART_MS:-50}" \
+  --rist-bind 0.0.0.0:27000 \
+  --rist-flow-id 0x11223344 \
+  --srt-bind 0.0.0.0:27001 \
+  --rtmp-bind 0.0.0.0:19350 \
+  --relay-local-id "${NEEDLETAIL_NODE_ID}" \
+  --relay-primary-bind "$(jq -r '.primary.bind' <<<"${SERVICE}")" \
+  --relay-primary-target "$(jq -r '.primary.target' <<<"${SERVICE}")" \
+  --relay-primary-id "$(jq -r '.primary.child_node_id' <<<"${SERVICE}")" \
+  --relay-secondary-bind "$(jq -r '.warm_secondary.bind' <<<"${SERVICE}")" \
+  --relay-secondary-target "$(jq -r '.warm_secondary.target' <<<"${SERVICE}")" \
+  --relay-secondary-id "$(jq -r '.warm_secondary.child_node_id' <<<"${SERVICE}")" \
+  --relay-secondary-seed-source \
+  --relay-exclusive \
+  --relay-topology-generation "$(jq -r '.topology_generation' <<<"${SERVICE}")" \
+  --relay-subscription-id "$(jq -r '.subscription_id' <<<"${SERVICE}")" \
+  --relay-deadline-ms "$(jq -r '.media_deadline_ms' <<<"${SERVICE}")"

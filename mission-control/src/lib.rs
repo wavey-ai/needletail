@@ -51,12 +51,18 @@ pub struct ContribRelayConfig {
     pub relay_primary_configured: bool,
     pub relay_secondary_configured: bool,
     pub relay_carrier: Option<String>,
+    pub relay_trust: Option<String>,
+    pub relay_primary_id: Option<String>,
     pub relay_primary_target: Option<String>,
     pub relay_primary_bind: Option<String>,
+    pub relay_secondary_id: Option<String>,
     pub relay_secondary_target: Option<String>,
     pub relay_secondary_bind: Option<String>,
+    pub relay_secondary_source_seeded: bool,
+    pub relay_exclusive: bool,
+    pub relay_topology_generation: u64,
+    pub relay_subscription_id: u64,
     pub relay_deadline_ms: u64,
-    pub relay_trust: Option<String>,
     pub media_object_clock_id: String,
     pub media_object_clock_confidence: String,
     pub media_object_clock_estimated_error_ms: u64,
@@ -367,6 +373,7 @@ pub struct MeshStatus {
     pub node: EdgeNode,
     #[serde(alias = "relay_ingress")]
     pub relay_session: RelayIngress,
+    pub relay_nodes: Vec<RelayNodeSession>,
     pub aggregate: FleetAggregate,
     pub telemetry: TelemetryHealth,
     pub orchestration: OperationsReadiness,
@@ -403,7 +410,7 @@ impl EdgeNode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RelayIngress {
     pub primary_sessions: u64,
@@ -425,17 +432,43 @@ pub struct RelayIngress {
     pub conflict_drops: u64,
     pub authentication_drops: u64,
     pub deadline_drops: u64,
+    pub downstream_children: u64,
+    pub forwarded_source_datagrams: u64,
+    pub forwarded_repair_datagrams: u64,
+    pub forwarded_bytes: u64,
+    pub forward_errors: u64,
+    pub forward_filtered_datagrams: u64,
+    pub forward_duration_count: u64,
+    pub forward_duration_sum_us: u64,
+    pub forward_duration_max_us: u64,
+    pub forward_duration_buckets: Vec<u64>,
 }
 
 impl RelayIngress {
-    pub fn errors(self) -> u64 {
+    pub fn errors(&self) -> u64 {
         self.datagrams_rejected
     }
 
-    pub fn repair_overhead_percent(self) -> Option<f64> {
+    pub fn repair_overhead_percent(&self) -> Option<f64> {
         let total = self.source_datagrams.saturating_add(self.repair_datagrams);
         (total > 0).then(|| self.repair_datagrams as f64 * 100.0 / total as f64)
     }
+
+    pub fn forward_percentile_us(&self, percentile: u64) -> Option<u64> {
+        histogram_percentile_us(
+            self.forward_duration_count,
+            &self.forward_duration_buckets,
+            percentile,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RelayNodeSession {
+    pub node_id: String,
+    pub region: String,
+    pub relay_session: RelayIngress,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -797,9 +830,37 @@ pub fn effective_delivery(
         (carrier.as_deref() == Some("private-udp")).then(|| "controlled network".to_owned())
     });
     DeliverySnapshot {
+        delivery_class: Some(if status.mesh.relay_secondary_configured {
+            "premium_live".to_owned()
+        } else {
+            "interactive".to_owned()
+        }),
+        generation: (status.mesh.relay_topology_generation > 0)
+            .then_some(status.mesh.relay_topology_generation),
+        route_state: edge.map(|edge| {
+            if edge.relay_session.primary_sessions > 0
+                && edge.relay_session.secondary_sessions > 0
+                && edge.relay_session.errors() == 0
+            {
+                "active".to_owned()
+            } else {
+                "warming".to_owned()
+            }
+        }),
+        route_ready: edge.map(|edge| {
+            edge.relay_session.primary_sessions > 0
+                && edge.relay_session.secondary_sessions > 0
+                && edge.relay_session.errors() == 0
+        }),
+        fabric: Some(if status.mesh.relay_secondary_configured {
+            "dual_parent_dag".to_owned()
+        } else {
+            "direct_low_latency".to_owned()
+        }),
         primary: (status.mesh.relay_primary_configured
             || status.mesh.relay_primary_target.is_some())
         .then(|| RouteLane {
+            node_id: status.mesh.relay_primary_id.clone(),
             target: status.mesh.relay_primary_target.clone(),
             carrier: carrier.clone(),
             trust: trust.clone(),
@@ -809,6 +870,7 @@ pub fn effective_delivery(
         secondary: (status.mesh.relay_secondary_configured
             || status.mesh.relay_secondary_target.is_some())
         .then(|| RouteLane {
+            node_id: status.mesh.relay_secondary_id.clone(),
             target: status.mesh.relay_secondary_target.clone(),
             carrier,
             trust,
@@ -1026,6 +1088,7 @@ mod tests {
       "updated_unix_ms":1784102400200,
       "node":{"node_id":"edge-lon","region":"eu-west","continent":"EU","total_storage_bytes":1000,"used_storage_bytes":400,"active_streams":1},
       "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repaired_objects":2,"source_datagrams":20,"repair_datagrams":5},
+      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5]}}],
       "aggregate":{"node_count":2,"active_streams":1},
       "telemetry":{"fresh_remote_count":1,"stale_remote_count":0},
       "orchestration":{"control_dispatch_ready":true},
@@ -1053,6 +1116,15 @@ mod tests {
         assert_eq!(edge.relay_session.authenticated_sessions, 1);
         assert_eq!(edge.edge_services[0].percentile_us(95), Some(900));
         assert_eq!(edge.nodes[0].storage_percent(), Some(40.0));
+        assert_eq!(edge.relay_nodes.len(), 1);
+        assert_eq!(
+            edge.relay_nodes[0].relay_session.forwarded_repair_datagrams,
+            5
+        );
+        assert_eq!(
+            edge.relay_nodes[0].relay_session.forward_percentile_us(95),
+            Some(100)
+        );
     }
 
     #[test]
@@ -1161,6 +1233,30 @@ mod tests {
         assert_eq!(
             delivery.secondary.unwrap().state.as_deref(),
             Some("warm repair")
+        );
+    }
+
+    #[test]
+    fn installed_dual_parent_sessions_surface_an_active_compiled_dag() {
+        let mut contrib: ContribStatus = serde_json::from_str(CONTRIB_PARTIAL).unwrap();
+        contrib.mesh.relay_topology_generation = 7;
+        contrib.mesh.relay_primary_id = Some("relay-primary".to_owned());
+        contrib.mesh.relay_secondary_id = Some("relay-secondary".to_owned());
+        let mut edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
+        edge.relay_session.controlled_sessions = 2;
+        edge.relay_session.datagrams_rejected = 0;
+
+        let delivery = effective_delivery(Some(&contrib), Some(&edge));
+        assert_eq!(delivery.fabric_label(), Some("Scalable DAG"));
+        assert_eq!(delivery.readiness_label(), "ready");
+        assert_eq!(delivery.generation, Some(7));
+        assert_eq!(
+            delivery.primary.and_then(|lane| lane.node_id).as_deref(),
+            Some("relay-primary")
+        );
+        assert_eq!(
+            delivery.secondary.and_then(|lane| lane.node_id).as_deref(),
+            Some("relay-secondary")
         );
     }
 }

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${NEEDLETAIL_NODE_ID:?missing NEEDLETAIL_NODE_ID}"
+: "${NEEDLETAIL_REGION:?missing NEEDLETAIL_REGION}"
+: "${NEEDLETAIL_PRIVATE_IP:?missing NEEDLETAIL_PRIVATE_IP}"
+
+PLAN="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
+SERVICE="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
+  '.services[] | select(.service == "av_mesh" and .node_id == $node)' "${PLAN}")"
+
+args=(
+  /usr/local/bin/av-mesh
+  --cert /etc/needletail/tls/fullchain.pem
+  --key /etc/needletail/tls/privkey.pem
+  --region "${NEEDLETAIL_REGION}"
+  --node-id "${NEEDLETAIL_NODE_ID}"
+  --mesh-bind "0.0.0.0:${NEEDLETAIL_MESH_PORT:-29101}"
+  --http-port "${NEEDLETAIL_HTTP_PORT:-19444}"
+  --playback-base-url "${NEEDLETAIL_PLAYBACK_BASE_URL:-https://${NEEDLETAIL_PRIVATE_IP}:${NEEDLETAIL_HTTP_PORT:-19444}/live}"
+  --fec-bind "0.0.0.0:${NEEDLETAIL_FEC_PORT:-22001}"
+  --media-fec-bind "0.0.0.0:${NEEDLETAIL_MEDIA_FEC_PORT:-22101}"
+  --telemetry-bind "0.0.0.0:${NEEDLETAIL_TELEMETRY_PORT:-27300}"
+  --telemetry-dns-name local.bitneedle.com
+  --telemetry-private-ipv4 "${NEEDLETAIL_PRIVATE_IP}"
+  --telemetry-interval-ms 250
+  --stream-id 1
+  --part-ms "${NEEDLETAIL_PART_MS:-50}"
+  --parts-per-segment 2
+  --window-parts 24
+  --slot-kb 2048
+  --relay-controlled-local
+)
+
+IFS=',' read -r -a telemetry_peers <<<"${NEEDLETAIL_TELEMETRY_PEERS:-}"
+for peer in "${telemetry_peers[@]}"; do
+  [[ -n "${peer}" ]] && args+=(--telemetry-peer "${peer}")
+done
+
+primary_bind="$(jq -r '.primary_parent.bind' <<<"${SERVICE}")"
+primary_peer="$(jq -r '.primary_parent.peer' <<<"${SERVICE}")"
+primary_id="$(jq -r '.primary_parent.parent_node_id' <<<"${SERVICE}")"
+primary_lane="$(jq -r '.primary_parent.lane' <<<"${SERVICE}")"
+args+=(
+  --relay-primary-bind "${primary_bind}"
+  --relay-primary-peer "${primary_peer}"
+  --relay-primary-id "${primary_id}"
+)
+[[ "${primary_lane}" == source_and_repair ]] && args+=(--relay-primary-promoted)
+
+if jq -e '.secondary_parent != null' <<<"${SERVICE}" >/dev/null; then
+  secondary_bind="$(jq -r '.secondary_parent.bind' <<<"${SERVICE}")"
+  secondary_peer="$(jq -r '.secondary_parent.peer' <<<"${SERVICE}")"
+  secondary_id="$(jq -r '.secondary_parent.parent_node_id' <<<"${SERVICE}")"
+  secondary_lane="$(jq -r '.secondary_parent.lane' <<<"${SERVICE}")"
+  args+=(
+    --relay-secondary-bind "${secondary_bind}"
+    --relay-secondary-peer "${secondary_peer}"
+    --relay-secondary-id "${secondary_id}"
+  )
+  [[ "${secondary_lane}" == source_and_repair ]] && args+=(--relay-secondary-promoted)
+fi
+
+args+=(
+  --relay-topology-generation "$(jq -r '.topology_generation' <<<"${SERVICE}")"
+  --relay-subscription-id "$(jq -r '.subscription_id' <<<"${SERVICE}")"
+  --relay-max-downstream-children "$(jq -r '.max_downstream_children' <<<"${SERVICE}")"
+)
+
+while IFS=$'\t' read -r bind target lane; do
+  [[ -n "${bind}" ]] || continue
+  [[ "${lane}" == source_and_repair ]] && lane=all
+  args+=(--relay-forward "${bind}=${target},${lane}")
+done < <(jq -r '.forwards[] | [.bind, .target, .lane] | @tsv' <<<"${SERVICE}")
+
+exec "${args[@]}"

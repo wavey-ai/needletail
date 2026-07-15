@@ -1,0 +1,18 @@
+[Unit]
+Description=Needletail contributor qualification ingress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/needletail/node.env
+Environment=RUST_LOG=av_contrib=info,av_web_service=warn
+ExecStart=/usr/local/bin/needletail-av-contrib-run
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

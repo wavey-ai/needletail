@@ -82,9 +82,11 @@ impl RelaySymbolLane {
 
 /// Runtime socket ownership for one directed topology relationship.
 ///
-/// `sender_bind` and `receiver_bind` are local service binds. `sender_peer` and
-/// `receiver_target` are the stable private-network addresses observed by the
-/// opposite service. Their ports must match their corresponding binds.
+/// `sender_bind` and `receiver_bind` are local service binds. `sender_peer` is
+/// the stable source address admitted by the child, while `receiver_target` is
+/// the address used by the parent. The observed addresses may intentionally be
+/// a tunnel, NAT, or qualification emulator endpoint rather than either local
+/// bind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarrierLink {
     pub parent_node_id: String,
@@ -366,18 +368,6 @@ impl RelayProgram {
                     link.parent_node_id, link.child_node_id
                 ));
             }
-            if link.sender_bind.port() != link.sender_peer.port() {
-                violations.push(format!(
-                    "carrier link {} -> {} sender bind/peer ports differ",
-                    link.parent_node_id, link.child_node_id
-                ));
-            }
-            if link.receiver_bind.port() != link.receiver_target.port() {
-                violations.push(format!(
-                    "carrier link {} -> {} receiver bind/target ports differ",
-                    link.parent_node_id, link.child_node_id
-                ));
-            }
             if !sender_binds.insert((link.parent_node_id.as_str(), link.sender_bind)) {
                 violations.push(format!(
                     "node {} reuses RelaySession sender bind {}",
@@ -507,7 +497,7 @@ impl RelayProgram {
             services.push(CompiledService::AvMesh(MeshRelayService {
                 node_id: node.node_id.clone(),
                 primary_parent: compiled_parent(primary),
-                secondary_parent: secondary.map(|link| compiled_parent(link)),
+                secondary_parent: secondary.map(compiled_parent),
                 forwards,
                 max_downstream_children: self.topology.limits.max_downstream_children,
                 topology_generation: self.topology.generation,

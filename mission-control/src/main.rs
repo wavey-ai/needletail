@@ -9,7 +9,7 @@ mod app {
         operational_alerts, publication_from_contrib, publication_from_edge, ContribStatus,
         DeliverySnapshot, DurationHistogram, EdgeNode, EdgeService, EventSource, IngestSession,
         ListenerStatus, MeshStatus, OperationalEvent, ProtocolRuntime, PublicationSnapshot,
-        RouteLane, MAX_EVENT_ROWS,
+        RelayNodeSession, RouteLane, MAX_EVENT_ROWS,
     };
     use serde::de::DeserializeOwned;
     use wasm_bindgen_futures::spawn_local;
@@ -226,6 +226,7 @@ mod app {
                             detail="Scalable DAG and low-latency lanes with primary source, warm secondary, trust, stretch, and generation."
                         />
                         <RouteProgram contrib edge />
+                        <RelayFabricTable edge />
                         <RouteTable contrib edge />
                     </section>
 
@@ -925,6 +926,93 @@ mod app {
                     </table>
                 </div>
             </section>
+        }
+    }
+
+    #[component]
+    fn RelayFabricTable(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        view! {
+            <section class="data-panel table-panel">
+                <PanelTitle title="Live RaptorQ relay fabric" detail="Per-node source, warm repair, forwarding, recovery, and carrier latency" />
+                <div class="table-shell">
+                    <table>
+                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Repair-assisted"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
+                        <tbody>
+                            <For
+                                each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
+                                key=|node| node.node_id.clone()
+                                let(node)
+                            >
+                                <RelayFabricRow node />
+                            </For>
+                        </tbody>
+                    </table>
+                </div>
+                {move || edge.get().is_some_and(|status| status.relay_nodes.is_empty()).then(|| view! { <p class="awaiting">"Waiting for relay-node telemetry."</p> })}
+            </section>
+        }
+    }
+
+    #[component]
+    fn RelayFabricRow(node: RelayNodeSession) -> impl IntoView {
+        let relay = &node.relay_session;
+        let assignment = if relay.primary_sessions > 0 && relay.secondary_sessions > 0 {
+            "playback edge"
+        } else if relay.downstream_children > 0 && relay.secondary_sessions > 0 {
+            "warm repair relay"
+        } else if relay.downstream_children > 0 {
+            "primary source relay"
+        } else {
+            "relay endpoint"
+        };
+        let state = if relay.errors() > 0 || relay.forward_errors > 0 {
+            "attention"
+        } else if relay.controlled_sessions > 0 || relay.authenticated_sessions > 0 {
+            "ready"
+        } else {
+            "waiting"
+        };
+        let parents = format!(
+            "{} primary · {} secondary",
+            relay.primary_sessions, relay.secondary_sessions
+        );
+        let received = format!("{} / {}", relay.source_datagrams, relay.repair_datagrams);
+        let forwarded = format!(
+            "{} / {}",
+            relay.forwarded_source_datagrams, relay.forwarded_repair_datagrams
+        );
+        let forward_latency = format!(
+            "{} / {}",
+            format_optional_duration(relay.forward_percentile_us(95)),
+            if relay.forward_duration_count > 0 {
+                format_duration_us(relay.forward_duration_max_us)
+            } else {
+                "—".to_owned()
+            }
+        );
+        let errors = relay
+            .datagrams_rejected
+            .saturating_add(relay.forward_errors);
+        let downstream_children = relay.downstream_children;
+        let repaired_objects = relay.repaired_objects;
+        let node_label = format!(
+            "{} · {}",
+            nonempty_owned(node.node_id, "relay"),
+            nonempty_owned(node.region, "region pending")
+        );
+        view! {
+            <tr>
+                <td class="strong-cell">{node_label}</td>
+                <td>{assignment}</td>
+                <td><StatePill state=state.to_owned() /></td>
+                <td>{parents}</td>
+                <td class="mono-cell">{received}</td>
+                <td>{downstream_children}</td>
+                <td class="mono-cell">{forwarded}</td>
+                <td>{repaired_objects}</td>
+                <td class="mono-cell">{forward_latency}</td>
+                <td>{errors}</td>
+            </tr>
         }
     }
 

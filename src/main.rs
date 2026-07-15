@@ -18,6 +18,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
 const DEFAULT_HOST: &str = "local.bitneedle.com";
+const CONTRIB_NODE_ID: &str = "contrib";
+const PRIMARY_RELAY_NODE_ID: &str = "relay-primary";
+const SECONDARY_RELAY_NODE_ID: &str = "relay-secondary";
+const EDGE_NODE_ID: &str = "edge";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -121,6 +125,26 @@ struct Args {
     /// Fixed contributor source socket for the warm-secondary/repair lane.
     #[arg(long, default_value = "127.0.0.1:22302")]
     contrib_relay_secondary_bind: SocketAddr,
+
+    /// Optional one-way carrier emulator/tunnel endpoint between the
+    /// contributor and primary backbone relay.
+    #[arg(long)]
+    contrib_primary_via: Option<SocketAddr>,
+
+    /// Optional one-way carrier emulator/tunnel endpoint between the
+    /// contributor and warm backbone relay.
+    #[arg(long)]
+    contrib_secondary_via: Option<SocketAddr>,
+
+    /// Optional one-way carrier emulator/tunnel endpoint on the primary
+    /// backbone-to-edge source lane.
+    #[arg(long)]
+    primary_edge_via: Option<SocketAddr>,
+
+    /// Optional one-way carrier emulator/tunnel endpoint on the warm
+    /// backbone-to-edge repair lane.
+    #[arg(long)]
+    secondary_edge_via: Option<SocketAddr>,
 
     #[arg(long, default_value_t = 1)]
     relay_topology_generation: u64,
@@ -239,36 +263,41 @@ async fn main() -> Result<()> {
     ensure_executable(&mesh_bin, "av-mesh")?;
     ensure_executable(&contrib_bin, "av-contrib")?;
 
+    let relay_plan = compile_local_relay_plan(&args)?;
+    let contrib_relay_args = compiled_relay_arguments(&relay_plan, CONTRIB_NODE_ID)?;
+    let primary_relay_args = compiled_relay_arguments(&relay_plan, PRIMARY_RELAY_NODE_ID)?;
+    let secondary_relay_args = compiled_relay_arguments(&relay_plan, SECONDARY_RELAY_NODE_ID)?;
+    let edge_relay_args = compiled_relay_arguments(&relay_plan, EDGE_NODE_ID)?;
+    println!(
+        "[orchestrator] compiled RelaySession graph generation={} subscription={} services={}",
+        relay_plan.topology_generation,
+        relay_plan.subscription_id,
+        relay_plan.services.len()
+    );
+
     let mut services = Vec::new();
     let result = async {
         services.push(
             spawn_service(
-                "mesh-uk",
+                PRIMARY_RELAY_NODE_ID,
                 &mesh_bin,
                 &mesh_root,
                 mesh_node_args(MeshNodeLaunch {
-                    region: "uk",
-                    node_id: "mesh-uk",
-                    mesh_bind: args.uk_mesh,
-                    peer: args.uk_peer.unwrap_or(args.us_mesh),
-                    http_port: args.uk_http_port,
+                    region: "backbone-primary",
+                    node_id: PRIMARY_RELAY_NODE_ID,
+                    mesh_bind: args.us_mesh,
+                    peer: None,
+                    http_port: args.us_http_port,
                     fec_bind: args.uk_fec,
                     media_fec_bind: args.uk_media_fec,
-                    telemetry_bind: args.uk_telemetry,
-                    telemetry_peer: args.us_telemetry,
+                    telemetry_bind: args.us_telemetry,
+                    telemetry_peers: vec![args.uk_telemetry],
                     stream_id: args.stream_id,
                     part_ms: args.part_ms,
                     host: &args.host,
                     cert: &tls.cert,
                     key: &tls.key,
-                    relay: Some(LocalRelayQualification {
-                        primary_bind: args.uk_fec,
-                        primary_peer: args.contrib_relay_primary_bind,
-                        secondary_bind: args.uk_relay_secondary_bind,
-                        secondary_peer: args.contrib_relay_secondary_bind,
-                        topology_generation: args.relay_topology_generation,
-                        subscription_id: args.relay_subscription_id,
-                    }),
+                    relay_arguments: primary_relay_args,
                 }),
                 &rust_log,
                 &[(
@@ -280,25 +309,55 @@ async fn main() -> Result<()> {
         );
         services.push(
             spawn_service(
-                "mesh-us",
+                SECONDARY_RELAY_NODE_ID,
                 &mesh_bin,
                 &mesh_root,
                 mesh_node_args(MeshNodeLaunch {
-                    region: "us",
-                    node_id: "mesh-us",
-                    mesh_bind: args.us_mesh,
-                    peer: args.us_peer.unwrap_or(args.uk_mesh),
-                    http_port: args.us_http_port,
+                    region: "backbone-secondary",
+                    node_id: SECONDARY_RELAY_NODE_ID,
+                    mesh_bind: args.secondary_relay_mesh,
+                    peer: None,
+                    http_port: args.secondary_relay_http_port,
                     fec_bind: args.us_fec,
                     media_fec_bind: args.us_media_fec,
-                    telemetry_bind: args.us_telemetry,
-                    telemetry_peer: args.uk_telemetry,
+                    telemetry_bind: args.secondary_relay_telemetry,
+                    telemetry_peers: vec![args.uk_telemetry],
                     stream_id: args.stream_id,
                     part_ms: args.part_ms,
                     host: &args.host,
                     cert: &tls.cert,
                     key: &tls.key,
-                    relay: None,
+                    relay_arguments: secondary_relay_args,
+                }),
+                &rust_log,
+                &[(
+                    "NEEDLETAIL_MISSION_CONTROL_DIST",
+                    mission_control_dist.display().to_string(),
+                )],
+            )
+            .await?,
+        );
+        services.push(
+            spawn_service(
+                EDGE_NODE_ID,
+                &mesh_bin,
+                &mesh_root,
+                mesh_node_args(MeshNodeLaunch {
+                    region: "playback-edge",
+                    node_id: EDGE_NODE_ID,
+                    mesh_bind: args.uk_mesh,
+                    peer: None,
+                    http_port: args.uk_http_port,
+                    fec_bind: args.edge_relay_primary_bind,
+                    media_fec_bind: args.edge_media_fec,
+                    telemetry_bind: args.uk_telemetry,
+                    telemetry_peers: vec![args.us_telemetry, args.secondary_relay_telemetry],
+                    stream_id: args.stream_id,
+                    part_ms: args.part_ms,
+                    host: &args.host,
+                    cert: &tls.cert,
+                    key: &tls.key,
+                    relay_arguments: edge_relay_args,
                 }),
                 &rust_log,
                 &[(
@@ -310,16 +369,24 @@ async fn main() -> Result<()> {
         );
 
         wait_for_health(
-            "mesh-uk",
-            args.uk_http_port,
+            PRIMARY_RELAY_NODE_ID,
+            args.us_http_port,
             Duration::from_secs(args.health_timeout_seconds),
             &args.host,
             &mut services,
         )
         .await?;
         wait_for_health(
-            "mesh-us",
-            args.us_http_port,
+            SECONDARY_RELAY_NODE_ID,
+            args.secondary_relay_http_port,
+            Duration::from_secs(args.health_timeout_seconds),
+            &args.host,
+            &mut services,
+        )
+        .await?;
+        wait_for_health(
+            EDGE_NODE_ID,
+            args.uk_http_port,
             Duration::from_secs(args.health_timeout_seconds),
             &args.host,
             &mut services,
@@ -331,7 +398,7 @@ async fn main() -> Result<()> {
                 "contrib",
                 &contrib_bin,
                 &contrib_root,
-                contrib_args(&args, &tls.cert, &tls.key),
+                contrib_args(&args, &tls.cert, &tls.key, contrib_relay_args),
                 &rust_log,
                 &[],
             )
@@ -354,16 +421,23 @@ async fn main() -> Result<()> {
         )
         .await?;
         require_https_resource(
-            "UK edge snapshot",
+            "playback edge snapshot",
             &args.host,
             args.uk_http_port,
             "/api/mesh",
         )
         .await?;
         require_https_resource(
-            "US edge snapshot",
+            "primary relay snapshot",
             &args.host,
             args.us_http_port,
+            "/api/mesh",
+        )
+        .await?;
+        require_https_resource(
+            "secondary relay snapshot",
+            &args.host,
+            args.secondary_relay_http_port,
             "/api/mesh",
         )
         .await?;
@@ -382,9 +456,16 @@ async fn main() -> Result<()> {
             .await?;
         }
         require_https_resource(
-            "US Needletail Mission Control",
+            "primary relay Needletail Mission Control",
             &args.host,
             args.us_http_port,
+            "/mesh",
+        )
+        .await?;
+        require_https_resource(
+            "secondary relay Needletail Mission Control",
+            &args.host,
+            args.secondary_relay_http_port,
             "/mesh",
         )
         .await?;
@@ -438,11 +519,165 @@ fn resolve_mesh_root(args: &Args, contrib_root: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 
+fn compile_local_relay_plan(args: &Args) -> Result<CompiledServicePlan> {
+    local_relay_program(args)
+        .compile()
+        .map_err(|error| anyhow!("local RelaySession program is invalid: {error}"))
+}
+
+fn compiled_relay_arguments(plan: &CompiledServicePlan, node_id: &str) -> Result<Vec<String>> {
+    plan.services
+        .iter()
+        .find(|service| service.node_id() == node_id)
+        .map(CompiledService::relay_arguments)
+        .with_context(|| format!("compiled RelaySession plan omitted {node_id}"))
+}
+
+fn local_relay_program(args: &Args) -> RelayProgram {
+    fn node(node_id: &str, level: u16, role: NodeRole, region: &str, zone: &str) -> RelayNode {
+        RelayNode {
+            node_id: node_id.to_owned(),
+            level,
+            role,
+            failure_domain: FailureDomain {
+                provider: "local-qualification".to_owned(),
+                region: region.to_owned(),
+                asn: 64_500,
+                zone: zone.to_owned(),
+            },
+        }
+    }
+
+    fn link(
+        parent_node_id: &str,
+        child_node_id: &str,
+        role: ParentRole,
+        lane: RelaySymbolLane,
+        sender_bind: SocketAddr,
+        receiver_bind: SocketAddr,
+        via: Option<SocketAddr>,
+    ) -> CarrierLink {
+        CarrierLink {
+            parent_node_id: parent_node_id.to_owned(),
+            child_node_id: child_node_id.to_owned(),
+            role,
+            lane,
+            sender_bind,
+            sender_peer: via.unwrap_or(sender_bind),
+            receiver_bind,
+            receiver_target: via.unwrap_or(receiver_bind),
+        }
+    }
+
+    RelayProgram {
+        purpose: DeploymentPurpose::LocalQualification,
+        carrier: CarrierProfile::ControlledPrivateUdp,
+        subscription_id: args.relay_subscription_id,
+        media_deadline_ms: args.relay_deadline_ms,
+        topology: RelayTopology {
+            generation: args.relay_topology_generation,
+            nodes: vec![
+                node(CONTRIB_NODE_ID, 0, NodeRole::Origin, "origin", "origin-a"),
+                node(
+                    PRIMARY_RELAY_NODE_ID,
+                    1,
+                    NodeRole::Backbone,
+                    "primary-backbone",
+                    "primary-a",
+                ),
+                node(
+                    SECONDARY_RELAY_NODE_ID,
+                    1,
+                    NodeRole::Backbone,
+                    "secondary-backbone",
+                    "secondary-a",
+                ),
+                node(
+                    EDGE_NODE_ID,
+                    2,
+                    NodeRole::PlaybackEdge,
+                    "playback-edge",
+                    "edge-a",
+                ),
+            ],
+            parent_links: vec![
+                ParentLink {
+                    parent_node_id: CONTRIB_NODE_ID.to_owned(),
+                    child_node_id: PRIMARY_RELAY_NODE_ID.to_owned(),
+                    role: ParentRole::Primary,
+                },
+                ParentLink {
+                    parent_node_id: CONTRIB_NODE_ID.to_owned(),
+                    child_node_id: SECONDARY_RELAY_NODE_ID.to_owned(),
+                    role: ParentRole::Primary,
+                },
+                ParentLink {
+                    parent_node_id: PRIMARY_RELAY_NODE_ID.to_owned(),
+                    child_node_id: EDGE_NODE_ID.to_owned(),
+                    role: ParentRole::Primary,
+                },
+                ParentLink {
+                    parent_node_id: SECONDARY_RELAY_NODE_ID.to_owned(),
+                    child_node_id: EDGE_NODE_ID.to_owned(),
+                    role: ParentRole::Secondary,
+                },
+            ],
+            limits: TopologyLimits {
+                max_origin_children: 2,
+                max_downstream_children: 4,
+            },
+        },
+        carrier_links: vec![
+            link(
+                CONTRIB_NODE_ID,
+                PRIMARY_RELAY_NODE_ID,
+                ParentRole::Primary,
+                RelaySymbolLane::Source,
+                args.contrib_relay_primary_bind,
+                args.uk_fec,
+                args.contrib_primary_via,
+            ),
+            link(
+                CONTRIB_NODE_ID,
+                SECONDARY_RELAY_NODE_ID,
+                ParentRole::Primary,
+                RelaySymbolLane::SourceAndRepair,
+                args.contrib_relay_secondary_bind,
+                args.us_fec,
+                args.contrib_secondary_via,
+            ),
+            link(
+                PRIMARY_RELAY_NODE_ID,
+                EDGE_NODE_ID,
+                ParentRole::Primary,
+                RelaySymbolLane::Source,
+                args.primary_relay_forward_bind,
+                args.edge_relay_primary_bind,
+                args.primary_edge_via,
+            ),
+            link(
+                SECONDARY_RELAY_NODE_ID,
+                EDGE_NODE_ID,
+                ParentRole::Secondary,
+                RelaySymbolLane::Repair,
+                args.secondary_relay_forward_bind,
+                args.uk_relay_secondary_bind,
+                args.secondary_edge_via,
+            ),
+        ],
+    }
+}
+
 fn validate_local_relay_wiring(args: &Args) -> Result<()> {
-    let sockets = [
-        ("UK primary RelaySession ingress", args.uk_fec),
+    let mut sockets = vec![
+        ("primary backbone RelaySession ingress", args.uk_fec),
+        ("secondary backbone RelaySession ingress", args.us_fec),
         (
-            "UK secondary RelaySession ingress",
+            "playback edge primary RelaySession ingress",
+            args.edge_relay_primary_bind,
+        ),
+        (
+            "playback edge secondary RelaySession ingress",
             args.uk_relay_secondary_bind,
         ),
         (
@@ -453,7 +688,34 @@ fn validate_local_relay_wiring(args: &Args) -> Result<()> {
             "contributor secondary RelaySession source",
             args.contrib_relay_secondary_bind,
         ),
+        (
+            "primary backbone RelaySession forward source",
+            args.primary_relay_forward_bind,
+        ),
+        (
+            "secondary backbone RelaySession forward source",
+            args.secondary_relay_forward_bind,
+        ),
     ];
+    for (name, endpoint) in [
+        (
+            "contributor primary carrier intermediary",
+            args.contrib_primary_via,
+        ),
+        (
+            "contributor secondary carrier intermediary",
+            args.contrib_secondary_via,
+        ),
+        ("primary edge carrier intermediary", args.primary_edge_via),
+        (
+            "secondary edge carrier intermediary",
+            args.secondary_edge_via,
+        ),
+    ] {
+        if let Some(endpoint) = endpoint {
+            sockets.push((name, endpoint));
+        }
+    }
     for (index, (left_name, left)) in sockets.iter().enumerate() {
         if let Some((right_name, _)) = sockets[index + 1..].iter().find(|(_, right)| right == left)
         {
@@ -469,6 +731,7 @@ fn validate_local_relay_wiring(args: &Args) -> Result<()> {
     if args.relay_deadline_ms == 0 {
         bail!("--relay-deadline-ms must be positive");
     }
+    compile_local_relay_plan(args)?;
     Ok(())
 }
 
@@ -582,18 +845,18 @@ struct MeshNodeLaunch<'a> {
     region: &'a str,
     node_id: &'a str,
     mesh_bind: SocketAddr,
-    peer: SocketAddr,
+    peer: Option<SocketAddr>,
     http_port: u16,
     fec_bind: SocketAddr,
     media_fec_bind: SocketAddr,
     telemetry_bind: SocketAddr,
-    telemetry_peer: SocketAddr,
+    telemetry_peers: Vec<SocketAddr>,
     stream_id: u64,
     part_ms: u64,
     host: &'a str,
     cert: &'a Path,
     key: &'a Path,
-    relay: Option<LocalRelayQualification>,
+    relay_arguments: Vec<String>,
 }
 
 fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
@@ -608,8 +871,6 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
         launch.node_id.into(),
         "--mesh-bind".into(),
         launch.mesh_bind.to_string(),
-        "--peer".into(),
-        launch.peer.to_string(),
         "--http-port".into(),
         launch.http_port.to_string(),
         "--playback-base-url".into(),
@@ -620,8 +881,6 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
         launch.media_fec_bind.to_string(),
         "--telemetry-bind".into(),
         launch.telemetry_bind.to_string(),
-        "--telemetry-peer".into(),
-        launch.telemetry_peer.to_string(),
         "--telemetry-dns-name".into(),
         launch.host.into(),
         "--telemetry-interval-ms".into(),
@@ -637,34 +896,20 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
         "--slot-kb".into(),
         "2048".into(),
     ];
-    if let Some(relay) = launch.relay {
-        args.extend([
-            "--relay-controlled-local".into(),
-            "--relay-primary-bind".into(),
-            relay.primary_bind.to_string(),
-            "--relay-primary-peer".into(),
-            relay.primary_peer.to_string(),
-            "--relay-primary-id".into(),
-            "av-contrib".into(),
-            "--relay-secondary-bind".into(),
-            relay.secondary_bind.to_string(),
-            "--relay-secondary-peer".into(),
-            relay.secondary_peer.to_string(),
-            "--relay-secondary-id".into(),
-            "av-contrib".into(),
-            "--relay-topology-generation".into(),
-            relay.topology_generation.to_string(),
-            "--relay-subscription-id".into(),
-            relay.subscription_id.to_string(),
-        ]);
+    if let Some(peer) = launch.peer {
+        args.extend(["--peer".into(), peer.to_string()]);
     }
+    for telemetry_peer in launch.telemetry_peers {
+        args.extend(["--telemetry-peer".into(), telemetry_peer.to_string()]);
+    }
+    args.extend(launch.relay_arguments);
     args
 }
 
-fn contrib_args(args: &Args, cert: &Path, key: &Path) -> Vec<String> {
+fn contrib_args(args: &Args, cert: &Path, key: &Path, relay_arguments: Vec<String>) -> Vec<String> {
     let fec_target = args.contrib_fec_target.unwrap_or(args.uk_fec);
     let media_fec_target = args.contrib_media_fec_target.unwrap_or(args.uk_media_fec);
-    vec![
+    let mut service_args = vec![
         "--cert".into(),
         cert.display().to_string(),
         "--key".into(),
@@ -675,26 +920,6 @@ fn contrib_args(args: &Args, cert: &Path, key: &Path) -> Vec<String> {
         fec_target.to_string(),
         "--mesh-media-fec-target".into(),
         media_fec_target.to_string(),
-        "--relay-local-id".into(),
-        "av-contrib".into(),
-        "--relay-primary-bind".into(),
-        args.contrib_relay_primary_bind.to_string(),
-        "--relay-primary-target".into(),
-        args.uk_fec.to_string(),
-        "--relay-primary-id".into(),
-        "mesh-uk".into(),
-        "--relay-secondary-bind".into(),
-        args.contrib_relay_secondary_bind.to_string(),
-        "--relay-secondary-target".into(),
-        args.uk_relay_secondary_bind.to_string(),
-        "--relay-secondary-id".into(),
-        "mesh-uk".into(),
-        "--relay-topology-generation".into(),
-        args.relay_topology_generation.to_string(),
-        "--relay-subscription-id".into(),
-        args.relay_subscription_id.to_string(),
-        "--relay-deadline-ms".into(),
-        args.relay_deadline_ms.to_string(),
         "--stream-id".into(),
         args.stream_id.to_string(),
         "--rist-stream-id".into(),
@@ -713,7 +938,9 @@ fn contrib_args(args: &Args, cert: &Path, key: &Path) -> Vec<String> {
         args.srt_bind.to_string(),
         "--rtmp-bind".into(),
         args.rtmp_bind.to_string(),
-    ]
+    ];
+    service_args.extend(relay_arguments);
+    service_args
 }
 
 async fn spawn_service(
@@ -860,12 +1087,16 @@ fn print_ready(args: &Args) {
         args.rist_flow_id
     );
     println!(
-        "[orchestrator] UK player: https://{}:{}/live/{}/stream.m3u8",
+        "[orchestrator] playback edge: https://{}:{}/live/{}/stream.m3u8",
         args.host, args.uk_http_port, args.stream_id
     );
     println!(
-        "[orchestrator] US player: https://{}:{}/live/{}/stream.m3u8",
-        args.host, args.us_http_port, args.stream_id
+        "[orchestrator] primary relay status: https://{}:{}/api/mesh",
+        args.host, args.us_http_port
+    );
+    println!(
+        "[orchestrator] warm relay status: https://{}:{}/api/mesh",
+        args.host, args.secondary_relay_http_port
     );
     println!(
         "[orchestrator] contrib status: https://{}:{}/api/status",
@@ -876,12 +1107,18 @@ fn print_ready(args: &Args) {
         args.host, args.contrib_http_port
     );
     println!(
-        "[orchestrator] RelaySession primary/source: {} -> {}",
-        args.contrib_relay_primary_bind, args.uk_fec
+        "[orchestrator] RelaySession source lane: {} -> {} -> {} -> {}",
+        args.contrib_relay_primary_bind,
+        args.uk_fec,
+        args.primary_relay_forward_bind,
+        args.edge_relay_primary_bind
     );
     println!(
-        "[orchestrator] RelaySession warm-secondary/repair: {} -> {}",
-        args.contrib_relay_secondary_bind, args.uk_relay_secondary_bind
+        "[orchestrator] RelaySession warm repair lane: {} -> {} -> {} -> {}",
+        args.contrib_relay_secondary_bind,
+        args.us_fec,
+        args.secondary_relay_forward_bind,
+        args.uk_relay_secondary_bind
     );
     println!(
         "[orchestrator] RelaySession desired state: generation={} subscription={}",
@@ -896,12 +1133,16 @@ fn print_ready(args: &Args) {
         args.stream_id, args.stream_id
     );
     println!(
-        "[orchestrator] UK Mission Control: https://{}:{}/mesh",
+        "[orchestrator] Mission Control: https://{}:{}/mesh",
         args.host, args.uk_http_port
     );
     println!(
-        "[orchestrator] US Mission Control: https://{}:{}/mesh",
+        "[orchestrator] primary relay Mission Control: https://{}:{}/mesh",
         args.host, args.us_http_port
+    );
+    println!(
+        "[orchestrator] warm relay Mission Control: https://{}:{}/mesh",
+        args.host, args.secondary_relay_http_port
     );
     println!("[orchestrator] logs from all services are prefixed below");
     println!();
@@ -977,58 +1218,20 @@ mod tests {
             .map(|pair| pair[1].as_str())
     }
 
-    fn relay_qualification(args: &Args) -> LocalRelayQualification {
-        LocalRelayQualification {
-            primary_bind: args.uk_fec,
-            primary_peer: args.contrib_relay_primary_bind,
-            secondary_bind: args.uk_relay_secondary_bind,
-            secondary_peer: args.contrib_relay_secondary_bind,
-            topology_generation: args.relay_topology_generation,
-            subscription_id: args.relay_subscription_id,
-        }
-    }
-
     #[test]
-    fn local_relay_lanes_converge_on_the_uk_object_assembler() {
+    fn local_compiler_emits_source_seeded_dual_parent_dag() {
         let args = default_args();
         validate_local_relay_wiring(&args).expect("valid fixed local relay sockets");
-        let mesh_args = mesh_node_args(MeshNodeLaunch {
-            region: "uk",
-            node_id: "mesh-uk",
-            mesh_bind: args.uk_mesh,
-            peer: args.us_mesh,
-            http_port: args.uk_http_port,
-            fec_bind: args.uk_fec,
-            media_fec_bind: args.uk_media_fec,
-            telemetry_bind: args.uk_telemetry,
-            telemetry_peer: args.us_telemetry,
-            stream_id: args.stream_id,
-            part_ms: args.part_ms,
-            host: &args.host,
-            cert: Path::new("cert.pem"),
-            key: Path::new("key.pem"),
-            relay: Some(relay_qualification(&args)),
-        });
-        let contrib_args = contrib_args(&args, Path::new("cert.pem"), Path::new("key.pem"));
+        let plan = compile_local_relay_plan(&args).expect("compile local plan");
+        assert_eq!(plan.services.len(), 4);
 
-        assert!(mesh_args
-            .iter()
-            .any(|arg| arg == "--relay-controlled-local"));
-        assert_eq!(
-            value_after(&mesh_args, "--relay-primary-bind"),
-            Some("127.0.0.1:22001")
-        );
-        assert_eq!(
-            value_after(&mesh_args, "--relay-primary-peer"),
-            Some("127.0.0.1:22301")
-        );
-        assert_eq!(
-            value_after(&mesh_args, "--relay-secondary-bind"),
-            Some("127.0.0.1:22201")
-        );
-        assert_eq!(
-            value_after(&mesh_args, "--relay-secondary-peer"),
-            Some("127.0.0.1:22302")
+        let contrib_relay_args =
+            compiled_relay_arguments(&plan, CONTRIB_NODE_ID).expect("contributor relay args");
+        let contrib_args = contrib_args(
+            &args,
+            Path::new("cert.pem"),
+            Path::new("key.pem"),
+            contrib_relay_args,
         );
         assert_eq!(
             value_after(&contrib_args, "--relay-primary-bind"),
@@ -1044,39 +1247,117 @@ mod tests {
         );
         assert_eq!(
             value_after(&contrib_args, "--relay-secondary-target"),
+            Some("127.0.0.1:22002")
+        );
+        assert!(contrib_args.contains(&"--relay-secondary-seed-source".to_owned()));
+        assert!(contrib_args.contains(&"--relay-exclusive".to_owned()));
+
+        let primary =
+            compiled_relay_arguments(&plan, PRIMARY_RELAY_NODE_ID).expect("primary relay args");
+        assert_eq!(
+            value_after(&primary, "--relay-primary-bind"),
+            Some("127.0.0.1:22001")
+        );
+        assert!(primary.contains(&"127.0.0.1:22401=127.0.0.1:22200,source".to_owned()));
+
+        let secondary =
+            compiled_relay_arguments(&plan, SECONDARY_RELAY_NODE_ID).expect("secondary relay args");
+        assert_eq!(
+            value_after(&secondary, "--relay-primary-bind"),
+            Some("127.0.0.1:22002")
+        );
+        assert!(secondary.contains(&"--relay-primary-promoted".to_owned()));
+        assert!(secondary.contains(&"127.0.0.1:22402=127.0.0.1:22201,repair".to_owned()));
+
+        let edge = compiled_relay_arguments(&plan, EDGE_NODE_ID).expect("edge relay args");
+        assert_eq!(
+            value_after(&edge, "--relay-primary-bind"),
+            Some("127.0.0.1:22200")
+        );
+        assert_eq!(
+            value_after(&edge, "--relay-primary-peer"),
+            Some("127.0.0.1:22401")
+        );
+        assert_eq!(
+            value_after(&edge, "--relay-secondary-bind"),
             Some("127.0.0.1:22201")
         );
         assert_eq!(
-            value_after(&mesh_args, "--relay-topology-generation"),
-            value_after(&contrib_args, "--relay-topology-generation")
-        );
-        assert_eq!(
-            value_after(&mesh_args, "--relay-subscription-id"),
-            value_after(&contrib_args, "--relay-subscription-id")
+            value_after(&edge, "--relay-secondary-peer"),
+            Some("127.0.0.1:22402")
         );
     }
 
     #[test]
-    fn second_edge_starts_without_an_unassigned_origin_session() {
+    fn local_qualification_disables_legacy_mesh_peer_forwarding() {
         let args = default_args();
+        let plan = compile_local_relay_plan(&args).expect("compile local plan");
         let mesh_args = mesh_node_args(MeshNodeLaunch {
-            region: "us",
-            node_id: "mesh-us",
-            mesh_bind: args.us_mesh,
-            peer: args.uk_mesh,
-            http_port: args.us_http_port,
-            fec_bind: args.us_fec,
-            media_fec_bind: args.us_media_fec,
-            telemetry_bind: args.us_telemetry,
-            telemetry_peer: args.uk_telemetry,
+            region: "playback-edge",
+            node_id: EDGE_NODE_ID,
+            mesh_bind: args.uk_mesh,
+            peer: None,
+            http_port: args.uk_http_port,
+            fec_bind: args.edge_relay_primary_bind,
+            media_fec_bind: args.edge_media_fec,
+            telemetry_bind: args.uk_telemetry,
+            telemetry_peers: vec![args.us_telemetry, args.secondary_relay_telemetry],
             stream_id: args.stream_id,
             part_ms: args.part_ms,
             host: &args.host,
             cert: Path::new("cert.pem"),
             key: Path::new("key.pem"),
-            relay: None,
+            relay_arguments: compiled_relay_arguments(&plan, EDGE_NODE_ID)
+                .expect("edge relay arguments"),
         });
-        assert!(!mesh_args.iter().any(|arg| arg.starts_with("--relay-")));
+        assert!(!mesh_args.iter().any(|arg| arg == "--peer"));
+        assert!(mesh_args
+            .iter()
+            .any(|arg| arg == "--relay-controlled-local"));
+    }
+
+    #[test]
+    fn compiled_carriers_preserve_explicit_impairment_intermediaries() {
+        let args = Args::try_parse_from([
+            "needletail",
+            "--contrib-primary-via",
+            "127.0.0.1:22901",
+            "--contrib-secondary-via",
+            "127.0.0.1:22902",
+            "--primary-edge-via",
+            "127.0.0.1:22903",
+            "--secondary-edge-via",
+            "127.0.0.1:22904",
+        ])
+        .expect("carrier intermediaries");
+        let plan = compile_local_relay_plan(&args).expect("compile intermediary plan");
+
+        let contrib = compiled_relay_arguments(&plan, CONTRIB_NODE_ID).expect("contrib");
+        assert_eq!(
+            value_after(&contrib, "--relay-primary-target"),
+            Some("127.0.0.1:22901")
+        );
+        assert_eq!(
+            value_after(&contrib, "--relay-secondary-target"),
+            Some("127.0.0.1:22902")
+        );
+
+        let primary = compiled_relay_arguments(&plan, PRIMARY_RELAY_NODE_ID).expect("primary");
+        assert_eq!(
+            value_after(&primary, "--relay-primary-peer"),
+            Some("127.0.0.1:22901")
+        );
+        assert!(primary.contains(&"127.0.0.1:22401=127.0.0.1:22903,source".to_owned()));
+
+        let edge = compiled_relay_arguments(&plan, EDGE_NODE_ID).expect("edge");
+        assert_eq!(
+            value_after(&edge, "--relay-primary-peer"),
+            Some("127.0.0.1:22903")
+        );
+        assert_eq!(
+            value_after(&edge, "--relay-secondary-peer"),
+            Some("127.0.0.1:22904")
+        );
     }
 
     #[test]
