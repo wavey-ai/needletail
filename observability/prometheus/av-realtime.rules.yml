@@ -50,6 +50,30 @@ groups:
               rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
             )
           )
+      - record: av:contrib_relay_stage_p50_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (job, instance, stage, le) (
+              rate(av_contrib_relay_session_stage_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_relay_stage_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, instance, stage, le) (
+              rate(av_contrib_relay_session_stage_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_relay_stage_p99_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, instance, stage, le) (
+              rate(av_contrib_relay_session_stage_duration_seconds_bucket[5m])
+            )
+          )
       - record: av:mesh_edge_handler_p50_seconds:5m
         expr: |
           histogram_quantile(
@@ -124,6 +148,16 @@ groups:
         expr: |
           sum by (job, instance, role) (
             rate(av_contrib_relay_session_datagrams_total[5m])
+          )
+      - record: av:contrib_relay_lane_failures_per_second:5m
+        expr: |
+          sum by (job, instance, path) (
+            rate(av_contrib_relay_session_lane_objects_total{outcome="failure"}[5m])
+          )
+      - record: av:contrib_relay_surviving_lane_objects_per_second:5m
+        expr: |
+          sum by (job, instance) (
+            rate(av_contrib_relay_session_surviving_lane_objects_total[5m])
           )
       - record: av:contrib_relay_send_error_ratio:5m
         expr: |
@@ -284,6 +318,17 @@ groups:
           description: 'Forwarding p99 on {{ $labels.instance }} is {{ $value | humanizeDuration }}.'
           runbook: Compare the p50, p95, and p99 stage lines and inspect CPU scheduling, symbol encoding, and carrier pacing.
 
+      - alert: AvContributorRelayStageP99High
+        expr: av:contrib_relay_stage_p99_seconds:5m > 0.010
+        for: 2m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Contributor RelaySession stage p99 exceeds 10 ms
+          description: '{{ $labels.stage }} p99 on {{ $labels.instance }} is {{ $value | humanizeDuration }}.'
+          runbook: Separate encoder lock wait, RaptorQ encode, source-first scheduling, and the primary or warm carrier send stage; then inspect CPU contention and socket pressure for the elevated line.
+
       - alert: AvContributorRelayPrimaryMissing
         expr: av_contrib_relay_session_carrier_configured{path="primary"} < 1
         for: 1m
@@ -321,12 +366,45 @@ groups:
         expr: increase(av_contrib_relay_session_send_errors_total[5m]) > 0
         for: 1m
         labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: RelaySession symbol send errors detected
+          description: '{{ $labels.instance }} recorded {{ $labels.role }} symbol send failures.'
+          runbook: Inspect lane-object outcomes to identify the failed parent; verify the surviving lane, fixed source bind, target reachability, socket pressure, and path MTU.
+
+      - alert: AvContributorRelayLaneFailure
+        expr: increase(av_contrib_relay_session_lane_objects_total{outcome="failure"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Contributor parent lane is degraded
+          description: '{{ $labels.instance }} failed one or more canonical objects on the {{ $labels.path }} parent lane.'
+          runbook: Verify the independent parent path and confirm surviving-lane deliveries continue before replacing the degraded route make-before-break.
+
+      - alert: AvContributorRelayAllLanesFailed
+        expr: increase(av_contrib_relay_session_all_lanes_failed_objects_total[5m]) > 0
+        for: 0m
+        labels:
           severity: critical
           slo: provisional
         annotations:
-          summary: RelaySession carrier send errors detected
-          description: '{{ $labels.instance }} recorded {{ $labels.role }} symbol send failures.'
-          runbook: Inspect the assigned carrier, fixed source bind, target reachability, socket pressure, and path MTU.
+          summary: Every complete contributor parent lane failed
+          description: '{{ $labels.instance }} could not emit one or more canonical objects on any complete configured RelaySession lane.'
+          runbook: Restore either source-capable parent immediately, then inspect carrier errors, topology assignment, and deadline headroom.
+
+      - alert: AvContributorRelayDeadlineMiss
+        expr: increase(av_contrib_relay_session_deadline_objects_total{outcome="miss"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Contributor object emission missed its media deadline
+          description: '{{ $labels.instance }} recorded {{ $value }} canonical object emission deadline misses in five minutes.'
+          runbook: Compare total, encode, schedule, and carrier-send p99 with the deadline budget; reduce queueing or repair load and drop obsolete symbols immediately.
 
       - alert: AvContributorDeadlineHeadroomLow
         expr: |

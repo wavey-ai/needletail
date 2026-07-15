@@ -54,6 +54,7 @@ RESULT_DIR="${RESULT_DIR:-${ROOT}/target/realtime-qualification/${RUN_ID}}"
 BASELINE_JSON="${RESULT_DIR}/baseline.json"
 IMPAIRED_JSON="${RESULT_DIR}/impaired.json"
 QUALIFICATION_JSON="${RESULT_DIR}/qualification.json"
+FAILOVER_JSON="${RESULT_DIR}/automatic-failover.json"
 
 RAPTORQ_REPAIRED_OBJECTS_BEFORE=0
 RAPTORQ_REPAIRED_OBJECTS_AFTER=0
@@ -79,10 +80,14 @@ SECONDARY_FORWARDED_REPAIR_DELTA=0
 RELAY_FORWARD_ERRORS_BEFORE=0
 RELAY_FORWARD_ERRORS_AFTER=0
 RELAY_FORWARD_ERRORS_DELTA=0
+FAILOVER_ACTIVATION_BUDGET_MS="${FAILOVER_ACTIVATION_BUDGET_MS:-250}"
+FAILOVER_MEDIA_GAP_BUDGET_MS="${FAILOVER_MEDIA_GAP_BUDGET_MS:-250}"
+FAILOVER_RECOVERY_TIMEOUT_MS="${FAILOVER_RECOVERY_TIMEOUT_MS:-10000}"
 
 STACK_PID=""
 MEDIA_PID=""
 NETEM_PIDS=()
+PRIMARY_EDGE_NETEM_PID=""
 CURRENT_PROFILE=""
 
 usage() {
@@ -109,6 +114,8 @@ Primary environment overrides:
   SECONDARY_EDGE_LOSS_PCT     warm repair path loss (default 0)
   RESULT_DIR                  artifact directory under target/ by default
   MAX_P95_RATIO               impaired/baseline client-p95 limit (default 3)
+  FAILOVER_ACTIVATION_BUDGET_MS maximum promotion-to-source time (default 250)
+  FAILOVER_MEDIA_GAP_BUDGET_MS maximum cache-completion gap (default 250)
   SKIP_BUILD=1                use existing release binaries
 
 Default gates are 15ms ingest/forwarding p95, 5ms playlist p95, 1ms edge
@@ -134,7 +141,7 @@ for command_name in curl ffmpeg h2load jq awk sed rg; do
   require_cmd "${command_name}"
 done
 
-for value_name in PART_TARGET_MS DURATION_SECONDS PROPAGATION_PROBES CONCURRENCY H2_STREAMS_PER_CLIENT PAYLOAD_BYTES PROFILE_SETTLE_SECONDS; do
+for value_name in PART_TARGET_MS DURATION_SECONDS PROPAGATION_PROBES CONCURRENCY H2_STREAMS_PER_CLIENT PAYLOAD_BYTES PROFILE_SETTLE_SECONDS FAILOVER_ACTIVATION_BUDGET_MS FAILOVER_MEDIA_GAP_BUDGET_MS FAILOVER_RECOVERY_TIMEOUT_MS; do
   value="${!value_name}"
   if [[ ! "${value}" =~ ^[0-9]+$ ]] || [[ "${value}" -eq 0 && "${value_name}" != "PROFILE_SETTLE_SECONDS" && "${value_name}" != "PROPAGATION_PROBES" ]]; then
     echo "${value_name} must be a positive integer (PROFILE_SETTLE_SECONDS and PROPAGATION_PROBES may be zero)" >&2
@@ -187,6 +194,7 @@ stop_netem() {
     stop_pid "${pid}"
   done
   NETEM_PIDS=()
+  PRIMARY_EDGE_NETEM_PID=""
 }
 
 cleanup() {
@@ -240,7 +248,11 @@ start_netem_link() {
     --loss-pct "${loss}" \
     --seed "${seed}" \
     >"${log}" 2>&1 &
-  NETEM_PIDS+=("$!")
+  local pid="$!"
+  NETEM_PIDS+=("${pid}")
+  if [[ "${label}" == "primary-edge" || "${label}" == "primary-edge-recovered" ]]; then
+    PRIMARY_EDGE_NETEM_PID="${pid}"
+  fi
 }
 
 start_netem() {
@@ -304,6 +316,39 @@ wait_for_stack() {
       return 1
     fi
   done
+  sleep 0.3
+  if ! kill -0 "${STACK_PID}" >/dev/null 2>&1; then
+    echo "Needletail stack exited while readiness was being verified" >&2
+    tail -n 160 "${RESULT_DIR}/${CURRENT_PROFILE}-stack.log" >&2 || true
+    return 1
+  fi
+}
+
+verify_runtime_wiring() {
+  local contributor edge
+  contributor="$(curl -kfsS "${CONTRIB_URL%/}/api/status")"
+  edge="$(curl -kfsS "${EDGE_URL%/}/api/mesh")"
+  if ! jq -e \
+    --arg primary "${CONTRIB_PRIMARY_VIA}" \
+    --arg secondary "${CONTRIB_SECONDARY_VIA}" \
+    '.mesh.relay_primary_target == $primary
+      and .mesh.relay_secondary_target == $secondary
+      and .mesh.relay_exclusive == true
+      and (.runtime.relay_session.stages | type == "object")' \
+    <<<"${contributor}" >/dev/null; then
+    echo "contributor runtime does not match the compiled qualification carriers" >&2
+    jq '{mesh:.mesh,relay_session:.runtime.relay_session}' <<<"${contributor}" >&2
+    return 1
+  fi
+  if ! jq -e \
+    '.relay_session.failover_controller_enabled == 1
+      and .relay_session.primary_sessions == 1
+      and .relay_session.secondary_sessions == 1' \
+    <<<"${edge}" >/dev/null; then
+    echo "edge runtime does not expose the compiled dual-parent failover controller" >&2
+    jq '{relay_session:.relay_session}' <<<"${edge}" >&2
+    return 1
+  fi
 }
 
 capture_profile_snapshot() {
@@ -331,6 +376,7 @@ start_stack() {
       >"${RESULT_DIR}/${profile}-stack.log" 2>&1 &
   STACK_PID="$!"
   wait_for_stack
+  verify_runtime_wiring
 }
 
 start_media() {
@@ -485,10 +531,176 @@ verify_raptorq_recovery() {
     "${RAPTORQ_REJECTED_DELTA}" "${RAPTORQ_DEADLINE_DROPS_DELTA}" "${RELAY_FORWARD_ERRORS_DELTA}"
 }
 
+edge_snapshot() {
+  curl -kfsS "${EDGE_URL%/}/api/mesh"
+}
+
+warm_relay_value() {
+  local expression="$1"
+  jq -r "[.relay_nodes[] | select(.node_id == \"relay-secondary\") | ${expression}] | add // 0"
+}
+
+exercise_automatic_failover() {
+  local before_path="${RESULT_DIR}/impaired-failover-before-edge.json"
+  local promoted_path="${RESULT_DIR}/impaired-failover-promoted-edge.json"
+  local continuity_path="${RESULT_DIR}/impaired-failover-continuity-edge.json"
+  local recovered_path="${RESULT_DIR}/impaired-failover-recovered-edge.json"
+  local polls="$((FAILOVER_RECOVERY_TIMEOUT_MS / 50))"
+  local snapshot state promotions demotions warm_promoted warm_source decoded
+
+  if [[ "${polls}" -lt 1 ]]; then
+    polls=1
+  fi
+
+  for _ in $(seq 1 "${polls}"); do
+    snapshot="$(edge_snapshot)"
+    if [[ "$(jq -r '.relay_session.failover_controller_state' <<<"${snapshot}")" == "healthy" ]]; then
+      printf '%s\n' "${snapshot}" >"${before_path}"
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ ! -s "${before_path}" ]]; then
+    echo "automatic failover controller did not reach healthy before fault injection" >&2
+    return 1
+  fi
+
+  local before_promotions before_demotions before_warm_source before_decoded
+  local before_expired before_deadline_drops before_rejected
+  before_promotions="$(jq -r '.relay_session.failover_promotions' "${before_path}")"
+  before_demotions="$(jq -r '.relay_session.failover_demotions' "${before_path}")"
+  before_warm_source="$(warm_relay_value '.relay_session.forwarded_source_datagrams' <"${before_path}")"
+  before_decoded="$(jq -r '.relay_session.decoded_objects' "${before_path}")"
+  before_expired="$(jq -r '.relay_session.expired_objects' "${before_path}")"
+  before_deadline_drops="$(jq -r '.relay_session.deadline_drops' "${before_path}")"
+  before_rejected="$(jq -r '.relay_session.datagrams_rejected' "${before_path}")"
+
+  if [[ -z "${PRIMARY_EDGE_NETEM_PID}" ]]; then
+    echo "primary backbone-to-edge impairment process is unavailable" >&2
+    return 1
+  fi
+  stop_pid "${PRIMARY_EDGE_NETEM_PID}"
+  PRIMARY_EDGE_NETEM_PID=""
+
+  for _ in $(seq 1 "${polls}"); do
+    snapshot="$(edge_snapshot)"
+    state="$(jq -r '.relay_session.failover_controller_state' <<<"${snapshot}")"
+    promotions="$(jq -r '.relay_session.failover_promotions' <<<"${snapshot}")"
+    warm_promoted="$(warm_relay_value '.relay_session.failover_promoted_children' <<<"${snapshot}")"
+    if [[ "${state}" == "promoted" && "${promotions}" -gt "${before_promotions}" && "${warm_promoted}" -gt 0 ]]; then
+      printf '%s\n' "${snapshot}" >"${promoted_path}"
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ ! -s "${promoted_path}" ]]; then
+    echo "warm secondary did not promote after the primary carrier outage" >&2
+    return 1
+  fi
+
+  for _ in $(seq 1 "${polls}"); do
+    snapshot="$(edge_snapshot)"
+    decoded="$(jq -r '.relay_session.decoded_objects' <<<"${snapshot}")"
+    warm_source="$(warm_relay_value '.relay_session.forwarded_source_datagrams' <<<"${snapshot}")"
+    if [[ "${decoded}" -gt "${before_decoded}" && "${warm_source}" -gt "${before_warm_source}" && "$(jq -r '.relay_session.failover_last_promotion_to_source_us' <<<"${snapshot}")" -gt 0 && "$(jq -r '.relay_session.failover_last_media_gap_us' <<<"${snapshot}")" -gt 0 ]]; then
+      printf '%s\n' "${snapshot}" >"${continuity_path}"
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ ! -s "${continuity_path}" ]]; then
+    echo "edge cache did not advance through the promoted warm path" >&2
+    return 1
+  fi
+
+  start_netem_link impaired primary-edge-recovered "${PRIMARY_EDGE_VIA}" \
+    "${EDGE_PRIMARY_INGRESS}" "${WAN_DELAY_MS}" "${WAN_JITTER_MS}" \
+    "${WAN_LOSS_PCT}" 2003
+
+  for _ in $(seq 1 "${polls}"); do
+    snapshot="$(edge_snapshot)"
+    state="$(jq -r '.relay_session.failover_controller_state' <<<"${snapshot}")"
+    demotions="$(jq -r '.relay_session.failover_demotions' <<<"${snapshot}")"
+    warm_promoted="$(warm_relay_value '.relay_session.failover_promoted_children' <<<"${snapshot}")"
+    if [[ "${state}" == "healthy" && "${demotions}" -gt "${before_demotions}" && "${warm_promoted}" -eq 0 ]]; then
+      printf '%s\n' "${snapshot}" >"${recovered_path}"
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ ! -s "${recovered_path}" ]]; then
+    echo "primary recovery did not complete make-before-break demotion" >&2
+    return 1
+  fi
+
+  local detection_us activation_us media_gap_us decoded_delta warm_source_delta
+  local expired_delta deadline_drop_delta rejected_delta activation_budget_us media_gap_budget_us
+  detection_us="$(jq -r '.relay_session.failover_last_detection_us' "${continuity_path}")"
+  activation_us="$(jq -r '.relay_session.failover_last_promotion_to_source_us' "${continuity_path}")"
+  media_gap_us="$(jq -r '.relay_session.failover_last_media_gap_us' "${continuity_path}")"
+  decoded_delta="$(( $(jq -r '.relay_session.decoded_objects' "${continuity_path}") - before_decoded ))"
+  warm_source_delta="$(( $(warm_relay_value '.relay_session.forwarded_source_datagrams' <"${continuity_path}") - before_warm_source ))"
+  expired_delta="$(( $(jq -r '.relay_session.expired_objects' "${continuity_path}") - before_expired ))"
+  deadline_drop_delta="$(( $(jq -r '.relay_session.deadline_drops' "${continuity_path}") - before_deadline_drops ))"
+  rejected_delta="$(( $(jq -r '.relay_session.datagrams_rejected' "${continuity_path}") - before_rejected ))"
+  activation_budget_us="$((FAILOVER_ACTIVATION_BUDGET_MS * 1000))"
+  media_gap_budget_us="$((FAILOVER_MEDIA_GAP_BUDGET_MS * 1000))"
+
+  if [[ "${activation_us}" -le 0 || "${activation_us}" -gt "${activation_budget_us}" ]]; then
+    echo "warm-path activation ${activation_us}us exceeded ${activation_budget_us}us" >&2
+    return 1
+  fi
+  if [[ "${media_gap_us}" -le 0 || "${media_gap_us}" -gt "${media_gap_budget_us}" ]]; then
+    echo "failover media gap ${media_gap_us}us exceeded ${media_gap_budget_us}us" >&2
+    return 1
+  fi
+  if [[ "${decoded_delta}" -le 0 || "${warm_source_delta}" -le 0 ]]; then
+    echo "promoted path did not advance decoded objects and warm source forwarding" >&2
+    return 1
+  fi
+  if [[ "${expired_delta}" -ne 0 || "${deadline_drop_delta}" -ne 0 || "${rejected_delta}" -ne 0 ]]; then
+    echo "failover integrity errors: expired=${expired_delta} deadline=${deadline_drop_delta} rejected=${rejected_delta}" >&2
+    return 1
+  fi
+
+  jq -n \
+    --slurpfile before "${before_path}" \
+    --slurpfile promoted "${promoted_path}" \
+    --slurpfile continuity "${continuity_path}" \
+    --slurpfile recovered "${recovered_path}" \
+    --argjson detection_us "${detection_us}" \
+    --argjson activation_us "${activation_us}" \
+    --argjson media_gap_us "${media_gap_us}" \
+    --argjson decoded_delta "${decoded_delta}" \
+    --argjson warm_source_delta "${warm_source_delta}" \
+    --argjson expired_delta "${expired_delta}" \
+    --argjson deadline_drop_delta "${deadline_drop_delta}" \
+    --argjson rejected_delta "${rejected_delta}" \
+    '{
+      state_sequence: [$before[0].relay_session.failover_controller_state, $promoted[0].relay_session.failover_controller_state, $recovered[0].relay_session.failover_controller_state],
+      detection_us: $detection_us,
+      promotion_to_source_us: $activation_us,
+      media_gap_us: $media_gap_us,
+      decoded_objects: $decoded_delta,
+      warm_forwarded_source_datagrams: $warm_source_delta,
+      expired_objects: $expired_delta,
+      deadline_drops: $deadline_drop_delta,
+      rejected_datagrams: $rejected_delta,
+      promotions: ($recovered[0].relay_session.failover_promotions - $before[0].relay_session.failover_promotions),
+      make_before_break_demotions: ($recovered[0].relay_session.failover_demotions - $before[0].relay_session.failover_demotions)
+    }' >"${FAILOVER_JSON}"
+
+  printf '%-24s detection=%sus activation=%sus media_gap=%sus decoded=%s warm_source=%s expired=%s deadline=%s rejected=%s\n' \
+    "automatic failover" "${detection_us}" "${activation_us}" "${media_gap_us}" \
+    "${decoded_delta}" "${warm_source_delta}" "${expired_delta}" \
+    "${deadline_drop_delta}" "${rejected_delta}"
+}
+
 write_qualification() {
   jq -n \
     --slurpfile baseline "${BASELINE_JSON}" \
     --slurpfile impaired "${IMPAIRED_JSON}" \
+    --slurpfile failover "${FAILOVER_JSON}" \
     --argjson wan_delay_ms "${WAN_DELAY_MS}" \
     --argjson wan_jitter_ms "${WAN_JITTER_MS}" \
     --argjson wan_loss_pct "${WAN_LOSS_PCT}" \
@@ -506,7 +718,7 @@ write_qualification() {
     --argjson deadline_drops "${RAPTORQ_DEADLINE_DROPS_DELTA}" \
     --argjson forward_errors "${RELAY_FORWARD_ERRORS_DELTA}" \
     '{
-      schema: "needletail.realtime-qualification.v2",
+      schema: "needletail.realtime-qualification.v3",
       impairment: {
         primary_backbone_to_edge: {delay_ms: $wan_delay_ms, jitter_ms: $wan_jitter_ms, loss_pct: $wan_loss_pct},
         secondary_backbone_to_edge: {delay_ms: $wan_delay_ms, jitter_ms: $wan_jitter_ms, loss_pct: $secondary_edge_loss_pct},
@@ -523,6 +735,7 @@ write_qualification() {
         deadline_drops: $deadline_drops,
         forward_errors: $forward_errors
       },
+      automatic_failover: $failover[0],
       profiles: {baseline: $baseline[0], impaired: $impaired[0]}
     }' >"${QUALIFICATION_JSON}"
 
@@ -580,10 +793,12 @@ sleep "${PROFILE_SETTLE_SECONDS}"
 capture_raptorq_before
 run_profile impaired "${IMPAIRED_JSON}"
 capture_raptorq_after
+exercise_automatic_failover
 stop_profile final
 verify_netem_log "impaired contrib-primary" "${RESULT_DIR}/impaired-contrib-primary-netem.jsonl" "${INGEST_LOSS_PCT}"
 verify_netem_log "impaired contrib-secondary" "${RESULT_DIR}/impaired-contrib-secondary-netem.jsonl" "${SECONDARY_INGEST_LOSS_PCT}"
 verify_netem_log "impaired primary-edge" "${RESULT_DIR}/impaired-primary-edge-netem.jsonl" "${WAN_LOSS_PCT}"
+verify_netem_log "recovered primary-edge" "${RESULT_DIR}/impaired-primary-edge-recovered-netem.jsonl" "${WAN_LOSS_PCT}"
 verify_netem_log "impaired secondary-edge" "${RESULT_DIR}/impaired-secondary-edge-netem.jsonl" "${SECONDARY_EDGE_LOSS_PCT}"
 verify_raptorq_recovery
 

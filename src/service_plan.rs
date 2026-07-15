@@ -1046,9 +1046,9 @@ mod tests {
         assert!(edge_args.contains(&"--relay-secondary-promoted".to_owned()));
         assert!(edge_args.contains(&"--relay-failover-controller".to_owned()));
         assert!(edge_args.contains(&"127.0.0.1:22501=127.0.0.1:22502".to_owned()));
-        assert!(edge_args.windows(2).any(|pair| {
-            pair == ["--relay-primary-recovery-ms".to_owned(), "2000".to_owned()]
-        }));
+        assert!(edge_args
+            .windows(2)
+            .any(|pair| { pair == ["--relay-primary-recovery-ms".to_owned(), "2000".to_owned()] }));
     }
 
     #[test]

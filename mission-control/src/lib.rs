@@ -127,7 +127,7 @@ pub struct ContribRuntime {
     pub ingest_latency: DurationHistogram,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RelayEmission {
     pub objects_sent: u64,
@@ -139,24 +139,49 @@ pub struct RelayEmission {
     pub repair_datagram_bytes: u64,
     pub repair_errors: u64,
     pub repair_primary_fallback_objects: u64,
+    pub primary_lane_objects_succeeded: u64,
+    pub primary_lane_objects_failed: u64,
+    pub secondary_lane_objects_succeeded: u64,
+    pub secondary_lane_objects_failed: u64,
+    pub surviving_lane_objects: u64,
+    pub all_lanes_failed_objects: u64,
     pub expired_objects: Option<u64>,
+    pub expired_symbols: Option<u64>,
     pub deadline_hits: Option<u64>,
     pub deadline_misses: Option<u64>,
     pub last_deadline_unix_us: Option<u64>,
     pub last_deadline_headroom_us: Option<u64>,
+    pub stages: RelayPipelineStages,
 }
 
 impl RelayEmission {
-    pub fn repair_overhead_percent(self) -> Option<f64> {
+    pub fn repair_overhead_percent(&self) -> Option<f64> {
         let total = self.source_datagrams.saturating_add(self.repair_datagrams);
         (total > 0).then(|| self.repair_datagrams as f64 * 100.0 / total as f64)
     }
 
-    pub fn errors(self) -> u64 {
+    pub fn errors(&self) -> u64 {
         self.encode_errors
-            .saturating_add(self.source_errors)
-            .saturating_add(self.repair_errors)
+            .saturating_add(self.all_lanes_failed_objects)
     }
+
+    pub fn lane_failures(&self) -> u64 {
+        self.primary_lane_objects_failed
+            .saturating_add(self.secondary_lane_objects_failed)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RelayPipelineStages {
+    pub total: DurationHistogram,
+    pub encode_wait: DurationHistogram,
+    pub encode: DurationHistogram,
+    pub schedule: DurationHistogram,
+    pub primary_source_send: DurationHistogram,
+    pub secondary_source_send: DurationHistogram,
+    pub primary_repair_send: DurationHistogram,
+    pub secondary_repair_send: DurationHistogram,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -999,6 +1024,14 @@ pub fn bounded_ingest_sessions(status: &ContribStatus) -> Vec<IngestSession> {
         .collect()
 }
 
+fn transition_or_snapshot_time(transition_unix_ms: u64, snapshot_unix_ms: u64) -> u64 {
+    if transition_unix_ms == 0 {
+        snapshot_unix_ms
+    } else {
+        transition_unix_ms
+    }
+}
+
 pub fn operational_alerts(
     contrib: Option<&ContribStatus>,
     edge: Option<&MeshStatus>,
@@ -1019,6 +1052,30 @@ pub fn operational_alerts(
                     .or_else(|| event.protocol.clone()),
             }
         }));
+        if status.runtime.relay_session.deadline_misses.unwrap_or(0) > 0 {
+            events.push(OperationalEvent {
+                source: EventSource::Contributor,
+                level: "warning".to_owned(),
+                code: "relay_emission_deadline_missed".to_owned(),
+                message: "One or more canonical objects missed the contributor emission deadline."
+                    .to_owned(),
+                count: status.runtime.relay_session.deadline_misses.unwrap_or(0),
+                seen_unix_ms: status.updated_unix_ms,
+                context: Some(status.advertised_hls_stream_id.clone()),
+            });
+        }
+        if status.runtime.relay_session.expired_symbols.unwrap_or(0) > 0 {
+            events.push(OperationalEvent {
+                source: EventSource::Contributor,
+                level: "warning".to_owned(),
+                code: "relay_symbol_expired".to_owned(),
+                message: "Deadline expiry dropped one or more RaptorQ symbols at the contributor."
+                    .to_owned(),
+                count: status.runtime.relay_session.expired_symbols.unwrap_or(0),
+                seen_unix_ms: status.updated_unix_ms,
+                context: Some(status.advertised_hls_stream_id.clone()),
+            });
+        }
     }
     if let Some(status) = edge {
         events.extend(
@@ -1044,16 +1101,17 @@ pub fn operational_alerts(
                 source: EventSource::Delivery,
                 level: "error".to_owned(),
                 code: "relay_failover_secondary_unavailable".to_owned(),
-                message: "Primary source is silent and the warm secondary is not ready."
-                    .to_owned(),
+                message: "Primary source is silent and the warm secondary is not ready.".to_owned(),
                 count: status
                     .relay_session
                     .failover_secondary_unavailable_events
                     .max(1),
-                seen_unix_ms: status
-                    .relay_session
-                    .failover_controller_last_transition_unix_ms
-                    .max(status.updated_unix_ms),
+                seen_unix_ms: transition_or_snapshot_time(
+                    status
+                        .relay_session
+                        .failover_controller_last_transition_unix_ms,
+                    status.updated_unix_ms,
+                ),
                 context: Some(status.node.node_id.clone()),
             });
         }
@@ -1062,28 +1120,32 @@ pub fn operational_alerts(
                 source: EventSource::Delivery,
                 level: "error".to_owned(),
                 code: "relay_failover_control_send_error".to_owned(),
-                message: "The edge could not refresh its warm-secondary control lease."
-                    .to_owned(),
+                message: "The edge could not refresh its warm-secondary control lease.".to_owned(),
                 count: status.relay_session.failover_command_send_errors,
                 seen_unix_ms: status.updated_unix_ms,
                 context: Some(status.node.node_id.clone()),
             });
         }
-        events.extend(status.relay_nodes.iter().filter_map(|node| {
-            (node.relay_session.failover_lease_expirations > 0).then(|| OperationalEvent {
-                source: EventSource::Delivery,
-                level: "warning".to_owned(),
-                code: "relay_failover_lease_expired".to_owned(),
-                message: "A warm relay returned to repair-only after its promotion lease expired."
-                    .to_owned(),
-                count: node.relay_session.failover_lease_expirations,
-                seen_unix_ms: node
-                    .relay_session
-                    .failover_listener_last_transition_unix_ms
-                    .max(status.updated_unix_ms),
-                context: Some(node.node_id.clone()),
-            })
-        }));
+        events.extend(
+            status
+                .relay_nodes
+                .iter()
+                .filter(|node| node.relay_session.failover_lease_expirations > 0)
+                .map(|node| OperationalEvent {
+                    source: EventSource::Delivery,
+                    level: "warning".to_owned(),
+                    code: "relay_failover_lease_expired".to_owned(),
+                    message:
+                        "A warm relay returned to repair-only after its promotion lease expired."
+                            .to_owned(),
+                    count: node.relay_session.failover_lease_expirations,
+                    seen_unix_ms: transition_or_snapshot_time(
+                        node.relay_session.failover_listener_last_transition_unix_ms,
+                        status.updated_unix_ms,
+                    ),
+                    context: Some(node.node_id.clone()),
+                }),
+        );
     }
     sort_and_bound_events(&mut events);
     events
@@ -1194,7 +1256,8 @@ mod tests {
         {"protocol":"srt","enabled":true,"bind":"0.0.0.0:27001","output_stream_id":"42","output_hls_path":"/42/stream.m3u8"}
       ],
       "runtime":{
-        "relay_session":{"objects_sent":7,"source_datagrams":20,"repair_datagrams":5,"last_deadline_headroom_us":12000},
+        "relay_session":{"objects_sent":7,"source_datagrams":20,"repair_datagrams":5,"primary_lane_objects_succeeded":6,"primary_lane_objects_failed":1,"secondary_lane_objects_succeeded":7,"secondary_lane_objects_failed":0,"surviving_lane_objects":1,"all_lanes_failed_objects":0,"expired_objects":1,"expired_symbols":2,"deadline_hits":6,"deadline_misses":1,"last_deadline_headroom_us":12000,
+          "stages":{"total":{"count":7,"p95_us":2500},"encode_wait":{"count":7,"p95_us":100},"encode":{"count":7,"p95_us":700},"schedule":{"count":7,"p95_us":100},"primary_source_send":{"count":20,"p95_us":250},"secondary_source_send":{"count":20,"p95_us":250},"secondary_repair_send":{"count":5,"p95_us":250}}},
         "mesh_forward":{"media_duration":{"count":100,"p95_us":2500},"media_stages":{"encode":{"count":100,"p95_us":700}}},
         "mpeg_ts":{"slots":200,"continuity_errors":2},
         "fmp4":{"parts":9,"video_codec":"h264","video_width":1920,"video_height":1080,"audio_codec":"aac"},
@@ -1233,7 +1296,31 @@ mod tests {
             contrib.runtime.relay_session.repair_overhead_percent(),
             Some(20.0)
         );
-        assert!(contrib.runtime.relay_session.deadline_hits.is_none());
+        assert_eq!(contrib.runtime.relay_session.deadline_hits, Some(6));
+        assert_eq!(contrib.runtime.relay_session.deadline_misses, Some(1));
+        assert_eq!(contrib.runtime.relay_session.expired_objects, Some(1));
+        assert_eq!(contrib.runtime.relay_session.primary_lane_objects_failed, 1);
+        assert_eq!(contrib.runtime.relay_session.surviving_lane_objects, 1);
+        assert_eq!(contrib.runtime.relay_session.all_lanes_failed_objects, 0);
+        assert_eq!(contrib.runtime.relay_session.lane_failures(), 1);
+        assert_eq!(
+            contrib
+                .runtime
+                .relay_session
+                .stages
+                .encode
+                .percentile_us(95),
+            Some(700)
+        );
+        assert_eq!(
+            contrib
+                .runtime
+                .relay_session
+                .stages
+                .secondary_repair_send
+                .percentile_us(95),
+            Some(250)
+        );
         let route = effective_delivery(Some(&contrib), None);
         assert_eq!(
             route.primary.as_ref().and_then(|lane| lane.rtt_us),
@@ -1370,6 +1457,38 @@ mod tests {
             event.message
                 == "One or more regional stream deliveries are behind the publication head."
         }));
+        assert!(alerts
+            .iter()
+            .any(|event| event.code == "relay_emission_deadline_missed"));
+        assert!(alerts
+            .iter()
+            .any(|event| event.code == "relay_symbol_expired"));
+    }
+
+    #[test]
+    fn synthetic_failover_alerts_keep_runtime_transition_times() {
+        let mut edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
+        edge.updated_unix_ms = 1_784_102_500_000;
+        edge.relay_session.failover_controller_state = "secondary_unavailable".to_owned();
+        edge.relay_session.failover_secondary_unavailable_events = 2;
+        edge.relay_session
+            .failover_controller_last_transition_unix_ms = 1_784_102_400_123;
+
+        let alerts = operational_alerts(None, Some(&edge));
+        let unavailable = alerts
+            .iter()
+            .find(|event| event.code == "relay_failover_secondary_unavailable")
+            .unwrap();
+        assert_eq!(unavailable.seen_unix_ms, 1_784_102_400_123);
+
+        edge.relay_session
+            .failover_controller_last_transition_unix_ms = 0;
+        let alerts = operational_alerts(None, Some(&edge));
+        let unavailable = alerts
+            .iter()
+            .find(|event| event.code == "relay_failover_secondary_unavailable")
+            .unwrap();
+        assert_eq!(unavailable.seen_unix_ms, edge.updated_unix_ms);
     }
 
     #[test]

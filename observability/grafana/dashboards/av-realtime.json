@@ -148,21 +148,23 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Canonical object output rate and RaptorQ source/repair symbol rate from the contributor.",
+      "description": "Canonical object output, RaptorQ source/repair symbols, degraded parent lanes, and objects completed by the surviving parent.",
       "fieldConfig": { "defaults": { "decimals": 2, "unit": "ops" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "id": 10,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
         { "editorMode": "code", "expr": "av:contrib_relay_objects_per_second:5m", "legendFormat": "{{instance}} · objects", "range": true, "refId": "A" },
-        { "editorMode": "code", "expr": "av:contrib_relay_datagrams_per_second:5m", "legendFormat": "{{instance}} · {{role}} symbols", "range": true, "refId": "B" }
+        { "editorMode": "code", "expr": "av:contrib_relay_datagrams_per_second:5m", "legendFormat": "{{instance}} · {{role}} symbols", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:contrib_relay_lane_failures_per_second:5m", "legendFormat": "{{instance}} · {{path}} lane failures", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "av:contrib_relay_surviving_lane_objects_per_second:5m", "legendFormat": "{{instance}} · surviving-lane objects", "range": true, "refId": "D" }
       ],
       "title": "Contributor canonical objects and RaptorQ symbols",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "RaptorQ encode failures, carrier send failures, and repair objects routed over the primary fallback.",
+      "description": "RaptorQ encode failures, carrier send failures, total parent-lane loss, deadline misses, expired symbols, and repair objects routed over the primary fallback.",
       "fieldConfig": { "defaults": { "decimals": 3, "unit": "ops" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "id": 11,
@@ -170,7 +172,10 @@
       "targets": [
         { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_encode_errors_total[5m]))", "legendFormat": "{{instance}} · encode errors", "range": true, "refId": "A" },
         { "editorMode": "code", "expr": "sum by (instance, role) (rate(av_contrib_relay_session_send_errors_total[5m]))", "legendFormat": "{{instance}} · {{role}} send errors", "range": true, "refId": "B" },
-        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_repair_primary_fallback_objects_total[5m]))", "legendFormat": "{{instance}} · primary repair fallback", "range": true, "refId": "C" }
+        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_repair_primary_fallback_objects_total[5m]))", "legendFormat": "{{instance}} · primary repair fallback", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_deadline_objects_total{outcome=\"miss\"}[5m]))", "legendFormat": "{{instance}} · deadline misses", "range": true, "refId": "D" },
+        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_expired_symbols_total[5m]))", "legendFormat": "{{instance}} · expired symbols", "range": true, "refId": "E" },
+        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_all_lanes_failed_objects_total[5m]))", "legendFormat": "{{instance}} · all lanes failed", "range": true, "refId": "F" }
       ],
       "title": "Contributor RelaySession errors and fallback",
       "type": "timeseries"
@@ -294,9 +299,9 @@
       "id": 20,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "editorMode": "code", "expr": "av:contrib_forward_stage_p50_seconds:5m{kind=\"stream\"}", "legendFormat": "{{stage}} · p50", "range": true, "refId": "A" },
-        { "editorMode": "code", "expr": "av:contrib_forward_stage_p95_seconds:5m{kind=\"stream\"}", "legendFormat": "{{stage}} · p95", "range": true, "refId": "B" },
-        { "editorMode": "code", "expr": "av:contrib_forward_stage_p99_seconds:5m{kind=\"stream\"}", "legendFormat": "{{stage}} · p99", "range": true, "refId": "C" }
+        { "editorMode": "code", "expr": "av:contrib_relay_stage_p50_seconds:5m", "legendFormat": "{{stage}} · p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:contrib_relay_stage_p95_seconds:5m", "legendFormat": "{{stage}} · p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:contrib_relay_stage_p99_seconds:5m", "legendFormat": "{{stage}} · p99", "range": true, "refId": "C" }
       ],
       "title": "Contributor RaptorQ pipeline stage quantiles",
       "type": "timeseries"

@@ -576,11 +576,13 @@ fn local_relay_program(args: &Args) -> RelayProgram {
         media_deadline_ms: args.relay_deadline_ms,
         source_path_observation: None,
         failover_policy: Some(FailoverPolicy {
-            primary_silence_ms: 250,
-            primary_recovery_ms: 2_000,
-            secondary_warm_ms: 750,
-            heartbeat_ms: 100,
-            lease_ms: 1_000,
+            // Keep the warm lane active and sample it often enough that a 50 ms
+            // media cadence can recover within the 250 ms interruption budget.
+            primary_silence_ms: 100,
+            primary_recovery_ms: 500,
+            secondary_warm_ms: 300,
+            heartbeat_ms: 25,
+            lease_ms: 300,
         }),
         failover_control_links: vec![FailoverControlLink {
             forwarder_node_id: SECONDARY_RELAY_NODE_ID.to_owned(),

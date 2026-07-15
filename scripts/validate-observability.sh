@@ -62,6 +62,11 @@ required_recordings = %w[
   av:contrib_forward_stage_p50_seconds:5m
   av:contrib_forward_stage_p95_seconds:5m
   av:contrib_forward_stage_p99_seconds:5m
+  av:contrib_relay_stage_p50_seconds:5m
+  av:contrib_relay_stage_p95_seconds:5m
+  av:contrib_relay_stage_p99_seconds:5m
+  av:contrib_relay_lane_failures_per_second:5m
+  av:contrib_relay_surviving_lane_objects_per_second:5m
   av:mesh_edge_handler_p50_seconds:5m
   av:mesh_edge_handler_p95_seconds:5m
   av:mesh_edge_handler_p99_seconds:5m
@@ -81,6 +86,10 @@ required_alerts = %w[
   AvContributorRelaySecondaryMissing
   AvContributorRelayEncodeErrors
   AvContributorRelaySendErrors
+  AvContributorRelayLaneFailure
+  AvContributorRelayAllLanesFailed
+  AvContributorRelayStageP99High
+  AvContributorRelayDeadlineMiss
   AvContributorDeadlineHeadroomLow
   AvContributorClockEstimateConsumesDeadline
   AvMeshRelayPrimaryMissing
@@ -134,7 +143,11 @@ service_metrics = Set.new(%w[
   av_contrib_mesh_forward_duration_seconds_bucket
   av_contrib_mesh_forward_stage_duration_seconds_bucket
   av_contrib_relay_session_carrier_configured
+  av_contrib_relay_session_lane_objects_total
+  av_contrib_relay_session_surviving_lane_objects_total
+  av_contrib_relay_session_all_lanes_failed_objects_total
   av_contrib_relay_session_datagrams_total
+  av_contrib_relay_session_deadline_objects_total
   av_contrib_relay_session_deadline_budget_seconds
   av_contrib_relay_session_encode_errors_total
   av_contrib_relay_session_last_deadline_headroom_seconds
@@ -148,6 +161,8 @@ service_metrics = Set.new(%w[
   av_contrib_relay_session_path_stretch_ratio
   av_contrib_relay_session_repair_primary_fallback_objects_total
   av_contrib_relay_session_send_errors_total
+  av_contrib_relay_session_expired_symbols_total
+  av_contrib_relay_session_stage_duration_seconds_bucket
   av_mesh_edge_requests_total
   av_mesh_edge_response_duration_seconds_bucket
   av_mesh_edge_responses_total

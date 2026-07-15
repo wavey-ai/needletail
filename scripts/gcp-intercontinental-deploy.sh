@@ -72,6 +72,11 @@ PATH_JITTER_US="${NEEDLETAIL_GCP_PATH_JITTER_US:-0}"
 PATH_LOSS_PPM="${NEEDLETAIL_GCP_PATH_LOSS_PPM:-0}"
 PATH_QUEUE_DELAY_US="${NEEDLETAIL_GCP_PATH_QUEUE_DELAY_US:-0}"
 PATH_OBSERVED_AT_UNIX_MS="$(( $(date +%s) * 1000 ))"
+FAILOVER_PRIMARY_SILENCE_MS="${NEEDLETAIL_GCP_FAILOVER_PRIMARY_SILENCE_MS:-100}"
+FAILOVER_PRIMARY_RECOVERY_MS="${NEEDLETAIL_GCP_FAILOVER_PRIMARY_RECOVERY_MS:-500}"
+FAILOVER_SECONDARY_WARM_MS="${NEEDLETAIL_GCP_FAILOVER_SECONDARY_WARM_MS:-300}"
+FAILOVER_HEARTBEAT_MS="${NEEDLETAIL_GCP_FAILOVER_HEARTBEAT_MS:-25}"
+FAILOVER_LEASE_MS="${NEEDLETAIL_GCP_FAILOVER_LEASE_MS:-300}"
 
 PROGRAM="${ARTIFACT_DIR}/relay-program.json"
 PLAN="${ARTIFACT_DIR}/compiled-plan.json"
@@ -87,6 +92,11 @@ jq -n \
   --argjson path_loss_ppm "${PATH_LOSS_PPM}" \
   --argjson path_queue_delay_us "${PATH_QUEUE_DELAY_US}" \
   --argjson path_observed_at_unix_ms "${PATH_OBSERVED_AT_UNIX_MS}" \
+  --argjson failover_primary_silence_ms "${FAILOVER_PRIMARY_SILENCE_MS}" \
+  --argjson failover_primary_recovery_ms "${FAILOVER_PRIMARY_RECOVERY_MS}" \
+  --argjson failover_secondary_warm_ms "${FAILOVER_SECONDARY_WARM_MS}" \
+  --argjson failover_heartbeat_ms "${FAILOVER_HEARTBEAT_MS}" \
+  --argjson failover_lease_ms "${FAILOVER_LEASE_MS}" \
   '{
     purpose:"single_provider_qualification",
     carrier:"controlled_private_udp",
@@ -107,11 +117,11 @@ jq -n \
       end
     ),
     failover_policy:{
-      primary_silence_ms:350,
-      primary_recovery_ms:2000,
-      secondary_warm_ms:900,
-      heartbeat_ms:100,
-      lease_ms:1000
+      primary_silence_ms:$failover_primary_silence_ms,
+      primary_recovery_ms:$failover_primary_recovery_ms,
+      secondary_warm_ms:$failover_secondary_warm_ms,
+      heartbeat_ms:$failover_heartbeat_ms,
+      lease_ms:$failover_lease_ms
     },
     failover_control_links:[
       {
@@ -128,7 +138,7 @@ jq -n \
       nodes:[
         {node_id:"contrib",level:0,role:"origin",failure_domain:{provider:"gcp",region:"europe-west2",asn:15169,zone:"europe-west2-b"}},
         {node_id:"relay-primary",level:1,role:"backbone",failure_domain:{provider:"gcp",region:"europe-west4",asn:15169,zone:"europe-west4-a"}},
-        {node_id:"relay-secondary",level:1,role:"backbone",failure_domain:{provider:"gcp",region:"us-east4",asn:15169,zone:"us-east4-a"}},
+        {node_id:"relay-secondary",level:1,role:"backbone",failure_domain:{provider:"gcp",region:"asia-northeast2",asn:15169,zone:"asia-northeast2-b"}},
         {node_id:"edge",level:2,role:"playback_edge",failure_domain:{provider:"gcp",region:"asia-northeast1",asn:15169,zone:"asia-northeast1-b"}}
       ],
       parent_links:[
@@ -153,6 +163,8 @@ jq -e '
   .purpose == "single_provider_qualification"
   and .carrier == "controlled_private_udp"
   and (.services | length == 4)
+  and ([.services[] | select(.service == "av_mesh" and .node_id == "edge")][0].failover_controller != null)
+  and ([.services[] | select(.service == "av_mesh" and .node_id == "relay-secondary")][0].failover_listeners | length == 1)
   and (.production_readiness_gaps | index("provider_asn_diversity_pending") != null)
 ' "${PLAN}" >/dev/null
 install -m 644 "${TLS_CERT}" "${ARTIFACT_DIR}/fullchain.pem"
@@ -222,7 +234,7 @@ EOF
 }
 
 write_mesh_env primary relay-primary europe-west4 "${PRIMARY_IP}" 29201 19445 22001 22101 27301 "${EDGE_IP}:27300"
-write_mesh_env secondary relay-secondary us-east4 "${SECONDARY_IP}" 29301 19446 22002 22102 27302 "${EDGE_IP}:27300"
+write_mesh_env secondary relay-secondary asia-northeast2 "${SECONDARY_IP}" 29301 19446 22002 22102 27302 "${EDGE_IP}:27300"
 write_mesh_env edge edge asia-northeast1 "${EDGE_IP}" 29101 19444 22200 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
 cat >"${ARTIFACT_DIR}/contributor.env" <<'EOF'
 NEEDLETAIL_NODE_ID=contrib
