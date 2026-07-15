@@ -21,6 +21,19 @@ TLS_KEY="${NEEDLETAIL_GCP_TLS_KEY:-${WORKSPACE_ROOT}/tls/local.bitneedle.com/pri
   echo "Needletail qualification TLS files are missing" >&2
   exit 2
 }
+if grep -ERq --include=Cargo.toml \
+  'path[[:space:]]*=[[:space:]]*"[^\"]*/Needletail/' \
+  "${WORKSPACE_ROOT}/av-mesh" \
+  "${WORKSPACE_ROOT}/av-contrib" \
+  "${WORKSPACE_ROOT}/av-service" \
+  "${WORKSPACE_ROOT}/media-object" \
+  "${WORKSPACE_ROOT}/relay-session" \
+  "${WORKSPACE_ROOT}/playlists" \
+  "${WORKSPACE_ROOT}/raptor-fec" \
+  "${WORKSPACE_ROOT}/rtmp-ingress"; then
+  echo "an archived Cargo manifest contains a case-sensitive Needletail path; use the canonical lowercase needletail directory before Linux deployment" >&2
+  exit 2
+fi
 
 mkdir -p "${GCLOUD_CONFIG}" "${ARTIFACT_DIR}"
 export CLOUDSDK_CONFIG="${GCLOUD_CONFIG}"
@@ -257,7 +270,8 @@ else
     --exclude='*.pem' \
     --exclude='*.key' \
     -C "${WORKSPACE_ROOT}" \
-    av-mesh av-contrib av-service media-object relay-session playlists raptor-fec rtmp-ingress
+    av-mesh av-contrib av-service media-object relay-session playlists raptor-fec rtmp-ingress \
+    needletail/crates/media-capability
 
   echo "Waiting for the contributor build host"
   for _ in $(seq 1 60); do

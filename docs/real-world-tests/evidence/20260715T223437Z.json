@@ -1,0 +1,45 @@
+{
+  "schema": "needletail.real-world-test-summary.v1",
+  "run_id": "20260715T223437Z",
+  "provider": "gcp",
+  "raw_artifact_directory": "target/gcp-qualification/runs/20260715T223437Z",
+  "topology": "London contributor -> Amsterdam/Osaka dual parents -> Tokyo edge",
+  "result": "failed",
+  "failed_gate": "dual-parent recovery",
+  "controlled_loss_phase_started": false,
+  "contributor_restart": {
+    "source_epoch_before": 1784154867818802,
+    "source_epoch_after": 1784154902252178,
+    "maximum_activation_delay_us": 1770584,
+    "observer_elapsed_us": 9961393,
+    "epoch_advanced": true,
+    "known_gaps": 0
+  },
+  "measured_routes": {
+    "best_direct_rtt_ms": 240.572,
+    "primary_rtt_ms": 263.528,
+    "primary_path_stretch": 1.095423,
+    "secondary_rtt_ms": 251.472,
+    "secondary_path_stretch": 1.045309,
+    "maximum_path_stretch": 1.15
+  },
+  "failover": {
+    "detection_us": 119992,
+    "activation_us": 12158,
+    "media_gap_us": 133766,
+    "decoded_objects": 306,
+    "repaired_objects": 38,
+    "expired_objects": 1,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0
+  },
+  "diagnosis": [
+    "a restarted relay treated inherited source age as epoch activation delay",
+    "the contiguous live watermark could not advance after an unresolved object left the rolling cache"
+  ],
+  "cleanup": {
+    "primary_service_active": true,
+    "contributor_services_active": true,
+    "loss_chain_absent": true
+  }
+}

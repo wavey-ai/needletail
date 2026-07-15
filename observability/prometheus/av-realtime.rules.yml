@@ -610,6 +610,17 @@ groups:
           description: '{{ $labels.instance }} retains incomplete objects without a completion in the last two minutes.'
           runbook: Inspect source and repair arrival, buffered datagrams, parent sessions, deadline drops, and object expiry.
 
+      - alert: AvMeshCanonicalEpochActivationSlow
+        expr: av_mesh_canonical_epoch_activation_delay_max_seconds > 10
+        for: 15s
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Canonical source epoch took too long to activate
+          description: 'The slowest visible relay took {{ $value }} seconds from contributor incarnation creation to first canonical object activation.'
+          runbook: Inspect contributor restart time, first ingest publication, relay path RTT, source/repair scheduling, and clock confidence on every visible node.
+
       - alert: AvMeshCanonicalEpochDivergence
         expr: av_mesh_canonical_epoch_divergent_streams > 0
         for: 15s

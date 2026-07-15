@@ -27,6 +27,8 @@ FAILOVER_TIMEOUT_SECONDS="${FAILOVER_TIMEOUT_SECONDS:-12}"
 FAILOVER_STABILITY_SECONDS="${FAILOVER_STABILITY_SECONDS:-3}"
 RECOVERY_TIMEOUT_SECONDS="${RECOVERY_TIMEOUT_SECONDS:-20}"
 PUBLICATION_MAX_LAG_OBJECTS="${PUBLICATION_MAX_LAG_OBJECTS:-4}"
+SOURCE_RESTART_CONVERGENCE_BUDGET_MS="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS:-10000}"
+SOURCE_RESTART_TIMEOUT_SECONDS="${SOURCE_RESTART_TIMEOUT_SECONDS:-20}"
 RAPTORQ_LOSS_PROBABILITY="${RAPTORQ_LOSS_PROBABILITY:-0.02}"
 RAPTORQ_LOSS_SECONDS="${RAPTORQ_LOSS_SECONDS:-15}"
 RAPTORQ_MIN_REPAIRED_OBJECTS="${RAPTORQ_MIN_REPAIRED_OBJECTS:-1}"
@@ -39,9 +41,11 @@ Usage: GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json \
   scripts/gcp-intercontinental-qualification.sh
 
 Qualifies the deployed London -> Amsterdam/Osaka -> Tokyo dual-parent DAG.
-The gate stops the Amsterdam primary, proves stable warm-parent continuity and
-recovery, then applies controlled primary-path loss and proves RaptorQ repair
-at the playback edge. Faults are removed and the primary is restarted on exit.
+The gate restarts the London contributor and proves atomic source-epoch
+convergence, stops the Amsterdam primary and proves stable warm-parent
+continuity and recovery, then applies controlled primary-path loss and proves
+RaptorQ repair at the playback edge. Faults are removed and services restored
+on exit.
 
 Key overrides:
   FAILOVER_DETECTION_BUDGET_MS   maximum source-loss detection (default 250)
@@ -49,6 +53,9 @@ Key overrides:
   FAILOVER_MEDIA_GAP_BUDGET_MS   maximum decoded-media gap (default 250)
   FAILOVER_MAX_EXPIRED_OBJECTS   tolerated severed in-flight objects (default 1)
   PUBLICATION_MAX_LAG_OBJECTS    maximum canonical lag after relay recovery (default 4)
+  SOURCE_RESTART_CONVERGENCE_BUDGET_MS
+                                  maximum source-epoch reconvergence (default 10000)
+  SOURCE_RESTART_TIMEOUT_SECONDS source-epoch observation timeout (default 20)
   RAPTORQ_LOSS_PROBABILITY       primary-ingress random drop probability (default 0.02)
   RAPTORQ_LOSS_SECONDS           controlled-loss duration (default 15)
   MAX_PATH_STRETCH               maximum measured route/direct RTT ratio (default 1.15)
@@ -68,7 +75,7 @@ require_cmd() {
   }
 }
 
-for command_name in gcloud jq curl awk; do
+for command_name in gcloud jq curl awk python3; do
   require_cmd "${command_name}"
 done
 
@@ -81,6 +88,8 @@ for value_name in \
   FAILOVER_STABILITY_SECONDS \
   RECOVERY_TIMEOUT_SECONDS \
   PUBLICATION_MAX_LAG_OBJECTS \
+  SOURCE_RESTART_CONVERGENCE_BUDGET_MS \
+  SOURCE_RESTART_TIMEOUT_SECONDS \
   RAPTORQ_LOSS_SECONDS \
   RAPTORQ_MIN_REPAIRED_OBJECTS; do
   value="${!value_name}"
@@ -141,7 +150,26 @@ fetch_edge_metrics() {
 }
 
 PRIMARY_STOPPED=0
+CONTRIBUTOR_RESTARTING=0
 LOSS_ACTIVE=0
+
+wall_clock_us() {
+  python3 -c 'import time; print(time.time_ns() // 1000)'
+}
+
+start_contributor() {
+  gcp_ssh contributor \
+    --command='sudo systemctl start needletail-contrib.service needletail-media.service' \
+    >/dev/null
+  CONTRIBUTOR_RESTARTING=0
+}
+
+restart_contributor() {
+  CONTRIBUTOR_RESTARTING=1
+  gcp_ssh contributor \
+    --command='sudo systemctl restart needletail-contrib.service needletail-media.service' \
+    >/dev/null
+}
 
 start_primary() {
   gcp_ssh primary \
@@ -182,6 +210,9 @@ cleanup() {
   fi
   if [[ "${PRIMARY_STOPPED}" == 1 ]]; then
     start_primary || true
+  fi
+  if [[ "${CONTRIBUTOR_RESTARTING}" == 1 ]]; then
+    start_contributor || true
   fi
 }
 trap cleanup EXIT INT TERM
@@ -265,23 +296,49 @@ capture_recovered() {
   exit 1
 }
 
-capture_publication_recovered() {
-  local deadline=$((SECONDS + RECOVERY_TIMEOUT_SECONDS))
+capture_publication_converged() {
+  local artifact_prefix="$1"
+  local minimum_source_epoch="$2"
+  local failure_message="$3"
+  local require_activation_measurement="${4:-1}"
+  local deadline=$((SECONDS + SOURCE_RESTART_TIMEOUT_SECONDS))
   local contributor edge source_epoch
   while ((SECONDS < deadline)); do
     if contributor="$(fetch_contributor 2>/dev/null)" \
-      && source_epoch="$(jq -er '.mesh.media_object_source_epoch | select(. > 0)' <<<"${contributor}")" \
+      && source_epoch="$(jq -er \
+        --argjson minimum_source_epoch "${minimum_source_epoch}" '
+          select(
+            .status == "active"
+            and .health.state == "active"
+            and .runtime.relay_session.primary_lane_state == "healthy"
+            and .runtime.relay_session.secondary_lane_state == "healthy"
+            and (.alerts | length == 0)
+          )
+          | .mesh.media_object_source_epoch
+          | select(. > $minimum_source_epoch)
+        ' <<<"${contributor}")" \
       && edge="$(fetch_edge 2>/dev/null)" && jq -e \
       --argjson maximum_lag "${PUBLICATION_MAX_LAG_OBJECTS}" \
+      --argjson maximum_activation_delay_us "$((SOURCE_RESTART_CONVERGENCE_BUDGET_MS * 1000))" \
+      --argjson require_activation_measurement "${require_activation_measurement}" \
       --argjson source_epoch "${source_epoch}" '
         [.streams[]
           | select(.stream_id_text == "1")
           | select(.node_id == "edge" or .node_id == "relay-primary" or .node_id == "relay-secondary")
         ] as $streams
         | ($streams | length) == 3
+        and (.alerts | length) == 0
+        and .relay_session.failover_controller_state == "healthy"
         and ([$streams[].canonical_epoch] | unique) == [$source_epoch]
         and all($streams[];
           .canonical_epoch == $source_epoch
+          and (if $require_activation_measurement == 1 then
+            .canonical_epoch_activation_delay_us != null
+            and .canonical_epoch_activation_delay_us <= $maximum_activation_delay_us
+          else
+            .canonical_epoch_activation_delay_us == null
+            or .canonical_epoch_activation_delay_us <= $maximum_activation_delay_us
+          end)
           and .head_object != null
           and .contiguous_object != null
           and .gap_count == 0
@@ -289,13 +346,13 @@ capture_publication_recovered() {
           and .mesh_lag_parts <= $maximum_lag
         )
       ' <<<"${edge}" >/dev/null; then
-      printf '%s\n' "${contributor}" >"${RESULT_DIR}/publication-recovered-contributor.json"
-      printf '%s\n' "${edge}" >"${RESULT_DIR}/publication-recovered-edge.json"
+      printf '%s\n' "${contributor}" >"${RESULT_DIR}/${artifact_prefix}-contributor.json"
+      printf '%s\n' "${edge}" >"${RESULT_DIR}/${artifact_prefix}-edge.json"
       return
     fi
     sleep 0.25
   done
-  echo "canonical publication did not reconverge after relay recovery" >&2
+  echo "${failure_message}" >&2
   exit 1
 }
 
@@ -310,6 +367,65 @@ assert_metric() {
   fi
 }
 
+assert_metric_at_most() {
+  local file="$1"
+  local metric="$2"
+  local maximum="$3"
+  if ! awk -v metric="${metric}" -v maximum="${maximum}" \
+    '$1 == metric && $2 <= maximum { found=1 } END { exit !found }' "${file}"; then
+    echo "expected ${metric} <= ${maximum} in ${file}" >&2
+    exit 1
+  fi
+}
+
+capture_baseline
+capture_publication_converged \
+  source-restart-before 0 \
+  "canonical publication was not converged before contributor restart" 0
+source_restart_before_epoch="$(jq -r '.mesh.media_object_source_epoch' \
+  "${RESULT_DIR}/source-restart-before-contributor.json")"
+source_restart_before_head="$(jq \
+  '[.streams[] | select(.stream_id_text == "1") | .head_object] | max' \
+  "${RESULT_DIR}/source-restart-before-edge.json")"
+source_restart_started_us="$(wall_clock_us)"
+restart_contributor
+capture_publication_converged \
+  source-restart-after "${source_restart_before_epoch}" \
+  "canonical publication did not converge on a new epoch after contributor restart"
+source_restart_observed_us="$(($(wall_clock_us) - source_restart_started_us))"
+CONTRIBUTOR_RESTARTING=0
+source_restart_after_epoch="$(jq -r '.mesh.media_object_source_epoch' \
+  "${RESULT_DIR}/source-restart-after-contributor.json")"
+source_restart_after_head="$(jq \
+  '[.streams[] | select(.stream_id_text == "1") | .head_object] | max' \
+  "${RESULT_DIR}/source-restart-after-edge.json")"
+source_restart_max_activation_delay_us="$(jq \
+  '[.streams[] | select(.stream_id_text == "1") | .canonical_epoch_activation_delay_us] | max' \
+  "${RESULT_DIR}/source-restart-after-edge.json")"
+if ((source_restart_observed_us <= 0)); then
+  echo "source-epoch observation clock did not advance" >&2
+  exit 1
+fi
+if ((source_restart_max_activation_delay_us > SOURCE_RESTART_CONVERGENCE_BUDGET_MS * 1000)); then
+  echo "source-epoch activation ${source_restart_max_activation_delay_us}us exceeded ${SOURCE_RESTART_CONVERGENCE_BUDGET_MS}ms" >&2
+  exit 1
+fi
+fetch_contributor_metrics >"${RESULT_DIR}/source-restart-after-contributor.metrics"
+fetch_edge_metrics >"${RESULT_DIR}/source-restart-after-edge.metrics"
+assert_metric "${RESULT_DIR}/source-restart-after-contributor.metrics" \
+  av_contrib_media_object_source_epoch "${source_restart_after_epoch}"
+assert_metric "${RESULT_DIR}/source-restart-after-edge.metrics" \
+  av_mesh_canonical_epoch_divergent_streams 0
+assert_metric_at_most "${RESULT_DIR}/source-restart-after-edge.metrics" \
+  av_mesh_canonical_epoch_activation_delay_max_seconds \
+  "$(awk -v budget_ms="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS}" 'BEGIN { print budget_ms / 1000 }')"
+printf '%-25s before=%s after=%s activate<=%sus observe=%sus head=%s\n' \
+  "contributor restart" "${source_restart_before_epoch}" "${source_restart_after_epoch}" \
+  "${source_restart_max_activation_delay_us}" "${source_restart_observed_us}" \
+  "${source_restart_after_head}"
+
+# Contributor counters restart with the process. Establish the failover baseline
+# only after the source-epoch qualification so every later delta is meaningful.
 capture_baseline
 reported_loss_fraction="$(jq -r '.mesh.relay_path_loss_fraction' \
   "${RESULT_DIR}/baseline-contributor.json")"
@@ -377,7 +493,9 @@ jq -e '.relay_session.failover_controller_state == "promoted"' \
 
 start_primary
 capture_recovered
-capture_publication_recovered
+capture_publication_converged \
+  publication-recovered "$((source_restart_after_epoch - 1))" \
+  "canonical publication did not reconverge after relay recovery" 0
 fetch_contributor_metrics >"${RESULT_DIR}/recovered-contributor.metrics"
 fetch_edge_metrics >"${RESULT_DIR}/publication-recovered-edge.metrics"
 assert_metric "${RESULT_DIR}/recovered-contributor.metrics" \
@@ -517,7 +635,7 @@ printf '%-25s dropped=%s decoded=%s repaired=%s expired=%s\n' \
   "${loss_repaired_delta}" "${loss_expired_delta}"
 
 jq -n \
-  --arg schema "needletail.gcp-intercontinental-qualification.v1" \
+  --arg schema "needletail.gcp-intercontinental-qualification.v2" \
   --arg run_id "${RUN_ID}" \
   --arg project "${PROJECT}" \
   --slurpfile lab "${LAB_STATE}" \
@@ -535,6 +653,13 @@ jq -n \
   --argjson failover_all_failed "${all_failed_delta}" \
   --argjson promotions "${promotion_delta}" \
   --argjson demotions "${demotion_delta}" \
+  --argjson source_restart_convergence_budget_ms "${SOURCE_RESTART_CONVERGENCE_BUDGET_MS}" \
+  --argjson source_restart_observed_us "${source_restart_observed_us}" \
+  --argjson source_restart_max_activation_delay_us "${source_restart_max_activation_delay_us}" \
+  --argjson source_restart_before_epoch "${source_restart_before_epoch}" \
+  --argjson source_restart_after_epoch "${source_restart_after_epoch}" \
+  --argjson source_restart_before_head "${source_restart_before_head}" \
+  --argjson source_restart_after_head "${source_restart_after_head}" \
   --argjson publication_max_lag "${publication_max_lag}" \
   --argjson publication_min_contiguous "${publication_min_contiguous}" \
   --argjson publication_max_head "${publication_max_head}" \
@@ -570,6 +695,18 @@ jq -n \
       primary: {rtt_ms: $primary_rtt_ms, path_stretch: $primary_path_stretch},
       secondary: {rtt_ms: $secondary_rtt_ms, path_stretch: $secondary_path_stretch},
       maximum_path_stretch: $max_path_stretch
+    },
+    contributor_restart: {
+      convergence_budget_ms: $source_restart_convergence_budget_ms,
+      observer_elapsed_us: $source_restart_observed_us,
+      maximum_activation_delay_us: $source_restart_max_activation_delay_us,
+      source_epoch_before: $source_restart_before_epoch,
+      source_epoch_after: $source_restart_after_epoch,
+      epoch_advanced: ($source_restart_after_epoch > $source_restart_before_epoch),
+      maximum_head_before: $source_restart_before_head,
+      maximum_head_after: $source_restart_after_head,
+      relay_epochs_aligned: true,
+      known_gaps: 0
     },
     failover: {
       budgets_ms: {

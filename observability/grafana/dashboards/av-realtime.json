@@ -390,8 +390,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Canonical source epoch, media-object head, contiguous LL-HLS publication watermark, known retained-window gaps, and comparable node lag. Process-local counters are intentionally excluded.",
-      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [] },
+      "description": "Canonical source epoch, first-object activation delay, media-object head, contiguous LL-HLS publication watermark, known retained-window gaps, and comparable node lag. Process-local counters are intentionally excluded.",
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [{ "matcher": { "id": "byRegexp", "options": "/.*epoch activation/" }, "properties": [{ "id": "unit", "value": "s" }, { "id": "decimals", "value": 3 }] }] },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 98 },
       "id": 26,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
@@ -400,7 +400,8 @@
         { "editorMode": "code", "expr": "av_mesh_stream_contiguous_object", "legendFormat": "{{node_id}} · {{stream_id}} contiguous", "range": true, "refId": "B" },
         { "editorMode": "code", "expr": "av_mesh_stream_known_gap_count", "legendFormat": "{{node_id}} · {{stream_id}} known gaps", "range": true, "refId": "C" },
         { "editorMode": "code", "expr": "av_mesh_stream_lag_parts", "legendFormat": "{{node_id}} · {{stream_id}} canonical lag", "range": true, "refId": "D" },
-        { "editorMode": "code", "expr": "av_mesh_stream_canonical_epoch", "legendFormat": "{{node_id}} · {{stream_id}} source epoch", "range": true, "refId": "E" }
+        { "editorMode": "code", "expr": "av_mesh_stream_canonical_epoch", "legendFormat": "{{node_id}} · {{stream_id}} source epoch", "range": true, "refId": "E" },
+        { "editorMode": "code", "expr": "av_mesh_stream_canonical_epoch_activation_delay_seconds", "legendFormat": "{{node_id}} · {{stream_id}} epoch activation", "range": true, "refId": "F" }
       ],
       "title": "Canonical publication continuity",
       "type": "timeseries"

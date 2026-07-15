@@ -500,6 +500,7 @@ mod app {
             <article class="watermark">
                 <p>{title}</p>
                 <div><span>"Source epoch"</span><strong>{move || optional_u64(publication.get_value()().canonical_epoch)}</strong></div>
+                <div><span>"Epoch activation"</span><strong>{move || format_optional_duration(publication.get_value()().canonical_epoch_activation_delay_us)}</strong></div>
                 <div><span>"Contiguous"</span><strong>{move || optional_u64(publication.get_value()().contiguous_object)}</strong></div>
                 <div><span>"Head"</span><strong>{move || optional_u64(publication.get_value()().head_object)}</strong></div>
                 <div><span>"Known gaps"</span><strong>{move || optional_u64(publication.get_value()().gap_count)}</strong></div>
@@ -564,7 +565,7 @@ mod app {
                 <PanelTitle title="Playback-edge publications" detail="Canonical object identity, contiguous availability, gaps, and staleness" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Stream"</th><th>"Node"</th><th>"Source epoch"</th><th>"Canonical head"</th><th>"Contiguous"</th><th>"Lag"</th><th>"Known gaps"</th><th>"Last ingest"</th><th>"State"</th></tr></thead>
+                        <thead><tr><th>"Stream"</th><th>"Node"</th><th>"Source epoch"</th><th>"Epoch activation"</th><th>"Canonical head"</th><th>"Contiguous"</th><th>"Lag"</th><th>"Known gaps"</th><th>"Last ingest"</th><th>"State"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| bounded_edge_streams(&status)).unwrap_or_default()
@@ -575,6 +576,7 @@ mod app {
                                     <td class="strong-cell">{nonempty_owned(stream.stream_id_text.clone(), "unnamed")}</td>
                                     <td>{nonempty_owned(stream.node_id.clone(), "edge")}</td>
                                     <td>{optional_u64(stream.canonical_epoch)}</td>
+                                    <td class="mono-cell">{format_optional_duration(stream.canonical_epoch_activation_delay_us)}</td>
                                     <td>{optional_u64(stream.head_object)}</td>
                                     <td>{optional_u64(stream.contiguous_object)}</td>
                                     <td>{stream.mesh_lag_parts.map(|lag| format!("{lag} parts")).unwrap_or_else(|| "pending".to_owned())}</td>
@@ -1078,6 +1080,7 @@ mod app {
                     <Metric label="Decoded" value=move || edge.get().map(|s| s.relay_session.decoded_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="verified objects" />
                     <Metric label="Repair-assisted" value=move || edge.get().map(|s| s.relay_session.repaired_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="recovered before deadline" />
                     <Metric label="Publish → edge p95" value=move || edge.get().and_then(|s| s.relay_session.publication_to_available_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="verified cache availability" />
+                    <Metric label="Epoch activation max" value=move || edge.get().and_then(|s| publication_from_edge(&s).canonical_epoch_activation_delay_us).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="contributor incarnation → first object" />
                     <Metric label="Latency clock error" value=move || edge.get().filter(|s| s.relay_session.publication_to_available_count > 0).map(|s| format!("±{}", format_duration_us(s.relay_session.publication_clock_error_max_us))).unwrap_or_else(|| "pending".to_owned()) detail="source timestamp bound" />
                     <Metric label="Failover state" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| nonempty_owned(s.relay_session.failover_controller_state, "arming")).unwrap_or_else(|| "pending".to_owned()) detail="automatic warm-secondary control" />
                     <Metric label="Primary source age" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| format_age_ms(s.relay_session.failover_primary_source_age_ms)).unwrap_or_else(|| "pending".to_owned()) detail="failure detector input" />

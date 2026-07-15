@@ -643,6 +643,7 @@ pub struct EdgeStream {
     pub latest_local_part_age_ms: Option<u64>,
     pub latest_mesh_part: Option<u64>,
     pub canonical_epoch: Option<u64>,
+    pub canonical_epoch_activation_delay_us: Option<u64>,
     pub bytes_received: u64,
     pub datagrams_received: u64,
     pub mesh_lag_parts: Option<u64>,
@@ -688,6 +689,7 @@ pub struct MeshActivity {
 pub struct PublicationSnapshot {
     #[serde(alias = "source_epoch")]
     pub canonical_epoch: Option<u64>,
+    pub canonical_epoch_activation_delay_us: Option<u64>,
     #[serde(alias = "contiguous_watermark")]
     pub contiguous_object: Option<u64>,
     #[serde(alias = "head_watermark")]
@@ -860,6 +862,10 @@ fn histogram_percentile_us_with_bounds(
 
 pub fn publication_from_contrib(status: &ContribStatus) -> PublicationSnapshot {
     if status.publication.canonical_epoch.is_some()
+        || status
+            .publication
+            .canonical_epoch_activation_delay_us
+            .is_some()
         || status.publication.contiguous_object.is_some()
         || status.publication.head_object.is_some()
         || status.publication.gap_count.is_some()
@@ -868,6 +874,7 @@ pub fn publication_from_contrib(status: &ContribStatus) -> PublicationSnapshot {
     }
     PublicationSnapshot {
         canonical_epoch: status.mesh.media_object_source_epoch,
+        canonical_epoch_activation_delay_us: None,
         contiguous_object: None,
         head_object: status
             .runtime
@@ -881,6 +888,10 @@ pub fn publication_from_contrib(status: &ContribStatus) -> PublicationSnapshot {
 
 pub fn publication_from_edge(status: &MeshStatus) -> PublicationSnapshot {
     if status.publication.canonical_epoch.is_some()
+        || status
+            .publication
+            .canonical_epoch_activation_delay_us
+            .is_some()
         || status.publication.contiguous_object.is_some()
         || status.publication.head_object.is_some()
         || status.publication.gap_count.is_some()
@@ -901,6 +912,11 @@ pub fn publication_from_edge(status: &MeshStatus) -> PublicationSnapshot {
     epochs.dedup();
     PublicationSnapshot {
         canonical_epoch: (epochs.len() == 1).then(|| epochs[0]),
+        canonical_epoch_activation_delay_us: status
+            .streams
+            .iter()
+            .filter_map(|stream| stream.canonical_epoch_activation_delay_us)
+            .max(),
         contiguous_object: status
             .streams
             .iter()
@@ -1322,7 +1338,7 @@ mod tests {
       "orchestration":{"control_dispatch_ready":true},
       "nodes":[{"node_id":"edge-lon","region":"eu-west","total_storage_bytes":1000,"used_storage_bytes":400}],
       "edge_services":[{"node_id":"edge-lon","region":"eu-west","playback_base_url":"https://edge.example","active_readers":4,"responses_total":15,"response_duration_count":10,"response_duration_p95_us":900,"response_duration_buckets":[0,0,2,10]}],
-      "streams":[{"node_id":"edge-lon","stream_id_text":"42","latest_local_part":8008,"latest_mesh_part":8,"canonical_epoch":1784151600000001,"contiguous_object":8,"head_object":8,"gap_count":0,"mesh_lag_parts":0,"last_ingest_age_ms":20,"stale_threshold_ms":3000}],
+      "streams":[{"node_id":"edge-lon","stream_id_text":"42","latest_local_part":8008,"latest_mesh_part":8,"canonical_epoch":1784151600000001,"canonical_epoch_activation_delay_us":180000,"contiguous_object":8,"head_object":8,"gap_count":0,"mesh_lag_parts":0,"last_ingest_age_ms":20,"stale_threshold_ms":3000}],
       "alerts":[{"level":"warn","code":"mesh_stream_lagging","message":"legacy wording","count":1,"stream_id_text":"42"},{"level":"warn","code":"mesh_unknown_peers","message":"obsolete topology","count":2}],
       "activity":[{"level":"info","code":"edge_response","message":"Part served.","count":1,"seen_unix_ms":1784102400180},{"level":"info","code":"provision_node","message":"obsolete control","count":1,"seen_unix_ms":1784102400190}]
     }"#;
@@ -1412,6 +1428,10 @@ mod tests {
         assert_eq!(publication_from_edge(&edge).contiguous_object, Some(8));
         assert_eq!(publication_from_edge(&edge).head_object, Some(8));
         assert_eq!(publication_from_edge(&edge).gap_count, Some(0));
+        assert_eq!(
+            publication_from_edge(&edge).canonical_epoch_activation_delay_us,
+            Some(180_000)
+        );
         assert_eq!(
             publication_from_edge(&edge).canonical_epoch,
             Some(1_784_151_600_000_001)

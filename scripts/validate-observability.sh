@@ -106,6 +106,7 @@ required_alerts = %w[
   AvMeshRelayDeadlineDrops
   AvMeshRelayObjectsExpiring
   AvMeshRelayDuplicateRatioHigh
+  AvMeshCanonicalEpochActivationSlow
   AvMeshCanonicalEpochDivergence
   AvMeshCanonicalPublicationGap
   AvMeshPublicationToAvailableP95High
@@ -181,6 +182,7 @@ service_metrics = Set.new(%w[
   av_mesh_edge_response_duration_seconds_bucket
   av_mesh_edge_responses_total
   av_mesh_canonical_epoch_divergent_streams
+  av_mesh_canonical_epoch_activation_delay_max_seconds
   av_mesh_relay_session_active_object_bytes
   av_mesh_relay_session_active_objects
   av_mesh_relay_session_buffered_datagrams
@@ -204,6 +206,7 @@ service_metrics = Set.new(%w[
   av_mesh_relay_failover_transitions_total
   av_mesh_stream_last_ingest_age_seconds
   av_mesh_stream_canonical_epoch
+  av_mesh_stream_canonical_epoch_activation_delay_seconds
   av_mesh_stream_canonical_head_object
   av_mesh_stream_contiguous_object
   av_mesh_stream_known_gap_count

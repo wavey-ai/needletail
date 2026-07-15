@@ -1,0 +1,75 @@
+{
+  "schema": "needletail.gcp-intercontinental-qualification.v2",
+  "run_id": "20260715T230319Z",
+  "project": "steadfast-slate-498623-r2",
+  "raw_artifact_directory": "target/gcp-qualification/runs/20260715T230319Z",
+  "topology": {
+    "network": "needletail-qualification",
+    "machine_type": "e2-standard-2",
+    "max_run_duration": "6h",
+    "nodes": {
+      "contributor": "europe-west2-b",
+      "primary": "europe-west4-a",
+      "secondary": "asia-northeast2-b",
+      "edge": "asia-northeast1-b"
+    }
+  },
+  "adaptive_raptorq": {
+    "controller_loss_fraction": 0.02,
+    "qualification_loss_probability": 0.02,
+    "policy_input_matches_fault": true
+  },
+  "measured_routes": {
+    "best_direct_rtt_ms": 368.53,
+    "primary": { "rtt_ms": 257.637, "path_stretch": 0.699094 },
+    "secondary": { "rtt_ms": 252.203, "path_stretch": 0.684349 },
+    "maximum_path_stretch": 1.15
+  },
+  "contributor_restart": {
+    "convergence_budget_ms": 10000,
+    "observer_elapsed_us": 19867011,
+    "maximum_activation_delay_us": 1723551,
+    "source_epoch_before": 1784156422194700,
+    "source_epoch_after": 1784156619298723,
+    "epoch_advanced": true,
+    "relay_epochs_aligned": true,
+    "known_gaps": 0
+  },
+  "failover": {
+    "budgets_ms": { "detection": 250, "activation": 250, "media_gap": 250 },
+    "observed_us": { "detection": 113025, "activation": 19915, "media_gap": 134517 },
+    "state_sequence": ["healthy", "promoted", "healthy"],
+    "decoded_objects": 339,
+    "expired_objects": 1,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "surviving_lane_objects": 15,
+    "all_lanes_failed_objects": 0,
+    "promotions": 1,
+    "make_before_break_demotions": 1
+  },
+  "canonical_publication_recovery": {
+    "source_epoch": 1784156619298723,
+    "maximum_allowed_lag_objects": 4,
+    "maximum_observed_lag_objects": 3,
+    "minimum_contiguous_object": 1443,
+    "maximum_head_object": 1446,
+    "known_gaps": 0
+  },
+  "raptorq_primary_path_loss": {
+    "probability": 0.02,
+    "duration_seconds": 15,
+    "dropped_datagrams": 76,
+    "decoded_objects": 369,
+    "repaired_objects": 369,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0
+  },
+  "cleanup": {
+    "primary_service_active": true,
+    "contributor_services_active": true,
+    "loss_chain_absent": true
+  },
+  "passed": true
+}

@@ -92,18 +92,28 @@ canonical media object it observes, restore a gap-free contiguous LL-HLS
 watermark, and reconverge within four canonical objects of the stream head.
 Contributor restarts advance the canonical source epoch; every relay must
 atomically converge on that epoch and reject delayed objects from an older
-incarnation before the publication gate can pass.
+incarnation before the publication gate can pass. Each relay records the
+data-plane delay from contributor incarnation creation to its first accepted
+canonical object; the qualification gates the maximum across all three nodes,
+then establishes failover counter baselines only after the restarted
+contributor is healthy.
 The gate then injects controlled loss on the primary source path and
 requires repair-assisted RaptorQ completion with no expiry, rejection, or
 deadline-drop regression. Evidence is written below
-`target/gcp-qualification/runs/`; cleanup restores the relay and packet filter
-even when a gate fails. The deployed qualification plan seeds that same
-controlled-loss profile into the adaptive RaptorQ policy; the gate rejects a
-plan whose observed loss input does not match the injected condition.
+`target/gcp-qualification/runs/`; cleanup restores contributor services, the
+relay, and the packet filter even when a gate fails. The deployed qualification
+plan seeds that same controlled-loss profile into the adaptive RaptorQ policy;
+the gate rejects a plan whose observed loss input does not match the injected
+condition.
 Both relay routes are measured from the deployed hosts. Their RTT and jitter
 feed the compiled parent observations, Mission Control, and the qualification
 artifact; either route exceeding the default `1.15x` direct-path stretch gate
 fails qualification.
+
+Versioned notes for every provider-network run live in
+[`docs/real-world-tests/`](docs/real-world-tests/README.md). They preserve test
+conditions, measurements, failures, corrective reruns, and cleanup state while
+raw evidence remains under `target/gcp-qualification/runs/`.
 
 For an authorized deployed canary only:
 

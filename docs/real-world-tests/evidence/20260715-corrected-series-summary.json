@@ -1,0 +1,55 @@
+{
+  "schema": "needletail.real-world-test-series.v1",
+  "series": "2026-07-15 corrected intercontinental qualification",
+  "run_ids": [
+    "20260715T225642Z",
+    "20260715T230001Z",
+    "20260715T230319Z",
+    "20260715T230643Z"
+  ],
+  "invocations": 4,
+  "complete_passes": 3,
+  "strict_failures": 1,
+  "failure": {
+    "gate": "failover expired objects <= 1",
+    "observed_expired_objects": 2
+  },
+  "source_epoch_activation_ms": {
+    "minimum": 1.577004,
+    "median": 1.752643,
+    "maximum": 2.702413,
+    "gate": 10.0
+  },
+  "failover_detection_ms": {
+    "minimum": 108.607,
+    "maximum": 118.696,
+    "gate": 250.0
+  },
+  "secondary_activation_ms": {
+    "minimum": 19.915,
+    "maximum": 77.435,
+    "gate": 250.0
+  },
+  "decoded_media_gap_ms": {
+    "minimum": 134.517,
+    "maximum": 197.535,
+    "gate": 250.0
+  },
+  "publication": {
+    "known_gaps_on_every_recovery": 0,
+    "maximum_lag_objects": 4,
+    "gate": 4
+  },
+  "successful_controlled_loss_runs": {
+    "count": 3,
+    "loss_probability": 0.02,
+    "duration_seconds_each": 15,
+    "dropped_datagrams_range": [67, 78],
+    "decoded_objects_range": [355, 370],
+    "repaired_objects_range": [57, 369],
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0
+  },
+  "cleanup_verified_after_every_invocation": true
+}
