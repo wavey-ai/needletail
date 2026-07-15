@@ -141,8 +141,10 @@ pub struct RelayEmission {
     pub repair_primary_fallback_objects: u64,
     pub primary_lane_objects_succeeded: u64,
     pub primary_lane_objects_failed: u64,
+    pub primary_lane_state: String,
     pub secondary_lane_objects_succeeded: u64,
     pub secondary_lane_objects_failed: u64,
+    pub secondary_lane_state: String,
     pub surviving_lane_objects: u64,
     pub all_lanes_failed_objects: u64,
     pub expired_objects: Option<u64>,
@@ -1256,7 +1258,7 @@ mod tests {
         {"protocol":"srt","enabled":true,"bind":"0.0.0.0:27001","output_stream_id":"42","output_hls_path":"/42/stream.m3u8"}
       ],
       "runtime":{
-        "relay_session":{"objects_sent":7,"source_datagrams":20,"repair_datagrams":5,"primary_lane_objects_succeeded":6,"primary_lane_objects_failed":1,"secondary_lane_objects_succeeded":7,"secondary_lane_objects_failed":0,"surviving_lane_objects":1,"all_lanes_failed_objects":0,"expired_objects":1,"expired_symbols":2,"deadline_hits":6,"deadline_misses":1,"last_deadline_headroom_us":12000,
+        "relay_session":{"objects_sent":7,"source_datagrams":20,"repair_datagrams":5,"primary_lane_objects_succeeded":6,"primary_lane_objects_failed":1,"primary_lane_state":"healthy","secondary_lane_objects_succeeded":7,"secondary_lane_objects_failed":0,"secondary_lane_state":"healthy","surviving_lane_objects":1,"all_lanes_failed_objects":0,"expired_objects":1,"expired_symbols":2,"deadline_hits":6,"deadline_misses":1,"last_deadline_headroom_us":12000,
           "stages":{"total":{"count":7,"p95_us":2500},"encode_wait":{"count":7,"p95_us":100},"encode":{"count":7,"p95_us":700},"schedule":{"count":7,"p95_us":100},"primary_source_send":{"count":20,"p95_us":250},"secondary_source_send":{"count":20,"p95_us":250},"secondary_repair_send":{"count":5,"p95_us":250}}},
         "mesh_forward":{"media_duration":{"count":100,"p95_us":2500},"media_stages":{"encode":{"count":100,"p95_us":700}}},
         "mpeg_ts":{"slots":200,"continuity_errors":2},
@@ -1300,6 +1302,11 @@ mod tests {
         assert_eq!(contrib.runtime.relay_session.deadline_misses, Some(1));
         assert_eq!(contrib.runtime.relay_session.expired_objects, Some(1));
         assert_eq!(contrib.runtime.relay_session.primary_lane_objects_failed, 1);
+        assert_eq!(contrib.runtime.relay_session.primary_lane_state, "healthy");
+        assert_eq!(
+            contrib.runtime.relay_session.secondary_lane_state,
+            "healthy"
+        );
         assert_eq!(contrib.runtime.relay_session.surviving_lane_objects, 1);
         assert_eq!(contrib.runtime.relay_session.all_lanes_failed_objects, 0);
         assert_eq!(contrib.runtime.relay_session.lane_failures(), 1);

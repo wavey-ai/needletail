@@ -87,6 +87,7 @@ required_alerts = %w[
   AvContributorRelayEncodeErrors
   AvContributorRelaySendErrors
   AvContributorRelayLaneFailure
+  AvContributorRelayLaneImpaired
   AvContributorRelayAllLanesFailed
   AvContributorRelayStageP99High
   AvContributorRelayDeadlineMiss
@@ -143,6 +144,7 @@ service_metrics = Set.new(%w[
   av_contrib_mesh_forward_duration_seconds_bucket
   av_contrib_mesh_forward_stage_duration_seconds_bucket
   av_contrib_relay_session_carrier_configured
+  av_contrib_relay_session_lane_health
   av_contrib_relay_session_lane_objects_total
   av_contrib_relay_session_surviving_lane_objects_total
   av_contrib_relay_session_all_lanes_failed_objects_total

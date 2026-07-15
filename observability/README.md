@@ -53,10 +53,11 @@ geography, concurrency, and viewer load establishes the global SLOs.
 The dashboard follows one canonical media object from contributor emission to
 edge publication:
 
-- contributor carrier readiness for the primary source lane and warm secondary
-  repair lane;
+- contributor carrier readiness and recoverable current health for the primary
+  source lane and warm secondary repair lane;
 - canonical object output, RaptorQ source/repair symbols, per-parent object
-  outcomes, surviving-lane deliveries, encoding errors, carrier send errors,
+  outcomes, current lane impairment, surviving-lane deliveries, encoding
+  errors, carrier send errors,
   deadline budget/headroom, and the declared wall-clock
   error estimate;
 - native RelaySession total, encoder-lock wait, RaptorQ encode, source-first

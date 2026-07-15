@@ -384,6 +384,17 @@ groups:
           description: '{{ $labels.instance }} failed one or more canonical objects on the {{ $labels.path }} parent lane.'
           runbook: Verify the independent parent path and confirm surviving-lane deliveries continue before replacing the degraded route make-before-break.
 
+      - alert: AvContributorRelayLaneImpaired
+        expr: av_contrib_relay_session_lane_health{state="impaired"} == 1
+        for: 15s
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Contributor parent lane remains impaired
+          description: '{{ $labels.instance }} currently reports the {{ $labels.path }} parent lane as impaired.'
+          runbook: Verify the independent parent path while confirming the healthy complete lane continues delivery; replace the impaired route make-before-break.
+
       - alert: AvContributorRelayAllLanesFailed
         expr: increase(av_contrib_relay_session_all_lanes_failed_objects_total[5m]) > 0
         for: 0m

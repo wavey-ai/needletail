@@ -148,7 +148,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Canonical object output, RaptorQ source/repair symbols, degraded parent lanes, and objects completed by the surviving parent.",
+      "description": "Canonical object output, RaptorQ source/repair symbols, current parent-lane health, lane failures, and objects completed by the surviving parent.",
       "fieldConfig": { "defaults": { "decimals": 2, "unit": "ops" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "id": 10,
@@ -157,7 +157,8 @@
         { "editorMode": "code", "expr": "av:contrib_relay_objects_per_second:5m", "legendFormat": "{{instance}} · objects", "range": true, "refId": "A" },
         { "editorMode": "code", "expr": "av:contrib_relay_datagrams_per_second:5m", "legendFormat": "{{instance}} · {{role}} symbols", "range": true, "refId": "B" },
         { "editorMode": "code", "expr": "av:contrib_relay_lane_failures_per_second:5m", "legendFormat": "{{instance}} · {{path}} lane failures", "range": true, "refId": "C" },
-        { "editorMode": "code", "expr": "av:contrib_relay_surviving_lane_objects_per_second:5m", "legendFormat": "{{instance}} · surviving-lane objects", "range": true, "refId": "D" }
+        { "editorMode": "code", "expr": "av:contrib_relay_surviving_lane_objects_per_second:5m", "legendFormat": "{{instance}} · surviving-lane objects", "range": true, "refId": "D" },
+        { "editorMode": "code", "expr": "max by (instance, path) (av_contrib_relay_session_lane_health{state=\"impaired\"})", "legendFormat": "{{instance}} · {{path}} currently impaired", "range": true, "refId": "E" }
       ],
       "title": "Contributor canonical objects and RaptorQ symbols",
       "type": "timeseries"
