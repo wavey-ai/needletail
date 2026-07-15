@@ -1,0 +1,432 @@
+groups:
+  - name: needletail-realtime-recording
+    interval: 15s
+    rules:
+      - record: av:contrib_forward_p50_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (job, instance, kind, le) (
+              rate(av_contrib_mesh_forward_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_forward_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, instance, kind, le) (
+              rate(av_contrib_mesh_forward_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_forward_p99_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, instance, kind, le) (
+              rate(av_contrib_mesh_forward_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_forward_stage_p50_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (job, instance, kind, stage, le) (
+              rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_forward_stage_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, instance, kind, stage, le) (
+              rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:contrib_forward_stage_p99_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, instance, kind, stage, le) (
+              rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:mesh_edge_handler_p50_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            max by (node_id, region, le) (
+              rate(av_mesh_edge_response_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:mesh_edge_handler_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            max by (node_id, region, le) (
+              rate(av_mesh_edge_response_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:mesh_edge_handler_p99_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            max by (node_id, region, le) (
+              rate(av_mesh_edge_response_duration_seconds_bucket[5m])
+            )
+          )
+      - record: av:mesh_edge_requests_per_second:5m
+        expr: |
+          max by (node_id, region) (
+            rate(av_mesh_edge_requests_total[5m])
+          )
+      - record: av:mesh_edge_error_ratio:5m
+        expr: |
+          max by (node_id, region) (
+            rate(av_mesh_edge_responses_total{outcome="error"}[5m])
+          )
+          /
+          clamp_min(
+            max by (node_id, region) (
+              rate(av_mesh_edge_responses_total{outcome="all"}[5m])
+            ),
+            0.001
+          )
+      - record: av:contrib_relay_objects_per_second:5m
+        expr: |
+          sum by (job, instance) (
+            rate(av_contrib_relay_session_objects_total[5m])
+          )
+      - record: av:contrib_relay_datagrams_per_second:5m
+        expr: |
+          sum by (job, instance, role) (
+            rate(av_contrib_relay_session_datagrams_total[5m])
+          )
+      - record: av:contrib_relay_send_error_ratio:5m
+        expr: |
+          sum by (job, instance, role) (
+            rate(av_contrib_relay_session_send_errors_total[5m])
+          )
+          /
+          clamp_min(
+            sum by (job, instance, role) (
+              rate(av_contrib_relay_session_send_errors_total[5m])
+            )
+            +
+            sum by (job, instance, role) (
+              rate(av_contrib_relay_session_datagrams_total[5m])
+            ),
+            0.001
+          )
+      - record: av:contrib_relay_repair_to_source_ratio:5m
+        expr: |
+          sum by (job, instance) (
+            rate(av_contrib_relay_session_datagrams_total{role="repair"}[5m])
+          )
+          /
+          clamp_min(
+            sum by (job, instance) (
+              rate(av_contrib_relay_session_datagrams_total{role="source"}[5m])
+            ),
+            0.001
+          )
+      - record: av:mesh_relay_datagrams_per_second:5m
+        expr: |
+          sum by (job, instance, outcome) (
+            rate(av_mesh_relay_session_datagrams_total[5m])
+          )
+      - record: av:mesh_relay_objects_per_second:5m
+        expr: |
+          sum by (job, instance, outcome) (
+            rate(av_mesh_relay_session_objects_total[5m])
+          )
+      - record: av:mesh_relay_drops_per_second:5m
+        expr: |
+          sum by (job, instance, reason) (
+            rate(av_mesh_relay_session_drops_total[5m])
+          )
+      - record: av:mesh_relay_expired_object_ratio:5m
+        expr: |
+          sum by (job, instance) (
+            rate(av_mesh_relay_session_objects_total{outcome="expired"}[5m])
+          )
+          /
+          clamp_min(
+            sum by (job, instance) (
+              rate(av_mesh_relay_session_objects_total{outcome=~"decoded|expired"}[5m])
+            ),
+            0.001
+          )
+      - record: av:mesh_relay_duplicate_datagram_ratio:5m
+        expr: |
+          sum by (job, instance) (
+            rate(av_mesh_relay_session_datagrams_total{outcome="duplicate"}[5m])
+          )
+          /
+          clamp_min(
+            sum by (job, instance) (
+              rate(av_mesh_relay_session_datagrams_total{outcome="received"}[5m])
+            ),
+            0.001
+          )
+
+  - name: needletail-realtime-alerts
+    interval: 15s
+    rules:
+      - alert: AvContributorTargetDown
+        expr: up{job="av-contrib"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Contributor metrics target is unavailable
+          description: 'Prometheus has failed to scrape {{ $labels.instance }} for one minute.'
+          runbook: Check av-contrib health, TLS, listener binding, and the Prometheus scrape target.
+
+      - alert: AvMeshTargetDown
+        expr: up{job="av-mesh"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Edge metrics target is unavailable
+          description: 'Prometheus has failed to scrape {{ $labels.instance }} for one minute.'
+          runbook: Check av-mesh health, TLS, listener binding, and the Prometheus scrape target.
+
+      - alert: AvContributorForwardingP95High
+        expr: av:contrib_forward_p95_seconds:5m{kind="stream"} > 0.015
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Contributor forwarding p95 is above 15 ms
+          description: 'Forwarding p95 on {{ $labels.instance }} is {{ $value | humanizeDuration }}.'
+          runbook: Inspect the forwarding-stage quantiles; encode_wait indicates contention, encode indicates RaptorQ CPU, and send indicates carrier pressure.
+
+      - alert: AvContributorForwardingP99High
+        expr: av:contrib_forward_p99_seconds:5m{kind="stream"} > 0.025
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Contributor forwarding p99 is above 25 ms
+          description: 'Forwarding p99 on {{ $labels.instance }} is {{ $value | humanizeDuration }}.'
+          runbook: Compare the p50, p95, and p99 stage lines and inspect CPU scheduling, symbol encoding, and carrier pacing.
+
+      - alert: AvContributorRelayPrimaryMissing
+        expr: av_contrib_relay_session_carrier_configured{path="primary"} < 1
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Contributor primary RelaySession carrier is absent
+          description: '{{ $labels.instance }} has no configured primary source-symbol carrier.'
+          runbook: Apply the controller assignment, verify the fixed bind and target, then confirm source datagrams advance.
+
+      - alert: AvContributorRelaySecondaryMissing
+        expr: av_contrib_relay_session_carrier_configured{path="secondary"} < 1
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Contributor warm secondary RelaySession carrier is absent
+          description: '{{ $labels.instance }} has no configured secondary repair-symbol carrier.'
+          runbook: Verify the secondary assignment and failure-domain path, then confirm repair datagrams advance independently.
+
+      - alert: AvContributorRelayEncodeErrors
+        expr: increase(av_contrib_relay_session_encode_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Canonical objects failed RaptorQ encoding
+          description: '{{ $labels.instance }} rejected one or more canonical objects during RelaySession encoding.'
+          runbook: Inspect object envelope bounds, RaptorQ geometry, media-object metadata, and process logs.
+
+      - alert: AvContributorRelaySendErrors
+        expr: increase(av_contrib_relay_session_send_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: RelaySession carrier send errors detected
+          description: '{{ $labels.instance }} recorded {{ $labels.role }} symbol send failures.'
+          runbook: Inspect the assigned carrier, fixed source bind, target reachability, socket pressure, and path MTU.
+
+      - alert: AvContributorDeadlineHeadroomLow
+        expr: |
+          (
+            av_contrib_relay_session_last_deadline_headroom_seconds
+            < on (job, instance)
+            (av_contrib_relay_session_deadline_budget_seconds * 0.10)
+          )
+          and on (job, instance)
+          (
+            av_contrib_last_seen_age_seconds{stage="fmp4_output"}
+            < on (job, instance)
+            (av_contrib_relay_session_deadline_budget_seconds * 2)
+          )
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: RelaySession emission consumed most of the object deadline
+          description: '{{ $labels.instance }} has {{ $value | humanizeDuration }} headroom after successful emission.'
+          runbook: Inspect stage p99, queueing, RaptorQ geometry, carrier pacing, and the configured deadline budget.
+
+      - alert: AvContributorClockEstimateConsumesDeadline
+        expr: |
+          av_contrib_media_object_clock_estimated_error_seconds
+          > on (job, instance)
+          (av_contrib_relay_session_deadline_budget_seconds * 0.10)
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Canonical timestamp uncertainty exceeds ten percent of the deadline
+          description: '{{ $labels.instance }} reports {{ $value | humanizeDuration }} maximum estimated clock error.'
+          runbook: Qualify host time synchronization and lower the configured estimate only when measured clock evidence supports it.
+
+      - alert: AvMeshRelayPrimaryMissing
+        expr: av_mesh_relay_session_parent_sessions{role="primary"} < 1
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Edge primary RelaySession parent is absent
+          description: '{{ $labels.instance }} has no active primary parent assignment.'
+          runbook: Inspect the controller generation, subscription, fixed source binding, and parent reachability.
+
+      - alert: AvMeshRelaySecondaryMissing
+        expr: av_mesh_relay_session_parent_sessions{role="secondary"} < 1
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Edge warm secondary RelaySession parent is absent
+          description: '{{ $labels.instance }} has no warm secondary parent assignment.'
+          runbook: Restore the independent secondary assignment before failover or path-loss qualification.
+
+      - alert: AvMeshControlledQualificationBoundaryActive
+        expr: av_mesh_relay_session_security_sessions{mode="controlled_qualification"} > 0
+        for: 5m
+        labels:
+          severity: info
+          slo: provisional
+        annotations:
+          summary: Controlled qualification carrier boundary is active
+          description: '{{ $labels.instance }} has {{ $value }} controlled-qualification RelaySession bindings.'
+          runbook: Record this boundary in qualification results; promotion requires authenticated carrier sessions.
+
+      - alert: AvMeshRelayConflictDrops
+        expr: increase(av_mesh_relay_session_drops_total{reason="conflict"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Canonical object identity conflicts detected
+          description: '{{ $labels.instance }} rejected conflicting RelaySession object metadata.'
+          runbook: Compare parent announcements, topology generations, subscription identities, and canonical envelope hashes.
+
+      - alert: AvMeshRelayAuthenticationDrops
+        expr: increase(av_mesh_relay_session_drops_total{reason="authentication"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: RelaySession authentication drops detected
+          description: '{{ $labels.instance }} rejected traffic outside its established trust boundary.'
+          runbook: Inspect peer identity, authorization, subscription, generation, and carrier-session state.
+
+      - alert: AvMeshRelayDeadlineDrops
+        expr: increase(av_mesh_relay_session_drops_total{reason="deadline"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Obsolete RelaySession symbols were dropped at the edge
+          description: '{{ $labels.instance }} discarded symbols after their media deadline.'
+          runbook: Compare deadline headroom, parent path health, source/repair arrival rates, and active-object pressure.
+
+      - alert: AvMeshRelayObjectsExpiring
+        expr: av:mesh_relay_expired_object_ratio:5m > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: RelaySession object expiry ratio is elevated
+          description: '{{ $labels.instance }} is expiring {{ $value | humanizePercentage }} of terminal objects.'
+          runbook: Compare source/repair rates, secondary health, RaptorQ recovery, deadline drops, loss, jitter, and active objects.
+
+      - alert: AvMeshRelayDuplicateRatioHigh
+        expr: av:mesh_relay_duplicate_datagram_ratio:5m > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: RelaySession duplicate datagram ratio is above five percent
+          description: '{{ $labels.instance }} is receiving {{ $value | humanizePercentage }} duplicate datagrams.'
+          runbook: Inspect parent symbol assignments, replay filtering, make-before-break overlap, and retransmit behavior.
+
+      - alert: AvMeshRelayObjectsStalled
+        expr: |
+          av_mesh_relay_session_active_objects > 0
+          and on (job, instance)
+          increase(av_mesh_relay_session_objects_total{outcome="decoded"}[2m]) == 0
+        for: 2m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Active RelaySession objects have made no decode progress
+          description: '{{ $labels.instance }} retains incomplete objects without a completion in the last two minutes.'
+          runbook: Inspect source and repair arrival, buffered datagrams, parent sessions, deadline drops, and object expiry.
+
+      - alert: AvMeshEdgeHandlerP95High
+        expr: av:mesh_edge_handler_p95_seconds:5m > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Edge LL-HLS handler p95 is above 1 ms
+          description: 'Handler p95 for {{ $labels.node_id }} in {{ $labels.region }} is {{ $value | humanizeDuration }}.'
+          runbook: Check contiguous publication, cache contention, CPU saturation, and response error ratio.
+
+      - alert: AvMeshEdgeHandlerP99High
+        expr: av:mesh_edge_handler_p99_seconds:5m > 0.0025
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Edge LL-HLS handler p99 is above 2.5 ms
+          description: 'Handler p99 for {{ $labels.node_id }} in {{ $labels.region }} is {{ $value | humanizeDuration }}.'
+          runbook: Compare p50, p95, and p99, then inspect cache locking, publication gaps, and CPU scheduling.
+
+      - alert: AvMeshEdgeErrorRatioHigh
+        expr: av:mesh_edge_error_ratio:5m > 0.001
+        for: 5m
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Edge LL-HLS response error ratio is elevated
+          description: '{{ $labels.node_id }} in {{ $labels.region }} has {{ $value | humanizePercentage }} errors.'
+          runbook: Inspect response outcomes, stream freshness, contiguous publication, cache availability, and node health.

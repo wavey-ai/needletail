@@ -1,0 +1,316 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Needletail contributor, canonical media object, RaptorQ RelaySession, deadline, trust-boundary, and LL-HLS qualification telemetry.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Five-minute p50, p95, and p99 contributor forwarding latency for stream objects.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "editorMode": "code", "expr": "max(av:contrib_forward_p50_seconds:5m{kind=\"stream\"})", "legendFormat": "p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "max(av:contrib_forward_p95_seconds:5m{kind=\"stream\"})", "legendFormat": "p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "max(av:contrib_forward_p99_seconds:5m{kind=\"stream\"})", "legendFormat": "p99", "range": true, "refId": "C" }
+      ],
+      "title": "Contributor forwarding p50 / p95 / p99",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Worst five-minute LL-HLS response-generation quantiles across edge nodes. These values cover server handling time.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "editorMode": "code", "expr": "max(av:mesh_edge_handler_p50_seconds:5m)", "legendFormat": "p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "max(av:mesh_edge_handler_p95_seconds:5m)", "legendFormat": "p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "max(av:mesh_edge_handler_p99_seconds:5m)", "legendFormat": "p99", "range": true, "refId": "C" }
+      ],
+      "title": "LL-HLS handler p50 / p95 / p99",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Remaining headroom after the latest canonical object was emitted, alongside its configured delivery budget.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "editorMode": "code", "expr": "min(av_contrib_relay_session_last_deadline_headroom_seconds)", "legendFormat": "headroom", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "min(av_contrib_relay_session_deadline_budget_seconds)", "legendFormat": "budget", "range": true, "refId": "B" }
+      ],
+      "title": "Canonical object deadline headroom",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Configured maximum estimated wall-clock error carried by canonical media-object timestamps.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "editorMode": "code", "expr": "max(av_contrib_media_object_clock_estimated_error_seconds)", "legendFormat": "estimated error", "range": true, "refId": "A" }
+      ],
+      "title": "Canonical clock estimated error",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Contributor stream forwarding distribution across the qualification window.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:contrib_forward_p50_seconds:5m{kind=\"stream\"}", "legendFormat": "{{instance}} · p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:contrib_forward_p95_seconds:5m{kind=\"stream\"}", "legendFormat": "{{instance}} · p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:contrib_forward_p99_seconds:5m{kind=\"stream\"}", "legendFormat": "{{instance}} · p99", "range": true, "refId": "C" }
+      ],
+      "title": "Contributor forwarding latency distribution",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "LL-HLS response-generation distribution by edge node and region.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_edge_handler_p50_seconds:5m", "legendFormat": "{{node_id}} · p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:mesh_edge_handler_p95_seconds:5m", "legendFormat": "{{node_id}} · p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:mesh_edge_handler_p99_seconds:5m", "legendFormat": "{{node_id}} · p99", "range": true, "refId": "C" }
+      ],
+      "title": "LL-HLS handler latency distribution",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Contributor source and repair carriers. Qualification expects one primary and one independent warm secondary path.",
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 13 },
+      "id": 7,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_contrib_relay_session_carrier_configured", "legendFormat": "{{instance}} · {{path}}", "range": true, "refId": "A" }
+      ],
+      "title": "Contributor RelaySession carriers",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Controller-assigned primary source and warm secondary repair parents at each edge.",
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 13 },
+      "id": 8,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_mesh_relay_session_parent_sessions", "legendFormat": "{{instance}} · {{role}}", "range": true, "refId": "A" }
+      ],
+      "title": "Edge RelaySession parents",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "RelaySession bindings split by authenticated production trust and controlled qualification boundary.",
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 13 },
+      "id": 9,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_mesh_relay_session_security_sessions", "legendFormat": "{{instance}} · {{mode}}", "range": true, "refId": "A" }
+      ],
+      "title": "Edge RelaySession trust boundary",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Canonical object output rate and RaptorQ source/repair symbol rate from the contributor.",
+      "fieldConfig": { "defaults": { "decimals": 2, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "id": 10,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:contrib_relay_objects_per_second:5m", "legendFormat": "{{instance}} · objects", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:contrib_relay_datagrams_per_second:5m", "legendFormat": "{{instance}} · {{role}} symbols", "range": true, "refId": "B" }
+      ],
+      "title": "Contributor canonical objects and RaptorQ symbols",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "RaptorQ encode failures, carrier send failures, and repair objects routed over the primary fallback.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "id": 11,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_encode_errors_total[5m]))", "legendFormat": "{{instance}} · encode errors", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "sum by (instance, role) (rate(av_contrib_relay_session_send_errors_total[5m]))", "legendFormat": "{{instance}} · {{role}} send errors", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "sum by (instance) (rate(av_contrib_relay_session_repair_primary_fallback_objects_total[5m]))", "legendFormat": "{{instance}} · primary repair fallback", "range": true, "refId": "C" }
+      ],
+      "title": "Contributor RelaySession errors and fallback",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Decoded, RaptorQ-repaired, and expired canonical object rates. Repaired objects are a subset of decoded objects.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "id": 12,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_relay_objects_per_second:5m", "legendFormat": "{{instance}} · {{outcome}}", "range": true, "refId": "A" }
+      ],
+      "title": "Edge canonical object outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Bounded active-object registry, accepted datagrams buffered for incomplete objects, and retained completed identities.",
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "id": 13,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_mesh_relay_session_active_objects", "legendFormat": "{{instance}} · active", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av_mesh_relay_session_buffered_datagrams", "legendFormat": "{{instance}} · buffered symbols", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av_mesh_relay_session_completed_objects", "legendFormat": "{{instance}} · retained complete", "range": true, "refId": "C" }
+      ],
+      "title": "Edge RelaySession object registry",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Declared canonical transfer bytes reserved by active RelaySession objects.",
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "id": 14,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_mesh_relay_session_active_object_bytes", "legendFormat": "{{instance}}", "range": true, "refId": "A" }
+      ],
+      "title": "Active canonical object bytes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "RelaySession receive rate split into total receive, accepted source/repair symbols, duplicates, and rejected datagrams.",
+      "fieldConfig": { "defaults": { "decimals": 2, "unit": "pps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "id": 15,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_relay_datagrams_per_second:5m", "legendFormat": "{{instance}} · {{outcome}}", "range": true, "refId": "A" }
+      ],
+      "title": "Edge RaptorQ symbol outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Low-cardinality conflict, authentication, and deadline drop reasons, alongside the total rejected datagram rate.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "pps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "id": 16,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_relay_drops_per_second:5m", "legendFormat": "{{instance}} · {{reason}}", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:mesh_relay_datagrams_per_second:5m{outcome=\"rejected\"}", "legendFormat": "{{instance}} · all rejected", "range": true, "refId": "B" }
+      ],
+      "title": "Edge RelaySession drops",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "RaptorQ protection, recovery expiry, and duplicate ratios used by local qualification.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "percentunit" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 44 },
+      "id": 17,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:contrib_relay_repair_to_source_ratio:5m", "legendFormat": "{{instance}} · repair/source", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:mesh_relay_expired_object_ratio:5m", "legendFormat": "{{instance}} · expired", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:mesh_relay_duplicate_datagram_ratio:5m", "legendFormat": "{{instance}} · duplicate", "range": true, "refId": "C" }
+      ],
+      "title": "RaptorQ qualification ratios",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "LL-HLS edge request throughput and response error ratio.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 44 },
+      "id": 18,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_edge_requests_per_second:5m", "legendFormat": "{{node_id}} · requests/s", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:mesh_edge_error_ratio:5m", "legendFormat": "{{node_id}} · error ratio", "range": true, "refId": "B" }
+      ],
+      "title": "LL-HLS traffic and errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Age of the latest contributor pipeline events and edge stream ingest.",
+      "fieldConfig": { "defaults": { "decimals": 2, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 44 },
+      "id": 19,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "max by (stage) (av_contrib_last_seen_age_seconds)", "legendFormat": "contributor · {{stage}}", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "max by (node_id, stream_id) (av_mesh_stream_last_ingest_age_seconds)", "legendFormat": "edge · {{node_id}} · {{stream_id}}", "range": true, "refId": "B" }
+      ],
+      "title": "Media path freshness",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Contributor hot-path stage p50, p95, and p99 for RaptorQ reservation, encoding, carrier send, and telemetry accounting.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 52 },
+      "id": 20,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:contrib_forward_stage_p50_seconds:5m{kind=\"stream\"}", "legendFormat": "{{stage}} · p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:contrib_forward_stage_p95_seconds:5m{kind=\"stream\"}", "legendFormat": "{{stage}} · p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:contrib_forward_stage_p99_seconds:5m{kind=\"stream\"}", "legendFormat": "{{stage}} · p99", "range": true, "refId": "C" }
+      ],
+      "title": "Contributor RaptorQ pipeline stage quantiles",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["needletail", "relay-session", "raptorq", "ll-hls", "realtime"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Needletail Realtime Qualification",
+  "uid": "needletail-realtime",
+  "version": 1,
+  "weekStart": ""
+}

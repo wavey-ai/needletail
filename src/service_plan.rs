@@ -1,0 +1,738 @@
+//! Compile validated Needletail relay programs into executable service state.
+//!
+//! The topology describes who may forward to whom. `CarrierLink` binds every
+//! directed relationship to stable sender/receiver sockets and an explicit
+//! RaptorQ symbol lane. The compiler then emits the exact `av-contrib` and
+//! `av-mesh` arguments reconciled by a host agent or used by local qualification.
+
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::net::SocketAddr;
+
+use serde::{Deserialize, Serialize};
+
+use crate::relay_topology::{
+    FailureDiversityRequirement, NodeRole, ParentRole, PolicyViolation, RelayTopology,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentPurpose {
+    LocalQualification,
+    SingleProviderQualification,
+    Production,
+}
+
+impl DeploymentPurpose {
+    const fn diversity(self) -> FailureDiversityRequirement {
+        match self {
+            Self::LocalQualification | Self::SingleProviderQualification => {
+                FailureDiversityRequirement::RegionAndZone
+            }
+            Self::Production => FailureDiversityRequirement::ProviderRegionAsnAndZone,
+        }
+    }
+
+    fn readiness_gaps(self) -> Vec<String> {
+        match self {
+            Self::LocalQualification => vec![
+                "physical_host_diversity_pending".to_owned(),
+                "provider_asn_diversity_pending".to_owned(),
+                "authenticated_public_carrier_pending".to_owned(),
+            ],
+            Self::SingleProviderQualification => vec![
+                "provider_asn_diversity_pending".to_owned(),
+                "authenticated_public_carrier_pending".to_owned(),
+            ],
+            Self::Production => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CarrierProfile {
+    /// Direct UDP inside an explicitly controlled private network. This is the
+    /// benchmark and private-VPC qualification carrier.
+    ControlledPrivateUdp,
+    /// Public-Internet production carrier seam. Service argument emission is
+    /// gated until the QUIC Datagram backend is enabled in both services.
+    QuicDatagram,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelaySymbolLane {
+    Source,
+    Repair,
+    /// A bounded origin-to-backbone seed carrying source first and repair. It
+    /// keeps the second backbone relay ready for immediate promotion.
+    SourceAndRepair,
+}
+
+impl RelaySymbolLane {
+    const fn forward_argument(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Repair => "repair",
+            Self::SourceAndRepair => "all",
+        }
+    }
+}
+
+/// Runtime socket ownership for one directed topology relationship.
+///
+/// `sender_bind` and `receiver_bind` are local service binds. `sender_peer` and
+/// `receiver_target` are the stable private-network addresses observed by the
+/// opposite service. Their ports must match their corresponding binds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarrierLink {
+    pub parent_node_id: String,
+    pub child_node_id: String,
+    pub role: ParentRole,
+    pub lane: RelaySymbolLane,
+    pub sender_bind: SocketAddr,
+    pub sender_peer: SocketAddr,
+    pub receiver_bind: SocketAddr,
+    pub receiver_target: SocketAddr,
+}
+
+impl CarrierLink {
+    fn topology_key(&self) -> (&str, &str, ParentRole) {
+        (&self.parent_node_id, &self.child_node_id, self.role)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProgram {
+    pub purpose: DeploymentPurpose,
+    pub carrier: CarrierProfile,
+    pub subscription_id: u64,
+    pub media_deadline_ms: u64,
+    pub topology: RelayTopology,
+    pub carrier_links: Vec<CarrierLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledParent {
+    pub parent_node_id: String,
+    pub bind: SocketAddr,
+    pub peer: SocketAddr,
+    pub lane: RelaySymbolLane,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledForward {
+    pub child_node_id: String,
+    pub bind: SocketAddr,
+    pub target: SocketAddr,
+    pub lane: RelaySymbolLane,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContribRelayService {
+    pub node_id: String,
+    pub primary: CompiledForward,
+    pub warm_secondary: CompiledForward,
+    pub topology_generation: u64,
+    pub subscription_id: u64,
+    pub media_deadline_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshRelayService {
+    pub node_id: String,
+    pub primary_parent: CompiledParent,
+    pub secondary_parent: Option<CompiledParent>,
+    pub forwards: Vec<CompiledForward>,
+    pub max_downstream_children: usize,
+    pub topology_generation: u64,
+    pub subscription_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "service", rename_all = "snake_case")]
+pub enum CompiledService {
+    AvContrib(ContribRelayService),
+    AvMesh(MeshRelayService),
+}
+
+impl CompiledService {
+    #[must_use]
+    pub fn node_id(&self) -> &str {
+        match self {
+            Self::AvContrib(service) => &service.node_id,
+            Self::AvMesh(service) => &service.node_id,
+        }
+    }
+
+    /// Exact relay-related CLI state consumed by the current native services.
+    #[must_use]
+    pub fn relay_arguments(&self) -> Vec<String> {
+        match self {
+            Self::AvContrib(service) => service.relay_arguments(),
+            Self::AvMesh(service) => service.relay_arguments(),
+        }
+    }
+}
+
+impl ContribRelayService {
+    fn relay_arguments(&self) -> Vec<String> {
+        vec![
+            "--relay-local-id".to_owned(),
+            self.node_id.clone(),
+            "--relay-primary-bind".to_owned(),
+            self.primary.bind.to_string(),
+            "--relay-primary-target".to_owned(),
+            self.primary.target.to_string(),
+            "--relay-primary-id".to_owned(),
+            self.primary.child_node_id.clone(),
+            "--relay-secondary-bind".to_owned(),
+            self.warm_secondary.bind.to_string(),
+            "--relay-secondary-target".to_owned(),
+            self.warm_secondary.target.to_string(),
+            "--relay-secondary-id".to_owned(),
+            self.warm_secondary.child_node_id.clone(),
+            "--relay-secondary-seed-source".to_owned(),
+            "--relay-exclusive".to_owned(),
+            "--relay-topology-generation".to_owned(),
+            self.topology_generation.to_string(),
+            "--relay-subscription-id".to_owned(),
+            self.subscription_id.to_string(),
+            "--relay-deadline-ms".to_owned(),
+            self.media_deadline_ms.to_string(),
+        ]
+    }
+}
+
+impl MeshRelayService {
+    fn relay_arguments(&self) -> Vec<String> {
+        let mut args = vec![
+            "--relay-controlled-local".to_owned(),
+            "--relay-primary-bind".to_owned(),
+            self.primary_parent.bind.to_string(),
+            "--relay-primary-peer".to_owned(),
+            self.primary_parent.peer.to_string(),
+            "--relay-primary-id".to_owned(),
+            self.primary_parent.parent_node_id.clone(),
+        ];
+        if self.primary_parent.lane == RelaySymbolLane::SourceAndRepair {
+            args.push("--relay-primary-promoted".to_owned());
+        }
+        if let Some(secondary) = &self.secondary_parent {
+            args.extend([
+                "--relay-secondary-bind".to_owned(),
+                secondary.bind.to_string(),
+                "--relay-secondary-peer".to_owned(),
+                secondary.peer.to_string(),
+                "--relay-secondary-id".to_owned(),
+                secondary.parent_node_id.clone(),
+            ]);
+            if secondary.lane == RelaySymbolLane::SourceAndRepair {
+                args.push("--relay-secondary-promoted".to_owned());
+            }
+        }
+        args.extend([
+            "--relay-topology-generation".to_owned(),
+            self.topology_generation.to_string(),
+            "--relay-subscription-id".to_owned(),
+            self.subscription_id.to_string(),
+            "--relay-max-downstream-children".to_owned(),
+            self.max_downstream_children.to_string(),
+        ]);
+        for forward in &self.forwards {
+            args.extend([
+                "--relay-forward".to_owned(),
+                format!(
+                    "{}={},{}",
+                    forward.bind,
+                    forward.target,
+                    forward.lane.forward_argument()
+                ),
+            ]);
+        }
+        args
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledServicePlan {
+    pub purpose: DeploymentPurpose,
+    pub carrier: CarrierProfile,
+    pub topology_generation: u64,
+    pub subscription_id: u64,
+    /// These are explicit qualification limitations, not silent policy
+    /// relaxations. An empty set is required for a production plan.
+    pub production_readiness_gaps: Vec<String>,
+    pub services: Vec<CompiledService>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServicePlanError {
+    Topology(Vec<PolicyViolation>),
+    InvalidProgram(Vec<String>),
+}
+
+impl fmt::Display for ServicePlanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Topology(violations) => write!(
+                formatter,
+                "relay topology failed validation: {}",
+                violations
+                    .iter()
+                    .map(|violation| format!("{}: {}", violation.code, violation.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            Self::InvalidProgram(violations) => write!(
+                formatter,
+                "relay service program failed validation: {}",
+                violations.join("; ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ServicePlanError {}
+
+impl RelayProgram {
+    pub fn compile(&self) -> Result<CompiledServicePlan, ServicePlanError> {
+        self.topology
+            .validate_with_diversity(self.purpose.diversity())
+            .map_err(ServicePlanError::Topology)?;
+
+        let mut violations = Vec::new();
+        if self.subscription_id == 0 {
+            violations.push("subscription_id must be positive".to_owned());
+        }
+        if self.media_deadline_ms == 0 {
+            violations.push("media_deadline_ms must be positive".to_owned());
+        }
+        match (self.purpose, self.carrier) {
+            (DeploymentPurpose::Production, CarrierProfile::ControlledPrivateUdp) => violations
+                .push("production public relay links require the QUIC Datagram carrier".to_owned()),
+            (_, CarrierProfile::QuicDatagram) => violations.push(
+                "QUIC Datagram argument emission awaits the service carrier backend".to_owned(),
+            ),
+            _ => {}
+        }
+
+        let nodes = self
+            .topology
+            .nodes
+            .iter()
+            .map(|node| (node.node_id.as_str(), node))
+            .collect::<HashMap<_, _>>();
+        let topology_links = self
+            .topology
+            .parent_links
+            .iter()
+            .map(|link| {
+                (
+                    (
+                        link.parent_node_id.as_str(),
+                        link.child_node_id.as_str(),
+                        link.role,
+                    ),
+                    link,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut carrier_keys = HashSet::with_capacity(self.carrier_links.len());
+        let mut sender_binds = HashSet::with_capacity(self.carrier_links.len());
+        let mut receiver_binds = HashSet::with_capacity(self.carrier_links.len());
+        for link in &self.carrier_links {
+            let key = link.topology_key();
+            if !carrier_keys.insert(key) {
+                violations.push(format!(
+                    "carrier link {} -> {} {:?} is duplicated",
+                    link.parent_node_id, link.child_node_id, link.role
+                ));
+            }
+            if !topology_links.contains_key(&key) {
+                violations.push(format!(
+                    "carrier link {} -> {} {:?} has no topology relationship",
+                    link.parent_node_id, link.child_node_id, link.role
+                ));
+            }
+            if link.sender_bind.port() == 0
+                || link.sender_peer.port() == 0
+                || link.receiver_bind.port() == 0
+                || link.receiver_target.port() == 0
+            {
+                violations.push(format!(
+                    "carrier link {} -> {} requires non-zero ports",
+                    link.parent_node_id, link.child_node_id
+                ));
+            }
+            if link.sender_bind.port() != link.sender_peer.port() {
+                violations.push(format!(
+                    "carrier link {} -> {} sender bind/peer ports differ",
+                    link.parent_node_id, link.child_node_id
+                ));
+            }
+            if link.receiver_bind.port() != link.receiver_target.port() {
+                violations.push(format!(
+                    "carrier link {} -> {} receiver bind/target ports differ",
+                    link.parent_node_id, link.child_node_id
+                ));
+            }
+            if !sender_binds.insert((link.parent_node_id.as_str(), link.sender_bind)) {
+                violations.push(format!(
+                    "node {} reuses RelaySession sender bind {}",
+                    link.parent_node_id, link.sender_bind
+                ));
+            }
+            if !receiver_binds.insert((link.child_node_id.as_str(), link.receiver_bind)) {
+                violations.push(format!(
+                    "node {} reuses RelaySession receiver bind {}",
+                    link.child_node_id, link.receiver_bind
+                ));
+            }
+            match (link.role, link.lane) {
+                (ParentRole::Primary, RelaySymbolLane::Source)
+                | (ParentRole::Primary, RelaySymbolLane::SourceAndRepair)
+                | (ParentRole::Secondary, RelaySymbolLane::Repair) => {}
+                _ => violations.push(format!(
+                    "carrier link {} -> {} assigns {:?} lane to {:?} parent role",
+                    link.parent_node_id, link.child_node_id, link.lane, link.role
+                )),
+            }
+        }
+        for topology_link in &self.topology.parent_links {
+            let key = (
+                topology_link.parent_node_id.as_str(),
+                topology_link.child_node_id.as_str(),
+                topology_link.role,
+            );
+            if !carrier_keys.contains(&key) {
+                violations.push(format!(
+                    "topology relationship {} -> {} {:?} has no carrier link",
+                    topology_link.parent_node_id, topology_link.child_node_id, topology_link.role
+                ));
+            }
+        }
+
+        let origin = self
+            .topology
+            .nodes
+            .iter()
+            .find(|node| node.role == NodeRole::Origin)
+            .expect("topology validation requires one origin");
+        let origin_links = self
+            .carrier_links
+            .iter()
+            .filter(|link| link.parent_node_id == origin.node_id)
+            .collect::<Vec<_>>();
+        let primary_origin_links = origin_links
+            .iter()
+            .filter(|link| link.lane == RelaySymbolLane::Source)
+            .collect::<Vec<_>>();
+        let warm_origin_links = origin_links
+            .iter()
+            .filter(|link| link.lane == RelaySymbolLane::SourceAndRepair)
+            .collect::<Vec<_>>();
+        if primary_origin_links.len() != 1 || warm_origin_links.len() != 1 {
+            violations.push(format!(
+                "origin {} requires one source path and one source-and-repair warm path",
+                origin.node_id
+            ));
+        }
+
+        for node in self
+            .topology
+            .nodes
+            .iter()
+            .filter(|node| node.role != NodeRole::Origin)
+        {
+            let incoming = self
+                .carrier_links
+                .iter()
+                .filter(|link| link.child_node_id == node.node_id)
+                .collect::<Vec<_>>();
+            let primary = incoming
+                .iter()
+                .filter(|link| link.role == ParentRole::Primary)
+                .count();
+            let secondary = incoming
+                .iter()
+                .filter(|link| link.role == ParentRole::Secondary)
+                .count();
+            if primary != 1 || secondary > 1 {
+                violations.push(format!(
+                    "node {} carrier slots require one primary and at most one secondary",
+                    node.node_id
+                ));
+            }
+        }
+
+        if !violations.is_empty() {
+            return Err(ServicePlanError::InvalidProgram(violations));
+        }
+
+        let primary_origin = primary_origin_links[0];
+        let warm_origin = warm_origin_links[0];
+        let contrib = CompiledService::AvContrib(ContribRelayService {
+            node_id: origin.node_id.clone(),
+            primary: compiled_forward(primary_origin),
+            warm_secondary: compiled_forward(warm_origin),
+            topology_generation: self.topology.generation,
+            subscription_id: self.subscription_id,
+            media_deadline_ms: self.media_deadline_ms,
+        });
+
+        let mut services = vec![contrib];
+        for node in self
+            .topology
+            .nodes
+            .iter()
+            .filter(|node| node.role != NodeRole::Origin)
+        {
+            let primary = self
+                .carrier_links
+                .iter()
+                .find(|link| link.child_node_id == node.node_id && link.role == ParentRole::Primary)
+                .expect("validated primary carrier");
+            let secondary = self.carrier_links.iter().find(|link| {
+                link.child_node_id == node.node_id && link.role == ParentRole::Secondary
+            });
+            let mut forwards = self
+                .carrier_links
+                .iter()
+                .filter(|link| link.parent_node_id == node.node_id)
+                .map(compiled_forward)
+                .collect::<Vec<_>>();
+            forwards.sort_by(|left, right| left.child_node_id.cmp(&right.child_node_id));
+            services.push(CompiledService::AvMesh(MeshRelayService {
+                node_id: node.node_id.clone(),
+                primary_parent: compiled_parent(primary),
+                secondary_parent: secondary.map(|link| compiled_parent(link)),
+                forwards,
+                max_downstream_children: self.topology.limits.max_downstream_children,
+                topology_generation: self.topology.generation,
+                subscription_id: self.subscription_id,
+            }));
+        }
+        services.sort_by(|left, right| left.node_id().cmp(right.node_id()));
+
+        // The validated topology catalog is authoritative. This assertion also
+        // prevents future compilation paths from silently omitting a node.
+        debug_assert_eq!(services.len(), nodes.len());
+        Ok(CompiledServicePlan {
+            purpose: self.purpose,
+            carrier: self.carrier,
+            topology_generation: self.topology.generation,
+            subscription_id: self.subscription_id,
+            production_readiness_gaps: self.purpose.readiness_gaps(),
+            services,
+        })
+    }
+}
+
+fn compiled_parent(link: &CarrierLink) -> CompiledParent {
+    CompiledParent {
+        parent_node_id: link.parent_node_id.clone(),
+        bind: link.receiver_bind,
+        peer: link.sender_peer,
+        lane: link.lane,
+    }
+}
+
+fn compiled_forward(link: &CarrierLink) -> CompiledForward {
+    CompiledForward {
+        child_node_id: link.child_node_id.clone(),
+        bind: link.sender_bind,
+        target: link.receiver_target,
+        lane: link.lane,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay_topology::{FailureDomain, ParentLink, RelayNode, TopologyLimits};
+
+    fn address(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn link(
+        parent: &str,
+        child: &str,
+        role: ParentRole,
+        lane: RelaySymbolLane,
+        sender_port: u16,
+        receiver_port: u16,
+    ) -> CarrierLink {
+        CarrierLink {
+            parent_node_id: parent.to_owned(),
+            child_node_id: child.to_owned(),
+            role,
+            lane,
+            sender_bind: address(sender_port),
+            sender_peer: address(sender_port),
+            receiver_bind: address(receiver_port),
+            receiver_target: address(receiver_port),
+        }
+    }
+
+    fn node(node_id: &str, level: u16, role: NodeRole, region: &str, zone: &str) -> RelayNode {
+        RelayNode {
+            node_id: node_id.to_owned(),
+            level,
+            role,
+            failure_domain: FailureDomain {
+                provider: "qualification-cloud".to_owned(),
+                region: region.to_owned(),
+                asn: 64_500,
+                zone: zone.to_owned(),
+            },
+        }
+    }
+
+    fn qualification_program() -> RelayProgram {
+        let parent_links = vec![
+            ParentLink {
+                parent_node_id: "contrib".to_owned(),
+                child_node_id: "relay-a".to_owned(),
+                role: ParentRole::Primary,
+            },
+            ParentLink {
+                parent_node_id: "contrib".to_owned(),
+                child_node_id: "relay-b".to_owned(),
+                role: ParentRole::Primary,
+            },
+            ParentLink {
+                parent_node_id: "relay-a".to_owned(),
+                child_node_id: "edge".to_owned(),
+                role: ParentRole::Primary,
+            },
+            ParentLink {
+                parent_node_id: "relay-b".to_owned(),
+                child_node_id: "edge".to_owned(),
+                role: ParentRole::Secondary,
+            },
+        ];
+        RelayProgram {
+            purpose: DeploymentPurpose::SingleProviderQualification,
+            carrier: CarrierProfile::ControlledPrivateUdp,
+            subscription_id: 9,
+            media_deadline_ms: 1_000,
+            topology: RelayTopology {
+                generation: 7,
+                nodes: vec![
+                    node("contrib", 0, NodeRole::Origin, "europe-west2", "a"),
+                    node("relay-a", 1, NodeRole::Backbone, "europe-west1", "b"),
+                    node("relay-b", 1, NodeRole::Backbone, "us-east1", "c"),
+                    node("edge", 2, NodeRole::PlaybackEdge, "asia-east1", "d"),
+                ],
+                parent_links,
+                limits: TopologyLimits {
+                    max_origin_children: 2,
+                    max_downstream_children: 4,
+                },
+            },
+            carrier_links: vec![
+                link(
+                    "contrib",
+                    "relay-a",
+                    ParentRole::Primary,
+                    RelaySymbolLane::Source,
+                    22_301,
+                    22_001,
+                ),
+                link(
+                    "contrib",
+                    "relay-b",
+                    ParentRole::Primary,
+                    RelaySymbolLane::SourceAndRepair,
+                    22_302,
+                    22_002,
+                ),
+                link(
+                    "relay-a",
+                    "edge",
+                    ParentRole::Primary,
+                    RelaySymbolLane::Source,
+                    22_303,
+                    22_003,
+                ),
+                link(
+                    "relay-b",
+                    "edge",
+                    ParentRole::Secondary,
+                    RelaySymbolLane::Repair,
+                    22_304,
+                    22_004,
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn compiles_four_host_source_seeded_dual_parent_routing() {
+        let plan = qualification_program().compile().expect("compile plan");
+        assert_eq!(plan.services.len(), 4);
+        assert_eq!(
+            plan.production_readiness_gaps,
+            vec![
+                "provider_asn_diversity_pending",
+                "authenticated_public_carrier_pending"
+            ]
+        );
+
+        let contrib = plan
+            .services
+            .iter()
+            .find(|service| service.node_id() == "contrib")
+            .expect("contrib");
+        let contrib_args = contrib.relay_arguments();
+        assert!(contrib_args.contains(&"--relay-secondary-seed-source".to_owned()));
+        assert!(contrib_args.contains(&"relay-a".to_owned()));
+        assert!(contrib_args.contains(&"relay-b".to_owned()));
+
+        let relay_b = plan
+            .services
+            .iter()
+            .find(|service| service.node_id() == "relay-b")
+            .expect("relay b");
+        let relay_b_args = relay_b.relay_arguments();
+        assert!(relay_b_args.contains(&"--relay-primary-promoted".to_owned()));
+        assert!(relay_b_args.contains(&"127.0.0.1:22304=127.0.0.1:22004,repair".to_owned()));
+
+        let edge = plan
+            .services
+            .iter()
+            .find(|service| service.node_id() == "edge")
+            .expect("edge");
+        let edge_args = edge.relay_arguments();
+        assert!(edge_args.contains(&"--relay-primary-peer".to_owned()));
+        assert!(edge_args.contains(&"--relay-secondary-peer".to_owned()));
+    }
+
+    #[test]
+    fn production_keeps_provider_and_asn_diversity_as_a_hard_gate() {
+        let mut program = qualification_program();
+        program.purpose = DeploymentPurpose::Production;
+        program.carrier = CarrierProfile::QuicDatagram;
+        let error = program
+            .compile()
+            .expect_err("same-provider production plan");
+        assert!(matches!(error, ServicePlanError::Topology(_)));
+    }
+
+    #[test]
+    fn rejects_lane_role_mismatch_and_missing_topology_carriers() {
+        let mut program = qualification_program();
+        program.carrier_links[3].lane = RelaySymbolLane::Source;
+        program.carrier_links.pop();
+        let error = program.compile().expect_err("incomplete carriers");
+        let ServicePlanError::InvalidProgram(violations) = error else {
+            panic!("expected service program violations");
+        };
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("has no carrier link")));
+    }
+}
