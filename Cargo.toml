@@ -9,7 +9,7 @@ repository = "https://github.com/wavey-ai/needletail"
 readme = "README.md"
 
 [workspace]
-members = [".", "crates/media-capability"]
+members = [".", "crates/capability-controller", "crates/media-capability"]
 exclude = ["mission-control"]
 resolver = "2"
 
