@@ -26,6 +26,7 @@ FAILOVER_MAX_EXPIRED_OBJECTS="${FAILOVER_MAX_EXPIRED_OBJECTS:-1}"
 FAILOVER_TIMEOUT_SECONDS="${FAILOVER_TIMEOUT_SECONDS:-12}"
 FAILOVER_STABILITY_SECONDS="${FAILOVER_STABILITY_SECONDS:-3}"
 RECOVERY_TIMEOUT_SECONDS="${RECOVERY_TIMEOUT_SECONDS:-20}"
+PUBLICATION_MAX_LAG_OBJECTS="${PUBLICATION_MAX_LAG_OBJECTS:-4}"
 RAPTORQ_LOSS_PROBABILITY="${RAPTORQ_LOSS_PROBABILITY:-0.02}"
 RAPTORQ_LOSS_SECONDS="${RAPTORQ_LOSS_SECONDS:-15}"
 RAPTORQ_MIN_REPAIRED_OBJECTS="${RAPTORQ_MIN_REPAIRED_OBJECTS:-1}"
@@ -47,6 +48,7 @@ Key overrides:
   FAILOVER_ACTIVATION_BUDGET_MS  maximum promotion activation (default 250)
   FAILOVER_MEDIA_GAP_BUDGET_MS   maximum decoded-media gap (default 250)
   FAILOVER_MAX_EXPIRED_OBJECTS   tolerated severed in-flight objects (default 1)
+  PUBLICATION_MAX_LAG_OBJECTS    maximum canonical lag after relay recovery (default 4)
   RAPTORQ_LOSS_PROBABILITY       primary-ingress random drop probability (default 0.02)
   RAPTORQ_LOSS_SECONDS           controlled-loss duration (default 15)
   MAX_PATH_STRETCH               maximum measured route/direct RTT ratio (default 1.15)
@@ -78,6 +80,7 @@ for value_name in \
   FAILOVER_TIMEOUT_SECONDS \
   FAILOVER_STABILITY_SECONDS \
   RECOVERY_TIMEOUT_SECONDS \
+  PUBLICATION_MAX_LAG_OBJECTS \
   RAPTORQ_LOSS_SECONDS \
   RAPTORQ_MIN_REPAIRED_OBJECTS; do
   value="${!value_name}"
@@ -130,6 +133,11 @@ fetch_contributor_metrics() {
 fetch_edge() {
   gcp_ssh edge \
     --command='curl --max-time 3 -ksSf https://127.0.0.1:19444/api/mesh'
+}
+
+fetch_edge_metrics() {
+  gcp_ssh edge \
+    --command='curl --max-time 3 -ksSf https://127.0.0.1:19444/metrics'
 }
 
 PRIMARY_STOPPED=0
@@ -257,6 +265,34 @@ capture_recovered() {
   exit 1
 }
 
+capture_publication_recovered() {
+  local deadline=$((SECONDS + RECOVERY_TIMEOUT_SECONDS))
+  local edge
+  while ((SECONDS < deadline)); do
+    if edge="$(fetch_edge 2>/dev/null)" && jq -e \
+      --argjson maximum_lag "${PUBLICATION_MAX_LAG_OBJECTS}" '
+        [.streams[]
+          | select(.stream_id_text == "1")
+          | select(.node_id == "edge" or .node_id == "relay-primary" or .node_id == "relay-secondary")
+        ] as $streams
+        | ($streams | length) == 3
+        and all($streams[];
+          .head_object != null
+          and .contiguous_object != null
+          and .gap_count == 0
+          and .mesh_lag_parts != null
+          and .mesh_lag_parts <= $maximum_lag
+        )
+      ' <<<"${edge}" >/dev/null; then
+      printf '%s\n' "${edge}" >"${RESULT_DIR}/publication-recovered-edge.json"
+      return
+    fi
+    sleep 0.25
+  done
+  echo "canonical publication did not reconverge after relay recovery" >&2
+  exit 1
+}
+
 assert_metric() {
   local file="$1"
   local metric="$2"
@@ -335,11 +371,17 @@ jq -e '.relay_session.failover_controller_state == "promoted"' \
 
 start_primary
 capture_recovered
+capture_publication_recovered
 fetch_contributor_metrics >"${RESULT_DIR}/recovered-contributor.metrics"
+fetch_edge_metrics >"${RESULT_DIR}/publication-recovered-edge.metrics"
 assert_metric "${RESULT_DIR}/recovered-contributor.metrics" \
   'av_contrib_relay_session_lane_health{path="primary",state="healthy"}' 1
 assert_metric "${RESULT_DIR}/recovered-contributor.metrics" \
   'av_contrib_relay_session_lane_health{path="primary",state="impaired"}' 0
+for node_id in edge relay-primary relay-secondary; do
+  assert_metric "${RESULT_DIR}/publication-recovered-edge.metrics" \
+    "av_mesh_stream_known_gap_count{node_id=\"${node_id}\",stream_id=\"1\"}" 0
+done
 
 before_edge="${RESULT_DIR}/baseline-edge.json"
 continuity_edge="${RESULT_DIR}/continuity-edge.json"
@@ -382,6 +424,12 @@ all_failed_delta="$((
   $(jq -r '.runtime.relay_session.all_lanes_failed_objects' "${continuity_contributor}") -
   $(jq -r '.runtime.relay_session.all_lanes_failed_objects' "${before_contributor}")
 ))"
+publication_max_lag="$(jq '[.streams[] | select(.stream_id_text == "1") | .mesh_lag_parts] | max' \
+  "${RESULT_DIR}/publication-recovered-edge.json")"
+publication_min_contiguous="$(jq '[.streams[] | select(.stream_id_text == "1") | .contiguous_object] | min' \
+  "${RESULT_DIR}/publication-recovered-edge.json")"
+publication_max_head="$(jq '[.streams[] | select(.stream_id_text == "1") | .head_object] | max' \
+  "${RESULT_DIR}/publication-recovered-edge.json")"
 
 if ((detection_us <= 0 || detection_us > FAILOVER_DETECTION_BUDGET_MS * 1000)); then
   echo "failover detection ${detection_us}us exceeded ${FAILOVER_DETECTION_BUDGET_MS}ms" >&2
@@ -411,6 +459,9 @@ fi
 printf '%-25s detection=%sus activation=%sus gap=%sus decoded=%s expired=%s\n' \
   "dual-parent failover" "${detection_us}" "${activation_us}" "${media_gap_us}" \
   "${decoded_delta}" "${expired_delta}"
+printf '%-25s head=%s contiguous>=%s max-lag=%s gaps=0\n' \
+  "canonical publication" "${publication_max_head}" "${publication_min_contiguous}" \
+  "${publication_max_lag}"
 
 fetch_edge >"${RESULT_DIR}/loss-before-edge.json"
 apply_loss
@@ -476,6 +527,10 @@ jq -n \
   --argjson failover_all_failed "${all_failed_delta}" \
   --argjson promotions "${promotion_delta}" \
   --argjson demotions "${demotion_delta}" \
+  --argjson publication_max_lag "${publication_max_lag}" \
+  --argjson publication_min_contiguous "${publication_min_contiguous}" \
+  --argjson publication_max_head "${publication_max_head}" \
+  --argjson publication_max_lag_objects "${PUBLICATION_MAX_LAG_OBJECTS}" \
   --argjson loss_probability "${RAPTORQ_LOSS_PROBABILITY}" \
   --argjson reported_loss_fraction "${reported_loss_fraction}" \
   --argjson best_direct_rtt_ms "${best_direct_rtt_ms}" \
@@ -527,6 +582,13 @@ jq -n \
       all_lanes_failed_objects: $failover_all_failed,
       promotions: $promotions,
       make_before_break_demotions: $demotions
+    },
+    canonical_publication_recovery: {
+      maximum_allowed_lag_objects: $publication_max_lag_objects,
+      maximum_observed_lag_objects: $publication_max_lag,
+      minimum_contiguous_object: $publication_min_contiguous,
+      maximum_head_object: $publication_max_head,
+      known_gaps: 0
     },
     raptorq_primary_path_loss: {
       probability: $loss_probability,

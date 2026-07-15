@@ -1307,7 +1307,7 @@ mod tests {
       "orchestration":{"control_dispatch_ready":true},
       "nodes":[{"node_id":"edge-lon","region":"eu-west","total_storage_bytes":1000,"used_storage_bytes":400}],
       "edge_services":[{"node_id":"edge-lon","region":"eu-west","playback_base_url":"https://edge.example","active_readers":4,"responses_total":15,"response_duration_count":10,"response_duration_p95_us":900,"response_duration_buckets":[0,0,2,10]}],
-      "streams":[{"node_id":"edge-lon","stream_id_text":"42","latest_local_part":8,"latest_mesh_part":8,"last_ingest_age_ms":20,"stale_threshold_ms":3000}],
+      "streams":[{"node_id":"edge-lon","stream_id_text":"42","latest_local_part":8008,"latest_mesh_part":8,"contiguous_object":8,"head_object":8,"gap_count":0,"mesh_lag_parts":0,"last_ingest_age_ms":20,"stale_threshold_ms":3000}],
       "alerts":[{"level":"warn","code":"mesh_stream_lagging","message":"legacy wording","count":1,"stream_id_text":"42"},{"level":"warn","code":"mesh_unknown_peers","message":"obsolete topology","count":2}],
       "activity":[{"level":"info","code":"edge_response","message":"Part served.","count":1,"seen_unix_ms":1784102400180},{"level":"info","code":"provision_node","message":"obsolete control","count":1,"seen_unix_ms":1784102400190}]
     }"#;
@@ -1394,6 +1394,9 @@ mod tests {
             5
         );
         assert_eq!(edge.relay_nodes[0].relay_session.failover_listeners, 1);
+        assert_eq!(publication_from_edge(&edge).contiguous_object, Some(8));
+        assert_eq!(publication_from_edge(&edge).head_object, Some(8));
+        assert_eq!(publication_from_edge(&edge).gap_count, Some(0));
         assert_eq!(
             edge.relay_nodes[0]
                 .relay_session

@@ -106,6 +106,7 @@ required_alerts = %w[
   AvMeshRelayDeadlineDrops
   AvMeshRelayObjectsExpiring
   AvMeshRelayDuplicateRatioHigh
+  AvMeshCanonicalPublicationGap
   AvMeshPublicationToAvailableP95High
   AvMeshPublicationClockErrorHigh
   AvContributorPathObservationStale
@@ -133,6 +134,7 @@ required_panel_titles = [
   "Automatic warm-secondary state",
   "Failover detection and interruption latency",
   "Failover transitions and control health",
+  "Canonical publication continuity",
 ]
 panel_titles = dashboard.fetch("panels").map { |panel| panel.fetch("title") }
 missing_panels = required_panel_titles - panel_titles
@@ -198,6 +200,10 @@ service_metrics = Set.new(%w[
   av_mesh_relay_failover_state
   av_mesh_relay_failover_transitions_total
   av_mesh_stream_last_ingest_age_seconds
+  av_mesh_stream_canonical_head_object
+  av_mesh_stream_contiguous_object
+  av_mesh_stream_known_gap_count
+  av_mesh_stream_lag_parts
 ])
 asset_text = [File.read(rules_path), File.read(dashboard_path)].join("\n")
 referenced_service_metrics = Set.new(asset_text.scan(/\bav_(?:contrib|mesh)_[a-zA-Z0-9_:]+/))

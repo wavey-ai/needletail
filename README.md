@@ -87,7 +87,10 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/google-cloud-key.json \
 
 It stops and restores the primary relay to prove stable lane-health reporting,
 bounded warm-parent promotion, uninterrupted decoding, and make-before-break
-recovery. It then injects controlled loss on the primary source path and
+recovery. A restarted relay must establish its live subscription at the first
+canonical media object it observes, restore a gap-free contiguous LL-HLS
+watermark, and reconverge within four canonical objects of the stream head.
+The gate then injects controlled loss on the primary source path and
 requires repair-assisted RaptorQ completion with no expiry, rejection, or
 deadline-drop regression. Evidence is written below
 `target/gcp-qualification/runs/`; cleanup restores the relay and packet filter

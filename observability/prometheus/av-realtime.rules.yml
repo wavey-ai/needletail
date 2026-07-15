@@ -610,6 +610,17 @@ groups:
           description: '{{ $labels.instance }} retains incomplete objects without a completion in the last two minutes.'
           runbook: Inspect source and repair arrival, buffered datagrams, parent sessions, deadline drops, and object expiry.
 
+      - alert: AvMeshCanonicalPublicationGap
+        expr: av_mesh_stream_known_gap_count > 0
+        for: 15s
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Canonical LL-HLS publication has a persistent object gap
+          description: '{{ $labels.node_id }} retains {{ $value }} missing canonical object(s) for stream {{ $labels.stream_id }}.'
+          runbook: Inspect RaptorQ expiry, parent-path health, reliable object recovery, and the subscriber publication base before serving this stream.
+
       - alert: AvMeshEdgeHandlerP95High
         expr: av:mesh_edge_handler_p95_seconds:5m > 0.001
         for: 5m

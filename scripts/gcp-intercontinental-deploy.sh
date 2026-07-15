@@ -286,12 +286,15 @@ else
 fi
 
 write_mesh_env() {
-  local role="$1" node_id="$2" region="$3" private_ip="$4"
-  local mesh_port="$5" http_port="$6" fec_port="$7" media_port="$8"
-  local telemetry_port="$9" telemetry_peers="${10}"
+  local role="$1" node_id="$2" region="$3" continent="$4" latitude="$5" longitude="$6"
+  local private_ip="$7" mesh_port="$8" http_port="$9" fec_port="${10}"
+  local media_port="${11}" telemetry_port="${12}" telemetry_peers="${13}"
   cat >"${ARTIFACT_DIR}/${role}.env" <<EOF
 NEEDLETAIL_NODE_ID=${node_id}
 NEEDLETAIL_REGION=${region}
+NEEDLETAIL_CONTINENT=${continent}
+NEEDLETAIL_LATITUDE=${latitude}
+NEEDLETAIL_LONGITUDE=${longitude}
 NEEDLETAIL_PRIVATE_IP=${private_ip}
 NEEDLETAIL_MESH_PORT=${mesh_port}
 NEEDLETAIL_HTTP_PORT=${http_port}
@@ -303,9 +306,9 @@ NEEDLETAIL_PART_MS=50
 EOF
 }
 
-write_mesh_env primary relay-primary europe-west4 "${PRIMARY_IP}" 29201 19445 22001 22101 27301 "${EDGE_IP}:27300"
-write_mesh_env secondary relay-secondary asia-northeast2 "${SECONDARY_IP}" 29301 19446 22002 22102 27302 "${EDGE_IP}:27300"
-write_mesh_env edge edge asia-northeast1 "${EDGE_IP}" 29101 19444 22200 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
+write_mesh_env primary relay-primary europe-west4 eu 52.3676 4.9041 "${PRIMARY_IP}" 29201 19445 22001 22101 27301 "${EDGE_IP}:27300"
+write_mesh_env secondary relay-secondary asia-northeast2 apac 34.6937 135.5023 "${SECONDARY_IP}" 29301 19446 22002 22102 27302 "${EDGE_IP}:27300"
+write_mesh_env edge edge asia-northeast1 apac 35.6762 139.6503 "${EDGE_IP}" 29101 19444 22200 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
 cat >"${ARTIFACT_DIR}/contributor.env" <<'EOF'
 NEEDLETAIL_NODE_ID=contrib
 NEEDLETAIL_HTTP_PORT=19443

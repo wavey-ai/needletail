@@ -560,10 +560,10 @@ mod app {
     fn EdgeStreams(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <section class="data-panel table-panel">
-                <PanelTitle title="Playback-edge publications" detail="Arrival, staleness, lag, and object position" />
+                <PanelTitle title="Playback-edge publications" detail="Canonical object identity, contiguous availability, gaps, and staleness" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Stream"</th><th>"Node"</th><th>"Local part"</th><th>"Delivery head"</th><th>"Lag"</th><th>"Last ingest"</th><th>"State"</th></tr></thead>
+                        <thead><tr><th>"Stream"</th><th>"Node"</th><th>"Canonical head"</th><th>"Contiguous"</th><th>"Lag"</th><th>"Known gaps"</th><th>"Last ingest"</th><th>"State"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| bounded_edge_streams(&status)).unwrap_or_default()
@@ -573,9 +573,10 @@ mod app {
                                 <tr>
                                     <td class="strong-cell">{nonempty_owned(stream.stream_id_text.clone(), "unnamed")}</td>
                                     <td>{nonempty_owned(stream.node_id.clone(), "edge")}</td>
-                                    <td>{optional_u64(stream.latest_local_part)}</td>
-                                    <td>{optional_u64(stream.latest_mesh_part)}</td>
+                                    <td>{optional_u64(stream.head_object)}</td>
+                                    <td>{optional_u64(stream.contiguous_object)}</td>
                                     <td>{stream.mesh_lag_parts.map(|lag| format!("{lag} parts")).unwrap_or_else(|| "pending".to_owned())}</td>
+                                    <td>{optional_u64(stream.gap_count)}</td>
                                     <td>{stream.last_ingest_age_ms.map(format_age).unwrap_or_else(|| "pending".to_owned())}</td>
                                     <td><StatePill state=edge_stream_state(stream.stale(), stream.mesh_lag_parts) /></td>
                                 </tr>
