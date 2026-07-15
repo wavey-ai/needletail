@@ -99,6 +99,31 @@ pub struct CarrierLink {
     pub receiver_target: SocketAddr,
 }
 
+/// Bounded automatic promotion policy shared by the edge detector and warm
+/// forwarder lease. All durations are deterministic integer milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailoverPolicy {
+    pub primary_silence_ms: u64,
+    pub primary_recovery_ms: u64,
+    pub secondary_warm_ms: u64,
+    pub heartbeat_ms: u64,
+    pub lease_ms: u64,
+}
+
+/// Controlled-private command carrier for one secondary relationship. The
+/// controller is the child/edge and the listener is the warm parent relay.
+/// Public deployments map the same compiled relationship to authenticated
+/// reliable carrier control.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailoverControlLink {
+    pub forwarder_node_id: String,
+    pub controller_node_id: String,
+    pub controller_bind: SocketAddr,
+    pub controller_peer: SocketAddr,
+    pub listener_bind: SocketAddr,
+    pub listener_target: SocketAddr,
+}
+
 /// Controller observation for the complete selected source route. Integer
 /// units keep compiled desired state deterministic across platforms.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +151,10 @@ pub struct RelayProgram {
     pub media_deadline_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path_observation: Option<SourcePathObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failover_policy: Option<FailoverPolicy>,
+    #[serde(default)]
+    pub failover_control_links: Vec<FailoverControlLink>,
     pub topology: RelayTopology,
     pub carrier_links: Vec<CarrierLink>,
 }
@@ -147,6 +176,19 @@ pub struct CompiledForward {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledFailoverListener {
+    pub bind: SocketAddr,
+    pub peer: SocketAddr,
+    pub forward_target: SocketAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledFailoverController {
+    pub bind: SocketAddr,
+    pub target: SocketAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContribRelayService {
     pub node_id: String,
     pub primary: CompiledForward,
@@ -164,6 +206,9 @@ pub struct MeshRelayService {
     pub primary_parent: CompiledParent,
     pub secondary_parent: Option<CompiledParent>,
     pub forwards: Vec<CompiledForward>,
+    pub failover_listeners: Vec<CompiledFailoverListener>,
+    pub failover_controller: Option<CompiledFailoverController>,
+    pub failover_policy: Option<FailoverPolicy>,
     pub max_downstream_children: usize,
     pub topology_generation: u64,
     pub subscription_id: u64,
@@ -268,7 +313,9 @@ impl MeshRelayService {
                 "--relay-secondary-id".to_owned(),
                 secondary.parent_node_id.clone(),
             ]);
-            if secondary.lane == RelaySymbolLane::SourceAndRepair {
+            if secondary.lane == RelaySymbolLane::SourceAndRepair
+                || self.failover_controller.is_some()
+            {
                 args.push("--relay-secondary-promoted".to_owned());
             }
         }
@@ -289,6 +336,35 @@ impl MeshRelayService {
                     forward.target,
                     forward.lane.forward_argument()
                 ),
+            ]);
+        }
+        for listener in &self.failover_listeners {
+            args.extend([
+                "--relay-failover-listener".to_owned(),
+                format!(
+                    "{}={},{}",
+                    listener.bind, listener.peer, listener.forward_target
+                ),
+            ]);
+        }
+        if let Some(controller) = &self.failover_controller {
+            args.extend([
+                "--relay-failover-controller".to_owned(),
+                format!("{}={}", controller.bind, controller.target),
+            ]);
+        }
+        if let Some(policy) = &self.failover_policy {
+            args.extend([
+                "--relay-primary-silence-ms".to_owned(),
+                policy.primary_silence_ms.to_string(),
+                "--relay-primary-recovery-ms".to_owned(),
+                policy.primary_recovery_ms.to_string(),
+                "--relay-secondary-warm-ms".to_owned(),
+                policy.secondary_warm_ms.to_string(),
+                "--relay-failover-heartbeat-ms".to_owned(),
+                policy.heartbeat_ms.to_string(),
+                "--relay-failover-lease-ms".to_owned(),
+                policy.lease_ms.to_string(),
             ]);
         }
         args
@@ -376,6 +452,28 @@ impl RelayProgram {
             }
         } else if self.purpose == DeploymentPurpose::Production {
             violations.push("production requires a source path observation".to_owned());
+        }
+        if let Some(policy) = &self.failover_policy {
+            if policy.primary_silence_ms == 0
+                || policy.primary_recovery_ms < policy.primary_silence_ms
+                || policy.secondary_warm_ms < policy.primary_silence_ms
+            {
+                violations.push(
+                    "failover policy requires positive silence and recovery/warm windows at least as large as silence"
+                        .to_owned(),
+                );
+            }
+            if policy.heartbeat_ms == 0
+                || policy.lease_ms < policy.heartbeat_ms.saturating_mul(3)
+                || policy.lease_ms > 60_000
+            {
+                violations.push(
+                    "failover policy lease must be at most 60000ms and at least three heartbeat intervals"
+                        .to_owned(),
+                );
+            }
+        } else if !self.failover_control_links.is_empty() {
+            violations.push("failover control links require failover_policy".to_owned());
         }
         match (self.purpose, self.carrier) {
             (DeploymentPurpose::Production, CarrierProfile::ControlledPrivateUdp) => violations
@@ -480,6 +578,93 @@ impl RelayProgram {
             }
         }
 
+        let secondary_carriers = self
+            .carrier_links
+            .iter()
+            .filter(|link| link.role == ParentRole::Secondary)
+            .collect::<Vec<_>>();
+        let mut control_keys = HashSet::with_capacity(self.failover_control_links.len());
+        let mut controller_nodes = HashSet::with_capacity(self.failover_control_links.len());
+        let mut control_binds = HashSet::with_capacity(self.failover_control_links.len() * 2);
+        for control in &self.failover_control_links {
+            let key = (
+                control.forwarder_node_id.as_str(),
+                control.controller_node_id.as_str(),
+            );
+            if !control_keys.insert(key) {
+                violations.push(format!(
+                    "failover control {} -> {} is duplicated",
+                    control.forwarder_node_id, control.controller_node_id
+                ));
+            }
+            if !controller_nodes.insert(control.controller_node_id.as_str()) {
+                violations.push(format!(
+                    "node {} has more than one failover controller relationship",
+                    control.controller_node_id
+                ));
+            }
+            let carrier = secondary_carriers.iter().find(|carrier| {
+                carrier.parent_node_id == control.forwarder_node_id
+                    && carrier.child_node_id == control.controller_node_id
+            });
+            if carrier.is_none() {
+                violations.push(format!(
+                    "failover control {} -> {} has no secondary carrier relationship",
+                    control.forwarder_node_id, control.controller_node_id
+                ));
+            }
+            if [
+                control.controller_bind,
+                control.controller_peer,
+                control.listener_bind,
+                control.listener_target,
+            ]
+            .iter()
+            .any(|address| address.port() == 0)
+            {
+                violations.push(format!(
+                    "failover control {} -> {} requires non-zero ports",
+                    control.forwarder_node_id, control.controller_node_id
+                ));
+            }
+            if control.controller_bind.ip().is_unspecified()
+                || control.listener_bind.ip().is_unspecified()
+            {
+                violations.push(format!(
+                    "failover control {} -> {} requires explicit controller and listener bind IPs",
+                    control.forwarder_node_id, control.controller_node_id
+                ));
+            }
+            for (node_id, address) in [
+                (control.controller_node_id.as_str(), control.controller_bind),
+                (control.forwarder_node_id.as_str(), control.listener_bind),
+            ] {
+                if !control_binds.insert((node_id, address))
+                    || sender_binds.contains(&(node_id, address))
+                    || receiver_binds.contains(&(node_id, address))
+                {
+                    violations.push(format!(
+                        "node {node_id} reuses failover control bind {address}"
+                    ));
+                }
+            }
+        }
+        for carrier in &secondary_carriers {
+            let has_control = control_keys.contains(&(
+                carrier.parent_node_id.as_str(),
+                carrier.child_node_id.as_str(),
+            ));
+            if !has_control {
+                violations.push(format!(
+                    "secondary carrier {} -> {} requires an automatic failover control link",
+                    carrier.parent_node_id, carrier.child_node_id
+                ));
+            }
+        }
+        if !secondary_carriers.is_empty() && self.failover_policy.is_none() {
+            violations.push("secondary carriers require failover_policy".to_owned());
+        }
+
         let origin = self
             .topology
             .nodes
@@ -571,11 +756,50 @@ impl RelayProgram {
                 .map(compiled_forward)
                 .collect::<Vec<_>>();
             forwards.sort_by(|left, right| left.child_node_id.cmp(&right.child_node_id));
+            let mut failover_listeners = self
+                .failover_control_links
+                .iter()
+                .filter(|control| control.forwarder_node_id == node.node_id)
+                .map(|control| {
+                    let carrier = self
+                        .carrier_links
+                        .iter()
+                        .find(|carrier| {
+                            carrier.parent_node_id == control.forwarder_node_id
+                                && carrier.child_node_id == control.controller_node_id
+                                && carrier.role == ParentRole::Secondary
+                        })
+                        .expect("validated failover carrier");
+                    CompiledFailoverListener {
+                        bind: control.listener_bind,
+                        peer: control.controller_peer,
+                        forward_target: carrier.receiver_target,
+                    }
+                })
+                .collect::<Vec<_>>();
+            failover_listeners.sort_by_key(|listener| listener.forward_target);
+            let failover_controller = self
+                .failover_control_links
+                .iter()
+                .find(|control| control.controller_node_id == node.node_id)
+                .map(|control| CompiledFailoverController {
+                    bind: control.controller_bind,
+                    target: control.listener_target,
+                });
+            let failover_policy = (!failover_listeners.is_empty() || failover_controller.is_some())
+                .then(|| {
+                    self.failover_policy
+                        .clone()
+                        .expect("validated failover policy")
+                });
             services.push(CompiledService::AvMesh(MeshRelayService {
                 node_id: node.node_id.clone(),
                 primary_parent: compiled_parent(primary),
                 secondary_parent: secondary.map(compiled_parent),
                 forwards,
+                failover_listeners,
+                failover_controller,
+                failover_policy,
                 max_downstream_children: self.topology.limits.max_downstream_children,
                 topology_generation: self.topology.generation,
                 subscription_id: self.subscription_id,
@@ -695,6 +919,21 @@ mod tests {
                 loss_ppm: 10_000,
                 queue_delay_us: 2_000,
             }),
+            failover_policy: Some(FailoverPolicy {
+                primary_silence_ms: 250,
+                primary_recovery_ms: 2_000,
+                secondary_warm_ms: 750,
+                heartbeat_ms: 100,
+                lease_ms: 1_000,
+            }),
+            failover_control_links: vec![FailoverControlLink {
+                forwarder_node_id: "relay-b".to_owned(),
+                controller_node_id: "edge".to_owned(),
+                controller_bind: address(22_501),
+                controller_peer: address(22_501),
+                listener_bind: address(22_502),
+                listener_target: address(22_502),
+            }],
             topology: RelayTopology {
                 generation: 7,
                 nodes: vec![
@@ -791,6 +1030,10 @@ mod tests {
         let relay_b_args = relay_b.relay_arguments();
         assert!(relay_b_args.contains(&"--relay-primary-promoted".to_owned()));
         assert!(relay_b_args.contains(&"127.0.0.1:22304=127.0.0.1:22004,repair".to_owned()));
+        assert!(relay_b_args.contains(&"--relay-failover-listener".to_owned()));
+        assert!(
+            relay_b_args.contains(&"127.0.0.1:22502=127.0.0.1:22501,127.0.0.1:22004".to_owned())
+        );
 
         let edge = plan
             .services
@@ -800,6 +1043,12 @@ mod tests {
         let edge_args = edge.relay_arguments();
         assert!(edge_args.contains(&"--relay-primary-peer".to_owned()));
         assert!(edge_args.contains(&"--relay-secondary-peer".to_owned()));
+        assert!(edge_args.contains(&"--relay-secondary-promoted".to_owned()));
+        assert!(edge_args.contains(&"--relay-failover-controller".to_owned()));
+        assert!(edge_args.contains(&"127.0.0.1:22501=127.0.0.1:22502".to_owned()));
+        assert!(edge_args.windows(2).any(|pair| {
+            pair == ["--relay-primary-recovery-ms".to_owned(), "2000".to_owned()]
+        }));
     }
 
     #[test]

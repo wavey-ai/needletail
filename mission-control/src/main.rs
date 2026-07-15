@@ -939,7 +939,7 @@ mod app {
                 <PanelTitle title="Live RaptorQ relay fabric" detail="Per-node source, warm repair, forwarding, recovery, and carrier latency" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Repair-assisted"</th><th>"Publish → available p95"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
+                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Failover"</th><th>"Repair-assisted"</th><th>"Publish → available p95"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
@@ -968,7 +968,10 @@ mod app {
         } else {
             "relay endpoint"
         };
-        let state = if relay.errors() > 0 || relay.forward_errors > 0 {
+        let state = if relay.errors() > 0
+            || relay.forward_errors > 0
+            || relay.failover_controller_state == "secondary_unavailable"
+        {
             "attention"
         } else if relay.controlled_sessions > 0 || relay.authenticated_sessions > 0 {
             "ready"
@@ -984,6 +987,21 @@ mod app {
             "{} / {}",
             relay.forwarded_source_datagrams, relay.forwarded_repair_datagrams
         );
+        let failover = if relay.failover_controller_enabled > 0 {
+            format!(
+                "{} · {}↑ {}↓",
+                nonempty_owned(relay.failover_controller_state.clone(), "arming"),
+                relay.failover_promotions,
+                relay.failover_demotions
+            )
+        } else if relay.failover_listeners > 0 {
+            format!(
+                "{} promoted / {} warm",
+                relay.failover_promoted_children, relay.failover_listeners
+            )
+        } else {
+            "—".to_owned()
+        };
         let forward_latency = format!(
             "{} / {}",
             format_optional_duration(relay.forward_percentile_us(95)),
@@ -1022,6 +1040,7 @@ mod app {
                 <td class="mono-cell">{received}</td>
                 <td>{downstream_children}</td>
                 <td class="mono-cell">{forwarded}</td>
+                <td class="mono-cell">{failover}</td>
                 <td>{repaired_objects}</td>
                 <td class="mono-cell">{availability_latency}</td>
                 <td class="mono-cell">{forward_latency}</td>
@@ -1046,6 +1065,12 @@ mod app {
                     <Metric label="Repair-assisted" value=move || edge.get().map(|s| s.relay_session.repaired_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="recovered before deadline" />
                     <Metric label="Publish → edge p95" value=move || edge.get().and_then(|s| s.relay_session.publication_to_available_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="verified cache availability" />
                     <Metric label="Latency clock error" value=move || edge.get().filter(|s| s.relay_session.publication_to_available_count > 0).map(|s| format!("±{}", format_duration_us(s.relay_session.publication_clock_error_max_us))).unwrap_or_else(|| "pending".to_owned()) detail="source timestamp bound" />
+                    <Metric label="Failover state" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| nonempty_owned(s.relay_session.failover_controller_state, "arming")).unwrap_or_else(|| "pending".to_owned()) detail="automatic warm-secondary control" />
+                    <Metric label="Primary source age" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| format_age_ms(s.relay_session.failover_primary_source_age_ms)).unwrap_or_else(|| "pending".to_owned()) detail="failure detector input" />
+                    <Metric label="Warm repair age" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| format_age_ms(s.relay_session.failover_secondary_repair_age_ms)).unwrap_or_else(|| "pending".to_owned()) detail="secondary readiness input" />
+                    <Metric label="Last detection" value=move || edge.get().filter(|s| s.relay_session.failover_promotions > 0).map(|s| format_duration_us(s.relay_session.failover_last_detection_us)).unwrap_or_else(|| "not exercised".to_owned()) detail="primary silence → promotion" />
+                    <Metric label="Promotion → source" value=move || edge.get().filter(|s| s.relay_session.failover_last_promotion_to_source_us > 0).map(|s| format_duration_us(s.relay_session.failover_last_promotion_to_source_us)).unwrap_or_else(|| "not exercised".to_owned()) detail="warm path activation" />
+                    <Metric label="Maximum failover gap" value=move || edge.get().filter(|s| s.relay_session.failover_max_media_gap_us > 0).map(|s| format_duration_us(s.relay_session.failover_max_media_gap_us)).unwrap_or_else(|| "not exercised".to_owned()) detail="verified cache completions" />
                     <Metric label="Expired" value=move || edge.get().map(|s| s.relay_session.expired_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="bounded receive state" />
                     <Metric label="Rejected" value=move || edge.get().map(|s| s.relay_session.datagrams_rejected.to_string()).unwrap_or_else(|| "—".to_owned()) detail="all receive drops" />
                 </div>
@@ -1056,6 +1081,8 @@ mod app {
                     <span>{move || edge.get().map(|s| format!("{} duplicates", s.relay_session.duplicate_datagrams)).unwrap_or_else(|| "— duplicates".to_owned())}</span>
                     <span>{move || edge.get().map(|s| format!("{} authenticated / {} controlled sessions", s.relay_session.authenticated_sessions, s.relay_session.controlled_sessions)).unwrap_or_else(|| "trust telemetry pending".to_owned())}</span>
                     <span>{move || edge.get().map(|s| format!("{} active objects / {} buffered symbols", s.relay_session.active_objects, s.relay_session.buffered_datagrams)).unwrap_or_else(|| "receiver telemetry pending".to_owned())}</span>
+                    <span>{move || edge.get().map(|s| format!("{} promotions / {} make-before-break demotions", s.relay_session.failover_promotions, s.relay_session.failover_demotions)).unwrap_or_else(|| "failover telemetry pending".to_owned())}</span>
+                    <span>{move || edge.get().map(|s| format!("{} control errors / {} secondary-unavailable events", s.relay_session.failover_command_send_errors, s.relay_session.failover_secondary_unavailable_events)).unwrap_or_else(|| "failover health pending".to_owned())}</span>
                 </div>
             </div>
         }
@@ -1475,6 +1502,14 @@ mod app {
             format!("{:.2} ms", value as f64 / 1_000.0)
         } else {
             format!("{value} µs")
+        }
+    }
+
+    fn format_age_ms(value: u64) -> String {
+        if value >= 1_000 {
+            format!("{:.2} s", value as f64 / 1_000.0)
+        } else {
+            format!("{value} ms")
         }
     }
 

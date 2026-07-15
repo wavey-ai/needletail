@@ -106,6 +106,23 @@ jq -n \
       else null
       end
     ),
+    failover_policy:{
+      primary_silence_ms:350,
+      primary_recovery_ms:2000,
+      secondary_warm_ms:900,
+      heartbeat_ms:100,
+      lease_ms:1000
+    },
+    failover_control_links:[
+      {
+        forwarder_node_id:"relay-secondary",
+        controller_node_id:"edge",
+        controller_bind:($edge+":22501"),
+        controller_peer:($edge+":22501"),
+        listener_bind:($secondary+":22502"),
+        listener_target:($secondary+":22502")
+      }
+    ],
     topology:{
       generation:1,
       nodes:[

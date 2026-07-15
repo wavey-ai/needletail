@@ -386,6 +386,61 @@ groups:
           description: '{{ $labels.instance }} has no warm secondary parent assignment.'
           runbook: Restore the independent secondary assignment before failover or path-loss qualification.
 
+      - alert: AvMeshRelayFailoverSecondaryUnavailable
+        expr: av_mesh_relay_failover_state{state="secondary_unavailable"} == 1
+        for: 15s
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Primary source is silent and the warm secondary is unavailable
+          description: '{{ $labels.instance }} cannot promote because no recent secondary repair symbol proves the warm path is ready.'
+          runbook: Restore the secondary repair lane, verify its independent route and subscription, then confirm repair age falls below the configured warm window.
+
+      - alert: AvMeshRelayFailoverControlErrors
+        expr: increase(av_mesh_relay_failover_commands_total{outcome=~"error|rejected"}[5m]) > 0
+        for: 15s
+        labels:
+          severity: critical
+          slo: provisional
+        annotations:
+          summary: Warm-secondary failover control commands are failing
+          description: '{{ $labels.instance }} recorded {{ $value }} failed or rejected failover commands in five minutes.'
+          runbook: Check controller/listener identity, topology generation, subscription, exact control addresses, and carrier reachability.
+
+      - alert: AvMeshRelayFailoverLeaseExpired
+        expr: increase(av_mesh_relay_failover_lease_expirations_total[5m]) > 0
+        for: 15s
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: A promoted warm-secondary forwarding lease expired
+          description: '{{ $labels.instance }} safely returned a child to repair-only after losing controller heartbeats.'
+          runbook: Restore controller heartbeats before the next primary failure and verify heartbeat interval remains below one third of the lease.
+
+      - alert: AvMeshRelayFailoverActivationSlow
+        expr: av_mesh_relay_failover_last_promotion_to_source_us > 250000
+        for: 15s
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Warm-secondary source activation exceeded 250 ms
+          description: '{{ $labels.instance }} took {{ $value }} microseconds from promotion command to admitted secondary source.'
+          runbook: Inspect control-path RTT, warm relay scheduling, bounded queues, and secondary source-symbol availability.
+
+      - alert: AvMeshRelayFailoverMediaGapHigh
+        expr: av_mesh_relay_failover_last_media_gap_us > 250000
+        for: 15s
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Automatic failover cache-completion gap exceeded 250 ms
+          description: '{{ $labels.instance }} observed a {{ $value }} microsecond media completion gap across failover.'
+          runbook: Compare detection time, promotion-to-source time, RaptorQ repair availability, object deadlines, and the LL-HLS part target.
+
       - alert: AvMeshControlledQualificationBoundaryActive
         expr: av_mesh_relay_session_security_sessions{mode="controlled_qualification"} > 0
         for: 5m

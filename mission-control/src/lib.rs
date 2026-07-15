@@ -459,11 +459,35 @@ pub struct RelayIngress {
     pub publication_to_available_buckets: Vec<u64>,
     pub publication_clock_error_max_us: u64,
     pub publication_clock_unusable_objects: u64,
+    pub failover_controller_state: String,
+    pub failover_controller_enabled: u64,
+    pub failover_commands_sent: u64,
+    pub failover_command_send_errors: u64,
+    pub failover_promotions: u64,
+    pub failover_demotions: u64,
+    pub failover_secondary_unavailable_events: u64,
+    pub failover_primary_source_age_ms: u64,
+    pub failover_secondary_repair_age_ms: u64,
+    pub failover_last_detection_us: u64,
+    pub failover_last_promotion_to_source_us: u64,
+    pub failover_last_media_gap_us: u64,
+    pub failover_max_media_gap_us: u64,
+    pub failover_controller_last_transition_unix_ms: u64,
+    pub failover_listeners: u64,
+    pub failover_promoted_children: u64,
+    pub failover_commands_received: u64,
+    pub failover_commands_rejected: u64,
+    pub failover_lease_expirations: u64,
+    pub failover_promotions_applied: u64,
+    pub failover_demotions_applied: u64,
+    pub failover_listener_last_transition_unix_ms: u64,
 }
 
 impl RelayIngress {
     pub fn errors(&self) -> u64 {
         self.datagrams_rejected
+            .saturating_add(self.failover_command_send_errors)
+            .saturating_add(self.failover_commands_rejected)
     }
 
     pub fn repair_overhead_percent(&self) -> Option<f64> {
@@ -1015,6 +1039,51 @@ pub fn operational_alerts(
                         .or_else(|| event.stream_id_text.clone()),
                 }),
         );
+        if status.relay_session.failover_controller_state == "secondary_unavailable" {
+            events.push(OperationalEvent {
+                source: EventSource::Delivery,
+                level: "error".to_owned(),
+                code: "relay_failover_secondary_unavailable".to_owned(),
+                message: "Primary source is silent and the warm secondary is not ready."
+                    .to_owned(),
+                count: status
+                    .relay_session
+                    .failover_secondary_unavailable_events
+                    .max(1),
+                seen_unix_ms: status
+                    .relay_session
+                    .failover_controller_last_transition_unix_ms
+                    .max(status.updated_unix_ms),
+                context: Some(status.node.node_id.clone()),
+            });
+        }
+        if status.relay_session.failover_command_send_errors > 0 {
+            events.push(OperationalEvent {
+                source: EventSource::Delivery,
+                level: "error".to_owned(),
+                code: "relay_failover_control_send_error".to_owned(),
+                message: "The edge could not refresh its warm-secondary control lease."
+                    .to_owned(),
+                count: status.relay_session.failover_command_send_errors,
+                seen_unix_ms: status.updated_unix_ms,
+                context: Some(status.node.node_id.clone()),
+            });
+        }
+        events.extend(status.relay_nodes.iter().filter_map(|node| {
+            (node.relay_session.failover_lease_expirations > 0).then(|| OperationalEvent {
+                source: EventSource::Delivery,
+                level: "warning".to_owned(),
+                code: "relay_failover_lease_expired".to_owned(),
+                message: "A warm relay returned to repair-only after its promotion lease expired."
+                    .to_owned(),
+                count: node.relay_session.failover_lease_expirations,
+                seen_unix_ms: node
+                    .relay_session
+                    .failover_listener_last_transition_unix_ms
+                    .max(status.updated_unix_ms),
+                context: Some(node.node_id.clone()),
+            })
+        }));
     }
     sort_and_bound_events(&mut events);
     events
@@ -1141,8 +1210,8 @@ mod tests {
     const EDGE_PARTIAL: &str = r#"{
       "updated_unix_ms":1784102400200,
       "node":{"node_id":"edge-lon","region":"eu-west","continent":"EU","total_storage_bytes":1000,"used_storage_bytes":400,"active_streams":1},
-      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repaired_objects":2,"source_datagrams":20,"repair_datagrams":5,"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000},
-      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000}}],
+      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repaired_objects":2,"source_datagrams":20,"repair_datagrams":5,"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_controller_state":"healthy","failover_controller_enabled":1,"failover_commands_sent":12,"failover_promotions":1,"failover_demotions":1,"failover_primary_source_age_ms":12,"failover_secondary_repair_age_ms":24,"failover_last_detection_us":351000,"failover_last_promotion_to_source_us":88000,"failover_max_media_gap_us":103000},
+      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_listeners":1,"failover_commands_received":12,"failover_promotions_applied":1,"failover_demotions_applied":1}}],
       "aggregate":{"node_count":2,"active_streams":1},
       "telemetry":{"fresh_remote_count":1,"stale_remote_count":0},
       "orchestration":{"control_dispatch_ready":true},
@@ -1187,12 +1256,22 @@ mod tests {
             Some(250_000)
         );
         assert_eq!(edge.relay_session.publication_clock_error_max_us, 5_000);
+        assert_eq!(edge.relay_session.failover_controller_state, "healthy");
+        assert_eq!(edge.relay_session.failover_promotions, 1);
+        assert_eq!(edge.relay_session.failover_max_media_gap_us, 103_000);
         assert_eq!(edge.edge_services[0].percentile_us(95), Some(900));
         assert_eq!(edge.nodes[0].storage_percent(), Some(40.0));
         assert_eq!(edge.relay_nodes.len(), 1);
         assert_eq!(
             edge.relay_nodes[0].relay_session.forwarded_repair_datagrams,
             5
+        );
+        assert_eq!(edge.relay_nodes[0].relay_session.failover_listeners, 1);
+        assert_eq!(
+            edge.relay_nodes[0]
+                .relay_session
+                .failover_promotions_applied,
+            1
         );
         assert_eq!(
             edge.relay_nodes[0].relay_session.forward_percentile_us(95),

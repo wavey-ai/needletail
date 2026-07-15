@@ -58,7 +58,9 @@ if jq -e '.secondary_parent != null' <<<"${SERVICE}" >/dev/null; then
     --relay-secondary-peer "${secondary_peer}"
     --relay-secondary-id "${secondary_id}"
   )
-  [[ "${secondary_lane}" == source_and_repair ]] && args+=(--relay-secondary-promoted)
+  if [[ "${secondary_lane}" == source_and_repair ]] || jq -e '.failover_controller != null' <<<"${SERVICE}" >/dev/null; then
+    args+=(--relay-secondary-promoted)
+  fi
 fi
 
 args+=(
@@ -72,5 +74,26 @@ while IFS=$'\t' read -r bind target lane; do
   [[ "${lane}" == source_and_repair ]] && lane=all
   args+=(--relay-forward "${bind}=${target},${lane}")
 done < <(jq -r '.forwards[] | [.bind, .target, .lane] | @tsv' <<<"${SERVICE}")
+
+while IFS=$'\t' read -r bind peer forward_target; do
+  [[ -n "${bind}" ]] || continue
+  args+=(--relay-failover-listener "${bind}=${peer},${forward_target}")
+done < <(jq -r '.failover_listeners[]? | [.bind, .peer, .forward_target] | @tsv' <<<"${SERVICE}")
+
+if jq -e '.failover_controller != null' <<<"${SERVICE}" >/dev/null; then
+  args+=(
+    --relay-failover-controller "$(jq -r '.failover_controller.bind + "=" + .failover_controller.target' <<<"${SERVICE}")"
+  )
+fi
+
+if jq -e '.failover_policy != null' <<<"${SERVICE}" >/dev/null; then
+  args+=(
+    --relay-primary-silence-ms "$(jq -r '.failover_policy.primary_silence_ms' <<<"${SERVICE}")"
+    --relay-primary-recovery-ms "$(jq -r '.failover_policy.primary_recovery_ms' <<<"${SERVICE}")"
+    --relay-secondary-warm-ms "$(jq -r '.failover_policy.secondary_warm_ms' <<<"${SERVICE}")"
+    --relay-failover-heartbeat-ms "$(jq -r '.failover_policy.heartbeat_ms' <<<"${SERVICE}")"
+    --relay-failover-lease-ms "$(jq -r '.failover_policy.lease_ms' <<<"${SERVICE}")"
+  )
+fi
 
 exec "${args[@]}"

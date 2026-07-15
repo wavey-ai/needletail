@@ -5,7 +5,7 @@ use needletail::relay_topology::{
 };
 use needletail::service_plan::{
     CarrierLink, CarrierProfile, CompiledService, CompiledServicePlan, DeploymentPurpose,
-    RelayProgram, RelaySymbolLane,
+    FailoverControlLink, FailoverPolicy, RelayProgram, RelaySymbolLane,
 };
 use std::ffi::OsStr;
 use std::net::SocketAddr;
@@ -575,6 +575,21 @@ fn local_relay_program(args: &Args) -> RelayProgram {
         subscription_id: args.relay_subscription_id,
         media_deadline_ms: args.relay_deadline_ms,
         source_path_observation: None,
+        failover_policy: Some(FailoverPolicy {
+            primary_silence_ms: 250,
+            primary_recovery_ms: 2_000,
+            secondary_warm_ms: 750,
+            heartbeat_ms: 100,
+            lease_ms: 1_000,
+        }),
+        failover_control_links: vec![FailoverControlLink {
+            forwarder_node_id: SECONDARY_RELAY_NODE_ID.to_owned(),
+            controller_node_id: EDGE_NODE_ID.to_owned(),
+            controller_bind: SocketAddr::from(([127, 0, 0, 1], 22_501)),
+            controller_peer: SocketAddr::from(([127, 0, 0, 1], 22_501)),
+            listener_bind: SocketAddr::from(([127, 0, 0, 1], 22_502)),
+            listener_target: SocketAddr::from(([127, 0, 0, 1], 22_502)),
+        }],
         topology: RelayTopology {
             generation: args.relay_topology_generation,
             nodes: vec![
@@ -696,6 +711,14 @@ fn validate_local_relay_wiring(args: &Args) -> Result<()> {
         (
             "secondary backbone RelaySession forward source",
             args.secondary_relay_forward_bind,
+        ),
+        (
+            "playback edge failover controller",
+            SocketAddr::from(([127, 0, 0, 1], 22_501)),
+        ),
+        (
+            "secondary backbone failover listener",
+            SocketAddr::from(([127, 0, 0, 1], 22_502)),
         ),
     ];
     for (name, endpoint) in [

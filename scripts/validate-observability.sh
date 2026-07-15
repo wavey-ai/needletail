@@ -85,6 +85,11 @@ required_alerts = %w[
   AvContributorClockEstimateConsumesDeadline
   AvMeshRelayPrimaryMissing
   AvMeshRelaySecondaryMissing
+  AvMeshRelayFailoverSecondaryUnavailable
+  AvMeshRelayFailoverControlErrors
+  AvMeshRelayFailoverLeaseExpired
+  AvMeshRelayFailoverActivationSlow
+  AvMeshRelayFailoverMediaGapHigh
   AvMeshControlledQualificationBoundaryActive
   AvMeshRelayConflictDrops
   AvMeshRelayAuthenticationDrops
@@ -115,6 +120,9 @@ required_panel_titles = [
   "Edge RelaySession drops",
   "Publication to verified cache p50 / p95 / p99",
   "Adaptive RaptorQ path observation",
+  "Automatic warm-secondary state",
+  "Failover detection and interruption latency",
+  "Failover transitions and control health",
 ]
 panel_titles = dashboard.fetch("panels").map { |panel| panel.fetch("title") }
 missing_panels = required_panel_titles - panel_titles
@@ -154,6 +162,16 @@ service_metrics = Set.new(%w[
   av_mesh_relay_session_publication_clock_error_max_us
   av_mesh_relay_session_publication_to_available_us_bucket
   av_mesh_relay_session_security_sessions
+  av_mesh_relay_failover_commands_total
+  av_mesh_relay_failover_last_detection_us
+  av_mesh_relay_failover_last_media_gap_us
+  av_mesh_relay_failover_last_promotion_to_source_us
+  av_mesh_relay_failover_lease_expirations_total
+  av_mesh_relay_failover_max_media_gap_us
+  av_mesh_relay_failover_promoted_children
+  av_mesh_relay_failover_secondary_unavailable_total
+  av_mesh_relay_failover_state
+  av_mesh_relay_failover_transitions_total
   av_mesh_stream_last_ingest_age_seconds
 ])
 asset_text = [File.read(rules_path), File.read(dashboard_path)].join("\n")

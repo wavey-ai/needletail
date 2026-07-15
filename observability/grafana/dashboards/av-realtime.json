@@ -335,6 +335,52 @@
       ],
       "title": "Adaptive RaptorQ path observation",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "One-hot automatic failover controller state and the number of warm children currently promoted to source plus repair.",
+      "fieldConfig": { "defaults": { "decimals": 0, "min": 0, "max": 1, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 82 },
+      "id": 23,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_mesh_relay_failover_state == 1", "legendFormat": "{{instance}} · {{state}}", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av_mesh_relay_failover_promoted_children", "legendFormat": "{{instance}} · promoted children", "range": true, "refId": "B" }
+      ],
+      "title": "Automatic warm-secondary state",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Primary-silence detection, promotion-command to secondary-source activation, and verified cache-completion gap across failover.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 82 },
+      "id": 24,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_mesh_relay_failover_last_detection_us / 1000000", "legendFormat": "{{instance}} · detection", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av_mesh_relay_failover_last_promotion_to_source_us / 1000000", "legendFormat": "{{instance}} · promotion to source", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av_mesh_relay_failover_last_media_gap_us / 1000000", "legendFormat": "{{instance}} · last media gap", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "av_mesh_relay_failover_max_media_gap_us / 1000000", "legendFormat": "{{instance}} · max media gap", "range": true, "refId": "D" }
+      ],
+      "title": "Failover detection and interruption latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Promotion/demotion transitions, leased control command outcomes, and lease-expiry safety events for the automatic warm path.",
+      "fieldConfig": { "defaults": { "decimals": 2, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 90 },
+      "id": 25,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "increase(av_mesh_relay_failover_transitions_total[$__rate_interval])", "legendFormat": "{{instance}} · {{side}} {{transition}}", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "increase(av_mesh_relay_failover_commands_total[$__rate_interval])", "legendFormat": "{{instance}} · {{direction}} {{outcome}}", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "increase(av_mesh_relay_failover_lease_expirations_total[$__rate_interval])", "legendFormat": "{{instance}} · lease expirations", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "increase(av_mesh_relay_failover_secondary_unavailable_total[$__rate_interval])", "legendFormat": "{{instance}} · secondary unavailable", "range": true, "refId": "D" }
+      ],
+      "title": "Failover transitions and control health",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
