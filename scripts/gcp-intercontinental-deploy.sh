@@ -66,6 +66,12 @@ SECONDARY_IP="$(node_ip secondary)"
 EDGE_IP="$(node_ip edge)"
 EDGE_EXTERNAL_IP="$(node_external_ip edge)"
 SKIP_BUILD="${NEEDLETAIL_GCP_SKIP_BUILD:-0}"
+PATH_RTT_US="${NEEDLETAIL_GCP_PATH_RTT_US:-0}"
+BEST_DIRECT_RTT_US="${NEEDLETAIL_GCP_BEST_DIRECT_RTT_US:-0}"
+PATH_JITTER_US="${NEEDLETAIL_GCP_PATH_JITTER_US:-0}"
+PATH_LOSS_PPM="${NEEDLETAIL_GCP_PATH_LOSS_PPM:-0}"
+PATH_QUEUE_DELAY_US="${NEEDLETAIL_GCP_PATH_QUEUE_DELAY_US:-0}"
+PATH_OBSERVED_AT_UNIX_MS="$(( $(date +%s) * 1000 ))"
 
 PROGRAM="${ARTIFACT_DIR}/relay-program.json"
 PLAN="${ARTIFACT_DIR}/compiled-plan.json"
@@ -75,11 +81,31 @@ jq -n \
   --arg primary "${PRIMARY_IP}" \
   --arg secondary "${SECONDARY_IP}" \
   --arg edge "${EDGE_IP}" \
+  --argjson path_rtt_us "${PATH_RTT_US}" \
+  --argjson best_direct_rtt_us "${BEST_DIRECT_RTT_US}" \
+  --argjson path_jitter_us "${PATH_JITTER_US}" \
+  --argjson path_loss_ppm "${PATH_LOSS_PPM}" \
+  --argjson path_queue_delay_us "${PATH_QUEUE_DELAY_US}" \
+  --argjson path_observed_at_unix_ms "${PATH_OBSERVED_AT_UNIX_MS}" \
   '{
     purpose:"single_provider_qualification",
     carrier:"controlled_private_udp",
     subscription_id:1,
     media_deadline_ms:1000,
+    source_path_observation:(
+      if (($best_direct_rtt_us + $path_rtt_us + $path_jitter_us + $path_loss_ppm + $path_queue_delay_us) > 0)
+      then {
+        source:"gcp-qualification-probe",
+        observed_at_unix_ms:$path_observed_at_unix_ms,
+        best_direct_rtt_us:$best_direct_rtt_us,
+        rtt_us:$path_rtt_us,
+        jitter_us:$path_jitter_us,
+        loss_ppm:$path_loss_ppm,
+        queue_delay_us:$path_queue_delay_us
+      }
+      else null
+      end
+    ),
     topology:{
       generation:1,
       nodes:[
@@ -97,10 +123,10 @@ jq -n \
       limits:{max_origin_children:2,max_downstream_children:4}
     },
     carrier_links:[
-      {parent_node_id:"contrib",child_node_id:"relay-primary",role:"primary",lane:"source",sender_bind:"0.0.0.0:22301",sender_peer:($contrib+":22301"),receiver_bind:"0.0.0.0:22001",receiver_target:($primary+":22001")},
-      {parent_node_id:"contrib",child_node_id:"relay-secondary",role:"primary",lane:"source_and_repair",sender_bind:"0.0.0.0:22302",sender_peer:($contrib+":22302"),receiver_bind:"0.0.0.0:22002",receiver_target:($secondary+":22002")},
-      {parent_node_id:"relay-primary",child_node_id:"edge",role:"primary",lane:"source",sender_bind:"0.0.0.0:22401",sender_peer:($primary+":22401"),receiver_bind:"0.0.0.0:22200",receiver_target:($edge+":22200")},
-      {parent_node_id:"relay-secondary",child_node_id:"edge",role:"secondary",lane:"repair",sender_bind:"0.0.0.0:22402",sender_peer:($secondary+":22402"),receiver_bind:"0.0.0.0:22201",receiver_target:($edge+":22201")}
+      {parent_node_id:"contrib",child_node_id:"relay-primary",role:"primary",lane:"source",sender_bind:($contrib+":22301"),sender_peer:($contrib+":22301"),receiver_bind:"0.0.0.0:22001",receiver_target:($primary+":22001")},
+      {parent_node_id:"contrib",child_node_id:"relay-secondary",role:"primary",lane:"source_and_repair",sender_bind:($contrib+":22302"),sender_peer:($contrib+":22302"),receiver_bind:"0.0.0.0:22002",receiver_target:($secondary+":22002")},
+      {parent_node_id:"relay-primary",child_node_id:"edge",role:"primary",lane:"source",sender_bind:($primary+":22401"),sender_peer:($primary+":22401"),receiver_bind:"0.0.0.0:22200",receiver_target:($edge+":22200")},
+      {parent_node_id:"relay-secondary",child_node_id:"edge",role:"secondary",lane:"repair",sender_bind:($secondary+":22402"),sender_peer:($secondary+":22402"),receiver_bind:"0.0.0.0:22201",receiver_target:($edge+":22201")}
     ]
   }' >"${PROGRAM}"
 

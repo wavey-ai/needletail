@@ -574,6 +574,7 @@ fn local_relay_program(args: &Args) -> RelayProgram {
         carrier: CarrierProfile::ControlledPrivateUdp,
         subscription_id: args.relay_subscription_id,
         media_deadline_ms: args.relay_deadline_ms,
+        source_path_observation: None,
         topology: RelayTopology {
             generation: args.relay_topology_generation,
             nodes: vec![

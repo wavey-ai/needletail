@@ -4,6 +4,10 @@ pub const HISTOGRAM_BOUNDS_US: [u64; 13] = [
     100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000,
     1_000_000,
 ];
+pub const PUBLICATION_AVAILABILITY_BOUNDS_US: [u64; 16] = [
+    1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 75_000, 100_000, 125_000, 150_000, 175_000,
+    200_000, 250_000, 500_000, 1_000_000, 2_000_000,
+];
 
 pub const MAX_STREAM_ROWS: usize = 12;
 pub const MAX_NODE_ROWS: usize = 16;
@@ -63,6 +67,13 @@ pub struct ContribRelayConfig {
     pub relay_topology_generation: u64,
     pub relay_subscription_id: u64,
     pub relay_deadline_ms: u64,
+    pub relay_path_observation_source: String,
+    pub relay_path_loss_fraction: f64,
+    pub relay_path_best_direct_rtt_ms: f64,
+    pub relay_path_rtt_ms: f64,
+    pub relay_path_jitter_ms: f64,
+    pub relay_path_queue_delay_ms: f64,
+    pub relay_path_observed_at_unix_ms: Option<u64>,
     pub media_object_clock_id: String,
     pub media_object_clock_confidence: String,
     pub media_object_clock_estimated_error_ms: u64,
@@ -442,6 +453,12 @@ pub struct RelayIngress {
     pub forward_duration_sum_us: u64,
     pub forward_duration_max_us: u64,
     pub forward_duration_buckets: Vec<u64>,
+    pub publication_to_available_count: u64,
+    pub publication_to_available_sum_us: u64,
+    pub publication_to_available_max_us: u64,
+    pub publication_to_available_buckets: Vec<u64>,
+    pub publication_clock_error_max_us: u64,
+    pub publication_clock_unusable_objects: u64,
 }
 
 impl RelayIngress {
@@ -458,6 +475,15 @@ impl RelayIngress {
         histogram_percentile_us(
             self.forward_duration_count,
             &self.forward_duration_buckets,
+            percentile,
+        )
+    }
+
+    pub fn publication_to_available_percentile_us(&self, percentile: u64) -> Option<u64> {
+        histogram_percentile_us_with_bounds(
+            self.publication_to_available_count,
+            &self.publication_to_available_buckets,
+            &PUBLICATION_AVAILABILITY_BOUNDS_US,
             percentile,
         )
     }
@@ -750,14 +776,23 @@ pub fn contributor_latency(status: &ContribStatus) -> &DurationHistogram {
 }
 
 pub fn histogram_percentile_us(count: u64, buckets: &[u64], percentile: u64) -> Option<u64> {
+    histogram_percentile_us_with_bounds(count, buckets, &HISTOGRAM_BOUNDS_US, percentile)
+}
+
+fn histogram_percentile_us_with_bounds(
+    count: u64,
+    buckets: &[u64],
+    bounds: &[u64],
+    percentile: u64,
+) -> Option<u64> {
     if count == 0 || buckets.is_empty() || percentile == 0 || percentile > 100 {
         return None;
     }
     let rank = count.saturating_mul(percentile).saturating_add(99) / 100;
     buckets
         .iter()
-        .zip(HISTOGRAM_BOUNDS_US)
-        .find_map(|(bucket_count, bound)| (*bucket_count >= rank).then_some(bound))
+        .zip(bounds)
+        .find_map(|(bucket_count, bound)| (*bucket_count >= rank).then_some(*bound))
 }
 
 pub fn publication_from_contrib(status: &ContribStatus) -> PublicationSnapshot {
@@ -857,6 +892,11 @@ pub fn effective_delivery(
         } else {
             "direct_low_latency".to_owned()
         }),
+        path_stretch: (status.mesh.relay_path_rtt_ms.is_finite()
+            && status.mesh.relay_path_best_direct_rtt_ms.is_finite()
+            && status.mesh.relay_path_rtt_ms > 0.0
+            && status.mesh.relay_path_best_direct_rtt_ms > 0.0)
+            .then(|| status.mesh.relay_path_rtt_ms / status.mesh.relay_path_best_direct_rtt_ms),
         primary: (status.mesh.relay_primary_configured
             || status.mesh.relay_primary_target.is_some())
         .then(|| RouteLane {
@@ -865,6 +905,9 @@ pub fn effective_delivery(
             carrier: carrier.clone(),
             trust: trust.clone(),
             state: Some("active source".to_owned()),
+            rtt_us: finite_positive_milliseconds_to_us(status.mesh.relay_path_rtt_ms),
+            jitter_us: finite_positive_milliseconds_to_us(status.mesh.relay_path_jitter_ms),
+            loss_ppm: finite_fraction_to_ppm(status.mesh.relay_path_loss_fraction),
             ..RouteLane::default()
         }),
         secondary: (status.mesh.relay_secondary_configured
@@ -879,6 +922,14 @@ pub fn effective_delivery(
         }),
         ..DeliverySnapshot::default()
     }
+}
+
+fn finite_positive_milliseconds_to_us(value: f64) -> Option<u64> {
+    (value.is_finite() && value > 0.0).then(|| (value * 1_000.0).round() as u64)
+}
+
+fn finite_fraction_to_ppm(value: f64) -> Option<u64> {
+    (value.is_finite() && value > 0.0).then(|| (value.clamp(0.0, 1.0) * 1_000_000.0).round() as u64)
 }
 
 pub fn bounded_contrib_streams(status: &ContribStatus) -> Vec<ContribStream> {
@@ -1064,6 +1115,9 @@ mod tests {
       "mesh":{"relay_primary_configured":true,"relay_secondary_configured":true,
         "relay_carrier":"private-udp","relay_primary_target":"127.0.0.1:12001",
         "relay_secondary_target":"127.0.0.1:12002","relay_deadline_ms":750,
+        "relay_path_observation_source":"controller-seeded","relay_path_loss_fraction":0.01,
+        "relay_path_best_direct_rtt_ms":12.0,"relay_path_rtt_ms":13.5,"relay_path_jitter_ms":0.3,"relay_path_queue_delay_ms":1.0,
+        "relay_path_observed_at_unix_ms":1784102400000,
         "media_object_clock_id":"av-contrib-wall-v1","media_object_clock_confidence":"estimated",
         "media_object_clock_estimated_error_ms":1000},
       "listeners":[
@@ -1087,8 +1141,8 @@ mod tests {
     const EDGE_PARTIAL: &str = r#"{
       "updated_unix_ms":1784102400200,
       "node":{"node_id":"edge-lon","region":"eu-west","continent":"EU","total_storage_bytes":1000,"used_storage_bytes":400,"active_streams":1},
-      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repaired_objects":2,"source_datagrams":20,"repair_datagrams":5},
-      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5]}}],
+      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repaired_objects":2,"source_datagrams":20,"repair_datagrams":5,"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000},
+      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000}}],
       "aggregate":{"node_count":2,"active_streams":1},
       "telemetry":{"fresh_remote_count":1,"stale_remote_count":0},
       "orchestration":{"control_dispatch_ready":true},
@@ -1111,9 +1165,28 @@ mod tests {
             Some(20.0)
         );
         assert!(contrib.runtime.relay_session.deadline_hits.is_none());
+        let route = effective_delivery(Some(&contrib), None);
+        assert_eq!(
+            route.primary.as_ref().and_then(|lane| lane.rtt_us),
+            Some(13_500)
+        );
+        assert_eq!(
+            route.primary.as_ref().and_then(|lane| lane.jitter_us),
+            Some(300)
+        );
+        assert_eq!(
+            route.primary.as_ref().and_then(|lane| lane.loss_ppm),
+            Some(10_000)
+        );
 
         let edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
         assert_eq!(edge.relay_session.authenticated_sessions, 1);
+        assert_eq!(
+            edge.relay_session
+                .publication_to_available_percentile_us(95),
+            Some(250_000)
+        );
+        assert_eq!(edge.relay_session.publication_clock_error_max_us, 5_000);
         assert_eq!(edge.edge_services[0].percentile_us(95), Some(900));
         assert_eq!(edge.nodes[0].storage_percent(), Some(40.0));
         assert_eq!(edge.relay_nodes.len(), 1);
@@ -1250,6 +1323,7 @@ mod tests {
         assert_eq!(delivery.fabric_label(), Some("Scalable DAG"));
         assert_eq!(delivery.readiness_label(), "ready");
         assert_eq!(delivery.generation, Some(7));
+        assert!((delivery.path_stretch.expect("measured stretch") - 1.125).abs() < 0.000_001);
         assert_eq!(
             delivery.primary.and_then(|lane| lane.node_id).as_deref(),
             Some("relay-primary")

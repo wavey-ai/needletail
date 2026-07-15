@@ -300,6 +300,41 @@
       ],
       "title": "Contributor RaptorQ pipeline stage quantiles",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Clock-qualified time from canonical contributor publication to verified local cache availability at each relay or playback edge. The clock-error line is the maximum source timestamp uncertainty bound.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 62 },
+      "id": 21,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_relay_publication_to_available_p50_seconds:5m", "legendFormat": "{{instance}} · p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:mesh_relay_publication_to_available_p95_seconds:5m", "legendFormat": "{{instance}} · p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:mesh_relay_publication_to_available_p99_seconds:5m", "legendFormat": "{{instance}} · p99", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "av_mesh_relay_session_publication_clock_error_max_us / 1000000", "legendFormat": "{{instance}} · clock error bound", "range": true, "refId": "D" }
+      ],
+      "title": "Publication to verified cache p50 / p95 / p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Controller observation currently driving adaptive RaptorQ protection and route choice. Loss is a fraction; stretch is selected RTT divided by fastest direct RTT.",
+      "fieldConfig": { "defaults": { "decimals": 4, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 72 },
+      "id": 22,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_loss_fraction", "legendFormat": "{{instance}} · loss fraction", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_rtt_seconds", "legendFormat": "{{instance}} · RTT seconds", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_jitter_seconds", "legendFormat": "{{instance}} · jitter seconds", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_queue_delay_seconds", "legendFormat": "{{instance}} · queue seconds", "range": true, "refId": "D" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_observation_age_seconds", "legendFormat": "{{instance}} · observation age", "range": true, "refId": "E" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_best_direct_rtt_seconds", "legendFormat": "{{instance}} · best direct RTT", "range": true, "refId": "F" },
+        { "editorMode": "code", "expr": "av_contrib_relay_session_path_stretch_ratio", "legendFormat": "{{instance}} · path stretch", "range": true, "refId": "G" }
+      ],
+      "title": "Adaptive RaptorQ path observation",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",

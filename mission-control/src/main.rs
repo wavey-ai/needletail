@@ -865,6 +865,9 @@ mod app {
                         <span>"Generation"</span><b>{move || optional_u64(effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).generation)}</b>
                         <span>"Route state"</span><b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).route_state.unwrap_or_else(|| "pending".to_owned())}</b>
                         <span>"Path stretch"</span><b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).path_stretch.map(|value| format!("{value:.3}×")).unwrap_or_else(|| "pending".to_owned())}</b>
+                        <span>"RaptorQ path input"</span><b>{move || contrib.get().map(|status| nonempty_owned(status.mesh.relay_path_observation_source, "pending")).unwrap_or_else(|| "pending".to_owned())}</b>
+                        <span>"Path observation age"</span><b>{move || contrib.get().and_then(|status| status.mesh.relay_path_observed_at_unix_ms).map(|observed| format_age(now_unix_ms().saturating_sub(observed))).unwrap_or_else(|| "pending".to_owned())}</b>
+                        <span>"Observed queue delay"</span><b>{move || contrib.get().filter(|status| status.mesh.relay_path_queue_delay_ms > 0.0).map(|status| format!("{:.2} ms", status.mesh.relay_path_queue_delay_ms)).unwrap_or_else(|| "pending".to_owned())}</b>
                     </div>
                 </article>
                 <RouteLaneCard role="Primary source" lane=move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).primary />
@@ -936,7 +939,7 @@ mod app {
                 <PanelTitle title="Live RaptorQ relay fabric" detail="Per-node source, warm repair, forwarding, recovery, and carrier latency" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Repair-assisted"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
+                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Repair-assisted"</th><th>"Publish → available p95"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
@@ -990,6 +993,16 @@ mod app {
                 "—".to_owned()
             }
         );
+        let availability_latency = relay
+            .publication_to_available_percentile_us(95)
+            .map(|duration_us| {
+                format!(
+                    "{} · clock ±{}",
+                    format_duration_us(duration_us),
+                    format_duration_us(relay.publication_clock_error_max_us)
+                )
+            })
+            .unwrap_or_else(|| "pending".to_owned());
         let errors = relay
             .datagrams_rejected
             .saturating_add(relay.forward_errors);
@@ -1010,6 +1023,7 @@ mod app {
                 <td>{downstream_children}</td>
                 <td class="mono-cell">{forwarded}</td>
                 <td>{repaired_objects}</td>
+                <td class="mono-cell">{availability_latency}</td>
                 <td class="mono-cell">{forward_latency}</td>
                 <td>{errors}</td>
             </tr>
@@ -1030,6 +1044,8 @@ mod app {
                     <Metric label="Repair overhead" value=move || contrib.get().and_then(|s| s.runtime.relay_session.repair_overhead_percent()).map(|value| format!("{value:.1}%")).unwrap_or_else(|| "—".to_owned()) detail="repair / all symbols" />
                     <Metric label="Decoded" value=move || edge.get().map(|s| s.relay_session.decoded_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="verified objects" />
                     <Metric label="Repair-assisted" value=move || edge.get().map(|s| s.relay_session.repaired_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="recovered before deadline" />
+                    <Metric label="Publish → edge p95" value=move || edge.get().and_then(|s| s.relay_session.publication_to_available_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="verified cache availability" />
+                    <Metric label="Latency clock error" value=move || edge.get().filter(|s| s.relay_session.publication_to_available_count > 0).map(|s| format!("±{}", format_duration_us(s.relay_session.publication_clock_error_max_us))).unwrap_or_else(|| "pending".to_owned()) detail="source timestamp bound" />
                     <Metric label="Expired" value=move || edge.get().map(|s| s.relay_session.expired_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="bounded receive state" />
                     <Metric label="Rejected" value=move || edge.get().map(|s| s.relay_session.datagrams_rejected.to_string()).unwrap_or_else(|| "—".to_owned()) detail="all receive drops" />
                 </div>
@@ -1079,8 +1095,9 @@ mod app {
                     </div>
                 </section>
                 <section class="data-panel latency-panel">
-                    <PanelTitle title="Playback-edge latency" detail="LL-HLS response handling by edge service" />
+                    <PanelTitle title="Relay and playback latency" detail="Publication-to-cache availability plus LL-HLS response handling" />
                     <div class="latency-stack">
+                        <RelayAvailabilityRows edge />
                         <EdgeLatencyRows edge />
                     </div>
                     <div class="clock-strip">
@@ -1108,6 +1125,43 @@ mod app {
                 <div><span>"p50"</span><strong>{move || format_optional_duration(histogram.get_value()().percentile_us(50))}</strong></div>
                 <div><span>"p95"</span><strong>{move || format_optional_duration(histogram.get_value()().percentile_us(95))}</strong></div>
                 <div><span>"p99"</span><strong>{move || format_optional_duration(histogram.get_value()().percentile_us(99))}</strong></div>
+            </article>
+        }
+    }
+
+    #[component]
+    fn RelayAvailabilityRows(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        view! {
+            <For
+                each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
+                key=|node| format!("relay-availability:{}:{}", node.node_id, node.region)
+                let(node)
+            >
+                <RelayAvailabilityRow node />
+            </For>
+            {move || edge.get().is_some_and(|status| status.relay_nodes.iter().all(|node| node.relay_session.publication_to_available_count == 0)).then(|| view! {
+                <p class="awaiting">"Publication-to-cache latency is waiting for clock-qualified canonical media."</p>
+            })}
+        }
+    }
+
+    #[component]
+    fn RelayAvailabilityRow(node: RelayNodeSession) -> impl IntoView {
+        let relay = node.relay_session;
+        let label = format!(
+            "{} · {} publish → available",
+            nonempty_owned(node.node_id, "relay"),
+            nonempty_owned(node.region, "region pending")
+        );
+        let p50 = relay.publication_to_available_percentile_us(50);
+        let p95 = relay.publication_to_available_percentile_us(95);
+        let p99 = relay.publication_to_available_percentile_us(99);
+        view! {
+            <article class="latency-row">
+                <p>{label}</p>
+                <div><span>"p50"</span><strong>{format_optional_duration(p50)}</strong></div>
+                <div><span>"p95"</span><strong>{format_optional_duration(p95)}</strong></div>
+                <div><span>"p99"</span><strong>{format_optional_duration(p99)}</strong></div>
             </article>
         }
     }

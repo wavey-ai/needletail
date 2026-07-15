@@ -91,6 +91,10 @@ required_alerts = %w[
   AvMeshRelayDeadlineDrops
   AvMeshRelayObjectsExpiring
   AvMeshRelayDuplicateRatioHigh
+  AvMeshPublicationToAvailableP95High
+  AvMeshPublicationClockErrorHigh
+  AvContributorPathObservationStale
+  AvContributorPathStretchHigh
 ]
 alert_names = alerts.map { |entry| entry.fetch("alert") }
 missing_alerts = required_alerts - alert_names
@@ -109,6 +113,8 @@ required_panel_titles = [
   "Edge RelaySession object registry",
   "Edge RaptorQ symbol outcomes",
   "Edge RelaySession drops",
+  "Publication to verified cache p50 / p95 / p99",
+  "Adaptive RaptorQ path observation",
 ]
 panel_titles = dashboard.fetch("panels").map { |panel| panel.fetch("title") }
 missing_panels = required_panel_titles - panel_titles
@@ -125,6 +131,13 @@ service_metrics = Set.new(%w[
   av_contrib_relay_session_encode_errors_total
   av_contrib_relay_session_last_deadline_headroom_seconds
   av_contrib_relay_session_objects_total
+  av_contrib_relay_session_path_jitter_seconds
+  av_contrib_relay_session_path_best_direct_rtt_seconds
+  av_contrib_relay_session_path_loss_fraction
+  av_contrib_relay_session_path_observation_age_seconds
+  av_contrib_relay_session_path_queue_delay_seconds
+  av_contrib_relay_session_path_rtt_seconds
+  av_contrib_relay_session_path_stretch_ratio
   av_contrib_relay_session_repair_primary_fallback_objects_total
   av_contrib_relay_session_send_errors_total
   av_mesh_edge_requests_total
@@ -138,6 +151,8 @@ service_metrics = Set.new(%w[
   av_mesh_relay_session_drops_total
   av_mesh_relay_session_objects_total
   av_mesh_relay_session_parent_sessions
+  av_mesh_relay_session_publication_clock_error_max_us
+  av_mesh_relay_session_publication_to_available_us_bucket
   av_mesh_relay_session_security_sessions
   av_mesh_stream_last_ingest_age_seconds
 ])

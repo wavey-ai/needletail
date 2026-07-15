@@ -99,6 +99,19 @@ pub struct CarrierLink {
     pub receiver_target: SocketAddr,
 }
 
+/// Controller observation for the complete selected source route. Integer
+/// units keep compiled desired state deterministic across platforms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourcePathObservation {
+    pub source: String,
+    pub observed_at_unix_ms: Option<u64>,
+    pub best_direct_rtt_us: u64,
+    pub rtt_us: u64,
+    pub jitter_us: u64,
+    pub loss_ppm: u64,
+    pub queue_delay_us: u64,
+}
+
 impl CarrierLink {
     fn topology_key(&self) -> (&str, &str, ParentRole) {
         (&self.parent_node_id, &self.child_node_id, self.role)
@@ -111,6 +124,8 @@ pub struct RelayProgram {
     pub carrier: CarrierProfile,
     pub subscription_id: u64,
     pub media_deadline_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path_observation: Option<SourcePathObservation>,
     pub topology: RelayTopology,
     pub carrier_links: Vec<CarrierLink>,
 }
@@ -139,6 +154,8 @@ pub struct ContribRelayService {
     pub topology_generation: u64,
     pub subscription_id: u64,
     pub media_deadline_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path_observation: Option<SourcePathObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +197,7 @@ impl CompiledService {
 
 impl ContribRelayService {
     fn relay_arguments(&self) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "--relay-local-id".to_owned(),
             self.node_id.clone(),
             "--relay-primary-bind".to_owned(),
@@ -203,7 +220,28 @@ impl ContribRelayService {
             self.subscription_id.to_string(),
             "--relay-deadline-ms".to_owned(),
             self.media_deadline_ms.to_string(),
-        ]
+        ];
+        if let Some(observation) = &self.source_path_observation {
+            args.extend([
+                "--relay-path-loss-fraction".to_owned(),
+                format!("{:.6}", observation.loss_ppm as f64 / 1_000_000.0),
+                "--relay-path-best-direct-rtt-ms".to_owned(),
+                format!("{:.3}", observation.best_direct_rtt_us as f64 / 1_000.0),
+                "--relay-path-rtt-ms".to_owned(),
+                format!("{:.3}", observation.rtt_us as f64 / 1_000.0),
+                "--relay-path-jitter-ms".to_owned(),
+                format!("{:.3}", observation.jitter_us as f64 / 1_000.0),
+                "--relay-path-queue-delay-ms".to_owned(),
+                format!("{:.3}", observation.queue_delay_us as f64 / 1_000.0),
+            ]);
+            if let Some(observed_at_unix_ms) = observation.observed_at_unix_ms {
+                args.extend([
+                    "--relay-path-observed-at-unix-ms".to_owned(),
+                    observed_at_unix_ms.to_string(),
+                ]);
+            }
+        }
+        args
     }
 }
 
@@ -311,6 +349,34 @@ impl RelayProgram {
         if self.media_deadline_ms == 0 {
             violations.push("media_deadline_ms must be positive".to_owned());
         }
+        if let Some(observation) = &self.source_path_observation {
+            if observation.source.trim().is_empty() || observation.source.len() > 64 {
+                violations.push(
+                    "source_path_observation.source must contain 1 through 64 bytes".to_owned(),
+                );
+            }
+            if observation.loss_ppm > 1_000_000 {
+                violations.push("source_path_observation.loss_ppm exceeds 1000000".to_owned());
+            }
+            for (field, value) in [
+                ("best_direct_rtt_us", observation.best_direct_rtt_us),
+                ("rtt_us", observation.rtt_us),
+                ("jitter_us", observation.jitter_us),
+                ("queue_delay_us", observation.queue_delay_us),
+            ] {
+                if value > 60_000_000 {
+                    violations.push(format!("source_path_observation.{field} exceeds 60000000"));
+                }
+            }
+            if observation.rtt_us > 0 && observation.best_direct_rtt_us == 0 {
+                violations.push(
+                    "source_path_observation.best_direct_rtt_us must be positive when rtt_us is observed"
+                        .to_owned(),
+                );
+            }
+        } else if self.purpose == DeploymentPurpose::Production {
+            violations.push("production requires a source path observation".to_owned());
+        }
         match (self.purpose, self.carrier) {
             (DeploymentPurpose::Production, CarrierProfile::ControlledPrivateUdp) => violations
                 .push("production public relay links require the QUIC Datagram carrier".to_owned()),
@@ -365,6 +431,16 @@ impl RelayProgram {
             {
                 violations.push(format!(
                     "carrier link {} -> {} requires non-zero ports",
+                    link.parent_node_id, link.child_node_id
+                ));
+            }
+            if nodes
+                .get(link.parent_node_id.as_str())
+                .is_some_and(|node| node.role == NodeRole::Origin)
+                && link.sender_bind.ip().is_unspecified()
+            {
+                violations.push(format!(
+                    "origin carrier link {} -> {} requires an explicit sender IP",
                     link.parent_node_id, link.child_node_id
                 ));
             }
@@ -470,6 +546,7 @@ impl RelayProgram {
             topology_generation: self.topology.generation,
             subscription_id: self.subscription_id,
             media_deadline_ms: self.media_deadline_ms,
+            source_path_observation: self.source_path_observation.clone(),
         });
 
         let mut services = vec![contrib];
@@ -609,6 +686,15 @@ mod tests {
             carrier: CarrierProfile::ControlledPrivateUdp,
             subscription_id: 9,
             media_deadline_ms: 1_000,
+            source_path_observation: Some(SourcePathObservation {
+                source: "qualification-probe".to_owned(),
+                observed_at_unix_ms: Some(1_784_102_400_000),
+                best_direct_rtt_us: 246_727,
+                rtt_us: 253_429,
+                jitter_us: 510,
+                loss_ppm: 10_000,
+                queue_delay_us: 2_000,
+            }),
             topology: RelayTopology {
                 generation: 7,
                 nodes: vec![
@@ -681,6 +767,21 @@ mod tests {
         assert!(contrib_args.contains(&"--relay-secondary-seed-source".to_owned()));
         assert!(contrib_args.contains(&"relay-a".to_owned()));
         assert!(contrib_args.contains(&"relay-b".to_owned()));
+        assert!(contrib_args.windows(2).any(|pair| {
+            pair == [
+                "--relay-path-loss-fraction".to_owned(),
+                "0.010000".to_owned(),
+            ]
+        }));
+        assert!(contrib_args
+            .windows(2)
+            .any(|pair| { pair == ["--relay-path-rtt-ms".to_owned(), "253.429".to_owned()] }));
+        assert!(contrib_args.windows(2).any(|pair| {
+            pair == [
+                "--relay-path-best-direct-rtt-ms".to_owned(),
+                "246.727".to_owned(),
+            ]
+        }));
 
         let relay_b = plan
             .services
@@ -724,5 +825,38 @@ mod tests {
         assert!(violations
             .iter()
             .any(|violation| violation.contains("has no carrier link")));
+    }
+
+    #[test]
+    fn rejects_unspecified_origin_sender_identity() {
+        let mut program = qualification_program();
+        program.carrier_links[0].sender_bind = "0.0.0.0:22301".parse().expect("address");
+
+        let error = program.compile().expect_err("unspecified origin sender");
+        let ServicePlanError::InvalidProgram(violations) = error else {
+            panic!("expected service program violations");
+        };
+        assert!(violations.iter().any(|violation| {
+            violation
+                .contains("origin carrier link contrib -> relay-a requires an explicit sender IP")
+        }));
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_source_path_observation() {
+        let mut program = qualification_program();
+        program
+            .source_path_observation
+            .as_mut()
+            .expect("path observation")
+            .loss_ppm = 1_000_001;
+
+        let error = program.compile().expect_err("invalid path observation");
+        let ServicePlanError::InvalidProgram(violations) = error else {
+            panic!("expected service program violations");
+        };
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("loss_ppm exceeds 1000000")));
     }
 }

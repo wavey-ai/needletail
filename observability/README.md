@@ -72,17 +72,21 @@ promotion evidence for an Internet-facing deployment.
 
 ## Current metric boundary
 
-The service histograms currently support contributor forwarding and forwarding
-stage quantiles plus LL-HLS response-handler quantiles. The wall-clock panel
-reports the configured maximum error estimate carried by canonical timestamps;
-a measured host clock-offset series belongs in the next exporter slice.
+The service histograms support contributor forwarding and forwarding-stage
+quantiles, canonical publication-to-verified-cache p50/p95/p99 at every relay,
+and LL-HLS response-handler quantiles. Publication latency carries the maximum
+source-clock error bound alongside the distribution; a measured host
+clock-offset series belongs in the next exporter slice. Controller observations
+also expose selected-route RTT, the fastest direct RTT baseline, path stretch,
+jitter, loss, queue delay, and observation age.
 
 The next instrumentation slice should add measured distributions for:
 
-- capture-to-contributor and canonical publication-to-edge completion latency;
+- capture-to-contributor latency when the contribution protocol supplies a
+  source timestamp;
 - RelaySession scheduler wait, RaptorQ encode/decode, first-symbol arrival,
   object completion, and deadline-hit rate;
-- parent RTT, jitter, loss, path stretch, and make-before-break failover time;
+- per-parent RTT, jitter, loss, and make-before-break failover time;
 - contiguous-publication high-water, buffered gap count, and gap residence;
 - reliable object fetch/backfill and carrier pacing/congestion state.
 

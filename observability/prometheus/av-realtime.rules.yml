@@ -74,6 +74,30 @@ groups:
               rate(av_mesh_edge_response_duration_seconds_bucket[5m])
             )
           )
+      - record: av:mesh_relay_publication_to_available_p50_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (job, instance, le) (
+              rate(av_mesh_relay_session_publication_to_available_us_bucket[5m])
+            )
+          ) / 1000000
+      - record: av:mesh_relay_publication_to_available_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, instance, le) (
+              rate(av_mesh_relay_session_publication_to_available_us_bucket[5m])
+            )
+          ) / 1000000
+      - record: av:mesh_relay_publication_to_available_p99_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, instance, le) (
+              rate(av_mesh_relay_session_publication_to_available_us_bucket[5m])
+            )
+          ) / 1000000
       - record: av:mesh_edge_requests_per_second:5m
         expr: |
           max by (node_id, region) (
@@ -193,6 +217,50 @@ groups:
           summary: Edge metrics target is unavailable
           description: 'Prometheus has failed to scrape {{ $labels.instance }} for one minute.'
           runbook: Check av-mesh health, TLS, listener binding, and the Prometheus scrape target.
+
+      - alert: AvMeshPublicationToAvailableP95High
+        expr: av:mesh_relay_publication_to_available_p95_seconds:5m > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Publication-to-cache p95 is above 500 ms
+          description: 'Canonical media on {{ $labels.instance }} reaches verified cache availability in {{ $value | humanizeDuration }} at p95.'
+          runbook: Compare parent RTT, source/repair arrival, RaptorQ recovery, relay forwarding time, and deadline headroom.
+
+      - alert: AvMeshPublicationClockErrorHigh
+        expr: av_mesh_relay_session_publication_clock_error_max_us > 50000
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Publication latency clock uncertainty exceeds 50 ms
+          description: 'The source timestamp error bound observed by {{ $labels.instance }} is {{ $value }} microseconds.'
+          runbook: Restore host clock synchronization and verify the canonical media clock confidence before using end-to-end latency for routing decisions.
+
+      - alert: AvContributorPathObservationStale
+        expr: av_contrib_relay_session_path_observation_age_seconds > 300
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Adaptive RaptorQ path observation is stale
+          description: 'The path input on {{ $labels.instance }} is {{ $value | humanizeDuration }} old.'
+          runbook: Refresh the controller route observation and verify RTT, jitter, loss, and queue-delay probes are advancing.
+
+      - alert: AvContributorPathStretchHigh
+        expr: av_contrib_relay_session_path_stretch_ratio > 1.15
+        for: 1m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Selected media route exceeds the interactive path-stretch bound
+          description: 'The selected source route on {{ $labels.instance }} is {{ $value }}x the fastest measured direct RTT.'
+          runbook: Re-score the route, prefer a direct or one-hop lane, and make-before-break to a warm path below 1.15x.
 
       - alert: AvContributorForwardingP95High
         expr: av:contrib_forward_p95_seconds:5m{kind="stream"} > 0.015
