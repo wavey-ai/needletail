@@ -29,6 +29,25 @@ The Rust supervisor runs the local development constellation. Needletail's
 production lifecycle target consists of a desired-state controller, a small
 agent on each host, and `systemd` supervision of native binaries.
 
+## Documentation map
+
+- [Relay fabric](docs/relay-fabric.md): routing classes, dual-parent DAG
+  invariants, fast-path constraints, RaptorQ media-plane policy, transport
+  boundaries, and latency release gates.
+- [Deployment control plane](deploy/README.md): native desired-state controller,
+  host agents, provider adapters, and `systemd` supervision model.
+- [Mission Control](mission-control/README.md): operations dashboard build,
+  test, and local run workflow.
+- [Real-world qualification records](docs/real-world-tests/README.md): indexed
+  local and provider-network tests, reruns, evidence files, and cleanup state.
+
+Current qualification records:
+
+- [2026-07-16 relay latency qualification](docs/real-world-tests/2026-07-16-relay-latency-qualification.md)
+- [GCP intercontinental evidence: 20260716T002843Z](docs/real-world-tests/evidence/20260716T002843Z.json)
+- [Local controlled-loss evidence: local-20260716T001959Z](docs/real-world-tests/evidence/local-20260716T001959Z.json)
+- [Evidence file index](docs/real-world-tests/evidence/README.md)
+
 ## Local constellation
 
 The default checkout layout places Needletail beside its component repos:
