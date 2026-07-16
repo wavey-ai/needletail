@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  The Wavey Goose is our mascot, but the Needletail is the fastest bird in level flight.
+  The Wavey Goose is our mascot, but the Needletail is the fastest bird in level flight...
 </p>
 
 # Needletail
