@@ -1,3 +1,11 @@
+<p align="center">
+  <img src="image.png" alt="Needletail logo" width="260">
+</p>
+
+<p align="center">
+  The Wavey Goose is our mascot, but the Needletail is the fastest bird in level flight.
+</p>
+
 # Needletail
 
 Needletail is the product-level constellation of Wavey realtime media services.
