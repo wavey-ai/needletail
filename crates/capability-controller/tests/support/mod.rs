@@ -102,6 +102,7 @@ pub struct TestIds {
     pub endpoint: EndpointId,
     pub contributor: ContributorId,
     pub source: SourceId,
+    pub talkback_audience: AudienceId,
     pub primary_edge: EdgeId,
     pub repair_edge: EdgeId,
 }
@@ -115,6 +116,7 @@ impl TestIds {
             endpoint: EndpointId::new("ep_logic").unwrap(),
             contributor: ContributorId::new("con_logic").unwrap(),
             source: SourceId::new("src_mix").unwrap(),
+            talkback_audience: AudienceId::new("aud_producer_return").unwrap(),
             primary_edge: EdgeId::new("edge_lon").unwrap(),
             repair_edge: EdgeId::new("edge_ams").unwrap(),
         }
@@ -201,6 +203,38 @@ pub fn fact(
     .unwrap()
 }
 
+pub fn talkback_fact(
+    ids: &TestIds,
+    operation: Operation,
+    subject_grant_epoch: u64,
+    media_policy_version: u64,
+    evaluated_at: i64,
+    access_expires_at: Option<i64>,
+) -> MediaAuthorizationFactV1 {
+    MediaAuthorizationFactV1::new(MediaAuthorizationFactV1Params {
+        authorization_fact_id: AuthorizationFactId::new("maf_talkback").unwrap(),
+        session_id: ids.session.clone(),
+        session_epoch: 9,
+        media_authorization_epoch: 14,
+        subject_grant_epoch,
+        media_policy_version,
+        participant_id: ids.participant.clone(),
+        endpoint_id: ids.endpoint.clone(),
+        effective_role: EffectiveRole::Producer,
+        access_expires_at,
+        allowed_operations: vec![operation],
+        allowed_media_classes: vec![MediaClass::Talkback],
+        allowed_source_ids: Vec::new(),
+        allowed_audience_ids: vec![ids.talkback_audience.clone()],
+        requested_operation: operation,
+        requested_media_class: MediaClass::Talkback,
+        take_id: None,
+        workflow_mode: SessionWorkflowMode::MixReview,
+        evaluated_at,
+    })
+    .unwrap()
+}
+
 pub fn native_request(ids: &TestIds) -> BrokerAuthorizationRequest {
     BrokerAuthorizationRequest {
         mode: AuthorizationMode::NativeMedia,
@@ -213,6 +247,9 @@ pub fn native_request(ids: &TestIds) -> BrokerAuthorizationRequest {
         take_id: None,
         client_key_thumbprint: Some(THUMBPRINT.to_owned()),
         requested_channels: 2,
+        requested_sample_rate_hz: None,
+        requested_frame_duration_us: None,
+        requested_frame_samples: None,
         requested_bitrate: 512_000,
         requested_datagram_bytes: 1_200,
         client: AdmissionClientProfile {
@@ -237,6 +274,9 @@ pub fn browser_request(ids: &TestIds) -> BrokerAuthorizationRequest {
         take_id: None,
         client_key_thumbprint: Some(THUMBPRINT.to_owned()),
         requested_channels: 2,
+        requested_sample_rate_hz: None,
+        requested_frame_duration_us: None,
+        requested_frame_samples: None,
         requested_bitrate: 256_000,
         requested_datagram_bytes: 1_200,
         client: AdmissionClientProfile {
@@ -245,6 +285,42 @@ pub fn browser_request(ids: &TestIds) -> BrokerAuthorizationRequest {
             requested_live_transport: LiveMonitorTransport::Auto,
             max_channels: 2,
             receiver_allowance_ms: 25,
+        },
+    }
+}
+
+pub fn talkback_request(
+    ids: &TestIds,
+    mode: AuthorizationMode,
+    operation: Operation,
+) -> BrokerAuthorizationRequest {
+    BrokerAuthorizationRequest {
+        mode,
+        subject: SubjectId::new("sub_zeroth_01").unwrap(),
+        endpoint_id: ids.endpoint.clone(),
+        operation,
+        media_class: MediaClass::Talkback,
+        source_ids: Vec::new(),
+        audience_ids: vec![ids.talkback_audience.clone()],
+        take_id: None,
+        client_key_thumbprint: Some(THUMBPRINT.to_owned()),
+        requested_channels: 1,
+        requested_sample_rate_hz: Some(48_000),
+        requested_frame_duration_us: Some(5_000),
+        requested_frame_samples: Some(240),
+        requested_bitrate: 96_000,
+        requested_datagram_bytes: 512,
+        client: AdmissionClientProfile {
+            supported_transports: vec![match mode {
+                AuthorizationMode::NativeMedia => MediaEndpointTransport::NativeDatagram,
+                AuthorizationMode::BrowserPlayback | AuthorizationMode::BrowserTalkback => {
+                    MediaEndpointTransport::WebtransportDatagram
+                }
+            }],
+            supported_codecs: vec![Codec::Opus],
+            requested_live_transport: LiveMonitorTransport::Opus,
+            max_channels: 1,
+            receiver_allowance_ms: 10,
         },
     }
 }
@@ -283,6 +359,39 @@ pub fn candidate(
             healthy_until: NOW + 300,
             independent_failure_domain: true,
         }),
+    }
+}
+
+pub fn talkback_candidate(
+    ids: &TestIds,
+    transport: MediaEndpointTransport,
+    edge_id: EdgeId,
+    rtt_ms: u32,
+) -> RouteCandidate {
+    RouteCandidate {
+        edge_id,
+        binding_generation: 8,
+        topology_generation: 52,
+        desired_state_active: true,
+        healthy_until: NOW + 300,
+        probe_observed_at: NOW,
+        estimated_rtt_ms: rtt_ms,
+        transport,
+        codecs: vec![Codec::Opus],
+        deadline_classes: vec![capability_controller::DeadlineClass::Interactive],
+        media_classes: vec![MediaClass::Talkback],
+        source_ids: Vec::new(),
+        audience_ids: vec![ids.talkback_audience.clone()],
+        max_channels: 1,
+        max_bitrate: 128_000,
+        max_datagram_bytes: 1_200,
+        available_bitrate: 10_000_000,
+        available_session_slots: 100,
+        cost_score: 1,
+        cost_allowed: true,
+        origin: "https://media-lon.infidelity.io".to_owned(),
+        path: "/v1/talkback/descriptor".to_owned(),
+        warm_repair: None,
     }
 }
 

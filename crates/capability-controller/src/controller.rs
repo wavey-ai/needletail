@@ -3,10 +3,10 @@ use std::fmt;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use media_object::{
-    AudienceId, CapabilityId, ContributorId, DescriptorId, EndpointId, MediaAuthorizationFactV1,
-    MediaAuthorizationRequestV1, MediaAuthorizationRequestV1Params, MediaCapabilityClaimsV1,
-    MediaCapabilityClaimsV1Params, MediaClass, MediaEndpointDescriptorV1, Operation, SessionId,
-    SessionWorkflowMode, SourceId, SubjectId, TakeId, TenantId,
+    AudienceId, CapabilityId, ContributorId, DescriptorId, EndpointId, LiveMonitorTransport,
+    MediaAuthorizationFactV1, MediaAuthorizationRequestV1, MediaAuthorizationRequestV1Params,
+    MediaCapabilityClaimsV1, MediaCapabilityClaimsV1Params, MediaClass, MediaEndpointDescriptorV1,
+    Operation, SessionId, SessionWorkflowMode, SourceId, SubjectId, TakeId, TenantId,
 };
 use serde::Serialize;
 
@@ -31,6 +31,9 @@ use crate::telemetry::{CapabilityTelemetryEvent, TelemetrySink};
 const ID_ENTROPY_BYTES: usize = 18;
 const MAX_EXCHANGE_INSERT_ATTEMPTS: usize = 4;
 const REDACTED: &str = "[REDACTED]";
+const TALKBACK_SAMPLE_RATE_HZ: u32 = 48_000;
+const TALKBACK_FRAME_DURATION_US: u32 = 5_000;
+const TALKBACK_FRAME_SAMPLES: u32 = 240;
 
 #[derive(Clone, Copy)]
 struct ExchangeDeadlines {
@@ -51,13 +54,14 @@ pub enum BrokerCaller {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorizationMode {
     BrowserPlayback,
+    BrowserTalkback,
     NativeMedia,
 }
 
 impl AuthorizationMode {
     const fn lifetime_class(self) -> ClientLifetimeClass {
         match self {
-            Self::BrowserPlayback => ClientLifetimeClass::BrowserPlayback,
+            Self::BrowserPlayback | Self::BrowserTalkback => ClientLifetimeClass::BrowserPlayback,
             Self::NativeMedia => ClientLifetimeClass::NativeMedia,
         }
     }
@@ -208,6 +212,9 @@ pub struct BrokerAuthorizationRequest {
     pub take_id: Option<TakeId>,
     pub client_key_thumbprint: Option<String>,
     pub requested_channels: u16,
+    pub requested_sample_rate_hz: Option<u32>,
+    pub requested_frame_duration_us: Option<u32>,
+    pub requested_frame_samples: Option<u32>,
     pub requested_bitrate: u64,
     pub requested_datagram_bytes: u32,
     pub client: AdmissionClientProfile,
@@ -227,6 +234,12 @@ impl fmt::Debug for BrokerAuthorizationRequest {
             .field("has_take", &self.take_id.is_some())
             .field("client_key_thumbprint", &REDACTED)
             .field("requested_channels", &self.requested_channels)
+            .field("requested_sample_rate_hz", &self.requested_sample_rate_hz)
+            .field(
+                "requested_frame_duration_us",
+                &self.requested_frame_duration_us,
+            )
+            .field("requested_frame_samples", &self.requested_frame_samples)
             .field("requested_bitrate", &self.requested_bitrate)
             .field("requested_datagram_bytes", &self.requested_datagram_bytes)
             .field("client", &self.client)
@@ -341,7 +354,7 @@ impl AdmissionMetadata {
 /// Public browser broker response. It intentionally has no reusable JWS or descriptor.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BrowserPlaybackAuthorization {
+pub struct BrowserExchangeAuthorization {
     authorization_id: String,
     issued_at: i64,
     authorization_expires_at: i64,
@@ -355,7 +368,7 @@ pub struct BrowserPlaybackAuthorization {
     admission: AdmissionMetadata,
 }
 
-impl BrowserPlaybackAuthorization {
+impl BrowserExchangeAuthorization {
     #[must_use]
     pub const fn exchange(&self) -> &BrowserExchangeGrant {
         &self.exchange
@@ -387,10 +400,10 @@ impl BrowserPlaybackAuthorization {
     }
 }
 
-impl fmt::Debug for BrowserPlaybackAuthorization {
+impl fmt::Debug for BrowserExchangeAuthorization {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("BrowserPlaybackAuthorization")
+            .debug_struct("BrowserExchangeAuthorization")
             .field("authorization_id", &REDACTED)
             .field("issued_at", &self.issued_at)
             .field("authorization_expires_at", &self.authorization_expires_at)
@@ -405,6 +418,9 @@ impl fmt::Debug for BrowserPlaybackAuthorization {
             .finish()
     }
 }
+
+/// Backward-compatible name for the original browser playback exchange shape.
+pub type BrowserPlaybackAuthorization = BrowserExchangeAuthorization;
 
 /// Authenticated native broker response carrying the short-lived JWS.
 #[derive(Clone, Serialize)]
@@ -458,14 +474,17 @@ impl fmt::Debug for NativeMediaAuthorization {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", content = "authorization", rename_all = "snake_case")]
 pub enum IssuedAuthorization {
-    BrowserPlayback(BrowserPlaybackAuthorization),
+    BrowserPlayback(BrowserExchangeAuthorization),
+    BrowserTalkback(BrowserExchangeAuthorization),
     NativeMedia(NativeMediaAuthorization),
 }
 
 impl IssuedAuthorization {
     const fn expires_at(&self) -> i64 {
         match self {
-            Self::BrowserPlayback(value) => value.authorization_expires_at,
+            Self::BrowserPlayback(value) | Self::BrowserTalkback(value) => {
+                value.authorization_expires_at
+            }
             Self::NativeMedia(value) => value.expires_at,
         }
     }
@@ -556,7 +575,8 @@ where
         match &result {
             Ok(issued) => self.telemetry.record(CapabilityTelemetryEvent::succeeded(
                 match issued {
-                    IssuedAuthorization::BrowserPlayback(_) => ControllerStage::BrowserExchange,
+                    IssuedAuthorization::BrowserPlayback(_)
+                    | IssuedAuthorization::BrowserTalkback(_) => ControllerStage::BrowserExchange,
                     IssuedAuthorization::NativeMedia(_) => ControllerStage::CapabilityIssuance,
                 },
                 class,
@@ -593,6 +613,7 @@ where
         self.check_gates(request.mode)?;
         validate_caller(caller, request.mode)?;
         validate_client_request(request)?;
+        validate_desired_state(request, desired)?;
 
         let identity_request =
             MediaAuthorizationRequestV1::new(MediaAuthorizationRequestV1Params {
@@ -710,12 +731,12 @@ where
                     endpoints: vec![admission.descriptor],
                 }))
             }
-            AuthorizationMode::BrowserPlayback => {
+            AuthorizationMode::BrowserPlayback | AuthorizationMode::BrowserTalkback => {
                 let proof = request.client_key_thumbprint.as_ref().ok_or_else(|| {
                     ControllerError::new(
                         ControllerErrorCode::InvalidRequest,
                         ControllerStage::RequestValidation,
-                        "browser playback requires an endpoint key thumbprint",
+                        "browser exchange requires an endpoint key thumbprint",
                     )
                 })?;
                 let exchange_expires_at = self
@@ -733,31 +754,38 @@ where
                         capability_expires_at: expires_at,
                     },
                 )?;
-                Ok(IssuedAuthorization::BrowserPlayback(
-                    BrowserPlaybackAuthorization {
-                        authorization_id,
-                        issued_at: now,
-                        authorization_expires_at: expires_at,
-                        session_epoch: fact.session_epoch(),
-                        media_authorization_epoch: fact.media_authorization_epoch(),
-                        subject_grant_epoch: fact.subject_grant_epoch(),
-                        media_policy_version: fact.media_policy_version(),
-                        binding_generation: admission.binding_generation,
-                        topology_generation: admission.topology_generation,
-                        exchange: BrowserExchangeGrant {
-                            token,
-                            expires_at: exchange_expires_at,
-                            bootstrap_url: self.config.browser_bootstrap_url.clone(),
-                        },
-                        admission: AdmissionMetadata {
-                            workflow_mode: fact.workflow_mode(),
-                            live_transport: admission.codec,
-                            receiver_allowance_ms: request.client.receiver_allowance_ms,
-                            reason: "admitted",
-                            renew_at,
-                        },
+                let authorization = BrowserExchangeAuthorization {
+                    authorization_id,
+                    issued_at: now,
+                    authorization_expires_at: expires_at,
+                    session_epoch: fact.session_epoch(),
+                    media_authorization_epoch: fact.media_authorization_epoch(),
+                    subject_grant_epoch: fact.subject_grant_epoch(),
+                    media_policy_version: fact.media_policy_version(),
+                    binding_generation: admission.binding_generation,
+                    topology_generation: admission.topology_generation,
+                    exchange: BrowserExchangeGrant {
+                        token,
+                        expires_at: exchange_expires_at,
+                        bootstrap_url: self.config.browser_bootstrap_url.clone(),
                     },
-                ))
+                    admission: AdmissionMetadata {
+                        workflow_mode: fact.workflow_mode(),
+                        live_transport: admission.codec,
+                        receiver_allowance_ms: request.client.receiver_allowance_ms,
+                        reason: "admitted",
+                        renew_at,
+                    },
+                };
+                Ok(match request.mode {
+                    AuthorizationMode::BrowserPlayback => {
+                        IssuedAuthorization::BrowserPlayback(authorization)
+                    }
+                    AuthorizationMode::BrowserTalkback => {
+                        IssuedAuthorization::BrowserTalkback(authorization)
+                    }
+                    AuthorizationMode::NativeMedia => unreachable!("native mode handled above"),
+                })
             }
         }
     }
@@ -867,8 +895,10 @@ where
         if gates.global_kill_switch == KillSwitch::Engaged
             || !gates.media_authorization_view_v1.is_enabled()
             || !gates.media_capability_issue_v1.is_enabled()
-            || (mode == AuthorizationMode::BrowserPlayback
-                && !gates.browser_playback_exchange_v1.is_enabled())
+            || (matches!(
+                mode,
+                AuthorizationMode::BrowserPlayback | AuthorizationMode::BrowserTalkback
+            ) && !gates.browser_playback_exchange_v1.is_enabled())
         {
             return Err(ControllerError::new(
                 ControllerErrorCode::FeatureDisabled,
@@ -912,7 +942,7 @@ fn validate_caller(caller: BrokerCaller, mode: AuthorizationMode) -> Result<()> 
         (caller, mode),
         (
             BrokerCaller::SessionsBroker,
-            AuthorizationMode::BrowserPlayback
+            AuthorizationMode::BrowserPlayback | AuthorizationMode::BrowserTalkback
         ) | (BrokerCaller::NativeBroker, AuthorizationMode::NativeMedia)
     );
     if !allowed {
@@ -926,15 +956,6 @@ fn validate_caller(caller: BrokerCaller, mode: AuthorizationMode) -> Result<()> 
 }
 
 fn validate_client_request(request: &BrokerAuthorizationRequest) -> Result<()> {
-    if request.mode == AuthorizationMode::BrowserPlayback
-        && request.operation != Operation::Subscribe
-    {
-        return Err(ControllerError::new(
-            ControllerErrorCode::CallerNotAllowed,
-            ControllerStage::CallerAuthentication,
-            "browser playback exchange cannot issue publish or take authority",
-        ));
-    }
     if request.client.supported_transports.is_empty()
         || request.client.supported_transports.len() > 8
         || request.client.supported_codecs.is_empty()
@@ -949,12 +970,116 @@ fn validate_client_request(request: &BrokerAuthorizationRequest) -> Result<()> {
             "client admission profile is empty or outside fixed bounds",
         ));
     }
-    if request.mode == AuthorizationMode::BrowserPlayback && request.client_key_thumbprint.is_none()
+    match request.mode {
+        AuthorizationMode::BrowserPlayback => {
+            if request.operation != Operation::Subscribe {
+                return Err(ControllerError::new(
+                    ControllerErrorCode::CallerNotAllowed,
+                    ControllerStage::CallerAuthentication,
+                    "browser playback exchange cannot issue publish or take authority",
+                ));
+            }
+            if request.media_class == MediaClass::Talkback {
+                return Err(ControllerError::new(
+                    ControllerErrorCode::InvalidRequest,
+                    ControllerStage::RequestValidation,
+                    "talkback must use the browser talkback authorization profile",
+                ));
+            }
+        }
+        AuthorizationMode::BrowserTalkback => {
+            if request.media_class != MediaClass::Talkback {
+                return Err(ControllerError::new(
+                    ControllerErrorCode::InvalidRequest,
+                    ControllerStage::RequestValidation,
+                    "browser talkback exchange only issues talkback authority",
+                ));
+            }
+        }
+        AuthorizationMode::NativeMedia => {}
+    }
+    if matches!(
+        request.mode,
+        AuthorizationMode::BrowserPlayback | AuthorizationMode::BrowserTalkback
+    ) && request.client_key_thumbprint.is_none()
     {
         return Err(ControllerError::new(
             ControllerErrorCode::InvalidRequest,
             ControllerStage::RequestValidation,
-            "browser playback requires endpoint proof binding",
+            "browser exchange requires endpoint proof binding",
+        ));
+    }
+    if request.media_class == MediaClass::Talkback {
+        validate_talkback_request(request)?;
+    } else if request.requested_sample_rate_hz.is_some()
+        || request.requested_frame_duration_us.is_some()
+        || request.requested_frame_samples.is_some()
+    {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidRequest,
+            ControllerStage::RequestValidation,
+            "frame format parameters are only accepted for talkback",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_talkback_request(request: &BrokerAuthorizationRequest) -> Result<()> {
+    if !matches!(request.operation, Operation::Publish | Operation::Subscribe) {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidRequest,
+            ControllerStage::RequestValidation,
+            "talkback capability issuance supports publish and subscribe only",
+        ));
+    }
+    if !request.source_ids.is_empty() || request.take_id.is_some() {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidRequest,
+            ControllerStage::RequestValidation,
+            "talkback capability scope must be audience-only",
+        ));
+    }
+    if request.audience_ids.is_empty()
+        || (request.operation == Operation::Publish && request.audience_ids.len() != 1)
+    {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidRequest,
+            ControllerStage::RequestValidation,
+            "talkback publish requires exactly one audience and subscribe requires explicit audiences",
+        ));
+    }
+    if request.client_key_thumbprint.is_none() {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidRequest,
+            ControllerStage::RequestValidation,
+            "talkback requires endpoint proof binding",
+        ));
+    }
+    if request.requested_channels != 1
+        || request.requested_sample_rate_hz != Some(TALKBACK_SAMPLE_RATE_HZ)
+        || request.requested_frame_duration_us != Some(TALKBACK_FRAME_DURATION_US)
+        || request.requested_frame_samples != Some(TALKBACK_FRAME_SAMPLES)
+        || request.client.requested_live_transport != LiveMonitorTransport::Opus
+        || !request.client.supported_codecs.contains(&Codec::Opus)
+    {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidRequest,
+            ControllerStage::RequestValidation,
+            "talkback v1 is fixed to mono 48 kHz Opus with 5 ms frames",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_desired_state(
+    request: &BrokerAuthorizationRequest,
+    desired: &DesiredMediaState<'_>,
+) -> Result<()> {
+    if request.media_class == MediaClass::Talkback && desired.class_authorization_epoch.is_none() {
+        return Err(ControllerError::new(
+            ControllerErrorCode::InvalidControllerState,
+            ControllerStage::RequestValidation,
+            "talkback desired state lacks the current class authorization epoch",
         ));
     }
     Ok(())

@@ -7,11 +7,11 @@ use std::thread;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use capability_controller::{
-    BrokerCaller, ControllerErrorCode, ControllerErrorDetail, DesiredMediaState,
-    Ed25519CapabilityIssuer, ExchangeConsumeRequest, ExchangeRejection, FeatureGates,
-    IdentityAuthorizationClient, IdentityAuthorizationTransport, IdentityBoundaryErrorCode,
-    IdentityTransportError, IssuedAuthorization, P01HmacIdentityClient, RetiringPublicKey,
-    RouteRefusalReason, SignedIdentityRequest, SignedIdentityResponse,
+    AuthorizationMode, BrokerCaller, Codec, ControllerErrorCode, ControllerErrorDetail,
+    DesiredMediaState, Ed25519CapabilityIssuer, ExchangeConsumeRequest, ExchangeRejection,
+    FeatureGates, IdentityAuthorizationClient, IdentityAuthorizationTransport,
+    IdentityBoundaryErrorCode, IdentityTransportError, IssuedAuthorization, P01HmacIdentityClient,
+    RetiringPublicKey, RouteRefusalReason, SignedIdentityRequest, SignedIdentityResponse,
 };
 use ed25519_dalek::SigningKey;
 use hmac::{Hmac, Mac as _};
@@ -21,14 +21,14 @@ use media_capability::{
     VerificationKeyring,
 };
 use media_object::{
-    EdgeId, MediaAuthorizationRequestV1, MediaCapabilityClaimsV1, MediaClass,
-    MediaEndpointTransport, Operation, SessionId,
+    AudienceId, EdgeId, LiveMonitorTransport, MediaAuthorizationRequestV1, MediaCapabilityClaimsV1,
+    MediaClass, MediaEndpointTransport, Operation, SessionId, TakeId,
 };
 use sha2::{Digest, Sha256};
 
 use support::{
     browser_request, candidate, desired, fact, harness, harness_with_gates, native_request,
-    CounterEntropy, TestIds, NOW, THUMBPRINT,
+    talkback_candidate, talkback_fact, talkback_request, CounterEntropy, TestIds, NOW, THUMBPRINT,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -107,6 +107,22 @@ impl ReplayAdmissionGuard for ReplayGuard {
         } else {
             Err(ReplayAdmissionRejection::Replay)
         }
+    }
+}
+
+fn talkback_desired<'a>(
+    ids: &'a TestIds,
+    routes: &'a [capability_controller::RouteCandidate],
+    class_authorization_epoch: Option<u64>,
+) -> DesiredMediaState<'a> {
+    DesiredMediaState {
+        tenant_id: &ids.tenant,
+        session_id: &ids.session,
+        topology_generation: 52,
+        class_authorization_epoch,
+        contributor_id: Some(&ids.contributor),
+        require_independent_repair: false,
+        route_candidates: routes,
     }
 }
 
@@ -334,6 +350,358 @@ fn browser_exchange_has_independent_15_second_consume_and_90_second_lease_lifeti
         ))
     );
     assert!(!format!("{browser:?}{replay:?}").contains(&token));
+}
+
+#[test]
+fn browser_talkback_publish_uses_proof_bound_exchange_and_talkback_epoch() {
+    let harness = harness(Operation::Publish);
+    harness.identity.replace(talkback_fact(
+        &harness.ids,
+        Operation::Publish,
+        5,
+        9,
+        NOW,
+        Some(NOW + 300),
+    ));
+    let request = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    let routes = vec![talkback_candidate(
+        &harness.ids,
+        MediaEndpointTransport::WebtransportDatagram,
+        harness.ids.primary_edge.clone(),
+        7,
+    )];
+    let desired = DesiredMediaState {
+        tenant_id: &harness.ids.tenant,
+        session_id: &harness.ids.session,
+        topology_generation: 52,
+        class_authorization_epoch: Some(42),
+        contributor_id: Some(&harness.ids.contributor),
+        require_independent_repair: false,
+        route_candidates: &routes,
+    };
+
+    let issued = harness
+        .controller
+        .issue(BrokerCaller::SessionsBroker, &request, &desired, NOW)
+        .unwrap();
+    let IssuedAuthorization::BrowserTalkback(browser) = issued else {
+        panic!("expected browser talkback authorization");
+    };
+    assert_eq!(browser.exchange().expires_at(), NOW + 15);
+    assert_eq!(browser.authorization_expires_at(), NOW + 90);
+
+    let lease = harness
+        .controller
+        .consume_exchange(&ExchangeConsumeRequest {
+            token: browser.exchange().token().expose(),
+            edge_id: &harness.ids.primary_edge,
+            endpoint_id: &harness.ids.endpoint,
+            endpoint_proof_thumbprint: THUMBPRINT,
+            now: NOW + 1,
+        })
+        .unwrap();
+    assert_eq!(lease.operation(), Operation::Publish);
+    assert_eq!(lease.media_class(), MediaClass::Talkback);
+
+    let mut keyring = VerificationKeyring::new();
+    keyring
+        .insert_active("key_active_01", harness.verification_key)
+        .unwrap();
+    let verifier =
+        MediaCapabilityVerifier::new(keyring, "https://control.infidelity.io", "av-contrib")
+            .unwrap();
+    let authorized = verifier
+        .authorize(
+            lease.capability().expose(),
+            &CurrentMediaAuthorizationContextV1 {
+                tenant_id: &harness.ids.tenant,
+                session_id: &harness.ids.session,
+                session_epoch: 9,
+                media_authorization_epoch: 14,
+                subject_grant_epoch: 5,
+                media_policy_version: 9,
+                class_authorization_epoch: Some(42),
+                binding_generation: 8,
+                topology_generation: 52,
+                participant_id: &harness.ids.participant,
+                endpoint_id: &harness.ids.endpoint,
+                contributor_id: Some(&harness.ids.contributor),
+                operation: Operation::Publish,
+                media_class: MediaClass::Talkback,
+                source_id: None,
+                audience_id: Some(&harness.ids.talkback_audience),
+                take_id: None,
+                edge_id: &harness.ids.primary_edge,
+                now: NOW + 1,
+                clock_skew_seconds: 5,
+            },
+            &mut ReplayGuard::default(),
+        )
+        .unwrap();
+    assert_eq!(authorized.claims().class_authorization_epoch(), Some(42));
+    assert!(authorized.claims().source_ids().is_empty());
+    assert_eq!(
+        authorized.claims().audience_ids(),
+        std::slice::from_ref(&harness.ids.talkback_audience)
+    );
+}
+
+#[test]
+fn native_talkback_subscribe_uses_direct_short_lease_and_talkback_epoch() {
+    let harness = harness(Operation::Subscribe);
+    harness.identity.replace(talkback_fact(
+        &harness.ids,
+        Operation::Subscribe,
+        6,
+        10,
+        NOW,
+        Some(NOW + 300),
+    ));
+    let request = talkback_request(
+        &harness.ids,
+        AuthorizationMode::NativeMedia,
+        Operation::Subscribe,
+    );
+    let routes = vec![talkback_candidate(
+        &harness.ids,
+        MediaEndpointTransport::NativeDatagram,
+        harness.ids.primary_edge.clone(),
+        6,
+    )];
+    let desired = DesiredMediaState {
+        tenant_id: &harness.ids.tenant,
+        session_id: &harness.ids.session,
+        topology_generation: 52,
+        class_authorization_epoch: Some(43),
+        contributor_id: Some(&harness.ids.contributor),
+        require_independent_repair: false,
+        route_candidates: &routes,
+    };
+
+    let issued = harness
+        .controller
+        .issue(BrokerCaller::NativeBroker, &request, &desired, NOW)
+        .unwrap();
+    let IssuedAuthorization::NativeMedia(native) = issued else {
+        panic!("expected native talkback authorization");
+    };
+    assert_eq!(native.expires_at(), NOW + 60);
+    assert_eq!(native.endpoints()[0].edge_id(), &harness.ids.primary_edge);
+
+    let mut keyring = VerificationKeyring::new();
+    keyring
+        .insert_active("key_active_01", harness.verification_key)
+        .unwrap();
+    let verifier =
+        MediaCapabilityVerifier::new(keyring, "https://control.infidelity.io", "av-mesh").unwrap();
+    let authorized = verifier
+        .authorize(
+            native.capability().expose(),
+            &CurrentMediaAuthorizationContextV1 {
+                tenant_id: &harness.ids.tenant,
+                session_id: &harness.ids.session,
+                session_epoch: 9,
+                media_authorization_epoch: 14,
+                subject_grant_epoch: 6,
+                media_policy_version: 10,
+                class_authorization_epoch: Some(43),
+                binding_generation: 8,
+                topology_generation: 52,
+                participant_id: &harness.ids.participant,
+                endpoint_id: &harness.ids.endpoint,
+                contributor_id: None,
+                operation: Operation::Subscribe,
+                media_class: MediaClass::Talkback,
+                source_id: None,
+                audience_id: Some(&harness.ids.talkback_audience),
+                take_id: None,
+                edge_id: &harness.ids.primary_edge,
+                now: NOW,
+                clock_skew_seconds: 5,
+            },
+            &mut ReplayGuard::default(),
+        )
+        .unwrap();
+    assert_eq!(authorized.claims().class_authorization_epoch(), Some(43));
+}
+
+#[test]
+fn talkback_broker_rejects_wrong_mode_and_non_audience_scope_before_identity() {
+    let harness = harness(Operation::Publish);
+    let routes = vec![talkback_candidate(
+        &harness.ids,
+        MediaEndpointTransport::WebtransportDatagram,
+        harness.ids.primary_edge.clone(),
+        7,
+    )];
+    let desired = talkback_desired(&harness.ids, &routes, Some(42));
+    let playback_mode = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserPlayback,
+        Operation::Subscribe,
+    );
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &playback_mode, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    let mut wrong_class = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    wrong_class.media_class = MediaClass::Program;
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &wrong_class, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    let mut source_scope = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    source_scope.source_ids.push(harness.ids.source.clone());
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &source_scope, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    let mut take_scope = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    take_scope.take_id = Some(TakeId::new("take_01").unwrap());
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &take_scope, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    assert_eq!(harness.identity.calls(), 0);
+}
+
+#[test]
+fn talkback_broker_rejects_non_strict_format_and_missing_epoch_before_identity() {
+    let harness = harness(Operation::Publish);
+    let routes = vec![talkback_candidate(
+        &harness.ids,
+        MediaEndpointTransport::WebtransportDatagram,
+        harness.ids.primary_edge.clone(),
+        7,
+    )];
+    let desired = talkback_desired(&harness.ids, &routes, Some(42));
+
+    let mut stereo = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    stereo.requested_channels = 2;
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &stereo, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    let mut pcm = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    pcm.client.requested_live_transport = LiveMonitorTransport::PcmIfAdmitted;
+    pcm.client.supported_codecs = vec![Codec::Pcm];
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &pcm, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    let mut missing_format = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    missing_format.requested_frame_samples = None;
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &missing_format, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+
+    let missing_epoch = talkback_desired(&harness.ids, &routes, None);
+    let strict = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &strict, &missing_epoch, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidControllerState
+    );
+    assert_eq!(harness.identity.calls(), 0);
+}
+
+#[test]
+fn talkback_broker_rejects_multi_audience_publish_before_identity() {
+    let harness = harness(Operation::Publish);
+    let routes = vec![talkback_candidate(
+        &harness.ids,
+        MediaEndpointTransport::WebtransportDatagram,
+        harness.ids.primary_edge.clone(),
+        7,
+    )];
+    let desired = talkback_desired(&harness.ids, &routes, Some(42));
+    let mut multi_publish = talkback_request(
+        &harness.ids,
+        AuthorizationMode::BrowserTalkback,
+        Operation::Publish,
+    );
+    multi_publish
+        .audience_ids
+        .push(AudienceId::new("aud_session_cue").unwrap());
+    assert_eq!(
+        harness
+            .controller
+            .issue(BrokerCaller::SessionsBroker, &multi_publish, &desired, NOW)
+            .unwrap_err()
+            .code(),
+        ControllerErrorCode::InvalidRequest
+    );
+    assert_eq!(harness.identity.calls(), 0);
 }
 
 #[test]
