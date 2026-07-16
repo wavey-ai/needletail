@@ -109,6 +109,87 @@ Cleanup audit:
 - Final audit maximum live lag: 5 objects. The recovery check measured 3
   objects; the audit was taken later while the live head continued to advance.
 
+## GCP run `20260716T023139Z`
+
+Raw artifacts:
+`target/gcp-qualification/runs/20260716T023139Z`.
+
+Versioned evidence:
+`docs/real-world-tests/evidence/20260716T023139Z.json`.
+
+Dashboard screenshots:
+`docs/performance/real-world-load-screenshots.md`.
+
+Topology:
+
+- Contributor: London, `europe-west2-b`.
+- Primary relay: Amsterdam, `europe-west4-a`.
+- Secondary relay: Osaka, `asia-northeast2-b`.
+- Playback edge: Tokyo, `asia-northeast1-b`.
+- Machine class: four `e2-standard-2` instances.
+- Carrier: controlled private UDP with primary source and warm-secondary repair.
+
+Measured routes:
+
+| Path | Measured RTT | Stretch limit | Observed stretch |
+| --- | ---: | ---: | ---: |
+| Direct contributor to edge | 250.915 ms | - | 1.000x |
+| Contributor -> Amsterdam -> Tokyo | 244.127 ms | <= 1.15x | 0.972947x |
+| Contributor -> Osaka -> Tokyo | 251.904 ms | <= 1.15x | 1.003942x |
+
+Physics factor:
+
+| Path | Distance | Vacuum RTT lower bound | Ideal-fiber RTT lower bound | Observed factor |
+| --- | ---: | ---: | ---: | ---: |
+| London -> Tokyo direct | 9,558.6 km | 63.8 ms | 93.7 ms | 3.93x vacuum / 2.68x ideal fiber |
+| London -> Amsterdam -> Tokyo | 9,645.9 km | 64.4 ms | 94.6 ms | 3.79x vacuum / 2.58x ideal fiber |
+| London -> Osaka -> Tokyo | 9,891.8 km | 66.0 ms | 97.0 ms | 3.82x vacuum / 2.60x ideal fiber |
+
+Results:
+
+| Check | Result | Budget |
+| --- | ---: | ---: |
+| Contributor restart max relay activation | 1.628260 s | <= 10 s |
+| Failover detection | 106.940 ms | <= 250 ms |
+| Promotion to source | 10.703 ms | <= 250 ms |
+| Maximum media gap | 120.034 ms | <= 250 ms |
+| Relay processing p95 | 1000 us | <= 1000 us |
+| Publication-to-cache p99 | 150 ms | <= 500 ms |
+| Canonical publication max lag after recovery | 4 objects | <= 4 objects |
+
+RaptorQ and failover:
+
+- Controlled primary-path loss dropped 70 datagrams.
+- Exact RaptorQ recovery: 381 objects and 1,195 source symbols.
+- Repair-assisted decodes: 381 objects.
+- Automatic failover sequence: healthy -> promoted -> healthy.
+- Warm source replay during promotion: 38 datagrams.
+- Expired objects, rejected datagrams, and deadline drops during the gated
+  fault phases: 0.
+
+Dashboard load:
+
+- `h2load` ran for 60 seconds through the local SSH tunnel to the Tokyo edge.
+- Requests: 6,520 total, 6,520 succeeded, 0 failed, 0 errored, 0 timed out.
+- Throughput: 108.67 requests/s.
+- Mean request time: 290.71 ms.
+- Max request time: 976.55 ms.
+
+Post-load observation:
+
+- Final API snapshot: 0 alerts, edge contiguous at head, rejected datagrams 0,
+  deadline drops 0.
+- Cumulative dashboard counters after the gate and dashboard load: 6 expired
+  objects and maximum historical failover gap 2.618526 s. These were not the
+  gated failover values; they are retained as follow-up operating data.
+
+Cleanup audit:
+
+- Primary relay service active before teardown: true.
+- Contributor and media services active before teardown: true.
+- Test packet-filter chain absent before teardown: true.
+- GCP lab teardown was run after documentation capture.
+
 ## Follow-up
 
 - Keep relay processing p95 as a hard release check for local and GCP runs.
@@ -116,3 +197,5 @@ Cleanup audit:
   availability timing.
 - Preserve RaptorQ as the recovery mechanism; QUIC remains a carrier option, not
   a replacement for FEC.
+- Investigate the post-dashboard-load cumulative expired-object counter and
+  historical maximum failover gap separately from the gated fault pass.

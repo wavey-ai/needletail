@@ -10,16 +10,16 @@
   <line x1="250" y1="88" x2="670" y2="88" class="axis"/>
 
   <text x="32" y="115" class="label">Best direct</text>
-  <rect x="250" y="98" width="419" height="28" rx="3" class="direct"/>
-  <text x="682" y="117" class="small">359.292 ms</text>
+  <rect x="250" y="98" width="418" height="28" rx="3" class="direct"/>
+  <text x="681" y="117" class="small">250.915 ms</text>
 
   <text x="32" y="165" class="label">Primary relay path</text>
-  <rect x="250" y="148" width="300" height="28" rx="3" class="primary"/>
-  <text x="562" y="167" class="small">257.431 ms · stretch 0.716×</text>
+  <rect x="250" y="148" width="407" height="28" rx="3" class="primary"/>
+  <text x="669" y="167" class="small">244.127 ms · stretch 0.973×</text>
 
   <text x="32" y="215" class="label">Secondary relay path</text>
-  <rect x="250" y="198" width="294" height="28" rx="3" class="secondary"/>
-  <text x="556" y="217" class="small">252.239 ms · stretch 0.702×</text>
+  <rect x="250" y="198" width="420" height="28" rx="3" class="secondary"/>
+  <text x="682" y="217" class="small">251.904 ms · stretch 1.004×</text>
 
   <text x="250" y="256" class="small">Route stretch limit: 1.15×</text>
 </svg>

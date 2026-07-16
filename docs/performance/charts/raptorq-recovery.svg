@@ -14,8 +14,8 @@
   <rect x="270" y="134" width="231" height="24" rx="3" class="local"/>
   <text x="513" y="152" class="small">1,120</text>
   <text x="32" y="188" class="small">GCP</text>
-  <rect x="270" y="172" width="11" height="24" rx="3" class="gcp"/>
-  <text x="293" y="190" class="small">52</text>
+  <rect x="270" y="172" width="79" height="24" rx="3" class="gcp"/>
+  <text x="361" y="190" class="small">381</text>
 
   <text x="32" y="235" class="label">Recovered source symbols</text>
   <line x1="270" y1="249" x2="670" y2="249" class="axis"/>
@@ -23,6 +23,6 @@
   <rect x="270" y="261" width="400" height="24" rx="3" class="local"/>
   <text x="682" y="279" class="small">1,941</text>
   <text x="32" y="315" class="small">GCP</text>
-  <rect x="270" y="299" width="12" height="24" rx="3" class="gcp"/>
-  <text x="294" y="317" class="small">58</text>
+  <rect x="270" y="299" width="246" height="24" rx="3" class="gcp"/>
+  <text x="528" y="317" class="small">1,195</text>
 </svg>

@@ -1,0 +1,204 @@
+{
+  "schema": "needletail.gcp-intercontinental-qualification.v3",
+  "run_id": "20260716T023139Z",
+  "project": "steadfast-slate-498623-r2",
+  "topology": {
+    "network": "needletail-qualification",
+    "machine_type": "e2-standard-2",
+    "nodes": {
+      "contributor": {
+        "role": "contributor",
+        "region": "London",
+        "zone": "europe-west2-b"
+      },
+      "primary": {
+        "role": "primary relay",
+        "region": "Amsterdam",
+        "zone": "europe-west4-a"
+      },
+      "secondary": {
+        "role": "secondary relay",
+        "region": "Osaka",
+        "zone": "asia-northeast2-b"
+      },
+      "edge": {
+        "role": "playback edge",
+        "region": "Tokyo",
+        "zone": "asia-northeast1-b"
+      }
+    }
+  },
+  "adaptive_raptorq": {
+    "controller_loss_fraction": 0.02,
+    "qualification_loss_probability": 0.02,
+    "policy_input_matches_fault": true
+  },
+  "measured_routes": {
+    "best_direct_rtt_ms": 250.915,
+    "primary": {
+      "rtt_ms": 244.127,
+      "path_stretch": 0.972947
+    },
+    "secondary": {
+      "rtt_ms": 251.904,
+      "path_stretch": 1.003942
+    },
+    "maximum_path_stretch": 1.15
+  },
+  "speed_of_light_factor": {
+    "direct_london_tokyo": {
+      "great_circle_km": 9558.6,
+      "measured_rtt_ms": 250.915,
+      "vacuum_rtt_lower_bound_ms": 63.8,
+      "ideal_fiber_rtt_lower_bound_ms": 93.7,
+      "vacuum_factor": 3.93,
+      "ideal_fiber_factor": 2.68
+    },
+    "primary_london_amsterdam_tokyo": {
+      "great_circle_km": 9645.9,
+      "measured_rtt_ms": 244.127,
+      "vacuum_rtt_lower_bound_ms": 64.4,
+      "ideal_fiber_rtt_lower_bound_ms": 94.6,
+      "vacuum_factor": 3.79,
+      "ideal_fiber_factor": 2.58
+    },
+    "secondary_london_osaka_tokyo": {
+      "great_circle_km": 9891.8,
+      "measured_rtt_ms": 251.904,
+      "vacuum_rtt_lower_bound_ms": 66.0,
+      "ideal_fiber_rtt_lower_bound_ms": 97.0,
+      "vacuum_factor": 3.82,
+      "ideal_fiber_factor": 2.6
+    }
+  },
+  "contributor_restart": {
+    "convergence_budget_ms": 10000,
+    "observer_elapsed_us": 10768602,
+    "maximum_activation_delay_us": 1628260,
+    "source_epoch_before": 1784168995455126,
+    "source_epoch_after": 1784169117510953,
+    "epoch_advanced": true,
+    "maximum_head_before": 1748,
+    "maximum_head_after": 88,
+    "relay_epochs_aligned": true,
+    "known_gaps": 0
+  },
+  "failover": {
+    "budgets_ms": {
+      "detection": 250,
+      "activation": 250,
+      "media_gap": 250
+    },
+    "observed_us": {
+      "detection": 106940,
+      "activation": 10703,
+      "media_gap": 120034
+    },
+    "state_sequence": [
+      "healthy",
+      "promoted",
+      "healthy"
+    ],
+    "decoded_objects": 327,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "surviving_lane_objects": 15,
+    "all_lanes_failed_objects": 0,
+    "promotions": 1,
+    "make_before_break_demotions": 1,
+    "warm_source_replayed_datagrams": 38
+  },
+  "canonical_publication_recovery": {
+    "source_epoch": 1784169117510953,
+    "maximum_allowed_lag_objects": 4,
+    "maximum_observed_lag_objects": 4,
+    "minimum_contiguous_object": 1005,
+    "maximum_head_object": 1009,
+    "known_gaps": 0
+  },
+  "raptorq_primary_path_loss": {
+    "probability": 0.02,
+    "duration_seconds": 15,
+    "dropped_datagrams": 70,
+    "decoded_objects": 381,
+    "repair_assisted_objects": 381,
+    "fec_recovered_objects": 381,
+    "fec_recovered_source_symbols": 1195,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0
+  },
+  "relay_latency": {
+    "schema": "needletail.relay-latency-delta.v1",
+    "relay_processing": {
+      "max_p95_us": 1000,
+      "max_p99_us": 1000
+    },
+    "publication_to_available": {
+      "max_p95_us": 150000,
+      "max_p99_us": 150000
+    },
+    "budgets_us": {
+      "relay_processing_p95": 1000,
+      "publication_to_available_p99": 500000
+    }
+  },
+  "dashboard_load": {
+    "tool": "h2load",
+    "target": "Tokyo edge over local SSH tunnel",
+    "duration_seconds": 60,
+    "connections": 8,
+    "streams_per_connection": 4,
+    "requests_total": 6520,
+    "requests_succeeded": 6520,
+    "requests_failed": 0,
+    "requests_per_second": 108.67,
+    "mean_request_ms": 290.71,
+    "max_request_ms": 976.55
+  },
+  "dashboard_screenshots": [
+    "docs/performance/screenshots/20260716T023139Z-overview.png",
+    "docs/performance/screenshots/20260716T023139Z-routes.png",
+    "docs/performance/screenshots/20260716T023139Z-performance.png"
+  ],
+  "post_dashboard_load_observation": {
+    "alerts": 0,
+    "edge_head_object": 15307,
+    "edge_contiguous_object": 15307,
+    "edge_lag_objects": 0,
+    "relay_primary_lag_objects": 2,
+    "relay_secondary_lag_objects": 3,
+    "decoded_objects": 17086,
+    "fec_recovered_objects": 16716,
+    "fec_recovered_source_symbols": 52347,
+    "expired_objects": 6,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "maximum_historical_failover_gap_us": 2618526
+  },
+  "passed": true,
+  "raw_artifact_directory": "target/gcp-qualification/runs/20260716T023139Z",
+  "tested_revisions": {
+    "needletail": {
+      "commit": "e5abbcbcfc5f8458c2a8ebd6723c09a1eb26514a",
+      "working_tree_modified": true
+    },
+    "av_contrib": {
+      "commit": "9aa15eaeb4d6602f35e750f1e91318201ce355b6",
+      "working_tree_modified": false
+    },
+    "av_mesh": {
+      "commit": "1d3276bc5868ce50a8577eb257d956bfa0b0c689",
+      "working_tree_modified": false
+    }
+  },
+  "cleanup": {
+    "primary_service_active": true,
+    "contributor_services_active": true,
+    "loss_chain_absent": true,
+    "alerts_empty": true,
+    "known_gaps": 0,
+    "gcp_lab_torn_down_after_documentation": true
+  }
+}

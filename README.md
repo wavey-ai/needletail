@@ -41,6 +41,7 @@ agent on each host, and `systemd` supervision of native binaries.
 ## Documentation
 
 - [Latency performance charts](docs/performance/latency-performance.md)
+- [Real-world load dashboard screenshots](docs/performance/real-world-load-screenshots.md)
 - [Relay fabric](docs/relay-fabric.md)
 - [Deployment control plane](deploy/README.md)
 - [Mission Control](mission-control/README.md)
@@ -103,8 +104,9 @@ Latest charts:
 
 Latest results:
 
-- GCP intercontinental: relay processing p95 `0.5 ms`; publication-to-cache p99
-  `150 ms`; failover media gap `122.738 ms`.
+- GCP intercontinental: relay processing p95 `1.0 ms`; publication-to-cache p99
+  `150 ms`; failover media gap `120.034 ms`; RaptorQ recovered `381` media
+  objects and `1,195` source symbols under controlled loss.
 - Local controlled-loss: relay processing p95 `1.0 ms`; publication-to-cache p99
   `150 ms`; RaptorQ recovered `1,120` media objects.
 

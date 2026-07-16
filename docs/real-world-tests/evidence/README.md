@@ -25,4 +25,5 @@ Evidence index:
 - `20260715-warm-source-replay-series-summary.json`: aggregate ranges and counter semantics across the three v3 runs;
 - `local-20260715T235439Z.json`: local controlled-impairment load, failover, and exact-RaptorQ run;
 - `local-20260716T001959Z.json`: local relay-processing and corrected publication-latency run;
-- `20260716T002843Z.json`: GCP relay-processing and corrected publication-latency run.
+- `20260716T002843Z.json`: GCP relay-processing and corrected publication-latency run;
+- `20260716T023139Z.json`: GCP intercontinental failover, RaptorQ loss recovery, dashboard load, screenshots, and speed-of-light factor run.
