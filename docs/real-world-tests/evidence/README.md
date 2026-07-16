@@ -18,4 +18,9 @@ Evidence index:
 - `20260715T230001Z.json`: repeat met latency gates but failed the strict one-object expiry bound;
 - `20260715T230319Z.json`: second complete passing run after the strict variance failure;
 - `20260715T230643Z.json`: third complete passing run;
-- `20260715-corrected-series-summary.json`: aggregate ranges across the four corrected-build repeats.
+- `20260715-corrected-series-summary.json`: aggregate ranges across the four corrected-build repeats;
+- `20260715T234426Z.json`: first zero-expiry pass with exact RaptorQ attribution and warm-source replay;
+- `20260715T234654Z.json`: second consecutive zero-expiry exact-recovery pass;
+- `20260715T234910Z.json`: third consecutive zero-expiry exact-recovery pass;
+- `20260715-warm-source-replay-series-summary.json`: aggregate ranges and counter semantics across the three v3 runs;
+- `local-20260715T235439Z.json`: local controlled-impairment load, failover, and exact-RaptorQ qualification.

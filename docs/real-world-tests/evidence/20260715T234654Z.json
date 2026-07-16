@@ -1,0 +1,130 @@
+{
+  "schema": "needletail.gcp-intercontinental-qualification.v3",
+  "run_id": "20260715T234654Z",
+  "project": "steadfast-slate-498623-r2",
+  "topology": {
+    "project": "steadfast-slate-498623-r2",
+    "network": "needletail-qualification",
+    "machine_type": "e2-standard-2",
+    "max_run_duration": "6h",
+    "nodes": {
+      "contributor": {
+        "name": "nt-contrib-lon",
+        "zone": "europe-west2-b"
+      },
+      "primary": {
+        "name": "nt-relay-ams",
+        "zone": "europe-west4-a"
+      },
+      "secondary": {
+        "name": "nt-relay-osa",
+        "zone": "asia-northeast2-b"
+      },
+      "edge": {
+        "name": "nt-edge-tyo",
+        "zone": "asia-northeast1-b"
+      }
+    }
+  },
+  "adaptive_raptorq": {
+    "controller_loss_fraction": 0.02,
+    "qualification_loss_probability": 0.02,
+    "policy_input_matches_fault": true
+  },
+  "measured_routes": {
+    "best_direct_rtt_ms": 241.231,
+    "primary": {
+      "rtt_ms": 259.508,
+      "path_stretch": 1.075766
+    },
+    "secondary": {
+      "rtt_ms": 250.794,
+      "path_stretch": 1.039643
+    },
+    "maximum_path_stretch": 1.15
+  },
+  "contributor_restart": {
+    "convergence_budget_ms": 10000,
+    "observer_elapsed_us": 10760129,
+    "maximum_activation_delay_us": 1626625,
+    "source_epoch_before": 1784159093258801,
+    "source_epoch_after": 1784159232647391,
+    "epoch_advanced": true,
+    "maximum_head_before": 2013,
+    "maximum_head_after": 84,
+    "relay_epochs_aligned": true,
+    "known_gaps": 0
+  },
+  "failover": {
+    "budgets_ms": {
+      "detection": 250,
+      "activation": 250,
+      "media_gap": 250
+    },
+    "observed_us": {
+      "detection": 103467,
+      "activation": 9704,
+      "media_gap": 114679
+    },
+    "state_sequence": [
+      "healthy",
+      "promoted",
+      "healthy"
+    ],
+    "decoded_objects": 328,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "surviving_lane_objects": 14,
+    "all_lanes_failed_objects": 0,
+    "promotions": 1,
+    "make_before_break_demotions": 1,
+    "warm_source_replayed_datagrams": 38
+  },
+  "canonical_publication_recovery": {
+    "source_epoch": 1784159232647391,
+    "maximum_allowed_lag_objects": 4,
+    "maximum_observed_lag_objects": 4,
+    "minimum_contiguous_object": 983,
+    "maximum_head_object": 987,
+    "known_gaps": 0
+  },
+  "raptorq_primary_path_loss": {
+    "probability": 0.02,
+    "duration_seconds": 15,
+    "dropped_datagrams": 81,
+    "decoded_objects": 384,
+    "repair_assisted_objects": 384,
+    "fec_recovered_objects": 384,
+    "fec_recovered_source_symbols": 1202,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0
+  },
+  "passed": true,
+  "raw_artifact_directory": "target/gcp-qualification/runs/20260715T234654Z",
+  "tested_revisions": {
+    "needletail": {
+      "commit": "5b8a957",
+      "working_tree_diff_sha256": "a578bd0e68aeb0d027040e829bff532325e05ecb2a16d23db8b9e53bb26dc1ed"
+    },
+    "av_mesh": {
+      "commit": "730cc1e",
+      "working_tree_diff_sha256": "cb8703788e1d6246117413f02639395506d7904bc4074667eb6b528b7a7a68fa"
+    },
+    "av_contrib": "9aa15ea",
+    "media_object": "881f1fe",
+    "raptor_fec": "2722922",
+    "relay_session": "41fbf36",
+    "playlists": "d0b4a09"
+  },
+  "cleanup": {
+    "primary_service_active": true,
+    "contributor_services_active": true,
+    "loss_chain_absent": true,
+    "alerts_empty": true,
+    "failover_controller_state": "healthy",
+    "known_gaps": 0,
+    "maximum_lag_objects": 4
+  }
+}

@@ -56,9 +56,15 @@ IMPAIRED_JSON="${RESULT_DIR}/impaired.json"
 QUALIFICATION_JSON="${RESULT_DIR}/qualification.json"
 FAILOVER_JSON="${RESULT_DIR}/automatic-failover.json"
 
-RAPTORQ_REPAIRED_OBJECTS_BEFORE=0
-RAPTORQ_REPAIRED_OBJECTS_AFTER=0
-RAPTORQ_REPAIRED_OBJECTS_DELTA=0
+RAPTORQ_REPAIR_ASSISTED_OBJECTS_BEFORE=0
+RAPTORQ_REPAIR_ASSISTED_OBJECTS_AFTER=0
+RAPTORQ_REPAIR_ASSISTED_OBJECTS_DELTA=0
+RAPTORQ_FEC_RECOVERED_OBJECTS_BEFORE=0
+RAPTORQ_FEC_RECOVERED_OBJECTS_AFTER=0
+RAPTORQ_FEC_RECOVERED_OBJECTS_DELTA=0
+RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_BEFORE=0
+RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_AFTER=0
+RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_DELTA=0
 RAPTORQ_SOURCE_DATAGRAMS_BEFORE=0
 RAPTORQ_SOURCE_DATAGRAMS_AFTER=0
 RAPTORQ_SOURCE_DATAGRAMS_DELTA=0
@@ -120,8 +126,8 @@ Primary environment overrides:
 
 Default gates are 15ms ingest/forwarding p95, 5ms playlist p95, 1ms edge
 handler p95, a 3x impaired/baseline p95 ratio, zero RelaySession rejection,
-deadline, or forwarding-error deltas, and proven repair-assisted RaptorQ object
-completion when primary-path loss is enabled.
+deadline, or forwarding-error deltas, and exact RaptorQ reconstruction of
+missing source symbols when primary-path loss is enabled.
 EOF
 }
 
@@ -473,7 +479,9 @@ verify_netem_log() {
 capture_raptorq_before() {
   local snapshot
   snapshot="$(curl -kfsS "${EDGE_URL%/}/api/mesh")"
-  RAPTORQ_REPAIRED_OBJECTS_BEFORE="$(jq -r '.relay_session.repaired_objects' <<<"${snapshot}")"
+  RAPTORQ_REPAIR_ASSISTED_OBJECTS_BEFORE="$(jq -r '.relay_session.repair_assisted_objects' <<<"${snapshot}")"
+  RAPTORQ_FEC_RECOVERED_OBJECTS_BEFORE="$(jq -r '.relay_session.fec_recovered_objects' <<<"${snapshot}")"
+  RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_BEFORE="$(jq -r '.relay_session.fec_recovered_source_symbols' <<<"${snapshot}")"
   RAPTORQ_SOURCE_DATAGRAMS_BEFORE="$(jq -r '.relay_session.source_datagrams' <<<"${snapshot}")"
   RAPTORQ_REPAIR_DATAGRAMS_BEFORE="$(jq -r '.relay_session.repair_datagrams' <<<"${snapshot}")"
   RAPTORQ_REJECTED_BEFORE="$(jq -r '.relay_session.datagrams_rejected' <<<"${snapshot}")"
@@ -486,7 +494,9 @@ capture_raptorq_before() {
 capture_raptorq_after() {
   local snapshot
   snapshot="$(curl -kfsS "${EDGE_URL%/}/api/mesh")"
-  RAPTORQ_REPAIRED_OBJECTS_AFTER="$(jq -r '.relay_session.repaired_objects' <<<"${snapshot}")"
+  RAPTORQ_REPAIR_ASSISTED_OBJECTS_AFTER="$(jq -r '.relay_session.repair_assisted_objects' <<<"${snapshot}")"
+  RAPTORQ_FEC_RECOVERED_OBJECTS_AFTER="$(jq -r '.relay_session.fec_recovered_objects' <<<"${snapshot}")"
+  RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_AFTER="$(jq -r '.relay_session.fec_recovered_source_symbols' <<<"${snapshot}")"
   RAPTORQ_SOURCE_DATAGRAMS_AFTER="$(jq -r '.relay_session.source_datagrams' <<<"${snapshot}")"
   RAPTORQ_REPAIR_DATAGRAMS_AFTER="$(jq -r '.relay_session.repair_datagrams' <<<"${snapshot}")"
   RAPTORQ_REJECTED_AFTER="$(jq -r '.relay_session.datagrams_rejected' <<<"${snapshot}")"
@@ -495,7 +505,9 @@ capture_raptorq_after() {
   SECONDARY_FORWARDED_REPAIR_AFTER="$(jq -r '[.relay_nodes[] | select(.node_id == "relay-secondary") | .relay_session.forwarded_repair_datagrams] | add // 0' <<<"${snapshot}")"
   RELAY_FORWARD_ERRORS_AFTER="$(jq -r '[.relay_nodes[].relay_session.forward_errors] | add // 0' <<<"${snapshot}")"
 
-  RAPTORQ_REPAIRED_OBJECTS_DELTA="$((RAPTORQ_REPAIRED_OBJECTS_AFTER - RAPTORQ_REPAIRED_OBJECTS_BEFORE))"
+  RAPTORQ_REPAIR_ASSISTED_OBJECTS_DELTA="$((RAPTORQ_REPAIR_ASSISTED_OBJECTS_AFTER - RAPTORQ_REPAIR_ASSISTED_OBJECTS_BEFORE))"
+  RAPTORQ_FEC_RECOVERED_OBJECTS_DELTA="$((RAPTORQ_FEC_RECOVERED_OBJECTS_AFTER - RAPTORQ_FEC_RECOVERED_OBJECTS_BEFORE))"
+  RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_DELTA="$((RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_AFTER - RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_BEFORE))"
   RAPTORQ_SOURCE_DATAGRAMS_DELTA="$((RAPTORQ_SOURCE_DATAGRAMS_AFTER - RAPTORQ_SOURCE_DATAGRAMS_BEFORE))"
   RAPTORQ_REPAIR_DATAGRAMS_DELTA="$((RAPTORQ_REPAIR_DATAGRAMS_AFTER - RAPTORQ_REPAIR_DATAGRAMS_BEFORE))"
   RAPTORQ_REJECTED_DELTA="$((RAPTORQ_REJECTED_AFTER - RAPTORQ_REJECTED_BEFORE))"
@@ -516,16 +528,18 @@ verify_raptorq_recovery() {
   fi
   if { awk -v loss="${WAN_LOSS_PCT}" 'BEGIN { exit !(loss > 0) }' || \
        awk -v loss="${INGEST_LOSS_PCT}" 'BEGIN { exit !(loss > 0) }'; } && \
-     [[ "${RAPTORQ_REPAIRED_OBJECTS_DELTA}" -le 0 ]]; then
-    echo "primary-path loss was enabled but no edge object completed with RaptorQ repair" >&2
+     { [[ "${RAPTORQ_FEC_RECOVERED_OBJECTS_DELTA}" -le 0 ]] || \
+       [[ "${RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_DELTA}" -le 0 ]]; }; then
+    echo "primary-path loss was enabled but the edge did not prove RaptorQ source-symbol reconstruction" >&2
     return 1
   fi
   if [[ "${RAPTORQ_REJECTED_DELTA}" -ne 0 || "${RAPTORQ_DEADLINE_DROPS_DELTA}" -ne 0 || "${RELAY_FORWARD_ERRORS_DELTA}" -ne 0 ]]; then
     echo "impaired RelaySession errors: rejected=${RAPTORQ_REJECTED_DELTA} deadline=${RAPTORQ_DEADLINE_DROPS_DELTA} forward=${RELAY_FORWARD_ERRORS_DELTA}" >&2
     return 1
   fi
-  printf '%-24s repaired_objects=%s source=%s repair=%s primary_forward=%s warm_forward=%s rejected=%s deadline=%s forward_errors=%s\n' \
-    "RaptorQ DAG recovery" "${RAPTORQ_REPAIRED_OBJECTS_DELTA}" \
+  printf '%-24s recovered_objects=%s recovered_source_symbols=%s repair_assisted=%s source=%s repair=%s primary_forward=%s warm_forward=%s rejected=%s deadline=%s forward_errors=%s\n' \
+    "RaptorQ DAG recovery" "${RAPTORQ_FEC_RECOVERED_OBJECTS_DELTA}" \
+    "${RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_DELTA}" "${RAPTORQ_REPAIR_ASSISTED_OBJECTS_DELTA}" \
     "${RAPTORQ_SOURCE_DATAGRAMS_DELTA}" "${RAPTORQ_REPAIR_DATAGRAMS_DELTA}" \
     "${PRIMARY_FORWARDED_SOURCE_DELTA}" "${SECONDARY_FORWARDED_REPAIR_DELTA}" \
     "${RAPTORQ_REJECTED_DELTA}" "${RAPTORQ_DEADLINE_DROPS_DELTA}" "${RELAY_FORWARD_ERRORS_DELTA}"
@@ -709,7 +723,9 @@ write_qualification() {
     --argjson ingest_loss_pct "${INGEST_LOSS_PCT}" \
     --argjson secondary_ingest_loss_pct "${SECONDARY_INGEST_LOSS_PCT}" \
     --argjson secondary_edge_loss_pct "${SECONDARY_EDGE_LOSS_PCT}" \
-    --argjson repaired_objects "${RAPTORQ_REPAIRED_OBJECTS_DELTA}" \
+    --argjson repair_assisted_objects "${RAPTORQ_REPAIR_ASSISTED_OBJECTS_DELTA}" \
+    --argjson fec_recovered_objects "${RAPTORQ_FEC_RECOVERED_OBJECTS_DELTA}" \
+    --argjson fec_recovered_source_symbols "${RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_DELTA}" \
     --argjson source_datagrams "${RAPTORQ_SOURCE_DATAGRAMS_DELTA}" \
     --argjson repair_datagrams "${RAPTORQ_REPAIR_DATAGRAMS_DELTA}" \
     --argjson primary_forwarded_source "${PRIMARY_FORWARDED_SOURCE_DELTA}" \
@@ -726,7 +742,9 @@ write_qualification() {
         contributor_to_secondary: {delay_ms: $ingest_delay_ms, jitter_ms: $ingest_jitter_ms, loss_pct: $secondary_ingest_loss_pct}
       },
       raptorq_recovery: {
-        repaired_objects: $repaired_objects,
+        repair_assisted_objects: $repair_assisted_objects,
+        fec_recovered_objects: $fec_recovered_objects,
+        fec_recovered_source_symbols: $fec_recovered_source_symbols,
         source_datagrams: $source_datagrams,
         repair_datagrams: $repair_datagrams,
         primary_forwarded_source_datagrams: $primary_forwarded_source,

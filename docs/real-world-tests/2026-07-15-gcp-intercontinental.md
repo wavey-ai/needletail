@@ -170,7 +170,7 @@ Primary-outage telemetry also remained inside the fast-failover budgets:
 | Secondary activation | 12.158 ms | ≤ 250 ms |
 | Decoded-media gap | 133.766 ms | ≤ 250 ms |
 | Decoded objects during outage | 306 | positive |
-| RaptorQ-repaired objects during outage | 38 | positive |
+| Repair-assisted decodes during outage (legacy `repaired_objects`) | 38 | positive |
 | Expired objects | 1 | ≤ 1 |
 | Rejected datagrams | 0 | 0 |
 | Deadline drops | 0 | 0 |
@@ -241,7 +241,7 @@ passed end to end:
 | Publication recovery | Known retained gaps | 0 | 0 |
 | Controlled 2% loss | Dropped datagrams | 67 | positive |
 | Controlled 2% loss | RaptorQ decoded objects | 355 | positive |
-| Controlled 2% loss | RaptorQ-repaired objects | 57 | ≥ 1 |
+| Controlled 2% loss | Repair-assisted decodes (legacy `repaired_objects`) | 57 | ≥ 1 |
 | Controlled 2% loss | Expired objects | 0 | 0 |
 | Controlled 2% loss | Rejected datagrams | 0 | 0 |
 | Controlled 2% loss | Deadline drops | 0 | 0 |
@@ -270,7 +270,7 @@ The primary outage remained within every latency budget:
 | Secondary activation | 77.435 ms | ≤ 250 ms |
 | Decoded-media gap | 197.535 ms | ≤ 250 ms |
 | Decoded objects | 334 | positive |
-| RaptorQ-repaired objects | 40 | positive |
+| Repair-assisted decodes (legacy `repaired_objects`) | 40 | positive |
 | Rejected datagrams | 0 | 0 |
 | Deadline drops | 0 | 0 |
 
@@ -307,7 +307,7 @@ The next immediate repeat passed every gate:
 | Publication recovery | Known retained gaps | 0 | 0 |
 | Controlled 2% loss | Dropped datagrams | 76 | positive |
 | Controlled 2% loss | RaptorQ decoded objects | 369 | positive |
-| Controlled 2% loss | RaptorQ-repaired objects | 369 | ≥ 1 |
+| Controlled 2% loss | Repair-assisted decodes (legacy `repaired_objects`) | 369 | ≥ 1 |
 | Controlled 2% loss | Expired objects | 0 | 0 |
 | Controlled 2% loss | Rejected datagrams | 0 | 0 |
 | Controlled 2% loss | Deadline drops | 0 | 0 |
@@ -340,7 +340,7 @@ The third complete pass produced:
 | Publication recovery | Known retained gaps | 0 | 0 |
 | Controlled 2% loss | Dropped datagrams | 78 | positive |
 | Controlled 2% loss | RaptorQ decoded objects | 370 | positive |
-| Controlled 2% loss | RaptorQ-repaired objects | 369 | ≥ 1 |
+| Controlled 2% loss | Repair-assisted decodes (legacy `repaired_objects`) | 369 | ≥ 1 |
 | Controlled 2% loss | Expired objects | 0 | 0 |
 | Controlled 2% loss | Rejected datagrams | 0 | 0 |
 | Controlled 2% loss | Deadline drops | 0 | 0 |
@@ -366,14 +366,104 @@ remained within the 250 ms detection, activation, and media-gap budgets:
 | Maximum publication lag | 4 objects |
 
 The three successful 2% loss phases dropped 67–78 datagrams, decoded 355–370
-objects, and attributed 57–369 objects to RaptorQ repair. All three finished
+objects, and admitted repair symbols before decode for 57–369 objects. All three finished
 with zero expired objects, rejected datagrams, or deadline drops during the
-controlled-loss interval. The wide repaired-object range is retained as a
+controlled-loss interval. The wide repair-assisted-decode range is retained as a
 follow-up observability question rather than normalized away.
+
+The July 15 receiver counter named `repaired_objects` measured repair-assisted
+decode: at least one repair symbol arrived before completion. It did not prove
+that a source symbol was missing. The July 16 instrumentation separates that
+legacy attribution from exact `fec_recovered_objects` and
+`fec_recovered_source_symbols` counters; new qualification gates use the exact
+counters.
+
+### Exact RaptorQ attribution and zero-expiry failover correction
+
+The previous series identified two separate observability and recovery issues:
+
+- `repaired_objects` counted any decode that admitted a repair symbol. It could
+  not distinguish a repair-assisted decode from reconstruction of an absent
+  source symbol.
+- the warm secondary kept subscription and repair state but discarded source
+  datagrams until promotion. Objects already in flight at the playback edge
+  could therefore expire even though the secondary path was warm.
+
+The receiver now counts the source-symbol deficit at decode time and exports
+`fec_recovered_objects` plus `fec_recovered_source_symbols`. The legacy
+attribution has the precise name `repair_assisted_objects`. Qualification gates
+use the exact recovery counters.
+
+Each warm child now retains a deadline-bounded source replay window: at most the
+latest four objects, 2,048 datagrams, and 4 MiB. Promotion changes the lane to
+source-plus-repair and immediately replays only unexpired source datagrams. The
+buffer exposes current bytes/datagrams, replay totals, expiry removals, rolling
+window retirements, and hard-bound evictions through the mesh API, Prometheus,
+Grafana, and the operations dashboard.
+
+The deployment tested these revisions:
+
+| Repository | Revision tested |
+| --- | --- |
+| Needletail | `5b8a957` plus working-tree diff SHA-256 `a578bd0e68aeb0d027040e829bff532325e05ecb2a16d23db8b9e53bb26dc1ed` |
+| av-mesh | `730cc1e` plus working-tree diff SHA-256 `cb8703788e1d6246117413f02639395506d7904bc4074667eb6b528b7a7a68fa` |
+| av-contrib | `9aa15ea` |
+| media-object | `881f1fe` |
+| raptor-fec | `2722922` |
+| relay-session | `41fbf36` |
+| playlists | `d0b4a09` |
+
+The Linux build completed on the London host and deployed to London,
+Amsterdam, Osaka, and Tokyo. The deployment measured 241.231 ms direct RTT,
+259.508 ms through Amsterdam (`1.075766×` stretch), and 250.794 ms through
+Osaka (`1.039643×` stretch). Both selected routes satisfied the `1.15×` gate.
+
+### Exact-recovery qualification runs 6–8 — all passed
+
+Artifact directories:
+
+- `target/gcp-qualification/runs/20260715T234426Z`
+- `target/gcp-qualification/runs/20260715T234654Z`
+- `target/gcp-qualification/runs/20260715T234910Z`
+
+Every invocation restarted the contributor, stopped the Amsterdam primary,
+verified warm-secondary promotion and publication convergence, restored the
+primary with make-before-break demotion, then injected 2% random loss for 15
+seconds on the primary RaptorQ ingress.
+
+| Run | Epoch activation | Detection | Warm activation | Media gap | Decoded during outage | Warm source replay | Expired | Max publication lag | Gaps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20260715T234426Z` | 1.763 s | 112.392 ms | 9.815 ms | 124.811 ms | 313 | 47 datagrams | 0 | 3 objects | 0 |
+| `20260715T234654Z` | 1.627 s | 103.467 ms | 9.704 ms | 114.679 ms | 328 | 38 datagrams | 0 | 4 objects | 0 |
+| `20260715T234910Z` | 1.773 s | 123.068 ms | 9.963 ms | 135.308 ms | 409 | 46 datagrams | 0 | 3 objects | 0 |
+
+All failover measurements remained inside their 250 ms budgets. The strict
+expiry gate was zero, and all three invocations met it. Each state sequence was
+healthy → promoted → healthy with one promotion and one make-before-break
+demotion.
+
+The controlled-loss phases directly proved missing-source reconstruction:
+
+| Run | Dropped datagrams | Decoded objects | Exact FEC-recovered objects | Reconstructed source symbols | Repair-assisted objects | Expired / rejected / deadline drops |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20260715T234426Z` | 78 | 368 | 223 | 399 | 223 | 0 / 0 / 0 |
+| `20260715T234654Z` | 81 | 384 | 384 | 1,202 | 384 | 0 / 0 / 0 |
+| `20260715T234910Z` | 76 | 381 | 188 | 330 | 188 | 0 / 0 / 0 |
+
+The exact reconstruction totals vary with loss placement and the number of
+source symbols absent when each object completes. The integrity results were
+stable: all three loss phases reconstructed source data, and all completed with
+zero expiry, rejection, and deadline-drop deltas.
+
+The next invocation's clean baseline verified cleanup after each of the first
+two runs. A separate final audit verified the Amsterdam relay active, both
+London services active, the qualification iptables chain absent, zero alerts,
+a healthy failover controller, zero publication gaps, and a maximum live lag
+of two objects.
 
 ## Current qualification status
 
-The corrected build has three complete passing qualifications and one preserved
-strict-threshold variance failure. The live system is healthy and clean after
-the series. The remaining optimization targets are the occasional second
-in-flight expiry and the large variation in RaptorQ repaired-object attribution.
+The exact-recovery build has three consecutive complete passes under the
+zero-expiry failover gate. The versioned v3 evidence preserves per-run exact
+RaptorQ recovery, warm-source replay, route stretch, publication convergence,
+and cleanup state.

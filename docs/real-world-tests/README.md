@@ -15,6 +15,8 @@ Each dated record includes:
 - delivery topology, carrier, RaptorQ policy, bitrate, and fault profile;
 - measured direct and selected-route RTT/path stretch;
 - contributor restart, source-epoch, publication, failover, and recovery results;
+- exact RaptorQ-recovered objects and source symbols, plus repair-assisted decode attribution;
+- warm-secondary source-buffer replay, expiry, retirement, and eviction counters;
 - LL-HLS part cadence and relevant p50/p95/p99 latency observations;
 - every failed gate or tooling defect, its diagnosis, and the corrective rerun;
 - final service, packet-filter, and test-resource cleanup state.
@@ -37,3 +39,4 @@ and absence of secret-shaped fields with:
 ```
 
 Current record: [2026-07-15 GCP intercontinental qualification](2026-07-15-gcp-intercontinental.md).
+Local controlled-impairment record: [2026-07-15 realtime qualification](2026-07-15-local-realtime.md).

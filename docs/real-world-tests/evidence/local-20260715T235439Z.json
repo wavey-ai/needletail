@@ -1,0 +1,119 @@
+{
+  "schema": "needletail.local-realtime-qualification.v1",
+  "run_id": "20260715T235439Z",
+  "raw_artifact_directory": "target/realtime-qualification/20260715T235439Z",
+  "host": {
+    "name": "air",
+    "architecture": "arm64",
+    "carrier": "loopback UDP through udp-netem"
+  },
+  "load": {
+    "client": "h2load",
+    "duration_seconds_per_endpoint": 15,
+    "connections": 8,
+    "streams_per_connection": 4,
+    "payload_bytes": 4096
+  },
+  "impairment": {
+    "contributor_to_primary": {"delay_ms": 10, "jitter_ms": 2, "loss_pct": 1},
+    "contributor_to_secondary": {"delay_ms": 10, "jitter_ms": 2, "loss_pct": 0},
+    "primary_backbone_to_edge": {"delay_ms": 35, "jitter_ms": 5, "loss_pct": 1},
+    "secondary_backbone_to_edge": {"delay_ms": 35, "jitter_ms": 5, "loss_pct": 0}
+  },
+  "baseline": {
+    "contributor_ingest": {
+      "requests": 88390,
+      "failed": 0,
+      "p50_ms": 4.728,
+      "p95_ms": 10.815,
+      "p99_ms": 19.75,
+      "effective_requests_per_second": 5919.6,
+      "service_forward_p95_upper_bound_ms": 5.0
+    },
+    "playlist": {
+      "requests": 734730,
+      "failed": 0,
+      "p50_ms": 0.526,
+      "p95_ms": 1.108,
+      "p99_ms": 1.827,
+      "effective_requests_per_second": 51677.8,
+      "service_handler_p95_upper_bound_ms": 0.1
+    },
+    "netem_loss_drops": 0
+  },
+  "impaired": {
+    "contributor_ingest": {
+      "requests": 105005,
+      "failed": 0,
+      "p50_ms": 3.973,
+      "p95_ms": 8.939,
+      "p99_ms": 16.823,
+      "effective_requests_per_second": 7024.5,
+      "service_forward_p95_upper_bound_ms": 2.5,
+      "p95_to_baseline_ratio": 0.826537216828479
+    },
+    "playlist": {
+      "requests": 806109,
+      "failed": 0,
+      "p50_ms": 0.479,
+      "p95_ms": 1.015,
+      "p99_ms": 1.669,
+      "effective_requests_per_second": 56732.3,
+      "service_handler_p95_upper_bound_ms": 0.1,
+      "p95_to_baseline_ratio": 0.9160649819494583
+    },
+    "netem": {
+      "contributor_to_primary_loss_drops": 60,
+      "primary_to_edge_loss_drops": 62,
+      "primary_to_edge_recovery_phase_loss_drops": 3,
+      "secondary_path_loss_drops": 0,
+      "overflow_drops": 0,
+      "send_errors": 0
+    }
+  },
+  "automatic_failover": {
+    "state_sequence": ["healthy", "promoted", "healthy"],
+    "detection_us": 111073,
+    "promotion_to_source_us": 32327,
+    "media_gap_us": 150068,
+    "decoded_objects": 6,
+    "warm_forwarded_source_datagrams": 63,
+    "expired_objects": 0,
+    "deadline_drops": 0,
+    "rejected_datagrams": 0,
+    "promotions": 1,
+    "make_before_break_demotions": 1
+  },
+  "raptorq_recovery": {
+    "repair_assisted_objects": 536,
+    "fec_recovered_objects": 536,
+    "fec_recovered_source_symbols": 915,
+    "source_datagrams": 7118,
+    "repair_datagrams": 1206,
+    "primary_forwarded_source_datagrams": 5697,
+    "secondary_forwarded_repair_datagrams": 1206,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "forward_errors": 0
+  },
+  "gates": {
+    "contributor_ingest_p95_ms": 15.0,
+    "playlist_p95_ms": 5.0,
+    "service_forward_p95_ms": 15.0,
+    "service_handler_p95_ms": 1.0,
+    "maximum_p95_ratio": 3.0,
+    "failover_activation_ms": 250.0,
+    "failover_media_gap_ms": 250.0,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "forward_errors": 0,
+    "minimum_exact_fec_recovered_objects": 1
+  },
+  "tested_binaries": {
+    "needletail": {"commit": "5b8a9571a7ef29916c4cc08e3613acc1a8ce0eee", "sha256": "874848414b5956d1c8378a78bf3e7646931bd75585b9fec82550186addbb7b79"},
+    "av_contrib": {"commit": "9aa15eaeb4d6602f35e750f1e91318201ce355b6", "sha256": "f6348cf677f43fe7b6a55334c2134382e30d3ee66b4c461c4ad8b60afe9b3ff0"},
+    "av_mesh": {"commit": "730cc1e47d8e1eed884df36f3a6d9f3641dce4a8", "sha256": "3a5dab193dee3219a9f6a8c81fdc4f13c1a9ef65b12b0c9c230fd3deef58b1db"}
+  },
+  "passed": true
+}

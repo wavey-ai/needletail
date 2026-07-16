@@ -46,10 +46,13 @@
     "duration_seconds_each": 15,
     "dropped_datagrams_range": [67, 78],
     "decoded_objects_range": [355, 370],
-    "repaired_objects_range": [57, 369],
+    "repair_assisted_objects_legacy_range": [57, 369],
     "expired_objects": 0,
     "rejected_datagrams": 0,
     "deadline_drops": 0
+  },
+  "counter_semantics": {
+    "repair_assisted_objects_legacy_range": "legacy repaired_objects counter; at least one repair symbol arrived before decode, without proving a missing source symbol"
   },
   "cleanup_verified_after_every_invocation": true
 }

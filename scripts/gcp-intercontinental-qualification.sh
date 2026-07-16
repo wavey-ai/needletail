@@ -22,7 +22,7 @@ RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/runs/${RUN_ID}}"
 FAILOVER_DETECTION_BUDGET_MS="${FAILOVER_DETECTION_BUDGET_MS:-250}"
 FAILOVER_ACTIVATION_BUDGET_MS="${FAILOVER_ACTIVATION_BUDGET_MS:-250}"
 FAILOVER_MEDIA_GAP_BUDGET_MS="${FAILOVER_MEDIA_GAP_BUDGET_MS:-250}"
-FAILOVER_MAX_EXPIRED_OBJECTS="${FAILOVER_MAX_EXPIRED_OBJECTS:-1}"
+FAILOVER_MAX_EXPIRED_OBJECTS="${FAILOVER_MAX_EXPIRED_OBJECTS:-0}"
 FAILOVER_TIMEOUT_SECONDS="${FAILOVER_TIMEOUT_SECONDS:-12}"
 FAILOVER_STABILITY_SECONDS="${FAILOVER_STABILITY_SECONDS:-3}"
 RECOVERY_TIMEOUT_SECONDS="${RECOVERY_TIMEOUT_SECONDS:-20}"
@@ -31,7 +31,7 @@ SOURCE_RESTART_CONVERGENCE_BUDGET_MS="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS:-10
 SOURCE_RESTART_TIMEOUT_SECONDS="${SOURCE_RESTART_TIMEOUT_SECONDS:-20}"
 RAPTORQ_LOSS_PROBABILITY="${RAPTORQ_LOSS_PROBABILITY:-0.02}"
 RAPTORQ_LOSS_SECONDS="${RAPTORQ_LOSS_SECONDS:-15}"
-RAPTORQ_MIN_REPAIRED_OBJECTS="${RAPTORQ_MIN_REPAIRED_OBJECTS:-1}"
+RAPTORQ_MIN_FEC_RECOVERED_OBJECTS="${RAPTORQ_MIN_FEC_RECOVERED_OBJECTS:-${RAPTORQ_MIN_REPAIRED_OBJECTS:-1}}"
 MAX_PATH_STRETCH="${MAX_PATH_STRETCH:-1.15}"
 LOSS_CHAIN="NEEDLETAIL_RQ_QUAL"
 
@@ -51,13 +51,15 @@ Key overrides:
   FAILOVER_DETECTION_BUDGET_MS   maximum source-loss detection (default 250)
   FAILOVER_ACTIVATION_BUDGET_MS  maximum promotion activation (default 250)
   FAILOVER_MEDIA_GAP_BUDGET_MS   maximum decoded-media gap (default 250)
-  FAILOVER_MAX_EXPIRED_OBJECTS   tolerated severed in-flight objects (default 1)
+  FAILOVER_MAX_EXPIRED_OBJECTS   tolerated severed in-flight objects (default 0)
   PUBLICATION_MAX_LAG_OBJECTS    maximum canonical lag after relay recovery (default 4)
   SOURCE_RESTART_CONVERGENCE_BUDGET_MS
                                   maximum source-epoch reconvergence (default 10000)
   SOURCE_RESTART_TIMEOUT_SECONDS source-epoch observation timeout (default 20)
   RAPTORQ_LOSS_PROBABILITY       primary-ingress random drop probability (default 0.02)
   RAPTORQ_LOSS_SECONDS           controlled-loss duration (default 15)
+  RAPTORQ_MIN_FEC_RECOVERED_OBJECTS
+                                  minimum exact FEC-recovered objects (default 1)
   MAX_PATH_STRETCH               maximum measured route/direct RTT ratio (default 1.15)
   RESULT_DIR                     qualification artifact directory
 EOF
@@ -91,7 +93,7 @@ for value_name in \
   SOURCE_RESTART_CONVERGENCE_BUDGET_MS \
   SOURCE_RESTART_TIMEOUT_SECONDS \
   RAPTORQ_LOSS_SECONDS \
-  RAPTORQ_MIN_REPAIRED_OBJECTS; do
+  RAPTORQ_MIN_FEC_RECOVERED_OBJECTS; do
   value="${!value_name}"
   if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
     echo "${value_name} must be a non-negative integer" >&2
@@ -540,6 +542,10 @@ demotion_delta="$((
   $(jq -r '.relay_session.failover_demotions' "${recovered_edge}") -
   $(jq -r '.relay_session.failover_demotions' "${before_edge}")
 ))"
+warm_source_replayed_delta="$((
+  $(jq -r '[.relay_nodes[] | select(.node_id == "relay-secondary") | .relay_session.warm_source_replayed_datagrams] | add // 0' "${continuity_edge}") -
+  $(jq -r '[.relay_nodes[] | select(.node_id == "relay-secondary") | .relay_session.warm_source_replayed_datagrams] | add // 0' "${before_edge}")
+))"
 surviving_delta="$((
   $(jq -r '.runtime.relay_session.surviving_lane_objects' "${continuity_contributor}") -
   $(jq -r '.runtime.relay_session.surviving_lane_objects' "${before_contributor}")
@@ -581,10 +587,14 @@ if ((promotion_delta < 1 || demotion_delta < 1)); then
   echo "failover transition counters did not advance: promotions=${promotion_delta} demotions=${demotion_delta}" >&2
   exit 1
 fi
+if ((warm_source_replayed_delta < 1)); then
+  echo "warm-secondary promotion did not replay retained source state" >&2
+  exit 1
+fi
 
-printf '%-25s detection=%sus activation=%sus gap=%sus decoded=%s expired=%s\n' \
+printf '%-25s detection=%sus activation=%sus gap=%sus decoded=%s expired=%s replayed_source=%s\n' \
   "dual-parent failover" "${detection_us}" "${activation_us}" "${media_gap_us}" \
-  "${decoded_delta}" "${expired_delta}"
+  "${decoded_delta}" "${expired_delta}" "${warm_source_replayed_delta}"
 printf '%-25s epoch=%s head=%s contiguous>=%s max-lag=%s gaps=0\n' \
   "canonical publication" "${publication_epoch}" "${publication_max_head}" "${publication_min_contiguous}" \
   "${publication_max_lag}"
@@ -600,9 +610,17 @@ loss_decoded_delta="$((
   $(jq -r '.relay_session.decoded_objects' "${RESULT_DIR}/loss-after-edge.json") -
   $(jq -r '.relay_session.decoded_objects' "${RESULT_DIR}/loss-before-edge.json")
 ))"
-loss_repaired_delta="$((
-  $(jq -r '.relay_session.repaired_objects' "${RESULT_DIR}/loss-after-edge.json") -
-  $(jq -r '.relay_session.repaired_objects' "${RESULT_DIR}/loss-before-edge.json")
+loss_repair_assisted_delta="$((
+  $(jq -r '.relay_session.repair_assisted_objects' "${RESULT_DIR}/loss-after-edge.json") -
+  $(jq -r '.relay_session.repair_assisted_objects' "${RESULT_DIR}/loss-before-edge.json")
+))"
+loss_fec_recovered_delta="$((
+  $(jq -r '.relay_session.fec_recovered_objects' "${RESULT_DIR}/loss-after-edge.json") -
+  $(jq -r '.relay_session.fec_recovered_objects' "${RESULT_DIR}/loss-before-edge.json")
+))"
+loss_fec_recovered_source_symbols_delta="$((
+  $(jq -r '.relay_session.fec_recovered_source_symbols' "${RESULT_DIR}/loss-after-edge.json") -
+  $(jq -r '.relay_session.fec_recovered_source_symbols' "${RESULT_DIR}/loss-before-edge.json")
 ))"
 loss_expired_delta="$((
   $(jq -r '.relay_session.expired_objects' "${RESULT_DIR}/loss-after-edge.json") -
@@ -621,8 +639,8 @@ if [[ ! "${loss_dropped}" =~ ^[0-9]+$ ]] || ((loss_dropped <= 0)); then
   echo "controlled primary-path loss did not drop any datagrams" >&2
   exit 1
 fi
-if ((loss_decoded_delta <= 0 || loss_repaired_delta < RAPTORQ_MIN_REPAIRED_OBJECTS)); then
-  echo "RaptorQ recovery was not proven: decoded=${loss_decoded_delta} repaired=${loss_repaired_delta}" >&2
+if ((loss_decoded_delta <= 0 || loss_fec_recovered_delta < RAPTORQ_MIN_FEC_RECOVERED_OBJECTS || loss_fec_recovered_source_symbols_delta <= 0)); then
+  echo "RaptorQ recovery was not proven: decoded=${loss_decoded_delta} fec_recovered=${loss_fec_recovered_delta} recovered_source_symbols=${loss_fec_recovered_source_symbols_delta} repair_assisted=${loss_repair_assisted_delta}" >&2
   exit 1
 fi
 if ((loss_expired_delta != 0 || loss_rejected_delta != 0 || loss_deadline_delta != 0)); then
@@ -630,12 +648,13 @@ if ((loss_expired_delta != 0 || loss_rejected_delta != 0 || loss_deadline_delta 
   exit 1
 fi
 
-printf '%-25s dropped=%s decoded=%s repaired=%s expired=%s\n' \
+printf '%-25s dropped=%s decoded=%s fec_recovered=%s recovered_source_symbols=%s repair_assisted=%s expired=%s\n' \
   "RaptorQ path recovery" "${loss_dropped}" "${loss_decoded_delta}" \
-  "${loss_repaired_delta}" "${loss_expired_delta}"
+  "${loss_fec_recovered_delta}" "${loss_fec_recovered_source_symbols_delta}" \
+  "${loss_repair_assisted_delta}" "${loss_expired_delta}"
 
 jq -n \
-  --arg schema "needletail.gcp-intercontinental-qualification.v2" \
+  --arg schema "needletail.gcp-intercontinental-qualification.v3" \
   --arg run_id "${RUN_ID}" \
   --arg project "${PROJECT}" \
   --slurpfile lab "${LAB_STATE}" \
@@ -653,6 +672,7 @@ jq -n \
   --argjson failover_all_failed "${all_failed_delta}" \
   --argjson promotions "${promotion_delta}" \
   --argjson demotions "${demotion_delta}" \
+  --argjson warm_source_replayed "${warm_source_replayed_delta}" \
   --argjson source_restart_convergence_budget_ms "${SOURCE_RESTART_CONVERGENCE_BUDGET_MS}" \
   --argjson source_restart_observed_us "${source_restart_observed_us}" \
   --argjson source_restart_max_activation_delay_us "${source_restart_max_activation_delay_us}" \
@@ -676,7 +696,9 @@ jq -n \
   --argjson loss_seconds "${RAPTORQ_LOSS_SECONDS}" \
   --argjson loss_dropped "${loss_dropped}" \
   --argjson loss_decoded "${loss_decoded_delta}" \
-  --argjson loss_repaired "${loss_repaired_delta}" \
+  --argjson loss_repair_assisted "${loss_repair_assisted_delta}" \
+  --argjson loss_fec_recovered "${loss_fec_recovered_delta}" \
+  --argjson loss_fec_recovered_source_symbols "${loss_fec_recovered_source_symbols_delta}" \
   --argjson loss_expired "${loss_expired_delta}" \
   --argjson loss_rejected "${loss_rejected_delta}" \
   --argjson loss_deadline "${loss_deadline_delta}" \
@@ -727,7 +749,8 @@ jq -n \
       surviving_lane_objects: $failover_surviving,
       all_lanes_failed_objects: $failover_all_failed,
       promotions: $promotions,
-      make_before_break_demotions: $demotions
+      make_before_break_demotions: $demotions,
+      warm_source_replayed_datagrams: $warm_source_replayed
     },
     canonical_publication_recovery: {
       source_epoch: $publication_epoch,
@@ -742,7 +765,9 @@ jq -n \
       duration_seconds: $loss_seconds,
       dropped_datagrams: $loss_dropped,
       decoded_objects: $loss_decoded,
-      repaired_objects: $loss_repaired,
+      repair_assisted_objects: $loss_repair_assisted,
+      fec_recovered_objects: $loss_fec_recovered,
+      fec_recovered_source_symbols: $loss_fec_recovered_source_symbols,
       expired_objects: $loss_expired,
       rejected_datagrams: $loss_rejected,
       deadline_drops: $loss_deadline

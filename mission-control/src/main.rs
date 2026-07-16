@@ -115,11 +115,11 @@ mod app {
         view! {
             <div class="app-shell">
                 <header class="topbar">
-                    <a class="brand-lockup" href="#overview" aria-label="Needletail Mission Control overview">
+                    <a class="brand-lockup" href="#overview" aria-label="Needletail operations dashboard overview">
                         <div class="mark" aria-hidden="true"><span></span><span></span><span></span></div>
                         <div>
                             <p class="eyebrow">"NEEDLETAIL"</p>
-                            <h1>"Mission Control"</h1>
+                            <h1>"Operations"</h1>
                         </div>
                     </a>
                     <div class="feed-strip">
@@ -148,7 +148,7 @@ mod app {
                     </details>
                 </header>
 
-                <nav class="section-nav" aria-label="Mission Control sections">
+                <nav class="section-nav" aria-label="Operations dashboard sections">
                     <a href="#overview">"Overview"</a>
                     <a href="#streams">"Live streams"</a>
                     <a href="#contributor">"Contributor ingest"</a>
@@ -161,9 +161,9 @@ mod app {
                 <main>
                     <section id="overview" class="section-block anchor-section">
                         <SectionHeading
-                            kicker="REALTIME OVERVIEW"
-                            title="The live path, in one view"
-                            detail="Contributor media, source-first RaptorQ delivery, warm repair, and playback-edge recovery."
+                            kicker="SYSTEM STATUS"
+                            title="Ingest, relay, and playback status"
+                            detail="Current service state, route assignment, object deadlines, and RaptorQ symbol forwarding."
                         />
                         <div class="hero-grid">
                             <ServiceHealth contrib edge />
@@ -171,7 +171,7 @@ mod app {
                             <DeadlineHealth contrib edge />
                         </div>
                         <div class="lane-flow-wrap">
-                            <p class="lane-legend">"SOURCE-FIRST OBJECT FLOW · REPAIR TRAVELS ON THE WARM SECONDARY WHEN ASSIGNED"</p>
+                            <p class="lane-legend">"MEDIA OBJECT FLOW · PRIMARY SOURCE SYMBOLS · SECONDARY REPAIR SYMBOLS"</p>
                             <div class="lane-flow">
                                 <IngestLane contrib />
                                 <div class="parallel-lanes">
@@ -185,9 +185,9 @@ mod app {
 
                     <section id="streams" class="section-block anchor-section">
                         <SectionHeading
-                            kicker="LIVE STREAMS & PUBLICATION"
-                            title="Every active object path"
-                            detail="Contributor packaging, edge arrival, contiguous progress, and bounded stream rows."
+                            kicker="STREAM PUBLICATION"
+                            title="Active streams and publication watermarks"
+                            detail="Contributor and playback-edge object counters, contiguous watermarks, known gaps, and lag."
                         />
                         <div class="split-grid publication-split">
                             <PublicationPanel contrib edge />
@@ -200,8 +200,8 @@ mod app {
                     <section id="contributor" class="section-block anchor-section">
                         <SectionHeading
                             kicker="CONTRIBUTOR INGEST"
-                            title="Listeners, sessions, and packaged media"
-                            detail="RIST, SRT, and RTMP input state through fMP4 output, codec discovery, and forwarding."
+                            title="Ingest listeners and sessions"
+                            detail="RIST, SRT, and RTMP listener state, session counters, codec detection, fMP4 packaging, and relay output."
                         />
                         <ContributorSummary contrib />
                         <ListenerTable contrib />
@@ -211,8 +211,8 @@ mod app {
                     <section id="nodes" class="section-block anchor-section">
                         <SectionHeading
                             kicker="NODES & PLAYBACK EDGES"
-                            title="Delivery fleet readiness"
-                            detail="Service health, storage headroom, active streams, readers, response outcomes, and staleness."
+                            title="Playback nodes and edge services"
+                            detail="Service state, storage use, stream count, readers, response outcomes, and telemetry age."
                         />
                         <FleetSummary edge />
                         <NodeTable edge />
@@ -222,8 +222,8 @@ mod app {
                     <section id="routes" class="section-block anchor-section">
                         <SectionHeading
                             kicker="ROUTES"
-                            title="Compiled delivery programs"
-                            detail="Scalable DAG and low-latency lanes with primary source, warm secondary, trust, stretch, and generation."
+                            title="Relay topology and assigned routes"
+                            detail="DAG and low-latency route assignments, primary source, secondary repair, trust, stretch, and generation."
                         />
                         <RouteProgram contrib edge />
                         <RelayFabricTable edge />
@@ -233,8 +233,8 @@ mod app {
                     <section id="performance" class="section-block anchor-section">
                         <SectionHeading
                             kicker="REALTIME PERFORMANCE"
-                            title="Latency and recovery, stage by stage"
-                            detail="Contributor histograms, LL-HLS response tails, RaptorQ outcomes, deadline health, and clock confidence."
+                            title="Latency, deadlines, and RaptorQ recovery"
+                            detail="Contributor stage histograms, relay availability, LL-HLS response latency, RaptorQ outcomes, and clock confidence."
                         />
                         <RaptorSummary contrib edge />
                         <LatencyPanel contrib edge />
@@ -243,8 +243,8 @@ mod app {
                     <section id="alerts" class="section-block anchor-section">
                         <SectionHeading
                             kicker="ALERTS & ACTIVITY"
-                            title="Operational signal from both services"
-                            detail="Recent bounded events from contributor ingest and the active delivery plane."
+                            title="Alerts and service events"
+                            detail="Current alerts and recent events reported by contributor and playback-edge services."
                         />
                         <AlertActivity contrib edge />
                     </section>
@@ -292,37 +292,37 @@ mod app {
             let contrib = contrib.get();
             let edge = edge.get();
             if contrib.is_none() || edge.is_none() {
-                "connecting"
-            } else if contrib.as_ref().is_some_and(|status| {
-                matches!(
-                    status.health.state.as_str(),
-                    "degraded" | "stale" | "stalled"
-                )
-            }) || edge.as_ref().is_some_and(|status| {
-                status.relay_session.errors() > 0
-                    || status
-                        .edge_services
-                        .iter()
-                        .any(|service| service.response_errors > 0)
-            }) {
-                "attention"
+                "Telemetry unavailable".to_owned()
             } else {
+                let alerts = operational_alerts(contrib.as_ref(), edge.as_ref()).len();
+                format!(
+                    "{alerts} active alert{}",
+                    if alerts == 1 { "" } else { "s" }
+                )
+            }
+        };
+        let tone = move || {
+            let contrib = contrib.get();
+            let edge = edge.get();
+            if contrib.is_none() || edge.is_none() {
+                "warn"
+            } else if operational_alerts(contrib.as_ref(), edge.as_ref()).is_empty() {
                 "healthy"
+            } else {
+                "error"
             }
         };
         view! {
-            <article class=move || format!("hero-card service {}", tone_for_state(state()))>
-                <p class="card-label">"Service health"</p>
+            <article class=move || format!("hero-card service {}", tone())>
+                <p class="card-label">"Service alerts"</p>
                 <div class="hero-value"><i></i><strong>{state}</strong></div>
                 <div class="service-pair">
-                    <span>"Contributor"</span>
+                    <span>"Contributor state"</span>
                     <b>{move || contrib.get().map(|s| nonempty_owned(s.health.state, "waiting")).unwrap_or_else(|| "connecting".to_owned())}</b>
-                    <span>"Playback edge"</span>
-                    <b>{move || edge.get().map(|s| {
-                        if s.node.draining { "draining" } else if s.relay_session.errors() > 0 { "attention" } else { "ready" }
-                    }).unwrap_or("connecting")}</b>
-                    <span>"Telemetry"</span>
-                    <b>{move || edge.get().map(|s| if s.telemetry.stale_remote_count == 0 { "fresh" } else { "stale snapshot" }).unwrap_or("connecting")}</b>
+                    <span>"Relay ingress errors"</span>
+                    <b>{move || edge.get().map(|s| s.relay_session.errors().to_string()).unwrap_or_else(|| "—".to_owned())}</b>
+                    <span>"Remote node snapshots"</span>
+                    <b>{move || edge.get().map(|s| format!("{} current / {} stale", s.telemetry.fresh_remote_count, s.telemetry.stale_remote_count)).unwrap_or_else(|| "—".to_owned())}</b>
                 </div>
             </article>
         }
@@ -335,11 +335,11 @@ mod app {
     ) -> impl IntoView {
         view! {
             <article class="hero-card delivery">
-                <p class="card-label">"Delivery program"</p>
+                <p class="card-label">"Relay topology"</p>
                 <div class="hero-value">
                     <strong>{move || {
                         let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
-                        delivery.fabric_label().unwrap_or("Route program pending")
+                        delivery.fabric_label().unwrap_or("Topology not reported")
                     }}</strong>
                 </div>
                 <div class="detail-row">
@@ -351,8 +351,14 @@ mod app {
                     <b>{move || optional_u64(effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).generation)}</b>
                 </div>
                 <div class="detail-row">
-                    <span>"Readiness"</span>
-                    <b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).readiness_label()}</b>
+                    <span>"Route state"</span>
+                    <b>{move || {
+                        let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
+                        delivery
+                            .route_state
+                            .clone()
+                            .unwrap_or_else(|| delivery.readiness_label().to_owned())
+                    }}</b>
                 </div>
                 <div class="detail-row">
                     <span>"Path stretch"</span>
@@ -425,7 +431,7 @@ mod app {
                 <div class="lane-index">"01"</div>
                 <p>"Contributor ingest"</p>
                 <strong>{move || contrib.get().map(|s| nonempty_owned(s.health.state, "waiting")).unwrap_or_else(|| "connecting".to_owned())}</strong>
-                <span>{move || contrib.get().map(|s| format!("{} canonical fMP4 objects", s.runtime.fmp4.parts)).unwrap_or_else(|| "Telemetry opening".to_owned())}</span>
+                <span>{move || contrib.get().map(|s| format!("{} canonical fMP4 objects", s.runtime.fmp4.parts)).unwrap_or_else(|| "No contributor telemetry".to_owned())}</span>
                 <small>{move || contrib.get().and_then(|s| s.health.last_input_age_ms).map(|age| format!("input {}", format_age(age))).unwrap_or_else(|| "waiting for contributor media".to_owned())}</small>
             </article>
         }
@@ -469,7 +475,7 @@ mod app {
                 <p>"Playback-edge recovery"</p>
                 <strong>{move || edge.get().map(|s| format!("{} · {}", nonempty_owned(s.node.node_id, "edge"), nonempty_owned(s.node.region, "region pending"))).unwrap_or_else(|| "connecting".to_owned())}</strong>
                 <span>{move || edge.get().map(|s| format!("{} primary · {} secondary sessions", s.relay_session.primary_sessions, s.relay_session.secondary_sessions)).unwrap_or_default()}</span>
-                <small>{move || edge.get().map(|s| format!("{} decoded · {} repair-assisted", s.relay_session.decoded_objects, s.relay_session.repaired_objects)).unwrap_or_default()}</small>
+                <small>{move || edge.get().map(|s| format!("{} decoded · {} FEC-recovered objects · {} recovered source symbols", s.relay_session.decoded_objects, s.relay_session.fec_recovered_objects, s.relay_session.fec_recovered_source_symbols)).unwrap_or_default()}</small>
             </article>
         }
     }
@@ -739,10 +745,10 @@ mod app {
     fn FleetSummary(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <div class="summary-grid">
-                <SummaryCard label="Visible nodes" value=move || edge.get().map(|s| s.aggregate.node_count.max(s.nodes.len()).to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} fresh · {} stale snapshots", s.telemetry.fresh_remote_count.saturating_add(1), s.telemetry.stale_remote_count)).unwrap_or_else(|| "telemetry opening".to_owned()) />
+                <SummaryCard label="Visible nodes" value=move || edge.get().map(|s| s.aggregate.node_count.max(s.nodes.len()).to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} current · {} stale snapshots", s.telemetry.fresh_remote_count.saturating_add(1), s.telemetry.stale_remote_count)).unwrap_or_else(|| "telemetry opening".to_owned()) />
                 <SummaryCard label="Active streams" value=move || edge.get().map(|s| s.aggregate.active_streams.to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} contributor-origin streams", s.aggregate.contributor_streams)).unwrap_or_else(|| "telemetry opening".to_owned()) />
                 <SummaryCard label="Active readers" value=move || edge.get().map(|s| s.edge_services.iter().map(|service| service.active_readers).sum::<u64>().to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} edge responses", s.edge_services.iter().map(|service| service.responses_total).sum::<u64>())).unwrap_or_else(|| "telemetry opening".to_owned()) />
-                <SummaryCard label="Route dispatch" value=move || edge.get().map(|s| if s.orchestration.control_dispatch_ready { "ready" } else { "starting" }.to_owned()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| if s.telemetry.stale_remote_count == 0 { "service telemetry current" } else { "awaiting refreshed node snapshots" }.to_owned()).unwrap_or_else(|| "telemetry opening".to_owned()) />
+                <SummaryCard label="Control dispatch" value=move || edge.get().map(|s| if s.orchestration.control_dispatch_ready { "enabled" } else { "disabled" }.to_owned()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} stale node snapshots", s.telemetry.stale_remote_count)).unwrap_or_else(|| "telemetry opening".to_owned()) />
             </div>
         }
     }
@@ -773,7 +779,11 @@ mod app {
 
     #[component]
     fn NodeRow(node: EdgeNode) -> impl IntoView {
-        let state = if node.draining { "draining" } else { "ready" };
+        let state = if node.draining {
+            "draining"
+        } else {
+            "accepting traffic"
+        };
         let node_id = nonempty_owned(node.node_id.clone(), "node");
         let location = format!(
             "{} · {}",
@@ -832,7 +842,7 @@ mod app {
         } else if service.response_errors > 0 {
             "attention"
         } else {
-            "ready"
+            "serving"
         };
         view! {
             <tr>
@@ -856,7 +866,7 @@ mod app {
         view! {
             <div class="route-program-grid">
                 <article class="data-panel route-policy">
-                    <PanelTitle title="Route program" detail="Controller assignment and measured constraint" />
+                    <PanelTitle title="Route assignment" detail="Controller assignment and measured constraints" />
                     <div class="route-program-value">
                         <strong>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).fabric_label().unwrap_or("Awaiting assignment")}</strong>
                         <span
@@ -942,10 +952,10 @@ mod app {
     fn RelayFabricTable(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <section class="data-panel table-panel">
-                <PanelTitle title="Live RaptorQ relay fabric" detail="Per-node source, warm repair, forwarding, recovery, and carrier latency" />
+                <PanelTitle title="Relay RaptorQ counters" detail="Per-node source, secondary repair, forwarding, recovery, failover, and carrier latency" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Failover"</th><th>"Repair-assisted"</th><th>"Publish → available p95"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
+                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Failover"</th><th>"FEC recovered"</th><th>"Warm replay"</th><th>"Publish → available p95"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
@@ -980,7 +990,7 @@ mod app {
         {
             "attention"
         } else if relay.controlled_sessions > 0 || relay.authenticated_sessions > 0 {
-            "ready"
+            "sessions established"
         } else {
             "waiting"
         };
@@ -1031,7 +1041,14 @@ mod app {
             .datagrams_rejected
             .saturating_add(relay.forward_errors);
         let downstream_children = relay.downstream_children;
-        let repaired_objects = relay.repaired_objects;
+        let fec_recovered = format!(
+            "{} objects / {} symbols",
+            relay.fec_recovered_objects, relay.fec_recovered_source_symbols
+        );
+        let warm_replay = format!(
+            "{} buffered / {} replayed",
+            relay.warm_source_buffered_datagrams, relay.warm_source_replayed_datagrams
+        );
         let node_label = format!(
             "{} · {}",
             nonempty_owned(node.node_id, "relay"),
@@ -1047,7 +1064,8 @@ mod app {
                 <td>{downstream_children}</td>
                 <td class="mono-cell">{forwarded}</td>
                 <td class="mono-cell">{failover}</td>
-                <td>{repaired_objects}</td>
+                <td>{fec_recovered}</td>
+                <td>{warm_replay}</td>
                 <td class="mono-cell">{availability_latency}</td>
                 <td class="mono-cell">{forward_latency}</td>
                 <td>{errors}</td>
@@ -1078,7 +1096,12 @@ mod app {
                     <Metric label="Warm repair send p95" value=move || contrib.get().and_then(|s| s.runtime.relay_session.stages.secondary_repair_send.percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="per repair symbol" />
                     <Metric label="Emission deadlines" value=move || contrib.get().map(|s| format!("{} hit / {} miss", s.runtime.relay_session.deadline_hits.unwrap_or(0), s.runtime.relay_session.deadline_misses.unwrap_or(0))).unwrap_or_else(|| "pending".to_owned()) detail="complete symbol plan" />
                     <Metric label="Decoded" value=move || edge.get().map(|s| s.relay_session.decoded_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="verified objects" />
-                    <Metric label="Repair-assisted" value=move || edge.get().map(|s| s.relay_session.repaired_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="recovered before deadline" />
+                    <Metric label="FEC-recovered objects" value=move || edge.get().map(|s| s.relay_session.fec_recovered_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="objects decoded with missing source symbols" />
+                    <Metric label="Recovered source symbols" value=move || edge.get().map(|s| s.relay_session.fec_recovered_source_symbols.to_string()).unwrap_or_else(|| "—".to_owned()) detail="exact source-symbol deficit reconstructed by RaptorQ" />
+                    <Metric label="Repair-assisted decodes" value=move || edge.get().map(|s| s.relay_session.repair_assisted_objects.to_string()).unwrap_or_else(|| "—".to_owned()) detail="repair admitted before decode; does not imply source loss" />
+                    <Metric label="Warm source buffer" value=move || edge.get().map(|s| format!("{} datagrams / {}", s.relay_session.warm_source_buffered_datagrams, format_bytes(s.relay_session.warm_source_buffered_bytes))).unwrap_or_else(|| "—".to_owned()) detail="unexpired source datagrams retained for promotion" />
+                    <Metric label="Warm source replay" value=move || edge.get().map(|s| format!("{} datagrams / {}", s.relay_session.warm_source_replayed_datagrams, format_bytes(s.relay_session.warm_source_replayed_bytes))).unwrap_or_else(|| "—".to_owned()) detail="source state replayed immediately after promotion" />
+                    <Metric label="Warm replay removals" value=move || edge.get().map(|s| format!("{} retired / {} expired / {} evicted", s.relay_session.warm_source_retired_datagrams, s.relay_session.warm_source_expired_datagrams, s.relay_session.warm_source_evicted_datagrams)).unwrap_or_else(|| "—".to_owned()) detail="completed-window retirement, deadline expiry, and hard-bound eviction" />
                     <Metric label="Publish → edge p95" value=move || edge.get().and_then(|s| s.relay_session.publication_to_available_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="verified cache availability" />
                     <Metric label="Epoch activation max" value=move || edge.get().and_then(|s| publication_from_edge(&s).canonical_epoch_activation_delay_us).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="contributor incarnation → first object" />
                     <Metric label="Latency clock error" value=move || edge.get().filter(|s| s.relay_session.publication_to_available_count > 0).map(|s| format!("±{}", format_duration_us(s.relay_session.publication_clock_error_max_us))).unwrap_or_else(|| "pending".to_owned()) detail="source timestamp bound" />
@@ -1329,7 +1352,7 @@ mod app {
     ) -> impl IntoView {
         view! {
             <section class="awaited">
-                <div><p>"TELEMETRY READINESS"</p><h2>"Next backend signals"</h2></div>
+                <div><p>"MISSING TELEMETRY"</p><h2>"Fields not reported by the current services"</h2></div>
                 <ul>
                     {move || {
                         let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
@@ -1487,8 +1510,17 @@ mod app {
 
     fn tone_for_state(state: &str) -> &'static str {
         match state.to_ascii_lowercase().as_str() {
-            "healthy" | "active" | "ready" | "current" | "publishing" | "listening"
-            | "compiled" | "installed" => "healthy",
+            "healthy"
+            | "active"
+            | "ready"
+            | "current"
+            | "publishing"
+            | "listening"
+            | "compiled"
+            | "installed"
+            | "accepting traffic"
+            | "serving"
+            | "sessions established" => "healthy",
             "attention" | "degraded" | "stale" | "stalled" | "error" | "lagging" | "failed" => {
                 "error"
             }
@@ -1604,5 +1636,5 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    println!("Needletail Mission Control builds for wasm32-unknown-unknown");
+    println!("Needletail operations dashboard builds for wasm32-unknown-unknown");
 }

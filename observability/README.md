@@ -69,8 +69,10 @@ edge publication:
   promotion/demotion transitions, control-command outcomes, and lease health;
 - primary-silence detection, promotion-to-first-source, and cache-completion
   interruption measurements for every failover;
-- active, buffered, retained-complete, decoded, repaired, and expired object
-  state;
+- active, buffered, retained-complete, decoded, repair-assisted, exact
+  RaptorQ-recovered, recovered-source-symbol, and expired object state;
+- deadline-bounded warm-source buffering, promotion replay, expiry, and
+  fixed-bound eviction counters;
 - conflict, authentication, deadline, rejected, and duplicate datagram
   outcomes;
 - LL-HLS traffic, errors, freshness, and response-handler p50/p95/p99.

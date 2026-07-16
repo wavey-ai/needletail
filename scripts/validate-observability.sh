@@ -76,6 +76,7 @@ required_recordings = %w[
   av:mesh_relay_drops_per_second:5m
   av:mesh_relay_expired_object_ratio:5m
   av:mesh_relay_duplicate_datagram_ratio:5m
+  av:mesh_relay_fec_recovery_object_ratio:5m
 ]
 recording_names = entries.filter_map { |entry| entry["record"] }
 missing_recordings = required_recordings - recording_names
@@ -190,6 +191,7 @@ service_metrics = Set.new(%w[
   av_mesh_relay_session_datagrams_total
   av_mesh_relay_session_drops_total
   av_mesh_relay_session_objects_total
+  av_mesh_relay_session_fec_recovered_source_symbols_total
   av_mesh_relay_session_parent_sessions
   av_mesh_relay_session_publication_clock_error_max_us
   av_mesh_relay_session_publication_to_available_us_bucket
@@ -204,6 +206,13 @@ service_metrics = Set.new(%w[
   av_mesh_relay_failover_secondary_unavailable_total
   av_mesh_relay_failover_state
   av_mesh_relay_failover_transitions_total
+  av_mesh_relay_warm_source_buffered_datagrams
+  av_mesh_relay_warm_source_buffered_bytes
+  av_mesh_relay_warm_source_replayed_datagrams_total
+  av_mesh_relay_warm_source_replayed_bytes_total
+  av_mesh_relay_warm_source_expired_datagrams_total
+  av_mesh_relay_warm_source_retired_datagrams_total
+  av_mesh_relay_warm_source_evicted_datagrams_total
   av_mesh_stream_last_ingest_age_seconds
   av_mesh_stream_canonical_epoch
   av_mesh_stream_canonical_epoch_activation_delay_seconds

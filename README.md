@@ -58,11 +58,11 @@ contributor source traffic uses `22301 → 22001`, warm-secondary repair uses
 `22302 → 22201`, and both lanes share desired-state generation/subscription `1`
 with canonical media-object deadlines.
 
-Use `make local-fast` after the component release binaries and Mission Control assets have
+Use `make local-fast` after the component release binaries and operations dashboard assets have
 already been built. Component roots can be overridden with `AV_CONTRIB_ROOT`
 and `AV_MESH_ROOT`.
 
-Mission Control builds as part of `make local`. Direct UI workflows are:
+The operations dashboard builds as part of `make local`. Direct UI workflows are:
 
 ```sh
 make mission-control-check
@@ -98,7 +98,7 @@ canonical object; the qualification gates the maximum across all three nodes,
 then establishes failover counter baselines only after the restarted
 contributor is healthy.
 The gate then injects controlled loss on the primary source path and
-requires repair-assisted RaptorQ completion with no expiry, rejection, or
+requires exact RaptorQ reconstruction of missing source symbols with no expiry, rejection, or
 deadline-drop regression. Evidence is written below
 `target/gcp-qualification/runs/`; cleanup restores contributor services, the
 relay, and the packet filter even when a gate fails. The deployed qualification
@@ -106,7 +106,7 @@ plan seeds that same controlled-loss profile into the adaptive RaptorQ policy;
 the gate rejects a plan whose observed loss input does not match the injected
 condition.
 Both relay routes are measured from the deployed hosts. Their RTT and jitter
-feed the compiled parent observations, Mission Control, and the qualification
+feed the compiled parent observations, the operations dashboard, and the qualification
 artifact; either route exceeding the default `1.15x` direct-path stretch gate
 fails qualification.
 

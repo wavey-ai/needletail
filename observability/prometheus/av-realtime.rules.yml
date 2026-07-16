@@ -226,6 +226,18 @@ groups:
             ),
             0.001
           )
+      - record: av:mesh_relay_fec_recovery_object_ratio:5m
+        expr: |
+          sum by (job, instance) (
+            rate(av_mesh_relay_session_objects_total{outcome="fec_recovered"}[5m])
+          )
+          /
+          clamp_min(
+            sum by (job, instance) (
+              rate(av_mesh_relay_session_objects_total{outcome="decoded"}[5m])
+            ),
+            0.001
+          )
 
   - name: needletail-realtime-alerts
     interval: 15s

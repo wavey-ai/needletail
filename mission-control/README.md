@@ -1,13 +1,13 @@
-# Needletail Mission Control
+# Needletail operations dashboard
 
-Mission Control is Needletail's complete product operations UI. The interface
+The Needletail operations dashboard is the product operations UI. The interface
 preserves a fast realtime overview and provides dedicated, anchored surfaces
 for:
 
 - live streams and contiguous publication;
 - contributor listeners, sessions, fMP4 output, codecs, and errors;
 - nodes and playback-edge services;
-- compiled scalable-DAG and low-latency route programs;
+- compiled dual-parent-DAG and low-latency route assignments;
 - contributor and LL-HLS latency, RaptorQ recovery, deadlines, and clock
   confidence;
 - alerts and recent activity from both services.
@@ -21,12 +21,12 @@ It reads bounded, low-cardinality snapshots from:
   RaptorQ recovery, publication watermarks, and LL-HLS handler latency.
 
 Every snapshot field uses a Serde default. A rolling component deployment can
-therefore present a partial snapshot while Mission Control clearly marks the
+therefore present a partial snapshot while the operations dashboard marks the
 controller or telemetry fields that are still arriving. Stream, node, session,
 edge, alert, and activity arrays are capped before rendering.
 
-The UI consumes the current service shapes and is ready for richer controller
-fields. The current backends still need to expose the following values before
+The UI consumes the current service shapes. The current backends do not yet
+expose the following values, so their corresponding cells remain `pending`:
 their corresponding cells can move from `pending` to measured:
 
 - delivery class, fabric, desired-state generation, installed route state, and
@@ -38,9 +38,8 @@ their corresponding cells can move from `pending` to measured:
 - detailed RIST/SRT session RTT, jitter, loss, reconnect, and end-reason
   telemetry.
 
-Configured RelaySession carrier targets are displayed as configured carriers;
-Mission Control only labels a route program ready when route-state telemetry
-does so explicitly.
+Configured RelaySession carrier targets are displayed as configured carriers.
+The dashboard displays the route-state value emitted by the controller.
 
 Run locally:
 

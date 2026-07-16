@@ -1,0 +1,72 @@
+{
+  "schema": "needletail.real-world-test-series.v2",
+  "series": "2026-07-15 exact RaptorQ and warm-source replay qualification",
+  "run_ids": [
+    "20260715T234426Z",
+    "20260715T234654Z",
+    "20260715T234910Z"
+  ],
+  "invocations": 3,
+  "complete_passes": 3,
+  "strict_failures": 0,
+  "gates": {
+    "source_epoch_activation_ms": 10000.0,
+    "failover_detection_ms": 250.0,
+    "secondary_activation_ms": 250.0,
+    "decoded_media_gap_ms": 250.0,
+    "failover_expired_objects": 0,
+    "publication_maximum_lag_objects": 4,
+    "publication_known_gaps": 0,
+    "controlled_loss_expired_objects": 0,
+    "controlled_loss_rejected_datagrams": 0,
+    "controlled_loss_deadline_drops": 0,
+    "minimum_exact_fec_recovered_objects": 1,
+    "minimum_warm_source_replayed_datagrams": 1,
+    "maximum_path_stretch": 1.15
+  },
+  "measured_routes": {
+    "best_direct_rtt_ms": 241.231,
+    "primary_rtt_ms": 259.508,
+    "primary_path_stretch": 1.075766,
+    "secondary_rtt_ms": 250.794,
+    "secondary_path_stretch": 1.039643
+  },
+  "observed_ranges": {
+    "source_epoch_activation_ms": [1626.625, 1773.047],
+    "observer_elapsed_ms_diagnostic": [10337.585, 22981.43],
+    "failover_detection_ms": [103.467, 123.068],
+    "secondary_activation_ms": [9.704, 9.963],
+    "decoded_media_gap_ms": [114.679, 135.308],
+    "failover_decoded_objects": [313, 409],
+    "failover_expired_objects": [0, 0],
+    "warm_source_replayed_datagrams": [38, 47],
+    "publication_maximum_lag_objects": [3, 4],
+    "publication_known_gaps": [0, 0],
+    "controlled_loss_dropped_datagrams": [76, 81],
+    "controlled_loss_decoded_objects": [368, 384],
+    "exact_fec_recovered_objects": [188, 384],
+    "exact_fec_recovered_source_symbols": [330, 1202],
+    "repair_assisted_objects": [188, 384],
+    "controlled_loss_expired_objects": [0, 0],
+    "controlled_loss_rejected_datagrams": [0, 0],
+    "controlled_loss_deadline_drops": [0, 0]
+  },
+  "counter_semantics": {
+    "repair_assisted_objects": "decode admitted at least one repair symbol",
+    "exact_fec_recovered_objects": "decode completed with at least one absent source symbol",
+    "exact_fec_recovered_source_symbols": "source-symbol deficit reconstructed by RaptorQ"
+  },
+  "cleanup": {
+    "verified_after_every_invocation": true,
+    "first_two_verified_by_next_clean_baseline": true,
+    "final_explicit_audit": {
+      "primary_service_active": true,
+      "contributor_services_active": true,
+      "loss_chain_absent": true,
+      "alerts_empty": true,
+      "failover_controller_state": "healthy",
+      "known_gaps": 0,
+      "maximum_lag_objects": 2
+    }
+  }
+}

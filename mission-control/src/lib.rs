@@ -473,7 +473,10 @@ pub struct RelayIngress {
     pub repair_datagrams: u64,
     pub duplicate_datagrams: u64,
     pub decoded_objects: u64,
-    pub repaired_objects: u64,
+    #[serde(alias = "repaired_objects")]
+    pub repair_assisted_objects: u64,
+    pub fec_recovered_objects: u64,
+    pub fec_recovered_source_symbols: u64,
     pub expired_objects: u64,
     pub conflict_drops: u64,
     pub authentication_drops: u64,
@@ -484,6 +487,13 @@ pub struct RelayIngress {
     pub forwarded_bytes: u64,
     pub forward_errors: u64,
     pub forward_filtered_datagrams: u64,
+    pub warm_source_buffered_datagrams: u64,
+    pub warm_source_buffered_bytes: u64,
+    pub warm_source_replayed_datagrams: u64,
+    pub warm_source_replayed_bytes: u64,
+    pub warm_source_expired_datagrams: u64,
+    pub warm_source_retired_datagrams: u64,
+    pub warm_source_evicted_datagrams: u64,
     pub forward_duration_count: u64,
     pub forward_duration_sum_us: u64,
     pub forward_duration_max_us: u64,
@@ -730,16 +740,16 @@ impl DeliverySnapshot {
         if let Some(fabric) = self.fabric.as_deref() {
             let lower = fabric.to_ascii_lowercase();
             if lower.contains("latency") || lower.contains("fast") || lower.contains("direct") {
-                return Some("Low-latency lane");
+                return Some("Direct / one-hop overlay");
             }
             if lower.contains("dag") || lower.contains("scalable") || lower.contains("regional") {
-                return Some("Scalable DAG");
+                return Some("Dual-parent DAG");
             }
         }
         match self.delivery_class.as_deref() {
-            Some("interactive") => Some("Low-latency lane"),
+            Some("interactive") => Some("Direct / one-hop overlay"),
             Some("premium-live" | "premium_live" | "mass-broadcast" | "mass_broadcast") => {
-                Some("Scalable DAG")
+                Some("Dual-parent DAG")
             }
             _ => None,
         }
@@ -1331,7 +1341,7 @@ mod tests {
     const EDGE_PARTIAL: &str = r#"{
       "updated_unix_ms":1784102400200,
       "node":{"node_id":"edge-lon","region":"eu-west","continent":"EU","total_storage_bytes":1000,"used_storage_bytes":400,"active_streams":1},
-      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repaired_objects":2,"source_datagrams":20,"repair_datagrams":5,"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_controller_state":"healthy","failover_controller_enabled":1,"failover_commands_sent":12,"failover_promotions":1,"failover_demotions":1,"failover_primary_source_age_ms":12,"failover_secondary_repair_age_ms":24,"failover_last_detection_us":351000,"failover_last_promotion_to_source_us":88000,"failover_max_media_gap_us":103000},
+      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repair_assisted_objects":2,"fec_recovered_objects":1,"fec_recovered_source_symbols":3,"source_datagrams":20,"repair_datagrams":5,"warm_source_buffered_datagrams":4,"warm_source_buffered_bytes":5200,"warm_source_replayed_datagrams":7,"warm_source_replayed_bytes":9100,"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_controller_state":"healthy","failover_controller_enabled":1,"failover_commands_sent":12,"failover_promotions":1,"failover_demotions":1,"failover_primary_source_age_ms":12,"failover_secondary_repair_age_ms":24,"failover_last_detection_us":351000,"failover_last_promotion_to_source_us":88000,"failover_max_media_gap_us":103000},
       "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_listeners":1,"failover_commands_received":12,"failover_promotions_applied":1,"failover_demotions_applied":1}}],
       "aggregate":{"node_count":2,"active_streams":1},
       "telemetry":{"fresh_remote_count":1,"stale_remote_count":0},
@@ -1408,6 +1418,10 @@ mod tests {
 
         let edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
         assert_eq!(edge.relay_session.authenticated_sessions, 1);
+        assert_eq!(edge.relay_session.fec_recovered_objects, 1);
+        assert_eq!(edge.relay_session.fec_recovered_source_symbols, 3);
+        assert_eq!(edge.relay_session.warm_source_buffered_datagrams, 4);
+        assert_eq!(edge.relay_session.warm_source_replayed_datagrams, 7);
         assert_eq!(
             edge.relay_session
                 .publication_to_available_percentile_us(95),
@@ -1471,13 +1485,13 @@ mod tests {
             r#"{"class":"interactive","topology_generation":42,"path_stretch":1.07,"route_state":"ready"}"#,
         )
         .unwrap();
-        assert_eq!(interactive.fabric_label(), Some("Low-latency lane"));
+        assert_eq!(interactive.fabric_label(), Some("Direct / one-hop overlay"));
         assert_eq!(interactive.readiness_label(), "ready");
 
         let broadcast: DeliverySnapshot =
             serde_json::from_str(r#"{"class":"mass_broadcast","topology":"dual-parent-dag"}"#)
                 .unwrap();
-        assert_eq!(broadcast.fabric_label(), Some("Scalable DAG"));
+        assert_eq!(broadcast.fabric_label(), Some("Dual-parent DAG"));
     }
 
     #[test]
@@ -1601,7 +1615,7 @@ mod tests {
         edge.relay_session.datagrams_rejected = 0;
 
         let delivery = effective_delivery(Some(&contrib), Some(&edge));
-        assert_eq!(delivery.fabric_label(), Some("Scalable DAG"));
+        assert_eq!(delivery.fabric_label(), Some("Dual-parent DAG"));
         assert_eq!(delivery.readiness_label(), "ready");
         assert_eq!(delivery.generation, Some(7));
         assert!((delivery.path_stretch.expect("measured stretch") - 1.125).abs() < 0.000_001);
