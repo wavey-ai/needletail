@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="330" viewBox="0 0 820 330" role="img" aria-labelledby="title desc">
+  <title id="title">RaptorQ recovery latest runs</title>
+  <desc id="desc">RaptorQ recovered media objects and source symbols for latest local and GCP runs.</desc>
+  <style>
+    .bg{fill:#fff}.title{font:700 22px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.label{font:600 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.small{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#555}.axis{stroke:#ddd;stroke-width:1}.local{fill:#111}.gcp{fill:#d71920}.zero{fill:#0f7b3f}
+  </style>
+  <rect class="bg" width="820" height="330"/>
+  <text x="32" y="38" class="title">RaptorQ recovery</text>
+  <text x="32" y="62" class="small">Recovered before deadline; zero rejected datagrams, deadline drops, or forward errors</text>
+
+  <text x="32" y="108" class="label">Recovered media objects</text>
+  <line x1="270" y1="122" x2="670" y2="122" class="axis"/>
+  <text x="32" y="150" class="small">Local</text>
+  <rect x="270" y="134" width="231" height="24" rx="3" class="local"/>
+  <text x="513" y="152" class="small">1,120</text>
+  <text x="32" y="188" class="small">GCP</text>
+  <rect x="270" y="172" width="11" height="24" rx="3" class="gcp"/>
+  <text x="293" y="190" class="small">52</text>
+
+  <text x="32" y="235" class="label">Recovered source symbols</text>
+  <line x1="270" y1="249" x2="670" y2="249" class="axis"/>
+  <text x="32" y="277" class="small">Local</text>
+  <rect x="270" y="261" width="400" height="24" rx="3" class="local"/>
+  <text x="682" y="279" class="small">1,941</text>
+  <text x="32" y="315" class="small">GCP</text>
+  <rect x="270" y="299" width="12" height="24" rx="3" class="gcp"/>
+  <text x="294" y="317" class="small">58</text>
+</svg>

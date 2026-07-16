@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="360" viewBox="0 0 820 360" role="img" aria-labelledby="title desc">
+  <title id="title">Failover latency latest runs</title>
+  <desc id="desc">Detection, activation, and media gap latency during local and GCP failover tests.</desc>
+  <style>
+    .bg{fill:#fff}.title{font:700 22px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.label{font:600 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.small{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#555}.axis{stroke:#ddd;stroke-width:1}.budget{stroke:#777;stroke-width:2;stroke-dasharray:5 5}.local{fill:#111}.gcp{fill:#d71920}
+  </style>
+  <rect class="bg" width="820" height="360"/>
+  <text x="32" y="38" class="title">Failover latency</text>
+  <text x="32" y="62" class="small">Budget line is 250 ms</text>
+  <line x1="670" y1="78" x2="670" y2="330" class="budget"/>
+
+  <text x="32" y="105" class="label">Detection</text>
+  <line x1="250" y1="118" x2="670" y2="118" class="axis"/>
+  <rect x="250" y="128" width="178" height="22" rx="3" class="local"/>
+  <text x="438" y="144" class="small">Local 106.234 ms</text>
+  <rect x="250" y="158" width="185" height="22" rx="3" class="gcp"/>
+  <text x="445" y="174" class="small">GCP 110.419 ms</text>
+
+  <text x="32" y="205" class="label">Activation</text>
+  <line x1="250" y1="218" x2="670" y2="218" class="axis"/>
+  <rect x="250" y="228" width="54" height="22" rx="3" class="local"/>
+  <text x="314" y="244" class="small">Local 31.851 ms</text>
+  <rect x="250" y="258" width="17" height="22" rx="3" class="gcp"/>
+  <text x="277" y="274" class="small">GCP 9.936 ms</text>
+
+  <text x="32" y="305" class="label">Media gap</text>
+  <line x1="250" y1="318" x2="670" y2="318" class="axis"/>
+  <rect x="250" y="288" width="240" height="22" rx="3" class="local"/>
+  <text x="500" y="304" class="small">Local 142.776 ms</text>
+  <rect x="250" y="322" width="206" height="22" rx="3" class="gcp"/>
+  <text x="466" y="338" class="small">GCP 122.738 ms</text>
+</svg>

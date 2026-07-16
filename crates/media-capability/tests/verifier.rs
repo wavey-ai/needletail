@@ -15,7 +15,7 @@ use media_object::{
 };
 
 const NOW: i64 = 1_784_131_220;
-const ISSUER: &str = "https://control.infidelity.io";
+const ISSUER: &str = "https://control.needletail.test";
 const AUDIENCE: &str = "av-contrib";
 const ACTIVE_KID: &str = "key_active_01";
 const RETIRING_KID: &str = "key_retiring_00";

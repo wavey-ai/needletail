@@ -1,13 +1,13 @@
-# 2026-07-16 relay latency qualification
+# 2026-07-16 relay latency
 
-This record covers the local and GCP qualification runs after adding measured
+This record covers the local and GCP runs after adding measured
 relay application-processing latency and correcting publication-to-available
 timing to observe verified cache availability after the cache commit completes.
 
 ## Tested revisions
 
 - Needletail: `6bb2fc8e65ffae31cdf23daea6a6a5fd2d4ffa20` plus working-tree
-  changes for Mission Control, Prometheus/Grafana rules, qualification scripts,
+  changes for Mission Control, Prometheus/Grafana rules, test scripts,
   and evidence handling.
 - av-mesh: `20512dcf61208d5a5361951d8a06375e2925e7e2` plus working-tree
   changes for post-commit availability timing and relay processing histograms.
@@ -15,8 +15,7 @@ timing to observe verified cache availability after the cache commit completes.
 
 ## Local run `20260716T001959Z`
 
-Raw artifacts:
-`target/realtime-qualification/20260716T001959Z`.
+Raw artifacts are in the local `target/` run directory.
 
 Versioned evidence:
 `docs/real-world-tests/evidence/local-20260716T001959Z.json`.
@@ -32,7 +31,7 @@ Topology:
 
 Results:
 
-| Gate | Result | Budget |
+| Check | Result | Budget |
 | --- | ---: | ---: |
 | Baseline contributor ingest p95 | 7.808 ms | <= 15 ms |
 | Impaired contributor ingest p95 | 10.337 ms | <= 15 ms |
@@ -56,8 +55,7 @@ RaptorQ and failover:
 
 ## GCP run `20260716T002843Z`
 
-Raw artifacts:
-`target/gcp-qualification/runs/20260716T002843Z`.
+Raw artifacts are in the local `target/` run directory.
 
 Versioned evidence:
 `docs/real-world-tests/evidence/20260716T002843Z.json`.
@@ -81,7 +79,7 @@ Measured routes:
 
 Results:
 
-| Gate | Result | Budget |
+| Check | Result | Budget |
 | --- | ---: | ---: |
 | Contributor restart max relay activation | 1.745706 s | <= 10 s |
 | Failover detection | 110.419 ms | <= 250 ms |
@@ -105,16 +103,15 @@ Cleanup audit:
 - All four GCP instances remained running after the run.
 - Primary relay service active: true.
 - Contributor and media services active: true.
-- Qualification packet-filter chain absent after cleanup: true.
+- Test packet-filter chain absent after cleanup: true.
 - Edge alerts: 0.
 - Final stream gap count: 0.
-- Final audit maximum live lag: 5 objects. The qualification recovery gate
-  measured 3 objects; the audit was taken later while the live head continued to
-  advance.
+- Final audit maximum live lag: 5 objects. The recovery check measured 3
+  objects; the audit was taken later while the live head continued to advance.
 
 ## Follow-up
 
-- Keep relay processing p95 as a hard qualification gate for local and GCP runs.
+- Keep relay processing p95 as a hard release check for local and GCP runs.
 - Continue recording publication-to-cache p99, using the corrected post-commit
   availability timing.
 - Preserve RaptorQ as the recovery mechanism; QUIC remains a carrier option, not

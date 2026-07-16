@@ -1,4 +1,4 @@
-//! Strict verification and authorization for Infidelity media-capability v1.
+//! Strict verification and authorization for Needletail media-capability v1.
 //!
 //! The only high-level admission API, [`MediaCapabilityVerifier::authorize`],
 //! requires a caller-owned [`ReplayAdmissionGuard`]. This crate contains public
@@ -25,7 +25,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 /// Required protected `alg` value for every v1 capability.
 pub const PROTECTED_ALGORITHM: &str = "EdDSA";
 /// Required protected `typ` value for every v1 capability.
-pub const PROTECTED_TOKEN_TYPE: &str = "infidelity-media-capability+jwt";
+pub const PROTECTED_TOKEN_TYPE: &str = "needletail-media-capability+jwt";
 /// Maximum encoded size of a protected header segment.
 pub const MAX_PROTECTED_HEADER_SEGMENT_BYTES: usize = 1_368;
 /// Maximum encoded size of the bounded media-control payload segment.

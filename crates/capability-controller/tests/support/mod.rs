@@ -151,12 +151,12 @@ pub fn harness_with_gates(operation: Operation, feature_gates: FeatureGates) -> 
         CounterEntropy::default(),
         telemetry.clone(),
         ControllerConfig::new(
-            "https://control.infidelity.io",
+            "https://control.needletail.test",
             "av-contrib",
             "av-mesh",
             "take-service",
             "av-mesh",
-            "https://media.infidelity.io/v1/playback/bootstrap",
+            "https://media.needletail.test/v1/playback/bootstrap",
             feature_gates,
             LifetimePolicy::default(),
         )
@@ -352,7 +352,7 @@ pub fn candidate(
         available_session_slots: 100,
         cost_score: 1,
         cost_allowed: true,
-        origin: "https://media-lon.infidelity.io".to_owned(),
+        origin: "https://media-lon.needletail.test".to_owned(),
         path: "/v1/playback/descriptor".to_owned(),
         warm_repair: Some(WarmRepairPath {
             edge_id: ids.repair_edge.clone(),
@@ -389,7 +389,7 @@ pub fn talkback_candidate(
         available_session_slots: 100,
         cost_score: 1,
         cost_allowed: true,
-        origin: "https://media-lon.infidelity.io".to_owned(),
+        origin: "https://media-lon.needletail.test".to_owned(),
         path: "/v1/talkback/descriptor".to_owned(),
         warm_repair: None,
     }

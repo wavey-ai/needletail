@@ -8,10 +8,9 @@
 
 # Needletail
 
-Needletail is the product-level constellation of Wavey realtime media services.
-This repository owns how the services are composed, observed, qualified, and
-operated; the services and reusable transport crates remain independently
-versioned components.
+Needletail is the product-level repo for Wavey realtime media delivery.
+It composes, runs, observes, and tests the service constellation. Core services
+and reusable crates stay in their own repos.
 
 Current components include:
 
@@ -32,29 +31,20 @@ service-specific container images. `mission-control/` is the Needletail-owned
 Leptos/WASM product UI for contributor ingest, compiled delivery routes,
 RelaySession lanes, RaptorQ recovery, publication continuity, and realtime
 latency.
+Contributor products integrate through the generic ingest, capability, and
+session APIs. They stay outside this repository.
 
 The Rust supervisor runs the local development constellation. Needletail's
 production lifecycle target consists of a desired-state controller, a small
 agent on each host, and `systemd` supervision of native binaries.
 
-## Documentation map
+## Documentation
 
-- [Relay fabric](docs/relay-fabric.md): routing classes, dual-parent DAG
-  invariants, fast-path constraints, RaptorQ media-plane policy, transport
-  boundaries, and latency release gates.
-- [Deployment control plane](deploy/README.md): native desired-state controller,
-  host agents, provider adapters, and `systemd` supervision model.
-- [Mission Control](mission-control/README.md): operations dashboard build,
-  test, and local run workflow.
-- [Real-world qualification records](docs/real-world-tests/README.md): indexed
-  local and provider-network tests, reruns, evidence files, and cleanup state.
-
-Current qualification records:
-
-- [2026-07-16 relay latency qualification](docs/real-world-tests/2026-07-16-relay-latency-qualification.md)
-- [GCP intercontinental evidence: 20260716T002843Z](docs/real-world-tests/evidence/20260716T002843Z.json)
-- [Local controlled-loss evidence: local-20260716T001959Z](docs/real-world-tests/evidence/local-20260716T001959Z.json)
-- [Evidence file index](docs/real-world-tests/evidence/README.md)
+- [Latency performance charts](docs/performance/latency-performance.md)
+- [Relay fabric](docs/relay-fabric.md)
+- [Deployment control plane](deploy/README.md)
+- [Mission Control](mission-control/README.md)
+- [Real-world test evidence](docs/real-world-tests/README.md)
 
 ## Local constellation
 
@@ -80,7 +70,7 @@ Run two local playback edges plus one contributor ingress with:
 make local
 ```
 
-The local constellation wires controlled RelaySession qualification by default:
+The local constellation wires controlled RelaySession test lanes by default:
 contributor source traffic uses `22301 → 22001`, warm-secondary repair uses
 `22302 → 22201`, and both lanes share desired-state generation/subscription `1`
 with canonical media-object deadlines.
@@ -97,64 +87,22 @@ make mission-control-test
 make mission-control-build
 ```
 
-## Realtime qualification
+## Latency performance
 
-`make realtime-benchmark` measures an already-running contributor and one or
-more mesh edges. `make realtime-qualification` owns the local controlled-loss
-topology. Both preserve `wavey.realtime-*.v1` artifact schemas and `av_*` metric
-names across the orchestration extraction.
+Latest charts:
 
-The short-lived GCP lab has a deployed gate for the London contributor,
-Amsterdam and Osaka parents, and Tokyo playback edge:
+- [Relay latency](docs/performance/charts/relay-latency.svg)
+- [Failover latency](docs/performance/charts/failover-latency.svg)
+- [GCP route RTT](docs/performance/charts/route-rtt.svg)
+- [RaptorQ recovery](docs/performance/charts/raptorq-recovery.svg)
+- [Numbers and raw evidence links](docs/performance/latency-performance.md)
 
-```sh
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/google-cloud-key.json \
-  make gcp-intercontinental-qualification
-```
+Latest results:
 
-It stops and restores the primary relay to prove stable lane-health reporting,
-bounded warm-parent promotion, uninterrupted decoding, and make-before-break
-recovery. A restarted relay must establish its live subscription at the first
-canonical media object it observes, restore a gap-free contiguous LL-HLS
-watermark, and reconverge within four canonical objects of the stream head.
-Contributor restarts advance the canonical source epoch; every relay must
-atomically converge on that epoch and reject delayed objects from an older
-incarnation before the publication gate can pass. Each relay records the
-data-plane delay from contributor incarnation creation to its first accepted
-canonical object; the qualification gates the maximum across all three nodes,
-then establishes failover counter baselines only after the restarted
-contributor is healthy.
-The gate then injects controlled loss on the primary source path and
-requires exact RaptorQ reconstruction of missing source symbols with no expiry, rejection, or
-deadline-drop regression. Evidence is written below
-`target/gcp-qualification/runs/`; cleanup restores contributor services, the
-relay, and the packet filter even when a gate fails. The deployed qualification
-plan seeds that same controlled-loss profile into the adaptive RaptorQ policy;
-the gate rejects a plan whose observed loss input does not match the injected
-condition.
-Both relay routes are measured from the deployed hosts. Their RTT and jitter
-feed the compiled parent observations, the operations dashboard, and the qualification
-artifact; either route exceeding the default `1.15x` direct-path stretch gate
-fails qualification.
-
-Versioned notes for every provider-network run live in
-[`docs/real-world-tests/`](docs/real-world-tests/README.md). They preserve test
-conditions, measurements, failures, corrective reruns, and cleanup state while
-raw evidence remains under `target/gcp-qualification/runs/`.
-
-For an authorized deployed canary only:
-
-```sh
-CONTRIB_URL=https://contrib-canary.example \
-MESH_URLS=https://uk-canary.example,https://us-canary.example \
-SOAK_SECONDS=3600 ROUND_SECONDS=60 \
-  make realtime-soak
-```
-
-The soak performs load and observation against explicit targets, uses verified
-TLS by default, applies simultaneous load, probes exact-byte
-propagation, captures raw metrics/counter deltas, and writes `soak.json` under
-`target/realtime-soak/`.
+- GCP intercontinental: relay processing p95 `0.5 ms`; publication-to-cache p99
+  `150 ms`; failover media gap `122.738 ms`.
+- Local controlled-loss: relay processing p95 `1.0 ms`; publication-to-cache p99
+  `150 ms`; RaptorQ recovered `1,120` media objects.
 
 ## Observability
 
@@ -169,7 +117,7 @@ make observability-up
 
 Production provides authenticated access, trusted TLS, pinned images, and real
 notification receivers. A stated hardware/geography/bitrate/viewer-load soak
-graduates the included qualification thresholds into production SLOs.
+graduates the included test thresholds into production SLOs.
 
 ## Native control plane
 

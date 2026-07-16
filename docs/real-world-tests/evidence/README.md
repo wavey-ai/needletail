@@ -1,15 +1,15 @@
-# Versioned qualification evidence
+# Versioned test evidence
 
 This directory contains sanitized machine-readable summaries of real provider
-tests. One JSON file represents one qualification invocation, including failed
-invocations. It records the raw local artifact directory so an operator with
+tests. One JSON file represents one run, including failed
+runs. It records the raw local artifact directory so an operator with
 the same workspace can inspect the full API snapshots and Prometheus captures.
 
 These summaries deliberately contain no credential paths, private keys,
 tokens, authorization headers, or secret material. A passing result is copied
-from the gate's `qualification.json`. When a gate exits before producing that
+from the run result JSON. When a run exits before producing that
 file, the summary is assembled from the immutable before/during/after captures
-and names the exact failed gate.
+and names the exact failed check.
 
 Evidence index:
 
@@ -23,6 +23,6 @@ Evidence index:
 - `20260715T234654Z.json`: second consecutive zero-expiry exact-recovery pass;
 - `20260715T234910Z.json`: third consecutive zero-expiry exact-recovery pass;
 - `20260715-warm-source-replay-series-summary.json`: aggregate ranges and counter semantics across the three v3 runs;
-- `local-20260715T235439Z.json`: local controlled-impairment load, failover, and exact-RaptorQ qualification;
-- `local-20260716T001959Z.json`: local relay-processing and corrected publication-latency qualification;
-- `20260716T002843Z.json`: GCP relay-processing and corrected publication-latency qualification.
+- `local-20260715T235439Z.json`: local controlled-impairment load, failover, and exact-RaptorQ run;
+- `local-20260716T001959Z.json`: local relay-processing and corrected publication-latency run;
+- `20260716T002843Z.json`: GCP relay-processing and corrected publication-latency run.

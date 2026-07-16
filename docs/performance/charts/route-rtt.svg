@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="280" viewBox="0 0 820 280" role="img" aria-labelledby="title desc">
+  <title id="title">GCP route RTT</title>
+  <desc id="desc">Measured RTT for direct, primary relay, and secondary relay GCP paths.</desc>
+  <style>
+    .bg{fill:#fff}.title{font:700 22px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.label{font:600 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.small{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#555}.axis{stroke:#ddd;stroke-width:1}.direct{fill:#777}.primary{fill:#111}.secondary{fill:#d71920}
+  </style>
+  <rect class="bg" width="820" height="280"/>
+  <text x="32" y="38" class="title">GCP route RTT</text>
+  <text x="32" y="62" class="small">London contributor, Amsterdam/Osaka parents, Tokyo edge</text>
+  <line x1="250" y1="88" x2="670" y2="88" class="axis"/>
+
+  <text x="32" y="115" class="label">Best direct</text>
+  <rect x="250" y="98" width="419" height="28" rx="3" class="direct"/>
+  <text x="682" y="117" class="small">359.292 ms</text>
+
+  <text x="32" y="165" class="label">Primary relay path</text>
+  <rect x="250" y="148" width="300" height="28" rx="3" class="primary"/>
+  <text x="562" y="167" class="small">257.431 ms · stretch 0.716×</text>
+
+  <text x="32" y="215" class="label">Secondary relay path</text>
+  <rect x="250" y="198" width="294" height="28" rx="3" class="secondary"/>
+  <text x="556" y="217" class="small">252.239 ms · stretch 0.702×</text>
+
+  <text x="250" y="256" class="small">Route stretch limit: 1.15×</text>
+</svg>

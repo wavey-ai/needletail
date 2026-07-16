@@ -48,7 +48,7 @@ impl IdentityAuthorizationTransport for FixtureIdentityTransport {
             include_bytes!("fixtures/p01-media-authorization-request.json")
         );
         let canonical_request = format!(
-            "INFIDELITY-HMAC-SHA256-V1\n{}\n{}\n{}\n{}\nPOST\n{}\n{}",
+            "NEEDLETAIL-HMAC-SHA256-V1\n{}\n{}\n{}\n{}\nPOST\n{}\n{}",
             request.service_id(),
             request.audience(),
             request.timestamp(),
@@ -64,7 +64,7 @@ impl IdentityAuthorizationTransport for FixtureIdentityTransport {
 
         let body = include_bytes!("fixtures/p01-media-authorization-fact.json").to_vec();
         let canonical_response = format!(
-            "INFIDELITY-HMAC-SHA256-RESPONSE-V1\n{}\n{}\n{}\n200\n{}\n{}",
+            "NEEDLETAIL-HMAC-SHA256-RESPONSE-V1\n{}\n{}\n{}\n200\n{}\n{}",
             request.audience(),
             NOW,
             request.nonce(),
@@ -139,7 +139,7 @@ fn signed_identity_boundary_consumes_exact_p01_fixtures_and_rejects_tampering() 
         },
         CounterEntropy::default(),
         "needletail",
-        "infidelity-media-control-production",
+        "needletail-media-control-production",
         HMAC_KEY,
     )
     .unwrap();
@@ -153,7 +153,7 @@ fn signed_identity_boundary_consumes_exact_p01_fixtures_and_rejects_tampering() 
         },
         CounterEntropy::default(),
         "needletail",
-        "infidelity-media-control-production",
+        "needletail-media-control-production",
         HMAC_KEY,
     )
     .unwrap();
@@ -201,7 +201,7 @@ fn native_issuer_matches_the_existing_strict_verifier_and_context_fences() {
         .insert_active("key_active_01", harness.verification_key)
         .unwrap();
     let verifier =
-        MediaCapabilityVerifier::new(keyring, "https://control.infidelity.io", "av-contrib")
+        MediaCapabilityVerifier::new(keyring, "https://control.needletail.test", "av-contrib")
             .unwrap();
     let context = CurrentMediaAuthorizationContextV1 {
         tenant_id: &harness.ids.tenant,
@@ -293,7 +293,7 @@ fn browser_exchange_has_independent_15_second_consume_and_90_second_lease_lifeti
     for forbidden in [
         "capability",
         "endpoints",
-        "media-lon.infidelity.io",
+        "media-lon.needletail.test",
         "src_mix",
         "ep_logic",
         THUMBPRINT,
@@ -412,7 +412,7 @@ fn browser_talkback_publish_uses_proof_bound_exchange_and_talkback_epoch() {
         .insert_active("key_active_01", harness.verification_key)
         .unwrap();
     let verifier =
-        MediaCapabilityVerifier::new(keyring, "https://control.infidelity.io", "av-contrib")
+        MediaCapabilityVerifier::new(keyring, "https://control.needletail.test", "av-contrib")
             .unwrap();
     let authorized = verifier
         .authorize(
@@ -497,7 +497,8 @@ fn native_talkback_subscribe_uses_direct_short_lease_and_talkback_epoch() {
         .insert_active("key_active_01", harness.verification_key)
         .unwrap();
     let verifier =
-        MediaCapabilityVerifier::new(keyring, "https://control.infidelity.io", "av-mesh").unwrap();
+        MediaCapabilityVerifier::new(keyring, "https://control.needletail.test", "av-mesh")
+            .unwrap();
     let authorized = verifier
         .authorize(
             native.capability().expose(),
@@ -965,7 +966,7 @@ fn renewal_re_evaluates_identity_and_current_topology_instead_of_copying_old_cla
         .insert_active("key_active_01", harness.verification_key)
         .unwrap();
     let verifier =
-        MediaCapabilityVerifier::new(keyring, "https://control.infidelity.io", "av-contrib")
+        MediaCapabilityVerifier::new(keyring, "https://control.needletail.test", "av-contrib")
             .unwrap();
     let authorized = verifier
         .authorize(
@@ -1130,7 +1131,7 @@ fn jwks_rotation_is_public_only_bounded_and_overlapping() {
     let ids = TestIds::new();
     let verifier = MediaCapabilityVerifier::new(
         issuer.verification_keyring(NOW + 20).unwrap(),
-        "https://control.infidelity.io",
+        "https://control.needletail.test",
         "av-contrib",
     )
     .unwrap();

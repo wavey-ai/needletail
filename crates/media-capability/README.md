@@ -1,6 +1,6 @@
 # media-capability
 
-`media-capability` is the reusable public-key verifier for Infidelity
+`media-capability` is the reusable public-key verifier for Needletail
 media-capability v1. It consumes the frozen `MediaCapabilityClaimsV1` contract
 from `media-object`; it does not define, extend, or reinterpret claim fields.
 
@@ -13,7 +13,7 @@ A capability has exactly three nonempty compact-JWS segments. The protected
 header is closed and canonically serialized as:
 
 ```json
-{"alg":"EdDSA","kid":"opaque-key-id","typ":"infidelity-media-capability+jwt"}
+{"alg":"EdDSA","kid":"opaque-key-id","typ":"needletail-media-capability+jwt"}
 ```
 
 The verifier enforces:

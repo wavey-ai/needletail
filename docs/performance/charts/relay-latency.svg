@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="360" viewBox="0 0 820 360" role="img" aria-labelledby="title desc">
+  <title id="title">Relay latency latest runs</title>
+  <desc id="desc">Relay processing p95 and publication-to-cache p99 for latest local and GCP runs.</desc>
+  <style>
+    .bg{fill:#fff}.title{font:700 22px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.label{font:600 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111}.small{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#555}.axis{stroke:#ddd;stroke-width:1}.budget{stroke:#777;stroke-width:2;stroke-dasharray:5 5}.local{fill:#111}.gcp{fill:#d71920}.target{fill:#777}
+  </style>
+  <rect class="bg" width="820" height="360"/>
+  <text x="32" y="38" class="title">Relay latency</text>
+  <text x="32" y="62" class="small">Latest recorded local and GCP runs</text>
+
+  <text x="32" y="102" class="label">Relay processing p95</text>
+  <text x="300" y="102" class="small">target ≤ 1.0 ms</text>
+  <line x1="250" y1="118" x2="670" y2="118" class="axis"/>
+  <line x1="670" y1="110" x2="670" y2="198" class="budget"/>
+  <text x="32" y="145" class="small">Local</text>
+  <rect x="250" y="130" width="420" height="24" rx="3" class="local"/>
+  <text x="682" y="148" class="small">1.0 ms</text>
+  <text x="32" y="185" class="small">GCP</text>
+  <rect x="250" y="170" width="210" height="24" rx="3" class="gcp"/>
+  <text x="472" y="188" class="small">0.5 ms</text>
+
+  <text x="32" y="232" class="label">Publication-to-cache p99</text>
+  <text x="300" y="232" class="small">target ≤ 500 ms</text>
+  <line x1="250" y1="248" x2="670" y2="248" class="axis"/>
+  <line x1="670" y1="240" x2="670" y2="328" class="budget"/>
+  <text x="32" y="275" class="small">Local</text>
+  <rect x="250" y="260" width="126" height="24" rx="3" class="local"/>
+  <text x="388" y="278" class="small">150 ms</text>
+  <text x="32" y="315" class="small">GCP</text>
+  <rect x="250" y="300" width="126" height="24" rx="3" class="gcp"/>
+  <text x="388" y="318" class="small">150 ms</text>
+</svg>
