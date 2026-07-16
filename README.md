@@ -46,6 +46,10 @@ agent on each host, and `systemd` supervision of native binaries.
 - [Mission Control](mission-control/README.md)
 - [Real-world test evidence](docs/real-world-tests/README.md)
 
+## License
+
+Needletail is licensed under the [MIT License](LICENSE).
+
 ## Local constellation
 
 The default checkout layout places Needletail beside its component repos:
