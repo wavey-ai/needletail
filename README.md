@@ -146,5 +146,3 @@ make check
 make test
 bash -n scripts/*.sh
 ```
-
-Repository publication remains an explicit operator action.
