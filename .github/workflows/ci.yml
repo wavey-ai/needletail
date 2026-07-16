@@ -13,6 +13,7 @@ jobs:
         with:
           components: rustfmt
           targets: wasm32-unknown-unknown
+      - run: scripts/validate-product-boundary.sh
       - run: cargo fmt --all -- --check
       - run: cargo check --locked --all-targets
       - run: cargo test --locked

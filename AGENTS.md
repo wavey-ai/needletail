@@ -8,6 +8,12 @@ Service implementations, protocol logic, reusable caches/FEC, and
 service-specific images remain in sibling repositories such as `av-contrib`,
 `av-mesh`, `playlists`, and `raptor-fec`.
 
+Contributor-product adapters, identity/client configuration, app session policy,
+DAW/plugin semantics, and app-specific end-to-end tests live in the owning
+contributor application repositories. Needletail accepts those products through
+generic ingest, capability, session, relay, and observability contracts.
+Run `make product-boundary-check` before committing boundary-sensitive changes.
+
 The Rust supervisor serves local development and qualification. Needletail
 production deployment uses the durable Needletail controller, host node agents,
 and `systemd`-supervised native services. Never commit TLS keys, provider
