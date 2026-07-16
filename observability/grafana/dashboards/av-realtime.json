@@ -326,9 +326,25 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Relay application processing time for each received media datagram. The p95 budget for interactive and premium paths is 1 ms.",
+      "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 72 },
+      "id": 27,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "editorMode": "code", "expr": "av:mesh_relay_processing_p50_seconds:5m", "legendFormat": "{{instance}} · p50", "range": true, "refId": "A" },
+        { "editorMode": "code", "expr": "av:mesh_relay_processing_p95_seconds:5m", "legendFormat": "{{instance}} · p95", "range": true, "refId": "B" },
+        { "editorMode": "code", "expr": "av:mesh_relay_processing_p99_seconds:5m", "legendFormat": "{{instance}} · p99", "range": true, "refId": "C" },
+        { "editorMode": "code", "expr": "av_mesh_relay_session_processing_duration_max_us / 1000000", "legendFormat": "{{instance}} · max", "range": true, "refId": "D" }
+      ],
+      "title": "Relay processing p50 / p95 / p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Independent primary and warm-secondary controller observations driving adaptive RaptorQ protection and route choice. Loss is a fraction; stretch is route RTT divided by fastest direct RTT.",
       "fieldConfig": { "defaults": { "decimals": 4, "unit": "short" }, "overrides": [] },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 72 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 82 },
       "id": 22,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
@@ -347,7 +363,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "One-hot automatic failover controller state and the number of warm children currently promoted to source plus repair.",
       "fieldConfig": { "defaults": { "decimals": 0, "min": 0, "max": 1, "unit": "short" }, "overrides": [] },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 82 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 92 },
       "id": 23,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
@@ -361,7 +377,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Primary-silence detection, promotion-command to secondary-source activation, and verified cache-completion gap across failover.",
       "fieldConfig": { "defaults": { "decimals": 3, "unit": "s" }, "overrides": [] },
-      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 82 },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 92 },
       "id": 24,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
@@ -377,7 +393,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Promotion/demotion transitions, control command outcomes, warm-source replay, fixed-bound eviction, deadline expiry, and lease-expiry safety events.",
       "fieldConfig": { "defaults": { "decimals": 2, "unit": "ops" }, "overrides": [] },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 90 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 100 },
       "id": 25,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
@@ -397,7 +413,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Canonical source epoch, first-object activation delay, media-object head, contiguous LL-HLS publication watermark, known retained-window gaps, and comparable node lag. Process-local counters are intentionally excluded.",
       "fieldConfig": { "defaults": { "decimals": 0, "unit": "short" }, "overrides": [{ "matcher": { "id": "byRegexp", "options": "/.*epoch activation/" }, "properties": [{ "id": "unit", "value": "s" }, { "id": "decimals", "value": 3 }] }] },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 98 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 108 },
       "id": 26,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [

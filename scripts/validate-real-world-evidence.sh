@@ -53,10 +53,16 @@ for evidence in "${run_files[@]}"; do
       and .raptorq_primary_path_loss.fec_recovered_source_symbols > 0
       and .raptorq_primary_path_loss.expired_objects == 0
       and .raptorq_primary_path_loss.rejected_datagrams == 0
-      and .raptorq_primary_path_loss.deadline_drops == 0
-      and (.raptorq_primary_path_loss | has("repaired_objects") | not)
-    ' "${evidence}" >/dev/null
-  fi
+	      and .raptorq_primary_path_loss.deadline_drops == 0
+	      and (.raptorq_primary_path_loss | has("repaired_objects") | not)
+	      and (
+	        if has("relay_latency") then
+	          .relay_latency.relay_processing.max_p95_us <= .relay_latency.budgets_us.relay_processing_p95
+	          and .relay_latency.publication_to_available.max_p99_us <= .relay_latency.budgets_us.publication_to_available_p99
+	        else true end
+	      )
+	    ' "${evidence}" >/dev/null
+	  fi
 
   if jq -e '
     .. | objects | keys[]
@@ -90,10 +96,16 @@ for evidence in "${local_files[@]}"; do
     and .raptorq_recovery.fec_recovered_objects > 0
     and .raptorq_recovery.fec_recovered_source_symbols > 0
     and .raptorq_recovery.rejected_datagrams == 0
-    and .raptorq_recovery.deadline_drops == 0
-    and .raptorq_recovery.forward_errors == 0
-    and .passed == true
-  ' "${evidence}" >/dev/null
+	    and .raptorq_recovery.deadline_drops == 0
+	    and .raptorq_recovery.forward_errors == 0
+	    and (
+	      if has("relay_latency") then
+	        .relay_latency.relay_processing.max_p95_us <= .relay_latency.budgets_us.relay_processing_p95
+	        and .relay_latency.publication_to_available.max_p99_us <= .relay_latency.budgets_us.publication_to_available_p99
+	      else true end
+	    )
+	    and .passed == true
+	  ' "${evidence}" >/dev/null
 
   if jq -e '
     .. | objects | keys[]

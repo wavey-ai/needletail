@@ -1,0 +1,367 @@
+{
+  "schema": "needletail.gcp-intercontinental-qualification.v3",
+  "run_id": "20260716T002843Z",
+  "project": "steadfast-slate-498623-r2",
+  "topology": {
+    "project": "steadfast-slate-498623-r2",
+    "network": "needletail-qualification",
+    "machine_type": "e2-standard-2",
+    "max_run_duration": "6h",
+    "nodes": {
+      "contributor": {
+        "name": "nt-contrib-lon",
+        "zone": "europe-west2-b"
+      },
+      "primary": {
+        "name": "nt-relay-ams",
+        "zone": "europe-west4-a"
+      },
+      "secondary": {
+        "name": "nt-relay-osa",
+        "zone": "asia-northeast2-b"
+      },
+      "edge": {
+        "name": "nt-edge-tyo",
+        "zone": "asia-northeast1-b"
+      }
+    }
+  },
+  "adaptive_raptorq": {
+    "controller_loss_fraction": 0.02,
+    "qualification_loss_probability": 0.02,
+    "policy_input_matches_fault": true
+  },
+  "measured_routes": {
+    "best_direct_rtt_ms": 359.292,
+    "primary": {
+      "rtt_ms": 257.431,
+      "path_stretch": 0.716495
+    },
+    "secondary": {
+      "rtt_ms": 252.239,
+      "path_stretch": 0.702045
+    },
+    "maximum_path_stretch": 1.15
+  },
+  "contributor_restart": {
+    "convergence_budget_ms": 10000,
+    "observer_elapsed_us": 10891319,
+    "maximum_activation_delay_us": 1745706,
+    "source_epoch_before": 1784161690770844,
+    "source_epoch_after": 1784161741275100,
+    "epoch_advanced": true,
+    "maximum_head_before": 669,
+    "maximum_head_after": 87,
+    "relay_epochs_aligned": true,
+    "known_gaps": 0
+  },
+  "failover": {
+    "budgets_ms": {
+      "detection": 250,
+      "activation": 250,
+      "media_gap": 250
+    },
+    "observed_us": {
+      "detection": 110419,
+      "activation": 9936,
+      "media_gap": 122738
+    },
+    "state_sequence": [
+      "healthy",
+      "promoted",
+      "healthy"
+    ],
+    "decoded_objects": 310,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0,
+    "surviving_lane_objects": 14,
+    "all_lanes_failed_objects": 0,
+    "promotions": 1,
+    "make_before_break_demotions": 1,
+    "warm_source_replayed_datagrams": 38
+  },
+  "canonical_publication_recovery": {
+    "source_epoch": 1784161741275100,
+    "maximum_allowed_lag_objects": 4,
+    "maximum_observed_lag_objects": 3,
+    "minimum_contiguous_object": 974,
+    "maximum_head_object": 977,
+    "known_gaps": 0
+  },
+  "raptorq_primary_path_loss": {
+    "probability": 0.02,
+    "duration_seconds": 15,
+    "dropped_datagrams": 66,
+    "decoded_objects": 369,
+    "repair_assisted_objects": 52,
+    "fec_recovered_objects": 52,
+    "fec_recovered_source_symbols": 58,
+    "expired_objects": 0,
+    "rejected_datagrams": 0,
+    "deadline_drops": 0
+  },
+  "relay_latency": {
+    "schema": "needletail.relay-latency-delta.v1",
+    "relay_processing": {
+      "nodes": [
+        {
+          "count": 16707,
+          "sum_us": 1802350,
+          "p50_us": 100,
+          "p95_us": 500,
+          "p99_us": 1000,
+          "after_max_us": 4474,
+          "buckets": [
+            13577,
+            15421,
+            15991,
+            16662,
+            16705,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707
+          ],
+          "role": "playback_edge",
+          "node_id": "edge",
+          "region": "asia-northeast1"
+        },
+        {
+          "count": 16707,
+          "sum_us": 1802350,
+          "p50_us": 100,
+          "p95_us": 500,
+          "p99_us": 1000,
+          "after_max_us": 4474,
+          "buckets": [
+            13577,
+            15421,
+            15991,
+            16662,
+            16705,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707,
+            16707
+          ],
+          "role": "relay_node",
+          "node_id": "edge",
+          "region": "asia-northeast1"
+        },
+        {
+          "count": 9025,
+          "sum_us": 576485,
+          "p50_us": 100,
+          "p95_us": 250,
+          "p99_us": 250,
+          "after_max_us": 464,
+          "buckets": [
+            7735,
+            9017,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025,
+            9025
+          ],
+          "role": "relay_node",
+          "node_id": "relay-primary",
+          "region": "europe-west4"
+        },
+        {
+          "count": 16669,
+          "sum_us": 1672801,
+          "p50_us": 100,
+          "p95_us": 500,
+          "p99_us": 1000,
+          "after_max_us": 2611,
+          "buckets": [
+            13788,
+            15443,
+            16288,
+            16665,
+            16669,
+            16669,
+            16669,
+            16669,
+            16669,
+            16669,
+            16669,
+            16669,
+            16669
+          ],
+          "role": "relay_node",
+          "node_id": "relay-secondary",
+          "region": "asia-northeast2"
+        }
+      ],
+      "max_p95_us": 500,
+      "max_p99_us": 1000
+    },
+    "publication_to_available": {
+      "nodes": [
+        {
+          "count": 1214,
+          "sum_us": 153874048,
+          "p50_us": 150000,
+          "p95_us": 150000,
+          "p99_us": 150000,
+          "after_max_us": 254221,
+          "buckets": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            178,
+            1213,
+            1213,
+            1214,
+            1214,
+            1214,
+            1214,
+            1214
+          ],
+          "role": "playback_edge",
+          "node_id": "edge",
+          "region": "asia-northeast1"
+        },
+        {
+          "count": 1214,
+          "sum_us": 153874048,
+          "p50_us": 150000,
+          "p95_us": 150000,
+          "p99_us": 150000,
+          "after_max_us": 254221,
+          "buckets": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            178,
+            1213,
+            1213,
+            1214,
+            1214,
+            1214,
+            1214,
+            1214
+          ],
+          "role": "relay_node",
+          "node_id": "edge",
+          "region": "asia-northeast1"
+        },
+        {
+          "count": 807,
+          "sum_us": 6455045,
+          "p50_us": 10000,
+          "p95_us": 10000,
+          "p99_us": 10000,
+          "after_max_us": 9982,
+          "buckets": [
+            0,
+            0,
+            0,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807,
+            807
+          ],
+          "role": "relay_node",
+          "node_id": "relay-primary",
+          "region": "europe-west4"
+        },
+        {
+          "count": 1215,
+          "sum_us": 150171116,
+          "p50_us": 125000,
+          "p95_us": 150000,
+          "p99_us": 150000,
+          "after_max_us": 127642,
+          "buckets": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1143,
+            1215,
+            1215,
+            1215,
+            1215,
+            1215,
+            1215,
+            1215
+          ],
+          "role": "relay_node",
+          "node_id": "relay-secondary",
+          "region": "asia-northeast2"
+        }
+      ],
+      "max_p95_us": 150000,
+      "max_p99_us": 150000
+    },
+    "budgets_us": {
+      "relay_processing_p95": 1000,
+      "publication_to_available_p99": 500000
+    }
+  },
+  "passed": true,
+  "raw_artifact_directory": "target/gcp-qualification/runs/20260716T002843Z",
+  "tested_revisions": {
+    "needletail": {
+      "commit": "6bb2fc8e65ffae31cdf23daea6a6a5fd2d4ffa20",
+      "working_tree_modified": true
+    },
+    "av_contrib": {
+      "commit": "9aa15eaeb4d6602f35e750f1e91318201ce355b6"
+    },
+    "av_mesh": {
+      "commit": "20512dcf61208d5a5361951d8a06375e2925e7e2",
+      "working_tree_modified": true
+    }
+  },
+  "cleanup": {
+    "primary_service_active": true,
+    "contributor_services_active": true,
+    "loss_chain_absent": true,
+    "alerts_empty": true,
+    "failover_controller_state": "healthy",
+    "known_gaps": 0,
+    "maximum_lag_objects": 5
+  }
+}

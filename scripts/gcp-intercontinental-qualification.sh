@@ -27,13 +27,16 @@ FAILOVER_TIMEOUT_SECONDS="${FAILOVER_TIMEOUT_SECONDS:-12}"
 FAILOVER_STABILITY_SECONDS="${FAILOVER_STABILITY_SECONDS:-3}"
 RECOVERY_TIMEOUT_SECONDS="${RECOVERY_TIMEOUT_SECONDS:-20}"
 PUBLICATION_MAX_LAG_OBJECTS="${PUBLICATION_MAX_LAG_OBJECTS:-4}"
+PUBLICATION_TO_AVAILABLE_P99_BUDGET_US="${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US:-500000}"
 SOURCE_RESTART_CONVERGENCE_BUDGET_MS="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS:-10000}"
 SOURCE_RESTART_TIMEOUT_SECONDS="${SOURCE_RESTART_TIMEOUT_SECONDS:-20}"
 RAPTORQ_LOSS_PROBABILITY="${RAPTORQ_LOSS_PROBABILITY:-0.02}"
 RAPTORQ_LOSS_SECONDS="${RAPTORQ_LOSS_SECONDS:-15}"
 RAPTORQ_MIN_FEC_RECOVERED_OBJECTS="${RAPTORQ_MIN_FEC_RECOVERED_OBJECTS:-${RAPTORQ_MIN_REPAIRED_OBJECTS:-1}}"
+RELAY_PROCESSING_P95_BUDGET_US="${RELAY_PROCESSING_P95_BUDGET_US:-1000}"
 MAX_PATH_STRETCH="${MAX_PATH_STRETCH:-1.15}"
 LOSS_CHAIN="NEEDLETAIL_RQ_QUAL"
+RELAY_LATENCY_JSON="${RESULT_DIR}/relay-latency.json"
 
 usage() {
   cat <<'EOF'
@@ -53,6 +56,8 @@ Key overrides:
   FAILOVER_MEDIA_GAP_BUDGET_MS   maximum decoded-media gap (default 250)
   FAILOVER_MAX_EXPIRED_OBJECTS   tolerated severed in-flight objects (default 0)
   PUBLICATION_MAX_LAG_OBJECTS    maximum canonical lag after relay recovery (default 4)
+  PUBLICATION_TO_AVAILABLE_P99_BUDGET_US
+                                  maximum publication-to-cache p99 (default 500000)
   SOURCE_RESTART_CONVERGENCE_BUDGET_MS
                                   maximum source-epoch reconvergence (default 10000)
   SOURCE_RESTART_TIMEOUT_SECONDS source-epoch observation timeout (default 20)
@@ -60,6 +65,7 @@ Key overrides:
   RAPTORQ_LOSS_SECONDS           controlled-loss duration (default 15)
   RAPTORQ_MIN_FEC_RECOVERED_OBJECTS
                                   minimum exact FEC-recovered objects (default 1)
+  RELAY_PROCESSING_P95_BUDGET_US maximum relay processing p95 (default 1000)
   MAX_PATH_STRETCH               maximum measured route/direct RTT ratio (default 1.15)
   RESULT_DIR                     qualification artifact directory
 EOF
@@ -90,10 +96,12 @@ for value_name in \
   FAILOVER_STABILITY_SECONDS \
   RECOVERY_TIMEOUT_SECONDS \
   PUBLICATION_MAX_LAG_OBJECTS \
+  PUBLICATION_TO_AVAILABLE_P99_BUDGET_US \
   SOURCE_RESTART_CONVERGENCE_BUDGET_MS \
   SOURCE_RESTART_TIMEOUT_SECONDS \
   RAPTORQ_LOSS_SECONDS \
-  RAPTORQ_MIN_FEC_RECOVERED_OBJECTS; do
+  RAPTORQ_MIN_FEC_RECOVERED_OBJECTS \
+  RELAY_PROCESSING_P95_BUDGET_US; do
   value="${!value_name}"
   if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
     echo "${value_name} must be a non-negative integer" >&2
@@ -653,11 +661,43 @@ printf '%-25s dropped=%s decoded=%s fec_recovered=%s recovered_source_symbols=%s
   "${loss_fec_recovered_delta}" "${loss_fec_recovered_source_symbols_delta}" \
   "${loss_repair_assisted_delta}" "${loss_expired_delta}"
 
+"${ROOT}/scripts/relay-latency-delta.py" \
+  --before "${RESULT_DIR}/baseline-edge.json" \
+  --after "${RESULT_DIR}/loss-after-edge.json" \
+  >"${RELAY_LATENCY_JSON}"
+
+if ! jq -e '.relay_processing.nodes | any(.count > 0)' \
+  "${RELAY_LATENCY_JSON}" >/dev/null; then
+  echo "relay processing latency had no received datagram samples" >&2
+  exit 1
+fi
+if ! jq -e '.publication_to_available.nodes | any(.count > 0)' \
+  "${RELAY_LATENCY_JSON}" >/dev/null; then
+  echo "publication-to-cache latency had no clock-qualified samples" >&2
+  exit 1
+fi
+relay_processing_p95_us="$(jq -r '[.relay_processing.nodes[] | select(.count > 0) | (.p95_us // 0)] | max // 0' "${RELAY_LATENCY_JSON}")"
+publication_to_available_p99_us="$(jq -r '[.publication_to_available.nodes[] | select(.count > 0) | (.p99_us // 0)] | max // 0' "${RELAY_LATENCY_JSON}")"
+if ((relay_processing_p95_us > RELAY_PROCESSING_P95_BUDGET_US)); then
+  echo "relay processing p95 ${relay_processing_p95_us}us exceeded ${RELAY_PROCESSING_P95_BUDGET_US}us" >&2
+  jq '.relay_processing.nodes' "${RELAY_LATENCY_JSON}" >&2
+  exit 1
+fi
+if ((publication_to_available_p99_us > PUBLICATION_TO_AVAILABLE_P99_BUDGET_US)); then
+  echo "publication-to-cache p99 ${publication_to_available_p99_us}us exceeded ${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US}us" >&2
+  jq '.publication_to_available.nodes' "${RELAY_LATENCY_JSON}" >&2
+  exit 1
+fi
+
+printf '%-25s processing_p95=%sus publish_to_cache_p99=%sus\n' \
+  "relay latency" "${relay_processing_p95_us}" "${publication_to_available_p99_us}"
+
 jq -n \
   --arg schema "needletail.gcp-intercontinental-qualification.v3" \
   --arg run_id "${RUN_ID}" \
   --arg project "${PROJECT}" \
   --slurpfile lab "${LAB_STATE}" \
+  --slurpfile relay_latency "${RELAY_LATENCY_JSON}" \
   --argjson detection_budget_ms "${FAILOVER_DETECTION_BUDGET_MS}" \
   --argjson activation_budget_ms "${FAILOVER_ACTIVATION_BUDGET_MS}" \
   --argjson media_gap_budget_ms "${FAILOVER_MEDIA_GAP_BUDGET_MS}" \
@@ -702,6 +742,8 @@ jq -n \
   --argjson loss_expired "${loss_expired_delta}" \
   --argjson loss_rejected "${loss_rejected_delta}" \
   --argjson loss_deadline "${loss_deadline_delta}" \
+  --argjson relay_processing_p95_budget_us "${RELAY_PROCESSING_P95_BUDGET_US}" \
+  --argjson publication_to_available_p99_budget_us "${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US}" \
   '{
     schema: $schema,
     run_id: $run_id,
@@ -772,6 +814,12 @@ jq -n \
       rejected_datagrams: $loss_rejected,
       deadline_drops: $loss_deadline
     },
+    relay_latency: ($relay_latency[0] + {
+      budgets_us: {
+        relay_processing_p95: $relay_processing_p95_budget_us,
+        publication_to_available_p99: $publication_to_available_p99_budget_us
+      }
+    }),
     passed: true
   }' >"${RESULT_DIR}/qualification.json"
 

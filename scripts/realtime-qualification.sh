@@ -46,6 +46,8 @@ PLAYLIST_P95_BUDGET_MS="${PLAYLIST_P95_BUDGET_MS:-5}"
 FORWARD_P95_BUDGET_MS="${FORWARD_P95_BUDGET_MS:-15}"
 EDGE_HANDLER_P95_BUDGET_MS="${EDGE_HANDLER_P95_BUDGET_MS:-1}"
 PROPAGATION_P95_BUDGET_MS="${PROPAGATION_P95_BUDGET_MS:-200}"
+RELAY_PROCESSING_P95_BUDGET_US="${RELAY_PROCESSING_P95_BUDGET_US:-1000}"
+PUBLICATION_TO_AVAILABLE_P99_BUDGET_US="${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US:-500000}"
 MAX_P95_RATIO="${MAX_P95_RATIO:-3}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 
@@ -55,6 +57,9 @@ BASELINE_JSON="${RESULT_DIR}/baseline.json"
 IMPAIRED_JSON="${RESULT_DIR}/impaired.json"
 QUALIFICATION_JSON="${RESULT_DIR}/qualification.json"
 FAILOVER_JSON="${RESULT_DIR}/automatic-failover.json"
+IMPAIRED_RELAY_BEFORE_JSON="${RESULT_DIR}/impaired-relay-before-edge.json"
+IMPAIRED_RELAY_AFTER_JSON="${RESULT_DIR}/impaired-relay-after-edge.json"
+RELAY_LATENCY_JSON="${RESULT_DIR}/relay-latency.json"
 
 RAPTORQ_REPAIR_ASSISTED_OBJECTS_BEFORE=0
 RAPTORQ_REPAIR_ASSISTED_OBJECTS_AFTER=0
@@ -122,6 +127,8 @@ Primary environment overrides:
   MAX_P95_RATIO               impaired/baseline client-p95 limit (default 3)
   FAILOVER_ACTIVATION_BUDGET_MS maximum promotion-to-source time (default 250)
   FAILOVER_MEDIA_GAP_BUDGET_MS maximum cache-completion gap (default 250)
+  RELAY_PROCESSING_P95_BUDGET_US maximum relay processing p95 (default 1000)
+  PUBLICATION_TO_AVAILABLE_P99_BUDGET_US maximum publish-to-cache p99 (default 500000)
   SKIP_BUILD=1                use existing release binaries
 
 Default gates are 15ms ingest/forwarding p95, 5ms playlist p95, 1ms edge
@@ -143,7 +150,7 @@ require_cmd() {
   }
 }
 
-for command_name in curl ffmpeg h2load jq awk sed rg; do
+for command_name in curl ffmpeg h2load jq awk sed rg python3; do
   require_cmd "${command_name}"
 done
 
@@ -479,6 +486,7 @@ verify_netem_log() {
 capture_raptorq_before() {
   local snapshot
   snapshot="$(curl -kfsS "${EDGE_URL%/}/api/mesh")"
+  printf '%s\n' "${snapshot}" >"${IMPAIRED_RELAY_BEFORE_JSON}"
   RAPTORQ_REPAIR_ASSISTED_OBJECTS_BEFORE="$(jq -r '.relay_session.repair_assisted_objects' <<<"${snapshot}")"
   RAPTORQ_FEC_RECOVERED_OBJECTS_BEFORE="$(jq -r '.relay_session.fec_recovered_objects' <<<"${snapshot}")"
   RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_BEFORE="$(jq -r '.relay_session.fec_recovered_source_symbols' <<<"${snapshot}")"
@@ -494,6 +502,7 @@ capture_raptorq_before() {
 capture_raptorq_after() {
   local snapshot
   snapshot="$(curl -kfsS "${EDGE_URL%/}/api/mesh")"
+  printf '%s\n' "${snapshot}" >"${IMPAIRED_RELAY_AFTER_JSON}"
   RAPTORQ_REPAIR_ASSISTED_OBJECTS_AFTER="$(jq -r '.relay_session.repair_assisted_objects' <<<"${snapshot}")"
   RAPTORQ_FEC_RECOVERED_OBJECTS_AFTER="$(jq -r '.relay_session.fec_recovered_objects' <<<"${snapshot}")"
   RAPTORQ_FEC_RECOVERED_SOURCE_SYMBOLS_AFTER="$(jq -r '.relay_session.fec_recovered_source_symbols' <<<"${snapshot}")"
@@ -543,6 +552,42 @@ verify_raptorq_recovery() {
     "${RAPTORQ_SOURCE_DATAGRAMS_DELTA}" "${RAPTORQ_REPAIR_DATAGRAMS_DELTA}" \
     "${PRIMARY_FORWARDED_SOURCE_DELTA}" "${SECONDARY_FORWARDED_REPAIR_DELTA}" \
     "${RAPTORQ_REJECTED_DELTA}" "${RAPTORQ_DEADLINE_DROPS_DELTA}" "${RELAY_FORWARD_ERRORS_DELTA}"
+}
+
+verify_relay_latency() {
+  "${SCRIPT_DIR}/relay-latency-delta.py" \
+    --before "${IMPAIRED_RELAY_BEFORE_JSON}" \
+    --after "${IMPAIRED_RELAY_AFTER_JSON}" \
+    >"${RELAY_LATENCY_JSON}"
+
+  if ! jq -e '.relay_processing.nodes | any(.count > 0)' \
+    "${RELAY_LATENCY_JSON}" >/dev/null; then
+    echo "relay processing latency had no received datagram samples" >&2
+    return 1
+  fi
+  if ! jq -e '.publication_to_available.nodes | any(.count > 0)' \
+    "${RELAY_LATENCY_JSON}" >/dev/null; then
+    echo "publication-to-cache latency had no clock-qualified samples" >&2
+    return 1
+  fi
+
+  local processing_p95_us publication_p99_us
+  processing_p95_us="$(jq -r '[.relay_processing.nodes[] | select(.count > 0) | (.p95_us // 0)] | max // 0' "${RELAY_LATENCY_JSON}")"
+  publication_p99_us="$(jq -r '[.publication_to_available.nodes[] | select(.count > 0) | (.p99_us // 0)] | max // 0' "${RELAY_LATENCY_JSON}")"
+
+  if [[ "${processing_p95_us}" -gt "${RELAY_PROCESSING_P95_BUDGET_US}" ]]; then
+    echo "relay processing p95 ${processing_p95_us}us exceeded ${RELAY_PROCESSING_P95_BUDGET_US}us" >&2
+    jq '.relay_processing.nodes' "${RELAY_LATENCY_JSON}" >&2
+    return 1
+  fi
+  if [[ "${publication_p99_us}" -gt "${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US}" ]]; then
+    echo "publication-to-cache p99 ${publication_p99_us}us exceeded ${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US}us" >&2
+    jq '.publication_to_available.nodes' "${RELAY_LATENCY_JSON}" >&2
+    return 1
+  fi
+
+  printf '%-24s processing_p95=%sus publish_to_cache_p99=%sus\n' \
+    "relay latency" "${processing_p95_us}" "${publication_p99_us}"
 }
 
 edge_snapshot() {
@@ -715,6 +760,7 @@ write_qualification() {
     --slurpfile baseline "${BASELINE_JSON}" \
     --slurpfile impaired "${IMPAIRED_JSON}" \
     --slurpfile failover "${FAILOVER_JSON}" \
+    --slurpfile relay_latency "${RELAY_LATENCY_JSON}" \
     --argjson wan_delay_ms "${WAN_DELAY_MS}" \
     --argjson wan_jitter_ms "${WAN_JITTER_MS}" \
     --argjson wan_loss_pct "${WAN_LOSS_PCT}" \
@@ -733,6 +779,8 @@ write_qualification() {
     --argjson rejected "${RAPTORQ_REJECTED_DELTA}" \
     --argjson deadline_drops "${RAPTORQ_DEADLINE_DROPS_DELTA}" \
     --argjson forward_errors "${RELAY_FORWARD_ERRORS_DELTA}" \
+    --argjson relay_processing_p95_budget_us "${RELAY_PROCESSING_P95_BUDGET_US}" \
+    --argjson publication_to_available_p99_budget_us "${PUBLICATION_TO_AVAILABLE_P99_BUDGET_US}" \
     '{
       schema: "needletail.realtime-qualification.v3",
       impairment: {
@@ -753,6 +801,12 @@ write_qualification() {
         deadline_drops: $deadline_drops,
         forward_errors: $forward_errors
       },
+      relay_latency: ($relay_latency[0] + {
+        budgets_us: {
+          relay_processing_p95: $relay_processing_p95_budget_us,
+          publication_to_available_p99: $publication_to_available_p99_budget_us
+        }
+      }),
       automatic_failover: $failover[0],
       profiles: {baseline: $baseline[0], impaired: $impaired[0]}
     }' >"${QUALIFICATION_JSON}"
@@ -819,6 +873,7 @@ verify_netem_log "impaired primary-edge" "${RESULT_DIR}/impaired-primary-edge-ne
 verify_netem_log "recovered primary-edge" "${RESULT_DIR}/impaired-primary-edge-recovered-netem.jsonl" "${WAN_LOSS_PCT}"
 verify_netem_log "impaired secondary-edge" "${RESULT_DIR}/impaired-secondary-edge-netem.jsonl" "${SECONDARY_EDGE_LOSS_PCT}"
 verify_raptorq_recovery
+verify_relay_latency
 
 write_qualification
 echo "realtime qualification passed"

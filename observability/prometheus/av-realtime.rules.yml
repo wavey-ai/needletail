@@ -122,6 +122,30 @@ groups:
               rate(av_mesh_relay_session_publication_to_available_us_bucket[5m])
             )
           ) / 1000000
+      - record: av:mesh_relay_processing_p50_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (job, instance, le) (
+              rate(av_mesh_relay_session_processing_duration_us_bucket[5m])
+            )
+          ) / 1000000
+      - record: av:mesh_relay_processing_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, instance, le) (
+              rate(av_mesh_relay_session_processing_duration_us_bucket[5m])
+            )
+          ) / 1000000
+      - record: av:mesh_relay_processing_p99_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, instance, le) (
+              rate(av_mesh_relay_session_processing_duration_us_bucket[5m])
+            )
+          ) / 1000000
       - record: av:mesh_edge_requests_per_second:5m
         expr: |
           max by (node_id, region) (
@@ -274,6 +298,17 @@ groups:
           summary: Publication-to-cache p95 is above 500 ms
           description: 'Canonical media on {{ $labels.instance }} reaches verified cache availability in {{ $value | humanizeDuration }} at p95.'
           runbook: Compare parent RTT, source/repair arrival, RaptorQ recovery, relay forwarding time, and deadline headroom.
+
+      - alert: AvMeshRelayProcessingP95High
+        expr: av:mesh_relay_processing_p95_seconds:5m > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          slo: provisional
+        annotations:
+          summary: Relay processing p95 is above 1 ms
+          description: 'Relay application processing on {{ $labels.instance }} is {{ $value | humanizeDuration }} at p95.'
+          runbook: Inspect receive-loop CPU, RaptorQ decode pressure, telemetry lock contention, forwarding fanout, and expired-object drops.
 
       - alert: AvMeshPublicationClockErrorHigh
         expr: av_mesh_relay_session_publication_clock_error_max_us > 50000

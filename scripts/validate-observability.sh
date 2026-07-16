@@ -193,6 +193,8 @@ service_metrics = Set.new(%w[
   av_mesh_relay_session_objects_total
   av_mesh_relay_session_fec_recovered_source_symbols_total
   av_mesh_relay_session_parent_sessions
+  av_mesh_relay_session_processing_duration_max_us
+  av_mesh_relay_session_processing_duration_us_bucket
   av_mesh_relay_session_publication_clock_error_max_us
   av_mesh_relay_session_publication_to_available_us_bucket
   av_mesh_relay_session_security_sessions

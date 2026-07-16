@@ -167,7 +167,7 @@ mod app {
                         />
                         <div class="hero-grid">
                             <ServiceHealth contrib edge />
-                            <DeliveryProgram contrib edge />
+                            <RouteAssignmentSummary contrib edge />
                             <DeadlineHealth contrib edge />
                         </div>
                         <div class="lane-flow-wrap">
@@ -225,7 +225,7 @@ mod app {
                             title="Relay topology and assigned routes"
                             detail="DAG and low-latency route assignments, primary source, secondary repair, trust, stretch, and generation."
                         />
-                        <RouteProgram contrib edge />
+                        <RouteAssignmentPanel contrib edge />
                         <RelayFabricTable edge />
                         <RouteTable contrib edge />
                     </section>
@@ -329,7 +329,7 @@ mod app {
     }
 
     #[component]
-    fn DeliveryProgram(
+    fn RouteAssignmentSummary(
         contrib: ReadSignal<Option<ContribStatus>>,
         edge: ReadSignal<Option<MeshStatus>>,
     ) -> impl IntoView {
@@ -859,15 +859,15 @@ mod app {
     }
 
     #[component]
-    fn RouteProgram(
+    fn RouteAssignmentPanel(
         contrib: ReadSignal<Option<ContribStatus>>,
         edge: ReadSignal<Option<MeshStatus>>,
     ) -> impl IntoView {
         view! {
-            <div class="route-program-grid">
+            <div class="route-assignment-grid">
                 <article class="data-panel route-policy">
                     <PanelTitle title="Route assignment" detail="Controller assignment and measured constraints" />
-                    <div class="route-program-value">
+                    <div class="route-assignment-value">
                         <strong>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).fabric_label().unwrap_or("Awaiting assignment")}</strong>
                         <span
                             class=move || format!("state-pill {}", tone_for_state(effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).readiness_label()))
@@ -955,7 +955,7 @@ mod app {
                 <PanelTitle title="Relay RaptorQ counters" detail="Per-node source, secondary repair, forwarding, recovery, failover, and carrier latency" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Failover"</th><th>"FEC recovered"</th><th>"Warm replay"</th><th>"Publish → available p95"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
+                        <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Failover"</th><th>"FEC recovered"</th><th>"Warm replay"</th><th>"Publish → available p95"</th><th>"Processing p95 / p99"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
@@ -1027,6 +1027,11 @@ mod app {
                 "—".to_owned()
             }
         );
+        let processing_latency = format!(
+            "{} / {}",
+            format_optional_duration(relay.processing_percentile_us(95)),
+            format_optional_duration(relay.processing_percentile_us(99))
+        );
         let availability_latency = relay
             .publication_to_available_percentile_us(95)
             .map(|duration_us| {
@@ -1067,6 +1072,7 @@ mod app {
                 <td>{fec_recovered}</td>
                 <td>{warm_replay}</td>
                 <td class="mono-cell">{availability_latency}</td>
+                <td class="mono-cell">{processing_latency}</td>
                 <td class="mono-cell">{forward_latency}</td>
                 <td>{errors}</td>
             </tr>
@@ -1102,6 +1108,8 @@ mod app {
                     <Metric label="Warm source buffer" value=move || edge.get().map(|s| format!("{} datagrams / {}", s.relay_session.warm_source_buffered_datagrams, format_bytes(s.relay_session.warm_source_buffered_bytes))).unwrap_or_else(|| "—".to_owned()) detail="unexpired source datagrams retained for promotion" />
                     <Metric label="Warm source replay" value=move || edge.get().map(|s| format!("{} datagrams / {}", s.relay_session.warm_source_replayed_datagrams, format_bytes(s.relay_session.warm_source_replayed_bytes))).unwrap_or_else(|| "—".to_owned()) detail="source state replayed immediately after promotion" />
                     <Metric label="Warm replay removals" value=move || edge.get().map(|s| format!("{} retired / {} expired / {} evicted", s.relay_session.warm_source_retired_datagrams, s.relay_session.warm_source_expired_datagrams, s.relay_session.warm_source_evicted_datagrams)).unwrap_or_else(|| "—".to_owned()) detail="completed-window retirement, deadline expiry, and hard-bound eviction" />
+                    <Metric label="Relay processing p95" value=move || edge.get().and_then(|s| s.relay_session.processing_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="per datagram receive path" />
+                    <Metric label="Relay processing p99" value=move || edge.get().and_then(|s| s.relay_session.processing_percentile_us(99)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="per datagram receive path" />
                     <Metric label="Publish → edge p95" value=move || edge.get().and_then(|s| s.relay_session.publication_to_available_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="verified cache availability" />
                     <Metric label="Epoch activation max" value=move || edge.get().and_then(|s| publication_from_edge(&s).canonical_epoch_activation_delay_us).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="contributor incarnation → first object" />
                     <Metric label="Latency clock error" value=move || edge.get().filter(|s| s.relay_session.publication_to_available_count > 0).map(|s| format!("±{}", format_duration_us(s.relay_session.publication_clock_error_max_us))).unwrap_or_else(|| "pending".to_owned()) detail="source timestamp bound" />
@@ -1164,6 +1172,7 @@ mod app {
                 <section class="data-panel latency-panel">
                     <PanelTitle title="Relay and playback latency" detail="Publication-to-cache availability plus LL-HLS response handling" />
                     <div class="latency-stack">
+                        <RelayProcessingRows edge />
                         <RelayAvailabilityRows edge />
                         <EdgeLatencyRows edge />
                     </div>
@@ -1194,6 +1203,48 @@ mod app {
                 <div><span>"p50"</span><strong>{move || format_optional_duration(histogram.get_value()().percentile_us(50))}</strong></div>
                 <div><span>"p95"</span><strong>{move || format_optional_duration(histogram.get_value()().percentile_us(95))}</strong></div>
                 <div><span>"p99"</span><strong>{move || format_optional_duration(histogram.get_value()().percentile_us(99))}</strong></div>
+            </article>
+        }
+    }
+
+    #[component]
+    fn RelayProcessingRows(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        view! {
+            <For
+                each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
+                key=|node| format!("relay-processing:{}:{}", node.node_id, node.region)
+                let(node)
+            >
+                <RelayProcessingRow node />
+            </For>
+            {move || edge.get().is_some_and(|status| status.relay_nodes.iter().all(|node| node.relay_session.processing_duration_count == 0)).then(|| view! {
+                <p class="awaiting">"Relay processing latency is waiting for received media datagrams."</p>
+            })}
+        }
+    }
+
+    #[component]
+    fn RelayProcessingRow(node: RelayNodeSession) -> impl IntoView {
+        let relay = node.relay_session;
+        let label = format!(
+            "{} · {} relay processing",
+            nonempty_owned(node.node_id, "relay"),
+            nonempty_owned(node.region, "region pending")
+        );
+        let p50 = relay.processing_percentile_us(50);
+        let p95 = relay.processing_percentile_us(95);
+        let p99 = relay.processing_percentile_us(99);
+        let class = if p95.is_some_and(|duration_us| duration_us > 1_000) {
+            "latency-row attention"
+        } else {
+            "latency-row"
+        };
+        view! {
+            <article class=class>
+                <p>{label}</p>
+                <div><span>"p50"</span><strong>{format_optional_duration(p50)}</strong></div>
+                <div><span>"p95"</span><strong>{format_optional_duration(p95)}</strong></div>
+                <div><span>"p99"</span><strong>{format_optional_duration(p99)}</strong></div>
             </article>
         }
     }
@@ -1388,7 +1439,7 @@ mod app {
         }
         let delivery = effective_delivery(contrib, edge);
         delivery
-            .has_program()
+            .has_assignment()
             .then_some(delivery)
             .into_iter()
             .collect()

@@ -38,5 +38,6 @@ and absence of secret-shaped fields with:
 ./scripts/validate-real-world-evidence.sh
 ```
 
-Current record: [2026-07-15 GCP intercontinental qualification](2026-07-15-gcp-intercontinental.md).
-Local controlled-impairment record: [2026-07-15 realtime qualification](2026-07-15-local-realtime.md).
+Current record: [2026-07-16 relay latency qualification](2026-07-16-relay-latency-qualification.md).
+Previous GCP intercontinental record: [2026-07-15 GCP intercontinental qualification](2026-07-15-gcp-intercontinental.md).
+Previous local controlled-impairment record: [2026-07-15 realtime qualification](2026-07-15-local-realtime.md).

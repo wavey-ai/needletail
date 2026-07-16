@@ -494,6 +494,10 @@ pub struct RelayIngress {
     pub warm_source_expired_datagrams: u64,
     pub warm_source_retired_datagrams: u64,
     pub warm_source_evicted_datagrams: u64,
+    pub processing_duration_count: u64,
+    pub processing_duration_sum_us: u64,
+    pub processing_duration_max_us: u64,
+    pub processing_duration_buckets: Vec<u64>,
     pub forward_duration_count: u64,
     pub forward_duration_sum_us: u64,
     pub forward_duration_max_us: u64,
@@ -544,6 +548,14 @@ impl RelayIngress {
         histogram_percentile_us(
             self.forward_duration_count,
             &self.forward_duration_buckets,
+            percentile,
+        )
+    }
+
+    pub fn processing_percentile_us(&self, percentile: u64) -> Option<u64> {
+        histogram_percentile_us(
+            self.processing_duration_count,
+            &self.processing_duration_buckets,
             percentile,
         )
     }
@@ -727,7 +739,7 @@ pub struct DeliverySnapshot {
 }
 
 impl DeliverySnapshot {
-    pub fn has_program(&self) -> bool {
+    pub fn has_assignment(&self) -> bool {
         self.delivery_class.is_some()
             || self.generation.is_some()
             || self.route_state.is_some()
@@ -768,7 +780,7 @@ impl DeliverySnapshot {
         } else if self.primary.is_some() || self.secondary.is_some() {
             "carrier configured"
         } else {
-            "awaiting route program"
+            "awaiting route assignment"
         }
     }
 }
@@ -947,13 +959,13 @@ pub fn effective_delivery(
 ) -> DeliverySnapshot {
     if let Some(delivery) = edge
         .map(|status| &status.delivery)
-        .filter(|d| d.has_program())
+        .filter(|d| d.has_assignment())
     {
         return delivery.clone();
     }
     if let Some(delivery) = contrib
         .map(|status| &status.delivery)
-        .filter(|delivery| delivery.has_program())
+        .filter(|delivery| delivery.has_assignment())
     {
         return delivery.clone();
     }
@@ -1341,8 +1353,8 @@ mod tests {
     const EDGE_PARTIAL: &str = r#"{
       "updated_unix_ms":1784102400200,
       "node":{"node_id":"edge-lon","region":"eu-west","continent":"EU","total_storage_bytes":1000,"used_storage_bytes":400,"active_streams":1},
-      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repair_assisted_objects":2,"fec_recovered_objects":1,"fec_recovered_source_symbols":3,"source_datagrams":20,"repair_datagrams":5,"warm_source_buffered_datagrams":4,"warm_source_buffered_bytes":5200,"warm_source_replayed_datagrams":7,"warm_source_replayed_bytes":9100,"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_controller_state":"healthy","failover_controller_enabled":1,"failover_commands_sent":12,"failover_promotions":1,"failover_demotions":1,"failover_primary_source_age_ms":12,"failover_secondary_repair_age_ms":24,"failover_last_detection_us":351000,"failover_last_promotion_to_source_us":88000,"failover_max_media_gap_us":103000},
-      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_listeners":1,"failover_commands_received":12,"failover_promotions_applied":1,"failover_demotions_applied":1}}],
+      "relay_session":{"primary_sessions":1,"secondary_sessions":1,"authenticated_sessions":1,"decoded_objects":6,"repair_assisted_objects":2,"fec_recovered_objects":1,"fec_recovered_source_symbols":3,"source_datagrams":20,"repair_datagrams":5,"warm_source_buffered_datagrams":4,"warm_source_buffered_bytes":5200,"warm_source_replayed_datagrams":7,"warm_source_replayed_bytes":9100,"processing_duration_count":8,"processing_duration_sum_us":3200,"processing_duration_max_us":900,"processing_duration_buckets":[0,2,6,8,8,8,8,8,8,8,8,8,8],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_controller_state":"healthy","failover_controller_enabled":1,"failover_commands_sent":12,"failover_promotions":1,"failover_demotions":1,"failover_primary_source_age_ms":12,"failover_secondary_repair_age_ms":24,"failover_last_detection_us":351000,"failover_last_promotion_to_source_us":88000,"failover_max_media_gap_us":103000},
+      "relay_nodes":[{"node_id":"relay-warm","region":"us-east","relay_session":{"secondary_sessions":1,"controlled_sessions":1,"downstream_children":1,"source_datagrams":20,"repair_datagrams":5,"forwarded_repair_datagrams":5,"processing_duration_count":5,"processing_duration_sum_us":1500,"processing_duration_max_us":500,"processing_duration_buckets":[1,3,5,5,5,5,5,5,5,5,5,5,5],"forward_duration_count":5,"forward_duration_max_us":73,"forward_duration_buckets":[5,5,5],"publication_to_available_count":6,"publication_to_available_sum_us":1200000,"publication_to_available_max_us":240000,"publication_to_available_buckets":[0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],"publication_clock_error_max_us":5000,"failover_listeners":1,"failover_commands_received":12,"failover_promotions_applied":1,"failover_demotions_applied":1}}],
       "aggregate":{"node_count":2,"active_streams":1},
       "telemetry":{"fresh_remote_count":1,"stale_remote_count":0},
       "orchestration":{"control_dispatch_ready":true},
@@ -1422,6 +1434,8 @@ mod tests {
         assert_eq!(edge.relay_session.fec_recovered_source_symbols, 3);
         assert_eq!(edge.relay_session.warm_source_buffered_datagrams, 4);
         assert_eq!(edge.relay_session.warm_source_replayed_datagrams, 7);
+        assert_eq!(edge.relay_session.processing_percentile_us(50), Some(500));
+        assert_eq!(edge.relay_session.processing_percentile_us(95), Some(1_000));
         assert_eq!(
             edge.relay_session
                 .publication_to_available_percentile_us(95),
@@ -1437,6 +1451,12 @@ mod tests {
         assert_eq!(
             edge.relay_nodes[0].relay_session.forwarded_repair_datagrams,
             5
+        );
+        assert_eq!(
+            edge.relay_nodes[0]
+                .relay_session
+                .processing_percentile_us(95),
+            Some(500)
         );
         assert_eq!(edge.relay_nodes[0].relay_session.failover_listeners, 1);
         assert_eq!(publication_from_edge(&edge).contiguous_object, Some(8));
@@ -1480,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn delivery_program_supports_both_product_fabrics() {
+    fn delivery_assignment_supports_both_product_fabrics() {
         let interactive: DeliverySnapshot = serde_json::from_str(
             r#"{"class":"interactive","topology_generation":42,"path_stretch":1.07,"route_state":"ready"}"#,
         )
