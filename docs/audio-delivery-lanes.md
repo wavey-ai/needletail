@@ -41,8 +41,9 @@ Every AEP1 payload kind reaches LL-HLS:
 - S16 and S24 PCM are encoded losslessly as FLAC.
 - S32 and F32 PCM are normalized to S24 before FLAC packaging so these wire
   formats still receive an LL-HLS rendition.
-- Opus is decoded to S16 PCM and packaged as FLAC; the native and WebTransport
-  lanes retain the original Opus packet.
+- Opus is decoded with the pure-Rust `libopus-rs` path, converted to S16 PCM,
+  and packaged as FLAC; the native and WebTransport lanes retain the original
+  Opus packet.
 
 The 48 kHz lossless gate uses S24/FLAC and verifies the `fLaC` sample entry in
 the fMP4 initialization segment. It also requires zero missing epochs/parts,
@@ -59,10 +60,14 @@ waiting for the next access unit.
 
 The final local run measured LL-HLS availability at 6.043 ms p50 and
 10.835 ms p99, versus native UDP at 4.931 ms and 7.604 ms. The final
-London-through-relays-to-Tokyo run measured LL-HLS at 128.508 ms p50 and
-138.759 ms p99, versus UDP at 125.480 ms and 129.701 ms. These are
-publication-to-edge availability measurements, not browser-to-speaker output.
-See the [17 July 2026 test record](real-world-tests/2026-07-17-lossless-h3.md).
+London-origin, six-node DAG measured LL-HLS at 43.360 ms in New York,
+118.799 ms in Tokyo, and 132.887 ms in Sydney at p50. Native UDP measured
+40.258, 115.673, and 129.821 ms respectively: a 3.067–3.125 ms LL-HLS
+premium. Local cache-to-H3-client delivery was 0.220–0.227 ms at p50 and below
+0.8 ms at p99. These are publication-to-client availability measurements, not
+browser-to-speaker output. See the
+[multi-region DAG record](real-world-tests/2026-07-17-linode-dag-replication.md)
+and the [local/GCP cadence record](real-world-tests/2026-07-17-lossless-h3.md).
 
 ## Qualification
 
@@ -95,3 +100,17 @@ scripts/gcp-intercontinental-lab.sh down
 
 `gcp-intercontinental-qualification.sh` includes the same three-lane lossless
 gate before the broader restart, failover, loss, load, and evidence checks.
+
+The multi-edge Linode qualification uses dedicated instances for London,
+Amsterdam, Osaka, New York, Tokyo, and Sydney. It adds exact replicated-cache
+identity, cache independence, bounded origin fanout, late join, controlled loss,
+and simultaneous three-edge failover checks:
+
+```sh
+cd needletail
+export NEEDLETAIL_LINODE_TOKEN_FILE=/path/to/token-file
+scripts/linode-intercontinental-lab.sh up
+scripts/linode-intercontinental-deploy.sh
+scripts/linode-dag-replication-qualification.sh
+scripts/linode-intercontinental-lab.sh down
+```

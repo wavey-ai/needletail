@@ -55,6 +55,10 @@ pub enum CarrierProfile {
     /// Direct UDP inside an explicitly controlled private network. This is the
     /// benchmark and private-VPC qualification carrier.
     ControlledPrivateUdp,
+    /// Direct UDP on explicitly allow-listed public addresses for a controlled
+    /// single-provider qualification where no cross-region private fabric is
+    /// available. This is evidence-only and is never production-ready.
+    ControlledPublicUdp,
     /// Public-Internet production carrier seam. Service argument emission is
     /// gated until the QUIC Datagram backend is enabled in both services.
     QuicDatagram,
@@ -476,7 +480,10 @@ impl RelayProgram {
             violations.push("failover control links require failover_policy".to_owned());
         }
         match (self.purpose, self.carrier) {
-            (DeploymentPurpose::Production, CarrierProfile::ControlledPrivateUdp) => violations
+            (
+                DeploymentPurpose::Production,
+                CarrierProfile::ControlledPrivateUdp | CarrierProfile::ControlledPublicUdp,
+            ) => violations
                 .push("production public relay links require the QUIC Datagram carrier".to_owned()),
             (_, CarrierProfile::QuicDatagram) => violations.push(
                 "QUIC Datagram argument emission awaits the service carrier backend".to_owned(),
@@ -1096,6 +1103,130 @@ mod tests {
     }
 
     #[test]
+    fn compiles_two_origin_fanout_links_into_three_independent_edge_caches() {
+        let mut program = qualification_program();
+        for (
+            edge,
+            region,
+            zone,
+            primary_sender,
+            primary_receiver,
+            secondary_sender,
+            secondary_receiver,
+            controller,
+            listener,
+        ) in [
+            (
+                "edge-new-york",
+                "us-east4",
+                "e",
+                22_305,
+                22_005,
+                22_306,
+                22_006,
+                22_503,
+                22_504,
+            ),
+            (
+                "edge-sydney",
+                "australia-southeast1",
+                "f",
+                22_307,
+                22_007,
+                22_308,
+                22_008,
+                22_505,
+                22_506,
+            ),
+        ] {
+            program
+                .topology
+                .nodes
+                .push(node(edge, 2, NodeRole::PlaybackEdge, region, zone));
+            program.topology.parent_links.extend([
+                ParentLink {
+                    parent_node_id: "relay-a".to_owned(),
+                    child_node_id: edge.to_owned(),
+                    role: ParentRole::Primary,
+                },
+                ParentLink {
+                    parent_node_id: "relay-b".to_owned(),
+                    child_node_id: edge.to_owned(),
+                    role: ParentRole::Secondary,
+                },
+            ]);
+            program.carrier_links.extend([
+                link(
+                    "relay-a",
+                    edge,
+                    ParentRole::Primary,
+                    RelaySymbolLane::Source,
+                    primary_sender,
+                    primary_receiver,
+                ),
+                link(
+                    "relay-b",
+                    edge,
+                    ParentRole::Secondary,
+                    RelaySymbolLane::Repair,
+                    secondary_sender,
+                    secondary_receiver,
+                ),
+            ]);
+            program.failover_control_links.push(FailoverControlLink {
+                forwarder_node_id: "relay-b".to_owned(),
+                controller_node_id: edge.to_owned(),
+                controller_bind: address(controller),
+                controller_peer: address(controller),
+                listener_bind: address(listener),
+                listener_target: address(listener),
+            });
+        }
+
+        let plan = program.compile().expect("compile multi-edge plan");
+        assert_eq!(plan.services.len(), 6);
+
+        let contrib = plan
+            .services
+            .iter()
+            .find(|service| service.node_id() == "contrib")
+            .expect("contrib");
+        let CompiledService::AvContrib(contrib) = contrib else {
+            panic!("contributor compiled as mesh service");
+        };
+        assert_eq!(contrib.primary.child_node_id, "relay-a");
+        assert_eq!(contrib.warm_secondary.child_node_id, "relay-b");
+
+        for relay in ["relay-a", "relay-b"] {
+            let service = plan
+                .services
+                .iter()
+                .find(|service| service.node_id() == relay)
+                .expect("backbone relay");
+            let CompiledService::AvMesh(service) = service else {
+                panic!("backbone compiled as contributor service");
+            };
+            assert_eq!(service.forwards.len(), 3);
+            if relay == "relay-b" {
+                assert_eq!(service.failover_listeners.len(), 3);
+            }
+        }
+
+        for edge in ["edge", "edge-new-york", "edge-sydney"] {
+            let service = plan
+                .services
+                .iter()
+                .find(|service| service.node_id() == edge)
+                .expect("playback edge");
+            let CompiledService::AvMesh(service) = service else {
+                panic!("edge compiled as contributor service");
+            };
+            assert!(service.secondary_parent.is_some());
+            assert!(service.failover_controller.is_some());
+        }
+    }
+
+    #[test]
     fn production_keeps_provider_and_asn_diversity_as_a_hard_gate() {
         let mut program = qualification_program();
         program.purpose = DeploymentPurpose::Production;
@@ -1104,6 +1235,17 @@ mod tests {
             .compile()
             .expect_err("same-provider production plan");
         assert!(matches!(error, ServicePlanError::Topology(_)));
+    }
+
+    #[test]
+    fn controlled_public_udp_retains_the_public_carrier_readiness_gap() {
+        let mut program = qualification_program();
+        program.carrier = CarrierProfile::ControlledPublicUdp;
+        let plan = program.compile().expect("single-provider public UDP lab");
+        assert_eq!(plan.carrier, CarrierProfile::ControlledPublicUdp);
+        assert!(plan
+            .production_readiness_gaps
+            .contains(&"authenticated_public_carrier_pending".to_owned()));
     }
 
     #[test]

@@ -31,3 +31,4 @@ Evidence index:
 - `20260717T054206Z.json`: passing GCP 5 ms lossless clean/impaired three-lane qualification;
 - `20260717T054847Z.json`: lossless phase passed, but the broader integrated invocation failed its pre-restart convergence gate;
 - `20260717-lossless-latency-series-summary.json`: 50 ms, 20 ms, and 5 ms cadence results plus the diagnostic-attempt ledger.
+- `20260717T145432Z-linode-dag.json`: complete six-node Linode clean/impaired three-lane DAG replication, exact cache identity, cache independence, failover, latency split, CPU, and idle-stream-retirement qualification.

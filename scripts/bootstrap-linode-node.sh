@@ -205,11 +205,11 @@ set -euo pipefail
 
 if command -v pacman >/dev/null 2>&1; then
   pacman -Sy --noconfirm archlinux-keyring ca-certificates-mozilla
-  pacman -Syu --noconfirm --needed base-devel ca-certificates curl git openssl pkgconf rsync
+  pacman -Syu --noconfirm --needed base-devel ca-certificates curl git iptables-nft openssl pkgconf rsync
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y build-essential ca-certificates curl git libssl-dev pkg-config rsync
+  apt-get install -y build-essential ca-certificates curl git iptables libssl-dev pkg-config rsync
 else
   echo "unsupported distro: expected pacman or apt-get" >&2
   exit 1
@@ -230,7 +230,7 @@ build_args=(cargo build --release --locked --manifest-path "${REMOTE_ROOT}/av-me
 if [ -n "${FEATURES}" ]; then
   build_args+=(--features "${FEATURES}")
 fi
-CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" "${build_args[@]}"
+CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" "${build_args[@]}"
 
 install -m 755 "${REMOTE_ROOT}/av-mesh/target/release/av-mesh" /usr/local/bin/av-mesh
 install -d -m 755 /etc/av-mesh /var/lib/av-mesh

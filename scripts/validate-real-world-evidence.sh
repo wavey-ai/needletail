@@ -39,6 +39,16 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.contributor_services_active == true
           and .cleanup.edge_service_active == true
           and .cleanup.loss_chain_absent == true
+        elif .schema == "needletail.multi-edge-dag-qualification.v1" then
+          .provider == "linode"
+          and .cleanup.final_service_audit_before_teardown == true
+          and .cleanup.dynamic_streams_retired == true
+          and .cleanup.private_images_saved == 6
+          and .cleanup.private_images_available_after_teardown == true
+          and .cleanup.linode_instances_deleted_after_documentation == true
+          and .cleanup.linode_firewall_deleted_after_documentation == true
+          and .cleanup.provider_resources_absent == true
+          and .cleanup.local_lab_state_removed == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -126,6 +136,73 @@ for evidence in "${run_files[@]}"; do
       and .profiles.impaired.lanes.webtransport.raptorq_shards_recovered > 0
       and .profiles.impaired.ll_hls_handoff.raptorq_fragments_recovered > 0
       and .cleanup.gcp_lab_torn_down_after_documentation == true
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.multi-edge-dag-qualification.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and (.release_gates | all(.[]; . == true))
+      and .origin_fanout.passed == true
+      and .origin_fanout.origin_children == 2
+      and .origin_fanout.playback_edges == 3
+      and .cache_identity.passed == true
+      and .cache_identity.playlist_byte_identical == true
+      and .cache_identity.init_byte_identical == true
+      and .cache_identity.parts_byte_identical == true
+      and .cache_independence.passed == true
+      and .failover.passed == true
+      and ([.failover.edges[]] | all(.[];
+        .detection_us <= 250000
+        and .activation_us <= 250000
+        and .media_gap_us <= 250000
+        and .expired_objects == 0
+        and .rejected_datagrams == 0
+        and .deadline_drops == 0
+      ))
+      and ([.profiles.clean, .profiles.impaired] | all(.[];
+        .passed == true
+        and .source.sample_rate == 48000
+        and .source.payload == "flac"
+        and .source.wire_overhead_ratio <= 4
+        and ([.edges[]] | length) == 3
+        and ([.edges[]] | all(.[];
+          .lanes.native_udp_fec.missing_epochs == 0
+          and .lanes.native_udp_fec.deadline_misses == 0
+          and .lanes.webtransport.missing_epochs == 0
+          and .lanes.webtransport.deadline_misses == 0
+          and .lanes.ll_hls.transport == "h3"
+          and .lanes.ll_hls.tls_protocol == "TLSv1.3"
+          and .lanes.ll_hls.tls_certificate_verified == true
+          and .lanes.ll_hls.persistent_connection == true
+          and .lanes.ll_hls.part_ms == 5
+          and .lanes.ll_hls.init_has_flac == true
+          and .lanes.ll_hls.playlist_has_ll_hls_tags == true
+          and .lanes.ll_hls.missing_parts == 0
+          and .lanes.ll_hls.non_contiguous_pts == 0
+          and .lanes.ll_hls.deadline_misses == 0
+          and .lanes.late_join_ll_hls.missing_parts == 0
+          and .lanes.late_join_ll_hls.non_contiguous_pts == 0
+          and .lanes.late_join_ll_hls.deadline_misses == 0
+          and .relay_integrity_delta.datagrams_rejected == 0
+          and .relay_integrity_delta.conflict_drops == 0
+          and .relay_integrity_delta.authentication_drops == 0
+          and .relay_integrity_delta.deadline_drops == 0
+          and .relay_integrity_delta.expired_objects == 0
+        ))
+      ))
+      and ([.profiles.impaired.edges[]] | all(.[];
+        .impairment_dropped_datagrams > 0
+        and .lanes.native_udp_fec.raptorq_shards_recovered > 0
+        and .lanes.webtransport.raptorq_shards_recovered > 0
+      ))
+      and .retention_audit.idle_retention_seconds == 300
+      and ([.retention_audit.edges[]] | all(.[];
+        (.dynamic_stream_ids | length) == 0
+        and .relay_active_objects == 0
+        and .tasks == 3
+      ))
     ' "${evidence}" >/dev/null
   fi
 

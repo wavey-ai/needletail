@@ -38,7 +38,8 @@ and absence of secret-shaped fields with:
 ./scripts/validate-real-world-evidence.sh
 ```
 
-Current record: [2026-07-17 lossless H3 latency](2026-07-17-lossless-h3.md).
+Current record: [2026-07-17 Linode multi-region DAG replication](2026-07-17-linode-dag-replication.md).
+Current local/GCP cadence record: [2026-07-17 lossless H3 latency](2026-07-17-lossless-h3.md).
 Previous relay-latency record: [2026-07-16 relay latency](2026-07-16-relay-latency.md).
 Previous GCP intercontinental record: [2026-07-15 GCP intercontinental test](2026-07-15-gcp-intercontinental.md).
 Previous local controlled-impairment record: [2026-07-15 realtime test](2026-07-15-local-realtime.md).

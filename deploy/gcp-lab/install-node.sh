@@ -7,7 +7,7 @@ STAGE=/tmp/needletail-deploy
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update
 packages=(ca-certificates jq)
-[[ "${SERVICE}" == contrib ]] && packages+=(ffmpeg procps)
+[[ "${SERVICE}" == contrib ]] && packages+=(procps)
 sudo apt-get install -y "${packages[@]}"
 
 sudo install -d -m 755 /etc/needletail/tls
@@ -46,11 +46,11 @@ else
   sudo install -m 755 "${STAGE}/av-contrib-run" /usr/local/bin/needletail-av-contrib-run
   sudo install -m 644 "${STAGE}/needletail-contrib.service" \
     /etc/systemd/system/needletail-contrib.service
-  sudo install -m 644 "${STAGE}/needletail-media.service" \
-    /etc/systemd/system/needletail-media.service
+  # Remove the legacy lossy/video warm-up source. Qualification publishes its
+  # controlled 48 kHz lossless AEP1 stream explicitly.
+  sudo systemctl disable --now needletail-media.service >/dev/null 2>&1 || true
+  sudo rm -f /etc/systemd/system/needletail-media.service
   sudo systemctl daemon-reload
   sudo systemctl enable --now needletail-contrib.service
-  sudo systemctl enable --now needletail-media.service
   sudo systemctl restart needletail-contrib.service
-  sudo systemctl restart needletail-media.service
 fi

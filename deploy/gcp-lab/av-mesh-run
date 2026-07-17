@@ -19,8 +19,8 @@ args=(
   --key /etc/needletail/tls/privkey.pem
   --region "${NEEDLETAIL_REGION}"
   --continent "${NEEDLETAIL_CONTINENT:?missing NEEDLETAIL_CONTINENT}"
-  --latitude "${NEEDLETAIL_LATITUDE:?missing NEEDLETAIL_LATITUDE}"
-  --longitude "${NEEDLETAIL_LONGITUDE:?missing NEEDLETAIL_LONGITUDE}"
+  "--latitude=${NEEDLETAIL_LATITUDE:?missing NEEDLETAIL_LATITUDE}"
+  "--longitude=${NEEDLETAIL_LONGITUDE:?missing NEEDLETAIL_LONGITUDE}"
   --node-id "${NEEDLETAIL_NODE_ID}"
   --mesh-bind "0.0.0.0:${NEEDLETAIL_MESH_PORT:-29101}"
   --http-port "${NEEDLETAIL_HTTP_PORT:-19444}"
@@ -30,7 +30,7 @@ args=(
   --telemetry-bind "0.0.0.0:${NEEDLETAIL_TELEMETRY_PORT:-27300}"
   --telemetry-dns-name local.bitneedle.com
   --telemetry-private-ipv4 "${NEEDLETAIL_PRIVATE_IP}"
-  --telemetry-interval-ms 250
+  --telemetry-interval-ms "${NEEDLETAIL_TELEMETRY_INTERVAL_MS:-1000}"
   --stream-id 1
   --part-ms "${part_ms}"
   --parts-per-segment "${parts_per_segment}"

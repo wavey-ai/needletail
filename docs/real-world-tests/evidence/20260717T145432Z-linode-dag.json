@@ -1,0 +1,1908 @@
+{
+  "schema": "needletail.multi-edge-dag-qualification.v1",
+  "provider": "linode",
+  "run_id": "20260717T145432Z",
+  "passed": true,
+  "raw_artifact_directory": "target/linode-qualification/dag-runs/20260717T145432Z",
+  "topology": {
+    "provider": "linode",
+    "run_id": "20260717T131830Z",
+    "type": "g6-dedicated-2",
+    "image": "linode/debian12",
+    "dedicated_vcpus_per_node": 2,
+    "node_count": 6,
+    "total_dedicated_vcpus": 12,
+    "hourly_usd": 0.324,
+    "nodes": {
+      "contributor": {
+        "region": "gb-lon",
+        "type": "g6-dedicated-2",
+        "city": "london"
+      },
+      "primary": {
+        "region": "nl-ams",
+        "type": "g6-dedicated-2",
+        "city": "amsterdam"
+      },
+      "secondary": {
+        "region": "jp-osa",
+        "type": "g6-dedicated-2",
+        "city": "osaka"
+      },
+      "edge": {
+        "region": "ap-northeast",
+        "type": "g6-dedicated-2",
+        "city": "tokyo"
+      },
+      "edge_new_york": {
+        "region": "us-east",
+        "type": "g6-dedicated-2",
+        "city": "new_york"
+      },
+      "edge_sydney": {
+        "region": "ap-southeast",
+        "type": "g6-dedicated-2",
+        "city": "sydney"
+      }
+    }
+  },
+  "profiles": {
+    "clean": {
+      "profile": "clean",
+      "impaired": false,
+      "impairment_probability": 0,
+      "passed": true,
+      "source": {
+        "schema": "needletail.aep1-48k-probe.send.v1",
+        "lane": "source",
+        "payload": "flac",
+        "session_id": 1784300118185224747,
+        "group_id": 50072,
+        "sample_rate": 48000,
+        "channels": 2,
+        "frame_count": 240,
+        "duration_seconds": 12,
+        "epochs": 2400,
+        "source_datagrams": 2400,
+        "repair_datagrams": 2400,
+        "wire_bytes": 3528880,
+        "lossless_payload_bytes": 1486040,
+        "pcm_reference_bytes": 3456000,
+        "wire_overhead_ratio": 2.3746870878307447,
+        "elapsed_ms": 11996
+      },
+      "contributor": {
+        "cpu_percent": 11.744,
+        "ll_hls_handoff": {
+          "enqueued": 4800,
+          "dropped": 0,
+          "errors": 0,
+          "capacity": 4096,
+          "maximum_depth": 23,
+          "groups_completed": 2400
+        }
+      },
+      "edges": {
+        "tokyo": {
+          "role": "edge",
+          "city": "tokyo",
+          "impairment_dropped_datagrams": 0,
+          "cpu_percent": 4.382,
+          "ll_hls_p99_premium_vs_direct_ms": null,
+          "repair_path_differential_ms": 0,
+          "cache_delivery_p99_budget_ms": 25,
+          "lanes": {
+            "native_udp_fec": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "native_udp_fec",
+              "session_id": 1784300118185224747,
+              "group_id": 50072,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 4903,
+              "systematic_shards_received": 2390,
+              "raptorq_shards_recovered": 10,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 3604084,
+              "latency_ms": {
+                "count": 2400,
+                "min": 114.931687,
+                "p50": 115.673436,
+                "p95": 116.26189,
+                "p99": 116.583902,
+                "max": 119.71922
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 114.931687,
+                "p50": 115.673436,
+                "p95": 116.26189,
+                "p99": 116.583902,
+                "max": 119.71922
+              }
+            },
+            "webtransport": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "webtransport",
+              "session_id": 1784300118185224747,
+              "group_id": 50072,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 4903,
+              "systematic_shards_received": 2390,
+              "raptorq_shards_recovered": 10,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 3608987,
+              "latency_ms": {
+                "count": 2400,
+                "min": 115.003148,
+                "p50": 115.788099,
+                "p95": 116.406011,
+                "p99": 116.786793,
+                "max": 119.941824
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 115.003148,
+                "p50": 115.788099,
+                "p95": 116.406011,
+                "p99": 116.786793,
+                "max": 119.941824
+              }
+            },
+            "ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 7.159825,
+              "path_prefix": "/live",
+              "stream_id": 50073,
+              "session_id": 1784300118185224747,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 2400,
+              "received_parts": 2400,
+              "missing_parts": 0,
+              "first_pts_ms": 0,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 0,
+              "wire_bytes": 2657116,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 2400,
+                "min": 115.705253,
+                "p50": 118.501253,
+                "p95": 121.677253,
+                "p99": 138.538253,
+                "max": 147.656253
+              },
+              "cache_to_client_latency_ms": {
+                "count": 2400,
+                "min": 0.159674,
+                "p50": 0.220382,
+                "p95": 0.436001,
+                "p99": 0.674298,
+                "max": 1.647863
+              },
+              "availability_latency_ms": {
+                "count": 2400,
+                "min": 115.897195,
+                "p50": 118.798738,
+                "p95": 121.99732,
+                "p99": 138.739575,
+                "max": 147.924612
+              },
+              "estimated_render_latency_ms": {
+                "count": 2400,
+                "min": 265.897195,
+                "p50": 268.798738,
+                "p95": 271.99732,
+                "p99": 288.739575,
+                "max": 297.924612
+              }
+            },
+            "direct_origin_ll_hls": null,
+            "late_join_ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 3.819842,
+              "path_prefix": "/live",
+              "stream_id": 50073,
+              "session_id": 1784300118185224747,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 1400,
+              "received_parts": 1400,
+              "missing_parts": 0,
+              "first_pts_ms": 5000,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 5000,
+              "wire_bytes": 1616738,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 1400,
+                "min": 117.334253,
+                "p50": 119.566253,
+                "p95": 127.635253,
+                "p99": 143.174253,
+                "max": 147.656253
+              },
+              "cache_to_client_latency_ms": {
+                "count": 1400,
+                "min": 0.175831,
+                "p50": 0.237645,
+                "p95": 0.515331,
+                "p99": 0.722051,
+                "max": 0.9506
+              },
+              "availability_latency_ms": {
+                "count": 1400,
+                "min": 117.534317,
+                "p50": 119.84369,
+                "p95": 127.852405,
+                "p99": 143.404335,
+                "max": 147.915202
+              },
+              "estimated_render_latency_ms": {
+                "count": 1400,
+                "min": 267.534317,
+                "p50": 269.84369,
+                "p95": 277.852405,
+                "p99": 293.404335,
+                "max": 297.915202
+              }
+            }
+          },
+          "stream": {
+            "node_id": "relay-secondary",
+            "stream_id": 50073,
+            "stream_id_text": "50073",
+            "latest_local_part": null,
+            "latest_local_part_bytes": 1238,
+            "latest_mesh_part": 2399,
+            "canonical_epoch": 1784299585830425,
+            "canonical_epoch_activation_delay_us": 532468728,
+            "contiguous_object": 2399,
+            "head_object": 2399,
+            "gap_count": 0,
+            "bytes_received": 2967468,
+            "datagrams_received": 2400,
+            "stale_threshold_ms": 20000,
+            "mesh_lag_parts": 0
+          },
+          "relay_integrity_delta": {
+            "datagrams_rejected": 0,
+            "conflict_drops": 0,
+            "authentication_drops": 0,
+            "deadline_drops": 0,
+            "expired_objects": 0
+          },
+          "relay_recovery_delta": {
+            "decoded_objects": 2401,
+            "fec_recovered_objects": 14,
+            "fec_recovered_source_symbols": 28
+          }
+        },
+        "new_york": {
+          "role": "edge_new_york",
+          "city": "new_york",
+          "impairment_dropped_datagrams": 0,
+          "cpu_percent": 4.387,
+          "ll_hls_p99_premium_vs_direct_ms": null,
+          "repair_path_differential_ms": 0,
+          "cache_delivery_p99_budget_ms": 25,
+          "lanes": {
+            "native_udp_fec": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "native_udp_fec",
+              "session_id": 1784300118185224747,
+              "group_id": 50072,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 4910,
+              "systematic_shards_received": 2400,
+              "raptorq_shards_recovered": 0,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 3609195,
+              "latency_ms": {
+                "count": 2400,
+                "min": 39.544932,
+                "p50": 40.257651,
+                "p95": 40.835474,
+                "p99": 41.180223,
+                "max": 45.164151
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 39.544932,
+                "p50": 40.257651,
+                "p95": 40.835474,
+                "p99": 41.180223,
+                "max": 45.164151
+              }
+            },
+            "webtransport": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "webtransport",
+              "session_id": 1784300118185224747,
+              "group_id": 50072,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 4910,
+              "systematic_shards_received": 2400,
+              "raptorq_shards_recovered": 0,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 3614105,
+              "latency_ms": {
+                "count": 2400,
+                "min": 39.626384,
+                "p50": 40.3328,
+                "p95": 40.959092,
+                "p99": 41.307009,
+                "max": 45.131391
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 39.626384,
+                "p50": 40.3328,
+                "p95": 40.959092,
+                "p99": 41.307009,
+                "max": 45.131391
+              }
+            },
+            "ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 6.905928,
+              "path_prefix": "/live",
+              "stream_id": 50073,
+              "session_id": 1784300118185224747,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 2400,
+              "received_parts": 2400,
+              "missing_parts": 0,
+              "first_pts_ms": 0,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 0,
+              "wire_bytes": 2661597,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 2400,
+                "min": 40.226253,
+                "p50": 43.114253,
+                "p95": 46.234253,
+                "p99": 63.116253,
+                "max": 71.931253
+              },
+              "cache_to_client_latency_ms": {
+                "count": 2400,
+                "min": 0.162681,
+                "p50": 0.222308,
+                "p95": 0.404352,
+                "p99": 0.654278,
+                "max": 2.453358
+              },
+              "availability_latency_ms": {
+                "count": 2400,
+                "min": 40.432046,
+                "p50": 43.36036,
+                "p95": 46.510151,
+                "p99": 63.320131,
+                "max": 72.220151
+              },
+              "estimated_render_latency_ms": {
+                "count": 2400,
+                "min": 190.432046,
+                "p50": 193.36036,
+                "p95": 196.510151,
+                "p99": 213.320131,
+                "max": 222.220151
+              }
+            },
+            "direct_origin_ll_hls": null,
+            "late_join_ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 3.127028,
+              "path_prefix": "/live",
+              "stream_id": 50073,
+              "session_id": 1784300118185224747,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 1400,
+              "received_parts": 1400,
+              "missing_parts": 0,
+              "first_pts_ms": 5000,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 5000,
+              "wire_bytes": 1603974,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 1400,
+                "min": 41.899253,
+                "p50": 44.134253,
+                "p95": 52.280253,
+                "p99": 67.552253,
+                "max": 71.931253
+              },
+              "cache_to_client_latency_ms": {
+                "count": 1400,
+                "min": 0.181486,
+                "p50": 0.245347,
+                "p95": 0.48481,
+                "p99": 0.710869,
+                "max": 2.636519
+              },
+              "availability_latency_ms": {
+                "count": 1400,
+                "min": 42.223976,
+                "p50": 44.37549,
+                "p95": 52.548222,
+                "p99": 67.865507,
+                "max": 72.319132
+              },
+              "estimated_render_latency_ms": {
+                "count": 1400,
+                "min": 192.223976,
+                "p50": 194.37549,
+                "p95": 202.548222,
+                "p99": 217.865507,
+                "max": 222.319132
+              }
+            }
+          },
+          "stream": {
+            "node_id": "relay-secondary",
+            "stream_id": 50073,
+            "stream_id_text": "50073",
+            "latest_local_part": null,
+            "latest_local_part_bytes": 1238,
+            "latest_mesh_part": 2399,
+            "canonical_epoch": 1784299585830425,
+            "canonical_epoch_activation_delay_us": 532468728,
+            "contiguous_object": 2399,
+            "head_object": 2399,
+            "gap_count": 0,
+            "bytes_received": 2967468,
+            "datagrams_received": 2400,
+            "stale_threshold_ms": 20000,
+            "mesh_lag_parts": 0
+          },
+          "relay_integrity_delta": {
+            "datagrams_rejected": 0,
+            "conflict_drops": 0,
+            "authentication_drops": 0,
+            "deadline_drops": 0,
+            "expired_objects": 0
+          },
+          "relay_recovery_delta": {
+            "decoded_objects": 2401,
+            "fec_recovered_objects": 0,
+            "fec_recovered_source_symbols": 0
+          }
+        },
+        "sydney": {
+          "role": "edge_sydney",
+          "city": "sydney",
+          "impairment_dropped_datagrams": 0,
+          "cpu_percent": 4.347,
+          "ll_hls_p99_premium_vs_direct_ms": null,
+          "repair_path_differential_ms": 0,
+          "cache_delivery_p99_budget_ms": 25,
+          "lanes": {
+            "native_udp_fec": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "native_udp_fec",
+              "session_id": 1784300118185224747,
+              "group_id": 50072,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 4918,
+              "systematic_shards_received": 2400,
+              "raptorq_shards_recovered": 0,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 3615028,
+              "latency_ms": {
+                "count": 2400,
+                "min": 129.105275,
+                "p50": 129.820621,
+                "p95": 130.52769,
+                "p99": 131.85318,
+                "max": 139.190925
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 129.105275,
+                "p50": 129.820621,
+                "p95": 130.52769,
+                "p99": 131.85318,
+                "max": 139.190925
+              }
+            },
+            "webtransport": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "webtransport",
+              "session_id": 1784300118185224747,
+              "group_id": 50072,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 4918,
+              "systematic_shards_received": 2400,
+              "raptorq_shards_recovered": 0,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 3619946,
+              "latency_ms": {
+                "count": 2400,
+                "min": 129.166488,
+                "p50": 129.94529,
+                "p95": 130.757911,
+                "p99": 132.251761,
+                "max": 140.142166
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 129.166488,
+                "p50": 129.94529,
+                "p95": 130.757911,
+                "p99": 132.251761,
+                "max": 140.142166
+              }
+            },
+            "ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 7.328372,
+              "path_prefix": "/live",
+              "stream_id": 50073,
+              "session_id": 1784300118185224747,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 2400,
+              "received_parts": 2400,
+              "missing_parts": 0,
+              "first_pts_ms": 0,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 0,
+              "wire_bytes": 2657506,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 2400,
+                "min": 129.829253,
+                "p50": 132.634253,
+                "p95": 136.356253,
+                "p99": 152.753253,
+                "max": 162.356253
+              },
+              "cache_to_client_latency_ms": {
+                "count": 2400,
+                "min": 0.163971,
+                "p50": 0.227417,
+                "p95": 0.480764,
+                "p99": 0.784573,
+                "max": 2.404546
+              },
+              "availability_latency_ms": {
+                "count": 2400,
+                "min": 130.039784,
+                "p50": 132.887337,
+                "p95": 136.687333,
+                "p99": 153.049214,
+                "max": 162.727841
+              },
+              "estimated_render_latency_ms": {
+                "count": 2400,
+                "min": 280.039784,
+                "p50": 282.887337,
+                "p95": 286.687333,
+                "p99": 303.049214,
+                "max": 312.727841
+              }
+            },
+            "direct_origin_ll_hls": null,
+            "late_join_ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 3.086718,
+              "path_prefix": "/live",
+              "stream_id": 50073,
+              "session_id": 1784300118185224747,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 1400,
+              "received_parts": 1400,
+              "missing_parts": 0,
+              "first_pts_ms": 5000,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 5000,
+              "wire_bytes": 1620774,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 1400,
+                "min": 131.472253,
+                "p50": 133.701253,
+                "p95": 143.806253,
+                "p99": 157.402253,
+                "max": 162.356253
+              },
+              "cache_to_client_latency_ms": {
+                "count": 1400,
+                "min": 0.181147,
+                "p50": 0.262239,
+                "p95": 0.637497,
+                "p99": 0.902121,
+                "max": 1.548674
+              },
+              "availability_latency_ms": {
+                "count": 1400,
+                "min": 131.773028,
+                "p50": 133.966433,
+                "p95": 144.22701,
+                "p99": 157.707382,
+                "max": 162.786182
+              },
+              "estimated_render_latency_ms": {
+                "count": 1400,
+                "min": 281.773028,
+                "p50": 283.966433,
+                "p95": 294.22701,
+                "p99": 307.707382,
+                "max": 312.786182
+              }
+            }
+          },
+          "stream": {
+            "node_id": "relay-secondary",
+            "stream_id": 50073,
+            "stream_id_text": "50073",
+            "latest_local_part": null,
+            "latest_local_part_bytes": 1238,
+            "latest_mesh_part": 2399,
+            "canonical_epoch": 1784299585830425,
+            "canonical_epoch_activation_delay_us": 532468728,
+            "contiguous_object": 2399,
+            "head_object": 2399,
+            "gap_count": 0,
+            "bytes_received": 2967468,
+            "datagrams_received": 2400,
+            "stale_threshold_ms": 20000,
+            "mesh_lag_parts": 0
+          },
+          "relay_integrity_delta": {
+            "datagrams_rejected": 0,
+            "conflict_drops": 0,
+            "authentication_drops": 0,
+            "deadline_drops": 0,
+            "expired_objects": 0
+          },
+          "relay_recovery_delta": {
+            "decoded_objects": 2401,
+            "fec_recovered_objects": 0,
+            "fec_recovered_source_symbols": 0
+          }
+        }
+      }
+    },
+    "impaired": {
+      "profile": "impaired",
+      "impaired": true,
+      "impairment_probability": 0.02,
+      "passed": true,
+      "source": {
+        "schema": "needletail.aep1-48k-probe.send.v1",
+        "lane": "source",
+        "payload": "flac",
+        "session_id": 1784300380336002692,
+        "group_id": 50073,
+        "sample_rate": 48000,
+        "channels": 2,
+        "frame_count": 240,
+        "duration_seconds": 12,
+        "epochs": 2400,
+        "source_datagrams": 2400,
+        "repair_datagrams": 4800,
+        "wire_bytes": 5302920,
+        "lossless_payload_bytes": 1486040,
+        "pcm_reference_bytes": 3456000,
+        "wire_overhead_ratio": 3.5684907539500954,
+        "elapsed_ms": 11996
+      },
+      "contributor": {
+        "cpu_percent": 16.462,
+        "ll_hls_handoff": {
+          "enqueued": 7200,
+          "dropped": 0,
+          "errors": 0,
+          "capacity": 4096,
+          "maximum_depth": 4096,
+          "groups_completed": 2801
+        }
+      },
+      "edges": {
+        "tokyo": {
+          "role": "edge",
+          "city": "tokyo",
+          "impairment_dropped_datagrams": 186,
+          "cpu_percent": 5.906,
+          "ll_hls_p99_premium_vs_direct_ms": null,
+          "repair_path_differential_ms": 0.8425,
+          "cache_delivery_p99_budget_ms": 25.843,
+          "lanes": {
+            "native_udp_fec": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "native_udp_fec",
+              "session_id": 1784300380336002692,
+              "group_id": 50073,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 7248,
+              "systematic_shards_received": 2349,
+              "raptorq_shards_recovered": 51,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 5337904,
+              "latency_ms": {
+                "count": 2400,
+                "min": 115.639573,
+                "p50": 116.443428,
+                "p95": 116.982585,
+                "p99": 117.69101,
+                "max": 120.390031
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 115.639573,
+                "p50": 116.443428,
+                "p95": 116.982585,
+                "p99": 117.69101,
+                "max": 120.390031
+              }
+            },
+            "webtransport": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "webtransport",
+              "session_id": 1784300380336002692,
+              "group_id": 50073,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 7248,
+              "systematic_shards_received": 2349,
+              "raptorq_shards_recovered": 51,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 5345152,
+              "latency_ms": {
+                "count": 2400,
+                "min": 115.701224,
+                "p50": 116.54492,
+                "p95": 117.201602,
+                "p99": 118.025085,
+                "max": 120.481902
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 115.701224,
+                "p50": 116.54492,
+                "p95": 117.201602,
+                "p99": 118.025085,
+                "max": 120.481902
+              }
+            },
+            "ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 4.914359,
+              "path_prefix": "/live",
+              "stream_id": 50074,
+              "session_id": 1784300380336002692,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 2400,
+              "received_parts": 2400,
+              "missing_parts": 0,
+              "first_pts_ms": 0,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 0,
+              "wire_bytes": 2659576,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 2400,
+                "min": 116.432308,
+                "p50": 119.257308,
+                "p95": 124.263308,
+                "p99": 127.162308,
+                "max": 128.066308
+              },
+              "cache_to_client_latency_ms": {
+                "count": 2400,
+                "min": 0.167049,
+                "p50": 0.245167,
+                "p95": 0.475501,
+                "p99": 0.730818,
+                "max": 2.048404
+              },
+              "availability_latency_ms": {
+                "count": 2400,
+                "min": 116.713392,
+                "p50": 119.543007,
+                "p95": 124.574767,
+                "p99": 127.553695,
+                "max": 128.289286
+              },
+              "estimated_render_latency_ms": {
+                "count": 2400,
+                "min": 266.713392,
+                "p50": 269.543007,
+                "p95": 274.574767,
+                "p99": 277.553695,
+                "max": 278.289286
+              }
+            },
+            "direct_origin_ll_hls": null,
+            "late_join_ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 3.105416,
+              "path_prefix": "/live",
+              "stream_id": 50074,
+              "session_id": 1784300380336002692,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 1400,
+              "received_parts": 1400,
+              "missing_parts": 0,
+              "first_pts_ms": 5000,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 5000,
+              "wire_bytes": 1618136,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 1400,
+                "min": 118.329308,
+                "p50": 120.192308,
+                "p95": 125.637308,
+                "p99": 127.474308,
+                "max": 128.066308
+              },
+              "cache_to_client_latency_ms": {
+                "count": 1400,
+                "min": 0.187842,
+                "p50": 0.256307,
+                "p95": 0.484754,
+                "p99": 0.756185,
+                "max": 2.326744
+              },
+              "availability_latency_ms": {
+                "count": 1400,
+                "min": 118.591523,
+                "p50": 120.491818,
+                "p95": 125.899765,
+                "p99": 127.874889,
+                "max": 128.315466
+              },
+              "estimated_render_latency_ms": {
+                "count": 1400,
+                "min": 268.591523,
+                "p50": 270.491818,
+                "p95": 275.899765,
+                "p99": 277.874889,
+                "max": 278.315466
+              }
+            }
+          },
+          "stream": {
+            "node_id": "relay-secondary",
+            "stream_id": 50074,
+            "stream_id_text": "50074",
+            "latest_local_part": null,
+            "latest_local_part_bytes": 1238,
+            "latest_mesh_part": 2399,
+            "canonical_epoch": 1784299585830425,
+            "canonical_epoch_activation_delay_us": 794620155,
+            "contiguous_object": 2399,
+            "head_object": 2399,
+            "gap_count": 0,
+            "bytes_received": 2967468,
+            "datagrams_received": 2400,
+            "stale_threshold_ms": 20000,
+            "mesh_lag_parts": 0
+          },
+          "relay_integrity_delta": {
+            "datagrams_rejected": 0,
+            "conflict_drops": 0,
+            "authentication_drops": 0,
+            "deadline_drops": 0,
+            "expired_objects": 0
+          },
+          "relay_recovery_delta": {
+            "decoded_objects": 2672,
+            "fec_recovered_objects": 81,
+            "fec_recovered_source_symbols": 88
+          }
+        },
+        "new_york": {
+          "role": "edge_new_york",
+          "city": "new_york",
+          "impairment_dropped_datagrams": 201,
+          "cpu_percent": 5.163,
+          "ll_hls_p99_premium_vs_direct_ms": null,
+          "repair_path_differential_ms": 146.6615,
+          "cache_delivery_p99_budget_ms": 171.661,
+          "lanes": {
+            "native_udp_fec": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "native_udp_fec",
+              "session_id": 1784300380336002692,
+              "group_id": 50073,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 7265,
+              "systematic_shards_received": 2362,
+              "raptorq_shards_recovered": 38,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 5350335,
+              "latency_ms": {
+                "count": 2400,
+                "min": 40.200136,
+                "p50": 40.971622,
+                "p95": 41.59753,
+                "p99": 193.421166,
+                "max": 195.126192
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 40.200136,
+                "p50": 40.971622,
+                "p95": 41.59753,
+                "p99": 193.421166,
+                "max": 195.126192
+              }
+            },
+            "webtransport": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "webtransport",
+              "session_id": 1784300380336002692,
+              "group_id": 50073,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 7265,
+              "systematic_shards_received": 2362,
+              "raptorq_shards_recovered": 38,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 5357600,
+              "latency_ms": {
+                "count": 2400,
+                "min": 40.208312,
+                "p50": 41.038054,
+                "p95": 41.73268,
+                "p99": 193.695851,
+                "max": 196.326852
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 40.208312,
+                "p50": 41.038054,
+                "p95": 41.73268,
+                "p99": 193.695851,
+                "max": 196.326852
+              }
+            },
+            "ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 8.044911,
+              "path_prefix": "/live",
+              "stream_id": 50074,
+              "session_id": 1784300380336002692,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 2400,
+              "received_parts": 2400,
+              "missing_parts": 0,
+              "first_pts_ms": 0,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 0,
+              "wire_bytes": 2676776,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 2400,
+                "min": 40.939308,
+                "p50": 43.833308,
+                "p95": 51.323308,
+                "p99": 197.853308,
+                "max": 204.688308
+              },
+              "cache_to_client_latency_ms": {
+                "count": 2400,
+                "min": 0.164827,
+                "p50": 63.310189,
+                "p95": 144.388029,
+                "p99": 149.253867,
+                "max": 152.743621
+              },
+              "availability_latency_ms": {
+                "count": 2400,
+                "min": 41.139536,
+                "p50": 115.978694,
+                "p95": 193.765173,
+                "p99": 198.71469,
+                "max": 205.000393
+              },
+              "estimated_render_latency_ms": {
+                "count": 2400,
+                "min": 191.139536,
+                "p50": 265.978694,
+                "p95": 343.765173,
+                "p99": 348.71469,
+                "max": 355.000393
+              }
+            },
+            "direct_origin_ll_hls": null,
+            "late_join_ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 2.798937,
+              "path_prefix": "/live",
+              "stream_id": 50074,
+              "session_id": 1784300380336002692,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 1400,
+              "received_parts": 1400,
+              "missing_parts": 0,
+              "first_pts_ms": 5000,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 5000,
+              "wire_bytes": 1632479,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 1400,
+                "min": 42.657308,
+                "p50": 44.760308,
+                "p95": 51.796308,
+                "p99": 198.626308,
+                "max": 204.688308
+              },
+              "cache_to_client_latency_ms": {
+                "count": 1400,
+                "min": 0.184145,
+                "p50": 43.890516,
+                "p95": 144.361698,
+                "p99": 149.189669,
+                "max": 152.398548
+              },
+              "availability_latency_ms": {
+                "count": 1400,
+                "min": 43.054876,
+                "p50": 99.971954,
+                "p95": 194.304977,
+                "p99": 199.703772,
+                "max": 204.927953
+              },
+              "estimated_render_latency_ms": {
+                "count": 1400,
+                "min": 193.054876,
+                "p50": 249.971954,
+                "p95": 344.304977,
+                "p99": 349.703772,
+                "max": 354.927953
+              }
+            }
+          },
+          "stream": {
+            "node_id": "relay-secondary",
+            "stream_id": 50074,
+            "stream_id_text": "50074",
+            "latest_local_part": null,
+            "latest_local_part_bytes": 1238,
+            "latest_mesh_part": 2399,
+            "canonical_epoch": 1784299585830425,
+            "canonical_epoch_activation_delay_us": 794620155,
+            "contiguous_object": 2399,
+            "head_object": 2399,
+            "gap_count": 0,
+            "bytes_received": 2967468,
+            "datagrams_received": 2400,
+            "stale_threshold_ms": 20000,
+            "mesh_lag_parts": 0
+          },
+          "relay_integrity_delta": {
+            "datagrams_rejected": 0,
+            "conflict_drops": 0,
+            "authentication_drops": 0,
+            "deadline_drops": 0,
+            "expired_objects": 0
+          },
+          "relay_recovery_delta": {
+            "decoded_objects": 2921,
+            "fec_recovered_objects": 90,
+            "fec_recovered_source_symbols": 91
+          }
+        },
+        "sydney": {
+          "role": "edge_sydney",
+          "city": "sydney",
+          "impairment_dropped_datagrams": 195,
+          "cpu_percent": 5.698,
+          "ll_hls_p99_premium_vs_direct_ms": null,
+          "repair_path_differential_ms": 35.9145,
+          "cache_delivery_p99_budget_ms": 60.914,
+          "lanes": {
+            "native_udp_fec": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "native_udp_fec",
+              "session_id": 1784300380336002692,
+              "group_id": 50073,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 7272,
+              "systematic_shards_received": 2357,
+              "raptorq_shards_recovered": 43,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 5355424,
+              "latency_ms": {
+                "count": 2400,
+                "min": 129.746142,
+                "p50": 130.506738,
+                "p95": 131.047043,
+                "p99": 167.434592,
+                "max": 168.394459
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 129.746142,
+                "p50": 130.506738,
+                "p95": 131.047043,
+                "p99": 167.434592,
+                "max": 168.394459
+              }
+            },
+            "webtransport": {
+              "schema": "needletail.aep1-48k-probe.receive.v1",
+              "lane": "webtransport",
+              "session_id": 1784300380336002692,
+              "group_id": 50073,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "expected_epochs": 2400,
+              "received_epochs": 2400,
+              "missing_epochs": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "datagrams_received": 7272,
+              "systematic_shards_received": 2357,
+              "raptorq_shards_recovered": 43,
+              "duplicate_or_late_epochs": 0,
+              "wire_bytes": 5362696,
+              "latency_ms": {
+                "count": 2400,
+                "min": 129.802574,
+                "p50": 130.621014,
+                "p95": 131.212056,
+                "p99": 167.616084,
+                "max": 169.240128
+              },
+              "render_ready_latency_ms": {
+                "count": 2400,
+                "min": 129.802574,
+                "p50": 130.621014,
+                "p95": 131.212056,
+                "p99": 167.616084,
+                "max": 169.240128
+              }
+            },
+            "ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 8.072249,
+              "path_prefix": "/live",
+              "stream_id": 50074,
+              "session_id": 1784300380336002692,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 2400,
+              "received_parts": 2400,
+              "missing_parts": 0,
+              "first_pts_ms": 0,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 0,
+              "wire_bytes": 2669800,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 2400,
+                "min": 130.542308,
+                "p50": 133.403308,
+                "p95": 141.667308,
+                "p99": 171.693308,
+                "max": 178.372308
+              },
+              "cache_to_client_latency_ms": {
+                "count": 2400,
+                "min": 0.165568,
+                "p50": 0.267451,
+                "p95": 28.975737,
+                "p99": 33.599108,
+                "max": 39.685964
+              },
+              "availability_latency_ms": {
+                "count": 2400,
+                "min": 130.78284,
+                "p50": 134.73635,
+                "p95": 168.709354,
+                "p99": 172.534218,
+                "max": 178.627305
+              },
+              "estimated_render_latency_ms": {
+                "count": 2400,
+                "min": 280.78284,
+                "p50": 284.73635,
+                "p95": 318.709354,
+                "p99": 322.534218,
+                "max": 328.627305
+              }
+            },
+            "direct_origin_ll_hls": null,
+            "late_join_ll_hls": {
+              "schema": "needletail.aep1-48k-probe.hls-receive.v3",
+              "lane": "ll_hls",
+              "transport": "h3",
+              "tls_protocol": "TLSv1.3",
+              "tls_certificate_verified": true,
+              "persistent_connection": true,
+              "connection_setup_ms": 2.835343,
+              "path_prefix": "/live",
+              "stream_id": 50074,
+              "session_id": 1784300380336002692,
+              "sample_rate": 48000,
+              "duration_seconds": 12,
+              "part_ms": 5,
+              "expected_parts": 1400,
+              "received_parts": 1400,
+              "missing_parts": 0,
+              "first_pts_ms": 5000,
+              "last_pts_ms": 11995,
+              "non_contiguous_pts": 0,
+              "deadline_ms": 1000,
+              "deadline_misses": 0,
+              "render_buffer_ms": 150,
+              "start_offset_ms": 5000,
+              "wire_bytes": 1627526,
+              "init_has_flac": true,
+              "playlist_has_ll_hls_tags": true,
+              "publication_to_cache_latency_ms": {
+                "count": 1400,
+                "min": 132.367308,
+                "p50": 134.361308,
+                "p95": 142.174308,
+                "p99": 172.593308,
+                "max": 178.372308
+              },
+              "cache_to_client_latency_ms": {
+                "count": 1400,
+                "min": 0.191292,
+                "p50": 0.285484,
+                "p95": 29.446035,
+                "p99": 33.707147,
+                "max": 39.309967
+              },
+              "availability_latency_ms": {
+                "count": 1400,
+                "min": 132.76014,
+                "p50": 135.820558,
+                "p95": 170.701901,
+                "p99": 173.906973,
+                "max": 178.723347
+              },
+              "estimated_render_latency_ms": {
+                "count": 1400,
+                "min": 282.76014,
+                "p50": 285.820558,
+                "p95": 320.701901,
+                "p99": 323.906973,
+                "max": 328.723347
+              }
+            }
+          },
+          "stream": {
+            "node_id": "relay-secondary",
+            "stream_id": 50074,
+            "stream_id_text": "50074",
+            "latest_local_part": null,
+            "latest_local_part_bytes": 1238,
+            "latest_mesh_part": 2399,
+            "canonical_epoch": 1784299585830425,
+            "canonical_epoch_activation_delay_us": 794620155,
+            "contiguous_object": 2399,
+            "head_object": 2399,
+            "gap_count": 0,
+            "bytes_received": 2967468,
+            "datagrams_received": 2400,
+            "stale_threshold_ms": 20000,
+            "mesh_lag_parts": 0
+          },
+          "relay_integrity_delta": {
+            "datagrams_rejected": 0,
+            "conflict_drops": 0,
+            "authentication_drops": 0,
+            "deadline_drops": 0,
+            "expired_objects": 0
+          },
+          "relay_recovery_delta": {
+            "decoded_objects": 2403,
+            "fec_recovered_objects": 103,
+            "fec_recovered_source_symbols": 104
+          }
+        }
+      }
+    }
+  },
+  "routes": {
+    "maximum_primary_path_stretch": 1.50,
+    "maximum_secondary_path_stretch": 6.50,
+    "edges": {
+      "tokyo": {
+        "role": "edge",
+        "city": "tokyo",
+        "direct": {
+          "rtt_us": 212968,
+          "jitter_us": 609
+        },
+        "primary": {
+          "route_rtt_us": 228613,
+          "jitter_us": 181,
+          "path_stretch": 1.073462
+        },
+        "secondary": {
+          "route_rtt_us": 230298,
+          "jitter_us": 145,
+          "path_stretch": 1.081374
+        }
+      },
+      "new_york": {
+        "role": "edge_new_york",
+        "city": "new_york",
+        "direct": {
+          "rtt_us": 61513,
+          "jitter_us": 93
+        },
+        "primary": {
+          "route_rtt_us": 82179,
+          "jitter_us": 148,
+          "path_stretch": 1.335962
+        },
+        "secondary": {
+          "route_rtt_us": 375502,
+          "jitter_us": 173,
+          "path_stretch": 6.104433
+        }
+      },
+      "sydney": {
+        "role": "edge_sydney",
+        "city": "sydney",
+        "direct": {
+          "rtt_us": 250746,
+          "jitter_us": 3749
+        },
+        "primary": {
+          "route_rtt_us": 256948,
+          "jitter_us": 972,
+          "path_stretch": 1.024734
+        },
+        "secondary": {
+          "route_rtt_us": 328777,
+          "jitter_us": 149,
+          "path_stretch": 1.311195
+        }
+      }
+    }
+  },
+  "latency_accounting": {
+    "propagation_proxy": "half of the measured London-to-primary plus primary-to-edge RTT sum",
+    "note": "architecture residual includes clock error and is not a physical speed-of-light bound",
+    "new_york": {
+      "primary_route_rtt_ms": 82.179,
+      "primary_propagation_floor_ms": 41.0895,
+      "direct_origin_network_rtt_ms": 61.513,
+      "direct_origin_propagation_proxy_ms": 30.7565,
+      "publication_to_cache_p50_ms": 43.114253,
+      "architecture_and_clock_residual_p50_ms": 2.024752999999997,
+      "cache_to_client_p50_ms": 0.222308,
+      "ll_hls_total_p50_ms": 43.36036,
+      "native_udp_total_p50_ms": 40.257651,
+      "ll_hls_premium_over_udp_p50_ms": 3.1027089999999973,
+      "direct_origin_ll_hls_p50_ms": null
+    },
+    "tokyo": {
+      "primary_route_rtt_ms": 228.613,
+      "primary_propagation_floor_ms": 114.3065,
+      "direct_origin_network_rtt_ms": 212.968,
+      "direct_origin_propagation_proxy_ms": 106.484,
+      "publication_to_cache_p50_ms": 118.501253,
+      "architecture_and_clock_residual_p50_ms": 4.194753000000006,
+      "cache_to_client_p50_ms": 0.220382,
+      "ll_hls_total_p50_ms": 118.798738,
+      "native_udp_total_p50_ms": 115.673436,
+      "ll_hls_premium_over_udp_p50_ms": 3.125302000000005,
+      "direct_origin_ll_hls_p50_ms": null
+    },
+    "sydney": {
+      "primary_route_rtt_ms": 256.948,
+      "primary_propagation_floor_ms": 128.474,
+      "direct_origin_network_rtt_ms": 250.746,
+      "direct_origin_propagation_proxy_ms": 125.373,
+      "publication_to_cache_p50_ms": 132.634253,
+      "architecture_and_clock_residual_p50_ms": 4.1602530000000115,
+      "cache_to_client_p50_ms": 0.227417,
+      "ll_hls_total_p50_ms": 132.887337,
+      "native_udp_total_p50_ms": 129.820621,
+      "ll_hls_premium_over_udp_p50_ms": 3.0667160000000138,
+      "direct_origin_ll_hls_p50_ms": null
+    }
+  },
+  "failover": {
+    "budgets_us": {
+      "detection": 250000,
+      "activation": 250000,
+      "media_gap": 250000
+    },
+    "live_publication": {
+      "schema": "needletail.aep1-48k-probe.send.v1",
+      "lane": "source",
+      "payload": "flac",
+      "session_id": 1784300265514119988,
+      "group_id": 50074,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frame_count": 240,
+      "duration_seconds": 60,
+      "epochs": 12000,
+      "source_datagrams": 12000,
+      "repair_datagrams": 12000,
+      "wire_bytes": 17661808,
+      "lossless_payload_bytes": 7438904,
+      "pcm_reference_bytes": 17280000,
+      "wire_overhead_ratio": 2.3742486796442055,
+      "elapsed_ms": 60068
+    },
+    "edges": {
+      "tokyo": {
+        "role": "edge",
+        "city": "tokyo",
+        "state_sequence": [
+          "healthy",
+          "promoted",
+          "healthy"
+        ],
+        "detection_us": 103057,
+        "activation_us": 8666,
+        "media_gap_us": 7728,
+        "promotions": 1,
+        "make_before_break_demotions": 1,
+        "decoded_objects": 1823,
+        "expired_objects": 0,
+        "rejected_datagrams": 0,
+        "deadline_drops": 0
+      },
+      "new_york": {
+        "role": "edge_new_york",
+        "city": "new_york",
+        "state_sequence": [
+          "healthy",
+          "promoted",
+          "healthy"
+        ],
+        "detection_us": 125067,
+        "activation_us": 157416,
+        "media_gap_us": 160161,
+        "promotions": 1,
+        "make_before_break_demotions": 1,
+        "decoded_objects": 1683,
+        "expired_objects": 0,
+        "rejected_datagrams": 0,
+        "deadline_drops": 0
+      },
+      "sydney": {
+        "role": "edge_sydney",
+        "city": "sydney",
+        "state_sequence": [
+          "healthy",
+          "promoted",
+          "healthy"
+        ],
+        "detection_us": 114198,
+        "activation_us": 106974,
+        "media_gap_us": 7335,
+        "promotions": 1,
+        "make_before_break_demotions": 1,
+        "decoded_objects": 1415,
+        "expired_objects": 0,
+        "rejected_datagrams": 0,
+        "deadline_drops": 0
+      }
+    },
+    "passed": true
+  },
+  "cache_identity": {
+    "stream_id": 50073,
+    "playlist_byte_identical": true,
+    "init_byte_identical": true,
+    "parts_byte_identical": true,
+    "timeline_and_sample_pts_embedded_in_identical_fmp4_parts": true,
+    "edges": {
+      "tokyo": {
+        "role": "edge",
+        "city": "tokyo",
+        "playlist_sha256": "0f7a0c4a8600fc1db3fd179998a0319b21a6ea03da9fdf82d232b09c2ab49ac8",
+        "init_sha256": "a01a2f85110ae9f7763db2ef95d089f4ca101e6d2fe43b366dcbf3275785ded9",
+        "parts": [
+          {
+            "part": "part2392.mp4",
+            "sha256": "4142e0be719a184533e7fbb0f16f870ade690f2136c8aeb2da219ab702c79630"
+          },
+          {
+            "part": "part2393.mp4",
+            "sha256": "c493bf2b394d56a30657bedd50fef9969fa3335d0eb9e97ffc1bb237d8600b3a"
+          },
+          {
+            "part": "part2394.mp4",
+            "sha256": "1a1b49c62a3f3b24ef7e4603cd8c203397dd4c40f3eafaf9e56c62027048f3c7"
+          },
+          {
+            "part": "part2395.mp4",
+            "sha256": "7371cafb6e00488693bf9cfc459aa2ea679128b22034b66b2ae26e5748a643e8"
+          },
+          {
+            "part": "part2396.mp4",
+            "sha256": "e76c8782651ebbd00a2a888196a57c02e7427dcbf5804d90580010ad818e1a7a"
+          },
+          {
+            "part": "part2397.mp4",
+            "sha256": "c9da771f7cf1f42eed2e5abf8e8b9e1993531726ff86bbfc8075980e8d90208f"
+          },
+          {
+            "part": "part2398.mp4",
+            "sha256": "b5fef5dc8403f86606ecffb18026167d3f7086436c213f5c92c7d056a9be350a"
+          },
+          {
+            "part": "part2399.mp4",
+            "sha256": "af1e4b090dcb26e315bbfb6915cbc4dc502f7dd79fe01fdd24a5c897646d887b"
+          }
+        ]
+      },
+      "new_york": {
+        "role": "edge_new_york",
+        "city": "new_york",
+        "playlist_sha256": "0f7a0c4a8600fc1db3fd179998a0319b21a6ea03da9fdf82d232b09c2ab49ac8",
+        "init_sha256": "a01a2f85110ae9f7763db2ef95d089f4ca101e6d2fe43b366dcbf3275785ded9",
+        "parts": [
+          {
+            "part": "part2392.mp4",
+            "sha256": "4142e0be719a184533e7fbb0f16f870ade690f2136c8aeb2da219ab702c79630"
+          },
+          {
+            "part": "part2393.mp4",
+            "sha256": "c493bf2b394d56a30657bedd50fef9969fa3335d0eb9e97ffc1bb237d8600b3a"
+          },
+          {
+            "part": "part2394.mp4",
+            "sha256": "1a1b49c62a3f3b24ef7e4603cd8c203397dd4c40f3eafaf9e56c62027048f3c7"
+          },
+          {
+            "part": "part2395.mp4",
+            "sha256": "7371cafb6e00488693bf9cfc459aa2ea679128b22034b66b2ae26e5748a643e8"
+          },
+          {
+            "part": "part2396.mp4",
+            "sha256": "e76c8782651ebbd00a2a888196a57c02e7427dcbf5804d90580010ad818e1a7a"
+          },
+          {
+            "part": "part2397.mp4",
+            "sha256": "c9da771f7cf1f42eed2e5abf8e8b9e1993531726ff86bbfc8075980e8d90208f"
+          },
+          {
+            "part": "part2398.mp4",
+            "sha256": "b5fef5dc8403f86606ecffb18026167d3f7086436c213f5c92c7d056a9be350a"
+          },
+          {
+            "part": "part2399.mp4",
+            "sha256": "af1e4b090dcb26e315bbfb6915cbc4dc502f7dd79fe01fdd24a5c897646d887b"
+          }
+        ]
+      },
+      "sydney": {
+        "role": "edge_sydney",
+        "city": "sydney",
+        "playlist_sha256": "0f7a0c4a8600fc1db3fd179998a0319b21a6ea03da9fdf82d232b09c2ab49ac8",
+        "init_sha256": "a01a2f85110ae9f7763db2ef95d089f4ca101e6d2fe43b366dcbf3275785ded9",
+        "parts": [
+          {
+            "part": "part2392.mp4",
+            "sha256": "4142e0be719a184533e7fbb0f16f870ade690f2136c8aeb2da219ab702c79630"
+          },
+          {
+            "part": "part2393.mp4",
+            "sha256": "c493bf2b394d56a30657bedd50fef9969fa3335d0eb9e97ffc1bb237d8600b3a"
+          },
+          {
+            "part": "part2394.mp4",
+            "sha256": "1a1b49c62a3f3b24ef7e4603cd8c203397dd4c40f3eafaf9e56c62027048f3c7"
+          },
+          {
+            "part": "part2395.mp4",
+            "sha256": "7371cafb6e00488693bf9cfc459aa2ea679128b22034b66b2ae26e5748a643e8"
+          },
+          {
+            "part": "part2396.mp4",
+            "sha256": "e76c8782651ebbd00a2a888196a57c02e7427dcbf5804d90580010ad818e1a7a"
+          },
+          {
+            "part": "part2397.mp4",
+            "sha256": "c9da771f7cf1f42eed2e5abf8e8b9e1993531726ff86bbfc8075980e8d90208f"
+          },
+          {
+            "part": "part2398.mp4",
+            "sha256": "b5fef5dc8403f86606ecffb18026167d3f7086436c213f5c92c7d056a9be350a"
+          },
+          {
+            "part": "part2399.mp4",
+            "sha256": "af1e4b090dcb26e315bbfb6915cbc4dc502f7dd79fe01fdd24a5c897646d887b"
+          }
+        ]
+      }
+    },
+    "passed": true
+  },
+  "cache_independence": {
+    "stopped_edge": "new_york",
+    "stream_id": 50073,
+    "tokyo_cache_served": true,
+    "sydney_cache_served": true,
+    "stopped_edge_restarted": true,
+    "passed": true
+  },
+  "origin_fanout": {
+    "origin_children": 2,
+    "playback_edges": 3,
+    "origin_egress_independent_of_edge_count": true,
+    "primary_child_node": "relay-primary",
+    "secondary_child_node": "relay-secondary",
+    "primary_downstream_children": 3,
+    "secondary_downstream_children": 3,
+    "secondary_failover_listeners": 3,
+    "contributor_runtime": {
+      "primary_configured": true,
+      "secondary_configured": true
+    },
+    "passed": true
+  },
+  "release_gates": {
+    "one_publication_reached_three_independent_caches": true,
+    "bounded_two_parent_origin_egress": true,
+    "all_three_lanes_complete_clean_and_impaired": true,
+    "mandatory_lossless_ll_hls": true,
+    "verified_persistent_tls13_h3": true,
+    "publication_cache_client_latency_split": true,
+    "direct_origin_network_baselines_complete": true,
+    "direct_origin_h3_stress_complete_or_disabled": true,
+    "sample_pts_and_timeline_identity": true,
+    "cross_parent_fec_recovery": true,
+    "primary_failure_and_make_before_break": true,
+    "late_join_from_local_cache": true,
+    "no_corruption_duplicates_deadlines_or_queue_loss": true,
+    "cpu_and_path_budgets": true
+  },
+  "retention_audit": {
+    "observed_utc": "2026-07-17T15:05:59Z",
+    "idle_retention_seconds": 300,
+    "retired_streams_by_city": {
+      "amsterdam": 4,
+      "osaka": 5,
+      "tokyo": 5,
+      "new_york": 3,
+      "sydney": 5
+    },
+    "edges": {
+      "new_york": {
+        "dynamic_stream_ids": [],
+        "permanent_stream_ids": [
+          1
+        ],
+        "relay_active_objects": 0,
+        "memory_bytes": 56987648,
+        "tasks": 3
+      },
+      "tokyo": {
+        "dynamic_stream_ids": [],
+        "permanent_stream_ids": [
+          1
+        ],
+        "relay_active_objects": 0,
+        "memory_bytes": 66088960,
+        "tasks": 3
+      },
+      "sydney": {
+        "dynamic_stream_ids": [],
+        "permanent_stream_ids": [
+          1
+        ],
+        "relay_active_objects": 0,
+        "memory_bytes": 68345856,
+        "tasks": 3
+      }
+    },
+    "passed": true
+  },
+  "cleanup": {
+    "final_service_audit_before_teardown": true,
+    "dynamic_streams_retired": true,
+    "private_images_saved": 6,
+    "private_images_total_mib": 18101,
+    "private_images_available_after_teardown": true,
+    "linode_instances_deleted_after_documentation": true,
+    "linode_firewall_deleted_after_documentation": true,
+    "provider_resources_absent": true,
+    "local_lab_state_removed": true
+  }
+}

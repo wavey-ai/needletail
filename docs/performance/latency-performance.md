@@ -2,6 +2,10 @@
 
 Latest runs:
 
+- Linode six-node DAG: [`20260717T145432Z`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)
+- Linode run note: [`2026-07-17 multi-region DAG`](../real-world-tests/2026-07-17-linode-dag-replication.md)
+- Local persistent-H3 5 ms lossless run: [`local-20260717T053347Z`](../real-world-tests/evidence/local-20260717T053347Z-lossless.json)
+- GCP 5 ms lossless run: [`20260717T054206Z`](../real-world-tests/evidence/20260717T054206Z.json)
 - Local controlled-loss run: [`local-20260716T001959Z`](../real-world-tests/evidence/local-20260716T001959Z.json)
 - GCP intercontinental run: [`20260716T023139Z`](../real-world-tests/evidence/20260716T023139Z.json)
 - GCP dashboard screenshots: [`20260716T023139Z`](real-world-load-screenshots.md)
@@ -18,6 +22,20 @@ Latest runs:
 ![RaptorQ recovery](charts/raptorq-recovery.svg)
 
 ## Numbers
+
+Latest clean 48 kHz FLAC result, published from London through the dual-parent
+DAG and consumed from the local playback cache over persistent H3:
+
+| City | UDP p50/p99 | WebTransport p50/p99 | LL-HLS p50/p99 | LL-HLS p50 premium | Cache→client p50/p99 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| New York | 40.258 / 41.180 ms | 40.333 / 41.307 ms | 43.360 / 63.320 ms | 3.103 ms | 0.222 / 0.654 ms |
+| Tokyo | 115.673 / 116.584 ms | 115.788 / 116.787 ms | 118.799 / 138.740 ms | 3.125 ms | 0.220 / 0.674 ms |
+| Sydney | 129.821 / 131.853 ms | 129.945 / 132.252 ms | 132.887 / 153.049 ms | 3.067 ms | 0.227 / 0.785 ms |
+
+The clean p99 LL-HLS premium was 21.196–22.156 ms. The “UDP plus a few
+milliseconds” summary refers to the measured median, not the tail.
+
+Earlier relay/failover gates:
 
 | Metric | Local | GCP | Target |
 | --- | ---: | ---: | ---: |
@@ -44,8 +62,18 @@ One-way observed latency is roughly 122-126 ms. An ideal straight fiber path is
 roughly 47-49 ms one-way, so the extra 75-79 ms is provider routing, cloud
 network path, queueing, and host overhead.
 
+The later Linode DAG measured primary-route RTTs of 82.179 ms to New York,
+228.613 ms to Tokyo, and 256.948 ms to Sydney. Half-RTT propagation proxies
+were 41.090, 114.307, and 128.474 ms. Median publication-to-cache latency was
+43.114, 118.501, and 132.634 ms, leaving an architecture-plus-clock residual of
+2.025–4.195 ms. This residual is measured from node clocks and is not a
+physical speed-of-light bound.
+
 ## Evidence
 
+- [`20260717T145432Z-linode-dag.json`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)
+- [`local-20260717T053347Z-lossless.json`](../real-world-tests/evidence/local-20260717T053347Z-lossless.json)
+- [`20260717T054206Z.json`](../real-world-tests/evidence/20260717T054206Z.json)
 - [`local-20260716T001959Z.json`](../real-world-tests/evidence/local-20260716T001959Z.json)
 - [`20260716T023139Z.json`](../real-world-tests/evidence/20260716T023139Z.json)
 - [`evidence index`](../real-world-tests/evidence/README.md)
