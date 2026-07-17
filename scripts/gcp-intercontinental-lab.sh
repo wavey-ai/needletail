@@ -14,6 +14,7 @@ PROJECT="${GCP_PROJECT:-$(jq -r '.project_id' "${GOOGLE_APPLICATION_CREDENTIALS}
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 NETWORK="${NEEDLETAIL_GCP_NETWORK:-needletail-qualification}"
 MACHINE_TYPE="${NEEDLETAIL_GCP_MACHINE_TYPE:-e2-standard-2}"
+EDGE_MACHINE_TYPE="${NEEDLETAIL_GCP_EDGE_MACHINE_TYPE:-${MACHINE_TYPE}}"
 MAX_RUN_DURATION="${NEEDLETAIL_GCP_MAX_RUN_DURATION:-6h}"
 SOURCE_IPV4="${NEEDLETAIL_OPERATOR_IPV4:-}"
 
@@ -93,6 +94,7 @@ ensure_instance() {
   local zone="$2"
   local subnet="$3"
   local role="$4"
+  local machine_type="${5:-${MACHINE_TYPE}}"
   if exists gcloud compute instances describe "${name}" \
     --zone="${zone}" --project="${PROJECT}" --quiet; then
     return
@@ -100,7 +102,7 @@ ensure_instance() {
   gcloud compute instances create "${name}" \
     --zone="${zone}" \
     --subnet="${subnet}" \
-    --machine-type="${MACHINE_TYPE}" \
+    --machine-type="${machine_type}" \
     --network-tier=PREMIUM \
     --image-family=debian-12 \
     --image-project=debian-cloud \
@@ -157,23 +159,24 @@ up() {
     --direction=INGRESS \
     --source-ranges="${SOURCE_IPV4}/32" \
     --target-tags=needletail-qualification \
-    --allow=tcp:22,tcp:19444
+    --allow=tcp:22,tcp:19444,udp:19444,udp:27100
 
   ensure_instance "${CONTRIB_NAME}" "${CONTRIB_ZONE}" "${CONTRIB_SUBNET}" contributor
   ensure_instance "${PRIMARY_NAME}" "${PRIMARY_ZONE}" "${PRIMARY_SUBNET}" primary-relay
   ensure_instance "${SECONDARY_NAME}" "${SECONDARY_ZONE}" "${SECONDARY_SUBNET}" secondary-relay
-  ensure_instance "${EDGE_NAME}" "${EDGE_ZONE}" "${EDGE_SUBNET}" playback-edge
+  ensure_instance "${EDGE_NAME}" "${EDGE_ZONE}" "${EDGE_SUBNET}" playback-edge "${EDGE_MACHINE_TYPE}"
 
   jq -n \
     --arg project "${PROJECT}" \
     --arg network "${NETWORK}" \
     --arg machine_type "${MACHINE_TYPE}" \
+    --arg edge_machine_type "${EDGE_MACHINE_TYPE}" \
     --arg max_run_duration "${MAX_RUN_DURATION}" \
     --arg contributor "${CONTRIB_NAME}" --arg contributor_zone "${CONTRIB_ZONE}" \
     --arg primary "${PRIMARY_NAME}" --arg primary_zone "${PRIMARY_ZONE}" \
     --arg secondary "${SECONDARY_NAME}" --arg secondary_zone "${SECONDARY_ZONE}" \
     --arg edge "${EDGE_NAME}" --arg edge_zone "${EDGE_ZONE}" \
-    '{project:$project,network:$network,machine_type:$machine_type,max_run_duration:$max_run_duration,nodes:{contributor:{name:$contributor,zone:$contributor_zone},primary:{name:$primary,zone:$primary_zone},secondary:{name:$secondary,zone:$secondary_zone},edge:{name:$edge,zone:$edge_zone}}}' \
+    '{project:$project,network:$network,machine_type:$machine_type,edge_machine_type:$edge_machine_type,max_run_duration:$max_run_duration,nodes:{contributor:{name:$contributor,zone:$contributor_zone,machine_type:$machine_type},primary:{name:$primary,zone:$primary_zone,machine_type:$machine_type},secondary:{name:$secondary,zone:$secondary_zone,machine_type:$machine_type},edge:{name:$edge,zone:$edge_zone,machine_type:$edge_machine_type}}}' \
     >"${ROOT}/target/gcp-qualification/lab.json"
   status
 }

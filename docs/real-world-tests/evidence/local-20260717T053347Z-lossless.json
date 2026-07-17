@@ -1,0 +1,176 @@
+{
+  "schema": "needletail.local-lossless-latency.v1",
+  "run_id": "20260717T053347Z",
+  "raw_artifact_directory": "target/local-lossless-5ms-h3-immediate/20260717T053347Z",
+  "topology": {
+    "kind": "two-region local relay smoke",
+    "receiver_location": "same host",
+    "clock": "shared host realtime clock"
+  },
+  "tested_revisions": {
+    "needletail": {
+      "commit": "0d6dc7c4d0a6a85a7abdfee3dbd8f17d9c3d9bc8",
+      "working_tree_modified": true
+    },
+    "av_contrib": {
+      "commit": "9aa15eaeb4d6602f35e750f1e91318201ce355b6",
+      "working_tree_modified": true
+    },
+    "av_mesh": {
+      "commit": "d8e66e7a172e5cf4f2280c45d146e43feceec4e5",
+      "working_tree_modified": true
+    },
+    "access_unit": {
+      "commit": "80decbb8c7ae0de31755c80c92958665eea28409",
+      "working_tree_modified": true
+    },
+    "raptor_fec": {
+      "commit": "27229228b7a910e019f8fbc42091ae45c677bbe3",
+      "working_tree_modified": true
+    }
+  },
+  "source": {
+    "schema": "needletail.aep1-48k-probe.send.v1",
+    "lane": "source",
+    "payload": "flac",
+    "session_id": 1784266438012454000,
+    "group_id": 100,
+    "sample_rate": 48000,
+    "channels": 2,
+    "frame_count": 240,
+    "duration_seconds": 5,
+    "epochs": 1000,
+    "source_datagrams": 1000,
+    "repair_datagrams": 1000,
+    "wire_bytes": 1469924,
+    "lossless_payload_bytes": 618962,
+    "pcm_reference_bytes": 1440000,
+    "wire_overhead_ratio": 2.3748210714066453,
+    "elapsed_ms": 4997
+  },
+  "lanes": {
+    "native_udp_fec": {
+      "schema": "needletail.aep1-48k-probe.receive.v1",
+      "lane": "native_udp_fec",
+      "session_id": 1784266438012454000,
+      "group_id": 100,
+      "sample_rate": 48000,
+      "duration_seconds": 5,
+      "expected_epochs": 1000,
+      "received_epochs": 1000,
+      "missing_epochs": 0,
+      "deadline_ms": 1000,
+      "deadline_misses": 0,
+      "datagrams_received": 2000,
+      "systematic_shards_received": 1000,
+      "raptorq_shards_recovered": 0,
+      "duplicate_or_late_epochs": 0,
+      "wire_bytes": 1469924,
+      "latency_ms": {
+        "count": 1000,
+        "min": 3.788,
+        "p50": 4.931,
+        "p95": 5.851,
+        "p99": 7.604,
+        "max": 10.527
+      },
+      "render_ready_latency_ms": {
+        "count": 1000,
+        "min": 3.788,
+        "p50": 4.931,
+        "p95": 5.851,
+        "p99": 7.604,
+        "max": 10.527
+      }
+    },
+    "webtransport": {
+      "schema": "needletail.aep1-48k-probe.receive.v1",
+      "lane": "webtransport",
+      "session_id": 1784266438012454000,
+      "group_id": 100,
+      "sample_rate": 48000,
+      "duration_seconds": 5,
+      "expected_epochs": 1000,
+      "received_epochs": 1000,
+      "missing_epochs": 0,
+      "deadline_ms": 1000,
+      "deadline_misses": 0,
+      "datagrams_received": 2000,
+      "systematic_shards_received": 1000,
+      "raptorq_shards_recovered": 0,
+      "duplicate_or_late_epochs": 0,
+      "wire_bytes": 1471924,
+      "latency_ms": {
+        "count": 1000,
+        "min": 3.868,
+        "p50": 5.04,
+        "p95": 6.071,
+        "p99": 7.837,
+        "max": 11.356
+      },
+      "render_ready_latency_ms": {
+        "count": 1000,
+        "min": 3.868,
+        "p50": 5.04,
+        "p95": 6.071,
+        "p99": 7.837,
+        "max": 11.356
+      }
+    },
+    "ll_hls": {
+      "schema": "needletail.aep1-48k-probe.hls-receive.v1",
+      "lane": "ll_hls",
+      "transport": "h3",
+      "tls_protocol": "TLSv1.3",
+      "tls_certificate_verified": true,
+      "persistent_connection": true,
+      "connection_setup_ms": 2.732792,
+      "stream_id": 101,
+      "session_id": 1784266438012454000,
+      "sample_rate": 48000,
+      "duration_seconds": 5,
+      "part_ms": 5,
+      "expected_parts": 1000,
+      "received_parts": 1000,
+      "missing_parts": 0,
+      "deadline_ms": 1500,
+      "deadline_misses": 0,
+      "render_buffer_ms": 150,
+      "wire_bytes": 1098204,
+      "init_has_flac": true,
+      "playlist_has_ll_hls_tags": true,
+      "availability_latency_ms": {
+        "count": 1000,
+        "min": 4.404,
+        "p50": 6.043,
+        "p95": 8.114,
+        "p99": 10.835,
+        "max": 16.841
+      },
+      "estimated_render_latency_ms": {
+        "count": 1000,
+        "min": 154.404,
+        "p50": 156.043,
+        "p95": 158.114,
+        "p99": 160.835,
+        "max": 166.841
+      }
+    }
+  },
+  "ll_hls_premium_ms": {
+    "p50": 1.112,
+    "p95": 2.263000000000001,
+    "p99": 3.2310000000000008
+  },
+  "release_gates": {
+    "lossless_reaches_ll_hls": true,
+    "ll_hls_uses_verified_persistent_h3": true,
+    "all_three_lanes_complete": true,
+    "zero_deadline_misses": true
+  },
+  "passed": true,
+  "cleanup": {
+    "local_services_stopped": true,
+    "generated_tls_unversioned": true
+  }
+}

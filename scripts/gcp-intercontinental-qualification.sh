@@ -44,11 +44,11 @@ Usage: GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json \
   scripts/gcp-intercontinental-qualification.sh
 
 Qualifies the deployed London -> Amsterdam/Osaka -> Tokyo dual-parent DAG.
-The gate restarts the London contributor and proves atomic source-epoch
-convergence, stops the Amsterdam primary and proves stable warm-parent
-continuity and recovery, then applies controlled primary-path loss and proves
-RaptorQ repair at the playback edge. Faults are removed and services restored
-on exit.
+The gate first runs clean and impaired 48 kHz lossless audio over native UDP,
+WebTransport, and mandatory FLAC fMP4 LL-HLS. It then restarts the London
+contributor and proves atomic source-epoch convergence, stops the Amsterdam
+primary and proves stable warm-parent continuity and recovery, and applies
+controlled primary-path loss. Faults are removed and services restored on exit.
 
 Key overrides:
   FAILOVER_DETECTION_BUDGET_MS   maximum source-loss detection (default 250)
@@ -242,7 +242,9 @@ capture_baseline() {
       ' <<<"${contributor}" >/dev/null && \
       jq -e '
         .relay_session.failover_controller_state == "healthy"
-        and (.alerts | length == 0)
+        and ([.alerts[]?
+          | select(.stream_id_text == null or .stream_id_text == "1")
+        ] | length == 0)
       ' <<<"${edge}" >/dev/null; then
       printf '%s\n' "${contributor}" >"${RESULT_DIR}/baseline-contributor.json"
       printf '%s\n' "${edge}" >"${RESULT_DIR}/baseline-edge.json"
@@ -294,7 +296,9 @@ capture_recovered() {
       ' <<<"${contributor}" >/dev/null && \
       jq -e '
         .relay_session.failover_controller_state == "healthy"
-        and (.alerts | length == 0)
+        and ([.alerts[]?
+          | select(.stream_id_text == null or .stream_id_text == "1")
+        ] | length == 0)
       ' <<<"${edge}" >/dev/null; then
       printf '%s\n' "${contributor}" >"${RESULT_DIR}/recovered-contributor.json"
       printf '%s\n' "${edge}" >"${RESULT_DIR}/recovered-edge.json"
@@ -337,7 +341,9 @@ capture_publication_converged() {
           | select(.node_id == "edge" or .node_id == "relay-primary" or .node_id == "relay-secondary")
         ] as $streams
         | ($streams | length) == 3
-        and (.alerts | length) == 0
+        and ([.alerts[]?
+          | select(.stream_id_text == null or .stream_id_text == "1")
+        ] | length == 0)
         and .relay_session.failover_controller_state == "healthy"
         and ([$streams[].canonical_epoch] | unique) == [$source_epoch]
         and all($streams[];
@@ -388,6 +394,33 @@ assert_metric_at_most() {
   fi
 }
 
+assert_stream_metric_at_most() {
+  local file="$1"
+  local metric="$2"
+  local stream_id="$3"
+  local maximum="$4"
+  local minimum_samples="$5"
+  if ! awk -v metric="${metric}" -v stream_id="${stream_id}" \
+    -v maximum="${maximum}" -v minimum_samples="${minimum_samples}" '
+      index($1, metric "{") == 1
+        && index($1, "stream_id=\"" stream_id "\"") > 0 {
+          samples++
+          if ($2 > maximum) exceeded=1
+        }
+      END { exit !(samples >= minimum_samples && !exceeded) }
+    ' "${file}"; then
+    echo "expected at least ${minimum_samples} ${metric} samples for stream ${stream_id} <= ${maximum} in ${file}" >&2
+    exit 1
+  fi
+}
+
+LOSSLESS_RESULT_DIR="${RESULT_DIR}/lossless"
+RESULT_DIR="${LOSSLESS_RESULT_DIR}" \
+RUN_ID="${RUN_ID}" \
+NEEDLETAIL_GCP_LAB_STATE="${LAB_STATE}" \
+GCP_PROJECT="${PROJECT}" \
+  "${ROOT}/scripts/gcp-lossless-latency.sh"
+
 capture_baseline
 capture_publication_converged \
   source-restart-before 0 \
@@ -426,9 +459,10 @@ assert_metric "${RESULT_DIR}/source-restart-after-contributor.metrics" \
   av_contrib_media_object_source_epoch "${source_restart_after_epoch}"
 assert_metric "${RESULT_DIR}/source-restart-after-edge.metrics" \
   av_mesh_canonical_epoch_divergent_streams 0
-assert_metric_at_most "${RESULT_DIR}/source-restart-after-edge.metrics" \
-  av_mesh_canonical_epoch_activation_delay_max_seconds \
-  "$(awk -v budget_ms="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS}" 'BEGIN { print budget_ms / 1000 }')"
+assert_stream_metric_at_most "${RESULT_DIR}/source-restart-after-edge.metrics" \
+  av_mesh_stream_canonical_epoch_activation_delay_seconds 1 \
+  "$(awk -v budget_ms="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS}" 'BEGIN { print budget_ms / 1000 }')" \
+  3
 printf '%-25s before=%s after=%s activate<=%sus observe=%sus head=%s\n' \
   "contributor restart" "${source_restart_before_epoch}" "${source_restart_after_epoch}" \
   "${source_restart_max_activation_delay_us}" "${source_restart_observed_us}" \
@@ -693,10 +727,11 @@ printf '%-25s processing_p95=%sus publish_to_cache_p99=%sus\n' \
   "relay latency" "${relay_processing_p95_us}" "${publication_to_available_p99_us}"
 
 jq -n \
-  --arg schema "needletail.gcp-intercontinental-qualification.v3" \
+  --arg schema "needletail.gcp-intercontinental-qualification.v4" \
   --arg run_id "${RUN_ID}" \
   --arg project "${PROJECT}" \
   --slurpfile lab "${LAB_STATE}" \
+  --slurpfile lossless "${LOSSLESS_RESULT_DIR}/qualification.json" \
   --slurpfile relay_latency "${RELAY_LATENCY_JSON}" \
   --argjson detection_budget_ms "${FAILOVER_DETECTION_BUDGET_MS}" \
   --argjson activation_budget_ms "${FAILOVER_ACTIVATION_BUDGET_MS}" \
@@ -749,6 +784,7 @@ jq -n \
     run_id: $run_id,
     project: $project,
     topology: $lab[0],
+    lossless_48khz_lanes: $lossless[0],
     adaptive_raptorq: {
       controller_loss_fraction: $reported_loss_fraction,
       qualification_loss_probability: $loss_probability,

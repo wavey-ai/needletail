@@ -8,6 +8,10 @@ set -euo pipefail
 PLAN="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
 SERVICE="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
   '.services[] | select(.service == "av_mesh" and .node_id == $node)' "${PLAN}")"
+part_ms="${NEEDLETAIL_PART_MS:-50}"
+segment_ms="${NEEDLETAIL_SEGMENT_MS:-1000}"
+parts_per_segment="${NEEDLETAIL_PARTS_PER_SEGMENT:-$(((segment_ms + part_ms - 1) / part_ms))}"
+window_parts="${NEEDLETAIL_WINDOW_PARTS:-$((parts_per_segment * 3))}"
 
 args=(
   /usr/local/bin/av-mesh
@@ -28,12 +32,16 @@ args=(
   --telemetry-private-ipv4 "${NEEDLETAIL_PRIVATE_IP}"
   --telemetry-interval-ms 250
   --stream-id 1
-  --part-ms "${NEEDLETAIL_PART_MS:-50}"
-  --parts-per-segment 2
-  --window-parts 24
+  --part-ms "${part_ms}"
+  --parts-per-segment "${parts_per_segment}"
+  --window-parts "${window_parts}"
   --slot-kb 2048
   --relay-controlled-local
 )
+
+if [[ "${NEEDLETAIL_EDGE_WEBTRANSPORT:-0}" == 1 ]]; then
+  args+=(--edge-webtransport)
+fi
 
 IFS=',' read -r -a telemetry_peers <<<"${NEEDLETAIL_TELEMETRY_PEERS:-}"
 for peer in "${telemetry_peers[@]}"; do

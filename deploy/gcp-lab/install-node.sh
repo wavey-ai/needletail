@@ -7,7 +7,7 @@ STAGE=/tmp/needletail-deploy
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update
 packages=(ca-certificates jq)
-[[ "${SERVICE}" == contrib ]] && packages+=(ffmpeg)
+[[ "${SERVICE}" == contrib ]] && packages+=(ffmpeg procps)
 sudo apt-get install -y "${packages[@]}"
 
 sudo install -d -m 755 /etc/needletail/tls
@@ -18,6 +18,9 @@ sudo install -m 600 "${STAGE}/node.env" /etc/needletail/node.env
 
 if [[ "${SERVICE}" == mesh ]]; then
   sudo install -m 755 "${STAGE}/av-mesh" /usr/local/bin/av-mesh
+  if [[ -x "${STAGE}/aep1-48k-probe" ]]; then
+    sudo install -m 755 "${STAGE}/aep1-48k-probe" /usr/local/bin/aep1-48k-probe
+  fi
   sudo install -m 755 "${STAGE}/av-mesh-run" /usr/local/bin/needletail-av-mesh-run
   sudo install -m 644 "${STAGE}/needletail-mesh.service" \
     /etc/systemd/system/needletail-mesh.service
@@ -30,7 +33,16 @@ if [[ "${SERVICE}" == mesh ]]; then
   sudo systemctl enable --now needletail-mesh.service
   sudo systemctl restart needletail-mesh.service
 else
+  receive_buffer_bytes=$((8 * 1024 * 1024))
+  current_receive_buffer_bytes="$(/usr/sbin/sysctl -n net.core.rmem_max)"
+  if (( current_receive_buffer_bytes > receive_buffer_bytes )); then
+    receive_buffer_bytes="${current_receive_buffer_bytes}"
+  fi
+  printf 'net.core.rmem_max=%s\n' "${receive_buffer_bytes}" \
+    | sudo tee /etc/sysctl.d/60-needletail-udp.conf >/dev/null
+  sudo /usr/sbin/sysctl -q -w "net.core.rmem_max=${receive_buffer_bytes}"
   sudo install -m 755 "${STAGE}/av-contrib" /usr/local/bin/av-contrib
+  sudo install -m 755 "${STAGE}/aep1-48k-probe" /usr/local/bin/aep1-48k-probe
   sudo install -m 755 "${STAGE}/av-contrib-run" /usr/local/bin/needletail-av-contrib-run
   sudo install -m 644 "${STAGE}/needletail-contrib.service" \
     /etc/systemd/system/needletail-contrib.service

@@ -26,4 +26,8 @@ Evidence index:
 - `local-20260715T235439Z.json`: local controlled-impairment load, failover, and exact-RaptorQ run;
 - `local-20260716T001959Z.json`: local relay-processing and corrected publication-latency run;
 - `20260716T002843Z.json`: GCP relay-processing and corrected publication-latency run;
-- `20260716T023139Z.json`: GCP intercontinental failover, RaptorQ loss recovery, dashboard load, screenshots, and speed-of-light factor run.
+- `20260716T023139Z.json`: GCP intercontinental failover, RaptorQ loss recovery, dashboard load, screenshots, and speed-of-light factor run;
+- `local-20260717T053347Z-lossless.json`: final local 5 ms lossless UDP, WebTransport, and certificate-verified persistent-H3 LL-HLS run;
+- `20260717T054206Z.json`: passing GCP 5 ms lossless clean/impaired three-lane qualification;
+- `20260717T054847Z.json`: lossless phase passed, but the broader integrated invocation failed its pre-restart convergence gate;
+- `20260717-lossless-latency-series-summary.json`: 50 ms, 20 ms, and 5 ms cadence results plus the diagnostic-attempt ledger.

@@ -1,0 +1,409 @@
+{
+  "schema": "needletail.gcp-lossless-latency.v1",
+  "run_id": "20260717T054206Z",
+  "topology": {
+    "network": "needletail-qualification",
+    "machine_type": "e2-standard-2",
+    "edge_machine_type": "n2-standard-2",
+    "max_run_duration": "6h",
+    "nodes": {
+      "contributor": {
+        "zone": "europe-west2-b",
+        "machine_type": "e2-standard-2"
+      },
+      "primary": {
+        "zone": "europe-west4-a",
+        "machine_type": "e2-standard-2"
+      },
+      "secondary": {
+        "zone": "asia-northeast2-b",
+        "machine_type": "e2-standard-2"
+      },
+      "edge": {
+        "zone": "asia-northeast1-b",
+        "machine_type": "n2-standard-2"
+      }
+    }
+  },
+  "profiles": {
+    "clean": {
+      "schema": "needletail.gcp-lossless-latency-profile.v1",
+      "profile": "clean",
+      "impaired": 0,
+      "identity": {
+        "session_id": 1784266965283699021,
+        "group_id": 13874,
+        "ll_hls_stream_id": 13875,
+        "sample_rate": 48000
+      },
+      "impairment": {
+        "probability": 0,
+        "dropped_datagrams": 0
+      },
+      "budgets_ms": {
+        "native_udp_p99": 350,
+        "webtransport_p99": 500,
+        "ll_hls_availability_p99": 1000
+      },
+      "source": {
+        "schema": "needletail.aep1-48k-probe.send.v1",
+        "lane": "source",
+        "payload": "flac",
+        "session_id": 1784266965283699021,
+        "group_id": 13874,
+        "sample_rate": 48000,
+        "channels": 2,
+        "frame_count": 240,
+        "duration_seconds": 10,
+        "epochs": 2000,
+        "source_datagrams": 2000,
+        "repair_datagrams": 2000,
+        "wire_bytes": 2940104,
+        "lossless_payload_bytes": 1238052,
+        "pcm_reference_bytes": 2880000,
+        "wire_overhead_ratio": 2.374782319320998,
+        "elapsed_ms": 9996
+      },
+      "lanes": {
+        "native_udp_fec": {
+          "schema": "needletail.aep1-48k-probe.receive.v1",
+          "lane": "native_udp_fec",
+          "session_id": 1784266965283699021,
+          "group_id": 13874,
+          "sample_rate": 48000,
+          "duration_seconds": 10,
+          "expected_epochs": 2000,
+          "received_epochs": 2000,
+          "missing_epochs": 0,
+          "deadline_ms": 350,
+          "deadline_misses": 0,
+          "datagrams_received": 4000,
+          "systematic_shards_received": 2000,
+          "raptorq_shards_recovered": 0,
+          "duplicate_or_late_epochs": 0,
+          "wire_bytes": 2940104,
+          "latency_ms": {
+            "count": 2000,
+            "min": 124.494124,
+            "p50": 125.479662,
+            "p95": 127.851127,
+            "p99": 129.700903,
+            "max": 139.631386
+          },
+          "render_ready_latency_ms": {
+            "count": 2000,
+            "min": 124.494124,
+            "p50": 125.479662,
+            "p95": 127.851127,
+            "p99": 129.700903,
+            "max": 139.631386
+          }
+        },
+        "webtransport": {
+          "schema": "needletail.aep1-48k-probe.receive.v1",
+          "lane": "webtransport",
+          "session_id": 1784266965283699021,
+          "group_id": 13874,
+          "sample_rate": 48000,
+          "duration_seconds": 10,
+          "expected_epochs": 2000,
+          "received_epochs": 2000,
+          "missing_epochs": 0,
+          "deadline_ms": 500,
+          "deadline_misses": 0,
+          "datagrams_received": 4000,
+          "systematic_shards_received": 2000,
+          "raptorq_shards_recovered": 0,
+          "duplicate_or_late_epochs": 0,
+          "wire_bytes": 2944104,
+          "latency_ms": {
+            "count": 2000,
+            "min": 124.60361,
+            "p50": 125.542409,
+            "p95": 127.957499,
+            "p99": 129.783705,
+            "max": 139.742222
+          },
+          "render_ready_latency_ms": {
+            "count": 2000,
+            "min": 124.60361,
+            "p50": 125.542409,
+            "p95": 127.957499,
+            "p99": 129.783705,
+            "max": 139.742222
+          }
+        },
+        "ll_hls": {
+          "schema": "needletail.aep1-48k-probe.hls-receive.v1",
+          "lane": "ll_hls",
+          "transport": "h3",
+          "tls_protocol": "TLSv1.3",
+          "tls_certificate_verified": true,
+          "persistent_connection": true,
+          "connection_setup_ms": 3.686318,
+          "stream_id": 13875,
+          "session_id": 1784266965283699021,
+          "sample_rate": 48000,
+          "duration_seconds": 10,
+          "part_ms": 5,
+          "expected_parts": 2000,
+          "received_parts": 2000,
+          "missing_parts": 0,
+          "deadline_ms": 1000,
+          "deadline_misses": 0,
+          "render_buffer_ms": 150,
+          "wire_bytes": 2169120,
+          "init_has_flac": true,
+          "playlist_has_ll_hls_tags": true,
+          "availability_latency_ms": {
+            "count": 2000,
+            "min": 125.671604,
+            "p50": 128.507849,
+            "p95": 134.681354,
+            "p99": 138.758902,
+            "max": 146.689204
+          },
+          "estimated_render_latency_ms": {
+            "count": 2000,
+            "min": 275.671604,
+            "p50": 278.507849,
+            "p95": 284.681354,
+            "p99": 288.758902,
+            "max": 296.689204
+          }
+        }
+      },
+      "ll_hls_handoff": {
+        "queue_enqueued": 4000,
+        "queue_dropped": 0,
+        "queue_capacity": 4096,
+        "maximum_depth": 7,
+        "groups_completed": 2000,
+        "raptorq_fragments_recovered": 0,
+        "worker_errors": 0
+      },
+      "service_cpu": {
+        "measurement_elapsed_ns": 24970159000,
+        "contributor_percent": 81.191,
+        "edge_percent": 16.915,
+        "maximum_percent": 200
+      },
+      "datagram_lanes_faster_than_hls_render": true,
+      "passed": true
+    },
+    "impaired": {
+      "schema": "needletail.gcp-lossless-latency-profile.v1",
+      "profile": "impaired",
+      "impaired": 1,
+      "identity": {
+        "session_id": 1784267084217871760,
+        "group_id": 13875,
+        "ll_hls_stream_id": 13876,
+        "sample_rate": 48000
+      },
+      "impairment": {
+        "probability": 0.02,
+        "dropped_datagrams": 116
+      },
+      "budgets_ms": {
+        "native_udp_p99": 500,
+        "webtransport_p99": 750,
+        "ll_hls_availability_p99": 1500
+      },
+      "source": {
+        "schema": "needletail.aep1-48k-probe.send.v1",
+        "lane": "source",
+        "payload": "flac",
+        "session_id": 1784267084217871760,
+        "group_id": 13875,
+        "sample_rate": 48000,
+        "channels": 2,
+        "frame_count": 240,
+        "duration_seconds": 10,
+        "epochs": 2000,
+        "source_datagrams": 2000,
+        "repair_datagrams": 4000,
+        "wire_bytes": 4418156,
+        "lossless_payload_bytes": 1238052,
+        "pcm_reference_bytes": 2880000,
+        "wire_overhead_ratio": 3.5686352431077206,
+        "elapsed_ms": 9997
+      },
+      "lanes": {
+        "native_udp_fec": {
+          "schema": "needletail.aep1-48k-probe.receive.v1",
+          "lane": "native_udp_fec",
+          "session_id": 1784267084217871760,
+          "group_id": 13875,
+          "sample_rate": 48000,
+          "duration_seconds": 10,
+          "expected_epochs": 2000,
+          "received_epochs": 2000,
+          "missing_epochs": 0,
+          "deadline_ms": 500,
+          "deadline_misses": 0,
+          "datagrams_received": 5884,
+          "systematic_shards_received": 1957,
+          "raptorq_shards_recovered": 43,
+          "duplicate_or_late_epochs": 0,
+          "wire_bytes": 4332808,
+          "latency_ms": {
+            "count": 2000,
+            "min": 126.22592,
+            "p50": 127.158228,
+            "p95": 129.748067,
+            "p99": 132.399222,
+            "max": 136.451041
+          },
+          "render_ready_latency_ms": {
+            "count": 2000,
+            "min": 126.22592,
+            "p50": 127.158228,
+            "p95": 129.748067,
+            "p99": 132.399222,
+            "max": 136.451041
+          }
+        },
+        "webtransport": {
+          "schema": "needletail.aep1-48k-probe.receive.v1",
+          "lane": "webtransport",
+          "session_id": 1784267084217871760,
+          "group_id": 13875,
+          "sample_rate": 48000,
+          "duration_seconds": 10,
+          "expected_epochs": 2000,
+          "received_epochs": 2000,
+          "missing_epochs": 0,
+          "deadline_ms": 750,
+          "deadline_misses": 0,
+          "datagrams_received": 5884,
+          "systematic_shards_received": 1957,
+          "raptorq_shards_recovered": 43,
+          "duplicate_or_late_epochs": 0,
+          "wire_bytes": 4338692,
+          "latency_ms": {
+            "count": 2000,
+            "min": 126.253012,
+            "p50": 127.222852,
+            "p95": 129.881537,
+            "p99": 132.675554,
+            "max": 137.003942
+          },
+          "render_ready_latency_ms": {
+            "count": 2000,
+            "min": 126.253012,
+            "p50": 127.222852,
+            "p95": 129.881537,
+            "p99": 132.675554,
+            "max": 137.003942
+          }
+        },
+        "ll_hls": {
+          "schema": "needletail.aep1-48k-probe.hls-receive.v1",
+          "lane": "ll_hls",
+          "transport": "h3",
+          "tls_protocol": "TLSv1.3",
+          "tls_certificate_verified": true,
+          "persistent_connection": true,
+          "connection_setup_ms": 3.9695709999999997,
+          "stream_id": 13876,
+          "session_id": 1784267084217871760,
+          "sample_rate": 48000,
+          "duration_seconds": 10,
+          "part_ms": 5,
+          "expected_parts": 2000,
+          "received_parts": 2000,
+          "missing_parts": 0,
+          "deadline_ms": 1500,
+          "deadline_misses": 0,
+          "render_buffer_ms": 150,
+          "wire_bytes": 2174589,
+          "init_has_flac": true,
+          "playlist_has_ll_hls_tags": true,
+          "availability_latency_ms": {
+            "count": 2000,
+            "min": 126.610026,
+            "p50": 129.34485,
+            "p95": 137.183509,
+            "p99": 140.638924,
+            "max": 144.758065
+          },
+          "estimated_render_latency_ms": {
+            "count": 2000,
+            "min": 276.610026,
+            "p50": 279.34485,
+            "p95": 287.183509,
+            "p99": 290.638924,
+            "max": 294.758065
+          }
+        }
+      },
+      "ll_hls_handoff": {
+        "queue_enqueued": 5884,
+        "queue_dropped": 0,
+        "queue_capacity": 4096,
+        "maximum_depth": 11,
+        "groups_completed": 2000,
+        "raptorq_fragments_recovered": 43,
+        "worker_errors": 0
+      },
+      "service_cpu": {
+        "measurement_elapsed_ns": 25018669000,
+        "contributor_percent": 81.545,
+        "edge_percent": 19.433,
+        "maximum_percent": 200
+      },
+      "datagram_lanes_faster_than_hls_render": true,
+      "passed": true
+    }
+  },
+  "release_gates": {
+    "lossless_reaches_ll_hls": true,
+    "ll_hls_uses_verified_persistent_h3": true,
+    "all_three_lanes_lossless_and_complete": true,
+    "impaired_fec_recovery_proven": true,
+    "hls_never_blocks_hot_path": true,
+    "datagram_latency_below_hls_render": true
+  },
+  "passed": true,
+  "tested_revisions": {
+    "needletail": {
+      "commit": "0d6dc7c4d0a6a85a7abdfee3dbd8f17d9c3d9bc8",
+      "working_tree_modified": true
+    },
+    "av_contrib": {
+      "commit": "9aa15eaeb4d6602f35e750f1e91318201ce355b6",
+      "working_tree_modified": true
+    },
+    "av_mesh": {
+      "commit": "d8e66e7a172e5cf4f2280c45d146e43feceec4e5",
+      "working_tree_modified": true
+    },
+    "access_unit": {
+      "commit": "80decbb8c7ae0de31755c80c92958665eea28409",
+      "working_tree_modified": true
+    },
+    "raptor_fec": {
+      "commit": "27229228b7a910e019f8fbc42091ae45c677bbe3",
+      "working_tree_modified": true
+    },
+    "soundkit": {
+      "commit": "9db859bc32908f227b48a506f87e4718044be28d",
+      "working_tree_modified": true
+    },
+    "libopus_rs": {
+      "commit": "8ca88a97d4ce1d78d2c9e385383cefdf14a2ebf9",
+      "working_tree_modified": false
+    }
+  },
+  "raw_artifact_directory": "target/gcp-qualification/lossless-runs/20260717T054206Z",
+  "cleanup": {
+    "primary_service_active": true,
+    "secondary_service_active": true,
+    "contributor_services_active": true,
+    "edge_service_active": true,
+    "loss_chain_absent": true,
+    "receiver_processes_stopped": true,
+    "gcp_lab_torn_down_after_documentation": true
+  }
+}

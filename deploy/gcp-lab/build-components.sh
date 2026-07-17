@@ -33,7 +33,7 @@ CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
 CARGO_TARGET_DIR=/opt/needletail-build/target \
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
   --manifest-path /opt/needletail-build/source/av-contrib/Cargo.toml \
-  --bin av-contrib
+  --bin av-contrib --bin aep1-48k-probe
 
 install -m 755 \
   /opt/needletail-build/target/release/av-mesh \
@@ -41,4 +41,7 @@ install -m 755 \
 install -m 755 \
   /opt/needletail-build/target/release/av-contrib \
   /tmp/av-contrib
-sha256sum /tmp/av-mesh /tmp/av-contrib > /tmp/needletail-binaries.sha256
+install -m 755 \
+  /opt/needletail-build/target/release/aep1-48k-probe \
+  /tmp/aep1-48k-probe
+sha256sum /tmp/av-mesh /tmp/av-contrib /tmp/aep1-48k-probe > /tmp/needletail-binaries.sha256

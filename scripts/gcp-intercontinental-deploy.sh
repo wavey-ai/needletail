@@ -25,6 +25,7 @@ if grep -ERq --include=Cargo.toml \
   'path[[:space:]]*=[[:space:]]*"[^\"]*/Needletail/' \
   "${WORKSPACE_ROOT}/av-mesh" \
   "${WORKSPACE_ROOT}/av-contrib" \
+  "${WORKSPACE_ROOT}/av-api" \
   "${WORKSPACE_ROOT}/av-service" \
   "${WORKSPACE_ROOT}/media-object" \
   "${WORKSPACE_ROOT}/relay-session" \
@@ -80,6 +81,7 @@ SECONDARY_IP="$(node_ip secondary)"
 EDGE_IP="$(node_ip edge)"
 EDGE_EXTERNAL_IP="$(node_external_ip edge)"
 SKIP_BUILD="${NEEDLETAIL_GCP_SKIP_BUILD:-0}"
+PART_MS="${NEEDLETAIL_GCP_PART_MS:-50}"
 PATH_PROBE_COUNT="${NEEDLETAIL_GCP_PATH_PROBE_COUNT:-7}"
 PATH_RTT_US="${NEEDLETAIL_GCP_PATH_RTT_US:-0}"
 BEST_DIRECT_RTT_US="${NEEDLETAIL_GCP_BEST_DIRECT_RTT_US:-0}"
@@ -255,22 +257,31 @@ install -m 600 "${TLS_KEY}" "${ARTIFACT_DIR}/privkey.pem"
 
 SOURCE_ARCHIVE="${ARTIFACT_DIR}/needletail-source.tar.gz"
 if [[ "${SKIP_BUILD}" == 1 ]]; then
-  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/av-contrib" ]] || {
+  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" ]] || {
     echo "NEEDLETAIL_GCP_SKIP_BUILD=1 requires cached Linux binaries" >&2
     exit 2
   }
 else
   tar -czf "${SOURCE_ARCHIVE}" \
     --exclude='.git' \
+    --exclude='*/.git' \
+    --exclude='*/.git/*' \
     --exclude='target' \
+    --exclude='*/target' \
+    --exclude='*/target/*' \
     --exclude='node_modules' \
+    --exclude='*/node_modules' \
+    --exclude='*/node_modules/*' \
+    --exclude='libopus-rs/roundtrips' \
+    --exclude='libopus-rs/roundtrips/*' \
     --exclude='av-contrib/test' \
     --exclude='*/test/work' \
     --exclude='.secrets' \
     --exclude='*.pem' \
     --exclude='*.key' \
     -C "${WORKSPACE_ROOT}" \
-    av-mesh av-contrib av-service media-object relay-session playlists raptor-fec rtmp-ingress \
+    access-unit av-mesh av-contrib av-api av-service media-object relay-session playlists raptor-fec rtmp-ingress \
+    soundkit frame-header libopus-rs \
     needletail/crates/media-capability
 
   echo "Waiting for the contributor build host"
@@ -296,7 +307,10 @@ else
   gcloud compute scp "$(node_name contributor):/tmp/av-contrib" \
     "${ARTIFACT_DIR}/av-contrib" \
     --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet --scp-flag=-C
-  chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/av-contrib"
+  gcloud compute scp "$(node_name contributor):/tmp/aep1-48k-probe" \
+    "${ARTIFACT_DIR}/aep1-48k-probe" \
+    --zone="$(node_zone contributor)" --project="${PROJECT}" --quiet --scp-flag=-C
+  chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe"
 fi
 
 write_mesh_env() {
@@ -316,17 +330,20 @@ NEEDLETAIL_FEC_PORT=${fec_port}
 NEEDLETAIL_MEDIA_FEC_PORT=${media_port}
 NEEDLETAIL_TELEMETRY_PORT=${telemetry_port}
 NEEDLETAIL_TELEMETRY_PEERS=${telemetry_peers}
-NEEDLETAIL_PART_MS=50
+NEEDLETAIL_PART_MS=${PART_MS}
 EOF
 }
 
 write_mesh_env primary relay-primary europe-west4 eu 52.3676 4.9041 "${PRIMARY_IP}" 29201 19445 22001 22101 27301 "${EDGE_IP}:27300"
 write_mesh_env secondary relay-secondary asia-northeast2 apac 34.6937 135.5023 "${SECONDARY_IP}" 29301 19446 22002 22102 27302 "${EDGE_IP}:27300"
 write_mesh_env edge edge asia-northeast1 apac 35.6762 139.6503 "${EDGE_IP}" 29101 19444 22200 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
-cat >"${ARTIFACT_DIR}/contributor.env" <<'EOF'
+printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge.env"
+cat >"${ARTIFACT_DIR}/contributor.env" <<EOF
 NEEDLETAIL_NODE_ID=contrib
 NEEDLETAIL_HTTP_PORT=19443
-NEEDLETAIL_PART_MS=50
+NEEDLETAIL_PART_MS=${PART_MS}
+NEEDLETAIL_DAW_MEDIA_PORT=27100
+NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY=4096
 EOF
 
 deploy_mesh() {
@@ -350,6 +367,7 @@ deploy_mesh secondary
 gcp_ssh edge --command='rm -rf /tmp/needletail-deploy && mkdir -p /tmp/needletail-deploy'
 gcp_scp_to edge \
   "${ARTIFACT_DIR}/av-mesh" \
+  "${ARTIFACT_DIR}/aep1-48k-probe" \
   "${DEPLOY_DIR}/av-mesh-run" \
   "${DEPLOY_DIR}/install-node.sh" \
   "${DEPLOY_DIR}/needletail-mesh.service" \
@@ -362,6 +380,7 @@ gcp_ssh edge --command="mv /tmp/needletail-deploy/edge.env /tmp/needletail-deplo
 gcp_ssh contributor --command='rm -rf /tmp/needletail-deploy && mkdir -p /tmp/needletail-deploy'
 gcp_scp_to contributor \
   "${ARTIFACT_DIR}/av-contrib" \
+  "${ARTIFACT_DIR}/aep1-48k-probe" \
   "${DEPLOY_DIR}/av-contrib-run" \
   "${DEPLOY_DIR}/install-node.sh" \
   "${DEPLOY_DIR}/needletail-contrib.service" \

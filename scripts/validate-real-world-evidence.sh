@@ -33,10 +33,18 @@ for evidence in "${run_files[@]}"; do
     and (.cleanup | type == "object")
     and (
       if .passed == true then
-        (.raptorq_primary_path_loss | type == "object")
-        and .cleanup.primary_service_active == true
-        and .cleanup.contributor_services_active == true
-        and .cleanup.loss_chain_absent == true
+        if .schema == "needletail.gcp-lossless-latency.v1" then
+          .cleanup.primary_service_active == true
+          and .cleanup.secondary_service_active == true
+          and .cleanup.contributor_services_active == true
+          and .cleanup.edge_service_active == true
+          and .cleanup.loss_chain_absent == true
+        else
+          (.raptorq_primary_path_loss | type == "object")
+          and .cleanup.primary_service_active == true
+          and .cleanup.contributor_services_active == true
+          and .cleanup.loss_chain_absent == true
+        end
       else
         (.result == "failed")
         and (.failed_gate | type == "string")
@@ -44,7 +52,10 @@ for evidence in "${run_files[@]}"; do
     )
   ' "${evidence}" >/dev/null
 
-  if jq -e '.schema == "needletail.gcp-intercontinental-qualification.v3"' \
+  if jq -e '
+    .schema == "needletail.gcp-intercontinental-qualification.v3"
+    or .schema == "needletail.gcp-intercontinental-qualification.v4"
+  ' \
     "${evidence}" >/dev/null; then
     jq -e '
       .failover.expired_objects == 0
@@ -63,6 +74,60 @@ for evidence in "${run_files[@]}"; do
 	      )
 	    ' "${evidence}" >/dev/null
 	  fi
+
+  if jq -e '.schema == "needletail.gcp-intercontinental-qualification.v4"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .lossless_48khz_lanes.passed == true
+      and (.lossless_48khz_lanes.release_gates | all(.[]; . == true))
+      and .lossless_48khz_lanes.profiles.clean.lanes.ll_hls.init_has_flac == true
+      and .lossless_48khz_lanes.profiles.impaired.lanes.ll_hls.init_has_flac == true
+      and .lossless_48khz_lanes.profiles.impaired.lanes.native_udp_fec.raptorq_shards_recovered > 0
+      and .lossless_48khz_lanes.profiles.impaired.lanes.webtransport.raptorq_shards_recovered > 0
+      and .lossless_48khz_lanes.profiles.impaired.ll_hls_handoff.raptorq_fragments_recovered > 0
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.gcp-lossless-latency.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and (.release_gates | all(.[]; . == true))
+      and ([.profiles.clean, .profiles.impaired] | all(.[];
+        .passed == true
+        and .source.sample_rate == 48000
+        and .source.payload == "flac"
+        and .source.wire_overhead_ratio <= 4
+        and .lanes.native_udp_fec.missing_epochs == 0
+        and .lanes.native_udp_fec.deadline_misses == 0
+        and .lanes.native_udp_fec.latency_ms.p99 <= .budgets_ms.native_udp_p99
+        and .lanes.webtransport.missing_epochs == 0
+        and .lanes.webtransport.deadline_misses == 0
+        and .lanes.webtransport.latency_ms.p99 <= .budgets_ms.webtransport_p99
+        and .lanes.ll_hls.transport == "h3"
+        and .lanes.ll_hls.tls_protocol == "TLSv1.3"
+        and .lanes.ll_hls.tls_certificate_verified == true
+        and .lanes.ll_hls.persistent_connection == true
+        and .lanes.ll_hls.init_has_flac == true
+        and .lanes.ll_hls.playlist_has_ll_hls_tags == true
+        and .lanes.ll_hls.missing_parts == 0
+        and .lanes.ll_hls.deadline_misses == 0
+        and .lanes.ll_hls.availability_latency_ms.p99 <= .budgets_ms.ll_hls_availability_p99
+        and .ll_hls_handoff.queue_dropped == 0
+        and .ll_hls_handoff.worker_errors == 0
+        and .ll_hls_handoff.maximum_depth <= .ll_hls_handoff.queue_capacity
+        and .service_cpu.contributor_percent <= .service_cpu.maximum_percent
+        and .service_cpu.edge_percent <= .service_cpu.maximum_percent
+      ))
+      and .profiles.clean.lanes.ll_hls.part_ms == 5
+      and .profiles.impaired.lanes.ll_hls.part_ms == 5
+      and .profiles.impaired.impairment.dropped_datagrams > 0
+      and .profiles.impaired.lanes.native_udp_fec.raptorq_shards_recovered > 0
+      and .profiles.impaired.lanes.webtransport.raptorq_shards_recovered > 0
+      and .profiles.impaired.ll_hls_handoff.raptorq_fragments_recovered > 0
+      and .cleanup.gcp_lab_torn_down_after_documentation == true
+    ' "${evidence}" >/dev/null
+  fi
 
   if jq -e '
     .. | objects | keys[]
@@ -86,26 +151,49 @@ done
 
 for evidence in "${local_files[@]}"; do
   jq -e '
-    .schema == "needletail.local-realtime-qualification.v1"
-    and (.run_id | type == "string")
+    (.run_id | type == "string")
     and (.raw_artifact_directory | type == "string")
-    and .automatic_failover.expired_objects == 0
-    and .automatic_failover.rejected_datagrams == 0
-    and .automatic_failover.deadline_drops == 0
-    and .automatic_failover.warm_forwarded_source_datagrams > 0
-    and .raptorq_recovery.fec_recovered_objects > 0
-    and .raptorq_recovery.fec_recovered_source_symbols > 0
-    and .raptorq_recovery.rejected_datagrams == 0
-	    and .raptorq_recovery.deadline_drops == 0
-	    and .raptorq_recovery.forward_errors == 0
-	    and (
-	      if has("relay_latency") then
-	        .relay_latency.relay_processing.max_p95_us <= .relay_latency.budgets_us.relay_processing_p95
-	        and .relay_latency.publication_to_available.max_p99_us <= .relay_latency.budgets_us.publication_to_available_p99
-	      else true end
-	    )
-	    and .passed == true
-	  ' "${evidence}" >/dev/null
+    and .passed == true
+    and (
+      if .schema == "needletail.local-lossless-latency.v1" then
+        .source.sample_rate == 48000
+        and .source.payload == "flac"
+        and (.release_gates | all(.[]; . == true))
+        and .lanes.native_udp_fec.missing_epochs == 0
+        and .lanes.native_udp_fec.deadline_misses == 0
+        and .lanes.webtransport.missing_epochs == 0
+        and .lanes.webtransport.deadline_misses == 0
+        and .lanes.ll_hls.part_ms == 5
+        and .lanes.ll_hls.transport == "h3"
+        and .lanes.ll_hls.tls_protocol == "TLSv1.3"
+        and .lanes.ll_hls.tls_certificate_verified == true
+        and .lanes.ll_hls.persistent_connection == true
+        and .lanes.ll_hls.init_has_flac == true
+        and .lanes.ll_hls.playlist_has_ll_hls_tags == true
+        and .lanes.ll_hls.missing_parts == 0
+        and .lanes.ll_hls.deadline_misses == 0
+        and .cleanup.local_services_stopped == true
+        and .cleanup.generated_tls_unversioned == true
+      else
+        .schema == "needletail.local-realtime-qualification.v1"
+        and .automatic_failover.expired_objects == 0
+        and .automatic_failover.rejected_datagrams == 0
+        and .automatic_failover.deadline_drops == 0
+        and .automatic_failover.warm_forwarded_source_datagrams > 0
+        and .raptorq_recovery.fec_recovered_objects > 0
+        and .raptorq_recovery.fec_recovered_source_symbols > 0
+        and .raptorq_recovery.rejected_datagrams == 0
+        and .raptorq_recovery.deadline_drops == 0
+        and .raptorq_recovery.forward_errors == 0
+        and (
+          if has("relay_latency") then
+            .relay_latency.relay_processing.max_p95_us <= .relay_latency.budgets_us.relay_processing_p95
+            and .relay_latency.publication_to_available.max_p99_us <= .relay_latency.budgets_us.publication_to_available_p99
+          else true end
+        )
+      end
+    )
+  ' "${evidence}" >/dev/null
 
   if jq -e '
     .. | objects | keys[]

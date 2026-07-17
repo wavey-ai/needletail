@@ -1,0 +1,357 @@
+{
+  "schema": "needletail.lossless-latency-series.v1",
+  "date": "2026-07-17",
+  "topology": {
+    "provider": "Google Cloud",
+    "origin": "London",
+    "primary_relay": "Amsterdam",
+    "secondary_relay": "Osaka",
+    "playback_edge": "Tokyo"
+  },
+  "accepted_gcp_runs": [
+    {
+      "run_id": "20260717T033934Z",
+      "raw_artifact_directory": "target/gcp-qualification/lossless-runs/20260717T033934Z",
+      "part_ms": 50,
+      "hls_probe_transport": "legacy HTTPS control probe",
+      "comparison_authority": "part-cadence engineering comparison only",
+      "clean": {
+        "lanes": {
+          "native_udp_fec": {
+            "count": 2000,
+            "min": 144.580675,
+            "p50": 145.464259,
+            "p95": 146.907933,
+            "p99": 148.283539,
+            "max": 149.459482
+          },
+          "webtransport": {
+            "count": 2000,
+            "min": 144.70318,
+            "p50": 145.564599,
+            "p95": 147.041199,
+            "p99": 148.438219,
+            "max": 149.66621
+          },
+          "ll_hls_availability": {
+            "count": 199,
+            "min": 199.061653,
+            "p50": 212.721731,
+            "p95": 225.477453,
+            "p99": 226.512882,
+            "max": 227.470412
+          },
+          "ll_hls_estimated_render": {
+            "count": 199,
+            "min": 349.061653,
+            "p50": 362.721731,
+            "p95": 375.477453,
+            "p99": 376.512882,
+            "max": 377.470412
+          }
+        }
+      },
+      "impaired": {
+        "dropped_datagrams": 102,
+        "recovered_shards": 2000,
+        "lanes": {
+          "native_udp_fec": {
+            "count": 2000,
+            "min": 143.741354,
+            "p50": 144.749426,
+            "p95": 145.999368,
+            "p99": 147.146422,
+            "max": 151.633554
+          },
+          "webtransport": {
+            "count": 2000,
+            "min": 143.854684,
+            "p50": 144.82884,
+            "p95": 146.121927,
+            "p99": 147.317349,
+            "max": 152.003852
+          },
+          "ll_hls_availability": {
+            "count": 199,
+            "min": 199.079979,
+            "p50": 212.702937,
+            "p95": 224.810487,
+            "p99": 226.677789,
+            "max": 229.095681
+          },
+          "ll_hls_estimated_render": {
+            "count": 199,
+            "min": 349.079979,
+            "p50": 362.702937,
+            "p95": 374.810487,
+            "p99": 376.677789,
+            "max": 379.095681
+          }
+        }
+      },
+      "passed": true
+    },
+    {
+      "run_id": "20260717T050042Z",
+      "raw_artifact_directory": "target/gcp-qualification/lossless-runs/20260717T050042Z",
+      "part_ms": 20,
+      "hls_probe_transport": "legacy HTTPS control probe",
+      "comparison_authority": "part-cadence engineering comparison only",
+      "clean": {
+        "lanes": {
+          "native_udp_fec": {
+            "count": 1000,
+            "min": 127.467131,
+            "p50": 128.27117,
+            "p95": 129.477404,
+            "p99": 130.521497,
+            "max": 131.753806
+          },
+          "webtransport": {
+            "count": 1000,
+            "min": 127.458733,
+            "p50": 128.312175,
+            "p95": 129.498163,
+            "p99": 130.595938,
+            "max": 131.773609
+          },
+          "ll_hls_availability": {
+            "count": 249,
+            "min": 149.050992,
+            "p50": 162.108874,
+            "p95": 174.325607,
+            "p99": 175.376618,
+            "max": 177.072512
+          },
+          "ll_hls_estimated_render": {
+            "count": 249,
+            "min": 299.050992,
+            "p50": 312.108874,
+            "p95": 324.325607,
+            "p99": 325.376618,
+            "max": 327.072512
+          }
+        }
+      },
+      "impaired": {
+        "dropped_datagrams": 56,
+        "recovered_shards": 14,
+        "lanes": {
+          "native_udp_fec": {
+            "count": 1000,
+            "min": 126.904333,
+            "p50": 127.632342,
+            "p95": 129.656484,
+            "p99": 131.791521,
+            "max": 134.132595
+          },
+          "webtransport": {
+            "count": 1000,
+            "min": 126.947693,
+            "p50": 127.67518,
+            "p95": 129.703925,
+            "p99": 132.023281,
+            "max": 134.132689
+          },
+          "ll_hls_availability": {
+            "count": 249,
+            "min": 148.291526,
+            "p50": 162.126151,
+            "p95": 174.42334,
+            "p99": 175.817167,
+            "max": 176.162293
+          },
+          "ll_hls_estimated_render": {
+            "count": 249,
+            "min": 298.291526,
+            "p50": 312.126151,
+            "p95": 324.42334,
+            "p99": 325.817167,
+            "max": 326.162293
+          }
+        }
+      },
+      "passed": true
+    },
+    {
+      "run_id": "20260717T054206Z",
+      "raw_artifact_directory": "target/gcp-qualification/lossless-runs/20260717T054206Z",
+      "part_ms": 5,
+      "hls_probe_transport": "persistent TLS 1.3/H3",
+      "comparison_authority": "current release-gated transport result",
+      "clean": {
+        "lanes": {
+          "native_udp_fec": {
+            "count": 2000,
+            "min": 124.494124,
+            "p50": 125.479662,
+            "p95": 127.851127,
+            "p99": 129.700903,
+            "max": 139.631386
+          },
+          "webtransport": {
+            "count": 2000,
+            "min": 124.60361,
+            "p50": 125.542409,
+            "p95": 127.957499,
+            "p99": 129.783705,
+            "max": 139.742222
+          },
+          "ll_hls_availability": {
+            "count": 2000,
+            "min": 125.671604,
+            "p50": 128.507849,
+            "p95": 134.681354,
+            "p99": 138.758902,
+            "max": 146.689204
+          },
+          "ll_hls_estimated_render": {
+            "count": 2000,
+            "min": 275.671604,
+            "p50": 278.507849,
+            "p95": 284.681354,
+            "p99": 288.758902,
+            "max": 296.689204
+          }
+        }
+      },
+      "impaired": {
+        "dropped_datagrams": 116,
+        "recovered_shards": 43,
+        "lanes": {
+          "native_udp_fec": {
+            "count": 2000,
+            "min": 126.22592,
+            "p50": 127.158228,
+            "p95": 129.748067,
+            "p99": 132.399222,
+            "max": 136.451041
+          },
+          "webtransport": {
+            "count": 2000,
+            "min": 126.253012,
+            "p50": 127.222852,
+            "p95": 129.881537,
+            "p99": 132.675554,
+            "max": 137.003942
+          },
+          "ll_hls_availability": {
+            "count": 2000,
+            "min": 126.610026,
+            "p50": 129.34485,
+            "p95": 137.183509,
+            "p99": 140.638924,
+            "max": 144.758065
+          },
+          "ll_hls_estimated_render": {
+            "count": 2000,
+            "min": 276.610026,
+            "p50": 279.34485,
+            "p95": 287.183509,
+            "p99": 290.638924,
+            "max": 294.758065
+          }
+        }
+      },
+      "passed": true
+    }
+  ],
+  "accepted_local_run": {
+    "run_id": "20260717T053347Z",
+    "raw_artifact_directory": "target/local-lossless-5ms-h3-immediate/20260717T053347Z",
+    "part_ms": 5,
+    "hls_probe_transport": "persistent TLS 1.3/H3",
+    "lanes": {
+      "native_udp_fec": {
+        "count": 1000,
+        "min": 3.788,
+        "p50": 4.931,
+        "p95": 5.851,
+        "p99": 7.604,
+        "max": 10.527
+      },
+      "webtransport": {
+        "count": 1000,
+        "min": 3.868,
+        "p50": 5.04,
+        "p95": 6.071,
+        "p99": 7.837,
+        "max": 11.356
+      },
+      "ll_hls_availability": {
+        "count": 1000,
+        "min": 4.404,
+        "p50": 6.043,
+        "p95": 8.114,
+        "p99": 10.835,
+        "max": 16.841
+      },
+      "ll_hls_estimated_render": {
+        "count": 1000,
+        "min": 154.404,
+        "p50": 156.043,
+        "p95": 158.114,
+        "p99": 160.835,
+        "max": 166.841
+      }
+    },
+    "ll_hls_premium_over_udp_ms": {
+      "p50": 1.112,
+      "p95": 2.263000000000001,
+      "p99": 3.2310000000000008
+    },
+    "passed": true
+  },
+  "diagnostic_attempts": [
+    {
+      "run_id": "20260717T031500Z",
+      "result": "failed",
+      "diagnosis": "receiver startup was not safely ahead of the publication clock"
+    },
+    {
+      "run_id": "20260717T031933Z",
+      "result": "failed",
+      "diagnosis": "repair datagrams did not all retain session identity"
+    },
+    {
+      "run_id": "20260717T043533Z",
+      "result": "failed",
+      "diagnosis": "edge and contributor part geometry did not match"
+    },
+    {
+      "run_id": "20260717T043932Z",
+      "result": "failed",
+      "diagnosis": "stream-id reuse exposed an open-tail part-count mismatch"
+    },
+    {
+      "run_id": "20260717T052000Z",
+      "result": "failed",
+      "diagnosis": "local LL-HLS receiver missed three parts before notification-blocking tail delivery was complete"
+    },
+    {
+      "run_id": "20260717T052500Z",
+      "result": "passed",
+      "diagnosis": "local 5 ms control run before H3 qualification"
+    },
+    {
+      "run_id": "20260717T052653Z",
+      "result": "passed",
+      "diagnosis": "persistent-H3 run exposed one-frame audio part lookahead"
+    },
+    {
+      "run_id": "20260717T053159Z",
+      "result": "measurement valid but gate failed",
+      "diagnosis": "immediate flush produced 1000 parts while the probe still expected 999"
+    },
+    {
+      "run_id": "20260717T054847Z",
+      "result": "lossless phase passed; broader invocation failed",
+      "diagnosis": "canonical publication had not converged before the contributor-restart phase"
+    }
+  ],
+  "claims": {
+    "measures": "publication timestamp to receiver or edge part availability",
+    "does_not_measure": "browser-to-speaker output",
+    "render_values": "estimate equal to part availability plus the configured 150 ms buffer"
+  }
+}

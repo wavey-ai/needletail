@@ -12,6 +12,15 @@ Needletail is the product-level repo for Wavey realtime media delivery. It
 composes, runs, observes, and tests the service constellation. Core services
 and reusable crates stay in their own repos.
 
+**Measured 48 kHz lossless latency:** with 5 ms parts over one persistent
+TLS 1.3/H3 connection, correctly implemented LL-HLS is essentially raw UDP
+plus a few milliseconds. Locally, median part availability was **6.0 ms**
+versus **4.9 ms** for UDP (`+1.1 ms`); from a London contributor through the
+relay mesh to a Tokyo edge it was **128.5 ms** versus **125.5 ms** (`+3.0 ms`).
+The measured LL-HLS premium at p99 was `3.2 ms` locally and `9.1 ms` on the
+intercontinental route. These are publication-to-edge availability results,
+not browser-to-speaker latency.
+
 Needletail owns:
 
 - multi-service topology and desired-state generation;
@@ -54,6 +63,12 @@ Contributor ingest
 RaptorQ is the live-media recovery system. QUIC Datagram is an optional carrier
 for authenticated, encrypted, paced datagrams. Reliable streams are for control,
 initialization, and backfill.
+
+Lossless 48 kHz Audio Epoch publications have three simultaneous delivery
+lanes: mandatory FLAC fMP4 LL-HLS, optional browser WebTransport datagrams, and
+optional native UDP+FEC subscriptions at a relay or playback edge. See
+[Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
+format behavior, and local/GCP qualification commands.
 
 ## Operations dashboard
 
@@ -103,8 +118,14 @@ Tokyo playback edge. Four `e2-standard-2` GCP instances.
 
 ## Latest real-world results
 
-Latest GCP run: `20260716T023139Z`.
-Latest local controlled-loss run: `local-20260716T001959Z`.
+Latest three-lane 48 kHz lossless GCP run: `20260717T054206Z`.
+Latest local persistent-H3 lossless run: `20260717T053347Z`.
+Latest complete intercontinental failover run: `20260716T023139Z`.
+
+The lossless run delivered all 2,000 five-millisecond epochs or parts in clean
+and two-percent-loss profiles. See the
+[17 July lossless H3 record](docs/real-world-tests/2026-07-17-lossless-h3.md)
+for p50/p95/p99 latency, wire, CPU, queue, recovery, and test-boundary details.
 
 ### Performance charts
 
@@ -206,6 +227,7 @@ Versioned evidence summary:
 
 ```text
 docs/real-world-tests/evidence/20260716T023139Z.json
+docs/real-world-tests/evidence/20260717T054206Z.json
 ```
 
 The GCP lab was torn down after capture: instances, firewall rules, subnets, and
