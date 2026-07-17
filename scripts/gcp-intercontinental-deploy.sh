@@ -276,6 +276,7 @@ jq -n \
     carrier:$carrier,
     subscription_id:1,
     media_deadline_ms:1000,
+    audio_epoch_redundant_ingress:true,
     source_path_observation:(
       if (($best_direct_rtt_us + $path_rtt_us + $path_jitter_us + $path_loss_ppm + $path_queue_delay_us) > 0)
       then {
@@ -381,6 +382,8 @@ jq -e --arg carrier "${CARRIER_PROFILE}" '
   and ([.services[] | select(.service == "av_mesh" and .node_id == "edge-new-york")][0].failover_controller != null)
   and ([.services[] | select(.service == "av_mesh" and .node_id == "edge-sydney")][0].failover_controller != null)
   and ([.services[] | select(.service == "av_contrib")][0].secondary_path_observation != null)
+  and ([.services[] | select(.service == "av_contrib")][0].audio_epoch_ingress_target != null)
+  and ([.services[] | select(.service == "av_contrib")][0].audio_epoch_redundant_ingress_target != null)
   and ([.services[] | select(.service == "av_mesh" and .node_id == "relay-primary")][0].forwards | length == 3)
   and ([.services[] | select(.service == "av_mesh" and .node_id == "relay-secondary")][0].failover_listeners | length == 3)
   and (.production_readiness_gaps | index("provider_asn_diversity_pending") != null)

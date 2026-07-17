@@ -153,6 +153,10 @@ pub struct RelayProgram {
     pub carrier: CarrierProfile,
     pub subscription_id: u64,
     pub media_deadline_ms: u64,
+    /// Send exact AEP1 datagrams to the warm ingress as one fixed redundant
+    /// origin publication relationship. Disabled by default; relays own fanout.
+    #[serde(default)]
+    pub audio_epoch_redundant_ingress: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path_observation: Option<SourcePathObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,6 +201,9 @@ pub struct CompiledFailoverController {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContribRelayService {
     pub node_id: String,
+    pub audio_epoch_ingress_target: SocketAddr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_epoch_redundant_ingress_target: Option<SocketAddr>,
     pub primary: CompiledForward,
     pub warm_secondary: CompiledForward,
     pub topology_generation: u64,
@@ -251,6 +258,8 @@ impl CompiledService {
 impl ContribRelayService {
     fn relay_arguments(&self) -> Vec<String> {
         let mut args = vec![
+            "--audio-epoch-ingress-target".to_owned(),
+            self.audio_epoch_ingress_target.to_string(),
             "--relay-local-id".to_owned(),
             self.node_id.clone(),
             "--relay-primary-bind".to_owned(),
@@ -274,6 +283,12 @@ impl ContribRelayService {
             "--relay-deadline-ms".to_owned(),
             self.media_deadline_ms.to_string(),
         ];
+        if let Some(target) = self.audio_epoch_redundant_ingress_target {
+            args.extend([
+                "--audio-epoch-redundant-ingress-target".to_owned(),
+                target.to_string(),
+            ]);
+        }
         if let Some(observation) = &self.source_path_observation {
             append_path_observation_arguments(&mut args, "--relay-path", observation);
         }
@@ -733,6 +748,10 @@ impl RelayProgram {
         let warm_origin = warm_origin_links[0];
         let contrib = CompiledService::AvContrib(ContribRelayService {
             node_id: origin.node_id.clone(),
+            audio_epoch_ingress_target: primary_origin.receiver_target,
+            audio_epoch_redundant_ingress_target: self
+                .audio_epoch_redundant_ingress
+                .then_some(warm_origin.receiver_target),
             primary: compiled_forward(primary_origin),
             warm_secondary: compiled_forward(warm_origin),
             topology_generation: self.topology.generation,
@@ -946,6 +965,7 @@ mod tests {
             carrier: CarrierProfile::ControlledPrivateUdp,
             subscription_id: 9,
             media_deadline_ms: 1_000,
+            audio_epoch_redundant_ingress: false,
             source_path_observation: Some(SourcePathObservation {
                 source: "qualification-probe".to_owned(),
                 observed_at_unix_ms: Some(1_784_102_400_000),
@@ -1048,6 +1068,21 @@ mod tests {
             .find(|service| service.node_id() == "contrib")
             .expect("contrib");
         let contrib_args = contrib.relay_arguments();
+        let CompiledService::AvContrib(contrib_service) = contrib else {
+            panic!("origin compiled as mesh service");
+        };
+        assert_eq!(
+            contrib_service.audio_epoch_ingress_target,
+            contrib_service.primary.target
+        );
+        assert_eq!(contrib_service.audio_epoch_redundant_ingress_target, None);
+        assert!(contrib_args.windows(2).any(|pair| {
+            pair == [
+                "--audio-epoch-ingress-target".to_owned(),
+                contrib_service.primary.target.to_string(),
+            ]
+        }));
+        assert!(!contrib_args.contains(&"--audio-epoch-redundant-ingress-target".to_owned()));
         assert!(contrib_args.contains(&"--relay-secondary-seed-source".to_owned()));
         assert!(contrib_args.contains(&"relay-a".to_owned()));
         assert!(contrib_args.contains(&"relay-b".to_owned()));
@@ -1100,6 +1135,37 @@ mod tests {
         assert!(edge_args
             .windows(2)
             .any(|pair| { pair == ["--relay-primary-recovery-ms".to_owned(), "2000".to_owned()] }));
+    }
+
+    #[test]
+    fn redundant_audio_epoch_ingress_is_explicit_and_bounded_to_two_targets() {
+        let mut program = qualification_program();
+        program.audio_epoch_redundant_ingress = true;
+        let plan = program.compile().expect("compile redundant ingress plan");
+        let contrib = plan
+            .services
+            .iter()
+            .find(|service| service.node_id() == "contrib")
+            .expect("contrib");
+        let CompiledService::AvContrib(service) = contrib else {
+            panic!("origin compiled as mesh service");
+        };
+        assert_eq!(
+            service.audio_epoch_redundant_ingress_target,
+            Some(service.warm_secondary.target)
+        );
+        let args = service.relay_arguments();
+        assert_eq!(
+            args.iter()
+                .filter(|argument| {
+                    matches!(
+                        argument.as_str(),
+                        "--audio-epoch-ingress-target" | "--audio-epoch-redundant-ingress-target"
+                    )
+                })
+                .count(),
+            2
+        );
     }
 
     #[test]

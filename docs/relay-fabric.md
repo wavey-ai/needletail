@@ -18,11 +18,20 @@ The controller manages two related structures:
 This separation keeps failover candidates warm while every media object follows
 an explicit acyclic route.
 
+The stream origin is a contributor pipeline, not a relay node. It performs
+ingest recovery, encoding, and packaging once and publishes to the nearest
+dedicated mesh ingress. Relay and edge nodes perform all geographical fanout;
+the contributor never acts as a transit hop or serves viewers. Production and
+qualification deployments keep the contributor/origin and relay/mesh roles on
+separate hosts. See the
+[contributor origin boundary](contributor-origin-boundary.md).
+
 ## Forwarding invariants
 
 Each desired-state generation satisfies these controller gates:
 
 - exactly one origin for a stream graph at level 0;
+- no relay role colocated with that origin;
 - one primary upstream for every downstream node;
 - up to one secondary upstream;
 - parents at an earlier level than their children;
@@ -168,6 +177,7 @@ A 100-node qualification topology must demonstrate:
 - no more than 198 upstream relationships for one-origin dual-parent routing;
 - origin fanout within the configured two-to-four backbone-relay limit;
 - origin egress independent of playback-edge count;
+- no contributor-to-edge or contributor-to-viewer media relationships;
 - zero repeated-object forwarding across levels;
 - subscription-scoped delivery to interested cohorts;
 - primary loss recovered through the warm secondary within the object deadline;

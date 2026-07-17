@@ -574,6 +574,7 @@ fn local_relay_program(args: &Args) -> RelayProgram {
         carrier: CarrierProfile::ControlledPrivateUdp,
         subscription_id: args.relay_subscription_id,
         media_deadline_ms: args.relay_deadline_ms,
+        audio_epoch_redundant_ingress: false,
         source_path_observation: None,
         secondary_path_observation: None,
         failover_policy: Some(FailoverPolicy {

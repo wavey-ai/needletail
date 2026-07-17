@@ -40,7 +40,7 @@ Current components:
 
 | Component | Owner responsibility |
 | --- | --- |
-| `av-contrib` | Contributor-facing RIST/SRT/RTMP/raw ingest, fMP4 packaging, media-object publication, and RaptorQ symbol emission. |
+| `av-contrib` | Per-stream origin ingest, FEC recovery, one lossless encode/package pass, and bounded publication to a dedicated mesh ingress. |
 | `av-mesh` | Playback edge, LL-HLS cache adapter, relay-node behavior, telemetry, and product-asset hosting. |
 | `media-object` | Canonical immutable media-object identity, bounded v1 envelope, payload integrity, dependencies, deadlines, and source-known timestamps. |
 | `raptor-fec` | Adaptive RaptorQ geometry, source-first scheduling, repair policy, deadline outcomes, and FEC-versus-fetch decisions. |
@@ -69,7 +69,9 @@ Lossless 48 kHz Audio Epoch publications have three simultaneous delivery
 lanes: mandatory FLAC fMP4 LL-HLS, optional browser WebTransport datagrams, and
 optional native UDP+FEC subscriptions at a relay or playback edge. See
 [Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
-format behavior, and local/GCP qualification commands.
+format behavior, and local/GCP qualification commands. The contributor performs
+stream-dependent work once and never doubles as a relay; see the
+[Contributor origin boundary](docs/contributor-origin-boundary.md).
 
 ## Operations dashboard
 

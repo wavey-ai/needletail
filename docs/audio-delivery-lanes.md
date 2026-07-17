@@ -6,19 +6,22 @@ turning on either tap never bypasses the HLS cache.
 
 ```text
 48 kHz AEP1 publication
-  |-- exact source/repair datagrams through the compiled relay fabric
-  |     |-- native UDP+FEC session subscription at a relay or edge
-  |     `-- WebTransport datagram session subscription at the edge
-  `-- bounded asynchronous recovery and packaging
-        `-- FLAC fMP4 LL-HLS rendition and edge cache
+  `-- contributor/origin: recover, encode once, and package once
+        `-- one ordered publication to the nearest mesh ingress
+              |-- exact source/repair datagrams through the relay fabric
+              |     |-- native UDP+FEC subscription at a relay or edge
+              |     `-- WebTransport datagram subscription at the edge
+              `-- FLAC fMP4 LL-HLS objects and regional edge caches
 ```
 
 All lanes retain the AEP1 session, configuration generation, epoch, sample PTS,
 and channel-group identity. Relay nodes forward the exact AEP1 source and repair
-datagrams. The contributor sends the datagram lanes first and uses a bounded
-non-blocking handoff for LL-HLS work, so compression or cache work cannot stall
-the low-latency paths. A full or failed HLS handoff is observable and fails the
-qualification gate; it does not add latency to the datagram hot path.
+datagrams. The contributor recovers, encodes, and packages each stream once,
+then publishes one ordered output to a dedicated mesh ingress. Compression or
+cache work cannot stall the low-latency paths. A full or failed HLS handoff is
+observable and fails the qualification gate; it does not add latency to the
+datagram hot path. The contributor does not serve viewers or act as a relay;
+see the [contributor origin boundary](contributor-origin-boundary.md).
 
 ## Lane contracts
 

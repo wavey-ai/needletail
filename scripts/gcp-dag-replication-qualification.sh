@@ -19,7 +19,7 @@ LATE_JOIN_SECONDS="${DAG_LATE_JOIN_SECONDS:-5}"
 RECEIVER_COMPLETION_TIMEOUT_SECONDS="${DAG_RECEIVER_COMPLETION_TIMEOUT_SECONDS:-20}"
 BASE_GROUP_ID="${DAG_BASE_GROUP_ID:-$((30000 + $(date +%s) % 30000))}"
 BASE_STREAM_ID="${DAG_BASE_STREAM_ID:-1}"
-DIRECT_ORIGIN_BASELINE="${DAG_DIRECT_ORIGIN_BASELINE:-0}"
+INGRESS_LOCAL_BASELINE="${DAG_INGRESS_LOCAL_BASELINE:-0}"
 STOP_AFTER_CLEAN="${DAG_STOP_AFTER_CLEAN:-0}"
 PROFILE_ONLY="${DAG_PROFILE_ONLY:-}"
 RENDER_BUFFER_MS="${DAG_RENDER_BUFFER_MS:-150}"
@@ -29,7 +29,7 @@ RECOVERY_TIMEOUT_SECONDS="${DAG_RECOVERY_TIMEOUT_SECONDS:-20}"
 FAILOVER_PUBLICATION_SECONDS="${DAG_FAILOVER_PUBLICATION_SECONDS:-60}"
 MAX_CACHE_TO_CLIENT_P99_MS="${DAG_MAX_CACHE_TO_CLIENT_P99_MS:-25}"
 MAX_LL_HLS_P99_MS="${DAG_MAX_LL_HLS_P99_MS:-1000}"
-MAX_DIRECT_LL_HLS_P99_MS="${DAG_MAX_DIRECT_LL_HLS_P99_MS:-1000}"
+MAX_INGRESS_LOCAL_LL_HLS_P99_MS="${DAG_MAX_INGRESS_LOCAL_LL_HLS_P99_MS:-1000}"
 MAX_PRIMARY_PATH_STRETCH="${DAG_MAX_PRIMARY_PATH_STRETCH:-1.50}"
 MAX_SECONDARY_PATH_STRETCH="${DAG_MAX_SECONDARY_PATH_STRETCH:-6.50}"
 MAX_SERVICE_CPU_PERCENT="${DAG_MAX_SERVICE_CPU_PERCENT:-200}"
@@ -43,8 +43,8 @@ Qualifies one London 48 kHz lossless publication replicated through two warm
 backbone parents into independent LL-HLS caches in New York, Tokyo, and Sydney.
 Every edge concurrently receives local native UDP+FEC, WebTransport, persistent
 TLS 1.3/H3 LL-HLS, and a delayed local-cache join. Per-city direct-origin
-network RTT is measured separately; DAG_DIRECT_ORIGIN_BASELINE=1 enables the
-additional origin-local H3 part-endpoint stress probe.
+network RTT is measured separately; DAG_INGRESS_LOCAL_BASELINE=1 enables an
+additional H3 part-endpoint stress probe on the primary mesh ingress.
 The runner also exercises primary-parent loss, cross-parent FEC, three-edge
 failover/recovery, make-before-break demotion, and edge-process independence.
 Set DAG_PROFILE_ONLY=clean or DAG_PROFILE_ONLY=impaired for a focused diagnostic.
@@ -102,7 +102,7 @@ for value_name in \
     exit 2
   }
 done
-for value_name in DIRECT_ORIGIN_BASELINE STOP_AFTER_CLEAN; do
+for value_name in INGRESS_LOCAL_BASELINE STOP_AFTER_CLEAN; do
   value="${!value_name}"
   [[ "${value}" == 0 || "${value}" == 1 ]] || {
     echo "${value_name} must be zero or one" >&2
@@ -125,7 +125,7 @@ if ! awk -v value="${IMPAIRMENT_PROBABILITY}" \
   exit 2
 fi
 for value_name in MAX_CACHE_TO_CLIENT_P99_MS MAX_LL_HLS_P99_MS \
-  MAX_DIRECT_LL_HLS_P99_MS MAX_PRIMARY_PATH_STRETCH \
+  MAX_INGRESS_LOCAL_LL_HLS_P99_MS MAX_PRIMARY_PATH_STRETCH \
   MAX_SECONDARY_PATH_STRETCH MAX_SERVICE_CPU_PERCENT; do
   value="${!value_name}"
   if ! awk -v value="${value}" 'BEGIN { exit !(value > 0) }'; then
@@ -275,7 +275,7 @@ stop_receivers() {
     done" >/dev/null 2>&1 || true
   done
   remote_prefix="/tmp/needletail-dag-${RUN_ID}-${profile}"
-  gcp_ssh contributor --command="pid_file=${remote_prefix}-direct-hls.pid
+  gcp_ssh primary --command="pid_file=${remote_prefix}-ingress-local-hls.pid
     if test -s \"\${pid_file}\"; then
       receiver_pid=\$(cat \"\${pid_file}\")
       if test -r \"/proc/\${receiver_pid}/cmdline\" && tr '\\0' ' ' <\"/proc/\${receiver_pid}/cmdline\" | grep -q aep1-48k-probe; then
@@ -594,28 +594,28 @@ start_edge_receivers() {
     echo \$! >${remote_prefix}-late-hls.pid" >/dev/null
 }
 
-start_direct_origin_receiver() {
+start_ingress_local_receiver() {
   local profile="$1"
   local session_id="$2"
   local stream_id="$3"
   local remote_prefix="/tmp/needletail-dag-${RUN_ID}-${profile}"
-  gcp_ssh contributor --command="nohup /usr/local/bin/aep1-48k-probe receive-hls \
-    --edge 127.0.0.1:19443 --server-name local.bitneedle.com --transport h3 \
-    --path-prefix '' --stream-id ${stream_id} --session-id ${session_id} \
+  gcp_ssh primary --command="nohup /usr/local/bin/aep1-48k-probe receive-hls \
+    --edge 127.0.0.1:19444 --server-name local.bitneedle.com --transport h3 \
+    --stream-id ${stream_id} --session-id ${session_id} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
     --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \
     --tail-seconds ${TAIL_SECONDS} \
-    >${remote_prefix}-direct-hls.json 2>${remote_prefix}-direct-hls.err </dev/null &
-    echo \$! >${remote_prefix}-direct-hls.pid" >/dev/null
+    >${remote_prefix}-ingress-local-hls.json 2>${remote_prefix}-ingress-local-hls.err </dev/null &
+    echo \$! >${remote_prefix}-ingress-local-hls.pid" >/dev/null
 }
 
-wait_for_direct_origin_receiver() {
+wait_for_ingress_local_receiver() {
   local profile="$1"
   local remote_prefix="/tmp/needletail-dag-${RUN_ID}-${profile}"
-  if gcp_ssh contributor --command="deadline=\$((\$(date +%s) + ${TAIL_SECONDS} + ${RECEIVER_COMPLETION_TIMEOUT_SECONDS}))
+  if gcp_ssh primary --command="deadline=\$((\$(date +%s) + ${TAIL_SECONDS} + ${RECEIVER_COMPLETION_TIMEOUT_SECONDS}))
     while :; do
-      if test -s ${remote_prefix}-direct-hls.json \
-        && jq -e . ${remote_prefix}-direct-hls.json >/dev/null; then
+      if test -s ${remote_prefix}-ingress-local-hls.json \
+        && jq -e . ${remote_prefix}-ingress-local-hls.json >/dev/null; then
         exit 0
       fi
       test \$(date +%s) -lt \${deadline} || exit 1
@@ -623,21 +623,21 @@ wait_for_direct_origin_receiver() {
     done" >/dev/null 2>&1; then
     return 0
   fi
-  echo "contributor ${profile} direct-origin H3 receiver did not finish" >&2
+  echo "primary ingress ${profile} local H3 receiver did not finish" >&2
   return 1
 }
 
-fetch_direct_origin_artifact() {
+fetch_ingress_local_artifact() {
   local profile="$1"
   local profile_dir="$2"
   local remote_prefix="/tmp/needletail-dag-${RUN_ID}-${profile}"
-  local bundle="${profile_dir}/direct-origin-bundle.json"
-  gcp_ssh_text contributor --command="jq -n \
-    --rawfile report ${remote_prefix}-direct-hls.json \
-    --rawfile error ${remote_prefix}-direct-hls.err \
+  local bundle="${profile_dir}/ingress-local-bundle.json"
+  gcp_ssh_text primary --command="jq -n \
+    --rawfile report ${remote_prefix}-ingress-local-hls.json \
+    --rawfile error ${remote_prefix}-ingress-local-hls.err \
     '{report:\$report,error:\$error}'" >"${bundle}"
-  jq -j '.report' "${bundle}" >"${profile_dir}/direct-origin-hls.json"
-  jq -j '.error' "${bundle}" >"${profile_dir}/direct-origin-hls.err"
+  jq -j '.report' "${bundle}" >"${profile_dir}/ingress-local-hls.json"
+  jq -j '.error' "${bundle}" >"${profile_dir}/ingress-local-hls.err"
   rm -f "${bundle}"
 }
 
@@ -757,8 +757,8 @@ run_profile() {
   session_id="$((session_id + START_DELAY_SECONDS * 1000000000))"
   ACTIVE_PROFILE="${profile}"
   parallel_pids=()
-  if [[ "${DIRECT_ORIGIN_BASELINE}" == 1 ]]; then
-    start_direct_origin_receiver "${profile}" "${session_id}" "${stream_id}" &
+  if [[ "${INGRESS_LOCAL_BASELINE}" == 1 ]]; then
+    start_ingress_local_receiver "${profile}" "${session_id}" "${stream_id}" &
     parallel_pids+=("$!")
   fi
   for role in "${EDGE_ROLES[@]}"; do
@@ -795,20 +795,20 @@ run_profile() {
     echo "${profile} did not collect every edge receiver report" >&2
     exit 1
   }
-  if [[ "${DIRECT_ORIGIN_BASELINE}" == 1 ]]; then
-    if ! wait_for_direct_origin_receiver "${profile}"; then
-      fetch_direct_origin_artifact "${profile}" "${profile_dir}"
+  if [[ "${INGRESS_LOCAL_BASELINE}" == 1 ]]; then
+    if ! wait_for_ingress_local_receiver "${profile}"; then
+      fetch_ingress_local_artifact "${profile}" "${profile_dir}"
       exit 1
     fi
-    fetch_direct_origin_artifact "${profile}" "${profile_dir}"
+    fetch_ingress_local_artifact "${profile}" "${profile_dir}"
     for role in "${EDGE_ROLES[@]}"; do
-      cp "${profile_dir}/direct-origin-hls.json" "${profile_dir}/${role}/direct-hls.json"
-      cp "${profile_dir}/direct-origin-hls.err" "${profile_dir}/${role}/direct-hls.err"
+      cp "${profile_dir}/ingress-local-hls.json" "${profile_dir}/${role}/ingress-local-hls.json"
+      cp "${profile_dir}/ingress-local-hls.err" "${profile_dir}/${role}/ingress-local-hls.err"
     done
   else
     for role in "${EDGE_ROLES[@]}"; do
-      printf 'null\n' >"${profile_dir}/${role}/direct-hls.json"
-      : >"${profile_dir}/${role}/direct-hls.err"
+      printf 'null\n' >"${profile_dir}/${role}/ingress-local-hls.json"
+      : >"${profile_dir}/${role}/ingress-local-hls.err"
     done
   fi
   stop_receivers
@@ -902,7 +902,7 @@ run_profile() {
         'BEGIN { printf "%.3f", local_budget + repair_delta }')"
     fi
     artifacts=(udp webtransport hls late-hls)
-    [[ "${DIRECT_ORIGIN_BASELINE}" == 0 ]] || artifacts+=(direct-hls)
+    [[ "${INGRESS_LOCAL_BASELINE}" == 0 ]] || artifacts+=(ingress-local-hls)
     for artifact in "${artifacts[@]}"; do
       jq -e . "${role_dir}/${artifact}.json" >/dev/null || {
         echo "${profile} ${city} ${artifact} did not produce valid JSON" >&2
@@ -957,10 +957,10 @@ run_profile() {
       jq . "${role_dir}/hls.json" >&2
       exit 1
     }
-    if [[ "${DIRECT_ORIGIN_BASELINE}" == 1 ]]; then
+    if [[ "${INGRESS_LOCAL_BASELINE}" == 1 ]]; then
       jq -e --argjson expected "${expected_parts}" \
         --argjson final_pts "$((DURATION_SECONDS * 1000 - PART_MS))" \
-        --argjson maximum_total "${MAX_DIRECT_LL_HLS_P99_MS}" '
+        --argjson maximum_total "${MAX_INGRESS_LOCAL_LL_HLS_P99_MS}" '
         .expected_parts == $expected
         and .received_parts == $expected
         and .missing_parts == 0
@@ -973,9 +973,9 @@ run_profile() {
         and .tls_certificate_verified
         and .persistent_connection
         and .availability_latency_ms.p99 <= $maximum_total
-      ' "${role_dir}/direct-hls.json" >/dev/null || {
-        echo "${profile} ${city} direct-origin H3 baseline failed" >&2
-        jq . "${role_dir}/direct-hls.json" >&2
+      ' "${role_dir}/ingress-local-hls.json" >/dev/null || {
+        echo "${profile} ${city} ingress-local H3 baseline failed" >&2
+        jq . "${role_dir}/ingress-local-hls.json" >&2
         exit 1
       }
     fi
@@ -1038,10 +1038,10 @@ run_profile() {
     fi
 
     local_hls_p99="$(jq -r '.availability_latency_ms.p99' "${role_dir}/hls.json")"
-    if [[ "${DIRECT_ORIGIN_BASELINE}" == 1 ]]; then
-      direct_hls_p99="$(jq -r '.availability_latency_ms.p99' "${role_dir}/direct-hls.json")"
-      ll_hls_premium_ms="$(awk -v local="${local_hls_p99}" -v direct="${direct_hls_p99}" \
-        'BEGIN { printf "%.3f", local - direct }')"
+    if [[ "${INGRESS_LOCAL_BASELINE}" == 1 ]]; then
+      ingress_local_hls_p99="$(jq -r '.availability_latency_ms.p99' "${role_dir}/ingress-local-hls.json")"
+      ll_hls_premium_ms="$(awk -v local="${local_hls_p99}" -v ingress="${ingress_local_hls_p99}" \
+        'BEGIN { printf "%.3f", local - ingress }')"
     else
       ll_hls_premium_ms=null
     fi
@@ -1057,13 +1057,13 @@ run_profile() {
       --slurpfile udp "${role_dir}/udp.json" \
       --slurpfile webtransport "${role_dir}/webtransport.json" \
       --slurpfile hls "${role_dir}/hls.json" \
-      --slurpfile direct_hls "${role_dir}/direct-hls.json" \
+      --slurpfile ingress_local_hls "${role_dir}/ingress-local-hls.json" \
       --slurpfile late_hls "${role_dir}/late-hls.json" '
       {role:$role,city:$city,impairment_dropped_datagrams:$dropped_datagrams,
-       cpu_percent:$cpu_percent,ll_hls_p99_premium_vs_direct_ms:$ll_hls_premium_ms,
+       cpu_percent:$cpu_percent,ll_hls_p99_premium_vs_ingress_local_ms:$ll_hls_premium_ms,
        repair_path_differential_ms:$repair_path_differential_ms,
        cache_delivery_p99_budget_ms:$cache_delivery_p99_budget_ms,
-       lanes:{native_udp_fec:$udp[0],webtransport:$webtransport[0],ll_hls:$hls[0],direct_origin_ll_hls:$direct_hls[0],late_join_ll_hls:$late_hls[0]},
+       lanes:{native_udp_fec:$udp[0],webtransport:$webtransport[0],ll_hls:$hls[0],ingress_local_ll_hls:$ingress_local_hls[0],late_join_ll_hls:$late_hls[0]},
        relay_before:$before[0].relay_session,relay_after:$after[0].relay_session,
        stream:($after[0].streams[]|select(.stream_id == $hls[0].stream_id))}
       ' >>"${profile_edges}"
@@ -1441,7 +1441,7 @@ capture_origin_fanout
 jq -n \
   --arg schema "needletail.multi-edge-dag-qualification.v1" \
   --arg run_id "${RUN_ID}" --arg provider "${PROVIDER}" --arg project "${PROJECT}" \
-  --argjson direct_origin_h3_enabled "${DIRECT_ORIGIN_BASELINE}" \
+  --argjson ingress_local_h3_enabled "${INGRESS_LOCAL_BASELINE}" \
   --slurpfile lab "${LAB_STATE}" \
   --slurpfile routes "${RESULT_DIR}/routes.json" \
   --slurpfile clean "${RESULT_DIR}/clean/profile.json" \
@@ -1466,12 +1466,12 @@ jq -n \
       ll_hls_total_p50_ms: $edge.lanes.ll_hls.availability_latency_ms.p50,
       native_udp_total_p50_ms: $edge.lanes.native_udp_fec.latency_ms.p50,
       ll_hls_premium_over_udp_p50_ms: ($edge.lanes.ll_hls.availability_latency_ms.p50 - $edge.lanes.native_udp_fec.latency_ms.p50),
-      direct_origin_ll_hls_p50_ms:(if $direct_origin_h3_enabled == 1 then $edge.lanes.direct_origin_ll_hls.availability_latency_ms.p50 else null end)
+      ingress_local_ll_hls_p50_ms:(if $ingress_local_h3_enabled == 1 then $edge.lanes.ingress_local_ll_hls.availability_latency_ms.p50 else null end)
     };
   {
     schema:$schema,run_id:$run_id,provider:$provider,
     project:(if $project == "" then null else $project end),
-    direct_origin_h3_stress_enabled:($direct_origin_h3_enabled == 1),topology:$lab[0],
+    ingress_local_h3_stress_enabled:($ingress_local_h3_enabled == 1),topology:$lab[0],
     routes:$routes[0],profiles:{clean:$clean[0],impaired:$impaired[0]},
     cache_identity:$identity[0],cache_independence:$independence[0],
     failover:$failover[0],origin_fanout:$origin[0],
@@ -1498,7 +1498,7 @@ jq -n \
       verified_persistent_tls13_h3:(
         all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
           all(([.lanes.ll_hls,.lanes.late_join_ll_hls]
-            + (if $direct_origin_h3_enabled == 1 then [.lanes.direct_origin_ll_hls] else [] end))[];
+            + (if $ingress_local_h3_enabled == 1 then [.lanes.ingress_local_ll_hls] else [] end))[];
             .transport=="h3" and .tls_protocol=="TLSv1.3"
             and .tls_certificate_verified and .persistent_connection))),
       publication_cache_client_latency_split:(
@@ -1508,10 +1508,10 @@ jq -n \
       direct_origin_network_baselines_complete:(
         all($routes[0].edges[];
           .direct.rtt_us>0 and .direct.jitter_us>=0)),
-      direct_origin_h3_stress_complete_or_disabled:(
-        $direct_origin_h3_enabled == 0
+      ingress_local_h3_stress_complete_or_disabled:(
+        $ingress_local_h3_enabled == 0
         or all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
-          .lanes.direct_origin_ll_hls.missing_parts==0)),
+          .lanes.ingress_local_ll_hls.missing_parts==0)),
       sample_pts_and_timeline_identity:(
         $identity[0].timeline_and_sample_pts_embedded_in_identical_fmp4_parts
         and all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
