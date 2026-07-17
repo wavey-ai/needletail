@@ -4,6 +4,7 @@ Latest runs:
 
 - Linode six-node DAG: [`20260717T145432Z`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)
 - Linode run note: [`2026-07-17 multi-region DAG`](../real-world-tests/2026-07-17-linode-dag-replication.md)
+- Local multichannel LL-HLS sizing: [`local-20260717T162832Z`](../real-world-tests/evidence/local-20260717T162832Z-multichannel-llhls-sizing.json)
 - Local persistent-H3 5 ms lossless run: [`local-20260717T053347Z`](../real-world-tests/evidence/local-20260717T053347Z-lossless.json)
 - GCP 5 ms lossless run: [`20260717T054206Z`](../real-world-tests/evidence/20260717T054206Z.json)
 - Local controlled-loss run: [`local-20260716T001959Z`](../real-world-tests/evidence/local-20260716T001959Z.json)
@@ -72,6 +73,7 @@ physical speed-of-light bound.
 ## Evidence
 
 - [`20260717T145432Z-linode-dag.json`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)
+- [`local-20260717T162832Z-multichannel-llhls-sizing.json`](../real-world-tests/evidence/local-20260717T162832Z-multichannel-llhls-sizing.json)
 - [`local-20260717T053347Z-lossless.json`](../real-world-tests/evidence/local-20260717T053347Z-lossless.json)
 - [`20260717T054206Z.json`](../real-world-tests/evidence/20260717T054206Z.json)
 - [`local-20260716T001959Z.json`](../real-world-tests/evidence/local-20260716T001959Z.json)

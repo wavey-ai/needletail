@@ -1,0 +1,392 @@
+{
+  "schema": "needletail.multichannel-llhls-sizing.v1",
+  "run_id": "local-20260717T162832Z-multichannel-llhls-sizing",
+  "raw_artifact_directory": "not retained; ad-hoc local loopback run, sanitized measurements are embedded in this evidence file",
+  "passed": false,
+  "result": "partial",
+  "recorded_at_utc": "2026-07-17T16:28:32Z",
+  "status": "partial",
+  "scope": "local pre-cloud multichannel LL-HLS sizing and bottleneck isolation",
+  "environment": {
+    "host": "local developer workstation",
+    "cpu": "Apple M1",
+    "logical_cpus": 8,
+    "physical_cpus": 8,
+    "memory_bytes": 17179869184,
+    "network": "loopback",
+    "tls": "local explicitly trusted certificate",
+    "h3": true
+  },
+  "media": {
+    "sample_rate_hz": 48000,
+    "sample_format": "S24LE",
+    "part_ms": 5,
+    "group_channels": 8,
+    "flac_max_channels_per_rendition": 8,
+    "logical_channel_counts_tested": [16, 32, 64, 128],
+    "signal": "decorrelated deterministic tones",
+    "note": "A logical stream wider than 8 channels is split into synchronized 8-channel FLAC-safe LL-HLS renditions."
+  },
+  "implementation_changes_under_test": [
+    {
+      "repo": "av-contrib",
+      "path": "src/audio_epoch_hls.rs",
+      "change": "AEP1 LL-HLS packaging is sharded per rendition; each active rendition owns ordered FLAC/fMP4 packaging state."
+    },
+    {
+      "repo": "av-contrib",
+      "path": "src/bin/av-contrib.rs",
+      "change": "AEP1 hot path skips UDP tap datagram inspection when there are no tap subscribers, hands LL-HLS off before mesh egress, and samples overload logs."
+    },
+    {
+      "repo": "av-contrib",
+      "path": "src/bin/aep1-48k-probe.rs",
+      "change": "Probe supports 16-128 channel logical streams split into 8-channel groups."
+    },
+    {
+      "repo": "soundkit",
+      "path": "soundkit-flac/src/frame_codec.rs",
+      "change": "Packet-codec defensive cap allows expanded realtime 8-channel FLAC frames."
+    }
+  ],
+  "release_build": {
+    "commands_passed": [
+      "cargo check --bin av-contrib --bin aep1-48k-probe",
+      "cargo test --lib audio_epoch_hls -- --nocapture",
+      "cargo test --bin av-contrib audio_epoch_hls_drop_logging_is_sampled_under_overload -- --nocapture",
+      "cargo build --release --bin av-contrib --bin aep1-48k-probe"
+    ]
+  },
+  "server": {
+    "binary": "av-contrib",
+    "http_port": 19443,
+    "daw_media_bind": "127.0.0.1:27100",
+    "daw_hls_queue_capacity": 32768,
+    "playlist_count": 1024,
+    "hls_part_ms": 5,
+    "transport": "TLS 1.3/H3",
+    "path_prefix": "",
+    "mesh_audio_epoch_forwarding": true
+  },
+  "results": [
+    {
+      "phase": "post_rendition_sharding_pcm_source",
+      "payload": "pcm",
+      "channels": 16,
+      "renditions": 2,
+      "send": {
+        "elapsed_ms": 4997,
+        "source_datagrams": 12000,
+        "repair_datagrams": 1000,
+        "wire_bytes": 13944000,
+        "wire_to_pcm_ratio": 1.2104166666666667
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 101,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 0,
+          "p50_ms": 4.755,
+          "p95_ms": 5.949,
+          "p99_ms": 6.816,
+          "max_ms": 8.159
+        },
+        {
+          "stream_id": 102,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 0,
+          "p50_ms": 4.734,
+          "p95_ms": 5.919,
+          "p99_ms": 6.757,
+          "max_ms": 7.61
+        }
+      ]
+    },
+    {
+      "phase": "post_rendition_sharding_pcm_source",
+      "payload": "pcm",
+      "channels": 32,
+      "renditions": 4,
+      "send": {
+        "elapsed_ms": 5003,
+        "source_datagrams": 24000,
+        "repair_datagrams": 1000,
+        "wire_bytes": 26808000,
+        "wire_to_pcm_ratio": 1.1635416666666667
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 201,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 0,
+          "p50_ms": 7.265,
+          "p95_ms": 15.638,
+          "p99_ms": 24.6,
+          "max_ms": 28.355
+        },
+        {
+          "stream_id": 204,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 0,
+          "p50_ms": 8.3,
+          "p95_ms": 18.521,
+          "p99_ms": 28.313,
+          "max_ms": 30.236
+        }
+      ]
+    },
+    {
+      "phase": "post_rendition_sharding_pcm_source",
+      "payload": "pcm",
+      "channels": 64,
+      "renditions": 8,
+      "send": {
+        "elapsed_ms": 5099,
+        "source_datagrams": 48000,
+        "repair_datagrams": 1000,
+        "wire_bytes": 52536000,
+        "wire_to_pcm_ratio": 1.1401041666666667
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 301,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 0,
+          "p50_ms": 256.034,
+          "p95_ms": 674.259,
+          "p99_ms": 689.763,
+          "max_ms": 697.262
+        },
+        {
+          "stream_id": 308,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 0,
+          "p50_ms": 261.113,
+          "p95_ms": 679.096,
+          "p99_ms": 694.348,
+          "max_ms": 701.337
+        }
+      ]
+    },
+    {
+      "phase": "post_rendition_sharding_pcm_source",
+      "payload": "pcm",
+      "channels": 128,
+      "renditions": 16,
+      "send": {
+        "elapsed_ms": 7293,
+        "source_datagrams": 96000,
+        "repair_datagrams": 1000,
+        "wire_bytes": 103992000,
+        "wire_to_pcm_ratio": 1.1283854166666667
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 401,
+          "received_parts": 652,
+          "missing_parts": 348,
+          "deadline_misses": 473,
+          "p50_ms": 2053.275,
+          "p95_ms": 4595.416,
+          "p99_ms": 4716.588,
+          "max_ms": 4741.54
+        },
+        {
+          "stream_id": 416,
+          "received_parts": 651,
+          "missing_parts": 349,
+          "deadline_misses": 473,
+          "p50_ms": 2062.693,
+          "p95_ms": 4599.891,
+          "p99_ms": 4720.89,
+          "max_ms": 4746.993
+        }
+      ]
+    },
+    {
+      "phase": "post_ingest_fast_path_pcm_source",
+      "payload": "pcm",
+      "channels": 64,
+      "renditions": 8,
+      "send": {
+        "elapsed_ms": 5509,
+        "source_datagrams": 48000,
+        "repair_datagrams": 1000,
+        "wire_bytes": 52536000,
+        "wire_to_pcm_ratio": 1.1401041666666667
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 701,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 410,
+          "p50_ms": 586.302,
+          "p95_ms": 1683.092,
+          "p99_ms": 1729.071,
+          "max_ms": 1756.853
+        },
+        {
+          "stream_id": 708,
+          "received_parts": 1000,
+          "missing_parts": 0,
+          "deadline_misses": 414,
+          "p50_ms": 591.265,
+          "p95_ms": 1687.545,
+          "p99_ms": 1739.049,
+          "max_ms": 1761.689
+        }
+      ]
+    },
+    {
+      "phase": "post_ingest_fast_path_pcm_source",
+      "payload": "pcm",
+      "channels": 128,
+      "renditions": 16,
+      "send": {
+        "elapsed_ms": 8224,
+        "source_datagrams": 96000,
+        "repair_datagrams": 1000,
+        "wire_bytes": 103992000,
+        "wire_to_pcm_ratio": 1.1283854166666667
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 801,
+          "received_parts": 562,
+          "missing_parts": 438,
+          "deadline_misses": 416,
+          "p50_ms": 2148.544,
+          "p95_ms": 4890.099,
+          "p99_ms": 5124.275,
+          "max_ms": 5187.642
+        },
+        {
+          "stream_id": 816,
+          "received_parts": 561,
+          "missing_parts": 439,
+          "deadline_misses": 417,
+          "p50_ms": 2159.73,
+          "p95_ms": 4897.071,
+          "p99_ms": 5128.384,
+          "max_ms": 5191.558
+        }
+      ],
+      "server_counters_after_phase_pair": {
+        "queue_capacity": 32768,
+        "queue_enqueued_total": 137692,
+        "queue_dropped_total": 8308,
+        "queue_max_depth": 32768,
+        "worker_datagrams_total": 137692,
+        "groups_completed_total": 22431,
+        "worker_errors_total": 0
+      }
+    },
+    {
+      "phase": "post_ingest_fast_path_flac_source",
+      "payload": "flac",
+      "channels": 64,
+      "renditions": 8,
+      "send": {
+        "elapsed_ms": 5774,
+        "source_datagrams": 44876,
+        "repair_datagrams": 1000,
+        "wire_bytes": 45733792,
+        "lossless_payload_bytes": 37913786,
+        "wire_to_pcm_ratio": 0.9924868055555556
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 901,
+          "received_parts": 823,
+          "missing_parts": 177,
+          "deadline_misses": 331,
+          "p50_ms": 496.737,
+          "p95_ms": 3598.278,
+          "p99_ms": 3847.845,
+          "max_ms": 3884.836
+        },
+        {
+          "stream_id": 908,
+          "received_parts": 829,
+          "missing_parts": 171,
+          "deadline_misses": 339,
+          "p50_ms": 514.2,
+          "p95_ms": 3565.792,
+          "p99_ms": 3816.499,
+          "max_ms": 3852.882
+        }
+      ]
+    },
+    {
+      "phase": "post_ingest_fast_path_flac_source",
+      "payload": "flac",
+      "channels": 128,
+      "renditions": 16,
+      "send": {
+        "elapsed_ms": 9045,
+        "source_datagrams": 90849,
+        "repair_datagrams": 1000,
+        "wire_bytes": 95305589,
+        "lossless_payload_bytes": 78570824,
+        "wire_to_pcm_ratio": 1.0341318250868055
+      },
+      "hls_renditions_sampled": [
+        {
+          "stream_id": 1001,
+          "received_parts": 479,
+          "missing_parts": 521,
+          "deadline_misses": 363,
+          "p50_ms": 2312.133,
+          "p95_ms": 5224.722,
+          "p99_ms": 5543.008,
+          "max_ms": 5610.198
+        },
+        {
+          "stream_id": 1016,
+          "received_parts": 478,
+          "missing_parts": 522,
+          "deadline_misses": 363,
+          "p50_ms": 2313.64,
+          "p95_ms": 5213.314,
+          "p99_ms": 5532.349,
+          "max_ms": 5600.944
+        }
+      ],
+      "server_counters_after_phase_pair": {
+        "queue_capacity": 32768,
+        "queue_enqueued_total": 137725,
+        "queue_dropped_total": 0,
+        "queue_max_depth": 24851,
+        "worker_datagrams_total": 137725,
+        "groups_completed_total": 24000,
+        "worker_errors_total": 0
+      }
+    }
+  ],
+  "findings": [
+    "The previous single LL-HLS packager was a hard bottleneck; per-rendition packaging moved 16-channel p99 to about 6.8 ms and 32-channel p99 to about 28.3 ms locally.",
+    "At 64 channels the laptop is not a reliable sizing proxy. The best PCM run completed without missing parts but had p99 around 690 ms; later runs varied under local CPU and sender contention.",
+    "At 128 channels the local host cannot sustain the full PCM-source path at 5 ms parts; source sending itself stretched to 7.3-8.2 s for 5 s of media.",
+    "FLAC-source tests removed server-side FLAC encoding work and reached zero HLS queue drops, but high latency remained because the local sender and server contend on the same host and the deterministic signal barely compresses at 5 ms frames.",
+    "The next authoritative sizing run requires separated sender, contributor, and reader/load machines."
+  ],
+  "gcp_blocker": {
+    "project_cpu_quota": 12,
+    "unrelated_existing_vm": "yl-encodec-1",
+    "unrelated_existing_vcpu": 4,
+    "effect": "The requested six-node DAG plus separate reader/load VM cannot be provisioned without more quota, stopping unrelated capacity, or using another provider.",
+    "test_resources_cleaned_up": true
+  },
+  "cleanup": {
+    "local_av_contrib_server_stopped": true,
+    "local_probe_processes_stopped": true,
+    "cloud_test_resources_left_running": false
+  }
+}

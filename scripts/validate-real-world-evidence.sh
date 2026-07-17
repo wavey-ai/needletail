@@ -230,10 +230,24 @@ for evidence in "${local_files[@]}"; do
   jq -e '
     (.run_id | type == "string")
     and (.raw_artifact_directory | type == "string")
-    and .passed == true
     and (
-      if .schema == "needletail.local-lossless-latency.v1" then
-        .source.sample_rate == 48000
+      if .schema == "needletail.multichannel-llhls-sizing.v1" then
+        .passed == false
+        and .result == "partial"
+        and .media.sample_rate_hz == 48000
+        and .media.part_ms == 5
+        and .media.group_channels == 8
+        and (.media.logical_channel_counts_tested == [16, 32, 64, 128])
+        and ([.results[] | select(.payload == "pcm")] | length) >= 4
+        and ([.results[] | select(.payload == "flac")] | length) >= 2
+        and ([.results[] | select(.payload == "pcm" and .channels == 16)] | length) >= 1
+        and ([.results[] | select(.payload == "pcm" and .channels == 128)] | length) >= 1
+        and .cleanup.local_av_contrib_server_stopped == true
+        and .cleanup.local_probe_processes_stopped == true
+        and .cleanup.cloud_test_resources_left_running == false
+      elif .schema == "needletail.local-lossless-latency.v1" then
+        .passed == true
+        and .source.sample_rate == 48000
         and .source.payload == "flac"
         and (.release_gates | all(.[]; . == true))
         and .lanes.native_udp_fec.missing_epochs == 0
@@ -252,6 +266,8 @@ for evidence in "${local_files[@]}"; do
         and .cleanup.local_services_stopped == true
         and .cleanup.generated_tls_unversioned == true
       else
+        .passed == true
+        and
         .schema == "needletail.local-realtime-qualification.v1"
         and .automatic_failover.expired_objects == 0
         and .automatic_failover.rejected_datagrams == 0

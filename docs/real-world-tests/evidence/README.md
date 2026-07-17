@@ -30,5 +30,6 @@ Evidence index:
 - `local-20260717T053347Z-lossless.json`: final local 5 ms lossless UDP, WebTransport, and certificate-verified persistent-H3 LL-HLS run;
 - `20260717T054206Z.json`: passing GCP 5 ms lossless clean/impaired three-lane qualification;
 - `20260717T054847Z.json`: lossless phase passed, but the broader integrated invocation failed its pre-restart convergence gate;
-- `20260717-lossless-latency-series-summary.json`: 50 ms, 20 ms, and 5 ms cadence results plus the diagnostic-attempt ledger.
-- `20260717T145432Z-linode-dag.json`: complete six-node Linode clean/impaired three-lane DAG replication, exact cache identity, cache independence, failover, latency split, CPU, and idle-stream-retirement qualification.
+- `20260717-lossless-latency-series-summary.json`: 50 ms, 20 ms, and 5 ms cadence results plus the diagnostic-attempt ledger;
+- `20260717T145432Z-linode-dag.json`: complete six-node Linode clean/impaired three-lane DAG replication, exact cache identity, cache independence, failover, latency split, CPU, and idle-stream-retirement qualification;
+- `local-20260717T162832Z-multichannel-llhls-sizing.json`: partial local 16/32/64/128-channel LL-HLS sizing and PCM-vs-FLAC-source bottleneck isolation.
