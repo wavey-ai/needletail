@@ -33,7 +33,7 @@ if [[ "${SERVICE}" == mesh ]]; then
   sudo systemctl enable --now needletail-mesh.service
   sudo systemctl restart needletail-mesh.service
 else
-  receive_buffer_bytes=$((8 * 1024 * 1024))
+  receive_buffer_bytes=$((64 * 1024 * 1024))
   current_receive_buffer_bytes="$(/usr/sbin/sysctl -n net.core.rmem_max)"
   if (( current_receive_buffer_bytes > receive_buffer_bytes )); then
     receive_buffer_bytes="${current_receive_buffer_bytes}"
