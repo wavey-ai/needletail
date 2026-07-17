@@ -15,7 +15,7 @@ publisher
     |
     v
 contributor/origin host
-ingest -> FEC/reorder -> clock/channel state -> encode -> package
+ingest -> FEC/reorder -> clock/channel state -> codec-preserving package
     |
     | one ordered publication to the nearest ingress
     v
@@ -33,17 +33,18 @@ The contributor pipeline owns:
 - AEP1 packet validation, ordering, duplicate rejection, and FEC recovery;
 - source clock, sample PTS, channel layout, configuration generation, and epoch
   continuity;
-- one lossless encode for PCM input, including the documented normalization of
-  wider PCM formats;
-- FLAC passthrough when the input is already suitable for the lossless
-  rendition;
+- exact PCM sample-format preservation into integer `ipcm` or float `fpcm`
+  fMP4 without a PCM-to-FLAC encode;
+- FLAC passthrough into `fLaC` fMP4 without re-encoding;
+- compatibility transcoding only for inputs whose mandatory LL-HLS rendition
+  cannot preserve the source codec directly;
 - one CMAF/fMP4 packaging pass, including 5 ms LL-HLS parts, segments,
   initialization data, and playlists;
 - one exact AEP1 datagram publication for the optional native UDP+FEC and
   WebTransport taps;
 - canonical media-object identity and integrity metadata;
-- per-stream ingest, recovery, encode, package, queue-age, and publication
-  metrics.
+- per-stream ingest, recovery, package, queue-age, and publication metrics,
+  including whether a compatibility encode was required.
 
 Every supported input format produces the mandatory lossless LL-HLS rendition.
 Enabling a datagram tap does not bypass or duplicate the encode/package path.
@@ -77,8 +78,8 @@ mesh work        = published objects x replication relationships
 edge work        = regional subscriptions and viewer connections
 ```
 
-Viewer count and geographical reach therefore do not change contributor encode
-or packaging work. They scale the relay and edge tiers independently.
+Viewer count and geographical reach therefore do not change contributor
+encoding or packaging work. They scale the relay and edge tiers independently.
 
 ## Required qualification
 
@@ -89,7 +90,8 @@ The boundary is complete only when qualification proves:
 - contributor egress has at most two mesh-ingress relationships and remains
   unchanged as regions and viewers are added;
 - the contributor sends no media to regional edges or viewers directly;
-- PCM is encoded once and FLAC input is not unnecessarily re-encoded;
+- PCM is packaged as PCM, FLAC is packaged as FLAC, and compatibility input is
+  transcoded at most once;
 - mandatory LL-HLS plus optional native UDP and WebTransport lanes remain
   continuous for the same AEP1 session and timestamps;
 - contributor CPU, queue depth, queue age, and network egress are measured with
@@ -116,6 +118,7 @@ queue-drop, worker-error, or socket-drop counters as a failed capacity point.
 The contributor implementation now publishes exact AEP1 datagrams to one
 explicit ingress by default, with an optional fixed redundant ingress. It does
 not accept viewer subscriptions or serve viewer LL-HLS, WebTransport, or UDP;
-those paths begin on `av-mesh`. The remaining qualification work is to prove
-this boundary under sustained local, GCP, and dedicated Linode load before
-assigning production capacity figures.
+those paths begin on `av-mesh`. A short GCP/Linode capacity ladder has proved
+the split through 25 simultaneous 16-channel PCM customers on a two-vCPU edge;
+sustained qualification is still required before assigning a production
+capacity figure.

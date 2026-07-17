@@ -6,21 +6,22 @@ turning on either tap never bypasses the HLS cache.
 
 ```text
 48 kHz AEP1 publication
-  `-- contributor/origin: recover, encode once, and package once
+  `-- contributor/origin: recover and package each codec once
         `-- one ordered publication to the nearest mesh ingress
               |-- exact source/repair datagrams through the relay fabric
               |     |-- native UDP+FEC subscription at a relay or edge
               |     `-- WebTransport datagram subscription at the edge
-              `-- FLAC fMP4 LL-HLS objects and regional edge caches
+              `-- lossless fMP4 LL-HLS objects and regional edge caches
 ```
 
 All lanes retain the AEP1 session, configuration generation, epoch, sample PTS,
 and channel-group identity. Relay nodes forward the exact AEP1 source and repair
-datagrams. The contributor recovers, encodes, and packages each stream once,
-then publishes one ordered output to a dedicated mesh ingress. Compression or
-cache work cannot stall the low-latency paths. A full or failed HLS handoff is
-observable and fails the qualification gate; it does not add latency to the
-datagram hot path. The contributor does not serve viewers or act as a relay;
+datagrams. The contributor recovers and packages each stream once, preserving
+lossless PCM or FLAC rather than forcing one codec into the other, then
+publishes one ordered output to a dedicated mesh ingress. Package or cache work
+cannot stall the low-latency paths. A full or failed HLS handoff is observable
+and fails the qualification gate; it does not add latency to the datagram hot
+path. The contributor does not serve viewers or act as a relay;
 see the [contributor origin boundary](contributor-origin-boundary.md).
 
 ## Lane contracts
@@ -29,7 +30,7 @@ see the [contributor origin boundary](contributor-origin-boundary.md).
 | --- | --- | --- |
 | Native UDP+FEC | `WAVEY-DAW-SUBSCRIBE/2 <session_id>` | Exact AEP1 UDP datagrams from the selected relay/edge; refresh within 15 seconds. |
 | WebTransport | `WAVEY-AUDIO-EPOCH/2 <session_id>` | Exact AEP1 QUIC datagrams from the playback edge. |
-| LL-HLS | `/live/<base_stream_id + group_id>/...` | Standards-compliant fMP4 parts with a FLAC sample entry and initialization segment. |
+| LL-HLS | `/live/<base_stream_id + group_id>/...` | Lossless fMP4 parts with codec-specific initialization: FLAC, integer PCM (`ipcm`), or float PCM (`fpcm`). |
 
 The v1 native and WebTransport subscription messages remain available as
 unscoped compatibility modes. New clients should use v2. The browser worker
@@ -38,20 +39,29 @@ identity.
 
 ## Format behavior
 
-Every AEP1 payload kind reaches LL-HLS:
+Every AEP1 payload kind reaches mandatory LL-HLS:
 
 - FLAC frames remain FLAC in fMP4.
-- S16 and S24 PCM are encoded losslessly as FLAC.
-- S32 and F32 PCM are normalized to S24 before FLAC packaging so these wire
-  formats still receive an LL-HLS rendition.
+- S16, S24, and S32 PCM retain their exact integer sample width in `ipcm` fMP4.
+- F32 PCM remains F32 in `fpcm` fMP4.
 - Opus is decoded with the pure-Rust `libopus-rs` path, converted to S16 PCM,
   and packaged as FLAC; the native and WebTransport lanes retain the original
   Opus packet.
 
-The 48 kHz lossless gate uses S24/FLAC and verifies the `fLaC` sample entry in
-the fMP4 initialization segment. It also requires zero missing epochs/parts,
-zero HLS queue drops or worker errors, and exact FEC recovery under controlled
-loss.
+The current 48 kHz multichannel gate uses S24 PCM and verifies the
+`ipcm_s24le` initialization metadata plus the exact byte geometry of every
+media part. FLAC-source qualification separately verifies the `fLaC` sample
+entry. Both require zero missing epochs/parts, zero HLS queue drops or worker
+errors, and exact FEC recovery under controlled loss.
+
+[`ipcm` and `fpcm` are registered ISO Base Media File Format codec
+entries](https://mp4ra.org/registered-types/codecs), with PCM configuration
+defined by ISO/IEC 23003-5, but [Apple's HLS authoring
+profile](https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices/)
+does not currently list PCM as a native playback codec. The transport, cache,
+fMP4 identity, and byte geometry are qualified; native Safari decode is not
+claimed. A browser player may use a supported decoder path and AudioWorklet
+while retaining LL-HLS as the mandatory delivery and cache format.
 
 ## Measured latency
 
@@ -61,16 +71,15 @@ notifications; there is no fixed polling sleep in the delivery path. Known-
 duration FLAC parts close as soon as they reach the target duration rather than
 waiting for the next access unit.
 
-The final local run measured LL-HLS availability at 6.043 ms p50 and
-10.835 ms p99, versus native UDP at 4.931 ms and 7.604 ms. The final
-London-origin, six-node DAG measured LL-HLS at 43.360 ms in New York,
-118.799 ms in Tokyo, and 132.887 ms in Sydney at p50. Native UDP measured
-40.258, 115.673, and 129.821 ms respectively: a 3.067–3.125 ms LL-HLS
-premium. Local cache-to-H3-client delivery was 0.220–0.227 ms at p50 and below
-0.8 ms at p99. These are publication-to-client availability measurements, not
-browser-to-speaker output. See the
-[multi-region DAG record](real-world-tests/2026-07-17-linode-dag-replication.md)
-and the [local/GCP cadence record](real-world-tests/2026-07-17-lossless-h3.md).
+The raw-PCM London-origin GCP DAG measured LL-HLS at 55.728 ms in New York,
+127.506 ms in Tokyo, and 148.549 ms in Sydney at p50. Native UDP measured
+53.338, 125.054, and 146.129 ms respectively: a 2.390–2.452 ms LL-HLS premium.
+Regional cache-to-H3-client delivery stayed below 1.51 ms at p99. The final
+post-deploy New York canary delivered both PCM renditions with 1.03–1.37 ms
+cache-to-client p99. These are publication-to-client availability
+measurements, not browser-to-speaker output. See the
+[raw PCM capacity record](real-world-tests/2026-07-17-pcm-h3-capacity.md) and
+the earlier [FLAC cadence record](real-world-tests/2026-07-17-lossless-h3.md).
 
 ## Qualification
 
@@ -97,7 +106,9 @@ cd needletail
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 scripts/gcp-intercontinental-lab.sh up
 scripts/gcp-intercontinental-deploy.sh
-scripts/gcp-lossless-latency.sh
+scripts/gcp-pcm-readiness-canary.sh
+DAG_PAYLOAD=pcm DAG_CHANNELS=16 DAG_GROUP_CHANNELS=8 \
+  DAG_STOP_AFTER_CLEAN=1 scripts/gcp-dag-replication-qualification.sh
 scripts/gcp-intercontinental-lab.sh down
 ```
 

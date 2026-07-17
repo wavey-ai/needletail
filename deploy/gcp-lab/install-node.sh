@@ -5,10 +5,19 @@ SERVICE="${1:?expected mesh or contrib}"
 STAGE=/tmp/needletail-deploy
 
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update
 packages=(ca-certificates jq)
 [[ "${SERVICE}" == contrib ]] && packages+=(procps)
-sudo apt-get install -y "${packages[@]}"
+missing_packages=()
+for package in "${packages[@]}"; do
+  if ! dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
+    | grep -q '^ii '; then
+    missing_packages+=("${package}")
+  fi
+done
+if (( ${#missing_packages[@]} > 0 )); then
+  sudo apt-get update
+  sudo apt-get install -y "${missing_packages[@]}"
+fi
 
 sudo install -d -m 755 /etc/needletail/tls
 sudo install -m 600 "${STAGE}/privkey.pem" /etc/needletail/tls/privkey.pem

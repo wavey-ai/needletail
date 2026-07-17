@@ -18,6 +18,7 @@ PROJECT=""
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 LINODE_SSH_KEY="${NEEDLETAIL_LINODE_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 LINODE_SSH_USER="${NEEDLETAIL_LINODE_SSH_USER:-root}"
+LINODE_KNOWN_HOSTS="${NEEDLETAIL_LINODE_KNOWN_HOSTS:-${QUALIFICATION_ROOT}/known_hosts}"
 TLS_CERT="${NEEDLETAIL_GCP_TLS_CERT:-${WORKSPACE_ROOT}/tls/local.bitneedle.com/fullchain.pem}"
 TLS_KEY="${NEEDLETAIL_GCP_TLS_KEY:-${WORKSPACE_ROOT}/tls/local.bitneedle.com/privkey.pem}"
 [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]] || {
@@ -86,6 +87,7 @@ gcp_ssh() {
       esac
     done
     ssh -i "${LINODE_SSH_KEY}" -o BatchMode=yes \
+      -o UserKnownHostsFile="${LINODE_KNOWN_HOSTS}" \
       -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
       "${LINODE_SSH_USER}@$(node_ip "${role}")" "${remote_command}"
   else
@@ -101,6 +103,7 @@ gcp_scp_to() {
   shift
   if [[ "${PROVIDER}" == linode ]]; then
     scp -C -i "${LINODE_SSH_KEY}" -o BatchMode=yes \
+      -o UserKnownHostsFile="${LINODE_KNOWN_HOSTS}" \
       -o StrictHostKeyChecking=accept-new "$@" \
       "${LINODE_SSH_USER}@$(node_ip "${role}"):/tmp/needletail-deploy/"
   else
@@ -117,6 +120,7 @@ provider_scp_to_path() {
   local role="$1" source="$2" destination="$3"
   if [[ "${PROVIDER}" == linode ]]; then
     scp -C -i "${LINODE_SSH_KEY}" -o BatchMode=yes \
+      -o UserKnownHostsFile="${LINODE_KNOWN_HOSTS}" \
       -o StrictHostKeyChecking=accept-new "${source}" \
       "${LINODE_SSH_USER}@$(node_ip "${role}"):${destination}"
   else
@@ -129,6 +133,7 @@ provider_scp_from() {
   local role="$1" source="$2" destination="$3"
   if [[ "${PROVIDER}" == linode ]]; then
     scp -C -i "${LINODE_SSH_KEY}" -o BatchMode=yes \
+      -o UserKnownHostsFile="${LINODE_KNOWN_HOSTS}" \
       -o StrictHostKeyChecking=accept-new \
       "${LINODE_SSH_USER}@$(node_ip "${role}"):${source}" "${destination}"
   else
@@ -141,6 +146,7 @@ provider_scp_directory_to() {
   local role="$1" source="$2" destination="$3"
   if [[ "${PROVIDER}" == linode ]]; then
     scp -C -r -i "${LINODE_SSH_KEY}" -o BatchMode=yes \
+      -o UserKnownHostsFile="${LINODE_KNOWN_HOSTS}" \
       -o StrictHostKeyChecking=accept-new "${source}" \
       "${LINODE_SSH_USER}@$(node_ip "${role}"):${destination}"
   else
@@ -466,6 +472,7 @@ write_mesh_env secondary relay-secondary "${SECONDARY_LOCATION}" apac 34.6937 13
 write_mesh_env edge edge "${EDGE_LOCATION}" apac 35.6762 139.6503 "${EDGE_IP}" 29101 19444 22200 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
 write_mesh_env edge_new_york edge-new-york "${EDGE_NEW_YORK_LOCATION}" na 40.7128 -74.0060 "${EDGE_NEW_YORK_IP}" 29101 19444 22210 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
 write_mesh_env edge_sydney edge-sydney "${EDGE_SYDNEY_LOCATION}" apac -33.8688 151.2093 "${EDGE_SYDNEY_IP}" 29101 19444 22220 22103 27300 "${PRIMARY_IP}:27301,${SECONDARY_IP}:27302"
+printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/primary.env"
 printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge.env"
 printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge_new_york.env"
 printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge_sydney.env"
@@ -482,6 +489,7 @@ deploy_mesh() {
   gcp_ssh "${role}" --command='rm -rf /tmp/needletail-deploy && mkdir -p /tmp/needletail-deploy'
   gcp_scp_to "${role}" \
     "${ARTIFACT_DIR}/av-mesh" \
+    "${ARTIFACT_DIR}/aep1-48k-probe" \
     "${DEPLOY_DIR}/av-mesh-run" \
     "${DEPLOY_DIR}/install-node.sh" \
     "${DEPLOY_DIR}/needletail-mesh.service" \
@@ -505,6 +513,15 @@ deploy_edge() {
   provider_scp_directory_to "${role}" "${ROOT}/mission-control/dist" \
     /tmp/needletail-deploy/mission-control
   gcp_ssh "${role}" --command="mv /tmp/needletail-deploy/${role}.env /tmp/needletail-deploy/node.env; chmod +x /tmp/needletail-deploy/install-node.sh; /tmp/needletail-deploy/install-node.sh mesh"
+}
+
+deploy_probe_host() {
+  local role="$1"
+  gcp_ssh "${role}" --command='sudo systemctl disable --now needletail-mesh.service needletail-contrib.service 2>/dev/null || true; rm -rf /tmp/needletail-deploy && mkdir -p /tmp/needletail-deploy'
+  gcp_scp_to "${role}" \
+    "${ARTIFACT_DIR}/aep1-48k-probe" \
+    "${ARTIFACT_DIR}/fullchain.pem"
+  gcp_ssh "${role}" --command='sudo install -m 755 /tmp/needletail-deploy/aep1-48k-probe /usr/local/bin/aep1-48k-probe; sudo install -m 644 /tmp/needletail-deploy/fullchain.pem /usr/local/share/ca-certificates/needletail-qualification.crt; sudo update-ca-certificates >/dev/null'
 }
 
 deployment_pids=()
@@ -535,6 +552,12 @@ gcp_scp_to contributor \
   "${PLAN}" "${ARTIFACT_DIR}/fullchain.pem" "${ARTIFACT_DIR}/privkey.pem" "${ARTIFACT_DIR}/contributor.env"
 gcp_ssh contributor --command="mv /tmp/needletail-deploy/contributor.env /tmp/needletail-deploy/node.env; chmod +x /tmp/needletail-deploy/install-node.sh; /tmp/needletail-deploy/install-node.sh contrib"
 
+for role in source load; do
+  if jq -e --arg role "${role}" '.nodes[$role] != null' "${LAB_STATE}" >/dev/null; then
+    deploy_probe_host "${role}"
+  fi
+done
+
 for role in primary secondary edge edge_new_york edge_sydney contributor; do
   gcp_ssh "${role}" --command='systemctl is-active --quiet needletail-mesh.service 2>/dev/null || systemctl is-active --quiet needletail-contrib.service'
 done
@@ -564,6 +587,12 @@ for role in edge edge_new_york edge_sydney; do
     exit 1
   }
 done
+
+if [[ "${PROVIDER}" == gcp && "${NEEDLETAIL_DEPLOY_SKIP_PCM_CANARY:-0}" != 1 ]]; then
+  NEEDLETAIL_GCP_LAB_STATE="${LAB_STATE}" \
+    NEEDLETAIL_GCLOUD_CONFIG="${GCLOUD_CONFIG}" \
+    "${ROOT}/scripts/gcp-pcm-readiness-canary.sh"
+fi
 
 echo "Intercontinental Needletail three-edge DAG is active"
 echo "Tokyo edge public endpoint: https://${EDGE_EXTERNAL_IP}:19444/mesh"

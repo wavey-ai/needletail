@@ -2,6 +2,12 @@
 
 ## Result
 
+> Historical implementation note: this record measured the former
+> PCM-to-FLAC path on a shared laptop. PCM now remains PCM in `ipcm`/`fpcm`
+> LL-HLS. Use the
+> [raw PCM GCP and H3 capacity record](2026-07-17-pcm-h3-capacity.md) for the
+> current implementation and server boundary.
+
 Run `local-20260717T162832Z-multichannel-llhls-sizing` is a local pre-cloud
 sizing record for 16-, 32-, 64-, and 128-channel 48 kHz lossless AEP1 streams
 ending in mandatory 5 ms FLAC LL-HLS over certificate-verified persistent H3.
@@ -139,10 +145,11 @@ record:
 - mesh forwarding enabled, because production publication does not stop at the
   origin LL-HLS cache.
 
-## GCP status
+## GCP status at the time of this historical run
 
-The requested six-node GCP DAG plus separate reader/load VM is still blocked by
+The requested six-node GCP DAG plus separate reader/load VM was then blocked by
 project CPU quota. The project quota observed during this work was 12 vCPU, and
 an unrelated existing VM, `yl-encodec-1`, was using 4 vCPU. The partial
 Needletail GCP resources created earlier were torn down. No cloud test
-resources from this local sizing pass were left running.
+resources from this local sizing pass were left running. That quota condition
+was later cleared and the current PCM-to-PCM GCP DAG qualification completed.

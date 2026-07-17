@@ -2,6 +2,8 @@
 
 Latest runs:
 
+- Raw PCM GCP DAG and H3 edge capacity: [`20260717T222106Z`](../real-world-tests/evidence/20260717T222106Z-pcm-h3-capacity.json)
+- Raw PCM run note: [`2026-07-17 PCM H3 capacity`](../real-world-tests/2026-07-17-pcm-h3-capacity.md)
 - Linode six-node DAG: [`20260717T145432Z`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)
 - Linode run note: [`2026-07-17 multi-region DAG`](../real-world-tests/2026-07-17-linode-dag-replication.md)
 - Local multichannel LL-HLS sizing: [`local-20260717T162832Z`](../real-world-tests/evidence/local-20260717T162832Z-multichannel-llhls-sizing.json)
@@ -24,17 +26,20 @@ Latest runs:
 
 ## Numbers
 
-Latest clean 48 kHz FLAC result, published from London through the dual-parent
-DAG and consumed from the local playback cache over persistent H3:
+Latest clean 48 kHz 16-channel S24 PCM result, published from London through
+the dual-parent GCP DAG and consumed from regional playback caches over
+persistent H3:
 
 | City | UDP p50/p99 | WebTransport p50/p99 | LL-HLS p50/p99 | LL-HLS p50 premium | Cache→client p50/p99 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| New York | 40.258 / 41.180 ms | 40.333 / 41.307 ms | 43.360 / 63.320 ms | 3.103 ms | 0.222 / 0.654 ms |
-| Tokyo | 115.673 / 116.584 ms | 115.788 / 116.787 ms | 118.799 / 138.740 ms | 3.125 ms | 0.220 / 0.674 ms |
-| Sydney | 129.821 / 131.853 ms | 129.945 / 132.252 ms | 132.887 / 153.049 ms | 3.067 ms | 0.227 / 0.785 ms |
+| New York | 53.338 / 55.853 ms | 53.595 / 57.021 ms | 55.728 / 57.137 ms | 2.390 ms | 0.387 / 1.510 ms |
+| Tokyo | 125.054 / 127.841 ms | 125.130 / 128.388 ms | 127.506 / 128.824 ms | 2.452 ms | 0.383 / 1.274 ms |
+| Sydney | 146.129 / 150.046 ms | 146.268 / 150.252 ms | 148.549 / 150.265 ms | 2.420 ms | 0.371 / 1.460 ms |
 
-The clean p99 LL-HLS premium was 21.196–22.156 ms. The “UDP plus a few
-milliseconds” summary refers to the measured median, not the tail.
+The percentile-to-percentile p99 difference was 0.220–1.284 ms. Percentiles
+are not paired samples, so the p50 lane premium is the clearer architectural
+comparison. The post-deploy two-rendition New York canary independently
+measured 1.032–1.374 ms cache-to-H3 p99.
 
 Earlier relay/failover gates:
 
@@ -72,6 +77,7 @@ physical speed-of-light bound.
 
 ## Evidence
 
+- [`20260717T222106Z-pcm-h3-capacity.json`](../real-world-tests/evidence/20260717T222106Z-pcm-h3-capacity.json)
 - [`20260717T145432Z-linode-dag.json`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)
 - [`local-20260717T162832Z-multichannel-llhls-sizing.json`](../real-world-tests/evidence/local-20260717T162832Z-multichannel-llhls-sizing.json)
 - [`local-20260717T053347Z-lossless.json`](../real-world-tests/evidence/local-20260717T053347Z-lossless.json)

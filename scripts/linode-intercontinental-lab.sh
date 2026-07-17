@@ -8,6 +8,13 @@ TOKEN_FILE="${NEEDLETAIL_LINODE_TOKEN_FILE:-${ROOT}/../.linode-token}"
 SSH_PUBLIC_KEY="${NEEDLETAIL_LINODE_SSH_PUBLIC_KEY:-${HOME}/.ssh/id_ed25519.pub}"
 INSTANCE_TYPE="${NEEDLETAIL_LINODE_TYPE:-g6-dedicated-2}"
 IMAGE="${NEEDLETAIL_LINODE_IMAGE:-linode/debian12}"
+CONTRIBUTOR_TYPE="${NEEDLETAIL_LINODE_CONTRIBUTOR_TYPE:-${INSTANCE_TYPE}}"
+SOURCE_TYPE="${NEEDLETAIL_LINODE_SOURCE_TYPE:-${INSTANCE_TYPE}}"
+LOAD_TYPE="${NEEDLETAIL_LINODE_LOAD_TYPE:-${INSTANCE_TYPE}}"
+CONTRIBUTOR_IMAGE="${NEEDLETAIL_LINODE_CONTRIBUTOR_IMAGE:-${IMAGE}}"
+SOURCE_IMAGE="${NEEDLETAIL_LINODE_SOURCE_IMAGE:-${IMAGE}}"
+LOAD_IMAGE="${NEEDLETAIL_LINODE_LOAD_IMAGE:-${IMAGE}}"
+CAPACITY_ROLES="${NEEDLETAIL_LINODE_CAPACITY_ROLES:-0}"
 RUN_ID="${NEEDLETAIL_LINODE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 TAG="needletail-dag-${RUN_ID}"
 API_BASE="https://api.linode.com/v4"
@@ -17,8 +24,10 @@ usage() {
 Usage: scripts/linode-intercontinental-lab.sh up|status|down
 
 Creates six short-lived dedicated-CPU Linodes in London, Amsterdam, Osaka,
-Tokyo, Newark, and Sydney. State records exact instance and firewall IDs so
-`down` removes only this qualification lab.
+Tokyo, Newark, and Sydney. Set NEEDLETAIL_LINODE_CAPACITY_ROLES=1 to add an
+independent London source and Amsterdam reader/load host. Set
+NEEDLETAIL_LINODE_CONTRIBUTOR_TYPE to scale only the contributor. State records
+exact instance and firewall IDs so `down` removes only this qualification lab.
 EOF
 }
 
@@ -67,8 +76,36 @@ node_spec() {
     edge) printf '%s\n' 'ap-northeast edge-tyo tokyo' ;;
     edge_new_york) printf '%s\n' 'us-east edge-nyc new_york' ;;
     edge_sydney) printf '%s\n' 'ap-southeast edge-syd sydney' ;;
+    source) printf '%s\n' 'gb-lon source-lon london_source' ;;
+    load) printf '%s\n' 'nl-ams load-ams amsterdam_load' ;;
     *) return 1 ;;
   esac
+}
+
+node_type() {
+  case "$1" in
+    contributor) printf '%s\n' "${CONTRIBUTOR_TYPE}" ;;
+    source) printf '%s\n' "${SOURCE_TYPE}" ;;
+    load) printf '%s\n' "${LOAD_TYPE}" ;;
+    *) printf '%s\n' "${INSTANCE_TYPE}" ;;
+  esac
+}
+
+node_image() {
+  case "$1" in
+    contributor) printf '%s\n' "${CONTRIBUTOR_IMAGE}" ;;
+    source) printf '%s\n' "${SOURCE_IMAGE}" ;;
+    load) printf '%s\n' "${LOAD_IMAGE}" ;;
+    *) printf '%s\n' "${IMAGE}" ;;
+  esac
+}
+
+assert_dedicated_type() {
+  local type="$1"
+  api GET "/linode/types/${type}" | jq -e '.class == "dedicated"' >/dev/null || {
+    echo "Linode type ${type} is not a dedicated-CPU type" >&2
+    exit 2
+  }
 }
 
 status() {
@@ -106,12 +143,14 @@ append_node() {
 
 create_node() {
   local role="$1"
-  local region suffix city label payload response
+  local region suffix city label payload response type image
   read -r region suffix city < <(node_spec "${role}")
+  type="$(node_type "${role}")"
+  image="$(node_image "${role}")"
   label="ntdag-${RUN_ID}-${suffix}"
   payload="$(jq -n \
-    --arg region "${region}" --arg type "${INSTANCE_TYPE}" \
-    --arg image "${IMAGE}" --arg label "${label}" \
+    --arg region "${region}" --arg type "${type}" \
+    --arg image "${image}" --arg label "${label}" \
     --arg authorized_key "$(<"${SSH_PUBLIC_KEY}")" \
     --arg run_tag "${TAG}" --arg role "${role}" --arg city "${city}" '
     {
@@ -161,7 +200,27 @@ create_firewall() {
     api POST "/networking/firewalls/${firewall_id}/devices" \
       "$(jq -n --argjson id "${id}" '{id:$id,type:"linode"}')" >/dev/null
   done < <(jq -r '.nodes[].id' "${STATE}")
-  echo "Attached one lab-only Cloud Firewall to all six Linodes"
+  echo "Attached one lab-only Cloud Firewall to every lab Linode"
+}
+
+refresh_capacity_metadata() {
+  local types_file next_state
+  types_file="$(mktemp)"
+  api GET '/linode/types?page_size=500' >"${types_file}"
+  next_state="${STATE}.next"
+  jq --slurpfile types "${types_file}" '
+    .node_count=(.nodes | length)
+    | .total_dedicated_vcpus=([
+        .nodes[].type as $node_type
+        | $types[0].data[] | select(.id == $node_type) | .vcpus
+      ] | add)
+    | .hourly_usd=([
+        .nodes[].type as $node_type
+        | $types[0].data[] | select(.id == $node_type) | .price.hourly
+      ] | add)
+  ' "${STATE}" >"${next_state}"
+  mv "${next_state}" "${STATE}"
+  rm -f "${types_file}"
 }
 
 wait_until_running() {
@@ -189,16 +248,30 @@ up() {
     echo "SSH public key is missing" >&2
     exit 2
   }
+  [[ "${CAPACITY_ROLES}" == 0 || "${CAPACITY_ROLES}" == 1 ]] || {
+    echo "NEEDLETAIL_LINODE_CAPACITY_ROLES must be zero or one" >&2
+    exit 2
+  }
+  assert_dedicated_type "${INSTANCE_TYPE}"
+  assert_dedicated_type "${CONTRIBUTOR_TYPE}"
+  if [[ "${CAPACITY_ROLES}" == 1 ]]; then
+    assert_dedicated_type "${SOURCE_TYPE}"
+    assert_dedicated_type "${LOAD_TYPE}"
+  fi
   mkdir -p "$(dirname "${STATE}")"
   jq -n --arg provider linode --arg run_id "${RUN_ID}" --arg tag "${TAG}" \
     --arg type "${INSTANCE_TYPE}" --arg image "${IMAGE}" \
-    '{provider:$provider,run_id:$run_id,tag:$tag,type:$type,image:$image,
-      dedicated_vcpus_per_node:2,node_count:6,total_dedicated_vcpus:12,
-      hourly_usd:0.324,nodes:{}}' >"${STATE}"
+    '{provider:$provider,run_id:$run_id,tag:$tag,default_type:$type,
+      default_image:$image,nodes:{}}' >"${STATE}"
 
   for role in contributor primary secondary edge edge_new_york edge_sydney; do
     create_node "${role}"
   done
+  if [[ "${CAPACITY_ROLES}" == 1 ]]; then
+    create_node source
+    create_node load
+  fi
+  refresh_capacity_metadata
   create_firewall
   wait_until_running
   status

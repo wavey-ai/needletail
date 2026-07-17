@@ -10,9 +10,13 @@ RESULT_DIR="${RESULT_DIR:-${QUALIFICATION_ROOT}/dag-runs/${RUN_ID}}"
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 LINODE_SSH_KEY="${NEEDLETAIL_LINODE_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 LINODE_SSH_USER="${NEEDLETAIL_LINODE_SSH_USER:-root}"
+LINODE_KNOWN_HOSTS="${NEEDLETAIL_LINODE_KNOWN_HOSTS:-${QUALIFICATION_ROOT}/known_hosts}"
 
 DURATION_SECONDS="${DAG_DURATION_SECONDS:-12}"
 PART_MS="${DAG_PART_MS:-5}"
+PAYLOAD="${DAG_PAYLOAD:-flac}"
+CHANNELS="${DAG_CHANNELS:-2}"
+GROUP_CHANNELS="${DAG_GROUP_CHANNELS:-8}"
 TAIL_SECONDS="${DAG_TAIL_SECONDS:-4}"
 START_DELAY_SECONDS="${DAG_START_DELAY_SECONDS:-20}"
 LATE_JOIN_SECONDS="${DAG_LATE_JOIN_SECONDS:-5}"
@@ -24,12 +28,15 @@ STOP_AFTER_CLEAN="${DAG_STOP_AFTER_CLEAN:-0}"
 PROFILE_ONLY="${DAG_PROFILE_ONLY:-}"
 RENDER_BUFFER_MS="${DAG_RENDER_BUFFER_MS:-150}"
 IMPAIRMENT_PROBABILITY="${DAG_IMPAIRMENT_PROBABILITY:-0.02}"
+MIN_REPAIR_SYMBOLS="${DAG_MIN_REPAIR_SYMBOLS:-1}"
+IMPAIRED_MIN_REPAIR_SYMBOLS="${DAG_IMPAIRED_MIN_REPAIR_SYMBOLS:-2}"
 FAILOVER_TIMEOUT_SECONDS="${DAG_FAILOVER_TIMEOUT_SECONDS:-15}"
 RECOVERY_TIMEOUT_SECONDS="${DAG_RECOVERY_TIMEOUT_SECONDS:-20}"
 FAILOVER_PUBLICATION_SECONDS="${DAG_FAILOVER_PUBLICATION_SECONDS:-60}"
 MAX_CACHE_TO_CLIENT_P99_MS="${DAG_MAX_CACHE_TO_CLIENT_P99_MS:-25}"
 MAX_LL_HLS_P99_MS="${DAG_MAX_LL_HLS_P99_MS:-1000}"
 MAX_INGRESS_LOCAL_LL_HLS_P99_MS="${DAG_MAX_INGRESS_LOCAL_LL_HLS_P99_MS:-1000}"
+MAX_INGRESS_QUEUE_AGE_P99_MS="${DAG_MAX_INGRESS_QUEUE_AGE_P99_MS:-50}"
 MAX_PRIMARY_PATH_STRETCH="${DAG_MAX_PRIMARY_PATH_STRETCH:-1.50}"
 MAX_SECONDARY_PATH_STRETCH="${DAG_MAX_SECONDARY_PATH_STRETCH:-6.50}"
 MAX_SERVICE_CPU_PERCENT="${DAG_MAX_SERVICE_CPU_PERCENT:-200}"
@@ -48,6 +55,8 @@ additional H3 part-endpoint stress probe on the primary mesh ingress.
 The runner also exercises primary-parent loss, cross-parent FEC, three-edge
 failover/recovery, make-before-break demotion, and edge-process independence.
 Set DAG_PROFILE_ONLY=clean or DAG_PROFILE_ONLY=impaired for a focused diagnostic.
+Set DAG_PAYLOAD=pcm or flac, DAG_CHANNELS=16, and DAG_GROUP_CHANNELS=8 to
+qualify a wide logical lossless stream and every derived LL-HLS rendition.
 EOF
 }
 
@@ -94,8 +103,9 @@ done
 for value_name in \
   DURATION_SECONDS PART_MS TAIL_SECONDS START_DELAY_SECONDS LATE_JOIN_SECONDS \
   RECEIVER_COMPLETION_TIMEOUT_SECONDS BASE_GROUP_ID BASE_STREAM_ID \
-  RENDER_BUFFER_MS FAILOVER_TIMEOUT_SECONDS \
-  RECOVERY_TIMEOUT_SECONDS FAILOVER_PUBLICATION_SECONDS IDENTITY_PARTS; do
+  RENDER_BUFFER_MS CHANNELS GROUP_CHANNELS FAILOVER_TIMEOUT_SECONDS \
+  RECOVERY_TIMEOUT_SECONDS FAILOVER_PUBLICATION_SECONDS IDENTITY_PARTS \
+  MIN_REPAIR_SYMBOLS IMPAIRED_MIN_REPAIR_SYMBOLS; do
   value="${!value_name}"
   [[ "${value}" =~ ^[0-9]+$ ]] || {
     echo "${value_name} must be a non-negative integer" >&2
@@ -113,9 +123,26 @@ done
   echo "DAG_PROFILE_ONLY must be clean, impaired, or empty" >&2
   exit 2
 }
+[[ "${PAYLOAD}" == pcm || "${PAYLOAD}" == flac ]] || {
+  echo "DAG_PAYLOAD must be pcm or flac" >&2
+  exit 2
+}
+if [[ "${PAYLOAD}" == pcm ]]; then
+  HLS_AUDIO_CODEC=ipcm
+  EXPECTED_HLS_AUDIO_CODEC=ipcm_s24le
+else
+  HLS_AUDIO_CODEC=flac
+  EXPECTED_HLS_AUDIO_CODEC=flac
+fi
+if ((GROUP_CHANNELS > 0)); then
+  GROUP_COUNT="$(((CHANNELS + GROUP_CHANNELS - 1) / GROUP_CHANNELS))"
+else
+  GROUP_COUNT=0
+fi
 if ((DURATION_SECONDS == 0 || PART_MS == 0 || START_DELAY_SECONDS == 0 || \
-  LATE_JOIN_SECONDS >= DURATION_SECONDS || IDENTITY_PARTS == 0 || \
-  BASE_GROUP_ID >= 65533)); then
+  LATE_JOIN_SECONDS >= DURATION_SECONDS || IDENTITY_PARTS == 0 || CHANNELS == 0 || \
+  CHANNELS > 128 || GROUP_CHANNELS == 0 || GROUP_CHANNELS > 8 || \
+  BASE_GROUP_ID + GROUP_COUNT > 65535)); then
   echo "duration/part/start values are invalid, or the late join is outside the publication" >&2
   exit 2
 fi
@@ -125,7 +152,7 @@ if ! awk -v value="${IMPAIRMENT_PROBABILITY}" \
   exit 2
 fi
 for value_name in MAX_CACHE_TO_CLIENT_P99_MS MAX_LL_HLS_P99_MS \
-  MAX_INGRESS_LOCAL_LL_HLS_P99_MS MAX_PRIMARY_PATH_STRETCH \
+  MAX_INGRESS_LOCAL_LL_HLS_P99_MS MAX_INGRESS_QUEUE_AGE_P99_MS MAX_PRIMARY_PATH_STRETCH \
   MAX_SECONDARY_PATH_STRETCH MAX_SERVICE_CPU_PERCENT; do
   value="${!value_name}"
   if ! awk -v value="${value}" 'BEGIN { exit !(value > 0) }'; then
@@ -175,6 +202,7 @@ gcp_ssh() {
       esac
     done
     ssh -n -i "${LINODE_SSH_KEY}" -o BatchMode=yes \
+      -o UserKnownHostsFile="${LINODE_KNOWN_HOSTS}" \
       -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
       "${LINODE_SSH_USER}@$(node_ip "${role}")" "${remote_command}"
   else
@@ -232,6 +260,21 @@ edge_city() {
   esac
 }
 
+hls_codec_args() {
+  local group_index="$1"
+  local remaining group_channels
+  if [[ "${PAYLOAD}" != pcm ]]; then
+    printf '%s\n' '--expected-audio-codec flac'
+    return
+  fi
+  remaining="$((CHANNELS - group_index * GROUP_CHANNELS))"
+  group_channels="${GROUP_CHANNELS}"
+  if ((remaining < group_channels)); then
+    group_channels="${remaining}"
+  fi
+  printf '%s\n' "--expected-audio-codec ipcm --expected-pcm-channels ${group_channels}"
+}
+
 edge_primary_port() {
   case "$1" in
     edge) printf '%s\n' 22200 ;;
@@ -254,6 +297,22 @@ CONTRIBUTOR_IP="$(node_ip contributor)"
 PRIMARY_IP="$(node_ip primary)"
 SECONDARY_IP="$(node_ip secondary)"
 EDGE_ROLES=(edge edge_new_york edge_sydney)
+if [[ -n "${DAG_SOURCE_ROLE:-}" ]]; then
+  SOURCE_ROLE="${DAG_SOURCE_ROLE}"
+elif jq -e '.nodes.source != null' "${LAB_STATE}" >/dev/null; then
+  SOURCE_ROLE=source
+else
+  SOURCE_ROLE=contributor
+fi
+jq -e --arg role "${SOURCE_ROLE}" '.nodes[$role] != null' "${LAB_STATE}" >/dev/null || {
+  echo "DAG source role ${SOURCE_ROLE} is not present in the lab" >&2
+  exit 2
+}
+if [[ "${SOURCE_ROLE}" == contributor ]]; then
+  SOURCE_TARGET=127.0.0.1:27100
+else
+  SOURCE_TARGET="${CONTRIBUTOR_IP}:27100"
+fi
 
 ACTIVE_PROFILE=""
 PRIMARY_STOPPED=0
@@ -321,7 +380,7 @@ start_primary() {
 
 stop_failover_publisher() {
   [[ "${FAILOVER_PUBLISHER_ACTIVE}" == 1 ]] || return 0
-  gcp_ssh contributor --command="pid_file=${FAILOVER_REMOTE_PREFIX}.pid
+  gcp_ssh "${SOURCE_ROLE}" --command="pid_file=${FAILOVER_REMOTE_PREFIX}.pid
     if test -s \"\${pid_file}\"; then
       publisher_pid=\$(cat \"\${pid_file}\")
       if test -r \"/proc/\${publisher_pid}/cmdline\" \
@@ -410,6 +469,41 @@ metric_delta() {
   fi
 }
 
+metric_float_delta() {
+  local before="$1"
+  local after="$2"
+  local metric="$3"
+  local before_value after_value
+  before_value="$(metric_value "${before}" "${metric}")"
+  after_value="$(metric_value "${after}" "${metric}")"
+  awk -v before="${before_value}" -v after="${after_value}" \
+    'BEGIN { if (before !~ /^[0-9]+([.][0-9]+)?$/ || after !~ /^[0-9]+([.][0-9]+)?$/) exit 1; printf "%.9f", (after >= before ? after-before : after) }'
+}
+
+histogram_delta_quantile_upper_ms() {
+  local before="$1"
+  local after="$2"
+  local metric="$3"
+  local count="$4"
+  local quantile="$5"
+  awk -v metric="${metric}_bucket" -v target="$(awk -v count="${count}" -v quantile="${quantile}" 'BEGIN { print int(count*quantile+0.999999) }')" '
+    NR==FNR {
+      if (index($1, metric "{") == 1) before[$1]=$2
+      next
+    }
+    index($1, metric "{") == 1 && !found {
+      delta=$2-(before[$1]+0)
+      if (delta >= target) {
+        if (match($1, /le="[^"]+"/)) {
+          upper=substr($1,RSTART+4,RLENGTH-5)
+          if (upper == "+Inf") print "+Inf"; else printf "%.3f\n", upper*1000
+          found=1
+        }
+      }
+    }
+  ' "${before}" "${after}"
+}
+
 process_cpu_percent() {
   local before="$1"
   local after="$2"
@@ -431,6 +525,17 @@ process_cpu_percent() {
   awk -v cpu_delta="$((after_cpu - before_cpu))" \
     -v wall_delta="$((after_wall - before_wall))" \
     'BEGIN { printf "%.3f", cpu_delta / wall_delta * 100 }'
+}
+
+process_cpu_percent_per_publication_second() {
+  local before="$1"
+  local after="$2"
+  local before_cpu after_cpu
+  before_cpu="$(property_value "${before}" CPUUsageNSec)"
+  after_cpu="$(property_value "${after}" CPUUsageNSec)"
+  awk -v before="${before_cpu}" -v after="${after_cpu}" \
+    -v duration="${DURATION_SECONDS}" \
+    'BEGIN { printf "%.3f", ((after-before)/1000000000)/duration*100 }'
 }
 
 capture_rtts() {
@@ -550,6 +655,23 @@ start_edge_receivers() {
   local late_offset_ms="$((LATE_JOIN_SECONDS * 1000))"
   local late_join_unix_ns="$((session_id + LATE_JOIN_SECONDS * 1000000000))"
   local webtransport_start_unix_ns="$((session_id - 2 * 1000000000))"
+  local extra_hls_commands=""
+  local group_index extra_stream_id extra_codec_args
+  local primary_codec_args
+  primary_codec_args="$(hls_codec_args 0)"
+  for ((group_index = 1; group_index < GROUP_COUNT; group_index++)); do
+    extra_stream_id="$((stream_id + group_index))"
+    extra_codec_args="$(hls_codec_args "${group_index}")"
+    extra_hls_commands+="
+    nohup /usr/local/bin/aep1-48k-probe receive-hls \\
+      --edge 127.0.0.1:19444 --server-name local.bitneedle.com --transport h3 \\
+      --stream-id ${extra_stream_id} --session-id ${session_id} \\
+      --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \\
+      --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \\
+      --tail-seconds ${TAIL_SECONDS} ${extra_codec_args} \\
+      >${remote_prefix}-hls-group-${group_index}.json 2>${remote_prefix}-hls-group-${group_index}.err </dev/null &
+    echo \$! >${remote_prefix}-hls-group-${group_index}.pid"
+  done
 
   gcp_ssh "${role}" --command="set -eu
     nohup /usr/local/bin/aep1-48k-probe receive-udp \
@@ -576,7 +698,7 @@ start_edge_receivers() {
       --stream-id ${stream_id} --session-id ${session_id} \
       --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
       --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \
-      --tail-seconds ${TAIL_SECONDS} \
+      --tail-seconds ${TAIL_SECONDS} ${primary_codec_args} \
       >${remote_prefix}-hls.json 2>${remote_prefix}-hls.err </dev/null &
     echo \$! >${remote_prefix}-hls.pid
     nohup sh -c 'now=\$(date +%s%N)
@@ -589,9 +711,10 @@ start_edge_receivers() {
       --stream-id ${stream_id} --session-id ${session_id} \
       --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
       --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \
-      --start-offset-ms ${late_offset_ms} --tail-seconds ${TAIL_SECONDS}' \
+      --start-offset-ms ${late_offset_ms} --tail-seconds ${TAIL_SECONDS} ${primary_codec_args}' \
       >${remote_prefix}-late-hls.json 2>${remote_prefix}-late-hls.err </dev/null &
-    echo \$! >${remote_prefix}-late-hls.pid" >/dev/null
+    echo \$! >${remote_prefix}-late-hls.pid
+    ${extra_hls_commands}" >/dev/null
 }
 
 start_ingress_local_receiver() {
@@ -599,12 +722,14 @@ start_ingress_local_receiver() {
   local session_id="$2"
   local stream_id="$3"
   local remote_prefix="/tmp/needletail-dag-${RUN_ID}-${profile}"
+  local primary_codec_args
+  primary_codec_args="$(hls_codec_args 0)"
   gcp_ssh primary --command="nohup /usr/local/bin/aep1-48k-probe receive-hls \
-    --edge 127.0.0.1:19444 --server-name local.bitneedle.com --transport h3 \
+    --edge 127.0.0.1:19445 --server-name local.bitneedle.com --transport h3 \
     --stream-id ${stream_id} --session-id ${session_id} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
     --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \
-    --tail-seconds ${TAIL_SECONDS} \
+    --tail-seconds ${TAIL_SECONDS} ${primary_codec_args} \
     >${remote_prefix}-ingress-local-hls.json 2>${remote_prefix}-ingress-local-hls.err </dev/null &
     echo \$! >${remote_prefix}-ingress-local-hls.pid" >/dev/null
 }
@@ -652,6 +777,10 @@ wait_for_edge_receivers() {
         test -s ${remote_prefix}-\${lane}.json \
           && jq -e . ${remote_prefix}-\${lane}.json >/dev/null || ready=0
       done
+      for group_index in \$(seq 1 $((GROUP_COUNT - 1))); do
+        test -s ${remote_prefix}-hls-group-\${group_index}.json \
+          && jq -e . ${remote_prefix}-hls-group-\${group_index}.json >/dev/null || ready=0
+      done
       test \${ready} = 0 || exit 0
       test \$(date +%s) -lt \${deadline} || exit 1
       sleep 0.2
@@ -687,6 +816,14 @@ fetch_receiver_artifacts() {
     jq -j --arg key "${key}_json" '.[$key]' "${bundle}" >"${role_dir}/${lane}.json"
     jq -j --arg key "${key}_error" '.[$key]' "${bundle}" >"${role_dir}/${lane}.err"
   done
+  for ((group_index = 1; group_index < GROUP_COUNT; group_index++)); do
+    gcp_ssh_text "${role}" \
+      --command="cat ${remote_prefix}-hls-group-${group_index}.json" \
+      >"${role_dir}/hls-group-${group_index}.json"
+    gcp_ssh_text "${role}" \
+      --command="cat ${remote_prefix}-hls-group-${group_index}.err" \
+      >"${role_dir}/hls-group-${group_index}.err"
+  done
   rm -f "${bundle}"
 }
 
@@ -714,9 +851,10 @@ run_profile() {
   local impaired="$2"
   local profile_dir="${RESULT_DIR}/${profile}"
   local group_id="${BASE_GROUP_ID}"
-  local min_repair_symbols=1
+  local min_repair_symbols="${MIN_REPAIR_SYMBOLS}"
   local profile_edges="${profile_dir}/edges.ndjson"
   local expected_epochs="$((DURATION_SECONDS * 200))"
+  local expected_hls_groups="$((expected_epochs * GROUP_COUNT))"
   local expected_parts="$((DURATION_SECONDS * 1000 / PART_MS))"
   local expected_late_parts="$(((DURATION_SECONDS - LATE_JOIN_SECONDS) * 1000 / PART_MS))"
   local -a parallel_pids=()
@@ -725,7 +863,7 @@ run_profile() {
 
   if [[ "${impaired}" == 1 ]]; then
     group_id="$((BASE_GROUP_ID + 1))"
-    min_repair_symbols=2
+    min_repair_symbols="${IMPAIRED_MIN_REPAIR_SYMBOLS}"
     apply_loss
   fi
   local stream_id="$((BASE_STREAM_ID + group_id))"
@@ -749,7 +887,7 @@ run_profile() {
   }
 
   local session_id
-  session_id="$(gcp_ssh_text contributor --command='date +%s%N')"
+  session_id="$(gcp_ssh_text "${SOURCE_ROLE}" --command='date +%s%N')"
   [[ "${session_id}" =~ ^[0-9]+$ ]] || {
     echo "contributor did not return a Unix-nanosecond clock" >&2
     exit 1
@@ -770,16 +908,17 @@ run_profile() {
     exit 1
   }
 
-  setup_now_ns="$(gcp_ssh_text contributor --command='date +%s%N')"
+  setup_now_ns="$(gcp_ssh_text "${SOURCE_ROLE}" --command='date +%s%N')"
   if [[ ! "${setup_now_ns}" =~ ^[0-9]+$ ]] \
     || ((session_id <= setup_now_ns + 5 * 1000000000)); then
     echo "receiver setup did not retain five seconds of publication start margin" >&2
     exit 1
   fi
 
-  gcp_ssh contributor --command="/usr/local/bin/aep1-48k-probe send \
-    --target 127.0.0.1:27100 --session-id ${session_id} --group-id ${group_id} \
-    --duration-seconds ${DURATION_SECONDS} --payload flac --repair-percent 20 \
+  gcp_ssh "${SOURCE_ROLE}" --command="/usr/local/bin/aep1-48k-probe send \
+    --target ${SOURCE_TARGET} --session-id ${session_id} --group-id ${group_id} \
+    --duration-seconds ${DURATION_SECONDS} --payload ${PAYLOAD} \
+    --channels ${CHANNELS} --group-channels ${GROUP_CHANNELS} --repair-percent 20 \
     --min-repair-symbols ${min_repair_symbols}" >"${profile_dir}/source.json"
 
   parallel_pids=()
@@ -838,8 +977,11 @@ run_profile() {
     "${profile_dir}/process-contributor-before.txt" \
     "${profile_dir}/process-contributor-after.txt"
 
-  jq -e --argjson maximum_ratio 4 '
-    .payload == "flac"
+  jq -e --arg payload "${PAYLOAD}" --argjson channels "${CHANNELS}" \
+    --argjson group_count "${GROUP_COUNT}" --argjson maximum_ratio 4 '
+    .payload == (if $payload == "pcm" then "pcm_s24le" else $payload end)
+    and .channels == $channels
+    and .group_count == $group_count
     and .sample_rate == 48000
     and .wire_overhead_ratio <= $maximum_ratio
   ' "${profile_dir}/source.json" >/dev/null || {
@@ -857,17 +999,48 @@ run_profile() {
     "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_hls_groups_completed_total)"
   queue_capacity="$(metric_value "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_hls_queue_capacity)"
   queue_max_depth="$(metric_value "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_hls_queue_max_depth)"
+  ingress_queue_dropped="$(metric_delta "${profile_dir}/contributor-before.metrics" \
+    "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_queue_dropped_total)"
+  ingress_errors="$(metric_delta "${profile_dir}/contributor-before.metrics" \
+    "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_errors_total)"
+  socket_drops="$(metric_delta "${profile_dir}/contributor-before.metrics" \
+    "${profile_dir}/contributor-after.metrics" av_contrib_daw_media_udp_socket_drops_total)"
+  ingress_queue_capacity="$(metric_value "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_queue_capacity)"
+  ingress_queue_max_depth="$(metric_value "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_queue_max_depth)"
+  ingress_target_count="$(metric_value "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_targets)"
+  ingress_queue_age_count="$(metric_delta "${profile_dir}/contributor-before.metrics" \
+    "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_queue_age_seconds_count)"
+  ingress_queue_age_sum_seconds="$(metric_float_delta "${profile_dir}/contributor-before.metrics" \
+    "${profile_dir}/contributor-after.metrics" av_contrib_audio_epoch_ingress_queue_age_seconds_sum)"
+  ingress_queue_age_mean_ms="$(awk -v sum="${ingress_queue_age_sum_seconds}" \
+    -v count="${ingress_queue_age_count}" 'BEGIN { if (count <= 0) exit 1; printf "%.6f", sum/count*1000 }')"
+  ingress_queue_age_p99_upper_ms="$(histogram_delta_quantile_upper_ms \
+    "${profile_dir}/contributor-before.metrics" "${profile_dir}/contributor-after.metrics" \
+    av_contrib_audio_epoch_ingress_queue_age_seconds "${ingress_queue_age_count}" 0.99)"
   if ((queue_enqueued <= 0 || queue_dropped != 0 || queue_errors != 0 || \
-    hls_groups < expected_epochs || queue_max_depth > queue_capacity)); then
-    echo "${profile} LL-HLS handoff queue gate failed" >&2
+    hls_groups < expected_hls_groups || queue_max_depth > queue_capacity || \
+    ingress_queue_dropped != 0 || ingress_errors != 0 || socket_drops != 0 || \
+    ingress_queue_max_depth > ingress_queue_capacity || ingress_target_count < 1 || \
+    ingress_target_count > 2 || ingress_queue_age_count <= 0)); then
+    echo "${profile} contributor handoff or UDP receive gate failed" >&2
+    exit 1
+  fi
+  if ! awk -v p99="${ingress_queue_age_p99_upper_ms}" \
+    -v maximum="${MAX_INGRESS_QUEUE_AGE_P99_MS}" \
+    'BEGIN { exit !(p99 ~ /^[0-9]+([.][0-9]+)?$/ && p99 <= maximum) }'; then
+    echo "${profile} origin-to-ingress queue age exceeded ${MAX_INGRESS_QUEUE_AGE_P99_MS} ms at p99" >&2
     exit 1
   fi
 
   contributor_cpu_percent="$(process_cpu_percent \
     "${profile_dir}/process-contributor-before.txt" \
     "${profile_dir}/process-contributor-after.txt")"
+  contributor_active_cpu_percent="$(process_cpu_percent_per_publication_second \
+    "${profile_dir}/process-contributor-before.txt" \
+    "${profile_dir}/process-contributor-after.txt")"
   if ! awk -v cpu="${contributor_cpu_percent}" -v maximum="${MAX_SERVICE_CPU_PERCENT}" \
-    'BEGIN { exit !(cpu <= maximum) }'; then
+    -v active_cpu="${contributor_active_cpu_percent}" \
+    'BEGIN { exit !(cpu <= maximum && active_cpu <= maximum) }'; then
     echo "${profile} contributor CPU exceeded ${MAX_SERVICE_CPU_PERCENT}%" >&2
     exit 1
   fi
@@ -903,6 +1076,9 @@ run_profile() {
     fi
     artifacts=(udp webtransport hls late-hls)
     [[ "${INGRESS_LOCAL_BASELINE}" == 0 ]] || artifacts+=(ingress-local-hls)
+    for ((group_index = 1; group_index < GROUP_COUNT; group_index++)); do
+      artifacts+=("hls-group-${group_index}")
+    done
     for artifact in "${artifacts[@]}"; do
       jq -e . "${role_dir}/${artifact}.json" >/dev/null || {
         echo "${profile} ${city} ${artifact} did not produce valid JSON" >&2
@@ -931,7 +1107,8 @@ run_profile() {
       echo "${profile} ${city} WebTransport gate failed" >&2
       exit 1
     }
-    jq -e --argjson expected "${expected_parts}" \
+    jq -e --arg expected_codec "${EXPECTED_HLS_AUDIO_CODEC}" \
+      --argjson expected "${expected_parts}" \
       --argjson final_pts "$((DURATION_SECONDS * 1000 - PART_MS))" \
       --argjson maximum_total "${MAX_LL_HLS_P99_MS}" \
       --argjson maximum_cache_delivery "${cache_delivery_p99_budget_ms}" '
@@ -942,7 +1119,10 @@ run_profile() {
       and .first_pts_ms == 0
       and .last_pts_ms == $final_pts
       and .non_contiguous_pts == 0
-      and .init_has_flac
+      and .expected_audio_codec == $expected_codec
+      and .init_audio_codec_verified
+      and .pcm_media_size_mismatches == 0
+      and (if $expected_codec == "ipcm_s24le" then .pcm_media_parts_verified == $expected else true end)
       and .playlist_has_ll_hls_tags
       and .transport == "h3"
       and .tls_protocol == "TLSv1.3"
@@ -957,8 +1137,43 @@ run_profile() {
       jq . "${role_dir}/hls.json" >&2
       exit 1
     }
+    for ((group_index = 1; group_index < GROUP_COUNT; group_index++)); do
+      jq -e --arg expected_codec "${EXPECTED_HLS_AUDIO_CODEC}" \
+        --argjson expected "${expected_parts}" \
+        --argjson expected_stream "$((stream_id + group_index))" \
+        --argjson final_pts "$((DURATION_SECONDS * 1000 - PART_MS))" \
+        --argjson maximum_total "${MAX_LL_HLS_P99_MS}" \
+        --argjson maximum_cache_delivery "${cache_delivery_p99_budget_ms}" '
+        .stream_id == $expected_stream
+        and .expected_parts == $expected
+        and .received_parts == $expected
+        and .missing_parts == 0
+        and .deadline_misses == 0
+        and .first_pts_ms == 0
+        and .last_pts_ms == $final_pts
+        and .non_contiguous_pts == 0
+        and .expected_audio_codec == $expected_codec
+        and .init_audio_codec_verified
+        and .pcm_media_size_mismatches == 0
+        and (if $expected_codec == "ipcm_s24le" then .pcm_media_parts_verified == $expected else true end)
+        and .playlist_has_ll_hls_tags
+        and .transport == "h3"
+        and .tls_protocol == "TLSv1.3"
+        and .tls_certificate_verified
+        and .persistent_connection
+        and .publication_to_cache_latency_ms.count == $expected
+        and .cache_to_client_latency_ms.count == $expected
+        and .availability_latency_ms.p99 <= $maximum_total
+        and .cache_to_client_latency_ms.p99 <= $maximum_cache_delivery
+      ' "${role_dir}/hls-group-${group_index}.json" >/dev/null || {
+        echo "${profile} ${city} LL-HLS rendition ${group_index} gate failed" >&2
+        jq . "${role_dir}/hls-group-${group_index}.json" >&2
+        exit 1
+      }
+    done
     if [[ "${INGRESS_LOCAL_BASELINE}" == 1 ]]; then
-      jq -e --argjson expected "${expected_parts}" \
+      jq -e --arg expected_codec "${EXPECTED_HLS_AUDIO_CODEC}" \
+        --argjson expected "${expected_parts}" \
         --argjson final_pts "$((DURATION_SECONDS * 1000 - PART_MS))" \
         --argjson maximum_total "${MAX_INGRESS_LOCAL_LL_HLS_P99_MS}" '
         .expected_parts == $expected
@@ -967,7 +1182,10 @@ run_profile() {
         and .first_pts_ms == 0
         and .last_pts_ms == $final_pts
         and .non_contiguous_pts == 0
-        and .init_has_flac
+        and .expected_audio_codec == $expected_codec
+        and .init_audio_codec_verified
+        and .pcm_media_size_mismatches == 0
+        and (if $expected_codec == "ipcm_s24le" then .pcm_media_parts_verified == $expected else true end)
         and .transport == "h3"
         and .tls_protocol == "TLSv1.3"
         and .tls_certificate_verified
@@ -979,7 +1197,8 @@ run_profile() {
         exit 1
       }
     fi
-    jq -e --argjson expected "${expected_late_parts}" \
+    jq -e --arg expected_codec "${EXPECTED_HLS_AUDIO_CODEC}" \
+      --argjson expected "${expected_late_parts}" \
       --argjson first_pts "$((LATE_JOIN_SECONDS * 1000))" \
       --argjson final_pts "$((DURATION_SECONDS * 1000 - PART_MS))" '
       .expected_parts == $expected
@@ -989,7 +1208,10 @@ run_profile() {
       and .last_pts_ms == $final_pts
       and .non_contiguous_pts == 0
       and .start_offset_ms == $first_pts
-      and .init_has_flac
+      and .expected_audio_codec == $expected_codec
+      and .init_audio_codec_verified
+      and .pcm_media_size_mismatches == 0
+      and (if $expected_codec == "ipcm_s24le" then .pcm_media_parts_verified == $expected else true end)
       and .transport == "h3"
       and .tls_certificate_verified
       and .persistent_connection
@@ -1024,6 +1246,15 @@ run_profile() {
       echo "${profile} ${city} cache has a canonical publication gap" >&2
       exit 1
     }
+    for ((group_index = 1; group_index < GROUP_COUNT; group_index++)); do
+      jq -e --argjson stream_id "$((stream_id + group_index))" '
+        (.streams[] | select(.stream_id == $stream_id) |
+          .gap_count == 0 and .canonical_epoch != null and .head_object == .contiguous_object)
+      ' "${role_dir}/after.json" >/dev/null || {
+        echo "${profile} ${city} rendition ${group_index} has a canonical publication gap" >&2
+        exit 1
+      }
+    done
 
     dropped="$(jq -r --arg role "${role}" 'select(.role == $role).dropped_datagrams' "${loss_counts}")"
     if [[ "${impaired}" == 1 ]]; then
@@ -1045,6 +1276,11 @@ run_profile() {
     else
       ll_hls_premium_ms=null
     fi
+    if ((GROUP_COUNT > 1)); then
+      jq -s '.' "${role_dir}"/hls-group-*.json >"${role_dir}/additional-hls.json"
+    else
+      printf '[]\n' >"${role_dir}/additional-hls.json"
+    fi
     jq -n \
       --arg role "${role}" --arg city "${city}" \
       --argjson dropped_datagrams "${dropped}" \
@@ -1057,13 +1293,14 @@ run_profile() {
       --slurpfile udp "${role_dir}/udp.json" \
       --slurpfile webtransport "${role_dir}/webtransport.json" \
       --slurpfile hls "${role_dir}/hls.json" \
+      --slurpfile additional_hls "${role_dir}/additional-hls.json" \
       --slurpfile ingress_local_hls "${role_dir}/ingress-local-hls.json" \
       --slurpfile late_hls "${role_dir}/late-hls.json" '
       {role:$role,city:$city,impairment_dropped_datagrams:$dropped_datagrams,
        cpu_percent:$cpu_percent,ll_hls_p99_premium_vs_ingress_local_ms:$ll_hls_premium_ms,
        repair_path_differential_ms:$repair_path_differential_ms,
        cache_delivery_p99_budget_ms:$cache_delivery_p99_budget_ms,
-       lanes:{native_udp_fec:$udp[0],webtransport:$webtransport[0],ll_hls:$hls[0],ingress_local_ll_hls:$ingress_local_hls[0],late_join_ll_hls:$late_hls[0]},
+       lanes:{native_udp_fec:$udp[0],webtransport:$webtransport[0],ll_hls:$hls[0],additional_ll_hls_renditions:$additional_hls[0],ingress_local_ll_hls:$ingress_local_hls[0],late_join_ll_hls:$late_hls[0]},
        relay_before:$before[0].relay_session,relay_after:$after[0].relay_session,
        stream:($after[0].streams[]|select(.stream_id == $hls[0].stream_id))}
       ' >>"${profile_edges}"
@@ -1078,12 +1315,23 @@ run_profile() {
     --argjson queue_capacity "${queue_capacity}" \
     --argjson queue_max_depth "${queue_max_depth}" \
     --argjson hls_groups "${hls_groups}" \
+    --argjson ingress_queue_dropped "${ingress_queue_dropped}" \
+    --argjson ingress_errors "${ingress_errors}" \
+    --argjson socket_drops "${socket_drops}" \
+    --argjson ingress_queue_capacity "${ingress_queue_capacity}" \
+    --argjson ingress_queue_max_depth "${ingress_queue_max_depth}" \
+    --argjson ingress_target_count "${ingress_target_count}" \
+    --argjson ingress_queue_age_count "${ingress_queue_age_count}" \
+    --argjson ingress_queue_age_mean_ms "${ingress_queue_age_mean_ms}" \
+    --argjson ingress_queue_age_p99_upper_ms "${ingress_queue_age_p99_upper_ms}" \
     --argjson contributor_cpu_percent "${contributor_cpu_percent}" \
+    --argjson contributor_active_cpu_percent "${contributor_active_cpu_percent}" \
     --slurpfile source "${profile_dir}/source.json" \
     --slurpfile edges "${profile_edges}" '
     {profile:$profile,impaired:($impaired==1),impairment_probability:(if $impaired==1 then $impairment_probability else 0 end),
-     source:$source[0],contributor:{cpu_percent:$contributor_cpu_percent,
-       ll_hls_handoff:{enqueued:$queue_enqueued,dropped:$queue_dropped,errors:$queue_errors,capacity:$queue_capacity,maximum_depth:$queue_max_depth,groups_completed:$hls_groups}},
+     source:$source[0],contributor:{cpu_percent:$contributor_cpu_percent,cpu_percent_per_publication_second:$contributor_active_cpu_percent,
+       ll_hls_handoff:{enqueued:$queue_enqueued,dropped:$queue_dropped,errors:$queue_errors,capacity:$queue_capacity,maximum_depth:$queue_max_depth,groups_completed:$hls_groups},
+       origin_to_ingress:{target_count:$ingress_target_count,dropped:$ingress_queue_dropped,errors:$ingress_errors,capacity:$ingress_queue_capacity,maximum_depth:$ingress_queue_max_depth,queue_age_samples:$ingress_queue_age_count,queue_age_mean_ms:$ingress_queue_age_mean_ms,queue_age_p99_upper_ms:$ingress_queue_age_p99_upper_ms,kernel_socket_drops:$socket_drops}},
      edges:($edges|map({key:.city,value:.})|from_entries),passed:true}
     ' >"${profile_dir}/profile.json"
 
@@ -1133,7 +1381,7 @@ capture_identity() {
       exit 1
     }
     cmp "${identity_dir}/${reference_role}/init.mp4" "${role_dir}/init.mp4" >/dev/null || {
-      echo "${role} FLAC initialization differs from the Tokyo cache" >&2
+      echo "${role} lossless-audio initialization differs from the Tokyo cache" >&2
       exit 1
     }
   done
@@ -1232,15 +1480,15 @@ exercise_failover() {
   : >"${states}"
 
   group_id="$((BASE_GROUP_ID + 2))"
-  session_id="$(gcp_ssh_text contributor --command='date +%s%N')"
+  session_id="$(gcp_ssh_text "${SOURCE_ROLE}" --command='date +%s%N')"
   [[ "${session_id}" =~ ^[0-9]+$ ]] || {
     echo "contributor did not return a failover publication clock" >&2
     exit 1
   }
   session_id="$((session_id + 5 * 1000000000))"
-  gcp_ssh contributor --command="rm -f ${FAILOVER_REMOTE_PREFIX}.json ${FAILOVER_REMOTE_PREFIX}.err
+  gcp_ssh "${SOURCE_ROLE}" --command="rm -f ${FAILOVER_REMOTE_PREFIX}.json ${FAILOVER_REMOTE_PREFIX}.err
     nohup /usr/local/bin/aep1-48k-probe send \
-      --target 127.0.0.1:27100 --session-id ${session_id} --group-id ${group_id} \
+      --target ${SOURCE_TARGET} --session-id ${session_id} --group-id ${group_id} \
       --duration-seconds ${FAILOVER_PUBLICATION_SECONDS} --payload flac \
       --repair-percent 20 --min-repair-symbols 1 \
       >${FAILOVER_REMOTE_PREFIX}.json 2>${FAILOVER_REMOTE_PREFIX}.err </dev/null &
@@ -1349,13 +1597,13 @@ exercise_failover() {
 
   deadline="$((SECONDS + FAILOVER_PUBLICATION_SECONDS + 5))"
   while ((SECONDS < deadline)); do
-    if gcp_ssh contributor --command="test -s ${FAILOVER_REMOTE_PREFIX}.json \
+    if gcp_ssh "${SOURCE_ROLE}" --command="test -s ${FAILOVER_REMOTE_PREFIX}.json \
       && jq -e . ${FAILOVER_REMOTE_PREFIX}.json >/dev/null" >/dev/null 2>&1; then
       break
     fi
     sleep 0.2
   done
-  gcp_ssh_text contributor --command="cat ${FAILOVER_REMOTE_PREFIX}.json" \
+  gcp_ssh_text "${SOURCE_ROLE}" --command="cat ${FAILOVER_REMOTE_PREFIX}.json" \
     >"${failover_dir}/source.json"
   FAILOVER_PUBLISHER_ACTIVE=0
   jq -s --slurpfile source "${failover_dir}/source.json" \
@@ -1441,6 +1689,7 @@ capture_origin_fanout
 jq -n \
   --arg schema "needletail.multi-edge-dag-qualification.v1" \
   --arg run_id "${RUN_ID}" --arg provider "${PROVIDER}" --arg project "${PROJECT}" \
+  --arg expected_hls_audio_codec "${EXPECTED_HLS_AUDIO_CODEC}" \
   --argjson ingress_local_h3_enabled "${INGRESS_LOCAL_BASELINE}" \
   --slurpfile lab "${LAB_STATE}" \
   --slurpfile routes "${RESULT_DIR}/routes.json" \
@@ -1491,20 +1740,33 @@ jq -n \
         all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
           .lanes.native_udp_fec.missing_epochs==0
           and .lanes.webtransport.missing_epochs==0
-          and .lanes.ll_hls.missing_parts==0)),
+          and .lanes.ll_hls.missing_parts==0
+          and all(.lanes.additional_ll_hls_renditions[]; .missing_parts==0))),
       mandatory_lossless_ll_hls:(
         all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
-          .lanes.ll_hls.init_has_flac and .lanes.ll_hls.playlist_has_ll_hls_tags)),
+          .lanes.ll_hls.expected_audio_codec==$expected_hls_audio_codec
+          and .lanes.ll_hls.init_audio_codec_verified
+          and .lanes.ll_hls.pcm_media_size_mismatches==0
+          and .lanes.ll_hls.playlist_has_ll_hls_tags
+          and all(.lanes.additional_ll_hls_renditions[];
+            .expected_audio_codec==$expected_hls_audio_codec
+            and .init_audio_codec_verified
+            and .pcm_media_size_mismatches==0
+            and .playlist_has_ll_hls_tags))),
       verified_persistent_tls13_h3:(
         all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
           all(([.lanes.ll_hls,.lanes.late_join_ll_hls]
+            + .lanes.additional_ll_hls_renditions
             + (if $ingress_local_h3_enabled == 1 then [.lanes.ingress_local_ll_hls] else [] end))[];
             .transport=="h3" and .tls_protocol=="TLSv1.3"
             and .tls_certificate_verified and .persistent_connection))),
       publication_cache_client_latency_split:(
         all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
           .lanes.ll_hls.publication_to_cache_latency_ms.count==.lanes.ll_hls.expected_parts
-          and .lanes.ll_hls.cache_to_client_latency_ms.count==.lanes.ll_hls.expected_parts)),
+          and .lanes.ll_hls.cache_to_client_latency_ms.count==.lanes.ll_hls.expected_parts
+          and all(.lanes.additional_ll_hls_renditions[];
+            .publication_to_cache_latency_ms.count==.expected_parts
+            and .cache_to_client_latency_ms.count==.expected_parts))),
       direct_origin_network_baselines_complete:(
         all($routes[0].edges[];
           .direct.rtt_us>0 and .direct.jitter_us>=0)),
@@ -1515,7 +1777,8 @@ jq -n \
       sample_pts_and_timeline_identity:(
         $identity[0].timeline_and_sample_pts_embedded_in_identical_fmp4_parts
         and all([edge_values($clean[0])[],edge_values($impaired[0])[]][];
-          .lanes.ll_hls.non_contiguous_pts==0)),
+          .lanes.ll_hls.non_contiguous_pts==0
+          and all(.lanes.additional_ll_hls_renditions[]; .non_contiguous_pts==0))),
       cross_parent_fec_recovery:(
         all(edge_values($impaired[0])[];
           .impairment_dropped_datagrams>0
@@ -1534,9 +1797,16 @@ jq -n \
           and .lanes.native_udp_fec.deadline_misses==0
           and .lanes.webtransport.deadline_misses==0
           and .lanes.ll_hls.deadline_misses==0
+          and all(.lanes.additional_ll_hls_renditions[]; .deadline_misses==0)
           and .stream.gap_count==0)
         and $clean[0].contributor.ll_hls_handoff.dropped==0
-        and $impaired[0].contributor.ll_hls_handoff.dropped==0),
+        and $impaired[0].contributor.ll_hls_handoff.dropped==0
+        and $clean[0].contributor.origin_to_ingress.dropped==0
+        and $impaired[0].contributor.origin_to_ingress.dropped==0
+        and $clean[0].contributor.origin_to_ingress.errors==0
+        and $impaired[0].contributor.origin_to_ingress.errors==0
+        and $clean[0].contributor.origin_to_ingress.kernel_socket_drops==0
+        and $impaired[0].contributor.origin_to_ingress.kernel_socket_drops==0),
       cpu_and_path_budgets:($clean[0].passed and $impaired[0].passed)
     }
   } | .passed=(.release_gates|all(.[];.==true))

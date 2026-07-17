@@ -38,7 +38,8 @@ and absence of secret-shaped fields with:
 ./scripts/validate-real-world-evidence.sh
 ```
 
-Current record: [2026-07-17 Linode multi-region DAG replication](2026-07-17-linode-dag-replication.md).
+Current record: [2026-07-17 raw PCM DAG latency and H3 edge capacity](2026-07-17-pcm-h3-capacity.md).
+Current FLAC DAG record: [2026-07-17 Linode multi-region DAG replication](2026-07-17-linode-dag-replication.md).
 Current local/GCP cadence record: [2026-07-17 lossless H3 latency](2026-07-17-lossless-h3.md).
 Current local multichannel sizing record: [2026-07-17 multichannel LL-HLS sizing](2026-07-17-multichannel-llhls-sizing.md).
 Previous relay-latency record: [2026-07-16 relay latency](2026-07-16-relay-latency.md).

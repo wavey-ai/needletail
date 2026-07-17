@@ -1,0 +1,179 @@
+{
+  "schema": "needletail.pcm-h3-capacity.v1",
+  "run_id": "20260717T222106Z",
+  "passed": true,
+  "result": "capacity_boundary_characterized",
+  "provider": "gcp+linode",
+  "raw_artifact_directory": "target/linode-qualification/h3-load-ladders/20260717T222106Z",
+  "additional_raw_artifact_directories": [
+    "target/gcp-qualification/dag-runs/20260717T213603Z/clean",
+    "target/gcp-qualification/readiness-canaries/20260717T225518Z"
+  ],
+  "media": {
+    "sample_rate_hz": 48000,
+    "sample_format": "s24le",
+    "channels": 16,
+    "group_channels": 8,
+    "renditions": 2,
+    "part_ms": 5,
+    "ll_hls_codec": "ipcm_s24le",
+    "source_to_ll_hls_conversion": false
+  },
+  "gcp_pcm_dag": {
+    "run_id": "20260717T213603Z",
+    "passed": true,
+    "duration_seconds": 8,
+    "source_pcm_bytes": 18432000,
+    "aep1_wire_bytes": 24038400,
+    "wire_to_pcm_ratio": 1.3041666666666667,
+    "contributor_cpu_cores_per_publication": 0.87534,
+    "origin_ingress_targets": 2,
+    "origin_queue_age_mean_ms": 0.081374,
+    "origin_queue_age_p99_upper_ms": 0.25,
+    "origin_queue_drops": 0,
+    "origin_worker_errors": 0,
+    "kernel_socket_drops": 0,
+    "edges": {
+      "new_york": {
+        "udp_p50_ms": 53.337658,
+        "udp_p99_ms": 55.852896,
+        "webtransport_p50_ms": 53.594516,
+        "webtransport_p99_ms": 57.020587,
+        "ll_hls_p50_ms": 55.727789,
+        "ll_hls_p99_ms": 57.137109,
+        "ll_hls_p50_premium_over_udp_ms": 2.390131,
+        "cache_to_client_p99_ms": 1.509875,
+        "renditions_received_parts": [1600, 1600],
+        "missing_parts": 0,
+        "pcm_media_size_mismatches": 0
+      },
+      "tokyo": {
+        "udp_p50_ms": 125.053785,
+        "udp_p99_ms": 127.841028,
+        "webtransport_p50_ms": 125.130413,
+        "webtransport_p99_ms": 128.387781,
+        "ll_hls_p50_ms": 127.505732,
+        "ll_hls_p99_ms": 128.823658,
+        "ll_hls_p50_premium_over_udp_ms": 2.451947,
+        "cache_to_client_p99_ms": 1.274148,
+        "renditions_received_parts": [1600, 1600],
+        "missing_parts": 0,
+        "pcm_media_size_mismatches": 0
+      },
+      "sydney": {
+        "udp_p50_ms": 146.128946,
+        "udp_p99_ms": 150.045882,
+        "webtransport_p50_ms": 146.268348,
+        "webtransport_p99_ms": 150.251667,
+        "ll_hls_p50_ms": 148.548585,
+        "ll_hls_p99_ms": 150.265431,
+        "ll_hls_p50_premium_over_udp_ms": 2.419639,
+        "cache_to_client_p99_ms": 1.459993,
+        "renditions_received_parts": [1600, 1600],
+        "missing_parts": 0,
+        "pcm_media_size_mismatches": 0
+      }
+    }
+  },
+  "post_deploy_readiness_canary": {
+    "run_id": "20260717T225518Z",
+    "passed": true,
+    "publication_location": "london",
+    "viewer_location": "new_york_edge_local",
+    "renditions_received_parts": [400, 400],
+    "missing_parts": 0,
+    "non_contiguous_parts": 0,
+    "deadline_misses": 0,
+    "pcm_media_size_mismatches": 0,
+    "cache_to_client_p99_ms": [1.031897, 1.373606],
+    "availability_p50_ms": [54.013321, 53.539333],
+    "availability_p99_ms": [55.012076, 54.935753]
+  },
+  "capacity": {
+    "edge_provider": "gcp",
+    "edge_machine_type": "n2-standard-2",
+    "edge_vcpus": 2,
+    "load_provider": "linode",
+    "load_machine_type": "g6-dedicated-4",
+    "publication_duration_seconds": 4,
+    "customers_are_independent_h3_clients": true,
+    "persistent_h3_connections_per_customer": 2,
+    "maximum_strict_pass_customers": 25,
+    "minimum_strict_failure_customers": 32,
+    "maximum_pass_connections": 50,
+    "maximum_pass_part_responses_per_second": 10000,
+    "maximum_pass_raw_pcm_payload_mbps": 460.8,
+    "maximum_pass_fmp4_application_payload_mbps": 510.56,
+    "endurance_claim": false,
+    "tiers": {
+      "1": {
+        "passed": true,
+        "expected_parts": 1600,
+        "received_parts": 1600,
+        "missing_parts": 0,
+        "non_contiguous_parts": 0,
+        "deadline_misses": 0,
+        "pcm_media_size_mismatches": 0,
+        "maximum_cache_to_client_p99_ms": 5.431154
+      },
+      "10": {
+        "passed": true,
+        "expected_parts": 16000,
+        "received_parts": 16000,
+        "missing_parts": 0,
+        "non_contiguous_parts": 0,
+        "deadline_misses": 0,
+        "pcm_media_size_mismatches": 0,
+        "maximum_cache_to_client_p99_ms": 6.385761
+      },
+      "25": {
+        "passed": true,
+        "expected_parts": 40000,
+        "received_parts": 40000,
+        "missing_parts": 0,
+        "non_contiguous_parts": 0,
+        "deadline_misses": 0,
+        "pcm_media_size_mismatches": 0,
+        "maximum_cache_to_client_p99_ms": 10.342392,
+        "maximum_availability_p99_ms": 64.635322,
+        "maximum_connection_setup_p99_ms": 42.078488,
+        "wire_bytes": 253777962
+      },
+      "32": {
+        "passed": false,
+        "expected_parts": 51200,
+        "received_parts": 46071,
+        "missing_parts": 5129,
+        "non_contiguous_parts": 288,
+        "deadline_misses": 12689,
+        "pcm_media_size_mismatches": 0,
+        "maximum_cache_to_client_p99_ms": 2830.146996
+      },
+      "50": {
+        "passed": false,
+        "expected_parts": 80000,
+        "received_parts": 39399,
+        "missing_parts": 40601,
+        "non_contiguous_parts": 500,
+        "deadline_misses": 21026,
+        "pcm_media_size_mismatches": 0,
+        "maximum_cache_to_client_p99_ms": 2811.222657
+      }
+    }
+  },
+  "diagnostic_ledger": [
+    "The first external load host was absent from the GCP firewall allowlist; the lab script now updates existing source ranges idempotently.",
+    "The original H3 probe serialized part requests and paid one RTT per part; it now multiplexes exact part requests on one persistent connection.",
+    "A global cache wakeup caused a thundering herd; exact stream-and-sequence waiters removed unrelated wakeups and the 10 ms polling sleep.",
+    "Exact waiters initially missed writes made directly by cache-mesh replication; notifications now live in the shared chunk cache.",
+    "Topology-ready status after a restart did not prove media readiness; the deployment workflow now has a strict two-rendition PCM H3 canary."
+  ],
+  "cleanup": {
+    "linode_load_instance_deleted": true,
+    "linode_instances_remaining": 0,
+    "private_reader_image_preserved": true,
+    "gcp_lab_retained_for_followup_testing": true,
+    "gcp_services_active_after_canary": true,
+    "stale_load_generator_firewall_ranges_removed": true
+  }
+}

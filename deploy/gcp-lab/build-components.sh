@@ -2,9 +2,20 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update
-sudo apt-get install -y \
+packages=(
   build-essential ca-certificates clang cmake curl git libssl-dev pkg-config
+)
+missing_packages=()
+for package in "${packages[@]}"; do
+  if ! dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
+    | grep -q '^ii '; then
+    missing_packages+=("${package}")
+  fi
+done
+if (( ${#missing_packages[@]} > 0 )); then
+  sudo apt-get update
+  sudo apt-get install -y "${missing_packages[@]}"
+fi
 
 if [[ -f "${HOME}/.cargo/env" ]]; then
   . "${HOME}/.cargo/env"

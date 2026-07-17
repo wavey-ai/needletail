@@ -19,6 +19,7 @@ TOKYO_EDGE_MACHINE_TYPE="${NEEDLETAIL_GCP_TOKYO_EDGE_MACHINE_TYPE:-e2-micro}"
 SYDNEY_EDGE_MACHINE_TYPE="${NEEDLETAIL_GCP_SYDNEY_EDGE_MACHINE_TYPE:-e2-micro}"
 MAX_RUN_DURATION="${NEEDLETAIL_GCP_MAX_RUN_DURATION:-6h}"
 SOURCE_IPV4="${NEEDLETAIL_OPERATOR_IPV4:-}"
+LOAD_IPV4="${NEEDLETAIL_GCP_LOAD_IPV4:-}"
 
 CONTRIB_NAME="nt-contrib-lon"
 PRIMARY_NAME="nt-relay-ams"
@@ -56,7 +57,9 @@ Usage: GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json \
 
 Creates six short-lived, tagged Compute Engine VMs for a single-provider
 intercontinental qualification. Instances auto-delete after six hours by
-default. `down` removes only the fixed Needletail qualification resources.
+default. Set NEEDLETAIL_GCP_LOAD_IPV4 to authorize one external load generator
+for H3/UDP qualification. Re-running `up` refreshes the existing firewall rule.
+`down` removes only the fixed Needletail qualification resources.
 EOF
 }
 
@@ -86,14 +89,25 @@ ensure_subnet() {
 
 ensure_firewall() {
   local name="$1"
-  shift
-  if ! exists gcloud compute firewall-rules describe "${name}" \
+  local source_ranges="$2"
+  local allow="$3"
+  if exists gcloud compute firewall-rules describe "${name}" \
     --project="${PROJECT}" --quiet; then
+    gcloud compute firewall-rules update "${name}" \
+      --source-ranges="${source_ranges}" \
+      --target-tags=needletail-qualification \
+      --allow="${allow}" \
+      --project="${PROJECT}" \
+      --quiet
+  else
     gcloud compute firewall-rules create "${name}" \
       --network="${NETWORK}" \
+      --direction=INGRESS \
+      --source-ranges="${source_ranges}" \
+      --target-tags=needletail-qualification \
+      --allow="${allow}" \
       --project="${PROJECT}" \
-      --quiet \
-      "$@"
+      --quiet
   fi
 }
 
@@ -143,6 +157,14 @@ up() {
     echo "could not determine the operator IPv4 address" >&2
     exit 2
   }
+  local operator_source_ranges="${SOURCE_IPV4}/32"
+  if [[ -n "${LOAD_IPV4}" ]]; then
+    [[ "${LOAD_IPV4}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+      echo "NEEDLETAIL_GCP_LOAD_IPV4 must be one IPv4 address" >&2
+      exit 2
+    }
+    operator_source_ranges+=",${LOAD_IPV4}/32"
+  fi
 
   if ! exists gcloud compute networks describe "${NETWORK}" \
     --project="${PROJECT}" --quiet; then
@@ -160,16 +182,9 @@ up() {
   ensure_subnet "${EDGE_NEW_YORK_SUBNET}" "$(region_for_zone "${EDGE_NEW_YORK_ZONE}")" 10.84.50.0/24
   ensure_subnet "${EDGE_SYDNEY_SUBNET}" "$(region_for_zone "${EDGE_SYDNEY_ZONE}")" 10.84.60.0/24
 
-  ensure_firewall "${NETWORK}-internal" \
-    --direction=INGRESS \
-    --source-ranges=10.84.0.0/16 \
-    --target-tags=needletail-qualification \
-    --allow=tcp,udp,icmp
-  ensure_firewall "${NETWORK}-operator" \
-    --direction=INGRESS \
-    --source-ranges="${SOURCE_IPV4}/32" \
-    --target-tags=needletail-qualification \
-    --allow=tcp:22,tcp:19444,udp:19444,udp:27100
+  ensure_firewall "${NETWORK}-internal" 10.84.0.0/16 tcp,udp,icmp
+  ensure_firewall "${NETWORK}-operator" "${operator_source_ranges}" \
+    tcp:22,tcp:19444,udp:19444,udp:27100
 
   ensure_instance "${CONTRIB_NAME}" "${CONTRIB_ZONE}" "${CONTRIB_SUBNET}" contributor
   ensure_instance "${PRIMARY_NAME}" "${PRIMARY_ZONE}" "${PRIMARY_SUBNET}" primary-relay

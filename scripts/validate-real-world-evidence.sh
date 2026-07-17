@@ -49,6 +49,14 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.linode_firewall_deleted_after_documentation == true
           and .cleanup.provider_resources_absent == true
           and .cleanup.local_lab_state_removed == true
+        elif .schema == "needletail.pcm-h3-capacity.v1" then
+          .provider == "gcp+linode"
+          and .cleanup.linode_load_instance_deleted == true
+          and .cleanup.linode_instances_remaining == 0
+          and .cleanup.private_reader_image_preserved == true
+          and .cleanup.gcp_lab_retained_for_followup_testing == true
+          and .cleanup.gcp_services_active_after_canary == true
+          and .cleanup.stale_load_generator_firewall_ranges_removed == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -203,6 +211,51 @@ for evidence in "${run_files[@]}"; do
         and .relay_active_objects == 0
         and .tasks == 3
       ))
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.pcm-h3-capacity.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and .result == "capacity_boundary_characterized"
+      and .media.sample_rate_hz == 48000
+      and .media.sample_format == "s24le"
+      and .media.channels == 16
+      and .media.group_channels == 8
+      and .media.renditions == 2
+      and .media.part_ms == 5
+      and .media.ll_hls_codec == "ipcm_s24le"
+      and .media.source_to_ll_hls_conversion == false
+      and .gcp_pcm_dag.passed == true
+      and ([.gcp_pcm_dag.edges[]] | length) == 3
+      and ([.gcp_pcm_dag.edges[]] | all(.[];
+        .renditions_received_parts == [1600, 1600]
+        and .missing_parts == 0
+        and .pcm_media_size_mismatches == 0
+        and .cache_to_client_p99_ms <= 2
+      ))
+      and .post_deploy_readiness_canary.passed == true
+      and .post_deploy_readiness_canary.renditions_received_parts == [400, 400]
+      and .post_deploy_readiness_canary.missing_parts == 0
+      and .post_deploy_readiness_canary.non_contiguous_parts == 0
+      and .post_deploy_readiness_canary.deadline_misses == 0
+      and .post_deploy_readiness_canary.pcm_media_size_mismatches == 0
+      and .capacity.maximum_strict_pass_customers == 25
+      and .capacity.minimum_strict_failure_customers == 32
+      and .capacity.endurance_claim == false
+      and (. as $root | ["1", "10", "25"] | all(.[]; . as $tier |
+        $root.capacity.tiers[$tier].passed == true
+        and $root.capacity.tiers[$tier].missing_parts == 0
+        and $root.capacity.tiers[$tier].non_contiguous_parts == 0
+        and $root.capacity.tiers[$tier].deadline_misses == 0
+        and $root.capacity.tiers[$tier].pcm_media_size_mismatches == 0
+      ))
+      and .capacity.tiers["25"].maximum_cache_to_client_p99_ms <= 11
+      and .capacity.tiers["32"].passed == false
+      and .capacity.tiers["32"].missing_parts > 0
+      and .capacity.tiers["50"].passed == false
+      and .capacity.tiers["50"].missing_parts > 0
     ' "${evidence}" >/dev/null
   fi
 

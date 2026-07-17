@@ -14,13 +14,15 @@ and reusable crates stay in their own repos.
 
 **Measured 48 kHz lossless latency:** with 5 ms parts over one persistent,
 certificate-verified TLS 1.3/H3 connection, correctly implemented LL-HLS is
-essentially raw UDP plus a few milliseconds. In the final London-origin,
-dual-parent mesh run, median LL-HLS availability was **43.4 ms in New York,
-118.8 ms in Tokyo, and 132.9 ms in Sydney**. Native UDP measured 40.3, 115.7,
-and 129.8 ms respectively: an LL-HLS premium of **3.07–3.13 ms at p50**.
-Cache-to-client delivery itself was 0.22–0.23 ms at p50 and below 0.8 ms at
-p99. Clean-path LL-HLS tails were 21.2–22.2 ms above UDP at p99. These are
-publication-to-client availability results, not browser-to-speaker latency.
+raw UDP plus a few milliseconds. In the latest London-origin, dual-parent GCP
+mesh run, raw 16-channel S24 PCM stayed PCM and reached LL-HLS at **55.728 ms
+in New York, 127.506 ms in Tokyo, and 148.549 ms in Sydney at p50**. Raw UDP
+measured 53.338, 125.054, and 146.129 ms: an LL-HLS premium of only
+**2.390–2.452 ms**. Once a part reached its regional cache, H3 delivery was
+below 1.51 ms at p99. A post-deploy New York canary repeated both eight-channel
+PCM renditions with 400/400 parts, zero deadline misses, and 1.03–1.37 ms
+cache-to-client p99. These are publication-to-client availability results, not
+browser-to-speaker latency.
 
 Needletail owns:
 
@@ -40,7 +42,7 @@ Current components:
 
 | Component | Owner responsibility |
 | --- | --- |
-| `av-contrib` | Per-stream origin ingest, FEC recovery, one lossless encode/package pass, and bounded publication to a dedicated mesh ingress. |
+| `av-contrib` | Per-stream origin ingest, FEC recovery, codec-preserving lossless packaging, and bounded publication to a dedicated mesh ingress. |
 | `av-mesh` | Playback edge, LL-HLS cache adapter, relay-node behavior, telemetry, and product-asset hosting. |
 | `media-object` | Canonical immutable media-object identity, bounded v1 envelope, payload integrity, dependencies, deadlines, and source-known timestamps. |
 | `raptor-fec` | Adaptive RaptorQ geometry, source-first scheduling, repair policy, deadline outcomes, and FEC-versus-fetch decisions. |
@@ -66,8 +68,9 @@ for authenticated, encrypted, paced datagrams. Reliable streams are for control,
 initialization, and backfill.
 
 Lossless 48 kHz Audio Epoch publications have three simultaneous delivery
-lanes: mandatory FLAC fMP4 LL-HLS, optional browser WebTransport datagrams, and
-optional native UDP+FEC subscriptions at a relay or playback edge. See
+lanes: mandatory lossless fMP4 LL-HLS, optional browser WebTransport datagrams,
+and optional native UDP+FEC subscriptions at a relay or playback edge. PCM
+remains PCM (`ipcm`/`fpcm`) and FLAC remains FLAC. See
 [Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
 format behavior, and local/GCP qualification commands. The contributor performs
 stream-dependent work once and never doubles as a relay; see the
@@ -121,12 +124,17 @@ Tokyo playback edge. Four `e2-standard-2` GCP instances.
 
 ## Latest real-world results
 
+Latest raw-PCM GCP DAG and H3 capacity ladder: `20260717T222106Z`.
 Latest six-node Linode DAG replication run: `20260717T145432Z`.
 Latest three-lane 48 kHz lossless GCP run: `20260717T054206Z`.
 Latest local persistent-H3 lossless run: `20260717T053347Z`.
 Latest complete intercontinental failover run: `20260716T023139Z`.
 
-The Linode run delivered all 2,400 five-millisecond epochs or parts to
+The raw-PCM run delivered both eight-channel LL-HLS renditions without loss to
+New York, Tokyo, and Sydney, then established a strict short-run edge boundary:
+25 simultaneous 16-channel customers passed on a two-vCPU `n2-standard-2`; 32
+failed. See the [raw PCM H3 capacity record](docs/real-world-tests/2026-07-17-pcm-h3-capacity.md).
+The earlier Linode run delivered all 2,400 five-millisecond epochs or parts to
 independent New York, Tokyo, and Sydney caches in clean and impaired profiles.
 It also proved byte-identical replication, late join, cache independence,
 cross-parent FEC recovery, and primary-parent failover. See the
@@ -138,15 +146,15 @@ for p50/p95/p99 latency, wire, CPU, queue, recovery, and test-boundary details.
 
 ### Latest multi-region clean-path result
 
-| City | UDP p50 | WebTransport p50 | LL-HLS p50 | LL-HLS premium | Publish→cache p50 | Cache→client p50 |
+| City | UDP p50 | WebTransport p50 | LL-HLS p50 | LL-HLS premium | LL-HLS p99 | Cache→client p99 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| New York | 40.258 ms | 40.333 ms | 43.360 ms | 3.103 ms | 43.114 ms | 0.222 ms |
-| Tokyo | 115.673 ms | 115.788 ms | 118.799 ms | 3.125 ms | 118.501 ms | 0.220 ms |
-| Sydney | 129.821 ms | 129.945 ms | 132.887 ms | 3.067 ms | 132.634 ms | 0.227 ms |
+| New York | 53.338 ms | 53.595 ms | 55.728 ms | 2.390 ms | 57.137 ms | 1.510 ms |
+| Tokyo | 125.054 ms | 125.130 ms | 127.506 ms | 2.452 ms | 128.824 ms | 1.274 ms |
+| Sydney | 146.129 ms | 146.268 ms | 148.549 ms | 2.420 ms | 150.265 ms | 1.460 ms |
 
-The measured primary-route propagation proxy accounts for 41.090 ms in New
-York, 114.307 ms in Tokyo, and 128.474 ms in Sydney. The remaining median
-publication-to-cache residual—including host clocks—is 2.025–4.195 ms.
+The wide-area network accounts for almost all publication-to-cache latency;
+the persistent H3 LL-HLS architecture adds only a few milliseconds over the
+raw datagram lane.
 
 ### Performance charts
 
