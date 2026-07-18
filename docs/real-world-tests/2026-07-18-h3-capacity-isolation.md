@@ -1,9 +1,10 @@
-# 18 July 2026: isolated HTTP/3 capacity and first fixed bottleneck
+# 18 July 2026: isolated HTTP/3 and edge-router capacity fixes
 
 ## Result
 
-The isolated production `web_service::H2H3Server` test has found and fixed one
-real HTTP/3 capacity bug. Ordinary media GET responses were constructing and
+The isolated production tests have found and fixed multiple real distribution
+capacity bugs in both `web_service::H2H3Server` and the playback-edge router.
+Ordinary media GET responses were constructing and
 QPACK-encoding `Access-Control-Allow-Methods` and
 `Access-Control-Allow-Headers`, fields needed on CORS preflight responses rather
 than every media response. The method-aware fix keeps those permissions on
@@ -15,10 +16,30 @@ The full 5,760-byte PCM-shaped path also used about `2.4%` less server CPU at 40
 customers. This is the first production capacity fix from the isolation work;
 the backend experiment and PMTU change did not improve capacity.
 
+A later connection-local scheduling fix removed one Tokio task creation per H3
+request. At 16 persistent connections with 64-byte responses, it raised the
+ten-second mean from `80,415` to `89,544` responses/s (`+11.35%`), reduced
+server CPU ticks by `12.49%`, and lowered p99 from about `16.1` to `12.5` ms.
+The 32-connection staircase peak rose from about `77,000` to `100,480`
+responses/s. The full 5,760-byte realtime workload remained exact and its
+warmed CPU cost remained neutral.
+
+The isolated production `AppRouter` benchmark then found a global async demand
+lock, two request-path string allocations, a successful-response diagnostic
+mutex, and cumulative histogram contention. Removing those costs raised the
+two-run one-worker mean from the original `792,037` to `1,112,332` cached PCM
+part responses/s (`+40.44%`). The eight-worker mean rose from `559,730` to
+`686,298` responses/s (`+22.61%`). These are in-process B3 boundary rates, not
+HTTP/3 or network capacity claims.
+
 Component revisions:
 
 - `web-services` `909f584d1f689396e1a8423eaa4ac6f41d418808`: method-aware H3 CORS response fields;
-- `av-mesh` `60cf9aa`: capacity runner pinned to that canonical `web-service` Git revision;
+- `web-services` `bb099150c2c0690b00944ca5426ab1bbabe5d4e4`: borrowed static response metadata where possible;
+- `web-services` `d80c578d298701f60773a63acf0c933842a3475e`: connection-local Quinn request scheduling;
+- `web-services` `f725087c137bee6f1e384f9c800708ab239ef198`: the same scheduling model for tokio-quiche;
+- `av-mesh` `2db246593df448e6921ace67f055b054fcb8e3dc`: allocation-free route borrowing and sharded atomic demand throttling;
+- `av-mesh` `7f076acf2b57167d976a69b3da4740b3613009cc`: sampled success detail and single-bucket histogram recording;
 - the unchanged Quinn load generator and reversal server used the pre-fix `h3-static-capacity-798189a` binary.
 
 The relevant `web-services` discussion is in the
@@ -72,6 +93,59 @@ means therefore show:
 Before the fix, a 499 Hz profile attributed `7.13%` flat CPU to stateless QPACK
 string encoding. After the fix that fell to `4.55%`. Allocation, QPACK decode,
 and response-buffer copies remain visible and are the next profile targets.
+
+## Connection-local H3 request scheduling
+
+The Quinn server originally created a detached Tokio task for every request
+stream. Five-millisecond parts make that scheduler work proportional to media
+part rate even though H3 already has connection-local multiplexing. Replacing
+the detached tasks with a `FuturesUnordered` owned and polled by the connection
+preserved concurrent stream completion and eliminated that scheduler boundary.
+
+The same London-to-Amsterdam setup produced these ten-second, 16-connection
+repeats with 64-byte responses:
+
+| Build | Mean responses/s | Mean server CPU ticks | Approximate p99 ms |
+| --- | ---: | ---: | ---: |
+| borrowed-response path | 80,415 | 1,946 | 16.1 |
+| connection-local scheduling | 89,544 | 1,703 | 12.5 |
+
+Both new repeats had zero errors and zero generator backpressure. This is
+`+11.35%` throughput, `-12.49%` CPU ticks, and about `+27%` requests per server
+CPU tick. A one-to-32-connection staircase reached `100,480` responses/s at 32
+connections, about `30%` above the preceding peak.
+
+At 80 connections carrying the full 5,760-byte response at 200 responses/s per
+connection, both repeats completed exactly 160,000 requests. The warmed repeat
+used 1,467 server CPU ticks, identical to the prior best, while p99 improved
+from about `13.2` to `12.7` ms. The fix therefore improves request-dominated
+loads without regressing the bandwidth- and packet-dominated media control.
+
+The optional tokio-quiche backend contained the same detached per-request task
+pattern. It now uses the same connection-local in-flight scheduling and passes
+the shared 128-concurrent-response backend test. It has not yet been rerun on
+the two-host capacity matrix, and Quinn remains the production default.
+
+## Playback-edge router boundary
+
+The release-mode B3 benchmark pre-seeds two streams with 512 PCM-shaped
+5,760-byte parts, calls the production `AppRouter::route`, and excludes H3,
+TLS, QUIC, UDP, and the network. Every run below returned exact bodies with
+zero failures.
+
+| Workers | Original responses/s | Final two-run mean | Change |
+| ---: | ---: | ---: | ---: |
+| 1 | 792,037 | 1,112,332 | +40.44% |
+| 2 | 713,858 | 822,484 | +15.22% |
+| 4 | 623,177 | 729,988 | +17.14% |
+| 8 | 559,730 | 686,298 | +22.61% |
+
+The final path preserves exact response totals, errors, not-found counts, and
+cumulative duration-histogram output. Internally it now records one exclusive
+duration bucket rather than updating as many as 13 cumulative atomics. It
+retains every error in the bounded recent-response ring and samples successful
+response detail at up to ten records/s; successful requests no longer allocate
+diagnostic strings or enter the ring mutex individually.
 
 ## PCM-shaped media control
 
@@ -135,6 +209,11 @@ Fixed and proven:
   generator backpressure;
 - ordinary H3 responses no longer repeat preflight-only CORS fields;
 - Quinn and tokio-quiche implement and test the same method-aware behavior;
+- neither H3 backend creates a Tokio task per request stream;
+- cached edge requests no longer allocate owned path and query strings;
+- replication throttling no longer awaits one global write lock per request;
+- successful response detail no longer serializes every request on one mutex;
+- duration histograms retain cumulative output with one bucket update/request;
 - the production server has demonstrated 1,000 simultaneous persistent H3
   connections at low request rate.
 
@@ -151,8 +230,7 @@ Next gates before resuming the six-node mesh endurance run:
    connection count independently from requests/s;
 2. add RSS/task/cancellation measurements for idle connections and blocked
    playlist reloads;
-3. remove and A/B the duplicate path allocation and full request-header clone;
-4. complete seeded-edge, range, disconnect, slow-reader, and flow-control
+3. complete seeded-edge, range, disconnect, slow-reader, and flow-control
    correctness tests; and
-5. rerun the full-media boundary with generator headroom before declaring a
-   customer capacity above the current exact tier.
+4. rerun the full-media boundary with the final edge-router build and generator
+   headroom before declaring customer capacity above the current exact tier.

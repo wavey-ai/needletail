@@ -92,17 +92,17 @@ parsers. Use a deterministic concurrency regression or loom model for the
 lookup/register/recheck waiter protocol. Fuzzing is not a substitute for the
 throughput tests.
 
-Test these current architectural hypotheses explicitly rather than assuming
-the cache is at fault:
+Test these architectural boundaries explicitly rather than assuming the cache
+is at fault:
 
-- AppRouter awaits request_replica_for_stream on every cached playlist and
-  part request; DemandTracker takes a write lock even when its one-second gate
-  declines the request.
-- record_edge_response takes one shared mutex and allocates/clones strings for
-  the recent-response ring on every /live request.
+- AppRouter's replication throttle must remain per-stream, non-async, and free
+  of a global request-path write lock.
+- record_edge_response must preserve exact aggregate counters while successful
+  diagnostic detail remains sampled and errors remain unsampled.
 - cached playlists are returned as cloned String values, whereas part bodies
   use cheap Bytes clones.
-- the H3 server spawns a Tokio task for every request stream.
+- the H3 server must keep request futures connection-local rather than spawning
+  a Tokio task for every request stream.
 
 For each hypothesis, measure the unchanged production path, isolate the cost,
 then make the smallest architecture-correct improvement and rerun the same
@@ -217,21 +217,28 @@ A clean capacity step requires:
 The test may intentionally exceed the gate to identify saturation. That first
 failed step remains in the evidence and names the limiting resource.
 
-## Current code hypotheses
+## Current code findings
 
-These are inspection findings, not conclusions:
+The isolated runs have now resolved several of the original hypotheses:
 
 - Cached part bodies are `Bytes` clones, so media lookup itself should not copy
   5,760-byte payloads.
 - Cached playlists clone a `String` per response, which allocates and copies.
-- Every live request enters a write-locked demand gate before a cache hit can be
-  served.
-- Every live response enters a shared recent-response mutex and constructs
-  owned telemetry strings.
-- Each H3 request stream is handled in a newly spawned Tokio task.
+- The write-locked demand gate was real. It is now a per-stream sharded atomic
+  throttle with no async scheduler boundary.
+- The playback router's owned path and query copies were real and are removed.
+- The recent-response mutex and diagnostic string construction were real. Exact
+  aggregate counters remain per response, while successful detail is sampled
+  and errors are always retained.
+- The cumulative latency histogram previously updated as many as 13 atomics per
+  response. It now updates one exclusive bucket and produces the same cumulative
+  representation at snapshot time.
+- Both H3 backends created a Tokio task for each request stream. They now poll
+  connection-local in-flight futures while retaining H3 multiplexing.
 
-B1 through B5 are designed to quantify these costs independently. Optimization
-starts only after the measurements identify which one is material.
+B1 through B5 continue to quantify the remaining cache, playlist, router, and
+transport costs independently. Cached playlist `String` copies and the complete
+seeded-edge H3 path remain open measurements.
 
 ## Current qualification status: 18 July 2026
 
@@ -261,10 +268,44 @@ bytes had no measurable effect. Quinn remains the default and owns
 WebTransport. Details and raw-artifact locations are in the
 [18 July H3 isolation record](../real-world-tests/2026-07-18-h3-capacity-isolation.md).
 
+Subsequent B4 work removed per-request Tokio task creation from the Quinn H3
+connection. On the same London-to-Amsterdam 64-byte workload, the ten-second
+mean at 16 connections rose from `80,415` to `89,544` responses/s (`+11.35%`),
+server CPU ticks fell by `12.49%`, and p99 fell from about `16.1` to `12.5` ms.
+The 32-connection staircase reached `100,480` responses/s. The full 5,760-byte
+40-customer control remained exact with neutral warmed CPU. The same scheduler
+fix is implemented and concurrency-tested on tokio-quiche, but its two-host
+capacity has not been remeasured.
+
+B3 has also produced a material edge-router improvement. The original
+release-mode cached PCM-part route measured `792,037`, `713,858`, `623,177`,
+and `559,730` responses/s at 1, 2, 4, and 8 workers. After removing owned route
+strings, the global async demand lock, successful-response diagnostic
+serialization, and cumulative histogram contention, final two-run means were
+`1,112,332`, `822,484`, `729,988`, and `686,298` responses/s. That is
+`+40.44%`, `+15.22%`, `+17.14%`, and `+22.61%` respectively, with zero
+failures. These are in-process router-boundary figures and must not be quoted as
+network or customer capacity.
+
+The dependency audit found no equivalent per-packet task creation in the
+current contributor or mesh data workers; the inspected spawns are long-lived
+ingest, rendition, peer, or service tasks. It did find two integration hazards:
+
+- the older `av-hls` and upload-response streaming implementations contain
+  1–5 ms polling loops, while the current `av-mesh` LL-HLS exact-part path uses
+  registered waiters and has a lost-wakeup regression test;
+- `av-contrib` currently compiles the canonical Git `web-service` for its main
+  H3 server and a differently named local `av-web-service` through
+  `av-upload-response` and the unused direct `av-hls` dependency. The local
+  copy is not the active contributor H3 server, but the duplicate dependency
+  boundary can let fixes diverge and should be removed before those routers are
+  used in production.
+
 ## Resume condition for the mesh test
 
-Resume the six-node 30-minute mesh baseline after B1 through B5 pass and B6 has
-either passed or named the two-host network ceiling. The distributed harness
+Resume the six-node 30-minute mesh baseline after the final B3 router build has
+passed seeded-edge H3 and the two-host B6 control has either passed or named the
+network ceiling. The distributed harness
 then uses one contributor publication, one replication copy per rendition per
 edge, and viewer-only late-join bursts at 1, 4, 8, 16, and 24 customer
 equivalents. It must not create a second publication to simulate viewers.
