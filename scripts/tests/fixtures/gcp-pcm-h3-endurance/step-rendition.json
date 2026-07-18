@@ -1,0 +1,21 @@
+{
+  "passed": true,
+  "transport": "h3",
+  "tls_protocol": "TLSv1.3",
+  "persistent_connections": true,
+  "readers_requested": 1,
+  "readers_completed": 1,
+  "readers_failed": 0,
+  "start_offset_ms": 500,
+  "end_offset_ms": 1000,
+  "expected_parts_per_reader": 100,
+  "received_parts_total": 100,
+  "missing_parts_total": 0,
+  "non_contiguous_pts_total": 0,
+  "deadline_misses_total": 0,
+  "expected_audio_codec": "ipcm_s24le",
+  "expected_pcm_channels": 8,
+  "init_verified_readers": 1,
+  "playlist_verified_readers": 1,
+  "pcm_media_size_mismatches_total": 0
+}

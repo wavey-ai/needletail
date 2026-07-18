@@ -1,0 +1,6 @@
+{
+  "payload": "pcm_s24le",
+  "sample_rate": 48000,
+  "channels": 16,
+  "epochs": 100
+}

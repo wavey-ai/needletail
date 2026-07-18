@@ -6,22 +6,26 @@ turning on either tap never bypasses the HLS cache.
 
 ```text
 48 kHz AEP1 publication
-  `-- contributor/origin: recover and package each codec once
+  `-- contributor/origin: recover once; apply the route's packaging policy
         `-- one ordered publication to the nearest mesh ingress
               |-- exact source/repair datagrams through the relay fabric
               |     |-- native UDP+FEC subscription at a relay or edge
               |     `-- WebTransport datagram subscription at the edge
-              `-- lossless fMP4 LL-HLS objects and regional edge caches
+              `-- format-preserving LL-HLS objects and regional edge caches
+                    |-- opaque: exact producer-framed bytes
+                    `-- fMP4: explicitly boxed elementary PCM or FLAC
 ```
 
 All lanes retain the AEP1 session, configuration generation, epoch, sample PTS,
 and channel-group identity. Relay nodes forward the exact AEP1 source and repair
-datagrams. The contributor recovers and packages each stream once, preserving
-lossless PCM or FLAC rather than forcing one codec into the other, then
-publishes one ordered output to a dedicated mesh ingress. Package or cache work
-cannot stall the low-latency paths. A full or failed HLS handoff is observable
-and fails the qualification gate; it does not add latency to the datagram hot
-path. The contributor does not serve viewers or act as a relay;
+datagrams. The contributor recovers each stream once and applies an explicit
+route policy: publish the payload unchanged, or box supported elementary media
+as fMP4. It never silently selects a codec or converts one codec into another.
+The mesh treats the result as opaque immutable bytes. Package or cache work
+cannot stall the low-latency paths. A full or
+failed HLS handoff is observable and fails the qualification gate; it does not
+add latency to the datagram hot path. The contributor does not serve viewers or
+act as a relay;
 see the [contributor origin boundary](contributor-origin-boundary.md).
 
 ## Lane contracts
@@ -30,25 +34,49 @@ see the [contributor origin boundary](contributor-origin-boundary.md).
 | --- | --- | --- |
 | Native UDP+FEC | `WAVEY-DAW-SUBSCRIBE/2 <session_id>` | Exact AEP1 UDP datagrams from the selected relay/edge; refresh within 15 seconds. |
 | WebTransport | `WAVEY-AUDIO-EPOCH/2 <session_id>` | Exact AEP1 QUIC datagrams from the playback edge. |
-| LL-HLS | `/live/<base_stream_id + group_id>/...` | Lossless fMP4 parts with codec-specific initialization: FLAC, integer PCM (`ipcm`), or float PCM (`fpcm`). |
+| LL-HLS | `/live/<base_stream_id + group_id>/...` | Route-selected opaque parts containing exact producer bytes, or explicitly boxed fMP4 parts with codec-specific initialization. |
 
 The v1 native and WebTransport subscription messages remain available as
 unscoped compatibility modes. New clients should use v2. The browser worker
 automatically chooses v2 when its authorized session is a numeric AEP1 session
 identity.
 
+## TODO: public programme rendition
+
+Add one producer-authored public programme rendition for ordinary LL-HLS
+players. It should be a standard, unencrypted Opus CMAF/fMP4 stream with its
+own initialization object and playlist, produced alongside—not derived from—
+the private per-track SoundKit publication. The producer owns the programme
+mix and Opus encode; contributors, relays, and edges only recover, cache, and
+serve the resulting bytes. This keeps private tracks encrypted, avoids an edge
+decrypt/remix/transcode step, and gives regular LL-HLS clients a conventional
+media rendition.
+
 ## Format behavior
 
-Every AEP1 payload kind reaches mandatory LL-HLS:
+Every AEP1 payload kind reaches mandatory LL-HLS. The route chooses one policy:
 
-- FLAC frames remain FLAC in fMP4.
-- S16, S24, and S32 PCM retain their exact integer sample width in `ipcm` fMP4.
-- F32 PCM remains F32 in `fpcm` fMP4.
-- Opus is decoded with the pure-Rust `libopus-rs` path, converted to S16 PCM,
-  and packaged as FLAC; the native and WebTransport lanes retain the original
-  Opus packet.
+- `opaque` publishes the exact recovered bytes. `av-contrib` and `av-mesh` do
+  not parse SoundKit, PCM, FLAC, Opus, or any other inner format. A 5 ms part
+  contains one producer unit; a larger part may concatenate consecutive units
+  only when the producer/client contract makes them self-delimiting.
+- `fmp4` keeps boxing in `av-contrib` for elementary FLAC and PCM. FLAC remains
+  FLAC; S16, S24, and S32 PCM retain their exact integer width in `ipcm`; F32
+  remains F32 in `fpcm`.
+- Framed or encrypted Opus is not forced through the fMP4 policy. It uses
+  `opaque`; a public Opus fMP4 programme must be supplied as its own compatible
+  producer rendition.
 
-The current 48 kHz multichannel gate uses S24 PCM and verifies the
+SoundKit v2 is the producer/player framing contract for private Studio media,
+including `PCMSigned`, `PCMFloat`, `FLAC`, and `Opus` frames. That contract does
+not leak into Needletail's cache: arbitrary non-SoundKit bytes pass through the
+same opaque path byte-for-byte.
+
+Private SoundKit LL-HLS is a web-studio transport and is not claimed to work
+in a generic player. The future public programme above is the conventional,
+unencrypted Opus CMAF/fMP4 compatibility rendition.
+
+The current fMP4 qualification profile uses S24 PCM and verifies the
 `ipcm_s24le` initialization metadata plus the exact byte geometry of every
 media part. FLAC-source qualification separately verifies the `fLaC` sample
 entry. Both require zero missing epochs/parts, zero HLS queue drops or worker

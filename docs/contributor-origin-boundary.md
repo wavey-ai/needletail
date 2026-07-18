@@ -15,7 +15,7 @@ publisher
     |
     v
 contributor/origin host
-ingest -> FEC/reorder -> clock/channel state -> codec-preserving package
+ingest -> FEC/reorder -> clock/channel state -> route-selected publication
     |
     | one ordered publication to the nearest ingress
     v
@@ -33,20 +33,20 @@ The contributor pipeline owns:
 - AEP1 packet validation, ordering, duplicate rejection, and FEC recovery;
 - source clock, sample PTS, channel layout, configuration generation, and epoch
   continuity;
-- exact PCM sample-format preservation into integer `ipcm` or float `fpcm`
-  fMP4 without a PCM-to-FLAC encode;
-- FLAC passthrough into `fLaC` fMP4 without re-encoding;
-- compatibility transcoding only for inputs whose mandatory LL-HLS rendition
-  cannot preserve the source codec directly;
-- one CMAF/fMP4 packaging pass, including 5 ms LL-HLS parts, segments,
-  initialization data, and playlists;
+- route-selected opaque publication that never parses or changes producer
+  bytes;
+- optional exact PCM sample-format preservation into integer `ipcm` or float
+  `fpcm` fMP4, when the route explicitly selects contributor boxing;
+- optional FLAC passthrough into `fLaC` fMP4 without re-encoding;
+- one packaging pass when boxing is selected, including LL-HLS parts,
+  segments, initialization data, and playlists;
 - one exact AEP1 datagram publication for the optional native UDP+FEC and
   WebTransport taps;
 - canonical media-object identity and integrity metadata;
 - per-stream ingest, recovery, package, queue-age, and publication metrics,
   including whether a compatibility encode was required.
 
-Every supported input format produces the mandatory lossless LL-HLS rendition.
+Every supported input format produces its mandatory LL-HLS rendition.
 Enabling a datagram tap does not bypass or duplicate the encode/package path.
 
 The contributor publishes each ordered output once to the nearest mesh ingress.
@@ -90,8 +90,8 @@ The boundary is complete only when qualification proves:
 - contributor egress has at most two mesh-ingress relationships and remains
   unchanged as regions and viewers are added;
 - the contributor sends no media to regional edges or viewers directly;
-- PCM is packaged as PCM, FLAC is packaged as FLAC, and compatibility input is
-  transcoded at most once;
+- opaque inputs remain byte-identical; when fMP4 boxing is selected, PCM is
+  boxed as PCM and FLAC is boxed as FLAC;
 - mandatory LL-HLS plus optional native UDP and WebTransport lanes remain
   continuous for the same AEP1 session and timestamps;
 - contributor CPU, queue depth, queue age, and network egress are measured with

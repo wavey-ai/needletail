@@ -16,6 +16,7 @@ args=(
   --audio-epoch-ingress-target "$(jq -r '.audio_epoch_ingress_target' <<<"${SERVICE}")"
   --daw-media-bind "0.0.0.0:${NEEDLETAIL_DAW_MEDIA_PORT:-27100}"
   --daw-hls-queue-capacity "${NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY:-4096}"
+  --daw-hls-packaging "${NEEDLETAIL_DAW_HLS_PACKAGING:-opaque}"
   --stream-id 1
   --rist-stream-id 1
   --srt-stream-id 1

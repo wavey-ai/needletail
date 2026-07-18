@@ -42,7 +42,7 @@ Current components:
 
 | Component | Owner responsibility |
 | --- | --- |
-| `av-contrib` | Per-stream origin ingest, FEC recovery, codec-preserving lossless packaging, and bounded publication to a dedicated mesh ingress. |
+| `av-contrib` | Per-stream origin ingest, FEC recovery, route-selected opaque publication or media boxing, and bounded publication to a dedicated mesh ingress. |
 | `av-mesh` | Playback edge, LL-HLS cache adapter, relay-node behavior, telemetry, and product-asset hosting. |
 | `media-object` | Canonical immutable media-object identity, bounded v1 envelope, payload integrity, dependencies, deadlines, and source-known timestamps. |
 | `raptor-fec` | Adaptive RaptorQ geometry, source-first scheduling, repair policy, deadline outcomes, and FEC-versus-fetch decisions. |
@@ -67,10 +67,12 @@ RaptorQ is the live-media recovery system. QUIC Datagram is an optional carrier
 for authenticated, encrypted, paced datagrams. Reliable streams are for control,
 initialization, and backfill.
 
-Lossless 48 kHz Audio Epoch publications have three simultaneous delivery
-lanes: mandatory lossless fMP4 LL-HLS, optional browser WebTransport datagrams,
-and optional native UDP+FEC subscriptions at a relay or playback edge. PCM
-remains PCM (`ipcm`/`fpcm`) and FLAC remains FLAC. See
+48 kHz Audio Epoch publications have three simultaneous delivery lanes:
+mandatory format-preserving LL-HLS, optional browser WebTransport datagrams,
+and optional native UDP+FEC subscriptions at a relay or playback edge. An
+ingress route can publish producer-framed bytes unchanged or explicitly ask
+`av-contrib` to box supported elementary media. The mesh caches and replicates
+either result as immutable bytes without interpreting the payload. See
 [Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
 format behavior, and local/GCP qualification commands. The contributor performs
 stream-dependent work once and never doubles as a relay; see the

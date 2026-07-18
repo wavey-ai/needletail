@@ -412,6 +412,7 @@ RUST_LOG="${RUST_LOG:-av_contrib=info,web_service=info}" \
   --mesh-fec-target "${UK_FEC}" \
   --mesh-media-fec-target "${UK_MEDIA_FEC}" \
   --daw-media-bind "${UK_DAW_MEDIA}" \
+  --daw-hls-packaging fmp4 \
   --fmp4-part-ms "${LOSSLESS_PART_MS}" \
   --rist-bind "${UK_RIST}" \
   >"${TMPDIR}/contrib.log" 2>&1 &

@@ -1,0 +1,13 @@
+{
+  "step_index": 0,
+  "baseline_continuous_readers": 1,
+  "target_added_readers": 1,
+  "readers_added_by_step": 1,
+  "target_active_customers": 2,
+  "target_active_h3_connections": 4,
+  "start_offset_ms": 500,
+  "end_offset_ms": 1000,
+  "sustained_duration_ms": 500,
+  "expected_parts_per_reader": 100,
+  "edge_udp_rcvbuf_errors_at_start": 7
+}

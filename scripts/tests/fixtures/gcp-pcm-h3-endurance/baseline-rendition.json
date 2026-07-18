@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "readers_requested": 1,
+  "received_parts_total": 100,
+  "missing_parts_total": 0,
+  "non_contiguous_pts_total": 0,
+  "deadline_misses_total": 0,
+  "pcm_media_size_mismatches_total": 0
+}
