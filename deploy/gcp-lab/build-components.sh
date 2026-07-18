@@ -40,7 +40,7 @@ tar -xzf /tmp/needletail-source.tar.gz -C /opt/needletail-build/source
 CARGO_TARGET_DIR=/opt/needletail-build/target \
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
   --manifest-path /opt/needletail-build/source/av-mesh/Cargo.toml \
-  --bin av-mesh
+  --bin av-mesh --bin h3-static-capacity
 CARGO_TARGET_DIR=/opt/needletail-build/target \
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
   --manifest-path /opt/needletail-build/source/av-contrib/Cargo.toml \
@@ -50,9 +50,13 @@ install -m 755 \
   /opt/needletail-build/target/release/av-mesh \
   /tmp/av-mesh
 install -m 755 \
+  /opt/needletail-build/target/release/h3-static-capacity \
+  /tmp/h3-static-capacity
+install -m 755 \
   /opt/needletail-build/target/release/av-contrib \
   /tmp/av-contrib
 install -m 755 \
   /opt/needletail-build/target/release/aep1-48k-probe \
   /tmp/aep1-48k-probe
-sha256sum /tmp/av-mesh /tmp/av-contrib /tmp/aep1-48k-probe > /tmp/needletail-binaries.sha256
+sha256sum /tmp/av-mesh /tmp/h3-static-capacity /tmp/av-contrib \
+  /tmp/aep1-48k-probe > /tmp/needletail-binaries.sha256

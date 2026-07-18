@@ -1,7 +1,13 @@
 # Latency performance
 
+The next capacity run is gated by the
+[isolated LL-HLS distribution-capacity qualification](distribution-capacity-isolation.md),
+which separates cache, router, HTTP/3, kernel/network, and load-generator
+ceilings before the distributed mesh is exercised again.
+
 Latest runs:
 
+- H3 isolation and first fixed capacity bottleneck: [18 July 2026 record](../real-world-tests/2026-07-18-h3-capacity-isolation.md)
 - Raw PCM GCP DAG and H3 edge capacity: [`20260717T222106Z`](../real-world-tests/evidence/20260717T222106Z-pcm-h3-capacity.json)
 - Raw PCM run note: [`2026-07-17 PCM H3 capacity`](../real-world-tests/2026-07-17-pcm-h3-capacity.md)
 - Linode six-node DAG: [`20260717T145432Z`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)

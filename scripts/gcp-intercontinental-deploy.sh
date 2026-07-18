@@ -399,7 +399,7 @@ install -m 600 "${TLS_KEY}" "${ARTIFACT_DIR}/privkey.pem"
 
 SOURCE_ARCHIVE="${ARTIFACT_DIR}/needletail-source.tar.gz"
 if [[ "${SKIP_BUILD}" == 1 ]]; then
-  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" ]] || {
+  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/h3-static-capacity" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" ]] || {
     echo "NEEDLETAIL_DEPLOY_SKIP_BUILD=1 requires cached Linux binaries" >&2
     exit 2
   }
@@ -440,9 +440,11 @@ else
   gcp_ssh contributor --command='chmod +x /tmp/build-components.sh && /tmp/build-components.sh'
 
   provider_scp_from contributor /tmp/av-mesh "${ARTIFACT_DIR}/av-mesh"
+  provider_scp_from contributor /tmp/h3-static-capacity "${ARTIFACT_DIR}/h3-static-capacity"
   provider_scp_from contributor /tmp/av-contrib "${ARTIFACT_DIR}/av-contrib"
   provider_scp_from contributor /tmp/aep1-48k-probe "${ARTIFACT_DIR}/aep1-48k-probe"
-  chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe"
+  chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/h3-static-capacity" \
+    "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe"
 fi
 
 write_mesh_env() {
