@@ -8,6 +8,7 @@ ceilings before the distributed mesh is exercised again.
 Latest runs:
 
 - H3 isolation and first fixed capacity bottleneck: [18 July 2026 record](../real-world-tests/2026-07-18-h3-capacity-isolation.md)
+- Eight-track SoundKit Opus GCP DAG capacity: [18 July 2026 record](../real-world-tests/2026-07-18-opus-h3-capacity.md)
 - Raw PCM GCP DAG and H3 edge capacity: [`20260717T222106Z`](../real-world-tests/evidence/20260717T222106Z-pcm-h3-capacity.json)
 - Raw PCM run note: [`2026-07-17 PCM H3 capacity`](../real-world-tests/2026-07-17-pcm-h3-capacity.md)
 - Linode six-node DAG: [`20260717T145432Z`](../real-world-tests/evidence/20260717T145432Z-linode-dag.json)

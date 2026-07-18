@@ -26,9 +26,8 @@ pub enum DeploymentPurpose {
 impl DeploymentPurpose {
     const fn diversity(self) -> FailureDiversityRequirement {
         match self {
-            Self::LocalQualification | Self::SingleProviderQualification => {
-                FailureDiversityRequirement::RegionAndZone
-            }
+            Self::LocalQualification => FailureDiversityRequirement::DistinctNodes,
+            Self::SingleProviderQualification => FailureDiversityRequirement::RegionAndZone,
             Self::Production => FailureDiversityRequirement::ProviderRegionAsnAndZone,
         }
     }
@@ -1135,6 +1134,32 @@ mod tests {
         assert!(edge_args
             .windows(2)
             .any(|pair| { pair == ["--relay-primary-recovery-ms".to_owned(), "2000".to_owned()] }));
+    }
+
+    #[test]
+    fn local_qualification_accepts_distinct_nodes_in_one_failure_domain() {
+        let mut program = qualification_program();
+        let shared_domain = program
+            .topology
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "relay-a")
+            .expect("relay a")
+            .failure_domain
+            .clone();
+        program
+            .topology
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "relay-b")
+            .expect("relay b")
+            .failure_domain = shared_domain;
+
+        program.purpose = DeploymentPurpose::LocalQualification;
+        let plan = program.compile().expect("same-domain local qualification");
+        assert!(plan
+            .production_readiness_gaps
+            .contains(&"physical_host_diversity_pending".to_owned()));
     }
 
     #[test]

@@ -24,6 +24,16 @@ PCM renditions with 400/400 parts, zero deadline misses, and 1.03–1.37 ms
 cache-to-client p99. These are publication-to-client availability results, not
 browser-to-speaker latency.
 
+**Measured eight-track Opus capacity:** in the same-zone GCP DAG, one customer
+tailed eight independent 5 ms SoundKit Opus streams (1,600 media requests/s).
+An `n2-standard-2` edge held **4 complete customers at the strict p99 gate**:
+6,400 requests/s, zero missing or invalid parts, 14.026 ms availability p99,
+and 1.673 ms cache-to-client p99. That is **2 complete eight-track customers
+per edge vCPU** with this conservative one-H3-connection-per-track client.
+Five customers crossed the 2 ms cache p99 target; nine still delivered every
+part, while ten became incomplete. See the
+[Opus H3 capacity record](docs/real-world-tests/2026-07-18-opus-h3-capacity.md).
+
 Needletail owns:
 
 - multi-service topology and desired-state generation;

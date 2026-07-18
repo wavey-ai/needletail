@@ -26,6 +26,7 @@ pub struct FailureDomain {
 impl FailureDomain {
     fn is_independent_from(&self, other: &Self, requirement: FailureDiversityRequirement) -> bool {
         match requirement {
+            FailureDiversityRequirement::DistinctNodes => true,
             FailureDiversityRequirement::ProviderRegionAsnAndZone => {
                 self.provider != other.provider
                     && self.region != other.region
@@ -42,10 +43,13 @@ impl FailureDomain {
 /// Failure-domain policy for a route validation stage. Production uses the
 /// full requirement. A declared single-provider qualification can exercise
 /// inter-region mechanics while retaining an explicit production-readiness
-/// gap for provider and ASN diversity.
+/// gap for provider and ASN diversity. Local qualification deliberately
+/// permits distinct processes in one failure domain and reports that gap in
+/// the compiled readiness metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureDiversityRequirement {
+    DistinctNodes,
     ProviderRegionAsnAndZone,
     RegionAndZone,
 }

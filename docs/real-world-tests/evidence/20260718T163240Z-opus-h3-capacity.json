@@ -1,0 +1,243 @@
+{
+  "schema": "needletail.opus-h3-capacity.v1",
+  "run_id": "20260718T163240Z",
+  "passed": true,
+  "result": "steady_capacity_and_hard_throughput_boundaries_characterized",
+  "provider": "gcp",
+  "zone": "europe-west2-c",
+  "raw_artifact_directory": "target/gcp-qualification/results/capacity-1784392483662715657",
+  "raw_artifact_directories": [
+    "target/gcp-qualification/results/local-opus-canary-1784390954446059509",
+    "target/gcp-qualification/results/capacity-1784392360971362559",
+    "target/gcp-qualification/results/capacity-1784392483662715657",
+    "target/gcp-qualification/results/capacity-1784392574892178020",
+    "target/gcp-qualification/results/capacity-1784392650218161009",
+    "target/gcp-qualification/results/capacity-1784392710704887583",
+    "target/gcp-qualification/results/capacity-1784392780964578626",
+    "target/gcp-qualification/results/capacity-1784392848756734656"
+  ],
+  "revisions": {
+    "needletail": "b740576a7746ce011d5e1ef0a65d64ca0e680e6e",
+    "av_contrib": "173d0b0a5ab3a3d3a041790ea604a450c62e9f5c",
+    "daw_nexus": "05a4098b2c652adb9937a3fabf5da7ff131be2c3",
+    "av_mesh": "57b94f093112f348724b44d7b49dcd3c5a94cfc4",
+    "web_services": "7bfe1a92c6dce0f40f71d71f4c1cfa928bebde38",
+    "tested_working_tree_patch": true
+  },
+  "topology": {
+    "publication": {
+      "role": "daw_nexus_source",
+      "machine_type": "n2-standard-2",
+      "vcpus": 2
+    },
+    "contributor": {
+      "machine_type": "n2-standard-2",
+      "vcpus": 2
+    },
+    "relays": {
+      "count": 2,
+      "machine_type": "n1-standard-1",
+      "vcpus_each": 1
+    },
+    "edge": {
+      "machine_type": "n2-standard-2",
+      "vcpus": 2
+    },
+    "external_reader": {
+      "machine_type": "n2-standard-4",
+      "vcpus": 4,
+      "runs_no_needletail_services": true
+    },
+    "all_roles_in_one_zone": true,
+    "dual_parent_dag": true
+  },
+  "media": {
+    "source": "Lori Asha CONFIRMATION stems",
+    "tracks": 8,
+    "channels_per_track": 2,
+    "sample_rate_hz": 48000,
+    "source_pcm_format": "s24le",
+    "wire_frame": "soundkit_v2",
+    "codec": "pure_rust_opus",
+    "encrypted": true,
+    "fec": "raptorq",
+    "ll_hls_packaging": "opaque",
+    "part_ms": 5,
+    "parts_per_second_per_track": 200
+  },
+  "clock_validation": {
+    "initial_systemd_timesyncd_offsets_ms": {
+      "publication": 13.972,
+      "edge": -48.707,
+      "reader": 66.611
+    },
+    "measurement_action": "chrony_metadata_clock_makestep",
+    "final_maximum_observed_system_offset_ms": 0.059,
+    "zero_latency_samples_before_clock_correction_are_rejected": true
+  },
+  "strict_eight_track_canary": {
+    "session_id": 1784390954446059509,
+    "passed": true,
+    "window_seconds": 3,
+    "tracks": 8,
+    "expected_parts": 4800,
+    "received_parts": 4800,
+    "missing_parts": 0,
+    "non_contiguous_parts": 0,
+    "deadline_misses": 0,
+    "invalid_opus_parts": 0,
+    "decoded_tracks": 8,
+    "minimum_waveform_correlation": 0.9865559844708067,
+    "maximum_waveform_correlation": 0.9980749802121917,
+    "maximum_availability_p99_ms": 12.326229,
+    "maximum_cache_to_client_p99_ms": 0.604081,
+    "maximum_connection_setup_ms": 7.993359
+  },
+  "capacity_method": {
+    "one_customer": "eight parallel track tails",
+    "persistent_h3_connections_per_customer": 8,
+    "requests_per_second_per_customer": 1600,
+    "randomized_arrival_window_ms": 750,
+    "active_window_seconds": 10,
+    "deterministic_arrival_seed": 424242,
+    "fresh_edge_process_per_tier": true,
+    "integrity_requirements": "all expected parts, contiguous PTS, valid SoundKit Opus, zero deadline misses",
+    "strict_availability_p99_ms": 20,
+    "strict_cache_to_client_p99_ms": 2,
+    "delivery_deadline_ms": 1000
+  },
+  "steady_tiers": {
+    "2": {
+      "session_id": 1784392360971362559,
+      "passed": true,
+      "qualified": true,
+      "h3_connections": 16,
+      "requests_per_second": 3200,
+      "missing_parts": 0,
+      "deadline_misses": 0,
+      "availability_p99_ms": 13.104195,
+      "cache_to_client_p99_ms": 0.747506,
+      "edge_cpu_mean_percent": 72.6,
+      "edge_cpu_max_percent": 106.0
+    },
+    "4": {
+      "session_id": 1784392483662715657,
+      "passed": true,
+      "qualified": true,
+      "h3_connections": 32,
+      "requests_per_second": 6400,
+      "wire_bytes": 27882144,
+      "missing_parts": 0,
+      "deadline_misses": 0,
+      "availability_p99_ms": 14.025708,
+      "cache_to_client_p99_ms": 1.673486,
+      "edge_cpu_mean_percent": 99.3,
+      "edge_cpu_max_percent": 143.0
+    },
+    "5": {
+      "session_id": 1784392574892178020,
+      "passed": true,
+      "qualified": false,
+      "h3_connections": 40,
+      "requests_per_second": 8000,
+      "wire_bytes": 34822969,
+      "missing_parts": 0,
+      "deadline_misses": 0,
+      "availability_p99_ms": 16.568537,
+      "cache_to_client_p99_ms": 2.254055,
+      "edge_cpu_mean_percent": 107.6,
+      "edge_cpu_max_percent": 149.0
+    },
+    "8": {
+      "session_id": 1784392650218161009,
+      "passed": true,
+      "qualified": false,
+      "h3_connections": 64,
+      "requests_per_second": 12800,
+      "missing_parts": 0,
+      "deadline_misses": 0,
+      "availability_p99_ms": 71.734744,
+      "cache_to_client_p99_ms": 4.905897,
+      "edge_cpu_mean_percent": 143.6,
+      "edge_cpu_max_percent": 197.0
+    },
+    "9": {
+      "session_id": 1784392848756734656,
+      "passed": true,
+      "qualified": false,
+      "h3_connections": 72,
+      "requests_per_second": 14400,
+      "wire_bytes": 62675208,
+      "expected_parts": 144000,
+      "received_parts": 144000,
+      "missing_parts": 0,
+      "deadline_misses": 0,
+      "availability_p99_ms": 153.832535,
+      "cache_to_client_p99_ms": 7.155471,
+      "edge_cpu_mean_percent": 154.3,
+      "edge_cpu_max_percent": 197.0
+    },
+    "10": {
+      "session_id": 1784392780964578626,
+      "passed": false,
+      "qualified": false,
+      "h3_connections": 80,
+      "requests_per_second": 16000,
+      "expected_parts": 160000,
+      "received_parts": 159132,
+      "missing_parts": 868,
+      "deadline_misses": 140,
+      "availability_p99_ms": 1207.734157,
+      "cache_to_client_p99_ms": 234.274783,
+      "edge_cpu_mean_percent": 165.7,
+      "edge_cpu_max_percent": 197.0
+    },
+    "12": {
+      "session_id": 1784392710704887583,
+      "passed": false,
+      "qualified": false,
+      "h3_connections": 96,
+      "requests_per_second": 19200,
+      "missing_parts": 28136,
+      "deadline_misses": 116,
+      "edge_cpu_mean_percent": 159.6,
+      "edge_cpu_max_percent": 197.0
+    }
+  },
+  "capacity": {
+    "maximum_strict_customers": 4,
+    "minimum_strict_failure_customers": 5,
+    "strict_customers_per_edge_vcpu": 2,
+    "strict_track_tails_per_edge_vcpu": 16,
+    "strict_h3_connections_per_edge_vcpu": 16,
+    "strict_requests_per_second_per_edge_vcpu": 3200,
+    "maximum_complete_delivery_customers": 9,
+    "minimum_incomplete_delivery_customers": 10,
+    "maximum_complete_delivery_customers_per_edge_vcpu": 4.5,
+    "maximum_complete_delivery_requests_per_second_per_edge_vcpu": 7200,
+    "connection_limit_reached": false,
+    "request_throughput_limit_reached": true,
+    "endurance_claim": false
+  },
+  "diagnostic_ledger": [
+    "The first canary exposed unusable zero latency samples because systemd-timesyncd reported synchronized while the three measurement hosts differed by more than 100 ms end to end; chrony against the Google metadata clock reduced observed offsets below 0.1 ms.",
+    "One early 600-part track window missed one part; a fully cold rerun delivered all 4,800 parts and the miss did not recur.",
+    "A back-to-back short-window ladder produced non-monotonic p99 because connection cleanup and churn carried into later tiers. Capacity tiers were rerun individually from fresh edge processes for ten seconds.",
+    "The reader host remained below 40% total CPU during the broad ramp, including loads beyond the edge failure point, so it was not the capacity limiter.",
+    "Every H3 handshake completed through 1,024 simultaneous track connections in the diagnostic ramp. The production ceiling observed here is request CPU/queue throughput, not a fixed global H3 connection count.",
+    "DAW startup still creates 56 explicit erasure packaging errors while eight tracks register sequentially. Qualification windows start three seconds into the session and contain no erasures; startup track-map declaration remains a required reliability fix."
+  ],
+  "comparison": {
+    "previous_pcm_test_pass_requests_per_second": 10000,
+    "previous_pcm_test_fail_requests_per_second": 12800,
+    "current_opus_complete_pass_requests_per_second": 14400,
+    "current_opus_incomplete_fail_requests_per_second": 16000,
+    "interpretation": "The Opus payload is much smaller and the current build carries somewhat more requests, but both boundaries are in the same request-rate range. Edge request and QUIC packet processing, rather than media byte bandwidth, is the dominant constraint. The revisions and client geometry differ, so this is directional rather than a codec-only A/B test."
+  },
+  "cleanup": {
+    "gcp_lab_retained_for_followup_testing": true,
+    "all_needletail_services_active": true,
+    "source_process_exited": true,
+    "reader_runs_no_needletail_services": true
+  }
+}

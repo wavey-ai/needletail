@@ -57,6 +57,12 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.gcp_lab_retained_for_followup_testing == true
           and .cleanup.gcp_services_active_after_canary == true
           and .cleanup.stale_load_generator_firewall_ranges_removed == true
+        elif .schema == "needletail.opus-h3-capacity.v1" then
+          .provider == "gcp"
+          and .cleanup.gcp_lab_retained_for_followup_testing == true
+          and .cleanup.all_needletail_services_active == true
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_runs_no_needletail_services == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -256,6 +262,43 @@ for evidence in "${run_files[@]}"; do
       and .capacity.tiers["32"].missing_parts > 0
       and .capacity.tiers["50"].passed == false
       and .capacity.tiers["50"].missing_parts > 0
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.opus-h3-capacity.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and .result == "steady_capacity_and_hard_throughput_boundaries_characterized"
+      and .media.sample_rate_hz == 48000
+      and .media.tracks == 8
+      and .media.channels_per_track == 2
+      and .media.codec == "pure_rust_opus"
+      and .media.wire_frame == "soundkit_v2"
+      and .media.part_ms == 5
+      and .strict_eight_track_canary.passed == true
+      and .strict_eight_track_canary.expected_parts == 4800
+      and .strict_eight_track_canary.received_parts == 4800
+      and .strict_eight_track_canary.missing_parts == 0
+      and .strict_eight_track_canary.invalid_opus_parts == 0
+      and .capacity.maximum_strict_customers == 4
+      and .capacity.minimum_strict_failure_customers == 5
+      and .capacity.strict_customers_per_edge_vcpu == 2
+      and .capacity.maximum_complete_delivery_customers == 9
+      and .capacity.minimum_incomplete_delivery_customers == 10
+      and .capacity.connection_limit_reached == false
+      and .capacity.request_throughput_limit_reached == true
+      and .capacity.endurance_claim == false
+      and .steady_tiers["4"].qualified == true
+      and .steady_tiers["4"].missing_parts == 0
+      and .steady_tiers["4"].cache_to_client_p99_ms <= 2
+      and .steady_tiers["5"].passed == true
+      and .steady_tiers["5"].qualified == false
+      and .steady_tiers["5"].cache_to_client_p99_ms > 2
+      and .steady_tiers["9"].passed == true
+      and .steady_tiers["9"].received_parts == .steady_tiers["9"].expected_parts
+      and .steady_tiers["10"].passed == false
+      and .steady_tiers["10"].missing_parts > 0
     ' "${evidence}" >/dev/null
   fi
 
