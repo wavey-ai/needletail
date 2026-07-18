@@ -8,6 +8,12 @@ machine-readable summary under [`evidence/`](evidence/README.md). The dated
 narrative captures the context needed to reproduce and interpret it without
 storing credentials, private keys, access tokens, or host secrets.
 
+For the current interpretation across all dated runs, start with
+[Current performance state and gaps](../performance/current-state-and-gaps.md).
+This index records evidence; the overview separates cache, router, H3,
+live-tail, latency, replication, and endurance claims so historical results are
+not compared as if they used the same workload.
+
 Each dated record includes:
 
 - the product and component revisions, including any tested working-tree patch;

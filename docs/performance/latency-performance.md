@@ -1,9 +1,12 @@
 # Latency performance
 
-The next capacity run is gated by the
-[isolated LL-HLS distribution-capacity qualification](distribution-capacity-isolation.md),
-which separates cache, router, HTTP/3, kernel/network, and load-generator
-ceilings before the distributed mesh is exercised again.
+This page owns the detailed geographic latency tables and physical-path
+comparison. Use the canonical
+[current performance state and gaps](current-state-and-gaps.md) for the latest
+cross-layer capacity interpretation, current bottleneck, supported claims, and
+ordered next work. The
+[isolated LL-HLS distribution-capacity qualification](distribution-capacity-isolation.md)
+defines the boundary methodology.
 
 Latest runs:
 

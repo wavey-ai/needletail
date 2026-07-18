@@ -12,27 +12,22 @@ Needletail is the product-level repo for Wavey realtime media delivery. It
 composes, runs, observes, and tests the service constellation. Core services
 and reusable crates stay in their own repos.
 
-**Measured 48 kHz lossless latency:** with 5 ms parts over one persistent,
-certificate-verified TLS 1.3/H3 connection, correctly implemented LL-HLS is
-raw UDP plus a few milliseconds. In the latest London-origin, dual-parent GCP
-mesh run, raw 16-channel S24 PCM stayed PCM and reached LL-HLS at **55.728 ms
-in New York, 127.506 ms in Tokyo, and 148.549 ms in Sydney at p50**. Raw UDP
-measured 53.338, 125.054, and 146.129 ms: an LL-HLS premium of only
-**2.390–2.452 ms**. Once a part reached its regional cache, H3 delivery was
-below 1.51 ms at p99. A post-deploy New York canary repeated both eight-channel
-PCM renditions with 400/400 parts, zero deadline misses, and 1.03–1.37 ms
-cache-to-client p99. These are publication-to-client availability results, not
+**Measured 48 kHz lossless latency:** persistent TLS 1.3/H3 LL-HLS with 5 ms
+parts added **2.390–2.452 ms at p50** over raw UDP in the London-origin,
+dual-parent GCP run. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
+127.506, and 148.549 ms at p50; regional cache-to-client delivery stayed below
+1.51 ms at p99. These are publication-to-client availability results, not
 browser-to-speaker latency.
 
-**Measured eight-track Opus capacity:** in the same-zone GCP DAG, one customer
-tailed eight independent 5 ms SoundKit Opus streams (1,600 media requests/s).
-An `n2-standard-2` edge held **4 complete customers at the strict p99 gate**:
-6,400 requests/s, zero missing or invalid parts, 14.026 ms availability p99,
-and 1.673 ms cache-to-client p99. That is **2 complete eight-track customers
-per edge vCPU** with this conservative one-H3-connection-per-track client.
-Five customers crossed the 2 ms cache p99 target; nine still delivered every
-part, while ten became incomplete. See the
-[Opus H3 capacity record](docs/real-world-tests/2026-07-18-opus-h3-capacity.md).
+**Measured eight-track Opus capacity:** the underlying cache reaches millions
+of reads/s and the optimized router exceeds one million cached-part responses/s;
+they are not the current limit. One real customer instead creates 1,600 live H3
+requests/s by tailing eight 5 ms tracks. On a two-vCPU GCP edge, four customers
+met the strict 2 ms cache-to-client p99 target, nine still received every part,
+and delivery became incomplete at ten. The current boundary is the combined
+live H3/QUIC path, including future-part waiter/wakeup, not playlist lookup or
+a low connection limit. See the canonical
+[current performance state and gaps](docs/performance/current-state-and-gaps.md).
 
 Needletail owns:
 
@@ -134,258 +129,47 @@ Tokyo playback edge. Four `e2-standard-2` GCP instances.
 
 ![Needletail performance dashboard](docs/performance/screenshots/20260716T023139Z-performance.png)
 
-## Latest real-world results
+## Current performance
 
-Latest raw-PCM GCP DAG and H3 capacity ladder: `20260717T222106Z`.
-Latest six-node Linode DAG replication run: `20260717T145432Z`.
-Latest three-lane 48 kHz lossless GCP run: `20260717T054206Z`.
-Latest local persistent-H3 lossless run: `20260717T053347Z`.
-Latest complete intercontinental failover run: `20260716T023139Z`.
+The canonical [current performance state and gaps](docs/performance/current-state-and-gaps.md)
+keeps the different capacity boundaries separate and names the next work. In
+brief:
 
-The raw-PCM run delivered both eight-channel LL-HLS renditions without loss to
-New York, Tokyo, and Sydney, then established a strict short-run edge boundary:
-25 simultaneous 16-channel customers passed on a two-vCPU `n2-standard-2`; 32
-failed. See the [raw PCM H3 capacity record](docs/real-world-tests/2026-07-17-pcm-h3-capacity.md).
-The earlier Linode run delivered all 2,400 five-millisecond epochs or parts to
-independent New York, Tokyo, and Sydney caches in clean and impaired profiles.
-It also proved byte-identical replication, late join, cache independence,
-cross-parent FEC recovery, and primary-parent failover. See the
-[17 July multi-region DAG record](docs/real-world-tests/2026-07-17-linode-dag-replication.md).
-The earlier GCP lossless run delivered all 2,000 five-millisecond epochs or
-parts in clean and two-percent-loss profiles. See the
-[17 July lossless H3 record](docs/real-world-tests/2026-07-17-lossless-h3.md)
-for p50/p95/p99 latency, wire, CPU, queue, recovery, and test-boundary details.
+| Question | Current answer |
+| --- | --- |
+| How close is 5 ms LL-HLS to UDP? | 2.390–2.452 ms p50 premium in the measured multi-region GCP run. |
+| Is playlist or part-cache lookup the limit? | No. Cache reads reach millions/s and the optimized router exceeds one million cached part responses/s without H3. |
+| What limits the current edge? | The combined live H3/QUIC path, including future-part waiter/wakeup, at high 5 ms per-track request rates. |
+| What is the strict Opus tier? | Four eight-track customers on two vCPUs for the measured ten-second window; endurance is pending. |
+| What remains complete beyond the strict tier? | Nine customers delivered every part; ten became incomplete. |
 
-### Latest multi-region clean-path result
-
-| City | UDP p50 | WebTransport p50 | LL-HLS p50 | LL-HLS premium | LL-HLS p99 | Cache→client p99 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| New York | 53.338 ms | 53.595 ms | 55.728 ms | 2.390 ms | 57.137 ms | 1.510 ms |
-| Tokyo | 125.054 ms | 125.130 ms | 127.506 ms | 2.452 ms | 128.824 ms | 1.274 ms |
-| Sydney | 146.129 ms | 146.268 ms | 148.549 ms | 2.420 ms | 150.265 ms | 1.460 ms |
-
-The wide-area network accounts for almost all publication-to-cache latency;
-the persistent H3 LL-HLS architecture adds only a few milliseconds over the
-raw datagram lane.
-
-### Performance charts
-
-![Relay latency](docs/performance/charts/relay-latency.svg)
-
-![Failover latency](docs/performance/charts/failover-latency.svg)
-
-![GCP route RTT](docs/performance/charts/route-rtt.svg)
-
-![RaptorQ recovery](docs/performance/charts/raptorq-recovery.svg)
-
-### Earlier GCP gate results
-
-| Metric | Local | GCP | Target |
-| --- | ---: | ---: | ---: |
-| Relay processing p95 | 1.0 ms | 1.0 ms | <= 1.0 ms |
-| Publication-to-cache p99 | 150 ms | 150 ms | <= 500 ms |
-| Failover detection | 106.234 ms | 106.940 ms | <= 250 ms |
-| Failover activation | 31.851 ms | 10.703 ms | <= 250 ms |
-| Media gap during failover | 142.776 ms | 120.034 ms | <= 250 ms |
-| RaptorQ recovered objects | 1,120 | 381 | zero receive/drop regressions |
-| RaptorQ recovered source symbols | 1,941 | 1,195 | zero receive/drop regressions |
-
-### GCP route measurements
-
-| Path | Measured RTT | Stretch limit | Observed stretch |
-| --- | ---: | ---: | ---: |
-| London -> Tokyo direct | 250.915 ms | - | 1.000x |
-| London -> Amsterdam -> Tokyo | 244.127 ms | <= 1.15x | 0.972947x |
-| London -> Osaka -> Tokyo | 251.904 ms | <= 1.15x | 1.003942x |
-
-The sub-millisecond numbers in the dashboard are relay processing times inside
-the service. Intercontinental network latency is measured in the RTT table.
-
-| Path | Distance | Measured RTT | Vacuum lower bound | Ideal-fiber lower bound | Factor vs vacuum | Factor vs ideal fiber |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| London -> Tokyo direct | 9,558.6 km | 250.915 ms | 63.8 ms | 93.7 ms | 3.93x | 2.68x |
-| London -> Amsterdam -> Tokyo | 9,645.9 km | 244.127 ms | 64.4 ms | 94.6 ms | 3.79x | 2.58x |
-| London -> Osaka -> Tokyo | 9,891.8 km | 251.904 ms | 66.0 ms | 97.0 ms | 3.82x | 2.60x |
-
-Observed one-way latency is roughly `122-126 ms`. An ideal straight fiber path
-is roughly `47-49 ms` one way, so the extra `75-79 ms` is provider routing,
-cloud network path, queueing, and host overhead.
-
-### GCP failover and RaptorQ recovery
-
-The deployed run stopped and restored the primary relay, then injected
-controlled loss on the primary source path.
-
-| Check | Result | Gate |
-| --- | ---: | ---: |
-| Contributor restart max relay activation | 1.628260 s | <= 10 s |
-| Failover detection | 106.940 ms | <= 250 ms |
-| Promotion to source | 10.703 ms | <= 250 ms |
-| Maximum media gap | 120.034 ms | <= 250 ms |
-| Canonical publication max lag after recovery | 4 objects | <= 4 objects |
-| Controlled primary-path loss | 70 dropped datagrams | recovered before deadline |
-| Exact RaptorQ recovery | 381 objects / 1,195 source symbols | > 0, no regressions |
-| Expired / rejected / deadline drops during gated fault phases | 0 / 0 / 0 | 0 / 0 / 0 |
-| Warm source replay during promotion | 38 datagrams | > 0 |
-
-The failover state sequence was:
-
-```text
-healthy -> promoted -> healthy
-```
-
-### Dashboard load
-
-`h2load` ran against the Tokyo edge through the local SSH tunnel.
-
-| Metric | Result |
-| --- | ---: |
-| Duration | 60 s |
-| Connections | 8 |
-| Streams per connection | 4 |
-| Requests | 6,520 |
-| Success | 6,520 |
-| Failed / errored / timed out | 0 |
-| Throughput | 108.67 req/s |
-| Mean request time | 290.71 ms |
-| Max request time | 976.55 ms |
-
-Final post-load API snapshot:
-
-- alerts: `0`;
-- edge contiguous at head: `15307 / 15307`;
-- rejected datagrams: `0`;
-- deadline drops: `0`;
-- decoded objects: `17,086`;
-- FEC-recovered objects: `16,716`;
-- recovered source symbols: `52,347`.
-
-Cumulative dashboard counters after the gate and dashboard load showed `6`
-expired objects and a historical maximum failover gap of `2.618526 s`. Those
-counters are follow-up operating data, separate from the gated failover result.
-
-Versioned evidence summary:
-
-```text
-docs/real-world-tests/evidence/20260716T023139Z.json
-docs/real-world-tests/evidence/20260717T054206Z.json
-```
-
-The GCP lab was torn down after capture: instances, firewall rules, subnets, and
-VPC were removed.
+Dated narratives and sanitized JSON live in the
+[real-world test index](docs/real-world-tests/README.md). Detailed geographic
+latency tables and charts remain in
+[latency performance](docs/performance/latency-performance.md).
 
 ## Relay fabric
 
 Needletail compiles a forwarding graph for every stream and destination cohort.
-The graph combines a scalable dual-parent DAG with a tightly connected backbone
-overlay for the lowest-latency delivery class.
+It selects one primary and up to one independent warm secondary parent for
+each relay or playback edge. Levels increase from the contributor origin to
+backbone relays and regional edges, keeping every forwarding route acyclic and
+origin egress independent of viewer count. Route choice uses measured RTT,
+jitter, loss, queueing, deadline behavior, and failure-domain diversity.
 
-The controller manages two related structures:
-
-1. the session overlay, which describes authenticated carrier connectivity
-   between trusted relays;
-2. the per-stream forwarding graph, which selects one primary and up to one
-   secondary upstream for each relay or playback edge.
-
-This keeps failover candidates warm while every media object follows an
-explicit acyclic route.
-
-Forwarding invariants:
-
-- exactly one origin for a stream graph at level 0;
-- one primary upstream for every downstream node;
-- up to one secondary upstream;
-- parents at an earlier level than their children;
-- provider, region, ASN, and physical-zone diversity between dual parents;
-- origin child limit, initially four;
-- configured downstream child limits per relay;
-- no more than `2 × (node count - 1)` upstream relationships;
-- explicit stream subscriptions before object forwarding;
-- idempotent generation and subscription application;
-- make-before-break parent changes with generation fencing.
-
-Parent roles:
-
-- primary parent carries live source symbols;
-- secondary parent keeps subscription and object state warm;
-- secondary parent can supply RaptorQ repair symbols, reliable missing-object
-  fetches, duplicated initialization/keyframe objects, and immediate takeover.
-
-Delivery classes:
-
-| Class | Forwarding shape | Playback lane | Initial hard limits |
-| --- | --- | --- | --- |
-| Interactive | direct or one-backbone-hop dual-parent fast path | interactive edge protocol | one inter-region relay, 1.15x stretch, relay p95 <= 1 ms, media queue p95 <= 5 ms |
-| Premium live | dual-parent regional DAG | object delivery or tightly tuned LL-HLS | two inter-region relays, 1.25x stretch, relay p95 <= 1 ms, queue p95 <= 5 ms |
-| Mass broadcast | bounded multi-level dual-parent DAG | LL-HLS/H3 | two inter-region relays, 1.50x stretch, relay p95 <= 2 ms, queue p95 <= 10 ms |
-| Resilient contribution | best regional ingress plus independent upstream | SRT, RIST, or WHIP | two inter-region relays, 1.25x stretch, relay p95 <= 1 ms, queue p95 <= 5 ms |
-
-Direct ingress-to-edge delivery remains a candidate for interactive cohorts.
-The controller chooses it when measured performance wins and keeps the best
-independent relay path warm.
-
-Route scoring uses:
-
-- RTT p50/p95/p99;
-- jitter and loss;
-- relay processing and media-queue p50/p95/p99;
-- deadline misses and expired-object drops;
-- repair demand and successful recovery by parent;
-- provider, ASN, region, and physical failure domain.
-
-Path stretch is:
-
-```text
-selected path RTT / fastest measured direct RTT
-```
-
-Placement uses measured network behavior as the authority. Geography is only
-candidate discovery and failure-domain context.
+See [Needletail relay fabric](docs/relay-fabric.md) for forwarding invariants,
+delivery classes, route compilation, session behavior, and scale gates.
 
 ## RaptorQ media plane
 
-RaptorQ remains the primary live-media recovery mechanism.
-
-The scheduler owns:
-
-- adaptive repair amount;
-- source-first ordering;
-- keyframe and audio priority;
-- path selection;
-- expiry;
-- the choice between additional FEC and reliable fetch.
-
-Symbols from an independent secondary path can complete the same coding object.
-Obsolete symbols leave the queue before newer decodable groups.
-
-Carrier comparisons use identical loss, RTT, jitter, bandwidth, queue, and
-congestion scenarios. Deadline-hit rate and p99 media latency select the
-winning policy.
-
-`RelayTransport` provides datagram send/receive, path MTU, pacing and
-congestion feedback, peer identity, and bounded session lifecycle.
-
-Initial carrier backends:
-
-- long-lived QUIC Datagram sessions for public relay links, with mTLS identity,
-  encryption, pacing, congestion control, and path management;
-- private UDP for controlled networks and benchmarks, paired with managed
-  network identity and WireGuard where encryption crosses hosts.
-
-`RelaySession` sits above either carrier and provides:
-
-- bounded, versioned framing;
-- subscribe, renew, unsubscribe, and generation fencing;
-- source-symbol and repair-symbol delivery;
-- reliable immutable-object fetch by canonical media-object key and hash;
-- receiver deadline feedback and repair requests;
-- priority for init/config/discontinuity/keyframe objects;
-- bounded queues with immediate expiry of obsolete media;
-- per-session and per-stream admission limits.
-
-Live source and repair symbols use datagrams. Reliable streams carry
-subscription control, initialization/configuration objects, catalogs, and late
-backfill.
+RaptorQ is the live recovery mechanism. The primary path sends source symbols;
+an independent secondary can provide compatible repair symbols, reliable
+missing-object fetches, or immediate takeover. Deadline-aware scheduling drops
+obsolete work before it delays newer media. `RelaySession` adds authenticated
+subscriptions, generation fencing, bounded queues, and reliable control and
+backfill around either QUIC Datagram or managed private-UDP carriers. The full
+contract and ownership boundaries are documented in
+[Needletail relay fabric](docs/relay-fabric.md#raptorq-media-plane).
 
 ## Native control plane
 

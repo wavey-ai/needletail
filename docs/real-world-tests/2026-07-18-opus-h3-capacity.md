@@ -39,6 +39,17 @@ H3 connection limit. A broader diagnostic ramp completed every handshake at
 1,024 simultaneous connections, and the isolated edge reached 197% process CPU
 before media became incomplete.
 
+This result is not a playlist-cache ceiling. The underlying cache reaches
+4.7–9.2 million reads/s and the optimized production router reaches 1.112
+million cached part responses/s on one worker without H3. Each measured Opus
+customer instead creates 1,600 live H3 request streams/s, including cache
+waiter/wakeup, H3/QPACK, QUIC, encryption, UDP, and stream cleanup. Four
+customers is the strict 2 ms cache-to-client p99 boundary; it is not a claim
+that the edge can only hold four connections or serve four complete customers.
+See the canonical
+[current performance state and gaps](../performance/current-state-and-gaps.md)
+for the cross-boundary comparison and ordered investigation.
+
 ## Integrity and latency canary
 
 Before load, a three-second late-join window requested 600 parts from each of

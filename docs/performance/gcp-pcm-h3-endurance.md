@@ -4,6 +4,11 @@
 publication live across the six-node GCP DAG. Each logical customer reads both
 eight-channel LL-HLS renditions over persistent TLS 1.3/H3 connections.
 
+This page documents the PCM endurance harness, not the current edge-capacity
+claim. The later real eight-track Opus workload has different request geometry.
+Use [Current performance state and gaps](current-state-and-gaps.md) for the
+current result and the remaining endurance gate.
+
 Before contacting either cloud, the launcher copies itself to
 `RESULT_DIR/harness.sh`, removes write permission, and re-executes that retained
 copy. A workspace edit during a long run therefore cannot change the Bash still

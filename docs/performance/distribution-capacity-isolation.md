@@ -1,9 +1,11 @@
 # Isolated LL-HLS distribution-capacity qualification
 
-This qualification precedes the next distributed mesh endurance run. It tests
-the playback edge at its code boundaries so cache lookup, route construction,
-HTTP/3, encryption, kernel UDP, network bandwidth, and the load generator are
-not mistaken for one another.
+This document defines the reproducible playback-edge boundary qualification so
+cache lookup, route construction, HTTP/3, encryption, kernel UDP, network
+bandwidth, and the load generator are not mistaken for one another. The
+canonical [current performance state and gaps](current-state-and-gaps.md)
+contains the concise result, current bottleneck, and ordered next work; this
+page retains the implementation prompt, arithmetic, and gates.
 
 The test uses 48 kHz S24 PCM throughout. It does not deploy a contributor,
 relay DAG, or remote mesh until the isolated gates pass.
@@ -217,95 +219,34 @@ A clean capacity step requires:
 The test may intentionally exceed the gate to identify saturation. That first
 failed step remains in the evidence and names the limiting resource.
 
-## Current code findings
+## Current qualification status
 
-The isolated runs have now resolved several of the original hypotheses:
+The boundary work has already proved and fixed several real costs:
 
-- Cached part bodies are `Bytes` clones, so media lookup itself should not copy
-  5,760-byte payloads.
-- Cached playlists clone a `String` per response, which allocates and copies.
-- The write-locked demand gate was real. It is now a per-stream sharded atomic
-  throttle with no async scheduler boundary.
-- The playback router's owned path and query copies were real and are removed.
-- The recent-response mutex and diagnostic string construction were real. Exact
-  aggregate counters remain per response, while successful detail is sampled
-  and errors are always retained.
-- The cumulative latency histogram previously updated as many as 13 atomics per
-  response. It now updates one exclusive bucket and produces the same cumulative
-  representation at snapshot time.
-- Both H3 backends created a Tokio task for each request stream. They now poll
-  connection-local in-flight futures while retaining H3 multiplexing.
+- part-cache lookup uses cheap `Bytes` clones;
+- the router no longer allocates owned route strings or takes a global async
+  demand lock per request;
+- successful diagnostics are sampled and duration histograms update one bucket
+  per request;
+- ordinary H3 GET responses no longer encode preflight-only CORS fields; and
+- Quinn and tokio-quiche keep request futures connection-local instead of
+  creating a detached Tokio task per request.
 
-B1 through B5 continue to quantify the remaining cache, playlist, router, and
-transport costs independently. Cached playlist `String` copies and the complete
-seeded-edge H3 path remain open measurements.
+The resulting boundaries are deliberately reported separately: 4.7–9.2
+million underlying cache reads/s, 1.112 million optimized cached-part router
+responses/s on one worker, about 89,500 static tiny H3 responses/s on two
+vCPUs, and 14,400 complete live eight-track Opus requests/s on the two-vCPU
+edge. The cache and router are not the current active-media limit.
 
-## Current qualification status: 18 July 2026
+The live edge is now bounded by H3/QUIC request processing plus future-part
+waiter/wakeup and cleanup work. The next decisive A/B keeps the same Opus client
+and compares preseeded ready parts with live future parts, followed by eight
+connections versus one multiplexed connection. Production sizing then requires
+the passing tier to hold for endurance with CPU, link, RSS, waiter, task, and
+generator headroom.
 
-B4/B6 has now found and fixed one production H3 capacity bug. Ordinary media
-GET responses carried two CORS fields intended for `OPTIONS` preflight
-responses. On separate London generator and Amsterdam server hosts, both GCP
-`n2-standard-2`, the method-aware fix raised the saturated 64-byte response
-rate from a two-run mean of `71,946` to `79,702` responses/s (`+10.78%`) at the
-same roughly `195%` server CPU. An immediate old-build reversal reproduced the
-old ceiling. Wire bytes per response fell by `12.49%`.
-
-At the 5,760-byte PCM geometry, two 40-customer runs remained exact and server
-CPU fell from about `150.8%` to `147.2%`. A 56-customer run improved to
-`99.9536%` completion but failed strict qualification with 104 missing requests
-and ten generator backpressure events. It is not a capacity pass.
-
-The same server completed exact 100-, 500-, and 1,000-connection steps at one
-request/s/connection. This establishes that the configured 256 H3 streams are
-not a global connection ceiling. It does not establish million-connection
-capacity; the next connection-count runner must share its client UDP endpoint
-and record server RSS and task count.
-
-The Quinn/tokio-quiche comparison also completed. At the exact 40-customer
-workload tokio-quiche used about `5.9%` more server CPU and emitted about `4.8%`
-more packets; changing its configured UDP payload ceiling from 1,350 to 1,400
-bytes had no measurable effect. Quinn remains the default and owns
-WebTransport. Details and raw-artifact locations are in the
-[18 July H3 isolation record](../real-world-tests/2026-07-18-h3-capacity-isolation.md).
-
-Subsequent B4 work removed per-request Tokio task creation from the Quinn H3
-connection. On the same London-to-Amsterdam 64-byte workload, the ten-second
-mean at 16 connections rose from `80,415` to `89,544` responses/s (`+11.35%`),
-server CPU ticks fell by `12.49%`, and p99 fell from about `16.1` to `12.5` ms.
-The 32-connection staircase reached `100,480` responses/s. The full 5,760-byte
-40-customer control remained exact with neutral warmed CPU. The same scheduler
-fix is implemented and concurrency-tested on tokio-quiche, but its two-host
-capacity has not been remeasured.
-
-B3 has also produced a material edge-router improvement. The original
-release-mode cached PCM-part route measured `792,037`, `713,858`, `623,177`,
-and `559,730` responses/s at 1, 2, 4, and 8 workers. After removing owned route
-strings, the global async demand lock, successful-response diagnostic
-serialization, and cumulative histogram contention, final two-run means were
-`1,112,332`, `822,484`, `729,988`, and `686,298` responses/s. That is
-`+40.44%`, `+15.22%`, `+17.14%`, and `+22.61%` respectively, with zero
-failures. These are in-process router-boundary figures and must not be quoted as
-network or customer capacity.
-
-The dependency audit found no equivalent per-packet task creation in the
-current contributor or mesh data workers; the inspected spawns are long-lived
-ingest, rendition, peer, or service tasks. It did find two integration hazards:
-
-- the older `av-hls` and upload-response streaming implementations contain
-  1–5 ms polling loops, while the current `av-mesh` LL-HLS exact-part path uses
-  registered waiters and has a lost-wakeup regression test;
-- `av-contrib` currently compiles the canonical Git `web-service` for its main
-  H3 server and a differently named local `av-web-service` through
-  `av-upload-response` and the unused direct `av-hls` dependency. The local
-  copy is not the active contributor H3 server, but the duplicate dependency
-  boundary can let fixes diverge and should be removed before those routers are
-  used in production.
-
-## Resume condition for the mesh test
-
-Resume the six-node 30-minute mesh baseline after the final B3 router build has
-passed seeded-edge H3 and the two-host B6 control has either passed or named the
-network ceiling. The distributed harness
-then uses one contributor publication, one replication copy per rendition per
-edge, and viewer-only late-join bursts at 1, 4, 8, 16, and 24 customer
-equivalents. It must not create a second publication to simulate viewers.
+Use [Current performance state and gaps](current-state-and-gaps.md) for the
+cross-layer numbers and ordered work. Exact historical measurements and
+revisions remain in the
+[18 July H3 isolation record](../real-world-tests/2026-07-18-h3-capacity-isolation.md)
+and [eight-track Opus record](../real-world-tests/2026-07-18-opus-h3-capacity.md).
