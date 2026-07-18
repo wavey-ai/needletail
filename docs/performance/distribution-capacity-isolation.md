@@ -238,15 +238,24 @@ responses/s on one worker, about 89,500 static tiny H3 responses/s on two
 vCPUs, and 14,400 complete live eight-track Opus requests/s on the two-vCPU
 edge. The cache and router are not the current active-media limit.
 
-The live edge is now bounded by H3/QUIC request processing plus future-part
-waiter/wakeup and cleanup work. The next decisive A/B keeps the same Opus client
-and compares preseeded ready parts with live future parts, followed by eight
-connections versus one multiplexed connection. Production sizing then requires
-the passing tier to hold for endurance with CPU, link, RSS, waiter, task, and
-generator headroom.
+The next test implemented a 200 ms service response policy over the unchanged
+5 ms cache units and multiplexed eight track tails on one H3 connection per
+customer. It reduced H3 responses from 1,600 to 40/customer/s. Complete
+delivery increased from nine to fourteen customers, but final-part p99 crossed
+50 ms between three and four customers and the edge still flattened near one
+core. The handler continued to perform 1,600 individual cache-unit reads per
+customer each second.
+
+This narrows the next boundary: add a bounded consecutive range read to the
+cache/edge adapter, then fix cancellation so disconnected H3 work cannot poison
+the following tier. Repeat the same randomized-arrival ladder and profile the
+remaining serialized section before any endurance sizing. Production sizing
+still requires CPU, link, RSS, waiter, task, and generator headroom.
 
 Use [Current performance state and gaps](current-state-and-gaps.md) for the
 cross-layer numbers and ordered work. Exact historical measurements and
 revisions remain in the
 [18 July H3 isolation record](../real-world-tests/2026-07-18-h3-capacity-isolation.md)
 and [eight-track Opus record](../real-world-tests/2026-07-18-opus-h3-capacity.md).
+The aggregation result is in the
+[200 ms Opus response record](../real-world-tests/2026-07-18-opus-h3-200ms-aggregation.md).

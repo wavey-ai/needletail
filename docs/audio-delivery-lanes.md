@@ -99,6 +99,15 @@ notifications; there is no fixed polling sleep in the delivery path. Known-
 duration FLAC parts close as soon as they reach the target duration rather than
 waiting for the next access unit.
 
+The playback edge can keep those 5 ms cache units while serving a slower
+response cadence. `AV_LL_HLS_RESPONSE_MS=200`, for example, waits for and
+returns 40 exact consecutive units per blocking tail response. Aggregation is
+valid only for a self-delimiting opaque stream such as SoundKit v2; it does not
+interpret or rebox the units. The first-part latency includes the intentional
+195 ms collection interval, while final-part latency measures the remaining
+delivery cost. The measured capacity effect and current batching bottleneck are
+in the [200 ms Opus record](real-world-tests/2026-07-18-opus-h3-200ms-aggregation.md).
+
 The raw-PCM London-origin GCP DAG measured LL-HLS at 55.728 ms in New York,
 127.506 ms in Tokyo, and 148.549 ms in Sydney at p50. Native UDP measured
 53.338, 125.054, and 146.129 ms respectively: a 2.390–2.452 ms LL-HLS premium.

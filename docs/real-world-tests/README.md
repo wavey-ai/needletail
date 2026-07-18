@@ -44,7 +44,8 @@ and absence of secret-shaped fields with:
 ./scripts/validate-real-world-evidence.sh
 ```
 
-Current record: [2026-07-18 eight-track Opus LL-HLS capacity](2026-07-18-opus-h3-capacity.md).
+Current record: [2026-07-18 200 ms Opus H3 response aggregation](2026-07-18-opus-h3-200ms-aggregation.md).
+Current 5 ms Opus record: [2026-07-18 eight-track Opus LL-HLS capacity](2026-07-18-opus-h3-capacity.md).
 Current raw PCM record: [2026-07-17 raw PCM DAG latency and H3 edge capacity](2026-07-17-pcm-h3-capacity.md).
 Current FLAC DAG record: [2026-07-17 Linode multi-region DAG replication](2026-07-17-linode-dag-replication.md).
 Current local/GCP cadence record: [2026-07-17 lossless H3 latency](2026-07-17-lossless-h3.md).

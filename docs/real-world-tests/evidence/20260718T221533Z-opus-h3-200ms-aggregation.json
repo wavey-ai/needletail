@@ -1,0 +1,319 @@
+{
+  "schema": "needletail.opus-h3-aggregation.v1",
+  "run_id": "20260718T221533Z",
+  "passed": true,
+  "result": "response_aggregation_capacity_boundary_characterized",
+  "provider": "gcp",
+  "zone": "europe-west2-c",
+  "raw_artifact_directory": "target/gcp-qualification/artifacts/2026-07-18-opus-h3-200ms",
+  "revisions": {
+    "needletail": "8f7a7a815ed418b32c28a808413477eb8b8e5b46",
+    "av_mesh": "57b94f093112f348724b44d7b49dcd3c5a94cfc4",
+    "av_contrib": "a7a8a0d510aa18ae2a999d1853ef7a8fb19a6a81",
+    "daw_nexus": "d29231e50a3c7b8fb3b1eb1036a8011216d321ef",
+    "playlists": "8b8bb9347cb78dedda8074883253614c0ab1d55c",
+    "web_services": "7bfe1a92c6dce0f40f71d71f4c1cfa928bebde38",
+    "tested_working_tree_patch": true
+  },
+  "deployed_binary_sha256": {
+    "av_mesh": "af31dbc2639c900e13daefbd6db5ad28d5310b92b3cbe3622899fc74e7b800d3",
+    "aep1_48k_probe": "6cc06fd759df93b86618664339cdaed777e7f33cd2a84dc05c0586c73fcaa06d"
+  },
+  "topology": {
+    "publication": {
+      "role": "daw_nexus_source",
+      "machine_type": "n2-standard-2",
+      "vcpus": 2
+    },
+    "contributor": {
+      "machine_type": "n2-standard-2",
+      "vcpus": 2
+    },
+    "relays": {
+      "count": 2,
+      "machine_type": "n1-standard-1",
+      "vcpus_each": 1
+    },
+    "edge": {
+      "machine_type": "n2-standard-2",
+      "vcpus": 2,
+      "tokio_workers": 2
+    },
+    "external_reader": {
+      "machine_type": "n2-standard-4",
+      "vcpus": 4,
+      "runs_no_needletail_services": true
+    },
+    "all_roles_in_one_zone": true,
+    "dual_parent_dag": true
+  },
+  "media": {
+    "source": "Lori Asha CONFIRMATION stems",
+    "tracks": 8,
+    "channels_per_track": 2,
+    "sample_rate_hz": 48000,
+    "source_pcm_format": "s24le",
+    "codec": "pure_rust_opus",
+    "wire_frame": "soundkit_v2",
+    "encrypted": true,
+    "fec": "raptorq",
+    "ll_hls_packaging": "opaque_self_delimiting_units",
+    "part_ms": 5,
+    "parts_per_second_per_track": 200
+  },
+  "service_policy": {
+    "environment_variable": "AV_LL_HLS_RESPONSE_MS",
+    "response_ms": 200,
+    "part_ms": 5,
+    "parts_per_response": 40,
+    "maximum_parts_per_response": 200,
+    "waits_for_exact_final_sequence": true,
+    "polling_sleep_ms": 0,
+    "body": "byte_exact_concatenation_of_consecutive_cache_units",
+    "underlying_cache_unit_unchanged": true
+  },
+  "content_canary": {
+    "session_id": 1784411060187519826,
+    "passed": true,
+    "tracks": 8,
+    "expected_units": 6400,
+    "received_units": 6400,
+    "media_responses": 160,
+    "units_per_response": 40,
+    "missing_units": 0,
+    "non_contiguous_units": 0,
+    "invalid_opus_units": 0,
+    "decoded_tracks": 8,
+    "waveform_matches": true,
+    "minimum_waveform_correlation": 0.9897,
+    "maximum_waveform_correlation": 0.9981,
+    "first_part_to_response_p99_ms": 209.19659,
+    "final_part_to_response_p99_ms": 14.19659,
+    "raw_report_retained": false,
+    "retention_note": "The valid canary report was lost when the reader VM was recreated; these results were captured in the operator ledger before recreation. The versioned capacity tiers and their raw reports are retained."
+  },
+  "source_stability": {
+    "session_id": 1784412933237864998,
+    "duration_seconds": 1530,
+    "audio_epoch_hold_us": 5000,
+    "source_log_lines": 6098,
+    "errors": 0,
+    "warnings": 0,
+    "explicit_erasures": 0,
+    "mean_process_cpu_percent": 44.7
+  },
+  "capacity_method": {
+    "one_customer": "eight parallel track tails multiplexed on one persistent H3 connection",
+    "persistent_h3_connections_per_customer": 1,
+    "track_tails_per_customer": 8,
+    "cached_unit_reads_per_second_per_customer": 1600,
+    "media_responses_per_second_per_customer": 40,
+    "response_rate_reduction_from_5ms": 40,
+    "randomized_arrival_window_ms": 750,
+    "deterministic_arrival_seed": 424242,
+    "active_window_seconds": 8,
+    "fresh_edge_process_for_critical_tiers": true,
+    "delivery_deadline_ms": 1000,
+    "latency_boundary_final_part_p99_ms": 50
+  },
+  "tiers": {
+    "1": {
+      "window_seconds": 4,
+      "h3_connections": 1,
+      "expected_units": 6400,
+      "received_units": 6400,
+      "media_responses": 160,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 0,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 222.687227,
+      "final_part_to_response_p99_ms": 27.687227,
+      "cache_to_client_p99_ms": 27.437225
+    },
+    "2": {
+      "window_seconds": 8,
+      "h3_connections": 2,
+      "expected_units": 25600,
+      "received_units": 25600,
+      "media_responses": 640,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 0,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 238.243294,
+      "final_part_to_response_p99_ms": 43.243294,
+      "cache_to_client_p99_ms": 33.834614
+    },
+    "3": {
+      "window_seconds": 8,
+      "h3_connections": 3,
+      "expected_units": 38400,
+      "received_units": 38400,
+      "media_responses": 960,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 0,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 241.53319,
+      "final_part_to_response_p99_ms": 46.53319,
+      "cache_to_client_p99_ms": 29.798765
+    },
+    "4": {
+      "window_seconds": 8,
+      "h3_connections": 4,
+      "expected_units": 51200,
+      "received_units": 51200,
+      "media_responses": 1280,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 0,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 419.518454,
+      "final_part_to_response_p99_ms": 224.518454,
+      "cache_to_client_p99_ms": 107.732071,
+      "edge_cpu_cores": 0.853,
+      "edge_rss_start_mb": 66.65,
+      "edge_rss_end_mb": 89.86
+    },
+    "8": {
+      "window_seconds": 8,
+      "h3_connections": 8,
+      "expected_units": 102400,
+      "received_units": 102400,
+      "media_responses": 2560,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 4,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 1018.053807,
+      "final_part_to_response_p99_ms": 823.053807,
+      "cache_to_client_p99_ms": 757.254882,
+      "edge_cpu_cores": 0.929,
+      "edge_rss_start_mb": 73.1,
+      "edge_rss_end_mb": 100.2
+    },
+    "12": {
+      "window_seconds": 8,
+      "h3_connections": 12,
+      "expected_units": 153600,
+      "received_units": 153600,
+      "media_responses": 3840,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 3617,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 2375.571124,
+      "final_part_to_response_p99_ms": 2180.571124,
+      "cache_to_client_p99_ms": 2172.47829,
+      "edge_cpu_cores": 0.953,
+      "edge_rss_start_mb": 65.8,
+      "edge_rss_end_mb": 95.1
+    },
+    "14": {
+      "window_seconds": 8,
+      "h3_connections": 14,
+      "expected_units": 179200,
+      "received_units": 179200,
+      "media_responses": 4480,
+      "missing_units": 0,
+      "incomplete_readers": 0,
+      "deadline_misses": 7421,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 2338.53086,
+      "final_part_to_response_p99_ms": 2143.53086,
+      "cache_to_client_p99_ms": 1712.32904
+    },
+    "15": {
+      "window_seconds": 8,
+      "h3_connections": 15,
+      "expected_units": 192000,
+      "received_units": 14600,
+      "media_responses": 365,
+      "missing_units": 177400,
+      "incomplete_readers": 120,
+      "deadline_misses": 7410,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 2295.879212,
+      "final_part_to_response_p99_ms": 2100.879212,
+      "cache_to_client_p99_ms": 1756.533404
+    },
+    "16": {
+      "window_seconds": 8,
+      "h3_connections": 16,
+      "expected_units": 204800,
+      "received_units": 15600,
+      "media_responses": 390,
+      "missing_units": 189200,
+      "incomplete_readers": 128,
+      "deadline_misses": 6466,
+      "invalid_opus_units": 0,
+      "first_part_to_response_p99_ms": 2459.801101,
+      "final_part_to_response_p99_ms": 2264.801101,
+      "cache_to_client_p99_ms": 1814.294099
+    }
+  },
+  "capacity": {
+    "maximum_complete_delivery_customers": 14,
+    "minimum_incomplete_delivery_customers": 15,
+    "maximum_customers_below_50ms_final_part_p99": 3,
+    "minimum_customers_above_50ms_final_part_p99": 4,
+    "stable_customers_below_20ms_final_part_p99": 0,
+    "endurance_claim": false
+  },
+  "edge_cpu": {
+    "fresh_edge_no_consumer_cores": 0.455,
+    "four_customers_cores": 0.853,
+    "eight_customers_cores": 0.929,
+    "twelve_customers_cores": 0.953,
+    "two_worker_threads_observed": true,
+    "interpretation": "Total edge work flattened near one core despite two Tokio workers, indicating a remaining serialized live cache/response boundary."
+  },
+  "comparison_to_5ms": {
+    "five_ms_connections_per_customer": 8,
+    "five_ms_media_responses_per_second_per_customer": 1600,
+    "five_ms_maximum_strict_customers": 4,
+    "five_ms_maximum_complete_customers": 9,
+    "five_ms_minimum_incomplete_customers": 10,
+    "two_hundred_ms_connections_per_customer": 1,
+    "two_hundred_ms_media_responses_per_second_per_customer": 40,
+    "two_hundred_ms_maximum_complete_customers": 14,
+    "two_hundred_ms_minimum_incomplete_customers": 15,
+    "pure_ab_test": false,
+    "interpretation": "Response aggregation reduced H3 response streams 40x and raised the complete-delivery ceiling, but did not improve the measured latency-qualified customer tier. The server still performs 40 cache unit reads, decodes, and copies for each response, and the client connection geometry also changed."
+  },
+  "bottleneck": {
+    "playlist_lookup": false,
+    "h3_response_rate_alone": false,
+    "remaining_work": [
+      "forty individual cache slot reads and unit decodes per aggregated response",
+      "serialized cache and response critical sections",
+      "slow cancellation of disconnected or expired client work"
+    ],
+    "next_changes": [
+      "add a bounded batch-range read that returns consecutive immutable cache units under one lookup",
+      "cancel disconnected tail handlers and their waiter/timer work promptly",
+      "profile and shard the remaining live cache delivery critical section"
+    ]
+  },
+  "diagnostic_ledger": [
+    "An early four-customer run lost one complete track per customer. Fresh-edge reruns delivered all data through fourteen customers; the transient is rejected from the final tier table.",
+    "Back-to-back overload made a later fourteen-customer run starve playlist and initialization work. Restarting the edge restored delivery, proving disconnected or expired work survives too long after client churn.",
+    "The one-millisecond DAW aggregation hold generated false erasures with eight independently paced tracks. AUDIO_EPOCH_HOLD_US=5000 produced 25.5 minutes with zero source errors, warnings, or explicit erasures.",
+    "The valid decode-and-waveform canary report was not retained before the reader VM was recreated. Capacity raw reports are retained; the content result is recorded as operator-ledger evidence rather than a reproducible raw attachment."
+  ],
+  "cleanup": {
+    "source_process_exited": true,
+    "reader_runs_no_needletail_services": true,
+    "gcp_instances_stopped_after_collection": true,
+    "stopped_instances": [
+      "nt-daw-lon",
+      "nt-contrib-lon",
+      "nt-edge-lon",
+      "nt-opus-reader-lon",
+      "nt-relay-a-lon",
+      "nt-relay-b-lon"
+    ],
+    "persistent_disks_and_images_preserved": true
+  }
+}

@@ -35,3 +35,4 @@ Evidence index:
 - `local-20260717T162832Z-multichannel-llhls-sizing.json`: partial local 16/32/64/128-channel LL-HLS sizing and PCM-vs-FLAC-source bottleneck isolation.
 - `20260717T222106Z-pcm-h3-capacity.json`: raw 16-channel S24 PCM through the six-node GCP DAG, strict two-vCPU H3 edge capacity ladder, and post-deploy PCM readiness canary.
 - `20260718T163240Z-opus-h3-capacity.json`: real eight-stem DAW Nexus pure-Rust Opus through the same-zone two-parent GCP DAG, strict p99 capacity, hard request-throughput boundary, and clock/churn diagnostics.
+- `20260718T221533Z-opus-h3-200ms-aggregation.json`: service-configured 200 ms H3 responses over exact 5 ms Opus units, one multiplexed connection/customer, complete-delivery and latency knees, source stability, near-one-core edge serialization, and cancellation diagnostics.

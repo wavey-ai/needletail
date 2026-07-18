@@ -63,6 +63,13 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.all_needletail_services_active == true
           and .cleanup.source_process_exited == true
           and .cleanup.reader_runs_no_needletail_services == true
+        elif .schema == "needletail.opus-h3-aggregation.v1" then
+          .provider == "gcp"
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_runs_no_needletail_services == true
+          and .cleanup.gcp_instances_stopped_after_collection == true
+          and (.cleanup.stopped_instances | length) == 6
+          and .cleanup.persistent_disks_and_images_preserved == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -299,6 +306,59 @@ for evidence in "${run_files[@]}"; do
       and .steady_tiers["9"].received_parts == .steady_tiers["9"].expected_parts
       and .steady_tiers["10"].passed == false
       and .steady_tiers["10"].missing_parts > 0
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.opus-h3-aggregation.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and .result == "response_aggregation_capacity_boundary_characterized"
+      and .media.sample_rate_hz == 48000
+      and .media.tracks == 8
+      and .media.channels_per_track == 2
+      and .media.codec == "pure_rust_opus"
+      and .media.wire_frame == "soundkit_v2"
+      and .media.part_ms == 5
+      and .service_policy.environment_variable == "AV_LL_HLS_RESPONSE_MS"
+      and .service_policy.response_ms == 200
+      and .service_policy.part_ms == 5
+      and .service_policy.parts_per_response == 40
+      and .service_policy.waits_for_exact_final_sequence == true
+      and .service_policy.polling_sleep_ms == 0
+      and .service_policy.underlying_cache_unit_unchanged == true
+      and .content_canary.passed == true
+      and .content_canary.expected_units == 6400
+      and .content_canary.received_units == 6400
+      and .content_canary.media_responses == 160
+      and .content_canary.units_per_response == 40
+      and .content_canary.missing_units == 0
+      and .content_canary.invalid_opus_units == 0
+      and .content_canary.decoded_tracks == 8
+      and .content_canary.waveform_matches == true
+      and .source_stability.duration_seconds >= 1500
+      and .source_stability.audio_epoch_hold_us == 5000
+      and .source_stability.errors == 0
+      and .source_stability.explicit_erasures == 0
+      and .capacity_method.persistent_h3_connections_per_customer == 1
+      and .capacity_method.cached_unit_reads_per_second_per_customer == 1600
+      and .capacity_method.media_responses_per_second_per_customer == 40
+      and .capacity_method.response_rate_reduction_from_5ms == 40
+      and .capacity.maximum_complete_delivery_customers == 14
+      and .capacity.minimum_incomplete_delivery_customers == 15
+      and .capacity.maximum_customers_below_50ms_final_part_p99 == 3
+      and .capacity.minimum_customers_above_50ms_final_part_p99 == 4
+      and .capacity.endurance_claim == false
+      and .tiers["3"].missing_units == 0
+      and .tiers["3"].deadline_misses == 0
+      and .tiers["3"].final_part_to_response_p99_ms <= 50
+      and .tiers["4"].missing_units == 0
+      and .tiers["4"].final_part_to_response_p99_ms > 200
+      and .tiers["14"].missing_units == 0
+      and .tiers["15"].missing_units > 0
+      and .edge_cpu.fresh_edge_no_consumer_cores < .edge_cpu.four_customers_cores
+      and .edge_cpu.four_customers_cores < .edge_cpu.twelve_customers_cores
+      and .edge_cpu.twelve_customers_cores < 1
     ' "${evidence}" >/dev/null
   fi
 

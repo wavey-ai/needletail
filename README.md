@@ -21,12 +21,14 @@ browser-to-speaker latency.
 
 **Measured eight-track Opus capacity:** the underlying cache reaches millions
 of reads/s and the optimized router exceeds one million cached-part responses/s;
-they are not the current limit. One real customer instead creates 1,600 live H3
-requests/s by tailing eight 5 ms tracks. On a two-vCPU GCP edge, four customers
-met the strict 2 ms cache-to-client p99 target, nine still received every part,
-and delivery became incomplete at ten. The current boundary is the combined
-live H3/QUIC path, including future-part waiter/wakeup, not playlist lookup or
-a low connection limit. See the canonical
+they are not the current standalone limit. One real customer creates 1,600
+live cache-unit reads/s by tailing eight 5 ms tracks. At 5 ms per H3 response,
+four customers met the strict p99 target, nine remained complete, and ten
+failed. With `AV_LL_HLS_RESPONSE_MS=200`, the same cache units are combined 40
+at a time: only 40 H3 responses/customer/s, fourteen customers complete, and
+fifteen fail. Useful p99 still degrades between three and four customers,
+exposing a serialized cache-batching and cancellation boundary rather than a
+playlist lookup or fixed connection limit. See the canonical
 [current performance state and gaps](docs/performance/current-state-and-gaps.md).
 
 Needletail owns:
@@ -138,8 +140,9 @@ brief:
 | Question | Current answer |
 | --- | --- |
 | How close is 5 ms LL-HLS to UDP? | 2.390–2.452 ms p50 premium in the measured multi-region GCP run. |
-| Is playlist or part-cache lookup the limit? | No. Cache reads reach millions/s and the optimized router exceeds one million cached part responses/s without H3. |
-| What limits the current edge? | The combined live H3/QUIC path, including future-part waiter/wakeup, at high 5 ms per-track request rates. |
+| Is one playlist or part-cache lookup the limit? | No. Isolated cache reads reach millions/s and the optimized router exceeds one million cached part responses/s without H3; the live range is not yet batched. |
+| What does 200 ms aggregation change? | `AV_LL_HLS_RESPONSE_MS=200` preserves 5 ms units and cuts H3 responses 40x; complete delivery rises to 14 customers but useful p99 does not improve. |
+| What limits the current edge? | The live cache-to-H3 path: repeated per-unit reads/copies, remaining serialization, waiter/wakeup, and slow canceled-work cleanup. |
 | What is the strict Opus tier? | Four eight-track customers on two vCPUs for the measured ten-second window; endurance is pending. |
 | What remains complete beyond the strict tier? | Nine customers delivered every part; ten became incomplete. |
 
