@@ -3,12 +3,12 @@
 This product-level bundle persists the `av-contrib` and `av-mesh` metrics that Mission
 Control shows in-process. It provisions:
 
-- Prometheus with 15 days of local TSDB retention;
+- Prometheus with 15 days of local TSDB retention
 - p50, p95, and p99 recording rules for contributor forwarding and LL-HLS
-  response handling;
+  response handling
 - RelaySession recording rules for canonical objects, RaptorQ source/repair
-  symbols, recovery, expiry, duplicates, and bounded drop reasons;
-- Alertmanager with a local UI receiver;
+  symbols, recovery, expiry, duplicates, and bounded drop reasons
+- Alertmanager with a local UI receiver
 - the **Needletail Realtime Qualification** Grafana dashboard.
 
 Start the contributor-plus-mesh stack first, then run:
@@ -54,27 +54,27 @@ The dashboard follows one canonical media object from contributor emission to
 edge publication:
 
 - contributor carrier readiness and recoverable current health for the primary
-  source lane and warm secondary repair lane;
+  source lane and warm secondary repair lane
 - canonical object output, RaptorQ source/repair symbols, per-parent object
   outcomes, current lane impairment, surviving-lane deliveries, encoding
   errors, carrier send errors,
   deadline budget/headroom, and the declared wall-clock
-  error estimate;
+  error estimate
 - native RelaySession total, encoder-lock wait, RaptorQ encode, source-first
   scheduling, primary-source send, warm-source send, and repair-send
-  distributions, plus contributor deadline hits, misses, and symbol expiry;
+  distributions, plus contributor deadline hits, misses, and symbol expiry
 - edge primary/secondary parents and an explicit split between authenticated
-  sessions and controlled-qualification sessions;
+  sessions and controlled-qualification sessions
 - automatic warm-secondary state, primary-source and secondary-repair age,
-  promotion/demotion transitions, control-command outcomes, and lease health;
+  promotion/demotion transitions, control-command outcomes, and lease health
 - primary-silence detection, promotion-to-first-source, and cache-completion
-  interruption measurements for every failover;
+  interruption measurements for every failover
 - active, buffered, retained-complete, decoded, repair-assisted, exact
-  RaptorQ-recovered, recovered-source-symbol, and expired object state;
+  RaptorQ-recovered, recovered-source-symbol, and expired object state
 - deadline-bounded warm-source buffering, promotion replay, expiry, and
-  fixed-bound eviction counters;
+  fixed-bound eviction counters
 - conflict, authentication, deadline, rejected, and duplicate datagram
-  outcomes;
+  outcomes
 - LL-HLS traffic, errors, freshness, and response-handler p50/p95/p99.
 
 `controlled_qualification` is an explicit trust-boundary state. Its alert is an
@@ -89,7 +89,7 @@ source and repair symbols remain on the deadline-bound media carrier.
 
 The failover alert set covers an unavailable warm path, command errors or
 rejections, expired promotion leases, activation above 250 ms, and a media
-completion gap above 250 ms. Mission Control uses the runtime transition time
+completion gap above 250 ms. Needletail Operations uses the runtime transition time
 for the event timeline and falls back to the snapshot time only when an older
 runtime omits that field.
 
@@ -107,11 +107,11 @@ and observation age.
 The next instrumentation slice should add measured distributions for:
 
 - capture-to-contributor latency when the contribution protocol supplies a
-  source timestamp;
+  source timestamp
 - RelaySession RaptorQ decode, first-symbol arrival, and receiver object
-  completion distributions;
-- per-parent RTT, jitter, loss, and continuous route-quality history;
-- contiguous-publication high-water, buffered gap count, and gap residence;
+  completion distributions
+- per-parent RTT, jitter, loss, and continuous route-quality history
+- contiguous-publication high-water, buffered gap count, and gap residence
 - reliable object fetch/backfill and carrier pacing/congestion state.
 
 Stable, low-cardinality service exporters are the entry gate for adding those

@@ -230,7 +230,10 @@ The boundary work has already proved and fixed several real costs:
   per request;
 - ordinary H3 GET responses no longer encode preflight-only CORS fields; and
 - Quinn and tokio-quiche keep request futures connection-local instead of
-  creating a detached Tokio task per request.
+  creating a detached Tokio task per request;
+- the cache returns generation-safe bounded consecutive ranges;
+- sharded exact waiters replace broad live-tail wakeups; and
+- one synchronized H3 bundle carries eight track tails per 5 ms response.
 
 The resulting boundaries are deliberately reported separately: 4.7–9.2
 million underlying cache reads/s, 1.112 million optimized cached-part router
@@ -238,7 +241,7 @@ responses/s on one worker, about 89,500 static tiny H3 responses/s on two
 vCPUs, and 14,400 complete live eight-track Opus requests/s on the two-vCPU
 edge. The cache and router are not the current active-media limit.
 
-The next test implemented a 200 ms service response policy over the unchanged
+The 18 July test implemented a 200 ms service response policy over the unchanged
 5 ms cache units and multiplexed eight track tails on one H3 connection per
 customer. It reduced H3 responses from 1,600 to 40/customer/s. Complete
 delivery increased from nine to fourteen customers, but final-part p99 crossed
@@ -246,11 +249,18 @@ delivery increased from nine to fourteen customers, but final-part p99 crossed
 core. The handler continued to perform 1,600 individual cache-unit reads per
 customer each second.
 
-This narrows the next boundary: add a bounded consecutive range read to the
-cache/edge adapter, then fix cancellation so disconnected H3 work cannot poison
-the following tier. Repeat the same randomized-arrival ladder and profile the
-remaining serialized section before any endurance sizing. Production sizing
-still requires CPU, link, RSS, waiter, task, and generator headroom.
+The 19 July follow-up added the bounded range read, exact waiters, and an
+eight-track bundle at the original 5 ms cadence. Twenty-four customers repeated
+three times at 16.578–18.051 ms availability p99 and 57.434–57.804% of the
+two-vCPU host, with all 2,304,000 parts delivered exactly. Twenty-eight was the
+first provisional 20 ms latency-gate miss; 32 was the first approximate 30%
+CPU-headroom miss, while both remained byte-complete.
+
+The next boundary is endurance and cleanup, not cache-range implementation.
+Run the 24-customer candidate for at least 30 minutes, then exercise connect,
+cancel, timeout, and slow-reader churn without restarting the edge. Production
+sizing still requires latency, CPU, link, RSS, waiter, task, connection, and
+generator headroom to pass together.
 
 Use [Current performance state and gaps](current-state-and-gaps.md) for the
 cross-layer numbers and ordered work. Exact historical measurements and
@@ -259,3 +269,5 @@ revisions remain in the
 and [eight-track Opus record](../real-world-tests/2026-07-18-opus-h3-capacity.md).
 The aggregation result is in the
 [200 ms Opus response record](../real-world-tests/2026-07-18-opus-h3-200ms-aggregation.md).
+The current bundle result is in the
+[19 July bundled-tail record](../real-world-tests/2026-07-19-opus-h3-tail-bundle.md).

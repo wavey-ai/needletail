@@ -70,6 +70,13 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.gcp_instances_stopped_after_collection == true
           and (.cleanup.stopped_instances | length) == 6
           and .cleanup.persistent_disks_and_images_preserved == true
+        elif .schema == "needletail.opus-h3-tail-bundle.v1" then
+          .provider == "gcp"
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_runs_no_needletail_services == true
+          and .cleanup.all_needletail_services_active == true
+          and .cleanup.gcp_lab_retained_for_followup_testing == true
+          and .cleanup.media_load_path_private == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -359,6 +366,69 @@ for evidence in "${run_files[@]}"; do
       and .edge_cpu.fresh_edge_no_consumer_cores < .edge_cpu.four_customers_cores
       and .edge_cpu.four_customers_cores < .edge_cpu.twelve_customers_cores
       and .edge_cpu.twelve_customers_cores < 1
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.opus-h3-tail-bundle.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and .result == "tail_bundle_latency_headroom_boundary_characterized"
+      and .media.sample_rate_hz == 48000
+      and .media.tracks == 8
+      and .media.channels_per_track == 2
+      and .media.codec == "pure_rust_opus"
+      and .media.wire_frame == "soundkit_v2"
+      and .media.part_ms == 5
+      and .topology.all_roles_in_one_zone == true
+      and .topology.source_to_contributor_private_ipv4 == true
+      and .topology.reader_to_edge_private_ipv4 == true
+      and .topology.load_and_media_cross_public_internet == false
+      and .optimization.generation_safe_consecutive_cache_read == true
+      and .optimization.stream_generation_resolved_once_per_range == true
+      and .optimization.exact_part_waiters == true
+      and .optimization.cancelled_waiters_retain_strong_request_work == false
+      and .optimization.tracks_per_h3_response == 8
+      and .optimization.parts_per_track_per_response == 1
+      and .optimization.persistent_h3_connections_per_customer == 1
+      and .optimization.h3_responses_per_second_per_customer == 200
+      and .optimization.cache_units_per_second_per_customer == 1600
+      and .optimization.response_rate_reduction_from_unbundled_5ms == 8
+      and .content_canary.passed == true
+      and .content_canary.expected_parts == 32000
+      and .content_canary.received_parts == 32000
+      and .content_canary.media_responses == 4000
+      and .content_canary.tracks_per_response == 8
+      and .content_canary.missing_parts == 0
+      and .content_canary.non_contiguous_parts == 0
+      and .content_canary.deadline_misses == 0
+      and .content_canary.invalid_opus_parts == 0
+      and .capacity.maximum_repeated_candidate_customers == 24
+      and .capacity.minimum_latency_gate_failure_customers == 28
+      and .capacity.minimum_cpu_headroom_failure_customers == 32
+      and .capacity.maximum_correctness_complete_customers_tested == 32
+      and .capacity.endurance_claim == false
+      and .capacity.production_sizing_claim == false
+      and .tiers["24"].candidate == true
+      and .tiers["24"].repetitions == 3
+      and .tiers["24"].total_expected_parts == 2304000
+      and .tiers["24"].total_received_parts == 2304000
+      and .tiers["24"].missing_parts == 0
+      and .tiers["24"].non_contiguous_parts == 0
+      and .tiers["24"].deadline_misses == 0
+      and .tiers["24"].invalid_opus_parts == 0
+      and ([.tiers["24"].availability_p99_ms[]] | length) == 3
+      and ([.tiers["24"].availability_p99_ms[]] | all(. <= 20))
+      and ([.tiers["24"].edge_host_cpu_percent[]] | all(. <= 70))
+      and .tiers["24"].availability_p99_range_over_mean_percent <= 10
+      and .tiers["24"].edge_cpu_range_over_mean_percent <= 10
+      and .tiers["24"].minimum_edge_cpu_headroom_percent >= 30
+      and .tiers["24"].endurance_qualified == false
+      and .tiers["28"].received_parts == .tiers["28"].expected_parts
+      and .tiers["28"].availability_p99_ms > 20
+      and .tiers["32"].received_parts == .tiers["32"].expected_parts
+      and .tiers["32"].availability_p99_ms > 20
+      and .tiers["32"].edge_host_cpu_percent_approximate > 70
     ' "${evidence}" >/dev/null
   fi
 

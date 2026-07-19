@@ -1,7 +1,7 @@
 # Current performance state and gaps
 
 This is the canonical snapshot of Needletail's measured media-delivery state as
-of 18 July 2026. It separates latency, cache and router throughput, HTTP/3
+of 19 July 2026. It separates latency, cache and router throughput, HTTP/3
 transport capacity, live-tail customer capacity, replication correctness, and
 remaining work. Dated test records remain the authority for exact revisions and
 raw evidence.
@@ -15,7 +15,8 @@ raw evidence.
 - A standalone cache lookup is not the current viewer-capacity bottleneck. The
   underlying cache reaches 4.7–9.2 million reads/s and the optimized production
   router reaches 1.112 million cached part responses/s on one worker without H3
-  or the network. The live path's repeated range access is not yet batched.
+  or the network. The deployed live path now performs generation-safe bounded
+  range reads and can bundle eight synchronized track tails in one response.
 - The current limit is the edge's live cache-to-H3 path. With 5 ms responses,
   one eight-track Opus customer makes 1,600 media requests/s. With 200 ms
   responses, one connection multiplexes the same tracks in 40 responses/s but
@@ -28,9 +29,23 @@ raw evidence.
   response. It raises complete delivery from nine to fourteen customers, but
   final-part p99 crosses 50 ms between three and four customers and total edge
   CPU still flattens near one core. Response count alone was not the bottleneck.
+- The 19 July bundled path keeps a 5 ms response cadence but carries all eight
+  tracks on one H3 connection. On the same two-vCPU edge, 24 customers repeated
+  three times at 16.578–18.051 ms availability p99 and about 57.4–57.8% host
+  CPU, with zero missing, discontinuous, late, or invalid Opus parts. Twenty-eight
+  was the first provisional 20 ms latency-gate miss; 32 was the first
+  approximate 30%-CPU-headroom miss while still delivering every part.
+- A matched 60-second profile at 24 customers then removed repeated canonical
+  object decode/hash work, accelerated the unchanged IEEE CRC-32, skipped AEP1
+  parsing on a leaf with no audio consumer, and replaced joined per-track waits
+  with exact sequential reads under one shared deadline. Edge CPU fell from
+  59.415% to 34.765% of the two-vCPU host and availability p99 from 14.633 to
+  10.801 ms. All 2,304,000 parts remained exact, but 9 of 288,000 bundles still
+  exceeded the strict 20 ms deadline, so that gate remains open.
 - Replication through a dual-parent DAG, independent regional caches, late join,
   RaptorQ recovery, and parent failover are proven in deployed tests. Endurance
-  at the final Opus latency tier and startup reliability are not yet qualified.
+  at the 24-customer bundled candidate, cancellation churn without restart, and
+  startup reliability are not yet qualified.
 
 ## Current media path
 
@@ -56,6 +71,11 @@ edge-wide default response duration while preserving 5 ms cache units; a
 controlled client can override the number of units for an A/B test. The body is
 the byte-exact concatenation of consecutive units, so aggregation requires a
 self-delimiting cached bytestream such as SoundKit v2.
+
+For synchronized multitrack clients, `/live/tail-bundle` can carry one bounded
+range from each requested stream in an `NTB1` envelope. The measured 5 ms mode
+returns one unit from each of eight tracks every 5 ms, reducing H3 response
+streams 8x without changing media cadence or cache identity.
 
 ## What is measured
 
@@ -88,7 +108,8 @@ interchangeable requests-per-second claim:
 | Static H3, 64-byte body | TLS, H3, QUIC, kernel UDP | 89,544 responses/s at 16 connections; 100,480 peak at 32 | Transport costs are orders of magnitude above cache lookup. |
 | Static H3, 5,760-byte body | PCM-shaped response at realtime cadence | 15,984 responses/s exact at 40 customer equivalents | Packet and byte processing matter even without the mesh. |
 | Live eight-track Opus, 5 ms responses | cache wait/wakeup, router, H3, QUIC, real DAG | 6,400 responses/s at strict p99; 14,400 complete; 16,000 incomplete | One request stream per 5 ms track unit is expensive. |
-| Live eight-track Opus, 200 ms responses | 40 cache reads/response, router, H3, QUIC, real DAG | 3 customers below 50 ms final-part p99; 14 complete; 15 incomplete | 40x fewer responses improved completeness but exposed serialized cache batching and cleanup work. |
+| Live eight-track Opus, 200 ms responses | 40 cache reads/response, router, H3, QUIC, real DAG | 3 customers below 50 ms final-part p99; 14 complete; 15 incomplete | Historical result: 40x fewer responses improved completeness but exposed serialized cache batching and cleanup work. |
+| Live eight-track Opus, bundled 5 ms responses | generation-safe range reads, eight tracks/response, exact waiters, router, H3, real DAG | 24 customers repeated below provisional 20 ms availability p99 with >42% host CPU headroom; 28 first latency miss; 32 first approximate headroom miss | Current short-window candidate; every tested part remained correct through 32 customers, but endurance is pending. |
 
 The connection count is not the observed ceiling. The production server
 completed 1,000 persistent connections at low request rate, and the Opus
@@ -151,11 +172,48 @@ improve. The handler still performs 40 cache slot reads, unit decodes, and
 copies per response. Edge CPU rose from 0.455 core with no consumers to 0.853
 at four customers and flattened at 0.953 by twelve despite two Tokio workers.
 
+### Bundled five-millisecond track tails
+
+The follow-up path implements the bounded range read and synchronizes all eight
+tracks in one response. One customer now uses one persistent H3 connection and
+200 bundle responses/s rather than eight connections and 1,600 single-track
+responses/s. It still carries 1,600 exact cache units/s.
+
+| Customers | H3 connections | Track readers | Availability p99 | Edge host CPU | Delivery |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 24, repeat range | 24 | 192 | 16.578–18.051 ms | 57.434–57.804% | 2,304,000/2,304,000 parts; candidate |
+| 28 | 28 | 224 | 20.759 ms | 63.180% | 896,000/896,000; latency-gate miss |
+| 32 | 32 | 256 | 22.967 ms | about 70.45% | 1,024,000/1,024,000; latency and headroom miss |
+
+All valid tiers had zero missing parts, PTS discontinuities, deadline misses,
+Opus mismatches, and kernel UDP-buffer errors. The three 24-customer p99 results
+varied by 8.60% of their mean and edge CPU by 0.64%. Load and media stayed on
+private GCP IPv4 paths.
+
+The subsequent matched 60-second profiles held geometry constant at 24
+customers and a strict 20 ms deadline:
+
+| Build | Edge host CPU | Availability p99 | Cache-to-client p99 | Late bundles |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 59.415% | 14.633 ms | 7.351 ms | 209 |
+| indexed canonical slot | 42.782% | 14.157 ms | 5.772 ms | 147 |
+| plus accelerated CRC | 41.679% | 14.039 ms | 5.409 ms | 53 |
+| plus zero-consumer AEP1 discard | 38.981% | 14.090 ms | 5.314 ms | 33 |
+| plus sequential exact bundle waits | 34.765% | 10.801 ms | 8.399 ms | 9 |
+
+Every row delivered all 2,304,000 parts without PTS or Opus mismatch. The final
+row is 41.49% less CPU than baseline and has 65.24% host CPU headroom, but its
+9 late bundles keep the strict gate failed. The final row's cache-to-client p99
+rose while end-to-end availability improved, so the next run must retain both
+metrics rather than treating either one as a substitute for the other.
+
+This candidate does not inherit the old 2 ms cache-to-client claim: the metric
+and connection geometry changed. It is also not production-sized until a
+30-minute run proves stable RSS and the same latency, correctness, and headroom.
+
 ## Where the edge CPU goes
 
-The current evidence names the broad boundary but does not yet provide a
-flamegraph of the real Opus live-tail tier. A fixed PCM-shaped H3 profile found
-the following overlapping inclusive costs:
+A fixed PCM-shaped H3 profile found the following overlapping inclusive costs:
 
 - 21.2% of samples below system calls;
 - 14.8% in the `sendmsg` family and 12.2% below `udp_sendmsg`;
@@ -174,6 +232,23 @@ live cache/response boundary. QPACK, allocation and copying, QUIC bookkeeping,
 kernel UDP work, waiter/wakeup, and cancellation still matter, but the next
 profile must begin at the cache range-read boundary.
 
+The 19 July matched profile then removed that leading boundary. A fixed internal
+slot index retained the exact canonical envelope while serving prevalidated
+byte ranges, accelerated CRC removed the bitwise checksum from the flat top,
+and zero-consumer leaf discard removed the former 3.15% AEP1 ingress closure.
+Sequential exact reads under one absolute deadline then removed the prior
+2.11% `join_all::MaybeDone` flat symbol. The final flat profile is led by
+allocation/free, SHA, router dispatch, QPACK, and kernel work. The next
+optimization must target those measured costs while preserving exact bundle
+and strict deadline semantics.
+
+An exact-envelope handoff from `RelaySession` to the cache is locally
+qualified and has a reproducible GCP Linux build. It removes another encode
+plus decode/hash cycle after FEC reconstruction, while retaining canonical
+parsing, payload-hash, identity, replay, and immutable-conflict checks. That
+build has not yet been deployed or profiled, so it is prepared follow-up work,
+not an entry in the proven table below; the v11 row remains authoritative.
+
 ## Improvements already proven
 
 | Change | Measured effect |
@@ -184,27 +259,39 @@ profile must begin at the cache range-read boundary.
 | Sample successful diagnostics and update one histogram bucket/request | Removes per-success mutex and cumulative-atomic contention while preserving exact counters |
 | Compare Quinn with tokio-quiche | Quinn remained the default; tokio-quiche used about 5.9% more CPU and emitted about 4.8% more packets |
 | Raise the tested tokio-quiche UDP payload ceiling | No measurable packetization or capacity change |
+| Add generation-safe bounded consecutive cache reads | Resolves one stream generation per range and returns only an all-or-nothing ordered immutable range across wrap and retirement. |
+| Replace broad live-tail wakeups with sharded exact waiters | Removes unrelated per-commit wakeups; canceled requests retain no strong waiter work. |
+| Bundle eight synchronized tracks per 5 ms H3 response | Cuts H3 responses and connections/customer 8x; produces the repeatable 24-customer short-window candidate. |
+| Index validated canonical live slots | Reduces matched edge CPU from 59.415% to 42.782% of the host and cache-to-client p99 from 7.351 to 5.772 ms without changing exact envelope semantics. |
+| Use accelerated IEEE CRC-32 | Removes the bitwise CRC hot spot; matched host CPU falls to 41.679% and late bundles from 147 to 53. |
+| Skip AEP1 parsing on a zero-consumer leaf | Removes the remaining audio-ingress hot closure; matched host CPU falls to 38.981% and late bundles from 53 to 33. |
+| Replace joined per-track waits with sequential exact waits under one deadline | Removes the 2.11% `join_all::MaybeDone` flat symbol; matched host CPU falls to 34.765%, availability p99 to 10.801 ms, and late bundles from 33 to 9. |
 
 These fixes rule out the cache, router, a global 256-connection limit, and
 Quinn alone as explanations for the remaining gap.
 
 ## Current gaps, in order
 
-1. **Batch consecutive cache reads.** Add a bounded range-read API that resolves
-   one stream generation and returns consecutive immutable units without 40
-   separate top-level lookups, decodes, and global-state updates.
-2. **Fix connection churn cleanup.** Back-to-back tiers show cleanup from
-   disconnected clients affecting the following tier. Cancellation must return
-   waiter, stream, timer, and connection memory to a stable band promptly.
-3. **Profile the remaining serialized boundary.** Rerun the 200 ms ladder after
-   cache batching and profile allocation, tasks, waiters, syscalls, packets,
-   per-stream locks, and response copying at three and four customers.
+1. **Close the strict 20 ms tail.** The optimized 24-customer run has 65.24%
+   host CPU headroom and exact media, but 9 of 288,000 bundle responses remain
+   late. Attribute and remove those outliers before calling the strict tier a
+   pass.
+2. **Measure connection-churn cleanup without restart.** Weak exact-waiter
+   registrations remove retained request work, but the recorded tiers restarted
+   the edge. Exercise connect, cancel, timeout, and slow-reader churn while
+   exposing bounded waiter, task, stream, timer, and connection counts.
+3. **Reduce the remaining measured hot costs.** Allocation/free, SHA, router
+   dispatch, QPACK, and kernel work now lead the flat profile. Attribute the
+   cache-to-client p99 increase from the sequential waiter, change one bounded
+   cost at a time, and repeat the matched 60-second run.
 4. **Finish publication startup reliability.** The measured 5 ms DAW epoch hold
    removes false erasures under independent track pacing. Add a declared track
    manifest/start barrier and rerun a retained zero-offset canary.
-5. **Qualify endurance and headroom.** Repeat the best latency-qualified Opus
-   tier for at least 30 minutes, then declare a production tier only below 70%
-   CPU and link ceilings with stable RSS and zero missing parts.
+5. **Qualify the strict candidate under endurance.** After the 20 ms gate
+   passes, run at least 30 minutes on private GCP paths with stable RSS and then
+   turn that result into a sizing policy. Declare a
+   production tier only after latency, CPU, link, RSS, and cleanup gates pass
+   together; retain the first failed tier and its named resource boundary.
 6. **Complete scale dimensions independently.** Measure large idle-connection
    sets, blocked reloads, slow readers, one shared client UDP endpoint, flow
    control, and cancellation without conflating them with active media rate.
@@ -225,14 +312,16 @@ Supported by current evidence:
 - standalone cache and router capacity are not the current active-media
   boundary;
 - the current two-vCPU edge supports the documented Opus tiers for the measured
-  short isolated windows; and
+  short isolated windows;
 - `AV_LL_HLS_RESPONSE_MS=200` preserves exact 5 ms units and reduces H3
-  responses 40x for the tested self-delimiting SoundKit v2 stream.
+  responses 40x for the tested self-delimiting SoundKit v2 stream; and
+- synchronized eight-track H3 bundling with generation-safe range reads
+  repeatedly supports the documented 24-customer short-window candidate.
 
 Not yet supported:
 
 - millions of active media customers or H3 connections;
-- four eight-track customers as an endurance-qualified production size;
+- 24 bundled eight-track customers as an endurance-qualified production size;
 - clean eight-track delivery from the first source epoch;
 - a production-qualified 200 ms aggregation tier with useful latency;
 - final capacity for 128- or 256-channel publications; or
@@ -242,6 +331,7 @@ Not yet supported:
 
 - [Eight-track Opus capacity](../real-world-tests/2026-07-18-opus-h3-capacity.md)
 - [Two-hundred-millisecond Opus response aggregation](../real-world-tests/2026-07-18-opus-h3-200ms-aggregation.md)
+- [Bundled eight-track Opus H3 tails](../real-world-tests/2026-07-19-opus-h3-tail-bundle.md)
 - [HTTP/3 and router isolation](../real-world-tests/2026-07-18-h3-capacity-isolation.md)
 - [Raw PCM DAG latency and capacity](../real-world-tests/2026-07-17-pcm-h3-capacity.md)
 - [Lossless three-lane latency](../real-world-tests/2026-07-17-lossless-h3.md)

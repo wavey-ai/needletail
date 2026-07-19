@@ -17,6 +17,8 @@ mod app {
 
     const DEFAULT_EDGE_API: &str = "/api/mesh";
     const DEFAULT_CONTRIB_API: &str = "https://local.bitneedle.com:19443/api/status";
+    const PUBLIC_OPERATIONS_HOST: &str = "mission-control.bitneedle.com";
+    const PUBLIC_CONTRIB_API: &str = "https://mission-control-feed.bitneedle.com/api/status";
     const POLL_INTERVAL_MS: u32 = 5_000;
     const RATE_HISTORY_POINTS: usize = 72;
 
@@ -125,11 +127,11 @@ mod app {
 
         fn label(&self) -> &'static str {
             if self.error.is_some() {
-                "error"
+                "unavailable"
             } else if self.last_ok_unix_ms.is_some() {
-                "healthy"
+                "live"
             } else {
-                "connecting"
+                "opening"
             }
         }
 
@@ -158,7 +160,7 @@ mod app {
         let (page, set_page) = signal(current_page());
         let (edge_api, set_edge_api) = signal(endpoint_from_query("edge", DEFAULT_EDGE_API));
         let (contrib_api, set_contrib_api) =
-            signal(endpoint_from_query("contrib", DEFAULT_CONTRIB_API));
+            signal(endpoint_from_query("contrib", default_contrib_api()));
         let (edge, set_edge) = signal(None::<MeshStatus>);
         let (contrib, set_contrib) = signal(None::<ContribStatus>);
         let (edge_feed, set_edge_feed) = signal(FeedState::default());
@@ -777,9 +779,9 @@ mod app {
             if contrib.is_none() || edge.is_none() {
                 "Telemetry unavailable".to_owned()
             } else {
-                let alerts = operational_alerts(contrib.as_ref(), edge.as_ref()).len();
+                let alerts = actionable_alert_count(contrib.as_ref(), edge.as_ref());
                 format!(
-                    "{alerts} active alert{}",
+                    "{alerts} actionable alert{}",
                     if alerts == 1 { "" } else { "s" }
                 )
             }
@@ -789,7 +791,7 @@ mod app {
             let edge = edge.get();
             if contrib.is_none() || edge.is_none() {
                 "warn"
-            } else if operational_alerts(contrib.as_ref(), edge.as_ref()).is_empty() {
+            } else if actionable_alert_count(contrib.as_ref(), edge.as_ref()) == 0 {
                 "healthy"
             } else {
                 "error"
@@ -2360,11 +2362,42 @@ mod app {
             .unwrap_or_else(|| fallback.to_owned())
     }
 
+    fn default_contrib_api() -> &'static str {
+        let public_host = web_sys::window()
+            .and_then(|window| window.location().hostname().ok())
+            .is_some_and(|hostname| hostname == PUBLIC_OPERATIONS_HOST);
+        if public_host {
+            PUBLIC_CONTRIB_API
+        } else {
+            DEFAULT_CONTRIB_API
+        }
+    }
+
     fn trust_label<'a>(trust: Option<&'a str>, carrier: Option<&str>) -> &'a str {
         trust.unwrap_or(match carrier {
             Some("private-udp") => "controlled network",
             _ => "trust profile pending",
         })
+    }
+
+    fn actionable_alert_count(contrib: Option<&ContribStatus>, edge: Option<&MeshStatus>) -> usize {
+        operational_alerts(contrib, edge)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.level.to_ascii_lowercase().as_str(),
+                    "alert"
+                        | "attention"
+                        | "critical"
+                        | "degraded"
+                        | "emergency"
+                        | "error"
+                        | "fatal"
+                        | "warn"
+                        | "warning"
+                )
+            })
+            .count()
     }
 
     fn tone_for_state(state: &str) -> &'static str {

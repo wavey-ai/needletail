@@ -19,25 +19,31 @@ dual-parent GCP run. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
 1.51 ms at p99. These are publication-to-client availability results, not
 browser-to-speaker latency.
 
-**Measured eight-track Opus capacity:** the underlying cache reaches millions
-of reads/s and the optimized router exceeds one million cached-part responses/s;
-they are not the current standalone limit. One real customer creates 1,600
-live cache-unit reads/s by tailing eight 5 ms tracks. At 5 ms per H3 response,
-four customers met the strict p99 target, nine remained complete, and ten
-failed. With `AV_LL_HLS_RESPONSE_MS=200`, the same cache units are combined 40
-at a time: only 40 H3 responses/customer/s, fourteen customers complete, and
-fifteen fail. Useful p99 still degrades between three and four customers,
-exposing a serialized cache-batching and cancellation boundary rather than a
-playlist lookup or fixed connection limit. See the canonical
+**Measured eight-track Opus capacity:** generation-safe cache range reads,
+sharded exact waiters, and synchronized eight-track H3 bundles now carry one
+5 ms unit/track in one response. On a two-vCPU GCP edge, 24 customers repeated
+three times at 16.578–18.051 ms availability p99 and 57.434–57.804% host CPU,
+with all 2,304,000 parts exact. Twenty-eight was the first provisional 20 ms
+latency-gate miss; 32 was the first approximate 30%-CPU-headroom miss while
+remaining byte-complete. Twenty-four is a short-window candidate, not a
+production tier: 30-minute endurance and restart-free cancellation churn are
+still pending.
+
+A matched 60-second private-GCP profile at 24 customers then reduced edge CPU
+from 59.415% to 34.765% of the two-vCPU host and availability p99 from 14.633
+to 10.801 ms. Every build delivered all 2,304,000 expected track parts. The
+latest build had 9 late bundle responses out of 288,000, down from 209, so the
+strict 20 ms per-response gate remains open rather than being reported as a
+pass. See the canonical
 [current performance state and gaps](docs/performance/current-state-and-gaps.md).
 
 Needletail owns:
 
-- multi-service topology and desired-state generation;
-- local and deployed orchestration;
-- the operations dashboard;
-- product observability;
-- real-world impairment, failover, latency, and RaptorQ recovery tests;
+- multi-service topology and desired-state generation
+- local and deployed orchestration
+- the operations dashboard
+- product observability
+- real-world impairment, failover, latency, and RaptorQ recovery tests
 - deployment composition around native binaries and `systemd`.
 
 Contributor-product integrations live in their owning app repos and integrate
@@ -93,11 +99,14 @@ bounded service snapshots.
 
 It reads:
 
-- `av-contrib` `GET /api/status`;
+- `av-contrib` `GET /api/status`
 - `av-mesh` `GET /api/mesh`.
 
 Default same-origin edge feed: `/api/mesh`.
-Default contributor feed: `https://local.bitneedle.com:19443/api/status`.
+Public UI: `https://mission-control.bitneedle.com/mesh`.
+Public Needletail Operations contributor feed:
+`https://mission-control-feed.bitneedle.com/api/status`.
+Local contributor feed: `https://local.bitneedle.com:19443/api/status`.
 
 The local supervisor collects one snapshot every 5 seconds. Remote relays send
 bounded MessagePack snapshots over the project's RaptorQ datagram codec to the
@@ -146,11 +155,11 @@ brief:
 | Question | Current answer |
 | --- | --- |
 | How close is 5 ms LL-HLS to UDP? | 2.390–2.452 ms p50 premium in the measured multi-region GCP run. |
-| Is one playlist or part-cache lookup the limit? | No. Isolated cache reads reach millions/s and the optimized router exceeds one million cached part responses/s without H3; the live range is not yet batched. |
-| What does 200 ms aggregation change? | `AV_LL_HLS_RESPONSE_MS=200` preserves 5 ms units and cuts H3 responses 40x; complete delivery rises to 14 customers but useful p99 does not improve. |
-| What limits the current edge? | The live cache-to-H3 path: repeated per-unit reads/copies, remaining serialization, waiter/wakeup, and slow canceled-work cleanup. |
-| What is the strict Opus tier? | Four eight-track customers on two vCPUs for the measured ten-second window; endurance is pending. |
-| What remains complete beyond the strict tier? | Nine customers delivered every part; ten became incomplete. |
+| Is one playlist or part-cache lookup the limit? | No. Isolated cache reads reach millions/s, the router exceeds one million cached part responses/s, and the live path now uses bounded generation-safe range reads. |
+| What does track bundling change? | One 5 ms H3 response carries all eight tracks, cutting connections and responses/customer 8x while preserving exact media units. |
+| What limits the current edge? | The strict tail: 9 of 288,000 matched bundle responses exceeded 20 ms even with 65.24% host CPU headroom. |
+| What is the current Opus candidate? | 24 eight-track customers on two vCPUs; short runs are exact, but the strict deadline and 30-minute endurance gates remain open. |
+| What happens above the candidate? | 28 first misses the provisional 20 ms p99 gate; 32 first misses 30% CPU headroom, but both still deliver every part. |
 
 Dated narratives and sanitized JSON live in the
 [real-world test index](docs/real-world-tests/README.md). Detailed geographic
@@ -244,9 +253,9 @@ AV_CONTRIB_ROOT=/path/to/av-contrib AV_MESH_ROOT=/path/to/av-mesh make local
 
 The local constellation wires controlled RelaySession lanes by default:
 
-- contributor source traffic: `22301 -> 22001`;
-- warm-secondary repair traffic: `22302 -> 22201`;
-- desired-state generation/subscription: `1`;
+- contributor source traffic: `22301 -> 22001`
+- warm-secondary repair traffic: `22302 -> 22201`
+- desired-state generation/subscription: `1`
 - canonical media-object deadlines enabled.
 
 Observability commands:
@@ -266,6 +275,16 @@ bash -n scripts/*.sh
 ./scripts/validate-real-world-evidence.sh
 ./scripts/validate-product-boundary.sh
 ```
+
+Use local hosts for unit, integration, build, dashboard, and browser smoke
+checks. Run load, capacity, soak, and profiler qualifications on explicitly
+scoped GCP hosts. Keep source, contributor, relay, edge, and reader traffic on
+private same-region subnets when the test does not require geographic distance;
+this avoids public data-plane noise and unnecessary inter-region egress. The
+dated record must state which links were private, the exact machine/zone,
+binary hash, workload geometry, failed gates, invalid attempts, and cleanup
+state. A complete byte count does not turn a latency or endurance failure into
+a pass.
 
 ## License
 

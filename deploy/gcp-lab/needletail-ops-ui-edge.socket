@@ -1,0 +1,10 @@
+[Unit]
+Description=Needletail Operations public HTTPS socket
+
+[Socket]
+ListenStream=0.0.0.0:443
+NoDelay=true
+Service=needletail-ops-ui-edge.service
+
+[Install]
+WantedBy=sockets.target

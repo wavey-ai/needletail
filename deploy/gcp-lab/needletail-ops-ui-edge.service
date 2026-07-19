@@ -1,0 +1,11 @@
+[Unit]
+Description=Needletail Operations HTTPS proxy
+After=network-online.target needletail-mesh.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:19444
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

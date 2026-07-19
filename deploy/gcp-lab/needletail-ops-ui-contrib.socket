@@ -1,0 +1,10 @@
+[Unit]
+Description=Needletail Operations contributor feed public HTTPS socket
+
+[Socket]
+ListenStream=0.0.0.0:443
+NoDelay=true
+Service=needletail-ops-ui-contrib.service
+
+[Install]
+WantedBy=sockets.target

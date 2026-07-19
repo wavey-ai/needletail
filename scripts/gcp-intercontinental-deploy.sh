@@ -479,6 +479,7 @@ printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/primary.env"
 printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge.env"
 printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge_new_york.env"
 printf 'NEEDLETAIL_EDGE_WEBTRANSPORT=1\n' >>"${ARTIFACT_DIR}/edge_sydney.env"
+printf 'NEEDLETAIL_PUBLIC_MISSION_CONTROL=1\n' >>"${ARTIFACT_DIR}/edge.env"
 cat >"${ARTIFACT_DIR}/contributor.env" <<EOF
 NEEDLETAIL_NODE_ID=contrib
 NEEDLETAIL_HTTP_PORT=19443
@@ -486,6 +487,7 @@ NEEDLETAIL_PART_MS=${PART_MS}
 NEEDLETAIL_DAW_MEDIA_PORT=27100
 NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY=4096
 NEEDLETAIL_DAW_HLS_PACKAGING=${DAW_HLS_PACKAGING}
+NEEDLETAIL_PUBLIC_MISSION_CONTROL_FEED=1
 EOF
 
 deploy_mesh() {
@@ -496,6 +498,7 @@ deploy_mesh() {
     "${ARTIFACT_DIR}/aep1-48k-probe" \
     "${DEPLOY_DIR}/av-mesh-run" \
     "${DEPLOY_DIR}/install-node.sh" \
+    "${DEPLOY_DIR}/tune-udp-host.sh" \
     "${DEPLOY_DIR}/needletail-mesh.service" \
     "${PLAN}" \
     "${ARTIFACT_DIR}/fullchain.pem" \
@@ -512,7 +515,10 @@ deploy_edge() {
     "${ARTIFACT_DIR}/aep1-48k-probe" \
     "${DEPLOY_DIR}/av-mesh-run" \
     "${DEPLOY_DIR}/install-node.sh" \
+    "${DEPLOY_DIR}/tune-udp-host.sh" \
     "${DEPLOY_DIR}/needletail-mesh.service" \
+    "${DEPLOY_DIR}/needletail-ops-ui-edge.socket" \
+    "${DEPLOY_DIR}/needletail-ops-ui-edge.service" \
     "${PLAN}" "${ARTIFACT_DIR}/fullchain.pem" "${ARTIFACT_DIR}/privkey.pem" "${ARTIFACT_DIR}/${role}.env"
   provider_scp_directory_to "${role}" "${ROOT}/mission-control/dist" \
     /tmp/needletail-deploy/mission-control
@@ -524,8 +530,9 @@ deploy_probe_host() {
   gcp_ssh "${role}" --command='sudo systemctl disable --now needletail-mesh.service needletail-contrib.service 2>/dev/null || true; rm -rf /tmp/needletail-deploy && mkdir -p /tmp/needletail-deploy'
   gcp_scp_to "${role}" \
     "${ARTIFACT_DIR}/aep1-48k-probe" \
-    "${ARTIFACT_DIR}/fullchain.pem"
-  gcp_ssh "${role}" --command='sudo install -m 755 /tmp/needletail-deploy/aep1-48k-probe /usr/local/bin/aep1-48k-probe; sudo install -m 644 /tmp/needletail-deploy/fullchain.pem /usr/local/share/ca-certificates/needletail-qualification.crt; sudo update-ca-certificates >/dev/null'
+    "${ARTIFACT_DIR}/fullchain.pem" \
+    "${DEPLOY_DIR}/tune-udp-host.sh"
+  gcp_ssh "${role}" --command='bash /tmp/needletail-deploy/tune-udp-host.sh; sudo install -m 755 /tmp/needletail-deploy/aep1-48k-probe /usr/local/bin/aep1-48k-probe; sudo install -m 755 /tmp/needletail-deploy/tune-udp-host.sh /usr/local/sbin/needletail-tune-udp-host; sudo install -m 644 /tmp/needletail-deploy/fullchain.pem /usr/local/share/ca-certificates/needletail-qualification.crt; sudo update-ca-certificates >/dev/null'
 }
 
 deployment_pids=()
@@ -552,7 +559,10 @@ gcp_scp_to contributor \
   "${ARTIFACT_DIR}/aep1-48k-probe" \
   "${DEPLOY_DIR}/av-contrib-run" \
   "${DEPLOY_DIR}/install-node.sh" \
+  "${DEPLOY_DIR}/tune-udp-host.sh" \
   "${DEPLOY_DIR}/needletail-contrib.service" \
+  "${DEPLOY_DIR}/needletail-ops-ui-contrib.socket" \
+  "${DEPLOY_DIR}/needletail-ops-ui-contrib.service" \
   "${PLAN}" "${ARTIFACT_DIR}/fullchain.pem" "${ARTIFACT_DIR}/privkey.pem" "${ARTIFACT_DIR}/contributor.env"
 gcp_ssh contributor --command="mv /tmp/needletail-deploy/contributor.env /tmp/needletail-deploy/node.env; chmod +x /tmp/needletail-deploy/install-node.sh; /tmp/needletail-deploy/install-node.sh contrib"
 
@@ -604,3 +614,4 @@ echo "New York edge public endpoint: https://${EDGE_NEW_YORK_EXTERNAL_IP}:19444/
 echo "Sydney edge public endpoint: https://${EDGE_SYDNEY_EXTERNAL_IP}:19444/mesh"
 echo "Recommended trusted local tunnel ports: edge=19447 contributor=19448"
 echo "Needletail Operations after tunnels: https://local.bitneedle.com:19447/mesh?contrib=https%3A%2F%2Flocal.bitneedle.com%3A19448%2Fapi%2Fstatus"
+echo "Needletail Operations: https://mission-control.bitneedle.com/mesh"

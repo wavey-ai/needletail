@@ -1,0 +1,159 @@
+{
+  "schema": "needletail.opus-h3-tail-profile.v1",
+  "run_id": "20260719T225507Z",
+  "passed": false,
+  "result": "failed",
+  "failed_gate": "bundle_response_deadline_ms_20",
+  "provider": "gcp",
+  "zone": "europe-west2-c",
+  "raw_artifact_directory": "target/gcp-qualification/live-tail-serialization/profile/20260719T225507Z-24x8-strict20-zero-consumer-v9",
+  "revisions": {
+    "needletail": "fd27ec0fc1ae5975e29d12bb063b81dee73a1f0a",
+    "av_mesh": "219af2de58df8c4c07914f5b7bb7779ede5da82c",
+    "raptor_fec": "13aa784fb2ab1e9f09e68883717d8ced3ca2ba1f",
+    "playlists": "3068fc25c9d5472d49b8e203db9f050fbc7701f5",
+    "av_contrib": "8ccbe1ef2f08aaa284dbd13a4df27fdffedc1ce7",
+    "media_object": "881f1fe506701e8bec1e16cb69e6f6d7b6e87ab5",
+    "tested_working_tree_patch": true
+  },
+  "artifacts": {
+    "source_archive_sha256": "76edaf3d0bb6307876d752132f50d20244072238753435a754edcd712ec0d095",
+    "deployed_av_mesh_sha256": "0a50ab21504914f52780a4428d0784f9d0ad3289b04b001953e6413ec29c43ff",
+    "linux_build_id": "13372cb40c4dbbda3c8289d9a1b7b57fad8c939e",
+    "previous_av_mesh_sha256": "3756ae6aeb260ac7ca6d726e7450250e5c61a9077a8f6dc2a475021be85d7ab1",
+    "previous_binary_backup": "/opt/needletail/backups/av-mesh-pre-zero-consumer-20260719T2348Z/av-mesh"
+  },
+  "topology": {
+    "machine_type": "n2-standard-2",
+    "vcpus_per_host": 2,
+    "all_roles_in_one_zone": true,
+    "source_to_contributor_private_ipv4": true,
+    "contributor_to_relays_private_ipv4": true,
+    "relays_to_edge_private_ipv4": true,
+    "reader_to_edge_private_ipv4": true,
+    "private_subnet_cidr": "10.84.0.0/16",
+    "load_and_media_cross_public_internet": false
+  },
+  "method": {
+    "customers": 24,
+    "tracks_per_customer": 8,
+    "track_readers": 192,
+    "persistent_h3_connections": 24,
+    "media_window_seconds": 60,
+    "part_ms": 5,
+    "bundle_response_ms": 5,
+    "deadline_ms": 20,
+    "arrival_window_ms": 750,
+    "arrival_seed": 424242,
+    "start_offset_ms": 5000,
+    "expected_audio_codec": "soundkit-opus",
+    "profiler_event": "cpu-clock",
+    "profiler_frequency_hz": 199
+  },
+  "implementation": {
+    "canonical_live_slot_index": true,
+    "complete_canonical_envelope_retained": true,
+    "validated_bytes_ranges_on_hot_read": true,
+    "raw_canonical_replication_fallback": true,
+    "accelerated_ieee_crc32": true,
+    "crc_reference_equivalence_tested": true,
+    "zero_consumer_aep1_leaf_discard": true,
+    "relay_forwarding_still_validated": true,
+    "active_audio_subscribers_still_validated": true,
+    "public_telemetry_carrier_enabled": false
+  },
+  "final_run": {
+    "remote_run_id": "20260719T225507Z-24x8-strict20-zero-consumer-v9",
+    "media_responses": 288000,
+    "expected_track_parts": 2304000,
+    "received_track_parts": 2304000,
+    "missing_parts": 0,
+    "non_contiguous_pts": 0,
+    "opus_packet_mismatches": 0,
+    "http_response_errors": 0,
+    "http_not_found": 0,
+    "deadline_missed_track_parts": 264,
+    "late_bundle_responses": 33,
+    "late_bundle_fraction": 0.00011458333333333333,
+    "availability_p99_ms": 14.089665,
+    "cache_to_client_p99_ms": 5.313937,
+    "connection_setup_p99_ms": 5.493971,
+    "wire_bytes": 479141454,
+    "edge_cpu_event_ns": 50597983625,
+    "profile_duration_ms": 64900.381,
+    "edge_cpu_percent_of_one_core": 77.9625,
+    "edge_cpu_percent_of_two_vcpu_host": 38.9813,
+    "edge_cpu_headroom_percent": 61.0187,
+    "perf_lost_samples": 0
+  },
+  "matched_runs": [
+    {
+      "run": "20260719T215454Z-24x8-strict20-perf-baseline-v3",
+      "variant": "baseline",
+      "edge_cpu_percent_of_one_core": 118.8308,
+      "availability_p99_ms": 14.633177,
+      "cache_to_client_p99_ms": 7.350865,
+      "late_bundle_responses": 209
+    },
+    {
+      "run": "20260719T221714Z-24x8-strict20-indexed-slot-v5",
+      "variant": "indexed_canonical_slot",
+      "edge_cpu_percent_of_one_core": 85.5634,
+      "availability_p99_ms": 14.157014,
+      "cache_to_client_p99_ms": 5.771501,
+      "late_bundle_responses": 147
+    },
+    {
+      "run": "20260719T222955Z-24x8-strict20-indexed-crc-v6",
+      "variant": "indexed_slot_accelerated_crc",
+      "edge_cpu_percent_of_one_core": 83.357,
+      "availability_p99_ms": 14.039201,
+      "cache_to_client_p99_ms": 5.408768,
+      "late_bundle_responses": 53
+    },
+    {
+      "run": "20260719T225507Z-24x8-strict20-zero-consumer-v9",
+      "variant": "indexed_slot_accelerated_crc_zero_consumer_aep1",
+      "edge_cpu_percent_of_one_core": 77.9625,
+      "availability_p99_ms": 14.089665,
+      "cache_to_client_p99_ms": 5.313937,
+      "late_bundle_responses": 33
+    }
+  ],
+  "comparison_to_baseline_percent": {
+    "edge_cpu": -34.39,
+    "availability_p99": -3.71,
+    "cache_to_client_p99": -27.71,
+    "late_bundle_responses": -84.21
+  },
+  "qualification": {
+    "av_mesh_active_tests_passed": 99,
+    "av_mesh_release_only_tests_ignored": 3,
+    "av_mesh_changed_binary_clippy_strict": true,
+    "raptor_fec_unit_tests_passed": 74,
+    "raptor_fec_audio_video_matrices_passed": true,
+    "raptor_fec_all_targets_all_features_clippy_strict": true,
+    "gcp_linux_release_build": true
+  },
+  "diagnostic_ledger": [
+    "20260719T225029Z-24x8-strict20-zero-consumer-v7 was cancelled because the launch wrapper expanded remote PID variables locally; services were reset before the next attempt.",
+    "20260719T225205Z-24x8-strict20-zero-consumer-v8 used the controller clock instead of GCP time, producing a uniform 4.371-second publication-clock error and 52,400 opening-window misses; it is excluded from comparison.",
+    "The final strict failure is deadline-only: every expected media unit was delivered and validated."
+  ],
+  "remaining_work": [
+    "remove the remaining 33 of 288000 bundle responses over the strict 20 ms deadline",
+    "run the optimized 24-customer tier for at least 30 minutes with stable RSS and bounded cleanup",
+    "exercise connect, cancel, timeout, and slow-reader churn without restarting the edge",
+    "repeat the final build geographically after the same-zone strict gate passes"
+  ],
+  "cleanup": {
+    "source_process_exited": true,
+    "reader_runs_no_needletail_services": true,
+    "all_needletail_services_active": true,
+    "public_operations_ui_http_200": true,
+    "public_mesh_api_http_200": true,
+    "public_contributor_feed_http_200": true,
+    "gcp_lab_retained_for_followup_testing": true,
+    "media_load_path_private": true
+  }
+}
