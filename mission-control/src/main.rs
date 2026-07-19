@@ -498,6 +498,7 @@ mod app {
             <div class="page-view">
                 <ThroughputPanel rates rate_history />
                 <RaptorSummary contrib edge />
+                <TelemetryTransportPanel edge />
                 <LatencyPanel contrib edge />
             </div>
         }
@@ -1629,6 +1630,29 @@ mod app {
                 <strong>{value}</strong>
                 <small>{detail}</small>
             </article>
+        }
+    }
+
+    #[component]
+    fn TelemetryTransportPanel(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        view! {
+            <section class="data-panel">
+                <PanelTitle title="Operations telemetry" detail="Bounded node-to-collector snapshot transport" />
+                <div class="telemetry-grid">
+                    <Metric label="State" value=move || edge.get().map(|s| if s.orchestration.telemetry_fec.enabled { "enabled" } else { "disabled" }.to_owned()).unwrap_or_else(|| "pending".to_owned()) detail="FEC snapshot lane" />
+                    <Metric label="Cadence" value=move || edge.get().map(|s| format_age_ms(s.orchestration.telemetry_fec.interval_ms)).unwrap_or_else(|| "—".to_owned()) detail="snapshot period" />
+                    <Metric label="Rate limit" value=move || edge.get().map(|s| format!("{} Kbit/s", s.orchestration.telemetry_fec.rate_bps / 1_000)).unwrap_or_else(|| "—".to_owned()) detail="all collector targets" />
+                    <Metric label="Queue" value=move || edge.get().map(|s| format!("{} blocks / {}", s.orchestration.telemetry_fec.queue_blocks, format_bytes(s.orchestration.telemetry_fec.queue_bytes as u64))).unwrap_or_else(|| "—".to_owned()) detail="maximum 2 blocks / 64 KiB" />
+                    <Metric label="Snapshots" value=move || edge.get().map(|s| format!("{} encoded / {} decoded", s.orchestration.telemetry_fec.blocks_encoded, s.orchestration.telemetry_fec.decoded_snapshots)).unwrap_or_else(|| "—".to_owned()) detail="cumulative outcomes" />
+                    <Metric label="Datagrams sent" value=move || edge.get().map(|s| format!("{} source / {} repair", s.orchestration.telemetry_fec.source_datagrams_sent, s.orchestration.telemetry_fec.repair_datagrams_sent)).unwrap_or_else(|| "—".to_owned()) detail="source-first order" />
+                    <Metric label="Datagrams received" value=move || edge.get().map(|s| format!("{} / {}", s.orchestration.telemetry_fec.received_datagrams, format_bytes(s.orchestration.telemetry_fec.received_bytes))).unwrap_or_else(|| "—".to_owned()) detail="collector input" />
+                    <Metric label="Queue replacements" value=move || edge.get().map(|s| s.orchestration.telemetry_fec.snapshots_replaced.to_string()).unwrap_or_else(|| "—".to_owned()) detail="oldest snapshots discarded" />
+                    <Metric label="Transport drops" value=move || edge.get().map(|s| format!("{} send / {} repair skipped", s.orchestration.telemetry_fec.send_drops, s.orchestration.telemetry_fec.skipped_repair_datagrams)).unwrap_or_else(|| "—".to_owned()) detail="non-blocking admission" />
+                    <Metric label="Payload errors" value=move || edge.get().map(|s| format!("{} encode / {} decode / {} ingest", s.orchestration.telemetry_fec.encode_errors, s.orchestration.telemetry_fec.decode_errors, s.orchestration.telemetry_fec.ingest_errors)).unwrap_or_else(|| "—".to_owned()) detail="bounded validation failures" />
+                    <Metric label="Last decode" value=move || edge.get().and_then(|s| s.orchestration.telemetry_fec.last_decoded_unix_ms).map(format_event_time).unwrap_or_else(|| "pending".to_owned()) detail="collector freshness" />
+                    <Metric label="Wire bytes" value=move || edge.get().map(|s| format!("{} sent / {} received", format_bytes(s.orchestration.telemetry_fec.sent_bytes), format_bytes(s.orchestration.telemetry_fec.received_bytes))).unwrap_or_else(|| "—".to_owned()) detail="cumulative UDP-FEC" />
+                </div>
+            </section>
         }
     }
 

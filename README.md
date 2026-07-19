@@ -87,9 +87,9 @@ stream-dependent work once and never doubles as a relay; see the
 
 ## Operations dashboard
 
-Mission Control is the Needletail-owned operations UI. It renders contributor
-ingest, compiled delivery routes, RelaySession lanes, RaptorQ recovery,
-publication continuity, latency, and alerts from bounded service snapshots.
+Needletail Operations shows contributor ingest, delivery routes, RelaySession
+lanes, RaptorQ recovery, publication continuity, latency, and alerts from
+bounded service snapshots.
 
 It reads:
 
@@ -98,6 +98,12 @@ It reads:
 
 Default same-origin edge feed: `/api/mesh`.
 Default contributor feed: `https://local.bitneedle.com:19443/api/status`.
+
+The local supervisor collects one snapshot every 5 seconds. Remote relays send
+bounded MessagePack snapshots over the project's RaptorQ datagram codec to the
+playback edge, which remains the only fleet feed used by the browser. The TLS
+TCP channel remains available for control commands. See
+[Operations telemetry transport](docs/operations-telemetry-transport.md).
 
 Override feeds with:
 

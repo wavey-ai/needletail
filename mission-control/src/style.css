@@ -420,6 +420,8 @@ td { color: var(--ink-soft); }
 .key-value-grid b { justify-self: end; max-width: 100%; font: 650 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; overflow-wrap: anywhere; }
 
 .raptor-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 5px 5px 0 0; overflow: hidden; background: var(--panel); }
+.telemetry-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
+.telemetry-grid .metric-card { border-bottom: 1px solid var(--line); }
 .metric-card { min-height: 104px; display: flex; flex-direction: column; gap: 5px; padding: 12px; border-right: 1px solid var(--line); }
 .metric-card:last-child { border-right: 0; }
 .metric-card span, .metric-card small { color: var(--muted); font-size: 9px; }
@@ -512,6 +514,7 @@ td { color: var(--ink-soft); }
   .route-assignment-grid { grid-template-columns: 1fr 1fr; }
   .route-policy { grid-column: 1 / -1; }
   .raptor-grid { grid-template-columns: repeat(4, 1fr); }
+  .telemetry-grid { grid-template-columns: repeat(4, 1fr); }
   .metric-card { border-bottom: 1px solid var(--line); }
 }
 
@@ -548,6 +551,7 @@ td { color: var(--ink-soft); }
   .watermark-grid { grid-template-columns: 1fr; }
   .summary-metrics.four { grid-template-columns: 1fr 1fr; }
   .raptor-grid { grid-template-columns: repeat(2, 1fr); }
+  .telemetry-grid { grid-template-columns: repeat(2, 1fr); }
   .latency-row { grid-template-columns: repeat(3, 1fr); }
   .latency-row > p { grid-column: 1 / -1; }
   .drop-strip span:last-child { margin-left: 0; }

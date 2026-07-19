@@ -1,152 +1,149 @@
 # Operations telemetry transport
 
-Status: design contract. The dashboard changes can ship against the existing
-bounded status endpoints; node transport changes require implementation and
-qualification in the owning service and transport repositories.
+Status: implemented for local and controlled-private qualification on the
+following branches:
 
-## Requirements
+- `av-mesh`: `codex/ops-telemetry-fec`
+- `needletail`: `codex/operations-telemetry-ui`
 
-Operations telemetry must provide a useful update within five seconds without
-changing media latency, queueing, or deadline outcomes. It must continue to
-arrive through ordinary packet loss and short path interruptions, but media and
-control traffic always take priority.
+The lane is opt-in in `av-mesh`. The Needletail supervisor configures the two
+remote relays to send snapshots to the playback edge, which remains the single
+fleet aggregator and browser feed.
 
-The transport does not carry application logs. Nodes export bounded counters,
-gauges, fixed-bucket histograms, topology state, and WARN/ERROR events. TRACE,
-DEBUG, per-packet INFO records, stack traces, and unbounded labels are excluded.
+## Runtime behavior
 
-## Collection at the service
+Each node takes one bounded snapshot every 5 seconds. The same producer serves
+the compatibility TCP path and the FEC path, so enabling both does not collect
+the snapshot twice. TCP admission and UDP transmission are non-blocking with
+respect to the producer.
 
-Hot paths update atomics, bounded fixed-bucket histograms, and bounded recent
-error rings. They do not allocate a telemetry event for each packet and do not
-write telemetry to disk.
-
-Every five seconds, a low-priority task copies the current values into a
-snapshot and computes deltas from the previous acknowledged base. Topology and
-build metadata are sent on change or every 30 seconds. WARN/ERROR events may
-request an earlier flush, but flushes are coalesced to at most one per second.
-
-Each snapshot is bounded before encoding:
-
-- 32 KiB maximum uncompressed payload;
-- 16 nodes, 12 streams, 12 edge services, and 16 events per source snapshot;
-- stable identifiers only; no viewer, packet, object, or request ID labels;
-- fixed histogram bounds shared by producers and the collector;
-- strings truncated at the schema boundary.
-
-If collection misses its budget, the task keeps the newest counters and drops
-older unsent snapshots. It never waits in a media task or takes a lock held by a
-media task.
-
-## Wire envelope
-
-The versioned envelope contains:
+The FEC payload is named MessagePack. The browser-facing `/api/mesh` response
+remains JSON. The versioned envelope contains:
 
 ```text
-schema_version
-source_node_id
-source_boot_id
-sequence
-base_sequence
-observed_unix_ms
-period_ms
-snapshot_kind
-payload_length
-payload_crc32
+magic and schema version
+snapshot kind
+source node id
+source boot id
+monotonic sequence
+observed Unix time
+period
+payload length
+payload CRC32
 payload
 ```
 
-`source_boot_id` and `sequence` give the collector idempotent deduplication.
-`base_sequence` identifies the counter base for a delta. A collector that lacks
-the base requests or waits for the next full snapshot; it never invents a rate
-from incompatible counters.
-
-The payload should use a compact schema with explicit numeric field IDs and
-bounded repeated fields. JSON remains the browser-facing representation, not
-the node wire representation.
+The complete envelope is limited to 32 KiB before FEC encoding. Empty payloads,
+invalid node ids, unsupported versions or kinds, length mismatches, bad CRCs,
+and unexpected RaptorQ geometry are rejected.
 
 ## FEC delivery
 
-Telemetry reuses the generic-data path in `raptorq-datagram-fec` and the
-authenticated `RelayTransport` sessions owned by `relay-session`:
+`av-mesh` uses the shared `raptorq-datagram-fec` encoder and decoder with
+1,152-byte symbols and a default repair budget of 20 percent. Source symbols are
+sent before repair symbols.
+
+The sender retains at most two envelopes and 64 KiB. A new snapshot replaces
+the oldest queued snapshot at the bound. If a new snapshot arrives while repair
+symbols are being sent, the remaining repair work is skipped. UDP uses
+`try_send_to`; socket backpressure drops telemetry instead of waiting.
+
+The total send rate across configured collectors defaults to 32 Kbit/s. The
+pacer spaces datagrams and does not accumulate a catch-up burst after a delay.
+There are no per-datagram log records and this path performs no database writes.
+
+The collector bounds state before allocating a decoder:
+
+- 256 active UDP peers;
+- two in-flight FEC blocks per peer;
+- 15-second incomplete-block expiry;
+- 32 KiB declared transfer length;
+- fixed 1,152-byte symbol geometry;
+- one stable node identity per UDP source;
+- duplicate suppression by node, boot id, and sequence.
+
+Completed snapshots enter the existing in-memory `TelemetryAggregator`.
+`/api/mesh` and `/metrics` expose queue, replacement, encode, send, receive,
+decode, duplicate, and error counters. The browser does not open per-node
+connections.
+
+## Configuration
+
+Collector:
 
 ```text
-bounded telemetry envelope
--> generic RaptorQ data block
--> telemetry-priority RelaySession queue
--> existing authenticated datagram carrier
--> regional collector
+--telemetry-fec-bind 0.0.0.0:27300
 ```
 
-Several small source snapshots may be batched into one coding block to avoid a
-one-symbol block paying a full-symbol repair floor. A five-second batch has a
-small fixed repair budget and a short expiry. The collector accepts the first
-valid decode and discards duplicate symbols by source, boot, and sequence.
+Node:
 
-Telemetry uses a distinct subscription and queue from media. Its queue has room
-for at most two coding blocks. Admission uses `try_send`; on congestion, the
-newest snapshot replaces the oldest queued snapshot. Telemetry repair symbols
-are the first telemetry work discarded. No telemetry send, repair, retry, or
-collector outage may backpressure media source symbols, media repair symbols,
-route control, or failover heartbeats.
+```text
+--telemetry-fec-target COLLECTOR_IP:27300
+--telemetry-snapshots-fec-only
+```
 
-Initial per-node limits:
+`--telemetry-snapshots-fec-only` disables snapshot publication on TCP but keeps
+the TLS/TCP feed active for control commands. Without that flag, TCP and FEC
+snapshots run together for shadow comparison.
 
-- 32 Kbit/s sustained telemetry token bucket;
-- 64 KiB maximum queued encoded data;
-- two in-flight coding blocks;
-- one full snapshot every 30 seconds, with five-second deltas between them;
-- no reliable replay after the data is older than 30 seconds.
+The current direct UDP lane is for controlled private networking. Public-path
+delivery must move the same bounded envelope and queue policy onto an
+authenticated RelaySession datagram carrier before it is enabled.
 
-Dual delivery may use the node's existing independent parent sessions. It must
-not create contributor-to-viewer links or a new all-to-all telemetry overlay.
-Regional collectors aggregate and forward telemetry to the operations service.
+## Resource policy
 
-## Collector and browser
+Hot paths update existing atomics, fixed histograms, and bounded state. The
+snapshot task reads those values every 5 seconds. TRACE logging is not required
+or enabled by this feature. Snapshot queue saturation, socket congestion,
+malformed traffic, and collector outages cannot backpressure media, route
+control, or failover work.
 
-The collector keeps the current snapshot and a short rate ring in memory. It
-exposes one bounded fleet snapshot to the browser. Browser updates remain at a
-five-second default cadence and may later use an aggregated event stream, but
-the browser never opens one feed per node.
+Raw snapshots remain in memory. There is no telemetry database in this path. If
+history is added later, persistence must aggregate in memory and use one batched
+transaction per minute rather than inserting each node sample.
 
-Raw five-second snapshots are not inserted into a database one row at a time.
-If history is required, the collector creates one-minute aggregates in memory
-and writes a batch in one transaction. The initial retention target is 15
-minutes of raw in-memory samples and 30 days of one-minute aggregates. WAL and
-database size are monitored as product metrics.
+## Tests and production gates
 
-## Qualification gates
+Automated coverage currently proves:
 
-The transport is not ready for production until a media soak proves all of the
-following with telemetry enabled and disabled under the same load:
+- envelope round trips, CRC rejection, and the 32 KiB bound;
+- one lost source symbol is recovered by repair;
+- a 200-snapshot deterministic 5 percent loss corpus delivers at least 99
+  percent of snapshots;
+- source-only ordering decodes without repair;
+- duplicate sequences are rejected and a new boot id is accepted;
+- peer, in-flight block, queue-byte, and queue-block bounds;
+- stale peer and block expiry;
+- oversized FEC geometry is rejected before decoder state is retained;
+- real UDP sender-to-collector ingestion reaches the existing aggregator;
+- the configured wire-rate pacer delays transmission as expected;
+- TCP snapshots and control commands remain compatible.
 
-- no measurable regression in media deadline misses or expired objects;
-- relay processing p95 remains within the delivery-class budget;
+On July 19, 2026, the release-mode isolated encoder qualification on an Apple
+M1 completed 1,000 MessagePack + envelope CRC + RaptorQ encodes in 222.8365 ms:
+222.836 microseconds per snapshot and 4,752 encoded wire bytes per iteration.
+At one snapshot every 5 seconds, the measured encode work is about 0.0045
+percent of one core. Snapshot collection and an enabled-versus-disabled media
+soak remain separate production gates.
+
+Production enablement still requires an enabled-versus-disabled media soak with
+the same traffic and impairment trace. Required gates:
+
+- no regression in media deadline misses or expired objects;
+- relay processing p95 remains within its delivery-class budget;
 - media queue p95 changes by less than 0.5 ms;
-- telemetry collection and encoding consume less than 0.5 percent of one CPU
-  core per node at the normal cadence;
-- telemetry stays below its token-bucket and memory limits;
-- sustained telemetry loss or collector outage cannot grow queues or memory;
-- a 5 percent datagram-loss test still delivers at least 99 percent of
-  five-second fleet snapshots within ten seconds;
-- duplicate, reordered, reset, and missing-base sequences do not create false
-  throughput spikes;
-- database writes, when enabled, occur in one-minute batches rather than per
-  node sample.
+- collection and encoding use less than 0.5 percent of one CPU core per node at
+  the normal cadence;
+- a collector outage cannot grow queue or memory beyond the fixed limits;
+- 5 percent datagram loss delivers at least 99 percent of snapshots within 10
+  seconds;
+- no database writes are introduced;
+- public rollout uses an authenticated RelaySession carrier.
 
-## Ownership and rollout
+## Rollout
 
-`av-contrib` and `av-mesh` own the bounded source snapshots. `raptor-fec` owns
-generic FEC framing and repair geometry. `relay-session` owns queue admission,
-priority, authentication, pacing, and expiry. Needletail owns aggregation,
-deployment policy, qualification, and the operations UI.
-
-Rollout order:
-
-1. Record collection cost with transport disabled.
-2. Send FEC telemetry to a shadow collector and compare it with current status
-   endpoints.
-3. Add loss, congestion, and collector-outage qualification.
-4. Make the aggregated snapshot the default UI feed while retaining endpoint
-   fallback for one release.
-5. Enable one-minute persistence only after write-rate and retention gates pass.
+1. Run TCP and FEC snapshots together and compare aggregate output.
+2. Run controlled loss, congestion, and collector-outage qualification.
+3. Enable FEC-only snapshots on controlled private nodes.
+4. Move the envelope to authenticated RelaySession carriers before public use.
+5. Add one-minute persistence only after write-rate and retention gates pass.

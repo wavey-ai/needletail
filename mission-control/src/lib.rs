@@ -611,6 +611,38 @@ pub struct TelemetryNodeHealth {
 #[serde(default)]
 pub struct OperationsReadiness {
     pub control_dispatch_ready: bool,
+    pub telemetry_fec: TelemetryFecStatus,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct TelemetryFecStatus {
+    pub enabled: bool,
+    pub collector_bind: Option<String>,
+    pub publisher_targets: usize,
+    pub interval_ms: u64,
+    pub rate_bps: u64,
+    pub queue_blocks: usize,
+    pub queue_bytes: usize,
+    pub snapshots_submitted: u64,
+    pub snapshots_replaced: u64,
+    pub snapshots_oversized: u64,
+    pub blocks_encoded: u64,
+    pub source_datagrams_sent: u64,
+    pub repair_datagrams_sent: u64,
+    pub sent_bytes: u64,
+    pub skipped_repair_datagrams: u64,
+    pub send_drops: u64,
+    pub received_datagrams: u64,
+    pub received_bytes: u64,
+    pub decoded_snapshots: u64,
+    pub duplicate_snapshots: u64,
+    pub encode_errors: u64,
+    pub receive_errors: u64,
+    pub decode_errors: u64,
+    pub ingest_errors: u64,
+    pub last_received_unix_ms: Option<u64>,
+    pub last_decoded_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1499,6 +1531,35 @@ mod tests {
         assert_eq!(contrib.runtime.relay_session.errors(), 0);
         assert_eq!(edge.relay_session.errors(), 0);
         assert!(contributor_latency(&contrib).percentile_us(95).is_none());
+    }
+
+    #[test]
+    fn operations_telemetry_status_parses_bounded_transport_counters() {
+        let edge: MeshStatus = serde_json::from_str(
+            r#"{
+                "orchestration": {
+                    "telemetry_fec": {
+                        "enabled": true,
+                        "interval_ms": 5000,
+                        "rate_bps": 32000,
+                        "queue_blocks": 1,
+                        "snapshots_submitted": 12,
+                        "decoded_snapshots": 11,
+                        "send_drops": 1,
+                        "last_decoded_unix_ms": 1784490000000
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let status = edge.orchestration.telemetry_fec;
+        assert!(status.enabled);
+        assert_eq!(status.interval_ms, 5_000);
+        assert_eq!(status.rate_bps, 32_000);
+        assert_eq!(status.queue_blocks, 1);
+        assert_eq!(status.snapshots_submitted, 12);
+        assert_eq!(status.decoded_snapshots, 11);
+        assert_eq!(status.send_drops, 1);
     }
 
     #[test]

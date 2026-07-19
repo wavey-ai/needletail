@@ -248,12 +248,12 @@ async fn main() -> Result<()> {
     }
     if mission_control_dist.join("index.html").exists() {
         println!(
-            "[orchestrator] Needletail Mission Control assets: {}",
+            "[orchestrator] Needletail Operations assets: {}",
             mission_control_dist.display()
         );
     } else {
         println!(
-            "[orchestrator] Mission Control setup response active at /mesh; build product assets into {}",
+            "[orchestrator] Operations setup response active at /mesh; build product assets into {}",
             mission_control_dist.display()
         );
     }
@@ -292,6 +292,9 @@ async fn main() -> Result<()> {
                     media_fec_bind: args.uk_media_fec,
                     telemetry_bind: args.us_telemetry,
                     telemetry_peers: vec![args.uk_telemetry],
+                    telemetry_fec_bind: None,
+                    telemetry_fec_targets: vec![args.uk_telemetry],
+                    telemetry_snapshots_fec_only: true,
                     stream_id: args.stream_id,
                     part_ms: args.part_ms,
                     host: &args.host,
@@ -322,6 +325,9 @@ async fn main() -> Result<()> {
                     media_fec_bind: args.us_media_fec,
                     telemetry_bind: args.secondary_relay_telemetry,
                     telemetry_peers: vec![args.uk_telemetry],
+                    telemetry_fec_bind: None,
+                    telemetry_fec_targets: vec![args.uk_telemetry],
+                    telemetry_snapshots_fec_only: true,
                     stream_id: args.stream_id,
                     part_ms: args.part_ms,
                     host: &args.host,
@@ -352,6 +358,9 @@ async fn main() -> Result<()> {
                     media_fec_bind: args.edge_media_fec,
                     telemetry_bind: args.uk_telemetry,
                     telemetry_peers: vec![args.us_telemetry, args.secondary_relay_telemetry],
+                    telemetry_fec_bind: Some(args.uk_telemetry),
+                    telemetry_fec_targets: Vec::new(),
+                    telemetry_snapshots_fec_only: false,
                     stream_id: args.stream_id,
                     part_ms: args.part_ms,
                     host: &args.host,
@@ -447,23 +456,18 @@ async fn main() -> Result<()> {
             "/needletail_mission_control.js",
             "/needletail_mission_control_bg.wasm",
         ] {
-            require_https_resource(
-                "Needletail Mission Control",
-                &args.host,
-                args.uk_http_port,
-                path,
-            )
-            .await?;
+            require_https_resource("Needletail Operations", &args.host, args.uk_http_port, path)
+                .await?;
         }
         require_https_resource(
-            "primary relay Needletail Mission Control",
+            "primary relay Needletail Operations",
             &args.host,
             args.us_http_port,
             "/mesh",
         )
         .await?;
         require_https_resource(
-            "secondary relay Needletail Mission Control",
+            "secondary relay Needletail Operations",
             &args.host,
             args.secondary_relay_http_port,
             "/mesh",
@@ -797,12 +801,12 @@ async fn run_mission_control_build(
     let build_script = mission_control_root.join("scripts/build.sh");
     if !build_script.exists() {
         bail!(
-            "Needletail Mission Control source is required at {}",
+            "Needletail Operations source is required at {}",
             build_script.display()
         );
     }
     println!(
-        "[orchestrator] building Needletail Mission Control in {}",
+        "[orchestrator] building Needletail Operations in {}",
         mission_control_root.display()
     );
     let status = Command::new("sh")
@@ -813,9 +817,9 @@ async fn run_mission_control_build(
         .stderr(Stdio::inherit())
         .status()
         .await
-        .with_context(|| "failed to start Needletail Mission Control asset build")?;
+        .with_context(|| "failed to start Needletail Operations asset build")?;
     if !status.success() {
-        bail!("Needletail Mission Control build failed with {status}");
+        bail!("Needletail Operations build failed with {status}");
     }
     Ok(())
 }
@@ -879,6 +883,9 @@ struct MeshNodeLaunch<'a> {
     media_fec_bind: SocketAddr,
     telemetry_bind: SocketAddr,
     telemetry_peers: Vec<SocketAddr>,
+    telemetry_fec_bind: Option<SocketAddr>,
+    telemetry_fec_targets: Vec<SocketAddr>,
+    telemetry_snapshots_fec_only: bool,
     stream_id: u64,
     part_ms: u64,
     host: &'a str,
@@ -912,7 +919,7 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
         "--telemetry-dns-name".into(),
         launch.host.into(),
         "--telemetry-interval-ms".into(),
-        "250".into(),
+        "5000".into(),
         "--stream-id".into(),
         launch.stream_id.to_string(),
         "--part-ms".into(),
@@ -929,6 +936,15 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
     }
     for telemetry_peer in launch.telemetry_peers {
         args.extend(["--telemetry-peer".into(), telemetry_peer.to_string()]);
+    }
+    if let Some(bind) = launch.telemetry_fec_bind {
+        args.extend(["--telemetry-fec-bind".into(), bind.to_string()]);
+    }
+    for target in launch.telemetry_fec_targets {
+        args.extend(["--telemetry-fec-target".into(), target.to_string()]);
+    }
+    if launch.telemetry_snapshots_fec_only {
+        args.push("--telemetry-snapshots-fec-only".into());
     }
     args.extend(launch.relay_arguments);
     args
@@ -1161,15 +1177,15 @@ fn print_ready(args: &Args) {
         args.stream_id, args.stream_id
     );
     println!(
-        "[orchestrator] Mission Control: https://{}:{}/mesh",
+        "[orchestrator] Operations: https://{}:{}/mesh",
         args.host, args.uk_http_port
     );
     println!(
-        "[orchestrator] primary relay Mission Control: https://{}:{}/mesh",
+        "[orchestrator] primary relay Operations: https://{}:{}/mesh",
         args.host, args.us_http_port
     );
     println!(
-        "[orchestrator] warm relay Mission Control: https://{}:{}/mesh",
+        "[orchestrator] warm relay Operations: https://{}:{}/mesh",
         args.host, args.secondary_relay_http_port
     );
     println!("[orchestrator] logs from all services are prefixed below");
@@ -1330,6 +1346,9 @@ mod tests {
             media_fec_bind: args.edge_media_fec,
             telemetry_bind: args.uk_telemetry,
             telemetry_peers: vec![args.us_telemetry, args.secondary_relay_telemetry],
+            telemetry_fec_bind: Some(args.uk_telemetry),
+            telemetry_fec_targets: Vec::new(),
+            telemetry_snapshots_fec_only: false,
             stream_id: args.stream_id,
             part_ms: args.part_ms,
             host: &args.host,
@@ -1342,6 +1361,14 @@ mod tests {
         assert!(mesh_args
             .iter()
             .any(|arg| arg == "--relay-controlled-local"));
+        assert_eq!(
+            value_after(&mesh_args, "--telemetry-interval-ms"),
+            Some("5000")
+        );
+        assert_eq!(
+            value_after(&mesh_args, "--telemetry-fec-bind"),
+            Some("127.0.0.1:27300")
+        );
     }
 
     #[test]
