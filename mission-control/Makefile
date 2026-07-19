@@ -12,9 +12,9 @@ DIST ?= dist
 .PHONY: help serve build check test clean
 
 help:
-	@printf '%s\n' 'Needletail Mission Control'
+	@printf '%s\n' 'Needletail Operations'
 	@printf '%s\n' ''
-	@printf '%s\n' '  make serve   Serve Mission Control with Trunk'
+	@printf '%s\n' '  make serve   Serve Needletail Operations with Trunk'
 	@printf '%s\n' '  make build   Build release WASM assets'
 	@printf '%s\n' '  make check   Check native models and the WASM app'
 	@printf '%s\n' '  make test    Test bounded snapshot parsing and summaries'

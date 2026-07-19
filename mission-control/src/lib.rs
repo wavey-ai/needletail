@@ -1309,6 +1309,16 @@ fn delivery_event_message(code: &str, message: &str) -> String {
     }
 }
 
+/// Converts two monotonic counter observations into a per-second rate.
+/// Counter resets and sub-second samples are ignored instead of producing a
+/// misleading spike.
+pub fn monotonic_rate_per_second(previous: u64, current: u64, elapsed_ms: u64) -> Option<f64> {
+    if current < previous || elapsed_ms < 1_000 {
+        return None;
+    }
+    Some(current.saturating_sub(previous) as f64 * 1_000.0 / elapsed_ms as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1497,6 +1507,13 @@ mod tests {
         assert_eq!(histogram_percentile_us(100, &buckets, 50), Some(2_500));
         assert_eq!(histogram_percentile_us(100, &buckets, 95), Some(5_000));
         assert_eq!(histogram_percentile_us(100, &buckets, 99), Some(10_000));
+    }
+
+    #[test]
+    fn monotonic_counter_rates_ignore_resets_and_short_samples() {
+        assert_eq!(monotonic_rate_per_second(1_000, 2_000, 5_000), Some(200.0));
+        assert_eq!(monotonic_rate_per_second(2_000, 1_000, 5_000), None);
+        assert_eq!(monotonic_rate_per_second(1_000, 2_000, 999), None);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 # Needletail operations dashboard
 
-The Needletail operations dashboard is the product operations UI. The interface
-preserves a fast realtime overview and provides dedicated, anchored surfaces
-for:
+The Needletail operations dashboard is the product operations UI. It provides
+separate hash-routed views for:
 
+- current health and throughput;
+- a geographic node and link map;
 - live streams and contiguous publication;
 - contributor listeners, sessions, fMP4 output, codecs, and errors;
 - nodes and playback-edge services;
@@ -11,6 +12,13 @@ for:
 - contributor and LL-HLS latency, RaptorQ recovery, deadlines, and clock
   confidence;
 - alerts and recent activity from both services.
+
+The browser fetches the two bounded snapshots concurrently every five seconds.
+It pauses routine polling while the page is hidden, calculates throughput from
+monotonic counter deltas, and retains at most six minutes of rate samples in
+memory. Counter resets and sub-second observations do not produce rate spikes.
+The map uses the node coordinates already present in `/api/mesh`; its local CC0
+base image does not require a map service at runtime.
 
 It reads bounded, low-cardinality snapshots from:
 
@@ -27,7 +35,6 @@ edge, alert, and activity arrays are capped before rendering.
 
 The UI consumes the current service shapes. The current backends do not yet
 expose the following values, so their corresponding cells remain `pending`:
-their corresponding cells can move from `pending` to measured:
 
 - delivery class, fabric, desired-state generation, installed route state, and
   per-stream/cohort route inventory;
@@ -69,6 +76,11 @@ NEEDLETAIL_MISSION_CONTROL_DIST=/path/to/needletail/mission-control/dist \
 
 `needletail` builds this directory and supplies the dist path to each supervised
 edge automatically.
+
+The proposed node-to-collector transport for this data is documented in
+[`../docs/operations-telemetry-transport.md`](../docs/operations-telemetry-transport.md).
+The current UI remains compatible with the existing bounded status endpoints
+while that transport is implemented and qualified.
 
 Validation:
 

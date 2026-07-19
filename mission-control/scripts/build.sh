@@ -13,7 +13,7 @@ if command -v "${TRUNK}" >/dev/null 2>&1; then
 fi
 
 command -v "${WASM_BINDGEN}" >/dev/null 2>&1 || {
-  printf '%s\n' 'Needletail Mission Control asset build requires trunk or wasm-bindgen.' >&2
+  printf '%s\n' 'Needletail Operations asset build requires trunk or wasm-bindgen.' >&2
   exit 1
 }
 
@@ -28,4 +28,5 @@ mkdir -p "${DIST}"
 "${WASM_BINDGEN}" "${WASM}" --target web --out-dir "${DIST}" \
   --out-name needletail_mission_control
 cp "${ROOT}/src/style.css" "${DIST}/needletail-mission-control.css"
+cp "${ROOT}/assets/world-map.png" "${DIST}/world-map.png"
 cp "${ROOT}/fallback-index.html" "${DIST}/index.html"

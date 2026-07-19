@@ -5,18 +5,20 @@ mod app {
     use leptos::{mount::mount_to_body, prelude::*};
     use needletail_mission_control::{
         bounded_contrib_streams, bounded_edge_streams, bounded_edges, bounded_ingest_sessions,
-        bounded_nodes, contributor_latency, effective_delivery, operational_activity,
-        operational_alerts, publication_from_contrib, publication_from_edge, ContribStatus,
-        DeliverySnapshot, DurationHistogram, EdgeNode, EdgeService, EventSource, IngestSession,
-        ListenerStatus, MeshStatus, OperationalEvent, ProtocolRuntime, PublicationSnapshot,
-        RelayNodeSession, RouteLane, MAX_EVENT_ROWS,
+        bounded_nodes, contributor_latency, effective_delivery, monotonic_rate_per_second,
+        operational_activity, operational_alerts, publication_from_contrib, publication_from_edge,
+        ContribStatus, DeliverySnapshot, DurationHistogram, EdgeNode, EdgeService, EventSource,
+        IngestSession, ListenerStatus, MeshStatus, OperationalEvent, ProtocolRuntime,
+        PublicationSnapshot, RelayNodeSession, RouteLane, MAX_EVENT_ROWS,
     };
     use serde::de::DeserializeOwned;
+    use wasm_bindgen::{closure::Closure, JsCast};
     use wasm_bindgen_futures::spawn_local;
 
     const DEFAULT_EDGE_API: &str = "/api/mesh";
     const DEFAULT_CONTRIB_API: &str = "https://local.bitneedle.com:19443/api/status";
-    const POLL_INTERVAL_MS: u32 = 2_000;
+    const POLL_INTERVAL_MS: u32 = 5_000;
+    const RATE_HISTORY_POINTS: usize = 72;
 
     pub fn run() {
         console_error_panic_hook::set_once();
@@ -27,6 +29,83 @@ mod app {
     struct FeedState {
         last_ok_unix_ms: Option<u64>,
         error: Option<String>,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum Page {
+        #[default]
+        Overview,
+        Network,
+        Streams,
+        Ingest,
+        Nodes,
+        Routes,
+        Performance,
+        Activity,
+    }
+
+    impl Page {
+        fn from_hash(hash: &str) -> Self {
+            match hash.trim_start_matches('#').trim_matches('/') {
+                "network" | "topology" => Self::Network,
+                "streams" => Self::Streams,
+                "ingest" | "contributor" => Self::Ingest,
+                "nodes" => Self::Nodes,
+                "routes" => Self::Routes,
+                "performance" => Self::Performance,
+                "activity" | "alerts" => Self::Activity,
+                _ => Self::Overview,
+            }
+        }
+
+        fn slug(self) -> &'static str {
+            match self {
+                Self::Overview => "overview",
+                Self::Network => "network",
+                Self::Streams => "streams",
+                Self::Ingest => "ingest",
+                Self::Nodes => "nodes",
+                Self::Routes => "routes",
+                Self::Performance => "performance",
+                Self::Activity => "activity",
+            }
+        }
+
+        fn title(self) -> &'static str {
+            match self {
+                Self::Overview => "Overview",
+                Self::Network => "Network map",
+                Self::Streams => "Streams",
+                Self::Ingest => "Contributor ingest",
+                Self::Nodes => "Nodes and edges",
+                Self::Routes => "Routes",
+                Self::Performance => "Performance",
+                Self::Activity => "Alerts and activity",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct TrafficRates {
+        at_unix_ms: u64,
+        input_bps: Option<f64>,
+        relay_bps: Option<f64>,
+        delivery_bps: Option<f64>,
+        objects_per_second: Option<f64>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct ContribCounters {
+        at_unix_ms: u64,
+        input_bytes: u64,
+        relay_bytes: u64,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct EdgeCounters {
+        at_unix_ms: u64,
+        delivery_bytes: u64,
+        decoded_objects: u64,
     }
 
     impl FeedState {
@@ -76,6 +155,7 @@ mod app {
 
     #[component]
     fn App() -> impl IntoView {
+        let (page, set_page) = signal(current_page());
         let (edge_api, set_edge_api) = signal(endpoint_from_query("edge", DEFAULT_EDGE_API));
         let (contrib_api, set_contrib_api) =
             signal(endpoint_from_query("contrib", DEFAULT_CONTRIB_API));
@@ -83,174 +163,355 @@ mod app {
         let (contrib, set_contrib) = signal(None::<ContribStatus>);
         let (edge_feed, set_edge_feed) = signal(FeedState::default());
         let (contrib_feed, set_contrib_feed) = signal(FeedState::default());
+        let (edge_in_flight, set_edge_in_flight) = signal(false);
+        let (contrib_in_flight, set_contrib_in_flight) = signal(false);
+        let (contrib_counters, set_contrib_counters) = signal(None::<ContribCounters>);
+        let (edge_counters, set_edge_counters) = signal(None::<EdgeCounters>);
+        let (rates, set_rates) = signal(TrafficRates::default());
+        let (rate_history, set_rate_history) = signal(Vec::<TrafficRates>::new());
+
+        if let Some(window) = web_sys::window() {
+            let on_hash_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+                set_page.set(current_page());
+            });
+            window.set_onhashchange(Some(on_hash_change.as_ref().unchecked_ref()));
+            on_hash_change.forget();
+        }
 
         let refresh = move || {
             let edge_url = edge_api.get();
             let contrib_url = contrib_api.get();
-            spawn_local(async move {
-                match fetch_json::<MeshStatus>(&edge_url).await {
-                    Ok(snapshot) => {
-                        set_edge.set(Some(snapshot));
-                        set_edge_feed.set(FeedState::ok());
+            if !edge_in_flight.get_untracked() {
+                set_edge_in_flight.set(true);
+                spawn_local(async move {
+                    match fetch_json::<MeshStatus>(&edge_url).await {
+                        Ok(snapshot) => {
+                            let counters = edge_counter_sample(&snapshot, now_unix_ms());
+                            if let Some(previous) = edge_counters.get_untracked() {
+                                set_rates.update(|current| {
+                                    current.at_unix_ms = counters.at_unix_ms;
+                                    current.delivery_bps = monotonic_rate_per_second(
+                                        previous.delivery_bytes,
+                                        counters.delivery_bytes,
+                                        counters.at_unix_ms.saturating_sub(previous.at_unix_ms),
+                                    )
+                                    .map(|rate| rate * 8.0);
+                                    current.objects_per_second = monotonic_rate_per_second(
+                                        previous.decoded_objects,
+                                        counters.decoded_objects,
+                                        counters.at_unix_ms.saturating_sub(previous.at_unix_ms),
+                                    );
+                                });
+                                let current_rates = rates.get_untracked();
+                                set_rate_history
+                                    .update(|history| record_rate_history(history, current_rates));
+                            }
+                            set_edge_counters.set(Some(counters));
+                            set_edge.set(Some(snapshot));
+                            set_edge_feed.set(FeedState::ok());
+                        }
+                        Err(error) => {
+                            set_edge_feed.update(|state| *state = FeedState::error(error, state));
+                        }
                     }
-                    Err(error) => {
-                        set_edge_feed.update(|state| *state = FeedState::error(error, state));
+                    set_edge_in_flight.set(false);
+                });
+            }
+            if !contrib_in_flight.get_untracked() {
+                set_contrib_in_flight.set(true);
+                spawn_local(async move {
+                    match fetch_json::<ContribStatus>(&contrib_url).await {
+                        Ok(snapshot) => {
+                            let counters = contrib_counter_sample(&snapshot, now_unix_ms());
+                            if let Some(previous) = contrib_counters.get_untracked() {
+                                let elapsed =
+                                    counters.at_unix_ms.saturating_sub(previous.at_unix_ms);
+                                set_rates.update(|current| {
+                                    current.at_unix_ms = counters.at_unix_ms;
+                                    current.input_bps = monotonic_rate_per_second(
+                                        previous.input_bytes,
+                                        counters.input_bytes,
+                                        elapsed,
+                                    )
+                                    .map(|rate| rate * 8.0);
+                                    current.relay_bps = monotonic_rate_per_second(
+                                        previous.relay_bytes,
+                                        counters.relay_bytes,
+                                        elapsed,
+                                    )
+                                    .map(|rate| rate * 8.0);
+                                });
+                                let current_rates = rates.get_untracked();
+                                set_rate_history
+                                    .update(|history| record_rate_history(history, current_rates));
+                            }
+                            set_contrib_counters.set(Some(counters));
+                            set_contrib.set(Some(snapshot));
+                            set_contrib_feed.set(FeedState::ok());
+                        }
+                        Err(error) => {
+                            set_contrib_feed
+                                .update(|state| *state = FeedState::error(error, state));
+                        }
                     }
-                }
-                match fetch_json::<ContribStatus>(&contrib_url).await {
-                    Ok(snapshot) => {
-                        set_contrib.set(Some(snapshot));
-                        set_contrib_feed.set(FeedState::ok());
-                    }
-                    Err(error) => {
-                        set_contrib_feed.update(|state| *state = FeedState::error(error, state));
-                    }
-                }
-            });
+                    set_contrib_in_flight.set(false);
+                });
+            }
         };
 
         refresh();
-        Interval::new(POLL_INTERVAL_MS, refresh).forget();
+        Interval::new(POLL_INTERVAL_MS, move || {
+            if document_is_visible() {
+                refresh();
+            }
+        })
+        .forget();
 
         view! {
             <div class="app-shell">
-                <header class="topbar">
-                    <a class="brand-lockup" href="#overview" aria-label="Needletail operations dashboard overview">
+                <aside class="sidebar">
+                    <a
+                        class="brand-lockup"
+                        href="#overview"
+                        aria-label="Needletail overview"
+                        on:click=move |_| set_page.set(Page::Overview)
+                    >
                         <div class="mark" aria-hidden="true"><span></span><span></span><span></span></div>
-                        <div>
-                            <p class="eyebrow">"NEEDLETAIL"</p>
-                            <h1>"Operations"</h1>
-                        </div>
+                        <div><strong>"Needletail"</strong><span>"Operations"</span></div>
                     </a>
-                    <div class="feed-strip">
+                    <nav class="primary-nav" aria-label="Operations views">
+                        <NavItem target=Page::Overview current=page set_current=set_page />
+                        <NavItem target=Page::Network current=page set_current=set_page />
+                        <NavItem target=Page::Streams current=page set_current=set_page />
+                        <NavItem target=Page::Ingest current=page set_current=set_page />
+                        <NavItem target=Page::Nodes current=page set_current=set_page />
+                        <NavItem target=Page::Routes current=page set_current=set_page />
+                        <NavItem target=Page::Performance current=page set_current=set_page />
+                        <NavItem target=Page::Activity current=page set_current=set_page />
+                    </nav>
+                    <div class="sidebar-feeds">
                         <FeedChip label="Contributor" state=contrib_feed />
                         <FeedChip label="Playback edge" state=edge_feed />
                     </div>
-                    <details class="feed-settings">
-                        <summary>"Feeds"</summary>
-                        <div class="feed-form">
-                            <label>
-                                <span>"Playback-edge snapshot"</span>
-                                <input
-                                    prop:value=move || edge_api.get()
-                                    on:input=move |event| set_edge_api.set(event_target_value(&event))
-                                />
-                            </label>
-                            <label>
-                                <span>"Contributor snapshot"</span>
-                                <input
-                                    prop:value=move || contrib_api.get()
-                                    on:input=move |event| set_contrib_api.set(event_target_value(&event))
-                                />
-                            </label>
-                            <button on:click=move |_| refresh()>"Apply & refresh"</button>
-                        </div>
-                    </details>
-                </header>
+                </aside>
 
-                <nav class="section-nav" aria-label="Operations dashboard sections">
-                    <a href="#overview">"Overview"</a>
-                    <a href="#streams">"Live streams"</a>
-                    <a href="#contributor">"Contributor ingest"</a>
-                    <a href="#nodes">"Nodes & edges"</a>
-                    <a href="#routes">"Routes"</a>
-                    <a href="#performance">"Performance"</a>
-                    <a href="#alerts">"Alerts & activity"</a>
-                </nav>
-
-                <main>
-                    <section id="overview" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="SYSTEM STATUS"
-                            title="Ingest, relay, and playback status"
-                            detail="Current service state, route assignment, object deadlines, and RaptorQ symbol forwarding."
-                        />
-                        <div class="hero-grid">
-                            <ServiceHealth contrib edge />
-                            <RouteAssignmentSummary contrib edge />
-                            <DeadlineHealth contrib edge />
+                <div class="workspace">
+                    <header class="workspace-bar">
+                        <div class="page-identity">
+                            <span>"Needletail"</span>
+                            <h1>{move || page.get().title()}</h1>
                         </div>
-                        <div class="lane-flow-wrap">
-                            <p class="lane-legend">"MEDIA OBJECT FLOW · PRIMARY SOURCE SYMBOLS · SECONDARY REPAIR SYMBOLS"</p>
-                            <div class="lane-flow">
-                                <IngestLane contrib />
-                                <div class="parallel-lanes">
-                                    <SourceLane contrib />
-                                    <RepairLane contrib />
+                        <div class="workspace-actions">
+                            <span class="cadence"><i></i>"5 second updates"</span>
+                            <button class="refresh-button" on:click=move |_| refresh()>"Refresh now"</button>
+                            <details class="feed-settings">
+                                <summary>"Data sources"</summary>
+                                <div class="feed-form">
+                                    <label>
+                                        <span>"Playback edge"</span>
+                                        <input
+                                            prop:value=move || edge_api.get()
+                                            on:input=move |event| set_edge_api.set(event_target_value(&event))
+                                        />
+                                    </label>
+                                    <label>
+                                        <span>"Contributor"</span>
+                                        <input
+                                            prop:value=move || contrib_api.get()
+                                            on:input=move |event| set_contrib_api.set(event_target_value(&event))
+                                        />
+                                    </label>
+                                    <button on:click=move |_| refresh()>"Apply"</button>
                                 </div>
-                                <EdgeLane edge />
-                            </div>
+                            </details>
                         </div>
-                    </section>
+                    </header>
 
-                    <section id="streams" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="STREAM PUBLICATION"
-                            title="Active streams and publication watermarks"
-                            detail="Contributor and playback-edge object counters, contiguous watermarks, known gaps, and lag."
-                        />
-                        <div class="split-grid publication-split">
-                            <PublicationPanel contrib edge />
-                            <StreamSummary contrib edge />
+                    <main class="page-stage">
+                        {move || match page.get() {
+                            Page::Overview => view! {
+                                <OverviewPage contrib edge rates rate_history />
+                            }.into_any(),
+                            Page::Network => view! {
+                                <NetworkPage contrib edge rates />
+                            }.into_any(),
+                            Page::Streams => view! {
+                                <StreamsPage contrib edge />
+                            }.into_any(),
+                            Page::Ingest => view! {
+                                <IngestPage contrib />
+                            }.into_any(),
+                            Page::Nodes => view! {
+                                <NodesPage edge />
+                            }.into_any(),
+                            Page::Routes => view! {
+                                <RoutesPage contrib edge />
+                            }.into_any(),
+                            Page::Performance => view! {
+                                <PerformancePage contrib edge rates rate_history />
+                            }.into_any(),
+                            Page::Activity => view! {
+                                <ActivityPage contrib edge />
+                            }.into_any(),
+                        }}
+                    </main>
+                </div>
+            </div>
+        }
+    }
+
+    #[component]
+    fn NavItem(
+        target: Page,
+        current: ReadSignal<Page>,
+        set_current: WriteSignal<Page>,
+    ) -> impl IntoView {
+        view! {
+            <a
+                href=format!("#{}", target.slug())
+                class=move || (current.get() == target).then_some("active")
+                aria-current=move || (current.get() == target).then_some("page")
+                on:click=move |_| set_current.set(target)
+            >
+                <span class="nav-indicator"></span>
+                {target.title()}
+            </a>
+        }
+    }
+
+    #[component]
+    fn OverviewPage(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+        rates: ReadSignal<TrafficRates>,
+        rate_history: ReadSignal<Vec<TrafficRates>>,
+    ) -> impl IntoView {
+        view! {
+            <div class="page-view overview-page">
+                <section class="section-block">
+                    <SectionHeading kicker="CURRENT STATUS" title="Delivery health" detail="Ingest, relay, and playback edge" />
+                    <div class="hero-grid">
+                        <ServiceHealth contrib edge />
+                        <RouteAssignmentSummary contrib edge />
+                        <DeadlineHealth contrib edge />
+                    </div>
+                </section>
+                <ThroughputPanel rates rate_history />
+                <section class="section-block">
+                    <SectionHeading kicker="CURRENT PATH" title="Media flow" detail="Primary source and warm repair lanes" />
+                    <div class="lane-flow">
+                        <IngestLane contrib />
+                        <div class="parallel-lanes">
+                            <SourceLane contrib />
+                            <RepairLane contrib />
                         </div>
-                        <ContributorStreams contrib />
-                        <EdgeStreams edge />
-                    </section>
+                        <EdgeLane edge />
+                    </div>
+                </section>
+                <div class="split-grid publication-split">
+                    <PublicationPanel contrib edge />
+                    <StreamSummary contrib edge />
+                </div>
+            </div>
+        }
+    }
 
-                    <section id="contributor" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="CONTRIBUTOR INGEST"
-                            title="Ingest listeners and sessions"
-                            detail="RIST, SRT, and RTMP listener state, session counters, codec detection, fMP4 packaging, and relay output."
-                        />
-                        <ContributorSummary contrib />
-                        <ListenerTable contrib />
-                        <IngestSessionTable contrib />
-                    </section>
+    #[component]
+    fn NetworkPage(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+        rates: ReadSignal<TrafficRates>,
+    ) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <section class="section-block">
+                    <SectionHeading kicker="DEPLOYMENT" title="Network map" detail="Node and link health" />
+                    <NetworkMap contrib edge rates />
+                </section>
+                <RouteAssignmentPanel contrib edge />
+                <RelayFabricTable edge />
+            </div>
+        }
+    }
 
-                    <section id="nodes" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="NODES & PLAYBACK EDGES"
-                            title="Playback nodes and edge services"
-                            detail="Service state, storage use, stream count, readers, response outcomes, and telemetry age."
-                        />
-                        <FleetSummary edge />
-                        <NodeTable edge />
-                        <EdgeServiceTable edge />
-                    </section>
+    #[component]
+    fn StreamsPage(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+    ) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <div class="split-grid publication-split">
+                    <PublicationPanel contrib edge />
+                    <StreamSummary contrib edge />
+                </div>
+                <ContributorStreams contrib />
+                <EdgeStreams edge />
+            </div>
+        }
+    }
 
-                    <section id="routes" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="ROUTES"
-                            title="Relay topology and assigned routes"
-                            detail="DAG and low-latency route assignments, primary source, secondary repair, trust, stretch, and generation."
-                        />
-                        <RouteAssignmentPanel contrib edge />
-                        <RelayFabricTable edge />
-                        <RouteTable contrib edge />
-                    </section>
+    #[component]
+    fn IngestPage(contrib: ReadSignal<Option<ContribStatus>>) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <ContributorSummary contrib />
+                <ListenerTable contrib />
+                <IngestSessionTable contrib />
+            </div>
+        }
+    }
 
-                    <section id="performance" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="REALTIME PERFORMANCE"
-                            title="Latency, deadlines, and RaptorQ recovery"
-                            detail="Contributor stage histograms, relay availability, LL-HLS response latency, RaptorQ outcomes, and clock confidence."
-                        />
-                        <RaptorSummary contrib edge />
-                        <LatencyPanel contrib edge />
-                    </section>
+    #[component]
+    fn NodesPage(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <FleetSummary edge />
+                <NodeTable edge />
+                <EdgeServiceTable edge />
+            </div>
+        }
+    }
 
-                    <section id="alerts" class="section-block anchor-section">
-                        <SectionHeading
-                            kicker="ALERTS & ACTIVITY"
-                            title="Alerts and service events"
-                            detail="Current alerts and recent events reported by contributor and playback-edge services."
-                        />
-                        <AlertActivity contrib edge />
-                    </section>
+    #[component]
+    fn RoutesPage(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+    ) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <RouteAssignmentPanel contrib edge />
+                <RouteTable contrib edge />
+                <RelayFabricTable edge />
+            </div>
+        }
+    }
 
-                    <AwaitedTelemetry contrib edge />
-                </main>
+    #[component]
+    fn PerformancePage(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+        rates: ReadSignal<TrafficRates>,
+        rate_history: ReadSignal<Vec<TrafficRates>>,
+    ) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <ThroughputPanel rates rate_history />
+                <RaptorSummary contrib edge />
+                <LatencyPanel contrib edge />
+            </div>
+        }
+    }
+
+    #[component]
+    fn ActivityPage(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+    ) -> impl IntoView {
+        view! {
+            <div class="page-view">
+                <AlertActivity contrib edge />
+                <AwaitedTelemetry contrib edge />
             </div>
         }
     }
@@ -266,6 +527,227 @@ mod app {
                 </div>
                 <small>{move || state.get().detail()}</small>
             </div>
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RateMetric {
+        Input,
+        Relay,
+        Delivery,
+        Objects,
+    }
+
+    impl RateMetric {
+        fn value(self, rates: &TrafficRates) -> Option<f64> {
+            match self {
+                Self::Input => rates.input_bps,
+                Self::Relay => rates.relay_bps,
+                Self::Delivery => rates.delivery_bps,
+                Self::Objects => rates.objects_per_second,
+            }
+        }
+    }
+
+    #[component]
+    fn ThroughputPanel(
+        rates: ReadSignal<TrafficRates>,
+        rate_history: ReadSignal<Vec<TrafficRates>>,
+    ) -> impl IntoView {
+        view! {
+            <section class="section-block throughput-section">
+                <SectionHeading kicker="LIVE RATES" title="Throughput" detail="Five-second counter deltas" />
+                <div class="throughput-grid">
+                    <RateCard label="Input" metric=RateMetric::Input rates rate_history unit="bit/s" />
+                    <RateCard label="Relay output" metric=RateMetric::Relay rates rate_history unit="bit/s" />
+                    <RateCard label="Playback delivery" metric=RateMetric::Delivery rates rate_history unit="bit/s" />
+                    <RateCard label="Decoded objects" metric=RateMetric::Objects rates rate_history unit="objects/s" />
+                </div>
+            </section>
+        }
+    }
+
+    #[component]
+    fn RateCard(
+        label: &'static str,
+        metric: RateMetric,
+        rates: ReadSignal<TrafficRates>,
+        rate_history: ReadSignal<Vec<TrafficRates>>,
+        unit: &'static str,
+    ) -> impl IntoView {
+        view! {
+            <article class="rate-card">
+                <div class="rate-card-heading">
+                    <span>{label}</span>
+                    <small>{unit}</small>
+                </div>
+                <strong>{move || format_rate(metric, metric.value(&rates.get()))}</strong>
+                <Sparkline metric history=rate_history />
+                <span class="rate-sample-count">
+                    {move || format!("{} samples", rate_history.get().len())}
+                </span>
+            </article>
+        }
+    }
+
+    #[component]
+    fn Sparkline(metric: RateMetric, history: ReadSignal<Vec<TrafficRates>>) -> impl IntoView {
+        view! {
+            <svg class="sparkline" viewBox="0 0 240 52" preserveAspectRatio="none" aria-hidden="true">
+                <path class="sparkline-baseline" d="M0 51.5 H240"></path>
+                <path class="sparkline-path" d=move || sparkline_path(&history.get(), metric)></path>
+            </svg>
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct NetworkLink {
+        key: String,
+        from: EdgeNode,
+        to: EdgeNode,
+        role: String,
+        tone: &'static str,
+    }
+
+    #[derive(Clone, Debug)]
+    struct MapCluster {
+        key: String,
+        nodes: Vec<EdgeNode>,
+    }
+
+    #[component]
+    fn NetworkMap(
+        contrib: ReadSignal<Option<ContribStatus>>,
+        edge: ReadSignal<Option<MeshStatus>>,
+        rates: ReadSignal<TrafficRates>,
+    ) -> impl IntoView {
+        let (selected_node, set_selected_node) = signal(None::<String>);
+        view! {
+            <div class="network-tool">
+                <div class="network-toolbar">
+                    <div class="network-summary">
+                        <strong>{move || edge.get().map(|status| bounded_nodes(&status).len()).unwrap_or(0)}</strong>
+                        <span>"nodes"</span>
+                        <strong>{move || {
+                            edge.get().map(|status| {
+                                let delivery = effective_delivery(contrib.get().as_ref(), Some(&status));
+                                network_links(&status, &delivery).len()
+                            }).unwrap_or(0)
+                        }}</strong>
+                        <span>"links"</span>
+                        <strong>{move || format_rate(RateMetric::Delivery, rates.get().delivery_bps)}</strong>
+                        <span>"delivery"</span>
+                    </div>
+                    <div class="map-legend" aria-label="Map status legend">
+                        <span class="healthy"><i></i>"Healthy"</span>
+                        <span class="warn"><i></i>"Degraded"</span>
+                        <span class="error"><i></i>"Unavailable"</span>
+                    </div>
+                </div>
+                <div class="network-map-layout">
+                    <div class="world-map" aria-label="Deployed Needletail nodes">
+                        <img src="world-map.png" alt="" aria-hidden="true" />
+                        <svg class="network-links" viewBox="0 0 1000 500" preserveAspectRatio="none" aria-hidden="true">
+                            <For
+                                each=move || edge.get().map(|status| {
+                                    let delivery = effective_delivery(contrib.get().as_ref(), Some(&status));
+                                    network_links(&status, &delivery)
+                                }).unwrap_or_default()
+                                key=|link| link.key.clone()
+                                children=move |link| {
+                                    let title = format!("{}: {} to {}", link.role, link.from.node_id, link.to.node_id);
+                                    view! {
+                                        <path
+                                            class=format!("network-link {}", link.tone)
+                                            d=map_link_path(&link.from, &link.to, &link.role)
+                                        >
+                                            <title>{title}</title>
+                                        </path>
+                                    }
+                                }
+                            />
+                        </svg>
+                        <For
+                            each=move || edge.get().map(|status| map_clusters(&status)).unwrap_or_default()
+                            key=|cluster| cluster.key.clone()
+                            children=move |cluster| {
+                                let representative = cluster.nodes[0].clone();
+                                let selected_id = representative.node_id.clone();
+                                let node_names = cluster.nodes.iter().map(|node| node.node_id.as_str()).collect::<Vec<_>>().join(", ");
+                                let region = nonempty_owned(representative.region.clone(), "region pending");
+                                let label = if cluster.nodes.len() == 1 {
+                                    representative.node_id.clone()
+                                } else {
+                                    format!("{} · {} nodes", region, cluster.nodes.len())
+                                };
+                                let tone = edge.get().map(|status| cluster_health_tone(&status, &cluster)).unwrap_or("warn");
+                                let (left, top) = project_node(&representative);
+                                view! {
+                                    <button
+                                        class=format!("map-node {tone}")
+                                        style=format!("left:{left:.3}%;top:{top:.3}%")
+                                        title=format!("{} · {}", node_names, region)
+                                        on:click=move |_| set_selected_node.set(Some(selected_id.clone()))
+                                    >
+                                        <i></i><span>{label}</span>
+                                    </button>
+                                }
+                            }
+                        />
+                        <div class="map-empty" class:hidden=move || edge.get().is_some_and(|status| !status.nodes.is_empty())>
+                            "Waiting for node coordinates"
+                        </div>
+                    </div>
+                    <MapNodeDetail edge selected=selected_node />
+                </div>
+            </div>
+        }
+    }
+
+    #[component]
+    fn MapNodeDetail(
+        edge: ReadSignal<Option<MeshStatus>>,
+        selected: ReadSignal<Option<String>>,
+    ) -> impl IntoView {
+        view! {
+            <aside class="map-detail">
+                {move || {
+                    let status = edge.get();
+                    let selected_id = selected.get();
+                    let node = status.as_ref().and_then(|status| {
+                        selected_id
+                            .as_ref()
+                            .and_then(|id| status.nodes.iter().find(|node| &node.node_id == id))
+                            .or_else(|| status.nodes.iter().find(|node| node.node_id == status.node.node_id))
+                            .or_else(|| status.nodes.first())
+                    });
+                    match (status.as_ref(), node) {
+                        (Some(status), Some(node)) => {
+                            let tone = node_health_tone(status, node);
+                            view! {
+                                <div class="map-detail-content">
+                                    <div class="map-detail-title">
+                                        <span class=format!("state-mark {tone}")></span>
+                                        <div><strong>{node.node_id.clone()}</strong><span>{nonempty_owned(node.region.clone(), "Region pending")}</span></div>
+                                    </div>
+                                    <dl>
+                                        <div><dt>"Status"</dt><dd>{node_health_label(status, node)}</dd></div>
+                                        <div><dt>"Location"</dt><dd>{format!("{:.3}, {:.3}", node.latitude, node.longitude)}</dd></div>
+                                        <div><dt>"Active streams"</dt><dd>{node.active_streams}</dd></div>
+                                        <div><dt>"Contributor streams"</dt><dd>{node.contributor_streams}</dd></div>
+                                        <div><dt>"Egress capacity"</dt><dd>{format_bps(node.egress_capacity_bps)}</dd></div>
+                                        <div><dt>"Storage"</dt><dd>{node.storage_percent().map(|value| format!("{value:.1}%")).unwrap_or_else(|| "pending".to_owned())}</dd></div>
+                                    </dl>
+                                    <a href="#nodes">"Open node details"</a>
+                                </div>
+                            }.into_any()
+                        }
+                        _ => view! {
+                            <div class="map-detail-empty"><strong>"No node selected"</strong><span>"Node details will appear here."</span></div>
+                        }.into_any(),
+                    }
+                }}
+            </aside>
         }
     }
 
@@ -1528,6 +2010,308 @@ mod app {
         }
     }
 
+    fn current_page() -> Page {
+        let hash = web_sys::window()
+            .and_then(|window| window.location().hash().ok())
+            .unwrap_or_default();
+        Page::from_hash(&hash)
+    }
+
+    fn document_is_visible() -> bool {
+        web_sys::window()
+            .and_then(|window| window.document())
+            .is_none_or(|document| document.visibility_state() != web_sys::VisibilityState::Hidden)
+    }
+
+    fn contrib_counter_sample(status: &ContribStatus, at_unix_ms: u64) -> ContribCounters {
+        let protocol_bytes = status
+            .runtime
+            .protocols
+            .iter()
+            .fold(0_u64, |total, protocol| {
+                total.saturating_add(protocol.bytes)
+            });
+        let input_bytes = if protocol_bytes > 0 {
+            protocol_bytes
+        } else {
+            status
+                .runtime
+                .media_access_units
+                .payload_bytes
+                .max(status.runtime.raw_http.bytes)
+                .max(status.runtime.mpeg_ts.bytes)
+                .max(status.runtime.rtmp.bytes)
+        };
+        ContribCounters {
+            at_unix_ms,
+            input_bytes,
+            relay_bytes: status
+                .runtime
+                .relay_session
+                .source_datagram_bytes
+                .saturating_add(status.runtime.relay_session.repair_datagram_bytes),
+        }
+    }
+
+    fn edge_counter_sample(status: &MeshStatus, at_unix_ms: u64) -> EdgeCounters {
+        EdgeCounters {
+            at_unix_ms,
+            delivery_bytes: status.edge_services.iter().fold(0_u64, |total, service| {
+                total.saturating_add(service.bytes_served)
+            }),
+            decoded_objects: status.relay_session.decoded_objects,
+        }
+    }
+
+    fn record_rate_history(history: &mut Vec<TrafficRates>, sample: TrafficRates) {
+        if sample.input_bps.is_none()
+            && sample.relay_bps.is_none()
+            && sample.delivery_bps.is_none()
+            && sample.objects_per_second.is_none()
+        {
+            return;
+        }
+        if let Some(last) = history
+            .last_mut()
+            .filter(|last| sample.at_unix_ms.saturating_sub(last.at_unix_ms) < 1_000)
+        {
+            *last = sample;
+        } else {
+            history.push(sample);
+        }
+        if history.len() > RATE_HISTORY_POINTS {
+            history.drain(..history.len() - RATE_HISTORY_POINTS);
+        }
+    }
+
+    fn format_rate(metric: RateMetric, value: Option<f64>) -> String {
+        let Some(value) = value.filter(|value| value.is_finite() && *value >= 0.0) else {
+            return "collecting".to_owned();
+        };
+        if matches!(metric, RateMetric::Objects) {
+            if value >= 100.0 {
+                format!("{value:.0}/s")
+            } else {
+                format!("{value:.1}/s")
+            }
+        } else {
+            format_throughput_bps(value)
+        }
+    }
+
+    fn format_throughput_bps(value: f64) -> String {
+        if value >= 1_000_000_000.0 {
+            format!("{:.2} Gbit/s", value / 1_000_000_000.0)
+        } else if value >= 1_000_000.0 {
+            format!("{:.2} Mbit/s", value / 1_000_000.0)
+        } else if value >= 1_000.0 {
+            format!("{:.2} Kbit/s", value / 1_000.0)
+        } else {
+            format!("{value:.0} bit/s")
+        }
+    }
+
+    fn sparkline_path(history: &[TrafficRates], metric: RateMetric) -> String {
+        let values = history
+            .iter()
+            .filter_map(|sample| metric.value(sample))
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .collect::<Vec<_>>();
+        if values.len() < 2 {
+            return String::new();
+        }
+        let maximum = values.iter().copied().fold(0.0_f64, f64::max).max(1.0);
+        let denominator = (values.len() - 1) as f64;
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let x = index as f64 * 240.0 / denominator;
+                let y = 48.0 - (value / maximum * 44.0);
+                format!("{} {x:.2} {y:.2}", if index == 0 { "M" } else { "L" })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn network_links(status: &MeshStatus, delivery: &DeliverySnapshot) -> Vec<NetworkLink> {
+        let nodes = bounded_nodes(status);
+        let destination = delivery
+            .destination
+            .as_deref()
+            .and_then(|id| nodes.iter().find(|node| node.node_id == id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|node| node.node_id == status.node.node_id)
+            })
+            .or_else(|| nodes.first())
+            .cloned();
+        let Some(destination) = destination else {
+            return Vec::new();
+        };
+
+        let mut links = Vec::new();
+        for (role, lane) in [
+            ("Primary source", delivery.primary.as_ref()),
+            ("Warm repair", delivery.secondary.as_ref()),
+        ] {
+            let Some((lane, source)) = lane.and_then(|lane| {
+                let id = lane.node_id.as_deref()?;
+                nodes
+                    .iter()
+                    .find(|node| node.node_id == id)
+                    .map(|node| (lane, node))
+            }) else {
+                continue;
+            };
+            if source.node_id == destination.node_id {
+                continue;
+            }
+            links.push(NetworkLink {
+                key: format!("{role}:{}:{}", source.node_id, destination.node_id),
+                from: source.clone(),
+                to: destination.clone(),
+                role: role.to_owned(),
+                tone: worst_tone(
+                    lane.state.as_deref().map(tone_for_state).unwrap_or("warn"),
+                    node_health_tone(status, source),
+                ),
+            });
+        }
+
+        if links.is_empty() {
+            links.extend(
+                nodes
+                    .iter()
+                    .filter(|node| node.node_id != destination.node_id)
+                    .map(|node| NetworkLink {
+                        key: format!("mesh:{}:{}", node.node_id, destination.node_id),
+                        from: node.clone(),
+                        to: destination.clone(),
+                        role: "Mesh link".to_owned(),
+                        tone: node_health_tone(status, node),
+                    }),
+            );
+        }
+        links
+    }
+
+    fn project_node(node: &EdgeNode) -> (f64, f64) {
+        let longitude = node.longitude.clamp(-180.0, 180.0);
+        let latitude = node.latitude.clamp(-90.0, 90.0);
+        (
+            (longitude + 180.0) / 360.0 * 100.0,
+            (90.0 - latitude) / 180.0 * 100.0,
+        )
+    }
+
+    fn map_link_path(from: &EdgeNode, to: &EdgeNode, role: &str) -> String {
+        let (from_x, from_y) = project_node(from);
+        let (to_x, to_y) = project_node(to);
+        if (from_x - to_x).abs() < 0.01 && (from_y - to_y).abs() < 0.01 {
+            let x = from_x * 10.0;
+            let y = from_y * 5.0;
+            let direction = if role.contains("Warm") { 1.0 } else { -1.0 };
+            return format!(
+                "M {:.2} {:.2} C {:.2} {:.2}, {:.2} {:.2}, {:.2} {:.2}",
+                x - 16.0,
+                y,
+                x - 16.0,
+                y + 34.0 * direction,
+                x + 16.0,
+                y + 34.0 * direction,
+                x + 16.0,
+                y
+            );
+        }
+        format!(
+            "M {:.2} {:.2} L {:.2} {:.2}",
+            from_x * 10.0,
+            from_y * 5.0,
+            to_x * 10.0,
+            to_y * 5.0
+        )
+    }
+
+    fn node_health_tone(status: &MeshStatus, node: &EdgeNode) -> &'static str {
+        if status
+            .telemetry
+            .stale_nodes
+            .iter()
+            .any(|stale| stale.node_id == node.node_id)
+        {
+            "error"
+        } else if node.draining {
+            "warn"
+        } else if node.node_id == status.node.node_id {
+            relay_health_tone(&status.relay_session)
+        } else if let Some(relay) = status
+            .relay_nodes
+            .iter()
+            .find(|relay| relay.node_id == node.node_id)
+        {
+            relay_health_tone(&relay.relay_session)
+        } else {
+            "healthy"
+        }
+    }
+
+    fn node_health_label(status: &MeshStatus, node: &EdgeNode) -> &'static str {
+        match node_health_tone(status, node) {
+            "error" => "Unavailable",
+            "warn" => "Degraded",
+            _ => "Healthy",
+        }
+    }
+
+    fn relay_health_tone(relay: &needletail_mission_control::RelayIngress) -> &'static str {
+        let state = relay.failover_controller_state.to_ascii_lowercase();
+        if relay.errors() > 0
+            || state.contains("unavailable")
+            || state.contains("failed")
+            || state.contains("error")
+        {
+            "error"
+        } else if state.contains("degraded") {
+            "warn"
+        } else {
+            "healthy"
+        }
+    }
+
+    fn worst_tone(left: &'static str, right: &'static str) -> &'static str {
+        if left == "error" || right == "error" {
+            "error"
+        } else if left == "warn" || right == "warn" {
+            "warn"
+        } else {
+            "healthy"
+        }
+    }
+
+    fn map_clusters(status: &MeshStatus) -> Vec<MapCluster> {
+        let mut clusters = Vec::<MapCluster>::new();
+        for node in bounded_nodes(status) {
+            let key = format!("{:.3}:{:.3}", node.latitude, node.longitude);
+            if let Some(cluster) = clusters.iter_mut().find(|cluster| cluster.key == key) {
+                cluster.nodes.push(node);
+            } else {
+                clusters.push(MapCluster {
+                    key,
+                    nodes: vec![node],
+                });
+            }
+        }
+        clusters
+    }
+
+    fn cluster_health_tone(status: &MeshStatus, cluster: &MapCluster) -> &'static str {
+        cluster.nodes.iter().fold("healthy", |tone, node| {
+            worst_tone(tone, node_health_tone(status, node))
+        })
+    }
+
     async fn fetch_json<T: DeserializeOwned>(url: &str) -> Result<T, String> {
         let response = Request::get(url)
             .header("accept", "application/json")
@@ -1571,7 +2355,9 @@ mod app {
             | "installed"
             | "accepting traffic"
             | "serving"
-            | "sessions established" => "healthy",
+            | "sessions established"
+            | "active source"
+            | "warm repair" => "healthy",
             "attention" | "degraded" | "stale" | "stalled" | "error" | "lagging" | "failed" => {
                 "error"
             }
