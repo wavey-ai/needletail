@@ -181,6 +181,10 @@ without a true group-completion barrier.
   `origin/main`.
 - Local evidence root:
   `target/gcp-qualification/live-tail-serialization/20260719T004643Z/`.
+- Exact private `gen-id` Cargo Git objects are packaged for the next Linux
+  build at `build/cargo-gen-id-cache.tar.gz` under that evidence root. Its
+  SHA-256 is
+  `4aafb5d6ece92490274bc60375df8216a5e6671617fc8b92d10fbe60f52637de`.
 - The most recent short-run JSON and source logs remain on the persistent GCP
   boot disks under `/tmp`; retrieve and normalize them after the next start.
   The summary numbers above were captured from the live command outputs, but
@@ -225,9 +229,10 @@ improvement.
 - [ ] Push `av-contrib` commit `4eafa1c` when ready to resume.
 - [ ] Produce the Linux probe binary from exactly `4eafa1c` and record its
   SHA-256. The stopped reader was prepared with Rust/build tools, but its build
-  could not authenticate the private SSH `gen-id` dependency. Use an
-  authenticated builder or transfer the exact local Cargo Git object/cache;
-  do not change dependency revisions merely to make the build pass.
+  could not authenticate the private SSH `gen-id` dependency. The exact Git
+  object cache is now packaged in the evidence root; transfer it into the
+  reader's Cargo home before building. Do not change dependency revisions
+  merely to make the build pass.
 - [ ] Start only the six London test instances and retrieve the raw result
   files currently on their persistent disks before running anything else.
 - [ ] Deploy the new probe to `nt-opus-reader-lon`; keep the proven
@@ -259,4 +264,3 @@ improvement.
   as the current best-capacity result.
 - [ ] Commit and push the final evidence and documentation, then stop the GCP
   instances again and verify that no Needletail compute remains running.
-
