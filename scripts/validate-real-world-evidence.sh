@@ -102,6 +102,9 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.gcp_lab_retained_for_followup_testing == true
           and .cleanup.media_load_path_private == true
           and .cleanup.public_telemetry_carrier_enabled == false
+          and .cleanup.gcp_instances_stopped_after_collection == true
+          and (.cleanup.stopped_instances | length) == 6
+          and .cleanup.persistent_disks_preserved == true
         elif .schema == "needletail.h264-fmp4-llhls-4k-8k.v1" then
           .provider == "gcp"
           and .result == "private_gcp_4k_and_derived_8k_transport_qualified"
@@ -122,6 +125,9 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.reader_process_exited == true
           and .cleanup.all_needletail_services_active == true
           and .cleanup.media_load_path_private == true
+          and .cleanup.gcp_instances_stopped_after_collection == true
+          and (.cleanup.stopped_instances | length) == 6
+          and .cleanup.persistent_disks_preserved == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true

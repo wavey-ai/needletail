@@ -145,6 +145,17 @@
     "all_needletail_services_active": true,
     "gcp_lab_retained_for_followup_testing": true,
     "media_load_path_private": true,
-    "public_telemetry_carrier_enabled": false
+    "public_telemetry_carrier_enabled": false,
+    "final_service_audit_before_shutdown": true,
+    "gcp_instances_stopped_after_collection": true,
+    "stopped_instances": [
+      "nt-daw-lon",
+      "nt-contrib-lon",
+      "nt-relay-a-lon",
+      "nt-relay-b-lon",
+      "nt-edge-lon",
+      "nt-opus-reader-lon"
+    ],
+    "persistent_disks_preserved": true
   }
 }

@@ -99,3 +99,5 @@ The result does not yet prove a 30-minute soak, repeated 64-customer strict
 behavior, slow-reader handling, cancellation churn, or production sizing.
 Those remain the next gates.
 
+After the final service and binary audit, all six London qualification
+instances were stopped. Persistent disks and raw evidence were preserved.
