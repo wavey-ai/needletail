@@ -12,16 +12,18 @@ Needletail is the product-level repo for Wavey realtime media delivery. It
 composes, runs, observes, and tests the service constellation. Core services
 and reusable crates stay in their own repos.
 
-**Measured 48 kHz lossless latency:** persistent TLS 1.3/H3 LL-HLS with 5 ms
-parts added **2.390–2.452 ms at p50** over raw UDP in the London-origin,
-dual-parent GCP run. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
-127.506, and 148.549 ms at p50; regional cache-to-client delivery stayed below
+**Measured 48 kHz lossless latency:** In the London-origin dual-parent GCP run,
+persistent TLS 1.3/H3 LL-HLS used 5 ms parts. It added **2.390–2.452 ms at p50**
+over raw UDP. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
+127.506, and 148.549 ms at p50. Regional cache-to-client delivery stayed below
 1.51 ms at p99. These are publication-to-client availability results, not
 browser-to-speaker latency.
 
-**Measured eight-track Opus capacity:** the underlying cache reaches millions
-of reads/s and the optimized router exceeds one million cached-part responses/s;
-they are not the current standalone limit. One real customer creates 1,600
+**Measured eight-track Opus capacity:** The cache reaches millions of reads per
+second. The optimized router exceeds one million cached-part responses per
+second. These components are not the current standalone limit.
+
+One real customer creates 1,600
 live cache-unit reads/s by tailing eight 5 ms tracks. At 5 ms per H3 response,
 four customers met the strict p99 target, nine remained complete, and ten
 failed. With `AV_LL_HLS_RESPONSE_MS=200`, the same cache units are combined 40
@@ -33,11 +35,11 @@ playlist lookup or fixed connection limit. See the canonical
 
 Needletail owns:
 
-- multi-service topology and desired-state generation;
-- local and deployed orchestration;
-- the operations dashboard;
-- product observability;
-- real-world impairment, failover, latency, and RaptorQ recovery tests;
+- multi-service topology and desired-state generation
+- local and deployed orchestration
+- the operations dashboard
+- product observability
+- real-world impairment, failover, latency, and RaptorQ recovery tests
 - deployment composition around native binaries and `systemd`.
 
 Contributor-product integrations live in their owning app repos and integrate
@@ -74,15 +76,17 @@ RaptorQ is the live-media recovery system. QUIC Datagram is an optional carrier
 for authenticated, encrypted, paced datagrams. Reliable streams are for control,
 initialization, and backfill.
 
-48 kHz Audio Epoch publications have three simultaneous delivery lanes:
-mandatory format-preserving LL-HLS, optional browser WebTransport datagrams,
-and optional native UDP+FEC subscriptions at a relay or playback edge. An
-ingress route can publish producer-framed bytes unchanged or explicitly ask
+48 kHz Audio Epoch publications have three simultaneous delivery lanes. They
+use mandatory format-preserving LL-HLS and optional browser WebTransport
+datagrams. They can also use native UDP+FEC subscriptions at a relay or playback
+edge.
+
+An ingress route can publish producer-framed bytes unchanged or explicitly ask
 `av-contrib` to box supported elementary media. The mesh caches and replicates
 either result as immutable bytes without interpreting the payload. See
 [Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
 format behavior, and local/GCP qualification commands. The contributor performs
-stream-dependent work once and never doubles as a relay; see the
+stream-dependent work once and never doubles as a relay. See the
 [Contributor origin boundary](docs/contributor-origin-boundary.md).
 
 ## Operations dashboard
@@ -93,15 +97,15 @@ bounded service snapshots.
 
 It reads:
 
-- `av-contrib` `GET /api/status`;
+- `av-contrib` `GET /api/status`
 - `av-mesh` `GET /api/mesh`.
 
 Default same-origin edge feed: `/api/mesh`.
 Default contributor feed: `https://local.bitneedle.com:19443/api/status`.
 
 The local supervisor collects one snapshot every 5 seconds. Remote relays send
-bounded MessagePack snapshots over the project's RaptorQ datagram codec to the
-playback edge, which remains the only fleet feed used by the browser. The TLS
+bounded MessagePack snapshots over the project's RaptorQ datagram codec. The
+playback edge receives them and remains the browser's only fleet feed. The TLS
 TCP channel remains available for control commands. See
 [Operations telemetry transport](docs/operations-telemetry-transport.md).
 
@@ -171,7 +175,7 @@ delivery classes, route compilation, session behavior, and scale gates.
 
 ## RaptorQ media plane
 
-RaptorQ is the live recovery mechanism. The primary path sends source symbols;
+RaptorQ is the live recovery mechanism. The primary path sends source symbols.
 an independent secondary can provide compatible repair symbols, reliable
 missing-object fetches, or immediate takeover. Deadline-aware scheduling drops
 obsolete work before it delays newer media. `RelaySession` adds authenticated
@@ -244,9 +248,9 @@ AV_CONTRIB_ROOT=/path/to/av-contrib AV_MESH_ROOT=/path/to/av-mesh make local
 
 The local constellation wires controlled RelaySession lanes by default:
 
-- contributor source traffic: `22301 -> 22001`;
-- warm-secondary repair traffic: `22302 -> 22201`;
-- desired-state generation/subscription: `1`;
+- contributor source traffic: `22301 -> 22001`
+- warm-secondary repair traffic: `22302 -> 22201`
+- desired-state generation/subscription: `1`
 - canonical media-object deadlines enabled.
 
 Observability commands:
