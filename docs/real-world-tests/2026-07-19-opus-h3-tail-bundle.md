@@ -120,7 +120,8 @@ validated parts.
 
 The tested Linux binary is SHA-256
 `cd05a9d03f12b00dddfa9158e978f0d89b5721c39be5bc419e01246716ae4278`.
-It is deployed on the London relays and edge with the prior binary retained at
+It was deployed on the London relays and edge for this profile. The prior
+binary remains at
 `/opt/needletail/backups/av-mesh-pre-sequential-bundle-20260719T2315Z/av-mesh`.
 The operations UI, mesh API, and contributor feed remained healthy. The public
 telemetry carrier was not enabled.
@@ -182,23 +183,53 @@ TLS trust file and caused excluded v10. The trust file was restored before
 v11. After v11, public Needletail Operations, the mesh API, and the contributor
 feed all returned HTTP 200. Public FEC telemetry remained disabled.
 
-## Prepared follow-up, not yet measured
+## Exact-envelope handoff follow-up
 
-The next bounded build lets `RelaySession` transfer the exact, already parsed
-and payload-hash-verified canonical envelope to `av-mesh` once. The cache then
-commits the verified object and exact envelope directly, avoiding a second
-encode plus decode/hash cycle without bypassing canonical parsing, identity
-rebinding, replay protection, announcement checks, or immutable conflict
-checks. Local locked checks, strict Clippy, the RelaySession integration suite,
-99 active `av-mesh` tests, and the product-boundary check passed. A Linux
-release binary was built in the same GCP lab but has not been deployed or
-measured; v11 therefore remains the current performance authority.
+The next build lets `RelaySession` transfer one exact canonical envelope to
+`av-mesh`. The envelope has already passed parsing and payload-hash checks.
+The cache commits the verified object and its exact envelope directly. This
+removes a second encode plus decode/hash cycle. Identity, announcement, replay,
+and immutable-conflict checks remain active.
 
-- prepared Linux binary SHA-256:
-  `58fd48fb1c59905bac55a4d18c89b553e6d50c6ab41b96cad4afa55578f8fd0b`;
-- Linux build ID: `1138155b20dfa09ffdc1177d9268254c957c004c`;
-- exact source archive SHA-256:
-  `214d137dcc845ef28567b14607f90fa6851e4aa8ab79f7ead4a7a29341a6969b`.
+The Linux binary is SHA-256
+`58fd48fb1c59905bac55a4d18c89b553e6d50c6ab41b96cad4afa55578f8fd0b`.
+Its build ID is `1138155b20dfa09ffdc1177d9268254c957c004c`. The exact source
+archive is SHA-256
+`214d137dcc845ef28567b14607f90fa6851e4aa8ab79f7ead4a7a29341a6969b`.
+The committed source revisions and per-file hashes are in
+[`20260720T001022Z-opus-h3-canonical-envelope-profile.json`](evidence/20260720T001022Z-opus-h3-canonical-envelope-profile.json).
+
+The deployment used the same private topology and 24-customer geometry. It
+included an interleaved v11 control because host CPU changed from the earlier
+profile series.
+
+| Run | Build | Flat profile | Host CPU | Availability p99 | Cache sample coverage | Late bundles | Result |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| `20260719T235616Z-24x8-strict20-canonical-envelope-v12` | v12 | no; callchains enabled | excluded | 11.514 ms | 177/192 | 0 | media pass; CPU comparison excluded |
+| `20260720T000115Z-24x8-strict20-canonical-envelope-v12-matched` | v12 | yes | 39.136% | 20.835 ms | 24/192 | 6,144 | deadline fail |
+| `20260720T000528Z-24x8-strict20-v11-control` | v11 | yes | 42.007% | 11.556 ms | 0/192 | 0 | control pass |
+| `20260720T001022Z-24x8-strict20-canonical-envelope-v12-repeat` | v12 | yes | 40.380% | 11.561 ms | 0/192 | 0 | run pass; series not repeatable |
+
+Every row delivered all 2,304,000 parts in 288,000 responses. No row had a
+missing part, PTS error, Opus mismatch, reader failure, HTTP error, or not-found
+response. The first v12 run used call-chain capture. Its media result is valid,
+but its CPU value is not comparable with the flat v11 profiles.
+
+The final v12 repeat used 3.873% less CPU than the adjacent v11 control.
+Availability p99 changed by only 0.005 ms. Canonical encode disappeared from
+the flat profile. SHA-256 fell from 2.33% to 1.22% of flat samples. These
+results confirm the intended CPU direction under the current host state.
+
+The series does not pass the strict repeatability gate. One flat v12 run had a
+global 20.835 ms availability p99 and 6,144 late bundles. The other two v12
+media runs had no late bundles. The final control and repeat also had no valid
+cache-to-client samples. Their cache p99 values are unavailable, not zero.
+These two evidence gaps block an endurance claim.
+
+The v12 binary remains on the London relays and edge. The v11 rollback is at
+`/opt/needletail/backups/av-mesh-pre-canonical-envelope-20260719T2352Z/av-mesh`.
+Public Needletail Operations, the mesh API, and the contributor feed returned
+HTTP 200. Public FEC telemetry remained disabled.
 
 ## Invalid attempts
 
@@ -225,11 +256,12 @@ value is approximate; its latency result and all media counters are retained.
 
 ## Next gates
 
-1. Deploy and profile the prepared exact-envelope handoff with the identical
-   v11 geometry. Retain v11 if the rerun is not correct and measurably better.
-2. Attribute and remove the remaining strict 20 ms outliers; do not call the
-   24-customer tier a strict pass while any retained response misses the gate.
-3. Run the 24-customer candidate for at least 30 minutes with stable RSS, zero
+1. Attribute the global 20.835 ms tail excursion. Restore valid
+   cache-to-client samples before another optimization comparison.
+2. Repeat the strict short-window series without a deadline failure. Do not
+   call the 24-customer tier repeatable while the retained failure remains.
+3. After repeatability passes, run the candidate for at least 30 minutes. The
+   run must have stable RSS, zero
    loss, and at least 30% edge CPU headroom.
 4. Run repeated connect, cancel, timeout, and slow-reader churn without an edge
    restart. Add bounded waiter, task, and connection counts so cleanup is

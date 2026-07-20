@@ -1,7 +1,7 @@
 # Current performance state and gaps
 
 This is the canonical snapshot of Needletail's measured media-delivery state as
-of 19 July 2026. It separates latency, cache and router throughput, HTTP/3
+of 20 July 2026. It separates latency, cache and router throughput, HTTP/3
 transport capacity, live-tail customer capacity, replication correctness, and
 remaining work. Dated test records remain the authority for exact revisions and
 raw evidence.
@@ -42,6 +42,12 @@ raw evidence.
   59.415% to 34.765% of the two-vCPU host and availability p99 from 14.633 to
   10.801 ms. All 2,304,000 parts remained exact, but 9 of 288,000 bundles still
   exceeded the strict 20 ms deadline, so that gate remains open.
+- The exact-envelope follow-up removed another encode/decode/hash cycle. Its
+  final run delivered every part with no late bundle and used 40.380% host CPU,
+  3.873% less than an adjacent v11 control under the changed host state.
+  However, one other flat-profile v12 run had a 20.835 ms availability p99 and
+  6,144 late bundles. The optimization has the intended CPU direction, but the
+  strict short-window series is not repeatable and has no endurance claim.
 - Replication through a dual-parent DAG, independent regional caches, late join,
   RaptorQ recovery, and parent failover are proven in deployed tests. Endurance
   at the 24-customer bundled candidate, cancellation churn without restart, and
@@ -207,6 +213,23 @@ row is 41.49% less CPU than baseline and has 65.24% host CPU headroom, but its
 rose while end-to-end availability improved, so the next run must retain both
 metrics rather than treating either one as a substitute for the other.
 
+Host state changed before the exact-envelope follow-up, so an interleaved v11
+control provides the valid CPU comparison:
+
+| Build/run | Edge host CPU | Availability p99 | Cache samples | Late bundles |
+| --- | ---: | ---: | ---: | ---: |
+| v12 matched | 39.136% | 20.835 ms | 24/192 | 6,144 |
+| v11 adjacent control | 42.007% | 11.556 ms | 0/192 | 0 |
+| v12 final repeat | 40.380% | 11.561 ms | 0/192 | 0 |
+
+The final v12 repeat used 3.873% less CPU than the adjacent control, with only
+0.005 ms difference in availability p99. A first v12 media run also had no late
+bundles, but its call-chain profile makes its CPU result incomparable. Every
+attempt delivered all 2,304,000 parts. Because one v12 attempt failed the
+deadline gate, the current build has not passed strict repeatability. The final
+control and repeat had no valid cache-to-client samples; those results are
+unavailable, not zero.
+
 This candidate does not inherit the old 2 ms cache-to-client claim: the metric
 and connection geometry changed. It is also not production-sized until a
 30-minute run proves stable RSS and the same latency, correctness, and headroom.
@@ -242,12 +265,12 @@ allocation/free, SHA, router dispatch, QPACK, and kernel work. The next
 optimization must target those measured costs while preserving exact bundle
 and strict deadline semantics.
 
-An exact-envelope handoff from `RelaySession` to the cache is locally
-qualified and has a reproducible GCP Linux build. It removes another encode
-plus decode/hash cycle after FEC reconstruction, while retaining canonical
-parsing, payload-hash, identity, replay, and immutable-conflict checks. That
-build has not yet been deployed or profiled, so it is prepared follow-up work,
-not an entry in the proven table below; the v11 row remains authoritative.
+The exact-envelope handoff from `RelaySession` to the cache is locally
+qualified, deployed, and measured on the private GCP topology. It retains
+canonical parsing, payload-hash, identity, replay, and immutable-conflict
+checks. Canonical encode disappeared from the final flat profile and SHA-256
+fell from 2.33% to 1.22% of samples. The final adjacent comparison used 3.873%
+less CPU, but the failed v12 deadline attempt prevents a repeatability claim.
 
 ## Improvements already proven
 
@@ -266,36 +289,40 @@ not an entry in the proven table below; the v11 row remains authoritative.
 | Use accelerated IEEE CRC-32 | Removes the bitwise CRC hot spot; matched host CPU falls to 41.679% and late bundles from 147 to 53. |
 | Skip AEP1 parsing on a zero-consumer leaf | Removes the remaining audio-ingress hot closure; matched host CPU falls to 38.981% and late bundles from 53 to 33. |
 | Replace joined per-track waits with sequential exact waits under one deadline | Removes the 2.11% `join_all::MaybeDone` flat symbol; matched host CPU falls to 34.765%, availability p99 to 10.801 ms, and late bundles from 33 to 9. |
+| Transfer the verified exact canonical envelope from `RelaySession` | Removes the duplicate encode/decode/hash cycle; canonical encode disappears, SHA-256 falls from 2.33% to 1.22% of flat samples, and the final run uses 3.873% less CPU than its adjacent v11 control. Strict repeatability remains open. |
 
 These fixes rule out the cache, router, a global 256-connection limit, and
 Quinn alone as explanations for the remaining gap.
 
 ## Current gaps, in order
 
-1. **Close the strict 20 ms tail.** The optimized 24-customer run has 65.24%
-   host CPU headroom and exact media, but 9 of 288,000 bundle responses remain
-   late. Attribute and remove those outliers before calling the strict tier a
-   pass.
-2. **Measure connection-churn cleanup without restart.** Weak exact-waiter
+1. **Make the strict 20 ms result repeatable.** One v12 run had 6,144 late
+   bundles while two v12 media runs had none. Attribute the global 20.835 ms
+   excursion and repeat the identical short-window series without a retained
+   deadline failure.
+2. **Restore cache-to-client evidence coverage.** The adjacent v11 control and
+   final v12 repeat had no valid cache samples. Retain all 192 samples before
+   using the next run to attribute the remaining tail or compare cache cost.
+3. **Measure connection-churn cleanup without restart.** Weak exact-waiter
    registrations remove retained request work, but the recorded tiers restarted
    the edge. Exercise connect, cancel, timeout, and slow-reader churn while
    exposing bounded waiter, task, stream, timer, and connection counts.
-3. **Reduce the remaining measured hot costs.** Allocation/free, SHA, router
+4. **Reduce the remaining measured hot costs.** Allocation/free, SHA, router
    dispatch, QPACK, and kernel work now lead the flat profile. Attribute the
-   cache-to-client p99 increase from the sequential waiter, change one bounded
-   cost at a time, and repeat the matched 60-second run.
-4. **Finish publication startup reliability.** The measured 5 ms DAW epoch hold
+   tail and cache sample loss, change one bounded cost at a time, and repeat the
+   matched 60-second run.
+5. **Finish publication startup reliability.** The measured 5 ms DAW epoch hold
    removes false erasures under independent track pacing. Add a declared track
    manifest/start barrier and rerun a retained zero-offset canary.
-5. **Qualify the strict candidate under endurance.** After the 20 ms gate
+6. **Qualify the strict candidate under endurance.** After the 20 ms gate
    passes, run at least 30 minutes on private GCP paths with stable RSS and then
    turn that result into a sizing policy. Declare a
    production tier only after latency, CPU, link, RSS, and cleanup gates pass
    together; retain the first failed tier and its named resource boundary.
-6. **Complete scale dimensions independently.** Measure large idle-connection
+7. **Complete scale dimensions independently.** Measure large idle-connection
    sets, blocked reloads, slow readers, one shared client UDP endpoint, flow
    control, and cancellation without conflating them with active media rate.
-7. **Repeat the final build geographically.** After the same-zone edge is
+8. **Repeat the final build geographically.** After the same-zone edge is
    understood, rerun the multi-region DAG and size 16-, 128-, and 256-channel
    publications without duplicating contributor work.
 
@@ -316,11 +343,15 @@ Supported by current evidence:
 - `AV_LL_HLS_RESPONSE_MS=200` preserves exact 5 ms units and reduces H3
   responses 40x for the tested self-delimiting SoundKit v2 stream; and
 - synchronized eight-track H3 bundling with generation-safe range reads
-  repeatedly supports the documented 24-customer short-window candidate.
+  repeatedly supported the documented pre-v12 24-customer short-window
+  candidate; and
+- the exact-envelope handoff retains complete media and shows the intended CPU
+  reduction in the adjacent v11/v12 comparison.
 
 Not yet supported:
 
 - millions of active media customers or H3 connections;
+- a repeatable strict 20 ms result for the current exact-envelope build;
 - 24 bundled eight-track customers as an endurance-qualified production size;
 - clean eight-track delivery from the first source epoch;
 - a production-qualified 200 ms aggregation tier with useful latency;

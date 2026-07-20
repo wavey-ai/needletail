@@ -29,12 +29,13 @@ remaining byte-complete. Twenty-four is a short-window candidate, not a
 production tier: 30-minute endurance and restart-free cancellation churn are
 still pending.
 
-A matched 60-second private-GCP profile at 24 customers then reduced edge CPU
-from 59.415% to 34.765% of the two-vCPU host and availability p99 from 14.633
-to 10.801 ms. Every build delivered all 2,304,000 expected track parts. The
-latest build had 9 late bundle responses out of 288,000, down from 209, so the
-strict 20 ms per-response gate remains open rather than being reported as a
-pass. See the canonical
+A matched 60-second private-GCP profile at 24 customers reduced edge CPU from
+59.415% to 34.765% of the two-vCPU host. A subsequent exact-envelope build
+removed another encode/decode/hash cycle. Its final run delivered all 2,304,000
+parts with no late bundles and used 40.380% host CPU, 3.873% less than an
+adjacent control. One other exact-envelope run had 6,144 late bundles, so the
+strict 20 ms tier is not yet repeatable or endurance-qualified. See the
+canonical
 [current performance state and gaps](docs/performance/current-state-and-gaps.md).
 
 Needletail owns:
