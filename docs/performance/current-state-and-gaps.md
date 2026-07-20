@@ -6,6 +6,32 @@ transport capacity, live-tail customer capacity, replication correctness, and
 remaining work. Dated test records remain the authority for exact revisions and
 raw evidence.
 
+## Latest capacity result
+
+The persistent bundle-response series supersedes the request-per-bundle
+capacity conclusions later in this document. One H3 request now keeps one
+response open per customer. Repeated four-byte-length-framed `NTB1` bundles
+preserve the 5 ms media cadence without creating a new request stream and
+QPACK field section every 5 ms.
+
+On the same two-vCPU `n2-standard-2` edge, 32 customers x 8 tracks passed
+twice: all 2,048,000 combined track units were exact, no response exceeded the
+20 ms deadline, availability p99 was 12.627–12.734 ms, cache-to-client p99 was
+3.768–3.874 ms, and edge-host CPU was 14.336–16.779%. This is a repeatable
+short-window result at 128 realtime Opus tails/vCPU with at least 83.22%
+measured host CPU headroom.
+
+A 64 x 8 run passed at 256 tails/vCPU and 21.270% host CPU, but its repeat had
+254 late bundles. The 96 x 8 and 128 x 8 tiers remained byte-perfect but failed
+the zero-outlier deadline gate. Therefore 128 tails/vCPU is the accepted
+repeatable short-window tier; 256 tails/vCPU is a provisional canary. Neither
+is a production-sizing or endurance claim. See the
+[persistent-response test record](../real-world-tests/2026-07-20-opus-h3-persistent-bundle-stream.md).
+
+The same private topology also passed realtime H.264/AAC through contributor
+fMP4 packaging and edge LL-HLS at native 4K transport geometry and derived 8K
+transport stress. See the [4K/8K video record](../real-world-tests/2026-07-20-h264-fmp4-llhls-4k-8k.md).
+
 ## Executive summary
 
 - Persistent TLS 1.3/H3 LL-HLS with 5 ms parts adds only 2.390–2.452 ms at p50
@@ -83,9 +109,10 @@ the byte-exact concatenation of consecutive units, so aggregation requires a
 self-delimiting cached bytestream such as SoundKit v2.
 
 For synchronized multitrack clients, `/live/tail-bundle` can carry one bounded
-range from each requested stream in an `NTB1` envelope. The measured 5 ms mode
-returns one unit from each of eight tracks every 5 ms, reducing H3 response
-streams 8x without changing media cadence or cache identity.
+range from each requested stream in an `NTB1` envelope. The optimized
+`/live/tail-bundle-stream` endpoint sends repeated length-framed `NTB1`
+envelopes on one persistent response. It returns one unit from each of eight
+tracks every 5 ms without repeated H3 request-stream and response-header work.
 
 ## What is measured
 

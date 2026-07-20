@@ -44,8 +44,10 @@ and absence of secret-shaped fields with:
 ./scripts/validate-real-world-evidence.sh
 ```
 
-Current record: [2026-07-20 clock-qualified Opus H3 tail repeatability](2026-07-20-opus-h3-clock-qualified-tail.md).
-Previous tail record: [2026-07-19 bundled eight-track Opus H3 tails](2026-07-19-opus-h3-tail-bundle.md).
+Current capacity record: [2026-07-20 persistent H3 Opus bundle stream](2026-07-20-opus-h3-persistent-bundle-stream.md).
+Current video record: [2026-07-20 H.264 to fMP4 LL-HLS at 4K and 8K](2026-07-20-h264-fmp4-llhls-4k-8k.md).
+Previous tail record: [2026-07-20 clock-qualified Opus H3 tail repeatability](2026-07-20-opus-h3-clock-qualified-tail.md).
+Previous bundle record: [2026-07-19 bundled eight-track Opus H3 tails](2026-07-19-opus-h3-tail-bundle.md).
 Previous aggregation record: [2026-07-18 200 ms Opus H3 response aggregation](2026-07-18-opus-h3-200ms-aggregation.md).
 Current 5 ms Opus record: [2026-07-18 eight-track Opus LL-HLS capacity](2026-07-18-opus-h3-capacity.md).
 Current raw PCM record: [2026-07-17 raw PCM DAG latency and H3 edge capacity](2026-07-17-pcm-h3-capacity.md).

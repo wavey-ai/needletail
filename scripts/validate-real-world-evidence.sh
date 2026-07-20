@@ -86,6 +86,42 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.media_load_path_private == true
           and .cleanup.accepted_binary_restored_after_ab == true
           and .cleanup.public_telemetry_carrier_enabled == false
+        elif .schema == "needletail.opus-h3-persistent-bundle-stream.v1" then
+          .provider == "gcp"
+          and .result == "strict_128_tails_per_vcpu_repeated"
+          and .accepted_repeat.runs == 2
+          and .accepted_repeat.tracks_per_vcpu == 128
+          and .accepted_repeat.deadline_missed_track_parts_each == 0
+          and .accepted_repeat.missing_parts_each == 0
+          and .accepted_repeat.non_contiguous_pts_each == 0
+          and .accepted_repeat.invalid_opus_parts_each == 0
+          and .accepted_repeat.minimum_edge_cpu_headroom_percent >= 30
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_runs_no_needletail_services == true
+          and .cleanup.all_needletail_services_active == true
+          and .cleanup.gcp_lab_retained_for_followup_testing == true
+          and .cleanup.media_load_path_private == true
+          and .cleanup.public_telemetry_carrier_enabled == false
+        elif .schema == "needletail.h264-fmp4-llhls-4k-8k.v1" then
+          .provider == "gcp"
+          and .result == "private_gcp_4k_and_derived_8k_transport_qualified"
+          and .four_k.width == 3840
+          and .four_k.height == 2160
+          and .four_k.strict_decode_exit == 0
+          and .four_k.publish_errors == 0
+          and .four_k.relay_errors == 0
+          and .four_k.continuity_errors == 0
+          and .eight_k.width == 7680
+          and .eight_k.height == 4320
+          and .eight_k.native_8k_quality_claim == false
+          and .eight_k.strict_decode_exit == 0
+          and .eight_k.publish_errors == 0
+          and .eight_k.relay_errors == 0
+          and .eight_k.continuity_errors == 0
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_process_exited == true
+          and .cleanup.all_needletail_services_active == true
+          and .cleanup.media_load_path_private == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true

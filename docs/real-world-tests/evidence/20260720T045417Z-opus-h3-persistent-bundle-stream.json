@@ -1,0 +1,150 @@
+{
+  "schema": "needletail.opus-h3-persistent-bundle-stream.v1",
+  "run_id": "20260720T045417Z",
+  "passed": true,
+  "result": "strict_128_tails_per_vcpu_repeated",
+  "provider": "gcp",
+  "zone": "europe-west2-c",
+  "raw_artifact_directory": "target/gcp-qualification/live-tail-serialization/profile/20260720T045417Z-32x8-strict20-persistent-response-32x8-r2",
+  "related_raw_artifact_directories": [
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T034854Z-32x8-strict20-real-32x8-pipelined-r1",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T035129Z-32x8-strict20-real-32x8-pipelined-r2",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T040617Z-32x8-strict20-compact-bundle-32x8-r1",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T044208Z-32x8-strict20-persistent-response-32x8-r1",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T044431Z-64x8-strict20-persistent-response-64x8-r1",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T044708Z-128x8-strict20-persistent-response-128x8-r1",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T044928Z-96x8-strict20-persistent-response-96x8-r1",
+    "target/gcp-qualification/live-tail-serialization/profile/20260720T045153Z-64x8-strict20-persistent-response-64x8-r2"
+  ],
+  "revisions": {
+    "needletail": "80aed34e566714975a4955af3acd3a4097f763a8",
+    "av_mesh_base": "8d87e805453f5d227c7eb5cd3eb4fc078ce82e01",
+    "av_contrib_base": "10f829e3703c6e56a3824fbf54db9e3e348aa13d",
+    "playlists_base": "79e2b96eb395484d8d89463e3bd76bda4c6c3b43",
+    "working_tree_patch_tested": true
+  },
+  "artifacts": {
+    "av_mesh_linux_sha256": "3e76ce6a7cb29990dbb9d3768631b35efbdd5c06ca9554af05e6cd5905910724",
+    "probe_linux_sha256": "824a5523c2593195e840086c91a10b645e6d953191ee8be9ae534caa21d9ae15",
+    "av_mesh_source_main_sha256": "1ed5ef6f3fcfcdaa34323f7b03f9f1445fcfee35abd512ba81d19f25cef66ce2",
+    "probe_source_sha256": "56d5e20bf9f72145513e45860dec0a84c71cd483029adf826c45a801b450f475",
+    "tail_bundle_source_sha256": "84ca71ebdf34a511e535e63097a7bbcaf4d52b797f6ae12fb146c907a4d8843f"
+  },
+  "topology": {
+    "machine_type": "n2-standard-2",
+    "vcpus_per_host": 2,
+    "hosts": 6,
+    "private_subnet_cidr": "10.84.0.0/16",
+    "all_media_and_load_private_ipv4": true,
+    "all_roles_in_one_zone": true,
+    "iap_used_for_orchestration_and_evidence_only": true,
+    "inter_region_media_egress": false
+  },
+  "method": {
+    "tracks_per_customer": 8,
+    "part_ms": 5,
+    "bundle_response_ms": 5,
+    "persistent_h3_connections_per_customer": 1,
+    "persistent_h3_responses_per_customer": 1,
+    "application_framing": "u32_be_length_plus_NTB1",
+    "media_window_seconds": 20,
+    "deadline_ms": 20,
+    "arrival_window_ms": 750,
+    "arrival_seed": 424242,
+    "expected_audio_codec": "soundkit-opus",
+    "source_material": "five_unique_lori_confirmation_stems_plus_three_repeated_slots",
+    "deadline_counter_unit": "track_parts",
+    "late_bundle_observation_limit": 512
+  },
+  "accepted_repeat": {
+    "customers": 32,
+    "tracks": 256,
+    "tracks_per_vcpu": 128,
+    "runs": 2,
+    "received_track_parts_each": 1024000,
+    "bundle_responses_each": 128000,
+    "deadline_missed_track_parts_each": 0,
+    "missing_parts_each": 0,
+    "non_contiguous_pts_each": 0,
+    "invalid_opus_parts_each": 0,
+    "availability_p99_ms_range": [12.626702, 12.733804],
+    "cache_to_client_p99_ms_range": [3.767535, 3.873807],
+    "edge_host_cpu_percent_range": [14.336167, 16.779456],
+    "minimum_edge_cpu_headroom_percent": 83.220544,
+    "wire_bytes_range": [169319057, 169320021]
+  },
+  "capacity_ladder": [
+    {
+      "customers": 64,
+      "tracks": 512,
+      "tracks_per_vcpu": 256,
+      "run": "20260720T044431Z-64x8-strict20-persistent-response-64x8-r1",
+      "passed": true,
+      "received_track_parts": 2048000,
+      "late_bundle_responses": 0,
+      "availability_p99_ms": 13.036968,
+      "edge_host_cpu_percent": 21.269954
+    },
+    {
+      "customers": 64,
+      "tracks": 512,
+      "tracks_per_vcpu": 256,
+      "run": "20260720T045153Z-64x8-strict20-persistent-response-64x8-r2",
+      "passed": false,
+      "failed_gate": "zero_deadline_misses",
+      "received_track_parts": 2048000,
+      "late_bundle_responses": 254,
+      "availability_p99_ms": 13.244911,
+      "edge_host_cpu_percent": 20.806785
+    },
+    {
+      "customers": 96,
+      "tracks": 768,
+      "tracks_per_vcpu": 384,
+      "run": "20260720T044928Z-96x8-strict20-persistent-response-96x8-r1",
+      "passed": false,
+      "failed_gate": "zero_deadline_misses",
+      "received_track_parts": 3072000,
+      "late_bundle_responses": 565,
+      "availability_p99_ms": 13.838882,
+      "edge_host_cpu_percent": 27.775710
+    },
+    {
+      "customers": 128,
+      "tracks": 1024,
+      "tracks_per_vcpu": 512,
+      "run": "20260720T044708Z-128x8-strict20-persistent-response-128x8-r1",
+      "passed": false,
+      "failed_gate": "p99_and_zero_deadline_misses",
+      "received_track_parts": 4096000,
+      "late_bundle_responses": 3881,
+      "availability_p99_ms": 22.948127,
+      "edge_host_cpu_percent": 33.920757
+    }
+  ],
+  "comparison": {
+    "request_per_bundle_32x8_mean_edge_host_cpu_percent": 27.147094,
+    "persistent_response_32x8_mean_edge_host_cpu_percent": 15.557812,
+    "relative_cpu_reduction_percent": 42.690789,
+    "request_per_bundle_wire_bytes_range": [208888588, 208893139],
+    "persistent_response_wire_bytes_range": [169319057, 169320021],
+    "wire_byte_reduction_percent_approximate": 18.95,
+    "request_per_bundle_repetitions_passing_zero_miss_gate": "0/2",
+    "persistent_response_repetitions_passing_zero_miss_gate": "2/2"
+  },
+  "limits": {
+    "production_sizing_claim": false,
+    "endurance_qualified": false,
+    "cancellation_churn_qualified": false,
+    "64_customer_tier_repeatable": false,
+    "reason": "The accepted tier has two 20-second media windows. Higher tiers remained byte-perfect but did not repeat the zero-outlier deadline gate."
+  },
+  "cleanup": {
+    "source_process_exited": true,
+    "reader_runs_no_needletail_services": true,
+    "all_needletail_services_active": true,
+    "gcp_lab_retained_for_followup_testing": true,
+    "media_load_path_private": true,
+    "public_telemetry_carrier_enabled": false
+  }
+}

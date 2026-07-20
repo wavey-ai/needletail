@@ -1,10 +1,6 @@
 # Operations telemetry transport
 
-Status: implemented for local and controlled-private qualification on the
-following branches:
-
-- `av-mesh`: `codex/ops-telemetry-fec`
-- `needletail`: `codex/operations-telemetry-ui`
+Status: implemented on `main` for local and controlled-private qualification.
 
 The lane is opt-in in `av-mesh`. The Needletail supervisor configures the two
 remote relays to send snapshots to the playback edge, which remains the single

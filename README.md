@@ -19,25 +19,22 @@ over raw UDP. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
 1.51 ms at p99. These are publication-to-client availability results, not
 browser-to-speaker latency.
 
-**Measured eight-track Opus capacity:** Generation-safe cache range reads and
-sharded exact waiters support synchronized eight-track H3 bundles. Each response
-carries one 5 ms unit for each track. On a two-vCPU GCP edge, 24 customers
-completed three runs with all 2,304,000 parts exact. Availability p99 was
-16.578–18.051 ms, and host CPU use was 57.434–57.804%. Twenty-eight was the first provisional 20 ms
-latency-gate miss. 32 was the first approximate 30%-CPU-headroom miss while
-remaining byte-complete. Twenty-four is a short-window candidate, not a
-production tier: 30-minute endurance and restart-free cancellation churn are
-still pending.
-
-A matched 60-second private-GCP profile at 24 customers reduced edge CPU from
-59.415% to 34.765% of the two-vCPU host. A later exact-envelope build removed an
-encode, decode, and hash cycle. Clock qualification and a corrected load probe
-then repeated that build twice. Both runs delivered all 2,304,000 parts with no
-late bundle. Availability p99 was 13.628 and 13.694 ms, cache-to-client p99 was
-4.947 and 5.058 ms, and host CPU was 32.951% and 34.084%. This qualifies the
-strict 20 ms short-window result. It does not qualify endurance or a production
-tier. See the canonical
+**Measured eight-track Opus capacity:** A persistent H3 response now carries a
+length-framed synchronized eight-track bundle every 5 ms. On a two-vCPU GCP
+edge, 32 customers repeated with all 2,048,000 total track units exact and no
+response beyond the 20 ms deadline. Availability p99 was 12.627–12.734 ms,
+cache-to-client p99 was 3.768–3.874 ms, and host CPU was 14.336–16.779%. This is
+128 realtime Opus track tails/vCPU with more than 83% measured headroom. A
+64-customer run reached 256 tails/vCPU cleanly, but its repeat had a rare late
+burst, so that higher tier is provisional. The accepted tier is a short-window
+result, not an endurance or production-sizing claim. See the canonical
 [current performance state and gaps](docs/performance/current-state-and-gaps.md).
+
+**Measured H.264 video path:** Realtime 3840 x 2160 H.264/AAC at 39.4 Mbit/s
+and derived 7680 x 4320 H.264/AAC at 125.5 Mbit/s passed contributor fMP4
+packaging, dual-parent private-GCP replication, LL-HLS playlist generation, and
+strict decode. The 8K fixture is transport stress derived from a 4K source, not
+a native-8K image-quality claim.
 
 Needletail owns:
 

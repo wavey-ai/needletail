@@ -500,6 +500,7 @@ jq --arg run_id "${RUN_ID}" --argjson session_id "${session_id}" \
     load_exit:($load_exit | tonumber),
     schema,
     passed,
+    persistent_bundle_response,
     deadline_ms,
     customers_requested,
     readers_requested,

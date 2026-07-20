@@ -17,37 +17,42 @@ time:
 - stable memory and cleanup under sustained load; and
 - at least 30% edge CPU headroom.
 
-The goal is still active. The short high-load test passes scale, media
-integrity, p99, and CPU headroom. It does not yet pass the zero-deadline-miss
-gate or prove sustained memory stability.
+The goal is still active because endurance and cancellation churn remain. The
+persistent-response build now passes every short-window gate twice at 32
+customers x 8 tracks. This is 128 realtime tails/vCPU. The 64-customer tier
+passed once at 256 tails/vCPU but did not repeat the zero-miss gate.
 
 ### How close we are
 
-The latest measured tier is 32 customers, each tailing eight independent Opus
-tracks over one persistent bundled H3 connection:
+The accepted measured tier is 32 customers, each tailing eight independent
+Opus tracks over one persistent H3 connection and one persistent response:
 
 ```text
 32 customers x 8 tracks = 256 realtime track tails
 256 tails / 2 edge vCPUs = 128 tails/vCPU
-1,024,000 validated 5 ms track units in the 20-second measured windows
+1,024,000 validated 5 ms track units in each 20-second measured window
+two consecutive accepted runs
 ```
 
 | Goal gate | Latest evidence | State |
 | --- | --- | --- |
-| 128 realtime track tails/vCPU | 256 tails on one 2-vCPU `n2-standard-2` edge | Pass for the short run |
-| Media integrity | 1,024,000/1,024,000 valid; zero missing, duplicate, malformed, or non-contiguous units | Pass |
-| Final-part p99 <=20 ms | 13.714731 ms with body-completion timestamps | Pass |
-| 30% CPU headroom | 60.1% machine CPU, or 39.9% headroom | Pass for the short run |
-| Zero deadline misses | 1,616 late track observations, representing 202 late eight-track bundle responses | Fail |
-| Stable memory and cancellation cleanup | About 68 MB RSS and three threads in short snapshots; no sustained proof | Not yet proven |
+| 128 realtime track tails/vCPU | 256 tails on one 2-vCPU `n2-standard-2` edge, repeated | Pass |
+| Media integrity | 2 x 1,024,000 valid; zero missing, duplicate, malformed, or non-contiguous units | Pass |
+| Final-part p99 <=20 ms | 12.626702 and 12.733804 ms | Pass |
+| 30% CPU headroom | 14.336% and 16.779% host CPU; at least 83.220% headroom | Pass |
+| Zero deadline misses | Zero in both accepted runs | Pass |
+| Stable memory and cancellation cleanup | Short samplers passed and waiter registrations returned to zero; no sustained proof | Not yet proven |
 
-The remaining deadline defect is small but real: 202 of 128,000 bundle
-responses were later than 20 ms, a 0.158% miss rate. The p99 is comfortably
-inside the gate, so this is a rare-tail problem rather than a throughput
-collapse. Four of the six runtime gates pass at the full target load. We are
-one targeted client A/B and one sustained qualification away if the committed
-H3 pipeline removes the rare tail; further server work is required if it does
-not.
+The persistent response removed repeated route dispatch, task creation, QPACK,
+and H3 request-stream lifecycle work. Against the matched 32 x 8
+request-per-bundle baseline, mean edge-host CPU fell 42.69% and wire bytes fell
+about 18.95%. Exact waiter registrations fell from 256 to 32.
+
+The remaining rare-tail boundary is above the accepted target. At 64 x 8, one
+run passed and one had 254 late bundles. The 96 x 8 tier had 565 late bundles,
+and 128 x 8 crossed the p99 gate. Every tier remained byte-perfect. Next work
+is a 30-minute 32 x 8 soak, cancellation and slow-reader churn, then scheduling
+tail work above 32 customers.
 
 Do not describe the goal as production-qualified until every gate passes in
 one sustained run.
@@ -125,9 +130,21 @@ This matches the intended multiplexed H3 access pattern. The direct per-part
 probe already used a depth-eight pipeline; the bundled path accidentally did
 not. All 19 `aep1-48k-probe` tests pass locally.
 
-This commit is clean but one commit ahead of `origin/main`. It has not been
-pushed, built for Linux, deployed, or measured on GCP. Its performance effect
-therefore remains unproven.
+This historical candidate was deployed and measured. It improved normal p99
+and CPU but did not remove the rare tail. A compact-response A/B then reduced
+wire bytes 3.46% and edge CPU about 5.3% relative to the request-per-bundle
+baseline, but it also failed the zero-miss gate.
+
+#### 5. Keep one bundle response open per customer
+
+The current working-tree candidate adds `/live/tail-bundle-stream`. One request
+receives repeated four-byte-length-framed `NTB1` envelopes. It removes route,
+task, QPACK, and request-stream lifecycle work from the 5 ms cadence while the
+existing endpoint remains compatible.
+
+At 32 x 8, the candidate cut mean edge-host CPU from 27.147% to 15.558%, cut
+wire bytes about 18.95%, and passed the zero-miss gate twice. All shared framing
+tests, mesh route tests, and 20 probe tests pass locally.
 
 ### Supporting measurements
 
@@ -169,41 +186,19 @@ without a true group-completion barrier.
 
 ### Current revisions and infrastructure
 
-- Proven edge and relay source: `av-mesh` `936f396` with `0fca9db` immediately
-  below it; the repositories are clean and pushed.
-- Proven edge/relay Linux binary SHA-256:
-  `60c653040b82576da63d8ff0ce9c27d4bfb7a9ff5419d6f4858a68148aeaadde`.
-- Previously deployed reader binary SHA-256:
-  `ab52454b714c9392c6d18d40042eb808d941f8b3637c053dea5df6f3616fca7d`.
-  It contains the receive-timestamp correction but not the new bundle
-  pipeline.
-- Pending probe source: `av-contrib` `4eafa1c`, clean and one commit ahead of
-  `origin/main`.
-- Local evidence root:
-  `target/gcp-qualification/live-tail-serialization/20260719T004643Z/`.
-- Exact private `gen-id` Cargo Git objects are packaged for the next Linux
-  build at `build/cargo-gen-id-cache.tar.gz` under that evidence root. Its
-  SHA-256 is
-  `4aafb5d6ece92490274bc60375df8216a5e6671617fc8b92d10fbe60f52637de`.
-- The most recent short-run JSON and source logs remain on the persistent GCP
-  boot disks under `/tmp`; retrieve and normalize them after the next start.
-  The summary numbers above were captured from the live command outputs, but
-  the raw files are not yet versioned evidence.
-
-All Needletail GCP test instances were stopped and confirmed `TERMINATED` on
-19 July 2026:
-
-- `nt-daw-lon`
-- `nt-contrib-lon`
-- `nt-relay-a-lon`
-- `nt-relay-b-lon`
-- `nt-edge-lon`
-- `nt-opus-reader-lon`
-
-The older Tokyo, Sydney, Amsterdam, and Osaka Needletail instances are also
-terminated. The two temporary Linode load machines were deleted earlier. GCP
-boot disks remain, so storage still incurs a small charge even though compute
-is stopped.
+- Tested `av-mesh` base: `8d87e80` plus the current duration, compact-response,
+  and persistent-response working-tree patch.
+- Tested edge and relay Linux SHA-256:
+  `3e76ce6a7cb29990dbb9d3768631b35efbdd5c06ca9554af05e6cd5905910724`.
+- Tested `av-contrib` base: `10f829e` plus the current probe and fMP4 fixes.
+- Tested reader Linux SHA-256:
+  `824a5523c2593195e840086c91a10b645e6d953191ee8be9ae534caa21d9ae15`.
+- Raw persistent-response evidence root:
+  `target/gcp-qualification/live-tail-serialization/profile/`.
+- Versioned record:
+  `docs/real-world-tests/evidence/20260720T045417Z-opus-h3-persistent-bundle-stream.json`.
+- All media and load ran on same-zone private addresses. IAP carried only
+  orchestration and evidence.
 
 ### Important test-incarnation rule
 
