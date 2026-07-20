@@ -18,6 +18,7 @@ if (( ${#missing_packages[@]} > 0 )); then
   sudo apt-get install -y "${missing_packages[@]}"
 fi
 
+bash "${STAGE}/configure-clock.sh"
 bash "${STAGE}/tune-udp-host.sh"
 
 sudo install -d -m 755 /etc/needletail/tls

@@ -77,6 +77,15 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.all_needletail_services_active == true
           and .cleanup.gcp_lab_retained_for_followup_testing == true
           and .cleanup.media_load_path_private == true
+        elif .schema == "needletail.opus-h3-clock-qualified-tail.v1" then
+          .provider == "gcp"
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_runs_no_needletail_services == true
+          and .cleanup.all_needletail_services_active == true
+          and .cleanup.gcp_lab_retained_for_followup_testing == true
+          and .cleanup.media_load_path_private == true
+          and .cleanup.accepted_binary_restored_after_ab == true
+          and .cleanup.public_telemetry_carrier_enabled == false
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -429,6 +438,75 @@ for evidence in "${run_files[@]}"; do
       and .tiers["32"].received_parts == .tiers["32"].expected_parts
       and .tiers["32"].availability_p99_ms > 20
       and .tiers["32"].edge_host_cpu_percent_approximate > 70
+    ' "${evidence}" >/dev/null
+  fi
+
+  if jq -e '.schema == "needletail.opus-h3-clock-qualified-tail.v1"' \
+    "${evidence}" >/dev/null; then
+    jq -e '
+      .passed == true
+      and .result == "strict_short_window_repeatability_qualified"
+      and .topology.hosts == 6
+      and .topology.vcpus_per_host == 2
+      and .topology.all_roles_in_one_zone == true
+      and .topology.source_to_contributor_private_ipv4 == true
+      and .topology.contributor_to_relays_private_ipv4 == true
+      and .topology.relays_to_edge_private_ipv4 == true
+      and .topology.reader_to_edge_private_ipv4 == true
+      and .topology.load_and_media_cross_public_internet == false
+      and .topology.iap_used_for_orchestration_only == true
+      and .clock.all_retained_clock_qualified_attempts_passed == true
+      and .clock.final_repeat_1_maximum_absolute_offset_seconds <= .clock.gate_maximum_absolute_offset_seconds
+      and .clock.final_repeat_1_maximum_root_dispersion_seconds <= .clock.gate_maximum_root_dispersion_seconds
+      and .clock.final_repeat_2_maximum_absolute_offset_seconds <= .clock.gate_maximum_absolute_offset_seconds
+      and .clock.final_repeat_2_maximum_root_dispersion_seconds <= .clock.gate_maximum_root_dispersion_seconds
+      and .method.customers == 24
+      and .method.tracks_per_customer == 8
+      and .method.track_readers == 192
+      and .method.persistent_h3_connections == 24
+      and .method.media_window_seconds == 60
+      and .method.part_ms == 5
+      and .method.bundle_response_ms == 5
+      and .method.deadline_ms == 20
+      and .method.deadline_counter_unit == "track_parts"
+      and .method.late_bundle_divisor == 8
+      and .probe_correction.deadline_required_on_cli == true
+      and .probe_correction.late_bundle_observations_bounded == 512
+      and .probe_correction.playlist_checks_run_before_each_customer_media_window == true
+      and .probe_correction.percentile_sorting_deferred_until_all_media_tasks_stop == true
+      and .probe_correction.diagnostic_late_bundles == 41
+      and .probe_correction.diagnostic_publication_dominant_late_bundles == 0
+      and .probe_correction.diagnostic_delivery_dominant_late_bundles == 41
+      and .corrected_ab.v12_repetitions == 2
+      and .corrected_ab.v12_passes == 2
+      and .corrected_ab.v12_late_bundle_responses == 0
+      and .corrected_ab.v14_repetitions == 2
+      and .corrected_ab.v14_passes == 1
+      and .corrected_ab.v14_late_bundle_responses == 1
+      and .corrected_ab.decision == "reject_v14_for_current_release"
+      and ([.attempts[] | select(.build == "v12_exact_envelope" and .probe_schema == "v6_corrected")] | length) == 2
+      and ([.attempts[] | select(.build == "v12_exact_envelope" and .probe_schema == "v6_corrected")] | all(.[];
+        .load_result == "passed"
+        and .received_track_parts == 2304000
+        and .media_responses == 288000
+        and .deadline_missed_track_parts == 0
+        and .late_bundle_responses == 0
+        and .cache_sample_count == 192
+        and .availability_p99_ms <= 20
+        and .edge_host_cpu_percent <= 70
+      ))
+      and .qualification.playlists_tests_passed == 56
+      and .qualification.av_mesh_library_tests_passed == 43
+      and .qualification.av_mesh_service_tests_passed == 104
+      and .qualification.av_contrib_probe_tests_passed == 20
+      and .qualification.clock_gate_passed_before_and_after_final_runs == true
+      and .deployment.accepted_build == "v12_exact_envelope"
+      and .deployment.accepted_build_on_both_london_relays_and_edge == true
+      and .deployment.rejected_group_waiter_merged == false
+      and .deployment.strict_short_window_declared_repeatable == true
+      and .deployment.endurance_qualified == false
+      and .deployment.production_tier_declared == false
+      and .deployment.public_telemetry_carrier_enabled == false
     ' "${evidence}" >/dev/null
   fi
 

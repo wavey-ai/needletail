@@ -35,19 +35,23 @@ raw evidence.
   CPU, with zero missing, discontinuous, late, or invalid Opus parts. Twenty-eight
   was the first provisional 20 ms latency-gate miss; 32 was the first
   approximate 30%-CPU-headroom miss while still delivering every part.
-- A matched 60-second profile at 24 customers then removed repeated canonical
-  object decode/hash work, accelerated the unchanged IEEE CRC-32, skipped AEP1
-  parsing on a leaf with no audio consumer, and replaced joined per-track waits
-  with exact sequential reads under one shared deadline. Edge CPU fell from
-  59.415% to 34.765% of the two-vCPU host and availability p99 from 14.633 to
-  10.801 ms. All 2,304,000 parts remained exact, but 9 of 288,000 bundles still
-  exceeded the strict 20 ms deadline, so that gate remains open.
-- The exact-envelope follow-up removed another encode/decode/hash cycle. Its
-  final run delivered every part with no late bundle and used 40.380% host CPU,
-  3.873% less than an adjacent v11 control under the changed host state.
-  However, one other flat-profile v12 run had a 20.835 ms availability p99 and
-  6,144 late bundles. The optimization has the intended CPU direction, but the
-  strict short-window series is not repeatable and has no endurance claim.
+- A matched 60-second profile at 24 customers removed repeated canonical
+  object work, accelerated the unchanged IEEE CRC-32, skipped unused AEP1
+  parsing, and replaced joined waits with exact sequential reads under one
+  deadline. Edge CPU fell from 59.415% to 34.765% of the two-vCPU host. A later
+  exact-envelope handoff removed another encode, decode, and hash cycle.
+- Clock-gated diagnostics then found that serial metadata checks and percentile
+  sorting in the load probe overlapped customers that were still receiving
+  media. The corrected probe performs metadata checks before each timed window
+  and defers sorting until all media tasks stop. The accepted exact-envelope
+  build then passed twice: each run delivered all 2,304,000 parts with zero late
+  bundle. Availability p99 was 13.628 and 13.694 ms, cache-to-client p99 was
+  4.947 and 5.058 ms, and host CPU was 32.951% and 34.084%.
+- A shared group-waiter candidate used 4.707% less mean CPU than the accepted
+  build but was slower in both p99 latency measures and passed only one of two
+  corrected repetitions. It is rejected for the current release. The accepted
+  exact-envelope build now has a repeatable strict short-window result but no
+  endurance or production-sizing claim.
 - Replication through a dual-parent DAG, independent regional caches, late join,
   RaptorQ recovery, and parent failover are proven in deployed tests. Endurance
   at the 24-customer bundled candidate, cancellation churn without restart, and
@@ -225,10 +229,23 @@ control provides the valid CPU comparison:
 The final v12 repeat used 3.873% less CPU than the adjacent control, with only
 0.005 ms difference in availability p99. A first v12 media run also had no late
 bundles, but its call-chain profile makes its CPU result incomparable. Every
-attempt delivered all 2,304,000 parts. Because one v12 attempt failed the
-deadline gate, the current build has not passed strict repeatability. The final
-control and repeat had no valid cache-to-client samples; those results are
-unavailable, not zero.
+attempt delivered all 2,304,000 parts. At that point, one v12 deadline failure
+prevented a strict repeatability claim. The final control and repeat also had no
+valid cache-to-client samples; those results are unavailable, not zero.
+
+Clock qualification and corrected client work then restored valid cache
+coverage and removed probe work from other customers' timed windows:
+
+| Accepted v12 run | Edge host CPU | Availability p99 | Cache-to-client p99 | Cache samples | Late bundles |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| corrected repeat 1 | 32.951% | 13.628 ms | 4.947 ms | 192/192 | 0 |
+| corrected repeat 2 | 34.084% | 13.694 ms | 5.058 ms | 192/192 | 0 |
+
+Each corrected run delivered 288,000 bundle responses and all 2,304,000 exact
+track parts. Both passed the explicit 20 ms deadline. Six-host chrony checks
+before and after each run stayed below the 1 ms offset and dispersion gates.
+This supersedes the earlier repeatability and cache-coverage gaps. The older
+attempts remain valid diagnostic evidence, not release results.
 
 This candidate does not inherit the old 2 ms cache-to-client claim: the metric
 and connection geometry changed. It is also not production-sized until a
@@ -270,7 +287,8 @@ qualified, deployed, and measured on the private GCP topology. It retains
 canonical parsing, payload-hash, identity, replay, and immutable-conflict
 checks. Canonical encode disappeared from the final flat profile and SHA-256
 fell from 2.33% to 1.22% of samples. The final adjacent comparison used 3.873%
-less CPU, but the failed v12 deadline attempt prevents a repeatability claim.
+less CPU. The corrected, clock-qualified v12 series then passed the strict
+short-window gate twice with complete cache evidence.
 
 ## Improvements already proven
 
@@ -289,41 +307,34 @@ less CPU, but the failed v12 deadline attempt prevents a repeatability claim.
 | Use accelerated IEEE CRC-32 | Removes the bitwise CRC hot spot; matched host CPU falls to 41.679% and late bundles from 147 to 53. |
 | Skip AEP1 parsing on a zero-consumer leaf | Removes the remaining audio-ingress hot closure; matched host CPU falls to 38.981% and late bundles from 53 to 33. |
 | Replace joined per-track waits with sequential exact waits under one deadline | Removes the 2.11% `join_all::MaybeDone` flat symbol; matched host CPU falls to 34.765%, availability p99 to 10.801 ms, and late bundles from 33 to 9. |
-| Transfer the verified exact canonical envelope from `RelaySession` | Removes the duplicate encode/decode/hash cycle; canonical encode disappears, SHA-256 falls from 2.33% to 1.22% of flat samples, and the final run uses 3.873% less CPU than its adjacent v11 control. Strict repeatability remains open. |
+| Transfer the verified exact canonical envelope from `RelaySession` | Removes the duplicate encode/decode/hash cycle; canonical encode disappears, SHA-256 falls from 2.33% to 1.22% of flat samples, and the corrected clock-qualified build repeats the strict 20 ms result twice. |
+| Keep probe metadata and reporting outside another customer's timed window | Restores all 192 cache samples and removes the artificial completion-tail load; two v12 repetitions deliver every part with zero late bundle. |
 
 These fixes rule out the cache, router, a global 256-connection limit, and
 Quinn alone as explanations for the remaining gap.
 
 ## Current gaps, in order
 
-1. **Make the strict 20 ms result repeatable.** One v12 run had 6,144 late
-   bundles while two v12 media runs had none. Attribute the global 20.835 ms
-   excursion and repeat the identical short-window series without a retained
-   deadline failure.
-2. **Restore cache-to-client evidence coverage.** The adjacent v11 control and
-   final v12 repeat had no valid cache samples. Retain all 192 samples before
-   using the next run to attribute the remaining tail or compare cache cost.
-3. **Measure connection-churn cleanup without restart.** Weak exact-waiter
+1. **Qualify the strict candidate under endurance.** Run the accepted geometry
+   for at least 30 minutes on private GCP paths. Require stable RSS, complete
+   media, the same strict latency and CPU headroom, and clean process exit.
+   Declare a production tier only after all gates pass together.
+2. **Measure connection-churn cleanup without restart.** Weak exact-waiter
    registrations remove retained request work, but the recorded tiers restarted
    the edge. Exercise connect, cancel, timeout, and slow-reader churn while
    exposing bounded waiter, task, stream, timer, and connection counts.
-4. **Reduce the remaining measured hot costs.** Allocation/free, SHA, router
-   dispatch, QPACK, and kernel work now lead the flat profile. Attribute the
-   tail and cache sample loss, change one bounded cost at a time, and repeat the
-   matched 60-second run.
-5. **Finish publication startup reliability.** The measured 5 ms DAW epoch hold
+3. **Reduce the remaining measured hot costs.** Allocation/free, SHA, router
+   dispatch, QPACK, and kernel work now lead the flat profile. The rejected
+   group waiter reduced mean CPU by 4.707%, but it did not improve p99 and did
+   not repeat the strict gate. Use that only as an isolated future lead.
+4. **Finish publication startup reliability.** The measured 5 ms DAW epoch hold
    removes false erasures under independent track pacing. Add a declared track
    manifest/start barrier and rerun a retained zero-offset canary.
-6. **Qualify the strict candidate under endurance.** After the 20 ms gate
-   passes, run at least 30 minutes on private GCP paths with stable RSS and then
-   turn that result into a sizing policy. Declare a
-   production tier only after latency, CPU, link, RSS, and cleanup gates pass
-   together; retain the first failed tier and its named resource boundary.
-7. **Complete scale dimensions independently.** Measure large idle-connection
+5. **Complete scale dimensions independently.** Measure large idle-connection
    sets, blocked reloads, slow readers, one shared client UDP endpoint, flow
    control, and cancellation without conflating them with active media rate.
-8. **Repeat the final build geographically.** After the same-zone edge is
-   understood, rerun the multi-region DAG and size 16-, 128-, and 256-channel
+6. **Repeat the final build geographically.** After same-zone endurance and
+   churn pass, rerun the multi-region DAG and size 16-, 128-, and 256-channel
    publications without duplicating contributor work.
 
 ## Claims and non-claims
@@ -342,16 +353,15 @@ Supported by current evidence:
   short isolated windows;
 - `AV_LL_HLS_RESPONSE_MS=200` preserves exact 5 ms units and reduces H3
   responses 40x for the tested self-delimiting SoundKit v2 stream; and
-- synchronized eight-track H3 bundling with generation-safe range reads
-  repeatedly supported the documented pre-v12 24-customer short-window
-  candidate; and
-- the exact-envelope handoff retains complete media and shows the intended CPU
-  reduction in the adjacent v11/v12 comparison.
+- synchronized eight-track H3 bundling with generation-safe range reads and the
+  exact-envelope handoff supports a repeatable strict 20 ms, 24-customer
+  short-window result on the measured private-GCP topology; and
+- the corrected load probe retains complete 192-reader cache evidence without
+  adding metadata or report work to another customer's timed media window.
 
 Not yet supported:
 
 - millions of active media customers or H3 connections;
-- a repeatable strict 20 ms result for the current exact-envelope build;
 - 24 bundled eight-track customers as an endurance-qualified production size;
 - clean eight-track delivery from the first source epoch;
 - a production-qualified 200 ms aggregation tier with useful latency;
@@ -360,6 +370,7 @@ Not yet supported:
 
 ## Evidence map
 
+- [Clock-qualified Opus H3 tail repeatability](../real-world-tests/2026-07-20-opus-h3-clock-qualified-tail.md)
 - [Eight-track Opus capacity](../real-world-tests/2026-07-18-opus-h3-capacity.md)
 - [Two-hundred-millisecond Opus response aggregation](../real-world-tests/2026-07-18-opus-h3-200ms-aggregation.md)
 - [Bundled eight-track Opus H3 tails](../real-world-tests/2026-07-19-opus-h3-tail-bundle.md)

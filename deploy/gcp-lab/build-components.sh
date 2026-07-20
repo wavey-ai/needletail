@@ -17,6 +17,18 @@ if (( ${#missing_packages[@]} > 0 )); then
   sudo apt-get install -y "${missing_packages[@]}"
 fi
 
+rm -f /tmp/needletail-chrony.deb /tmp/chrony_*_amd64.deb
+(
+  cd /tmp
+  apt-get download chrony
+)
+chrony_deb="$(find /tmp -maxdepth 1 -name 'chrony_*_amd64.deb' -print -quit)"
+[[ -n "${chrony_deb}" ]] || {
+  echo "the Chrony package download did not produce an artifact" >&2
+  exit 1
+}
+mv "${chrony_deb}" /tmp/needletail-chrony.deb
+
 if [[ -f "${HOME}/.cargo/env" ]]; then
   . "${HOME}/.cargo/env"
 fi
@@ -59,4 +71,5 @@ install -m 755 \
   /opt/needletail-build/target/release/aep1-48k-probe \
   /tmp/aep1-48k-probe
 sha256sum /tmp/av-mesh /tmp/h3-static-capacity /tmp/av-contrib \
-  /tmp/aep1-48k-probe > /tmp/needletail-binaries.sha256
+  /tmp/aep1-48k-probe /tmp/needletail-chrony.deb \
+  > /tmp/needletail-binaries.sha256

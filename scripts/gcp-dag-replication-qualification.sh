@@ -406,13 +406,28 @@ trap cleanup EXIT INT TERM
 assert_synchronized_clock() {
   local role="$1"
   local output="$2"
-  gcp_ssh_text "${role}" --command='timedatectl show --property=NTPSynchronized --property=TimeUSec --property=RTCTimeUSec --no-pager' \
+  gcp_ssh_text "${role}" --command='timedatectl show --property=NTPSynchronized --property=TimeUSec --property=RTCTimeUSec --no-pager; chronyc tracking -n' \
     >"${output}"
   awk -F= '$1 == "NTPSynchronized" && $2 == "yes" { found=1 } END { exit !found }' \
     "${output}" || {
       echo "${role} clock is not NTP synchronized" >&2
       exit 1
     }
+  local offset
+  offset="$(awk '$1 == "System" && $2 == "time" { print $4; exit }' "${output}")"
+  local dispersion
+  dispersion="$(awk '$1 == "Root" && $2 == "dispersion" { print $4; exit }' \
+    "${output}")"
+  if [[ -z "${offset}" || -z "${dispersion}" ]] \
+    || ! awk -v offset="${offset}" -v dispersion="${dispersion}" '
+    BEGIN {
+      if (offset < 0) offset = -offset
+      exit !(offset <= 0.001 && dispersion <= 0.001)
+    }
+  '; then
+    echo "${role} clock error exceeds 1 ms" >&2
+    exit 1
+  fi
 }
 
 fetch_edge() {

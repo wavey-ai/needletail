@@ -275,3 +275,11 @@ value is approximate; its latency result and all media counters are retained.
 The GCP lab remains active for these follow-up tests. Test source and reader
 processes exited after each retained run; the native Needletail services remain
 supervised and healthy.
+
+## Follow-up
+
+The [20 July clock-qualified series](2026-07-20-opus-h3-clock-qualified-tail.md)
+resolved the first two gates above. It attributed the apparent completion tail
+to probe metadata and reporting work, restored all 192 cache samples, and
+repeated the accepted v12 build twice with zero late bundle. The 30-minute
+endurance gate remains open.

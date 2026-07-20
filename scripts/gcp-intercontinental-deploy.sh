@@ -400,7 +400,7 @@ install -m 600 "${TLS_KEY}" "${ARTIFACT_DIR}/privkey.pem"
 
 SOURCE_ARCHIVE="${ARTIFACT_DIR}/needletail-source.tar.gz"
 if [[ "${SKIP_BUILD}" == 1 ]]; then
-  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/h3-static-capacity" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" ]] || {
+  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/h3-static-capacity" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" && -f "${ARTIFACT_DIR}/chrony.deb" ]] || {
     echo "NEEDLETAIL_DEPLOY_SKIP_BUILD=1 requires cached Linux binaries" >&2
     exit 2
   }
@@ -444,6 +444,8 @@ else
   provider_scp_from contributor /tmp/h3-static-capacity "${ARTIFACT_DIR}/h3-static-capacity"
   provider_scp_from contributor /tmp/av-contrib "${ARTIFACT_DIR}/av-contrib"
   provider_scp_from contributor /tmp/aep1-48k-probe "${ARTIFACT_DIR}/aep1-48k-probe"
+  provider_scp_from contributor /tmp/needletail-chrony.deb \
+    "${ARTIFACT_DIR}/chrony.deb"
   chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/h3-static-capacity" \
     "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe"
 fi
@@ -496,7 +498,10 @@ deploy_mesh() {
   gcp_scp_to "${role}" \
     "${ARTIFACT_DIR}/av-mesh" \
     "${ARTIFACT_DIR}/aep1-48k-probe" \
+    "${ARTIFACT_DIR}/chrony.deb" \
     "${DEPLOY_DIR}/av-mesh-run" \
+    "${DEPLOY_DIR}/chrony-gcp.conf" \
+    "${DEPLOY_DIR}/configure-clock.sh" \
     "${DEPLOY_DIR}/install-node.sh" \
     "${DEPLOY_DIR}/tune-udp-host.sh" \
     "${DEPLOY_DIR}/needletail-mesh.service" \
@@ -513,7 +518,10 @@ deploy_edge() {
   gcp_scp_to "${role}" \
     "${ARTIFACT_DIR}/av-mesh" \
     "${ARTIFACT_DIR}/aep1-48k-probe" \
+    "${ARTIFACT_DIR}/chrony.deb" \
     "${DEPLOY_DIR}/av-mesh-run" \
+    "${DEPLOY_DIR}/chrony-gcp.conf" \
+    "${DEPLOY_DIR}/configure-clock.sh" \
     "${DEPLOY_DIR}/install-node.sh" \
     "${DEPLOY_DIR}/tune-udp-host.sh" \
     "${DEPLOY_DIR}/needletail-mesh.service" \
@@ -531,8 +539,11 @@ deploy_probe_host() {
   gcp_scp_to "${role}" \
     "${ARTIFACT_DIR}/aep1-48k-probe" \
     "${ARTIFACT_DIR}/fullchain.pem" \
+    "${ARTIFACT_DIR}/chrony.deb" \
+    "${DEPLOY_DIR}/chrony-gcp.conf" \
+    "${DEPLOY_DIR}/configure-clock.sh" \
     "${DEPLOY_DIR}/tune-udp-host.sh"
-  gcp_ssh "${role}" --command='bash /tmp/needletail-deploy/tune-udp-host.sh; sudo install -m 755 /tmp/needletail-deploy/aep1-48k-probe /usr/local/bin/aep1-48k-probe; sudo install -m 755 /tmp/needletail-deploy/tune-udp-host.sh /usr/local/sbin/needletail-tune-udp-host; sudo install -m 644 /tmp/needletail-deploy/fullchain.pem /usr/local/share/ca-certificates/needletail-qualification.crt; sudo update-ca-certificates >/dev/null'
+  gcp_ssh "${role}" --command='bash /tmp/needletail-deploy/configure-clock.sh; bash /tmp/needletail-deploy/tune-udp-host.sh; sudo install -m 755 /tmp/needletail-deploy/aep1-48k-probe /usr/local/bin/aep1-48k-probe; sudo install -m 755 /tmp/needletail-deploy/tune-udp-host.sh /usr/local/sbin/needletail-tune-udp-host; sudo install -m 644 /tmp/needletail-deploy/fullchain.pem /usr/local/share/ca-certificates/needletail-qualification.crt; sudo update-ca-certificates >/dev/null'
 }
 
 deployment_pids=()
@@ -557,7 +568,10 @@ gcp_ssh contributor --command='rm -rf /tmp/needletail-deploy && mkdir -p /tmp/ne
 gcp_scp_to contributor \
   "${ARTIFACT_DIR}/av-contrib" \
   "${ARTIFACT_DIR}/aep1-48k-probe" \
+  "${ARTIFACT_DIR}/chrony.deb" \
   "${DEPLOY_DIR}/av-contrib-run" \
+  "${DEPLOY_DIR}/chrony-gcp.conf" \
+  "${DEPLOY_DIR}/configure-clock.sh" \
   "${DEPLOY_DIR}/install-node.sh" \
   "${DEPLOY_DIR}/tune-udp-host.sh" \
   "${DEPLOY_DIR}/needletail-contrib.service" \

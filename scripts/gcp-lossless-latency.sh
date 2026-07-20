@@ -259,10 +259,25 @@ assert_synchronized_clock() {
     --property=NTPSynchronized \
     --property=TimeUSec \
     --property=RTCTimeUSec \
-    --no-pager" >"${output}"
+    --no-pager; chronyc tracking -n" >"${output}"
   if ! awk -F= '$1 == "NTPSynchronized" && $2 == "yes" { found=1 } END { exit !found }' \
     "${output}"; then
     echo "${role} clock is not NTP synchronized" >&2
+    exit 1
+  fi
+  local offset
+  offset="$(awk '$1 == "System" && $2 == "time" { print $4; exit }' "${output}")"
+  local dispersion
+  dispersion="$(awk '$1 == "Root" && $2 == "dispersion" { print $4; exit }' \
+    "${output}")"
+  if [[ -z "${offset}" || -z "${dispersion}" ]] \
+    || ! awk -v offset="${offset}" -v dispersion="${dispersion}" '
+    BEGIN {
+      if (offset < 0) offset = -offset
+      exit !(offset <= 0.001 && dispersion <= 0.001)
+    }
+  '; then
+    echo "${role} clock error exceeds 1 ms" >&2
     exit 1
   fi
 }

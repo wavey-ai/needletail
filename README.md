@@ -31,11 +31,12 @@ still pending.
 
 A matched 60-second private-GCP profile at 24 customers reduced edge CPU from
 59.415% to 34.765% of the two-vCPU host. A later exact-envelope build removed an
-encode, decode, and hash cycle. Its final run delivered all 2,304,000 parts with
-no late bundles. It used 40.380% host CPU, which was 3.873% less than the
-adjacent control. One other exact-envelope run had 6,144 late bundles, so the
-strict 20 ms tier is not yet repeatable or endurance-qualified. See the
-canonical
+encode, decode, and hash cycle. Clock qualification and a corrected load probe
+then repeated that build twice. Both runs delivered all 2,304,000 parts with no
+late bundle. Availability p99 was 13.628 and 13.694 ms, cache-to-client p99 was
+4.947 and 5.058 ms, and host CPU was 32.951% and 34.084%. This qualifies the
+strict 20 ms short-window result. It does not qualify endurance or a production
+tier. See the canonical
 [current performance state and gaps](docs/performance/current-state-and-gaps.md).
 
 Needletail owns:
@@ -160,8 +161,8 @@ brief:
 | How close is 5 ms LL-HLS to UDP? | 2.390–2.452 ms p50 premium in the measured multi-region GCP run. |
 | Is one playlist or part-cache lookup the limit? | No. Isolated cache reads reach millions/s, the router exceeds one million cached part responses/s, and the live path now uses bounded generation-safe range reads. |
 | What does track bundling change? | One 5 ms H3 response carries all eight tracks, cutting connections and responses/customer 8x while preserving exact media units. |
-| What limits the current edge? | The strict tail: 9 of 288,000 matched bundle responses exceeded 20 ms even with 65.24% host CPU headroom. |
-| What is the current Opus candidate? | 24 eight-track customers on two vCPUs; short runs are exact, but the strict deadline and 30-minute endurance gates remain open. |
+| What limits the current edge? | The accepted 24-customer build passes the strict 20 ms short-window gate. Endurance and restart-free churn are the next limits to qualify. |
+| What is the current Opus candidate? | 24 eight-track customers on two vCPUs; two corrected clock-qualified runs were exact with zero late bundles, but the 30-minute endurance gate remains open. |
 | What happens above the candidate? | 28 first misses the provisional 20 ms p99 gate; 32 first misses 30% CPU headroom, but both still deliver every part. |
 
 Dated narratives and sanitized JSON live in the

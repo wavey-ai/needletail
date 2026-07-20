@@ -25,3 +25,32 @@ audit log. Realtime media flows directly between ingress, relays, and edges.
 The existing provider bootstrap script under `scripts/` remains a lab migration
 tool invoked explicitly by an operator. The durable controller becomes the
 authoritative source for production reconciliation.
+
+## GCP performance lab
+
+Use local hosts for correctness, build, UI, and browser checks. Run load,
+capacity, profiling, and soak tests on explicitly scoped GCP hosts. Keep the
+source, contributor, relays, edge, and load reader in one region and on private
+subnets unless the test measures geographic distance.
+
+Before a latency test, configure all lab hosts to use the GCP metadata time
+server and verify the clock gate:
+
+```sh
+GCP_PROJECT=<project-id> deploy/gcp-lab/configure-clock.sh
+```
+
+Run the matched live-tail profile with an explicit label:
+
+```sh
+GCP_PROJECT=<project-id> \
+  GCP_PROFILE_RUN_LABEL=<run-label> \
+  scripts/gcp-live-tail-profile.sh
+```
+
+The profile retains private-path geometry, binary hashes, clock state, service
+state, exact media counters, latency, CPU, journals, invalid attempts, and
+cleanup evidence under `target/gcp-qualification/`. Add a sanitized JSON record
+and dated narrative under `docs/real-world-tests/` before making a performance
+claim. Do not commit provider credentials, host secrets, TLS private keys, or
+raw generated artifacts.
