@@ -27,6 +27,11 @@ DEADLINE_MS="${GCP_PROFILE_DEADLINE_MS:-20}"
 START_LEAD_SECONDS="${GCP_PROFILE_START_LEAD_SECONDS:-15}"
 PERF_START_OFFSET_SECONDS="${GCP_PROFILE_PERF_START_OFFSET_SECONDS:-3}"
 PERF_SECONDS="${GCP_PROFILE_PERF_SECONDS:-65}"
+RESOURCE_SAMPLE_SECONDS="${GCP_PROFILE_RESOURCE_SAMPLE_SECONDS:-5}"
+RESOURCE_WARMUP_SECONDS="${GCP_PROFILE_RESOURCE_WARMUP_SECONDS:-120}"
+MAX_RSS_GROWTH_KIB="${GCP_PROFILE_MAX_RSS_GROWTH_KIB:-32768}"
+MAX_RSS_RANGE_KIB="${GCP_PROFILE_MAX_RSS_RANGE_KIB:-65536}"
+REQUIRE_RESOURCE_STABILITY="${GCP_PROFILE_REQUIRE_RESOURCE_STABILITY:-0}"
 MAX_CLOCK_ERROR_SECONDS="${GCP_PROFILE_MAX_CLOCK_ERROR_SECONDS:-0.001}"
 READER_PERF_BIN="${GCP_PROFILE_READER_PERF_BIN:-}"
 READER_PERF_LIBRARY_PATH="${GCP_PROFILE_READER_PERF_LIBRARY_PATH:-}"
@@ -34,13 +39,33 @@ READER_PERF_EXEC_PATH="${GCP_PROFILE_READER_PERF_EXEC_PATH:-}"
 
 for value_name in CUSTOMERS TRACKS SOURCE_SECONDS QUALIFICATION_SECONDS \
   WINDOW_SECONDS START_OFFSET_MS ARRIVAL_WINDOW_MS ARRIVAL_SEED DEADLINE_MS \
-  START_LEAD_SECONDS PERF_START_OFFSET_SECONDS PERF_SECONDS; do
+  START_LEAD_SECONDS PERF_START_OFFSET_SECONDS PERF_SECONDS \
+  RESOURCE_SAMPLE_SECONDS RESOURCE_WARMUP_SECONDS MAX_RSS_GROWTH_KIB \
+  MAX_RSS_RANGE_KIB REQUIRE_RESOURCE_STABILITY; do
   value="${!value_name}"
   if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
     echo "${value_name} must be an unsigned integer" >&2
     exit 2
   fi
 done
+
+if ((RESOURCE_SAMPLE_SECONDS == 0)); then
+  echo "GCP_PROFILE_RESOURCE_SAMPLE_SECONDS must be greater than zero" >&2
+  exit 2
+fi
+if [[ "${REQUIRE_RESOURCE_STABILITY}" != 0 \
+  && "${REQUIRE_RESOURCE_STABILITY}" != 1 ]]; then
+  echo "GCP_PROFILE_REQUIRE_RESOURCE_STABILITY must be zero or one" >&2
+  exit 2
+fi
+
+LOAD_WAIT_SECONDS="${GCP_PROFILE_LOAD_WAIT_SECONDS:-$((
+  START_LEAD_SECONDS + QUALIFICATION_SECONDS + 120
+))}"
+if [[ ! "${LOAD_WAIT_SECONDS}" =~ ^[0-9]+$ ]] || ((LOAD_WAIT_SECONDS == 0)); then
+  echo "GCP_PROFILE_LOAD_WAIT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
 
 gcp_ssh() {
   local host="$1"
@@ -232,6 +257,42 @@ gcp_ssh "${READER_HOST}" --command="nohup bash -c '
 ' >/dev/null 2>&1 </dev/null & echo \$! >${REMOTE_DIR}/load-wrapper.pid"
 
 gcp_ssh "${EDGE_HOST}" --command="set -eu
+  service_pid=\$(systemctl show needletail-mesh.service --property=MainPID --value)
+  if [[ -z \"\${service_pid}\" || \"\${service_pid}\" == 0 ]]; then
+    echo 'edge service has no active process' >&2
+    exit 1
+  fi
+  clock_ticks_per_second=\$(getconf CLK_TCK)
+  printf '%s\n' 'sample_unix_ns process_ticks rss_kib memory_current tasks_current exact_waiter_keys exact_waiter_registrations exact_waiter_capacity service_pid clock_ticks_per_second' \
+    >${REMOTE_DIR}/edge-resource-samples.txt
+  while :; do
+    current_pid=\$(systemctl show needletail-mesh.service --property=MainPID --value)
+    if [[ \"\${current_pid}\" != \"\${service_pid}\" ]] \
+      || [[ ! -r /proc/\${service_pid}/stat ]]; then
+      echo 'edge service process changed during qualification' >&2
+      exit 1
+    fi
+    process_ticks=\$(cut -d ' ' -f 14,15 /proc/\${service_pid}/stat | tr ' ' ',')
+    rss_kib=\$(awk '/^VmRSS:/ { print \$2; exit }' /proc/\${service_pid}/status)
+    memory_current=\$(systemctl show needletail-mesh.service --property=MemoryCurrent --value)
+    tasks_current=\$(systemctl show needletail-mesh.service --property=TasksCurrent --value)
+    runtime=\$(curl --max-time 5 -ksSf https://127.0.0.1:19444/api/mesh \
+      | jq -r '.llhls_runtime | [.exact_waiter_keys, .exact_waiter_registrations, .exact_waiter_capacity] | @csv')
+    IFS=, read -r waiter_keys waiter_registrations waiter_capacity <<<\"\${runtime}\"
+    printf '%s %s %s %s %s %s %s %s %s %s\n' \
+      \"\$(date +%s%N)\" \"\${process_ticks}\" \"\${rss_kib}\" \
+      \"\${memory_current}\" \"\${tasks_current}\" \"\${waiter_keys}\" \
+      \"\${waiter_registrations}\" \"\${waiter_capacity}\" \"\${service_pid}\" \
+      \"\${clock_ticks_per_second}\" \
+      >>${REMOTE_DIR}/edge-resource-samples.txt
+    if test -f ${REMOTE_DIR}/edge-resource-stop; then
+      break
+    fi
+    sleep ${RESOURCE_SAMPLE_SECONDS}
+  done" &
+edge_sampler_ssh_pid=$!
+
+gcp_ssh "${EDGE_HOST}" --command="set -eu
   target_ns=${perf_start_ns}
   now_ns=\$(date +%s%N)
   if ((target_ns > now_ns)); then
@@ -301,7 +362,7 @@ if [[ -n "${READER_PERF_BIN}" ]]; then
   reader_perf_ssh_pid=$!
 fi
 
-load_exit="$(gcp_ssh "${READER_HOST}" --command="for _ in \$(seq 1 150); do
+load_exit="$(gcp_ssh "${READER_HOST}" --command="for _ in \$(seq 1 ${LOAD_WAIT_SECONDS}); do
   if test -f ${REMOTE_DIR}/load.exit; then
     cat ${REMOTE_DIR}/load.exit
     exit 0
@@ -310,7 +371,9 @@ load_exit="$(gcp_ssh "${READER_HOST}" --command="for _ in \$(seq 1 150); do
 done
 echo load-timeout >&2
 exit 1")"
+gcp_ssh "${EDGE_HOST}" --command="touch ${REMOTE_DIR}/edge-resource-stop"
 wait "${perf_ssh_pid}"
+wait "${edge_sampler_ssh_pid}"
 if [[ -n "${reader_perf_ssh_pid}" ]]; then
   wait "${reader_perf_ssh_pid}"
 fi
@@ -342,8 +405,95 @@ if [[ ! -f "${load_file}" ]]; then
   exit 1
 fi
 
+resource_samples_file="${RESULT_DIR}/remote-edge/${RUN_ID}/edge-resource-samples.txt"
+resource_summary_file="${RESULT_DIR}/edge-resource-summary.json"
+if [[ ! -f "${resource_samples_file}" ]]; then
+  echo "the edge resource samples are missing" >&2
+  exit 1
+fi
+minimum_resource_samples=$((
+  WINDOW_SECONDS * 9 / (RESOURCE_SAMPLE_SECONDS * 10)
+))
+((minimum_resource_samples > 1)) || minimum_resource_samples=2
+awk -v warmup_seconds="${RESOURCE_WARMUP_SECONDS}" '
+  NR == 1 { next }
+  {
+    split($2, ticks, ",")
+    total_ticks = ticks[1] + ticks[2]
+    if (samples == 0) {
+      first_ns = $1
+      first_ticks = total_ticks
+      service_pid = $9
+      clock_ticks_per_second = $10
+    }
+    samples++
+    last_ns = $1
+    last_ticks = total_ticks
+    last_rss_kib = $3
+    last_memory_current = $4
+    last_waiter_keys = $6
+    last_waiter_registrations = $7
+    if ($5 > max_tasks_current || samples == 1) max_tasks_current = $5
+    if ($6 > max_waiter_keys || samples == 1) max_waiter_keys = $6
+    if ($7 > max_waiter_registrations || samples == 1) max_waiter_registrations = $7
+    if ($4 > max_memory_current || samples == 1) max_memory_current = $4
+    if ($8 > max_waiter_capacity || samples == 1) max_waiter_capacity = $8
+    if ($8 < min_waiter_capacity || samples == 1) min_waiter_capacity = $8
+    if ($1 >= first_ns + warmup_seconds * 1000000000) {
+      if (post_warmup_samples == 0) {
+        post_warmup_first_rss_kib = $3
+        post_warmup_min_rss_kib = $3
+        post_warmup_max_rss_kib = $3
+      }
+      post_warmup_samples++
+      post_warmup_last_rss_kib = $3
+      if ($3 < post_warmup_min_rss_kib) post_warmup_min_rss_kib = $3
+      if ($3 > post_warmup_max_rss_kib) post_warmup_max_rss_kib = $3
+    }
+  }
+  END {
+    elapsed_seconds = (last_ns - first_ns) / 1000000000
+    cpu_seconds = (last_ticks - first_ticks) / clock_ticks_per_second
+    host_cpu_percent = elapsed_seconds > 0 ? cpu_seconds / elapsed_seconds / 2 * 100 : 0
+    rss_growth_kib = post_warmup_last_rss_kib - post_warmup_first_rss_kib
+    rss_range_kib = post_warmup_max_rss_kib - post_warmup_min_rss_kib
+    printf "{\"samples\":%d,\"elapsed_seconds\":%.6f,", samples, elapsed_seconds
+    printf "\"service_pid\":%d,\"process_cpu_seconds\":%.6f,", service_pid, cpu_seconds
+    printf "\"host_cpu_percent\":%.6f,\"last_rss_kib\":%d,", host_cpu_percent, last_rss_kib
+    printf "\"last_memory_current\":%d,\"max_memory_current\":%d,", last_memory_current, max_memory_current
+    printf "\"max_tasks_current\":%d,\"post_warmup_samples\":%d,", max_tasks_current, post_warmup_samples
+    printf "\"post_warmup_first_rss_kib\":%d,\"post_warmup_last_rss_kib\":%d,", post_warmup_first_rss_kib, post_warmup_last_rss_kib
+    printf "\"post_warmup_min_rss_kib\":%d,\"post_warmup_max_rss_kib\":%d,", post_warmup_min_rss_kib, post_warmup_max_rss_kib
+    printf "\"post_warmup_rss_growth_kib\":%d,\"post_warmup_rss_range_kib\":%d,", rss_growth_kib, rss_range_kib
+    printf "\"max_exact_waiter_keys\":%d,\"max_exact_waiter_registrations\":%d,", max_waiter_keys, max_waiter_registrations
+    printf "\"last_exact_waiter_keys\":%d,\"last_exact_waiter_registrations\":%d,", last_waiter_keys, last_waiter_registrations
+    printf "\"minimum_exact_waiter_capacity\":%d,\"maximum_exact_waiter_capacity\":%d}\n", min_waiter_capacity, max_waiter_capacity
+  }
+' "${resource_samples_file}" >"${resource_summary_file}.raw"
+jq \
+  --argjson minimum_samples "${minimum_resource_samples}" \
+  --argjson max_rss_growth_kib "${MAX_RSS_GROWTH_KIB}" \
+  --argjson max_rss_range_kib "${MAX_RSS_RANGE_KIB}" \
+  '. + {
+    gates: {
+      minimum_samples: $minimum_samples,
+      maximum_post_warmup_rss_growth_kib: $max_rss_growth_kib,
+      maximum_post_warmup_rss_range_kib: $max_rss_range_kib
+    },
+    passed: (
+      .samples >= $minimum_samples
+      and .post_warmup_samples >= 2
+      and .post_warmup_rss_growth_kib <= $max_rss_growth_kib
+      and .post_warmup_rss_range_kib <= $max_rss_range_kib
+      and .last_exact_waiter_registrations == 0
+      and .max_exact_waiter_keys <= .minimum_exact_waiter_capacity
+      and .minimum_exact_waiter_capacity == .maximum_exact_waiter_capacity
+    )
+  }' "${resource_summary_file}.raw" >"${resource_summary_file}"
+rm "${resource_summary_file}.raw"
+
 jq --arg run_id "${RUN_ID}" --argjson session_id "${session_id}" \
-  --arg load_exit "${load_exit}" '
+  --arg load_exit "${load_exit}" --slurpfile edge_resource "${resource_summary_file}" '
   {
     run_id:$run_id,
     session_id:$session_id,
@@ -365,7 +515,8 @@ jq --arg run_id "${RUN_ID}" --argjson session_id "${session_id}" \
     availability_p99_ms_across_readers,
     cache_to_client_p99_ms_across_readers,
     connection_setup_ms,
-    wire_bytes_total
+    wire_bytes_total,
+    edge_resource:$edge_resource[0]
   }' "${load_file}" | tee "${RESULT_DIR}/summary.json"
 
 expected_cache_samples=$((CUSTOMERS * TRACKS))
@@ -379,6 +530,12 @@ if [[ "${load_exit}" != 0 ]] || ! jq -e \
     and .cache_to_client_p99_ms_across_readers.sample_count == $expected_cache_samples
   ' "${load_file}" >/dev/null; then
   echo "${RUN_ID} failed the strict media or cache-sample gate" >&2
+  exit 1
+fi
+
+if [[ "${REQUIRE_RESOURCE_STABILITY}" == 1 ]] \
+  && ! jq -e '.passed == true' "${resource_summary_file}" >/dev/null; then
+  echo "${RUN_ID} failed the edge resource-stability gate" >&2
   exit 1
 fi
 
