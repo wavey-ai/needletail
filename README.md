@@ -12,27 +12,27 @@ Needletail is the product-level repo for Wavey realtime media delivery. It
 composes, runs, observes, and tests the service constellation. Core services
 and reusable crates stay in their own repos.
 
-**Measured 48 kHz lossless latency:** persistent TLS 1.3/H3 LL-HLS with 5 ms
-parts added **2.390–2.452 ms at p50** over raw UDP in the London-origin,
-dual-parent GCP run. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
-127.506, and 148.549 ms at p50; regional cache-to-client delivery stayed below
+**Measured 48 kHz lossless latency:** In the London-origin dual-parent GCP run,
+persistent TLS 1.3/H3 LL-HLS used 5 ms parts. It added **2.390–2.452 ms at p50**
+over raw UDP. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
+127.506, and 148.549 ms at p50. Regional cache-to-client delivery stayed below
 1.51 ms at p99. These are publication-to-client availability results, not
 browser-to-speaker latency.
 
-**Measured eight-track Opus capacity:** generation-safe cache range reads,
-sharded exact waiters, and synchronized eight-track H3 bundles now carry one
-5 ms unit/track in one response. On a two-vCPU GCP edge, 24 customers repeated
-three times at 16.578–18.051 ms availability p99 and 57.434–57.804% host CPU,
-with all 2,304,000 parts exact. Twenty-eight was the first provisional 20 ms
-latency-gate miss; 32 was the first approximate 30%-CPU-headroom miss while
+**Measured eight-track Opus capacity:** Generation-safe cache range reads and
+sharded exact waiters support synchronized eight-track H3 bundles. Each response
+carries one 5 ms unit for each track. On a two-vCPU GCP edge, 24 customers
+completed three runs with all 2,304,000 parts exact. Availability p99 was
+16.578–18.051 ms, and host CPU use was 57.434–57.804%. Twenty-eight was the first provisional 20 ms
+latency-gate miss. 32 was the first approximate 30%-CPU-headroom miss while
 remaining byte-complete. Twenty-four is a short-window candidate, not a
 production tier: 30-minute endurance and restart-free cancellation churn are
 still pending.
 
 A matched 60-second private-GCP profile at 24 customers reduced edge CPU from
-59.415% to 34.765% of the two-vCPU host. A subsequent exact-envelope build
-removed another encode/decode/hash cycle. Its final run delivered all 2,304,000
-parts with no late bundles and used 40.380% host CPU, 3.873% less than an
+59.415% to 34.765% of the two-vCPU host. A later exact-envelope build removed an
+encode, decode, and hash cycle. Its final run delivered all 2,304,000 parts with
+no late bundles. It used 40.380% host CPU, which was 3.873% less than the
 adjacent control. One other exact-envelope run had 6,144 late bundles, so the
 strict 20 ms tier is not yet repeatable or endurance-qualified. See the
 canonical
@@ -81,15 +81,17 @@ RaptorQ is the live-media recovery system. QUIC Datagram is an optional carrier
 for authenticated, encrypted, paced datagrams. Reliable streams are for control,
 initialization, and backfill.
 
-48 kHz Audio Epoch publications have three simultaneous delivery lanes:
-mandatory format-preserving LL-HLS, optional browser WebTransport datagrams,
-and optional native UDP+FEC subscriptions at a relay or playback edge. An
-ingress route can publish producer-framed bytes unchanged or explicitly ask
+48 kHz Audio Epoch publications have three simultaneous delivery lanes. They
+use mandatory format-preserving LL-HLS and optional browser WebTransport
+datagrams. They can also use native UDP+FEC subscriptions at a relay or playback
+edge.
+
+An ingress route can publish producer-framed bytes unchanged or explicitly ask
 `av-contrib` to box supported elementary media. The mesh caches and replicates
 either result as immutable bytes without interpreting the payload. See
 [Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
 format behavior, and local/GCP qualification commands. The contributor performs
-stream-dependent work once and never doubles as a relay; see the
+stream-dependent work once and never doubles as a relay. See the
 [Contributor origin boundary](docs/contributor-origin-boundary.md).
 
 ## Operations dashboard
@@ -110,8 +112,8 @@ Public Needletail Operations contributor feed:
 Local contributor feed: `https://local.bitneedle.com:19443/api/status`.
 
 The local supervisor collects one snapshot every 5 seconds. Remote relays send
-bounded MessagePack snapshots over the project's RaptorQ datagram codec to the
-playback edge, which remains the only fleet feed used by the browser. The TLS
+bounded MessagePack snapshots over the project's RaptorQ datagram codec. The
+playback edge receives them and remains the browser's only fleet feed. The TLS
 TCP channel remains available for control commands. See
 [Operations telemetry transport](docs/operations-telemetry-transport.md).
 
@@ -181,7 +183,7 @@ delivery classes, route compilation, session behavior, and scale gates.
 
 ## RaptorQ media plane
 
-RaptorQ is the live recovery mechanism. The primary path sends source symbols;
+RaptorQ is the live recovery mechanism. The primary path sends source symbols.
 an independent secondary can provide compatible repair symbols, reliable
 missing-object fetches, or immediate takeover. Deadline-aware scheduling drops
 obsolete work before it delays newer media. `RelaySession` adds authenticated
@@ -280,8 +282,8 @@ bash -n scripts/*.sh
 Use local hosts for unit, integration, build, dashboard, and browser smoke
 checks. Run load, capacity, soak, and profiler qualifications on explicitly
 scoped GCP hosts. Keep source, contributor, relay, edge, and reader traffic on
-private same-region subnets when the test does not require geographic distance;
-this avoids public data-plane noise and unnecessary inter-region egress. The
+private same-region subnets unless the test requires geographic distance. This
+avoids public data-plane noise and unnecessary inter-region egress. The
 dated record must state which links were private, the exact machine/zone,
 binary hash, workload geometry, failed gates, invalid attempts, and cleanup
 state. A complete byte count does not turn a latency or endurance failure into

@@ -3,28 +3,29 @@
 The Needletail operations dashboard is the product operations UI. It provides
 separate hash-routed views for:
 
-- current health and throughput;
-- a geographic node and link map;
-- live streams and contiguous publication;
-- contributor listeners, sessions, fMP4 output, codecs, and errors;
-- nodes and playback-edge services;
-- compiled dual-parent-DAG and low-latency route assignments;
+- current health and throughput
+- a geographic node and link map
+- live streams and contiguous publication
+- contributor listeners, sessions, fMP4 output, codecs, and errors
+- nodes and playback-edge services
+- compiled dual-parent-DAG and low-latency route assignments
 - contributor and LL-HLS latency, RaptorQ recovery, deadlines, and clock
-  confidence;
+  confidence
 - alerts and recent activity from both services.
 
 The browser fetches the two bounded snapshots concurrently every five seconds.
-It pauses routine polling while the page is hidden, calculates throughput from
-monotonic counter deltas, and retains at most six minutes of rate samples in
-memory. Counter resets and sub-second observations do not produce rate spikes.
-The map uses the node coordinates already present in `/api/mesh`; its local CC0
+It pauses routine polling while the page is hidden. It calculates throughput
+from monotonic counter changes. It retains at most six minutes of rate samples
+in memory. Counter resets and sub-second observations do not produce rate spikes.
+
+The map uses the node coordinates already present in `/api/mesh`. Its local CC0
 base image does not require a map service at runtime.
 
 It reads bounded, low-cardinality snapshots from:
 
 - `av-contrib` `GET /api/status` for contributor health, RelaySession carrier
   assignments, primary source traffic, warm-secondary repair traffic, RaptorQ
-  emission, deadline headroom, publication heads, and forwarding latency;
+  emission, deadline headroom, publication heads, and forwarding latency
 - `av-mesh` `GET /api/mesh` for playback-edge health, RelaySession ingress,
   RaptorQ recovery, publication watermarks, and LL-HLS handler latency.
 
@@ -37,11 +38,11 @@ The UI consumes the current service shapes. The current backends do not yet
 expose the following values, so their corresponding cells remain `pending`:
 
 - delivery class, fabric, desired-state generation, installed route state, and
-  per-stream/cohort route inventory;
+  per-stream/cohort route inventory
 - primary and warm-secondary node identities, failure-domain independence,
-  RTT, jitter, loss, deadline-miss rate, and path stretch;
-- contributor deadline hit/miss and sender-expiry totals;
-- contributor and edge contiguous publication watermarks and known-gap totals;
+  RTT, jitter, loss, deadline-miss rate, and path stretch
+- contributor deadline hit/miss and sender-expiry totals
+- contributor and edge contiguous publication watermarks and known-gap totals
 - detailed RIST/SRT session RTT, jitter, loss, reconnect, and end-reason
   telemetry.
 
@@ -54,9 +55,9 @@ Run locally:
 make serve
 ```
 
-`make build` uses Trunk when available and otherwise performs a deterministic
-WASM release build with the pinned local `wasm-bindgen` CLI, then assembles the
-same static-host asset contract in `dist/`.
+`make build` uses Trunk when available. Otherwise, it performs a deterministic
+WASM release build with the pinned local `wasm-bindgen` CLI. It then assembles
+the same static-host asset contract in `dist/`.
 
 The default feeds are same-origin `/api/mesh` and
 `https://local.bitneedle.com:19443/api/status`. Override either endpoint with

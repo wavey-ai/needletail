@@ -8,6 +8,6 @@ dedication:
 - https://commons.wikimedia.org/wiki/File:BlankMap-Equirectangular.svg
 - https://creativecommons.org/publicdomain/zero/1.0/
 
-The equirectangular projection is intentional: the dashboard can place node
-telemetry using a direct longitude/latitude to x/y conversion without shipping
-a GIS runtime or loading map tiles.
+The equirectangular projection is intentional. The dashboard can convert
+longitude and latitude directly to x and y coordinates. It does not need a GIS
+runtime or map tiles.

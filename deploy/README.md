@@ -1,6 +1,6 @@
 # Native deployment and control
 
-Component repositories produce native service binaries; `systemd` supervises
+Component repositories produce native service binaries.`systemd` supervises
 them on explicitly provisioned hosts managed by Needletail.
 
 The target production control path is:

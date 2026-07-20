@@ -2,7 +2,7 @@
 
 `media-capability` is the reusable public-key verifier for Needletail
 media-capability v1. It consumes the frozen `MediaCapabilityClaimsV1` contract
-from `media-object`; it does not define, extend, or reinterpret claim fields.
+from `media-object`. It does not define, extend, or reinterpret claim fields.
 
 The crate has no signing API and stores no private key. Issuance and private-key
 custody remain in the Needletail issuer boundary.
@@ -18,15 +18,15 @@ header is closed and canonically serialized as:
 
 The verifier enforces:
 
-- exact `alg`, `typ`, and bounded opaque `kid` values;
-- no duplicate or unknown protected-header fields;
-- unpadded canonical base64url with no alternate trailing-bit representation;
-- fixed header, claims, and Ed25519 signature bounds;
-- Ed25519 `verify_strict` against a public-key keyring;
-- signature verification before claims decoding or parsing;
-- canonical compact media-control JSON bytes after authentication;
-- pinned verifier-owned issuer and audience;
-- the exact caller-provided current authorization context;
+- exact `alg`, `typ`, and bounded opaque `kid` values
+- no duplicate or unknown protected-header fields
+- unpadded canonical base64url with no alternate trailing-bit representation
+- fixed header, claims, and Ed25519 signature bounds
+- Ed25519 `verify_strict` against a public-key keyring
+- signature verification before claims decoding or parsing
+- canonical compact media-control JSON bytes after authentication
+- pinned verifier-owned issuer and audience
+- the exact caller-provided current authorization context
 - an atomic caller-provided replay and resource-admission decision.
 
 Header parsing necessarily precedes signature verification because `kid`
@@ -37,7 +37,7 @@ selects the public key. Claims parsing never does.
 `VerificationKeyring` contains only Ed25519 public keys. Each unique `kid` is
 either:
 
-- `Active`; or
+- `Active`. Or
 - `Retiring { accept_until }`, accepted only while the verifier's trusted
   current time is earlier than that deadline.
 
