@@ -86,8 +86,6 @@ The player provides:
 - playback, buffer, and live-edge progress on the timeline; and
 - seeking within the retained live window.
 
-![Needletail live player](docs/release/screenshots/live-player.png)
-
 ## Operations
 
 Needletail Operations shows the complete route from contribution to playback.
