@@ -207,9 +207,9 @@ gcloud compute scp "${TLS_CERT}" "${READER_HOST}:/tmp/fullchain.pem" \
 
 gcp_ssh "${DAW_HOST}" --command="sudo systemctl stop \
   needletail-rist-source-lori-4k.service 2>/dev/null || true
-  pkill -f '/usr/local/bin/daw-test-source' 2>/dev/null || true"
-gcp_ssh "${READER_HOST}" --command="pkill -f \
-  '/usr/local/bin/aep1-48k-probe load-hls' 2>/dev/null || true"
+  pkill -x daw-test-source 2>/dev/null || true"
+gcp_ssh "${READER_HOST}" --command="pkill -x aep1-48k-probe \
+  2>/dev/null || true"
 restart_media_services
 
 now_ns="$(gcp_ssh "${DAW_HOST}" --command='date +%s%N' | tail -1)"
