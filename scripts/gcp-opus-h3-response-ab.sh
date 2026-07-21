@@ -13,6 +13,7 @@ EDGE_HOST="${GCP_EDGE_HOST:-nt-edge-lon}"
 READER_HOST="${GCP_READER_HOST:-nt-opus-reader-lon}"
 CONTRIB_PRIVATE_IP="${GCP_CONTRIB_PRIVATE_IP:-10.84.10.5}"
 EDGE_PRIVATE_IP="${GCP_EDGE_PRIVATE_IP:-10.84.10.6}"
+EDGE_PORT="${GCP_EDGE_PORT:-443}"
 TRACK_DIRECTORY="${GCP_TRACK_DIRECTORY:-/opt/needletail/lori-pray4me-8}"
 TLS_CERT="${GCP_TLS_CERT:-${ROOT}/../tls/local.infidelity.io/fullchain.pem}"
 RUN_ID="${RUN_ID:-$(date -u '+%Y%m%dT%H%M%SZ')-opus-h3-response-ab}"
@@ -69,21 +70,27 @@ wait_for_service() {
 
 restart_media_services() {
   gcp_ssh "${RELAY_A_HOST}" \
-    --command='sudo systemctl restart needletail-mesh.service' &
+    --command='sudo systemctl restart --no-block needletail-mesh.service' &
   local relay_a_pid=$!
   gcp_ssh "${RELAY_B_HOST}" \
-    --command='sudo systemctl restart needletail-mesh.service' &
+    --command='sudo systemctl restart --no-block needletail-mesh.service' &
   local relay_b_pid=$!
   wait "${relay_a_pid}"
   wait "${relay_b_pid}"
   gcp_ssh "${EDGE_HOST}" \
-    --command='sudo systemctl restart needletail-mesh.service'
+    --command='sudo systemctl restart --no-block needletail-mesh.service'
   gcp_ssh "${CONTRIB_HOST}" \
-    --command='sudo systemctl restart needletail-contrib.service'
+    --command='sudo systemctl restart --no-block needletail-contrib.service'
   wait_for_service "${RELAY_A_HOST}" needletail-mesh.service
   wait_for_service "${RELAY_B_HOST}" needletail-mesh.service
   wait_for_service "${EDGE_HOST}" needletail-mesh.service
   wait_for_service "${CONTRIB_HOST}" needletail-contrib.service
+  gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 60); do
+    curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
+      >/dev/null && exit 0
+    sleep 1
+  done
+  exit 1"
 }
 
 trial_offset_ms() {
@@ -109,9 +116,15 @@ run_trial() {
   local start_offset_ms before_file after_file
   mkdir -p "${local_dir}"
 
-  gcp_ssh "${EDGE_HOST}" --command='sudo systemctl restart needletail-mesh.service'
+  gcp_ssh "${EDGE_HOST}" \
+    --command='sudo systemctl restart --no-block needletail-mesh.service'
   wait_for_service "${EDGE_HOST}" needletail-mesh.service
-  sleep 2
+  gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 60); do
+    curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
+      >/dev/null && exit 0
+    sleep 1
+  done
+  exit 1"
   start_offset_ms="$(trial_offset_ms)"
   before_file="${local_dir}/edge-cpu-before.txt"
   after_file="${local_dir}/edge-cpu-after.txt"
@@ -123,7 +136,7 @@ run_trial() {
     status=0
     for stream_id in \$(seq 1 ${TRACKS}); do
       /usr/local/bin/aep1-48k-probe load-hls \
-        --edge ${EDGE_PRIVATE_IP}:19444 \
+        --edge ${EDGE_PRIVATE_IP}:${EDGE_PORT} \
         --server-name local.infidelity.io \
         --tls-ca /tmp/fullchain.pem \
         --transport h3 \
