@@ -33,12 +33,10 @@ This README uses fMP4 for fragmented MP4.
 RIST and SRT recover MPEG-TS before this packaging step.
 RTMP supplies encoded access units through its FLV input.
 
-The contribution protocol ends at `av-contrib`.
-The relay fabric does not carry raw RIST, SRT, RTMP, FLV, or MPEG-TS data.
-The fabric receives bounded, immutable media objects with stream identity, timing, dependencies, and integrity data.
-
-This boundary keeps protocol recovery near the source.
-It also prevents each relay from repeating demultiplexing and packaging work.
+`av-contrib` converts each contribution into bounded, immutable media objects.
+Each object carries stream identity, timing, dependencies, and integrity data.
+The relay fabric carries these canonical objects between the source, relay parents, and playback edges.
+This design performs protocol recovery and packaging once near the source.
 
 ## Adaptive Delivery
 
