@@ -25,6 +25,7 @@ WINDOW_SECONDS="${WINDOW_SECONDS:-8}"
 DEADLINE_MS="${DEADLINE_MS:-1000}"
 ARRIVAL_WINDOW_MS="${ARRIVAL_WINDOW_MS:-750}"
 ARRIVAL_SEED="${ARRIVAL_SEED:-424242}"
+START_LEAD_MS="${START_LEAD_MS:-20000}"
 FULL_RESPONSE_MS="${FULL_RESPONSE_MS:-100}"
 FULL_CUSTOMERS="${FULL_CUSTOMERS:-12}"
 FULL_WINDOW_SECONDS="${FULL_WINDOW_SECONDS:-90}"
@@ -180,16 +181,54 @@ wait_for_edge_media() {
 trial_offset_ms() {
   local now_ns
   now_ns="$(gcp_ssh "${READER_HOST}" --command='date +%s%N' | tail -1)"
-  printf '%s\n' "$(( ((now_ns - session_id) / 1000000 + 5000) / 5 * 5 ))"
+  printf '%s\n' "$(( ((now_ns - session_id) / 1000000 + START_LEAD_MS) / 5 * 5 ))"
 }
 
-capture_cpu_sample() {
-  local destination="$1"
-  gcp_ssh "${EDGE_HOST}" --command="pid=\$(systemctl show \
-    needletail-mesh.service --property=MainPID --value)
-  ticks=\$(awk '{ print \$14 + \$15 }' /proc/\${pid}/stat)
-  printf '%s %s %s %s\n' \"\$(date +%s%N)\" \"\${ticks}\" \
-    \"\$(getconf CLK_TCK)\" \"\${pid}\"" >"${destination}"
+capture_cpu_window() {
+  local destination="$1" start_ns="$2" sample_seconds="$3"
+  gcp_ssh "${EDGE_HOST}" --command="now_ns=\$(date +%s%N)
+  if ((now_ns < ${start_ns})); then
+    wait_ns=\$(( ${start_ns} - now_ns ))
+    sleep \$(awk -v wait_ns=\"\${wait_ns}\" 'BEGIN { printf \"%.6f\", wait_ns / 1000000000 }')
+  fi
+  for sample in 1 2; do
+    pid=\$(systemctl show needletail-mesh.service --property=MainPID --value)
+    ticks=\$(awk '{ print \$14 + \$15 }' /proc/\${pid}/stat)
+    read -r total idle < <(awk '/^cpu / {
+      total = 0
+      for (field = 2; field <= NF; field++) total += \$field
+      print total, \$5 + \$6
+      exit
+    }' /proc/stat)
+    printf '%s %s %s %s %s %s %s\n' \"\$(date +%s%N)\" \"\${ticks}\" \
+      \"\$(getconf CLK_TCK)\" \"\${pid}\" \"\${total}\" \"\${idle}\" \
+      \"\$(nproc)\"
+    if ((sample == 1)); then
+      sleep ${sample_seconds}
+    fi
+  done" >"${destination}"
+}
+
+capture_reader_cpu_window() {
+  local destination="$1" start_ns="$2" sample_seconds="$3"
+  gcp_ssh "${READER_HOST}" --command="now_ns=\$(date +%s%N)
+  if ((now_ns < ${start_ns})); then
+    wait_ns=\$(( ${start_ns} - now_ns ))
+    sleep \$(awk -v wait_ns=\"\${wait_ns}\" 'BEGIN { printf \"%.6f\", wait_ns / 1000000000 }')
+  fi
+  for sample in 1 2; do
+    read -r total idle < <(awk '/^cpu / {
+      total = 0
+      for (field = 2; field <= NF; field++) total += \$field
+      print total, \$5 + \$6
+      exit
+    }' /proc/stat)
+    printf '%s %s %s %s %s\n' \"\$(date +%s%N)\" \"\${total}\" \
+      \"\${idle}\" \"\$(getconf CLK_TCK)\" \"\$(nproc)\"
+    if ((sample == 1)); then
+      sleep ${sample_seconds}
+    fi
+  done" >"${destination}"
 }
 
 run_trial() {
@@ -197,7 +236,8 @@ run_trial() {
   local trial_name="${label}-r${response_ms}-c${customers}"
   local remote_dir="${REMOTE_ROOT}/${trial_name}"
   local local_dir="${RESULT_DIR}/${trial_name}"
-  local start_offset_ms before_file after_file
+  local start_offset_ms start_unix_ns cpu_window_seconds edge_cpu_file reader_cpu_file
+  local edge_sample_pid reader_sample_pid load_pid
   mkdir -p "${local_dir}"
 
   set_edge_response_ms "${response_ms}"
@@ -215,9 +255,16 @@ run_trial() {
   exit 1"
   wait_for_edge_media
   start_offset_ms="$(trial_offset_ms)"
-  before_file="${local_dir}/edge-cpu-before.txt"
-  after_file="${local_dir}/edge-cpu-after.txt"
-  capture_cpu_sample "${before_file}"
+  start_unix_ns="$((session_id + start_offset_ms * 1000000))"
+  cpu_window_seconds="$((window_seconds + (ARRIVAL_WINDOW_MS + 999) / 1000 + 1))"
+  edge_cpu_file="${local_dir}/edge-cpu-window.txt"
+  reader_cpu_file="${local_dir}/reader-cpu-window.txt"
+  capture_cpu_window "${edge_cpu_file}" "${start_unix_ns}" \
+    "${cpu_window_seconds}" &
+  edge_sample_pid=$!
+  capture_reader_cpu_window "${reader_cpu_file}" "${start_unix_ns}" \
+    "${cpu_window_seconds}" &
+  reader_sample_pid=$!
 
   gcp_ssh "${READER_HOST}" --command="set -u
     rm -rf '${remote_dir}'
@@ -251,9 +298,11 @@ run_trial() {
     for stream_id in \$(seq 1 ${TRACKS}); do
       wait \"\${pids[\${stream_id}]}\" || status=1
     done
-    printf '%s\n' \"\${status}\" >'${remote_dir}'/exit"
-
-  capture_cpu_sample "${after_file}"
+    printf '%s\n' \"\${status}\" >'${remote_dir}'/exit" &
+  load_pid=$!
+  wait "${load_pid}"
+  wait "${edge_sample_pid}"
+  wait "${reader_sample_pid}"
   gcp_scp_from "${READER_HOST}" "${remote_dir}" "${local_dir}"
   local copied_dir="${local_dir}/${trial_name}"
   local load_status
@@ -267,10 +316,10 @@ run_trial() {
     --argjson tracks "${TRACKS}" \
     --argjson window_seconds "${window_seconds}" \
     --argjson process_status "${load_status}" \
-    --rawfile cpu_before "${before_file}" \
-    --rawfile cpu_after "${after_file}" '
-      ($cpu_before | [splits("\\s+") | select(length > 0) | tonumber]) as $before
-      | ($cpu_after | [splits("\\s+") | select(length > 0) | tonumber]) as $after
+    --rawfile edge_cpu "${edge_cpu_file}" \
+    --rawfile reader_cpu "${reader_cpu_file}" '
+      ($edge_cpu | [splits("\\s+") | select(length > 0) | tonumber]) as $edge
+      | ($reader_cpu | [splits("\\s+") | select(length > 0) | tonumber]) as $reader
       | {
           schema: "needletail.opus-h3-response-ab-trial.v1",
           run_id: $run_id,
@@ -286,21 +335,41 @@ run_trial() {
           missing_units: (map(.missing_parts_total) | add),
           non_contiguous_pts: (map(.non_contiguous_pts_total) | add),
           deadline_misses: (map(.deadline_misses_total) | add),
+          readers_requested: (map(.readers_requested) | add),
+          readers_completed: (map(.readers_completed) | add),
+          readers_with_incomplete_media: (map(.readers_with_incomplete_media) | add),
+          init_verified_readers: (map(.init_verified_readers) | add),
+          playlist_verified_readers: (map(.playlist_verified_readers) | add),
+          opus_media_packet_mismatches: (map(.opus_media_packet_mismatches_total) | add),
+          pcm_media_size_mismatches: (map(.pcm_media_size_mismatches_total) | add),
+          unexpected_errors: [.[] | .errors[]? | select(test("deadline misses") | not)],
           media_responses: (map(.media_responses_total) | add),
           final_part_p99_ms: (map(.final_part_to_response_p99_ms_across_readers.p99) | max),
           cache_to_client_p99_ms: (map(.cache_to_client_p99_ms_across_readers.p99) | max),
-          edge_cpu_cores: ((($after[1] - $before[1]) / $after[2]) / (($after[0] - $before[0]) / 1000000000)),
-          edge_pid_stable: ($before[3] == $after[3]),
+          edge_cpu_cores: ((($edge[8] - $edge[1]) / $edge[9]) / (($edge[7] - $edge[0]) / 1000000000)),
+          edge_host_cpu_cores: (((($edge[11] - $edge[4]) - ($edge[12] - $edge[5])) / $edge[9]) / (($edge[7] - $edge[0]) / 1000000000)),
+          edge_vcpus: $edge[13],
+          reader_host_cpu_cores: (((($reader[6] - $reader[1]) - ($reader[7] - $reader[2])) / $reader[8]) / (($reader[5] - $reader[0]) / 1000000000)),
+          reader_vcpus: $reader[9],
+          edge_pid_stable: ($edge[3] == $edge[10]),
           process_status: $process_status,
           passed: ($process_status == 0 and (map(.passed) | all))
         }
     ' "${copied_dir}"/stream-*.json >"${local_dir}/trial.json"
   jq -c . "${local_dir}/trial.json"
   jq -e '
-    .passed
-    and .edge_pid_stable
+    .edge_pid_stable
+    and .process_status == (if .deadline_misses > 0 then 1 else 0 end)
+    and .received_units == .expected_units
     and .missing_units == 0
     and .non_contiguous_pts == 0
+    and .readers_completed == .readers_requested
+    and .readers_with_incomplete_media == 0
+    and .init_verified_readers == .readers_requested
+    and .playlist_verified_readers == .readers_requested
+    and .opus_media_packet_mismatches == 0
+    and .pcm_media_size_mismatches == 0
+    and (.unexpected_errors | length) == 0
   ' "${local_dir}/trial.json" >/dev/null
 }
 
