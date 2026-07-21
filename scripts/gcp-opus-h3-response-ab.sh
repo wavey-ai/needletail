@@ -28,6 +28,7 @@ ARRIVAL_SEED="${ARRIVAL_SEED:-424242}"
 FULL_RESPONSE_MS="${FULL_RESPONSE_MS:-100}"
 FULL_CUSTOMERS="${FULL_CUSTOMERS:-12}"
 FULL_WINDOW_SECONDS="${FULL_WINDOW_SECONDS:-90}"
+BENCHMARK_CONFIGURED=0
 IFS=, read -r -a RESPONSE_VALUES <<<"${RESPONSE_VALUES:-5,100,200}"
 IFS=, read -r -a CUSTOMER_VALUES <<<"${CUSTOMER_VALUES:-1,2,3,4,5,8,12}"
 
@@ -64,6 +65,17 @@ cleanup_remote_load() {
     2>/dev/null || true" >/dev/null 2>&1 || true
   gcp_ssh "${DAW_HOST}" --command="pkill -x daw-test-source \
     2>/dev/null || true" >/dev/null 2>&1 || true
+  if [[ "${BENCHMARK_CONFIGURED}" == 1 ]]; then
+    for host in "${CONTRIB_HOST}" "${RELAY_A_HOST}" "${RELAY_B_HOST}" \
+      "${EDGE_HOST}"; do
+      gcp_ssh "${host}" --command="sudo rm -f \
+        /run/systemd/system/needletail-contrib.service.d/50-opus-benchmark.conf \
+        /run/systemd/system/needletail-mesh.service.d/50-opus-benchmark.conf \
+        /run/needletail-opus-benchmark.env
+        sudo systemctl daemon-reload" >/dev/null 2>&1 || true
+    done
+    restart_media_services >/dev/null 2>&1 || true
+  fi
 }
 
 trap cleanup_remote_load EXIT
@@ -78,18 +90,31 @@ wait_for_service() {
 }
 
 restart_media_services() {
+  gcp_ssh "${CONTRIB_HOST}" \
+    --command='sudo systemctl stop needletail-contrib.service'
+  gcp_ssh "${EDGE_HOST}" \
+    --command='sudo systemctl stop needletail-mesh.service'
   gcp_ssh "${RELAY_A_HOST}" \
-    --command='sudo systemctl restart --no-block needletail-mesh.service' &
+    --command='sudo systemctl stop needletail-mesh.service' &
   local relay_a_pid=$!
   gcp_ssh "${RELAY_B_HOST}" \
-    --command='sudo systemctl restart --no-block needletail-mesh.service' &
+    --command='sudo systemctl stop needletail-mesh.service' &
   local relay_b_pid=$!
   wait "${relay_a_pid}"
   wait "${relay_b_pid}"
+
+  gcp_ssh "${RELAY_A_HOST}" \
+    --command='sudo systemctl start needletail-mesh.service' &
+  relay_a_pid=$!
+  gcp_ssh "${RELAY_B_HOST}" \
+    --command='sudo systemctl start needletail-mesh.service' &
+  relay_b_pid=$!
+  wait "${relay_a_pid}"
+  wait "${relay_b_pid}"
   gcp_ssh "${EDGE_HOST}" \
-    --command='sudo systemctl restart --no-block needletail-mesh.service'
+    --command='sudo systemctl start needletail-mesh.service'
   gcp_ssh "${CONTRIB_HOST}" \
-    --command='sudo systemctl restart --no-block needletail-contrib.service'
+    --command='sudo systemctl start needletail-contrib.service'
   wait_for_service "${RELAY_A_HOST}" needletail-mesh.service
   wait_for_service "${RELAY_B_HOST}" needletail-mesh.service
   wait_for_service "${EDGE_HOST}" needletail-mesh.service
@@ -97,6 +122,50 @@ restart_media_services() {
   gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 60); do
     curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
       >/dev/null && exit 0
+    sleep 1
+  done
+  exit 1"
+}
+
+configure_benchmark_part_ms() {
+  local host service
+  BENCHMARK_CONFIGURED=1
+  for host in "${CONTRIB_HOST}" "${RELAY_A_HOST}" "${RELAY_B_HOST}" \
+    "${EDGE_HOST}"; do
+    service=needletail-mesh.service
+    [[ "${host}" == "${CONTRIB_HOST}" ]] && service=needletail-contrib.service
+    gcp_ssh "${host}" --command="sudo mkdir -p \
+      /run/systemd/system/${service}.d
+      printf 'NEEDLETAIL_PART_MS=5\\n' | sudo tee \
+        /run/needletail-opus-benchmark.env >/dev/null
+      printf '[Service]\\nEnvironmentFile=/run/needletail-opus-benchmark.env\\n' | sudo tee \
+        /run/systemd/system/${service}.d/50-opus-benchmark.conf >/dev/null
+      sudo systemctl daemon-reload"
+  done
+}
+
+assert_benchmark_part_ms() {
+  gcp_ssh "${CONTRIB_HOST}" --command="pid=\$(systemctl show \
+    needletail-contrib.service --property=MainPID --value)
+  tr '\\0' ' ' </proc/\${pid}/cmdline | grep -Fq -- '--fmp4-part-ms 5 '"
+  for host in "${RELAY_A_HOST}" "${RELAY_B_HOST}" "${EDGE_HOST}"; do
+    gcp_ssh "${host}" --command="pid=\$(systemctl show \
+      needletail-mesh.service --property=MainPID --value)
+    tr '\\0' ' ' </proc/\${pid}/cmdline | grep -Fq -- '--part-ms 5 '"
+  done
+}
+
+wait_for_edge_media() {
+  gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 90); do
+    if curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
+      | jq -e '[.streams[] | select(
+          .node_id == \"edge\"
+          and .stream_id >= 1
+          and .stream_id <= ${TRACKS}
+          and (.latest_mesh_part // -1) >= 20
+        )] | length == ${TRACKS}' >/dev/null; then
+      exit 0
+    fi
     sleep 1
   done
   exit 1"
@@ -126,7 +195,7 @@ run_trial() {
   mkdir -p "${local_dir}"
 
   gcp_ssh "${EDGE_HOST}" \
-    --command='sudo systemctl restart --no-block needletail-mesh.service'
+    --command='sudo systemctl restart needletail-mesh.service'
   wait_for_service "${EDGE_HOST}" needletail-mesh.service
   gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 60); do
     curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
@@ -134,6 +203,7 @@ run_trial() {
     sleep 1
   done
   exit 1"
+  wait_for_edge_media
   start_offset_ms="$(trial_offset_ms)"
   before_file="${local_dir}/edge-cpu-before.txt"
   after_file="${local_dir}/edge-cpu-after.txt"
@@ -232,7 +302,9 @@ gcp_ssh "${DAW_HOST}" --command="sudo systemctl stop \
   pkill -x daw-test-source 2>/dev/null || true"
 gcp_ssh "${READER_HOST}" --command="pkill -x aep1-48k-probe \
   2>/dev/null || true"
+configure_benchmark_part_ms
 restart_media_services
+assert_benchmark_part_ms
 
 now_ns="$(gcp_ssh "${DAW_HOST}" --command='date +%s%N' | tail -1)"
 session_id="$((now_ns + 15000000000))"
@@ -245,6 +317,7 @@ gcp_ssh "${DAW_HOST}" --command="rm -rf '${REMOTE_ROOT}'
   echo \$! >'${REMOTE_ROOT}'/source.pid"
 
 sleep 20
+wait_for_edge_media
 for response_ms in "${RESPONSE_VALUES[@]}"; do
   for customers in "${CUSTOMER_VALUES[@]}"; do
     run_trial "${response_ms}" "${customers}" "${WINDOW_SECONDS}" matrix
