@@ -1,12 +1,16 @@
 [package]
-name = "needletail"
-version = "0.7.4"
+name = "needletail-live"
+version = "0.1.0"
 edition = "2021"
 default-run = "needletail"
 license = "MIT"
 description = "Product-level orchestration for the Needletail realtime media constellation"
 repository = "https://github.com/wavey-ai/needletail"
 readme = "README.md"
+
+[[bin]]
+name = "needletail"
+path = "src/main.rs"
 
 [workspace]
 members = [".", "crates/capability-controller", "crates/media-capability"]
