@@ -8,6 +8,9 @@ description = "Product-level orchestration for the Needletail realtime media con
 repository = "https://github.com/wavey-ai/needletail"
 readme = "README.md"
 
+[lib]
+name = "needletail"
+
 [[bin]]
 name = "needletail"
 path = "src/main.rs"

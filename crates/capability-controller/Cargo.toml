@@ -13,7 +13,7 @@ base64 = "0.22"
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "zeroize"] }
 getrandom = "0.2"
 hmac = "0.12"
-media-capability = { version = "0.1.1", path = "../media-capability" }
+media-capability = "0.1.1"
 media-object = "0.1.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
