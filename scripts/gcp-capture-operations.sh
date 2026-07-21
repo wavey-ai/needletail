@@ -8,10 +8,21 @@ ZONE="${GCP_ZONE:-europe-west2-c}"
 READER_HOST="${GCP_READER_HOST:-nt-opus-reader-lon}"
 EDGE_PRIVATE_IP="${GCP_EDGE_PRIVATE_IP:-10.84.10.6}"
 CONTRIB_PRIVATE_IP="${GCP_CONTRIB_PRIVATE_IP:-10.84.10.5}"
+LOAD_PROCESS_NAME="${GCP_LOAD_PROCESS_NAME:-aep1-48k-probe}"
+LOAD_PROCESS_MIN="${GCP_LOAD_PROCESS_MIN:-8}"
 RUN_DIR="${1:?pass the local GCP benchmark result directory}"
 RUN_ID="$(basename "${RUN_DIR}")"
 REMOTE_DIR="/tmp/${RUN_ID}-operations-captures"
 LOCAL_DIR="${RUN_DIR}/ui-screenshots"
+
+[[ "${LOAD_PROCESS_NAME}" =~ ^[A-Za-z0-9._-]+$ ]] || {
+  echo "GCP_LOAD_PROCESS_NAME contains an invalid character" >&2
+  exit 2
+}
+[[ "${LOAD_PROCESS_MIN}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "GCP_LOAD_PROCESS_MIN must be a positive integer" >&2
+  exit 2
+}
 
 gcp_ssh() {
   gcloud compute ssh "${READER_HOST}" --project="${GCP_PROJECT}" \
@@ -28,7 +39,7 @@ done
 }
 
 gcp_ssh --command="for _ in \$(seq 1 120); do
-  [[ \$(pgrep -xc aep1-48k-probe || true) -ge 8 ]] && exit 0
+  [[ \$(pgrep -xc '${LOAD_PROCESS_NAME}' || true) -ge ${LOAD_PROCESS_MIN} ]] && exit 0
   sleep 1
 done
 exit 1"
