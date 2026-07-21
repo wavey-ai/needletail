@@ -304,7 +304,7 @@ start_receivers() {
     echo \$! >${remote_prefix}-udp.pid
     nohup /usr/local/bin/aep1-48k-probe receive-webtransport \
       --edge 127.0.0.1:19444 \
-      --server-name local.bitneedle.com \
+      --server-name local.infidelity.io \
       --session-id ${session_id} \
       --group-id ${group_id} \
       --duration-seconds ${DURATION_SECONDS} \
@@ -314,7 +314,7 @@ start_receivers() {
     echo \$! >${remote_prefix}-webtransport.pid
     nohup /usr/local/bin/aep1-48k-probe receive-hls \
       --edge 127.0.0.1:19444 \
-      --server-name local.bitneedle.com \
+      --server-name local.infidelity.io \
       --transport h3 \
       --stream-id ${stream_id} \
       --session-id ${session_id} \

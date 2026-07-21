@@ -87,7 +87,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "capability-controller"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -323,7 +323,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "media-capability"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "base64ct",
@@ -336,7 +336,9 @@ dependencies = [
 
 [[package]]
 name = "media-object"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef77f0e529d99fd674e3bcffc67ad999148b96b02e7bcb363a32573c65ac815a"
 dependencies = [
  "serde",
  "serde_json",
@@ -362,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "needletail"
-version = "0.1.0"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "clap",

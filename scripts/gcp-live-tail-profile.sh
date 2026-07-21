@@ -230,7 +230,7 @@ gcp_ssh "${DAW_HOST}" --command="nohup env \
 gcp_ssh "${READER_HOST}" --command="nohup bash -c '
   /usr/local/bin/aep1-48k-probe load-hls \
     --edge ${EDGE_PRIVATE_IP}:19444 \
-    --server-name local.bitneedle.com \
+    --server-name local.infidelity.io \
     --tls-ca /tmp/fullchain.pem \
     --transport h3 \
     --path-prefix /live \

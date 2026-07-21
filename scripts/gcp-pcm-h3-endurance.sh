@@ -474,7 +474,7 @@ launch_sustained_reader_step() {
   mkdir -p "${local_step}"
   load_ssh "mkdir -p ${remote_step}
     nohup /usr/local/bin/aep1-48k-probe load-hls \
-      --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.bitneedle.com \
+      --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
       --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
       --stream-id ${STREAM_0} --session-id ${SESSION_ID} \
       --duration-seconds ${DURATION_SECONDS} --start-offset-ms ${start_offset_ms} \
@@ -483,7 +483,7 @@ launch_sustained_reader_step() {
       --expected-audio-codec ipcm --expected-pcm-channels 8 \
       >${remote_step}/group-0.json 2>${remote_step}/group-0.err & echo \$! >${remote_step}/group-0.pid
     nohup /usr/local/bin/aep1-48k-probe load-hls \
-      --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.bitneedle.com \
+      --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
       --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
       --stream-id ${STREAM_1} --session-id ${SESSION_ID} \
       --duration-seconds ${DURATION_SECONDS} --start-offset-ms ${start_offset_ms} \
@@ -628,7 +628,7 @@ finalize_sustained_reader_step() {
 
 load_ssh "mkdir -p ${REMOTE_ROOT}
   nohup /usr/local/bin/aep1-48k-probe load-hls \
-    --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.bitneedle.com \
+    --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
     --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
     --stream-id ${STREAM_0} --session-id ${SESSION_ID} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
@@ -636,7 +636,7 @@ load_ssh "mkdir -p ${REMOTE_ROOT}
     --expected-audio-codec ipcm --expected-pcm-channels 8 \
     >${REMOTE_ROOT}/group-0.json 2>${REMOTE_ROOT}/group-0.err & echo \$! >${REMOTE_ROOT}/group-0.pid
   nohup /usr/local/bin/aep1-48k-probe load-hls \
-    --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.bitneedle.com \
+    --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
     --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
     --stream-id ${STREAM_1} --session-id ${SESSION_ID} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \

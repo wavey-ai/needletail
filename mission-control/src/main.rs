@@ -16,9 +16,9 @@ mod app {
     use wasm_bindgen_futures::spawn_local;
 
     const DEFAULT_EDGE_API: &str = "/api/mesh";
-    const DEFAULT_CONTRIB_API: &str = "https://local.bitneedle.com:19443/api/status";
-    const PUBLIC_OPERATIONS_HOST: &str = "mission-control.bitneedle.com";
-    const PUBLIC_CONTRIB_API: &str = "https://mission-control-feed.bitneedle.com/api/status";
+    const DEFAULT_CONTRIB_API: &str = "https://local.infidelity.io:19443/api/status";
+    const PUBLIC_OPERATIONS_HOST: &str = "mission-control.infidelity.io";
+    const PUBLIC_CONTRIB_API: &str = "https://mission-control-feed.infidelity.io/api/status";
     const POLL_INTERVAL_MS: u32 = 5_000;
     const RATE_HISTORY_POINTS: usize = 72;
 

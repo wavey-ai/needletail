@@ -19,8 +19,8 @@ GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 LINODE_SSH_KEY="${NEEDLETAIL_LINODE_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 LINODE_SSH_USER="${NEEDLETAIL_LINODE_SSH_USER:-root}"
 LINODE_KNOWN_HOSTS="${NEEDLETAIL_LINODE_KNOWN_HOSTS:-${QUALIFICATION_ROOT}/known_hosts}"
-TLS_CERT="${NEEDLETAIL_GCP_TLS_CERT:-${WORKSPACE_ROOT}/tls/local.bitneedle.com/fullchain.pem}"
-TLS_KEY="${NEEDLETAIL_GCP_TLS_KEY:-${WORKSPACE_ROOT}/tls/local.bitneedle.com/privkey.pem}"
+TLS_CERT="${NEEDLETAIL_GCP_TLS_CERT:-${WORKSPACE_ROOT}/tls/local.infidelity.io/fullchain.pem}"
+TLS_KEY="${NEEDLETAIL_GCP_TLS_KEY:-${WORKSPACE_ROOT}/tls/local.infidelity.io/privkey.pem}"
 [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]] || {
   echo "Needletail qualification TLS files are missing" >&2
   exit 2
@@ -180,6 +180,7 @@ else
 fi
 SKIP_BUILD="${NEEDLETAIL_DEPLOY_SKIP_BUILD:-${NEEDLETAIL_GCP_SKIP_BUILD:-0}}"
 PART_MS="${NEEDLETAIL_PART_MS:-${NEEDLETAIL_GCP_PART_MS:-5}}"
+FMP4_PART_MS="${NEEDLETAIL_FMP4_PART_MS:-${NEEDLETAIL_GCP_FMP4_PART_MS:-200}}"
 DAW_HLS_PACKAGING="${NEEDLETAIL_DAW_HLS_PACKAGING:-opaque}"
 WINDOW_PARTS="${NEEDLETAIL_GCP_WINDOW_PARTS:-4000}"
 PATH_PROBE_COUNT="${NEEDLETAIL_GCP_PATH_PROBE_COUNT:-7}"
@@ -397,10 +398,12 @@ jq -e --arg carrier "${CARRIER_PROFILE}" '
 ' "${PLAN}" >/dev/null
 install -m 644 "${TLS_CERT}" "${ARTIFACT_DIR}/fullchain.pem"
 install -m 600 "${TLS_KEY}" "${ARTIFACT_DIR}/privkey.pem"
+npm ci --prefix "${ROOT}/player" --ignore-scripts
+npm run build --prefix "${ROOT}/player"
 
 SOURCE_ARCHIVE="${ARTIFACT_DIR}/needletail-source.tar.gz"
 if [[ "${SKIP_BUILD}" == 1 ]]; then
-  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/h3-static-capacity" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" && -f "${ARTIFACT_DIR}/chrony.deb" ]] || {
+  [[ -x "${ARTIFACT_DIR}/av-mesh" && -x "${ARTIFACT_DIR}/h3-static-capacity" && -x "${ARTIFACT_DIR}/av-contrib" && -x "${ARTIFACT_DIR}/aep1-48k-probe" && -x "${ARTIFACT_DIR}/rist-send" && -f "${ARTIFACT_DIR}/chrony.deb" ]] || {
     echo "NEEDLETAIL_DEPLOY_SKIP_BUILD=1 requires cached Linux binaries" >&2
     exit 2
   }
@@ -423,8 +426,8 @@ else
     --exclude='*.pem' \
     --exclude='*.key' \
     -C "${WORKSPACE_ROOT}" \
-    access-unit av-mesh av-contrib av-api av-service boxer media-object relay-session playlists raptor-fec rtmp-ingress \
-    soundkit frame-header libopus-rs \
+    access-unit av-mesh av-contrib av-api av-service boxer media-object relay-session playlists raptor-fec rtmp-ingress rist-rs mpeg2ts-reader \
+    soundkit frame-header libopus-rs web-services \
     needletail/crates/media-capability
 
   echo "Waiting for the contributor build host"
@@ -444,10 +447,12 @@ else
   provider_scp_from contributor /tmp/h3-static-capacity "${ARTIFACT_DIR}/h3-static-capacity"
   provider_scp_from contributor /tmp/av-contrib "${ARTIFACT_DIR}/av-contrib"
   provider_scp_from contributor /tmp/aep1-48k-probe "${ARTIFACT_DIR}/aep1-48k-probe"
+  provider_scp_from contributor /tmp/rist-send "${ARTIFACT_DIR}/rist-send"
   provider_scp_from contributor /tmp/needletail-chrony.deb \
     "${ARTIFACT_DIR}/chrony.deb"
   chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/h3-static-capacity" \
-    "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe"
+    "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe" \
+    "${ARTIFACT_DIR}/rist-send"
 fi
 
 write_mesh_env() {
@@ -486,6 +491,7 @@ cat >"${ARTIFACT_DIR}/contributor.env" <<EOF
 NEEDLETAIL_NODE_ID=contrib
 NEEDLETAIL_HTTP_PORT=19443
 NEEDLETAIL_PART_MS=${PART_MS}
+NEEDLETAIL_FMP4_PART_MS=${FMP4_PART_MS}
 NEEDLETAIL_DAW_MEDIA_PORT=27100
 NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY=4096
 NEEDLETAIL_DAW_HLS_PACKAGING=${DAW_HLS_PACKAGING}
@@ -530,6 +536,8 @@ deploy_edge() {
     "${PLAN}" "${ARTIFACT_DIR}/fullchain.pem" "${ARTIFACT_DIR}/privkey.pem" "${ARTIFACT_DIR}/${role}.env"
   provider_scp_directory_to "${role}" "${ROOT}/mission-control/dist" \
     /tmp/needletail-deploy/mission-control
+  provider_scp_directory_to "${role}" "${ROOT}/player/dist" \
+    /tmp/needletail-deploy/player
   gcp_ssh "${role}" --command="mv /tmp/needletail-deploy/${role}.env /tmp/needletail-deploy/node.env; chmod +x /tmp/needletail-deploy/install-node.sh; /tmp/needletail-deploy/install-node.sh mesh"
 }
 
@@ -568,6 +576,7 @@ gcp_ssh contributor --command='rm -rf /tmp/needletail-deploy && mkdir -p /tmp/ne
 gcp_scp_to contributor \
   "${ARTIFACT_DIR}/av-contrib" \
   "${ARTIFACT_DIR}/aep1-48k-probe" \
+  "${ARTIFACT_DIR}/rist-send" \
   "${ARTIFACT_DIR}/chrony.deb" \
   "${DEPLOY_DIR}/av-contrib-run" \
   "${DEPLOY_DIR}/chrony-gcp.conf" \
@@ -627,5 +636,5 @@ echo "Tokyo edge public endpoint: https://${EDGE_EXTERNAL_IP}:19444/mesh"
 echo "New York edge public endpoint: https://${EDGE_NEW_YORK_EXTERNAL_IP}:19444/mesh"
 echo "Sydney edge public endpoint: https://${EDGE_SYDNEY_EXTERNAL_IP}:19444/mesh"
 echo "Recommended trusted local tunnel ports: edge=19447 contributor=19448"
-echo "Needletail Operations after tunnels: https://local.bitneedle.com:19447/mesh?contrib=https%3A%2F%2Flocal.bitneedle.com%3A19448%2Fapi%2Fstatus"
-echo "Needletail Operations: https://mission-control.bitneedle.com/mesh"
+echo "Needletail Operations after tunnels: https://local.infidelity.io:19447/mesh?contrib=https%3A%2F%2Flocal.infidelity.io%3A19448%2Fapi%2Fstatus"
+echo "Needletail Operations: https://mission-control.infidelity.io/mesh"

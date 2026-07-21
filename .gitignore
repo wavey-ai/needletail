@@ -1,5 +1,7 @@
 /target/
 /mission-control/target/
 /mission-control/dist/
+/player/dist/
+/player/node_modules/
 /.bootstrap-tls/
 /.DS_Store

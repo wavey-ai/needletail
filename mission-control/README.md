@@ -13,6 +13,8 @@ separate hash-routed views for:
   confidence
 - alerts and recent activity from both services.
 
+![Needletail operations overview](../docs/release/screenshots/operations.png)
+
 The browser fetches the two bounded snapshots concurrently every five seconds.
 It pauses routine polling while the page is hidden. It calculates throughput
 from monotonic counter changes. It retains at most six minutes of rate samples
@@ -60,7 +62,7 @@ WASM release build with the pinned local `wasm-bindgen` CLI. It then assembles
 the same static-host asset contract in `dist/`.
 
 The default feeds are same-origin `/api/mesh` and
-`https://local.bitneedle.com:19443/api/status`. Override either endpoint with
+`https://local.infidelity.io:19443/api/status`. Override either endpoint with
 the controls in the header or query parameters:
 
 ```text

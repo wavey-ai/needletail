@@ -46,6 +46,11 @@ if [[ "${SERVICE}" == mesh ]]; then
     sudo install -d -m 755 /opt/needletail/mission-control
     sudo cp -R "${STAGE}/mission-control/." /opt/needletail/mission-control/
   fi
+  if [[ -d "${STAGE}/player" ]]; then
+    sudo rm -rf /opt/needletail/player
+    sudo install -d -m 755 /opt/needletail/player
+    sudo cp -R "${STAGE}/player/." /opt/needletail/player/
+  fi
   sudo systemctl daemon-reload
   sudo systemctl enable --now needletail-mesh.service
   sudo systemctl restart needletail-mesh.service
@@ -55,6 +60,9 @@ if [[ "${SERVICE}" == mesh ]]; then
 else
   sudo install -m 755 "${STAGE}/av-contrib" /usr/local/bin/av-contrib
   sudo install -m 755 "${STAGE}/aep1-48k-probe" /usr/local/bin/aep1-48k-probe
+  if [[ -x "${STAGE}/rist-send" ]]; then
+    sudo install -m 755 "${STAGE}/rist-send" /usr/local/bin/rist-send
+  fi
   sudo install -m 755 "${STAGE}/av-contrib-run" /usr/local/bin/needletail-av-contrib-run
   sudo install -m 644 "${STAGE}/needletail-contrib.service" \
     /etc/systemd/system/needletail-contrib.service

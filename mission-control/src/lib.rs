@@ -1234,26 +1234,6 @@ pub fn operational_alerts(
                 context: Some(status.node.node_id.clone()),
             });
         }
-        events.extend(
-            status
-                .relay_nodes
-                .iter()
-                .filter(|node| node.relay_session.failover_lease_expirations > 0)
-                .map(|node| OperationalEvent {
-                    source: EventSource::Delivery,
-                    level: "warning".to_owned(),
-                    code: "relay_failover_lease_expired".to_owned(),
-                    message:
-                        "A warm relay returned to repair-only after its promotion lease expired."
-                            .to_owned(),
-                    count: node.relay_session.failover_lease_expirations,
-                    seen_unix_ms: transition_or_snapshot_time(
-                        node.relay_session.failover_listener_last_transition_unix_ms,
-                        status.updated_unix_ms,
-                    ),
-                    context: Some(node.node_id.clone()),
-                }),
-        );
     }
     sort_and_bound_events(&mut events);
     events
@@ -1292,6 +1272,26 @@ pub fn operational_activity(
                         .node_id
                         .clone()
                         .or_else(|| event.stream_id_text.clone()),
+                }),
+        );
+        events.extend(
+            status
+                .relay_nodes
+                .iter()
+                .filter(|node| node.relay_session.failover_lease_expirations > 0)
+                .map(|node| OperationalEvent {
+                    source: EventSource::Delivery,
+                    level: "info".to_owned(),
+                    code: "relay_failover_lease_expired".to_owned(),
+                    message:
+                        "A warm relay returned to repair-only after its promotion lease expired."
+                            .to_owned(),
+                    count: node.relay_session.failover_lease_expirations,
+                    seen_unix_ms: transition_or_snapshot_time(
+                        node.relay_session.failover_listener_last_transition_unix_ms,
+                        status.updated_unix_ms,
+                    ),
+                    context: Some(node.node_id.clone()),
                 }),
         );
     }
@@ -1684,6 +1684,22 @@ mod tests {
             .find(|event| event.code == "relay_failover_secondary_unavailable")
             .unwrap();
         assert_eq!(unavailable.seen_unix_ms, edge.updated_unix_ms);
+
+        let relay = edge.relay_nodes.first_mut().unwrap();
+        relay.relay_session.failover_lease_expirations = 3;
+        relay
+            .relay_session
+            .failover_listener_last_transition_unix_ms = 1_784_102_401_234;
+        assert!(operational_alerts(None, Some(&edge))
+            .iter()
+            .all(|event| event.code != "relay_failover_lease_expired"));
+        let activity = operational_activity(None, Some(&edge));
+        let expiry = activity
+            .iter()
+            .find(|event| event.code == "relay_failover_lease_expired")
+            .unwrap();
+        assert_eq!(expiry.level, "info");
+        assert_eq!(expiry.seen_unix_ms, 1_784_102_401_234);
     }
 
     #[test]

@@ -56,7 +56,7 @@ CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
 CARGO_TARGET_DIR=/opt/needletail-build/target \
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo build --release --locked \
   --manifest-path /opt/needletail-build/source/av-contrib/Cargo.toml \
-  --bin av-contrib --bin aep1-48k-probe
+  --bin av-contrib --bin aep1-48k-probe --bin rist-send
 
 install -m 755 \
   /opt/needletail-build/target/release/av-mesh \
@@ -70,6 +70,9 @@ install -m 755 \
 install -m 755 \
   /opt/needletail-build/target/release/aep1-48k-probe \
   /tmp/aep1-48k-probe
+install -m 755 \
+  /opt/needletail-build/target/release/rist-send \
+  /tmp/rist-send
 sha256sum /tmp/av-mesh /tmp/h3-static-capacity /tmp/av-contrib \
-  /tmp/aep1-48k-probe /tmp/needletail-chrony.deb \
+  /tmp/aep1-48k-probe /tmp/rist-send /tmp/needletail-chrony.deb \
   > /tmp/needletail-binaries.sha256

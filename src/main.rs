@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-const DEFAULT_HOST: &str = "local.bitneedle.com";
+const DEFAULT_HOST: &str = "local.infidelity.io";
 const CONTRIB_NODE_ID: &str = "contrib";
 const PRIMARY_RELAY_NODE_ID: &str = "relay-primary";
 const SECONDARY_RELAY_NODE_ID: &str = "relay-secondary";
@@ -52,6 +52,12 @@ struct Args {
 
     #[arg(long)]
     no_mission_control_build: bool,
+
+    #[arg(long, env = "NEEDLETAIL_PLAYER_DIST")]
+    player_dist: Option<PathBuf>,
+
+    #[arg(long)]
+    no_player_build: bool,
 
     #[arg(long, default_value_t = 1)]
     stream_id: u64,
@@ -182,7 +188,7 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:19350")]
     rtmp_bind: SocketAddr,
 
-    #[arg(long, default_value = "obs-local")]
+    #[arg(long, default_value = "live-local")]
     rtmp_stream_key: String,
 
     #[arg(long, default_value_t = 25)]
@@ -258,6 +264,22 @@ async fn main() -> Result<()> {
         );
     }
 
+    let player_dist = resolve_player_dist(&args, &needletail_root);
+    if !args.no_build && !args.no_player_build {
+        run_player_build(&needletail_root, &player_dist).await?;
+    }
+    if player_dist.join("index.html").exists() {
+        println!(
+            "[orchestrator] Needletail Player assets: {}",
+            player_dist.display()
+        );
+    } else {
+        println!(
+            "[orchestrator] Player setup response active at /1; build product assets into {}",
+            player_dist.display()
+        );
+    }
+
     let mesh_bin = target_release_bin(&mesh_root, "av-mesh");
     let contrib_bin = target_release_bin(&contrib_root, "av-contrib");
     ensure_executable(&mesh_bin, "av-mesh")?;
@@ -303,10 +325,13 @@ async fn main() -> Result<()> {
                     relay_arguments: primary_relay_args,
                 }),
                 &rust_log,
-                &[(
-                    "NEEDLETAIL_MISSION_CONTROL_DIST",
-                    mission_control_dist.display().to_string(),
-                )],
+                &[
+                    (
+                        "NEEDLETAIL_MISSION_CONTROL_DIST",
+                        mission_control_dist.display().to_string(),
+                    ),
+                    ("NEEDLETAIL_PLAYER_DIST", player_dist.display().to_string()),
+                ],
             )
             .await?,
         );
@@ -336,10 +361,13 @@ async fn main() -> Result<()> {
                     relay_arguments: secondary_relay_args,
                 }),
                 &rust_log,
-                &[(
-                    "NEEDLETAIL_MISSION_CONTROL_DIST",
-                    mission_control_dist.display().to_string(),
-                )],
+                &[
+                    (
+                        "NEEDLETAIL_MISSION_CONTROL_DIST",
+                        mission_control_dist.display().to_string(),
+                    ),
+                    ("NEEDLETAIL_PLAYER_DIST", player_dist.display().to_string()),
+                ],
             )
             .await?,
         );
@@ -369,10 +397,13 @@ async fn main() -> Result<()> {
                     relay_arguments: edge_relay_args,
                 }),
                 &rust_log,
-                &[(
-                    "NEEDLETAIL_MISSION_CONTROL_DIST",
-                    mission_control_dist.display().to_string(),
-                )],
+                &[
+                    (
+                        "NEEDLETAIL_MISSION_CONTROL_DIST",
+                        mission_control_dist.display().to_string(),
+                    ),
+                    ("NEEDLETAIL_PLAYER_DIST", player_dist.display().to_string()),
+                ],
             )
             .await?,
         );
@@ -457,6 +488,16 @@ async fn main() -> Result<()> {
             "/needletail_mission_control_bg.wasm",
         ] {
             require_https_resource("Needletail Operations", &args.host, args.uk_http_port, path)
+                .await?;
+        }
+        for path in [
+            "/1",
+            "/player.css",
+            "/player.js",
+            "/hls.min.js",
+            "/manifest.webmanifest",
+        ] {
+            require_https_resource("Needletail Player", &args.host, args.uk_http_port, path)
                 .await?;
         }
         require_https_resource(
@@ -793,6 +834,12 @@ fn resolve_mission_control_dist(args: &Args, needletail_root: &Path) -> PathBuf 
         .unwrap_or_else(|| needletail_root.join("mission-control").join("dist"))
 }
 
+fn resolve_player_dist(args: &Args, needletail_root: &Path) -> PathBuf {
+    args.player_dist
+        .clone()
+        .unwrap_or_else(|| needletail_root.join("player").join("dist"))
+}
+
 async fn run_mission_control_build(
     needletail_root: &Path,
     mission_control_dist: &Path,
@@ -820,6 +867,55 @@ async fn run_mission_control_build(
         .with_context(|| "failed to start Needletail Operations asset build")?;
     if !status.success() {
         bail!("Needletail Operations build failed with {status}");
+    }
+    Ok(())
+}
+
+async fn run_player_build(needletail_root: &Path, player_dist: &Path) -> Result<()> {
+    let player_root = needletail_root.join("player");
+    let package_json = player_root.join("package.json");
+    if !package_json.exists() {
+        bail!(
+            "Needletail Player source is required at {}",
+            package_json.display()
+        );
+    }
+    if !player_root
+        .join("node_modules/hls.js/dist/hls.min.js")
+        .exists()
+    {
+        println!(
+            "[orchestrator] installing locked Needletail Player dependencies in {}",
+            player_root.display()
+        );
+        let status = Command::new("npm")
+            .args(["ci", "--ignore-scripts"])
+            .current_dir(&player_root)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .with_context(|| "failed to install Needletail Player dependencies")?;
+        if !status.success() {
+            bail!("Needletail Player dependency install failed with {status}");
+        }
+    }
+
+    println!(
+        "[orchestrator] building Needletail Player in {}",
+        player_root.display()
+    );
+    let status = Command::new("npm")
+        .args(["run", "build", "--"])
+        .arg(player_dist)
+        .current_dir(&player_root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| "failed to start Needletail Player asset build")?;
+    if !status.success() {
+        bail!("Needletail Player build failed with {status}");
     }
     Ok(())
 }
@@ -1110,17 +1206,9 @@ fn first_exited(services: &mut [Service]) -> Result<Option<(String, ExitStatus)>
 fn print_ready(args: &Args) {
     println!();
     println!("[orchestrator] Needletail local stack ready");
+    println!("[orchestrator] generic live-ingest endpoints");
     println!(
-        "[orchestrator] OBS RTMP server: rtmp://{}:{}/live",
-        args.host,
-        args.rtmp_bind.port()
-    );
-    println!(
-        "[orchestrator] OBS RTMP stream key: {}",
-        args.rtmp_stream_key
-    );
-    println!(
-        "[orchestrator] OBS SRT caller URL: srt://{}:{}?mode=caller",
+        "[orchestrator] SRT caller URL: srt://{}:{}?mode=caller",
         args.host,
         args.srt_bind.port()
     );
@@ -1129,6 +1217,19 @@ fn print_ready(args: &Args) {
         args.host,
         args.rist_bind.port(),
         args.rist_flow_id
+    );
+    println!(
+        "[orchestrator] RTMP compatibility URL: rtmp://{}:{}/live",
+        args.host,
+        args.rtmp_bind.port()
+    );
+    println!(
+        "[orchestrator] RTMP ingest stream key: {}",
+        args.rtmp_stream_key
+    );
+    println!(
+        "[orchestrator] player: https://{}:{}/{}",
+        args.host, args.uk_http_port, args.stream_id
     );
     println!(
         "[orchestrator] playback edge: https://{}:{}/live/{}/stream.m3u8",

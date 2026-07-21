@@ -5,6 +5,7 @@ set -euo pipefail
 PLAN="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
 SERVICE="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
   '.services[] | select(.service == "av_contrib" and .node_id == $node)' "${PLAN}")"
+fmp4_part_ms="${NEEDLETAIL_FMP4_PART_MS:-${NEEDLETAIL_PART_MS:-50}}"
 
 args=(
   /usr/local/bin/av-contrib
@@ -21,7 +22,7 @@ args=(
   --rist-stream-id 1
   --srt-stream-id 1
   --rtmp-stream-id 1
-  --fmp4-part-ms "${NEEDLETAIL_PART_MS:-50}"
+  --fmp4-part-ms "${fmp4_part_ms}"
   --wall-clock-estimated-error-ms "${NEEDLETAIL_CLOCK_ERROR_MS:-5}"
   --rist-bind 0.0.0.0:27000
   --rist-flow-id 0x11223344

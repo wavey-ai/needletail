@@ -8,6 +8,7 @@ Type=simple
 EnvironmentFile=/etc/needletail/node.env
 Environment=RUST_LOG=av_mesh=info,av_web_service=warn
 Environment=NEEDLETAIL_MISSION_CONTROL_DIST=/opt/needletail/mission-control
+Environment=NEEDLETAIL_PLAYER_DIST=/opt/needletail/player
 ExecStart=/usr/local/bin/needletail-av-mesh-run
 Restart=always
 RestartSec=2

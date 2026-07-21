@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 
 CARGO ?= cargo
-HOST ?= local.bitneedle.com
+HOST ?= local.infidelity.io
 STREAM_ID ?= 1
 PART_MS ?= 50
 RUST_LOG ?= info
@@ -11,6 +11,7 @@ STACK_ARGS ?=
 
 .PHONY: help local local-debug local-fast build build-release check test fmt \
 	mission-control-build mission-control-serve mission-control-check mission-control-test \
+	player-install player-build player-check player-test \
 	realtime-benchmark realtime-qualification realtime-soak gcp-intercontinental-qualification two-region-smoke \
 	observability-check observability-up observability-down product-boundary-check
 
@@ -22,6 +23,8 @@ help:
 	@printf '%s\n' '  make mission-control-build Build Needletail Operations assets'
 	@printf '%s\n' '  make mission-control-serve Serve Operations with Trunk'
 	@printf '%s\n' '  make mission-control-check Check product UI models and WASM'
+	@printf '%s\n' '  make player-build          Build the edge-hosted HLS.js player'
+	@printf '%s\n' '  make player-check          Check and test the player source'
 	@printf '%s\n' '  make realtime-benchmark     Benchmark an already-running constellation'
 	@printf '%s\n' '  make realtime-qualification Run local baseline + controlled-loss qualification'
 	@printf '%s\n' '  make gcp-intercontinental-qualification Qualify the deployed four-region relay DAG'
@@ -33,7 +36,7 @@ help:
 	@printf '%s\n' '  make product-boundary-check Check that product integrations stay outside Needletail'
 	@printf '%s\n' '  make check                  Check the standalone Needletail Rust tools'
 	@printf '%s\n' ''
-	@printf '%s\n' 'Common overrides: STREAM_ID=1 PART_MS=50 RUST_LOG=info HOST=local.bitneedle.com'
+	@printf '%s\n' 'Common overrides: STREAM_ID=1 PART_MS=50 RUST_LOG=info HOST=local.infidelity.io'
 
 local:
 	AV_LL_HLS_PART_MS=$(PART_MS) RUST_LOG=$(RUST_LOG) \
@@ -62,6 +65,18 @@ mission-control-check:
 
 mission-control-test:
 	$(MAKE) -C mission-control test
+
+player-install:
+	npm ci --prefix player
+
+player-build:
+	npm run build --prefix player
+
+player-check:
+	npm run check --prefix player
+
+player-test:
+	npm run test --prefix player
 
 realtime-benchmark:
 	./scripts/realtime-benchmark.sh

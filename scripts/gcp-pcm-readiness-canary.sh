@@ -110,7 +110,7 @@ start_receiver() {
   local suffix="$2"
   gcp_ssh "${EDGE_NAME}" "${EDGE_ZONE}" --command="
     nohup /usr/local/bin/aep1-48k-probe receive-hls \
-      --edge ${EDGE_IP}:19444 --server-name local.bitneedle.com \
+      --edge ${EDGE_IP}:19444 --server-name local.infidelity.io \
       --tls-ca /etc/needletail/tls/fullchain.pem \
       --transport h3 --path-prefix /live --stream-id ${stream_id} \
       --session-id ${SESSION_ID} --duration-seconds ${DURATION_SECONDS} \

@@ -1,6 +1,6 @@
 [package]
 name = "media-capability"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.81"
 license = "MIT"
@@ -14,7 +14,7 @@ base64 = "0.22"
 # for ed25519-dalek; base64ct 1.8 switched its manifest to edition 2024.
 base64ct = { version = "=1.7.3", default-features = false, optional = true }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
-media-object = "0.1.0"
+media-object = "0.1.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Same MSRV lock for ed25519-dalek's key-material hygiene dependency.

@@ -28,7 +28,7 @@ args=(
   --fec-bind "0.0.0.0:${NEEDLETAIL_FEC_PORT:-22001}"
   --media-fec-bind "0.0.0.0:${NEEDLETAIL_MEDIA_FEC_PORT:-22101}"
   --telemetry-bind "0.0.0.0:${NEEDLETAIL_TELEMETRY_PORT:-27300}"
-  --telemetry-dns-name local.bitneedle.com
+  --telemetry-dns-name local.infidelity.io
   --telemetry-private-ipv4 "${NEEDLETAIL_PRIVATE_IP}"
   --telemetry-interval-ms "${NEEDLETAIL_TELEMETRY_INTERVAL_MS:-1000}"
   --stream-id 1

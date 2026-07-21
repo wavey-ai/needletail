@@ -400,7 +400,7 @@ run_trial() {
     ((readers_for_host == 0)) && continue
     load_ssh "${host}" "mkdir -p ${remote_trial}
       /usr/local/bin/aep1-48k-probe load-hls \
-        --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.bitneedle.com \
+        --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
         --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
         --stream-id ${trial_stream_0} --session-id ${session_id} \
         --duration-seconds ${SOURCE_DURATION_SECONDS} \
@@ -410,7 +410,7 @@ run_trial() {
         --expected-pcm-channels 8 \
         >${remote_trial}/group-0.json 2>${remote_trial}/group-0.err & p0=\$!
       /usr/local/bin/aep1-48k-probe load-hls \
-        --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.bitneedle.com \
+        --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
         --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
         --stream-id ${trial_stream_1} --session-id ${session_id} \
         --duration-seconds ${SOURCE_DURATION_SECONDS} \
