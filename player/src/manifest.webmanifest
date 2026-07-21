@@ -1,0 +1,9 @@
+{
+  "name": "Needletail Live",
+  "short_name": "Needletail",
+  "description": "Low-latency live playback from a Needletail edge.",
+  "start_url": "/1",
+  "display": "standalone",
+  "background_color": "#07110e",
+  "theme_color": "#07110e"
+}

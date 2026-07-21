@@ -1,0 +1,19 @@
+{
+  "name": "needletail-player",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Needletail playback-edge LL-HLS player",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --check src/player.js && node --test tests/*.test.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node tests/browser-smoke.mjs",
+    "test:continuity": "node tests/hls-av-continuity.mjs",
+    "test:load": "node tests/hls-load.mjs",
+    "test:native-safari": "node tests/native-safari-smoke.mjs"
+  },
+  "dependencies": {
+    "hls.js": "1.6.16"
+  }
+}

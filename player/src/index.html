@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07110e" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="referrer" content="same-origin" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
+    <title>Needletail Live</title>
+    <meta name="description" content="Low-latency live playback from the nearest Needletail edge." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%2307110e'/%3E%3Cpath d='M15 45V19l17 26V19l17 26V19' fill='none' stroke='%2368e7ae' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/player.css" />
+    <script src="/hls.min.js" defer></script>
+    <script src="/player.js" type="module"></script>
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <main class="page-shell">
+      <header class="site-header">
+        <div class="header-left">
+          <a class="brand" href="/1" aria-label="Needletail Live home">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 36 36"><path d="M7 27V9l11 18V9l11 18V9" /></svg>
+            </span>
+            <span><strong>Needletail</strong><small>LIVE</small></span>
+          </a>
+
+          <span class="header-tags" aria-label="Stream metadata">
+            <span class="header-tag" id="header-stream-tag">STREAM 1</span>
+            <span class="header-tag protocol-tag" id="source-protocol">RIST</span>
+          </span>
+        </div>
+
+        <div class="edge-pill" id="edge-pill" aria-live="polite">
+          <span class="edge-pulse"></span>
+          <span id="edge-label">London edge</span>
+        </div>
+      </header>
+
+      <section class="player-card" id="player-card">
+        <div class="video-stage" id="video-stage">
+          <video id="video" playsinline preload="auto" aria-label="Needletail live stream"></video>
+          <div class="stage-gradient" aria-hidden="true"></div>
+
+          <div class="stage-topline">
+            <span class="live-badge" id="live-badge"><i></i><span>WAITING</span></span>
+            <span class="latency-badge" id="latency-badge">Connecting</span>
+          </div>
+
+          <div class="empty-state" id="empty-state">
+            <div class="signal-orbit" aria-hidden="true">
+              <span></span><span></span><span></span>
+              <svg viewBox="0 0 52 52"><path d="M12 38V14l14 24V14l14 24V14" /></svg>
+            </div>
+            <p class="empty-kicker" id="empty-kicker">LONDON EDGE IS READY</p>
+            <h2 id="empty-title">Waiting for live ingest</h2>
+            <p id="empty-copy">Playback will join automatically when fresh media reaches this edge.</p>
+            <button class="primary-action" id="start-button" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5V7Z" /></svg>
+              <span>Check live feed</span>
+            </button>
+          </div>
+
+          <div class="tap-target" id="tap-target" aria-hidden="true"></div>
+
+          <div class="controls" id="controls">
+            <button class="icon-button" id="play-button" type="button" aria-label="Play">
+              <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5V7Z" /></svg>
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h3v10H8zm5 0h3v10h-3z" /></svg>
+            </button>
+            <button class="icon-button" id="mute-button" type="button" aria-label="Unmute">
+              <svg class="sound-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l4 3V7l-4 3H5Zm11.2-.8a4 4 0 0 1 0 5.6M18.5 7a7 7 0 0 1 0 10" /></svg>
+              <svg class="muted-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l4 3V7l-4 3H5Zm11-1 5 6m0-6-5 6" /></svg>
+            </button>
+            <button class="live-jump" id="live-button" type="button"><i></i> LIVE</button>
+            <div class="live-timeline" id="live-timeline">
+              <span class="timeline-track" aria-hidden="true">
+                <span class="timeline-buffered" id="timeline-buffered"></span>
+                <span class="timeline-played" id="timeline-played"></span>
+              </span>
+              <input id="seek-bar" type="range" min="0" max="1000" step="1" value="1000" aria-label="Live window position" />
+              <span class="timeline-live-edge" aria-hidden="true"></span>
+            </div>
+            <span class="quality-label" id="quality-label">AUTO</span>
+            <button class="icon-button" id="fullscreen-button" type="button" aria-label="Enter full screen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" /></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="status-grid" aria-label="Stream details">
+        <article class="status-card">
+          <span class="status-icon"><svg viewBox="0 0 24 24"><path d="M5 16a10 10 0 0 1 14 0M8 19a6 6 0 0 1 8 0m-4 2h.01M3 12a14 14 0 0 1 18 0" /></svg></span>
+          <div><small>FEED</small><strong id="feed-value">Waiting for ingest</strong></div>
+        </article>
+        <article class="status-card">
+          <span class="status-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M12 8v5l3 2" /></svg></span>
+          <div><small>LIVE DELAY</small><strong id="delay-value">—</strong></div>
+        </article>
+        <article class="status-card">
+          <span class="status-icon"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m9 9 6 3-6 3V9Z" /></svg></span>
+          <div><small>PICTURE</small><strong id="picture-value">Auto</strong></div>
+        </article>
+        <article class="status-card mode-card">
+          <span class="status-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></svg></span>
+          <div>
+            <small>PLAYER</small>
+            <div class="mode-choices" id="player-mode-control" role="group" aria-label="Player mode">
+              <button type="button" data-player-mode="native">Native</button>
+              <button type="button" data-player-mode="hls">HLS.js</button>
+            </div>
+          </div>
+        </article>
+        <article class="status-card latency-card">
+          <span class="status-icon"><svg viewBox="0 0 24 24"><path d="M4 12h4l2-6 4 12 2-6h4" /></svg></span>
+          <div>
+            <small>TARGET</small>
+            <div class="latency-slider">
+              <strong id="latency-target-value">700 ms</strong>
+              <input id="latency-target" type="range" min="0.1" max="5" step="0.05" value="0.7" aria-label="Live latency target" />
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="share-row">
+        <div>
+          <small>WATCH ON ANOTHER DEVICE</small>
+          <p>Open this secure link on your phone, tablet, or TV.</p>
+        </div>
+        <button class="share-button" id="share-button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12h8m-4-4 4 4-4 4M5 5h4M5 5v14h4" /></svg>
+          <span>Share stream</span>
+        </button>
+      </section>
+
+      <footer>
+        <span>Needletail Playback Edge</span><span class="footer-dot"></span>
+        <span id="transport-label">HLS.js low-latency playback</span>
+      </footer>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

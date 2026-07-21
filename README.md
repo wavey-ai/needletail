@@ -129,38 +129,10 @@ Needletail composes the services that move media from source to viewer.
 
 ## Local Development
 
-Place Needletail beside its service repositories:
+Needletail uses published registry crates from crates.io.
+The repository contains the orchestration tools, Operations assets, Player assets, and release checks.
 
-```text
-wavey.ai/
-  needletail/
-  av-contrib/
-  av-mesh/
-  av-service/
-  media-object/
-  relay-session/
-  playlists/
-  raptor-fec/
-  tls/
-```
-
-Start two playback edges and one contribution service:
-
-```sh
-make local
-```
-
-Use the fast target after the service binaries and web assets are ready:
-
-```sh
-make local-fast
-```
-
-The supervisor prints the local RIST, SRT, RTMP, player, and Operations addresses.
-
-Cargo manifests use published registry crates.
-
-Run workspace checks with:
+Build and check the repository with:
 
 ```sh
 make fmt
@@ -169,6 +141,15 @@ make test
 make player-check
 make mission-control-check
 ```
+
+Build the browser assets with:
+
+```sh
+make player-build
+make mission-control-build
+```
+
+Cargo manifests use published registry crates from crates.io.
 
 ## Documentation
 
