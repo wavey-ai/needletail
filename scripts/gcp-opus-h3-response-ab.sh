@@ -286,6 +286,12 @@ run_trial() {
         }
     ' "${copied_dir}"/stream-*.json >"${local_dir}/trial.json"
   jq -c . "${local_dir}/trial.json"
+  jq -e '
+    .passed
+    and .edge_pid_stable
+    and .missing_units == 0
+    and .non_contiguous_pts == 0
+  ' "${local_dir}/trial.json" >/dev/null
 }
 
 mkdir -p "${RESULT_DIR}"
