@@ -93,7 +93,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom",
  "hmac",
- "media-capability",
+ "media-capability 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "media-object",
  "serde",
  "serde_json",
@@ -327,6 +327,20 @@ version = "0.1.1"
 dependencies = [
  "base64",
  "base64ct",
+ "ed25519-dalek",
+ "media-object",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "media-capability"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a5931bc782093c3aea6aafe6a7018b04200bbb6d44511cc7a27d7d5b019e40"
+dependencies = [
+ "base64",
  "ed25519-dalek",
  "media-object",
  "serde",

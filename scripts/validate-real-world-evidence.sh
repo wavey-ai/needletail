@@ -105,6 +105,39 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.gcp_instances_stopped_after_collection == true
           and (.cleanup.stopped_instances | length) == 6
           and .cleanup.persistent_disks_preserved == true
+        elif .schema == "needletail.opus-h3-response-ab.v1" then
+          .provider == "gcp"
+          and .result == "matched_response_duration_qualified"
+          and .matched_geometry.part_ms == 5
+          and .matched_geometry.tracks_per_customer == 8
+          and .matched_geometry.h3_connections_per_customer == 8
+          and .aggregate.trials == 22
+          and .aggregate.expected_units == 3072000
+          and .aggregate.received_units == .aggregate.expected_units
+          and .aggregate.missing_units == 0
+          and .aggregate.non_contiguous_pts == 0
+          and .aggregate.deadline_misses == 0
+          and .aggregate.opus_media_packet_mismatches == 0
+          and .aggregate.unexpected_errors == 0
+          and (.release_gates | all(.[]; . == true))
+          and ([.trials[]] | all(.[];
+            .passed == true
+            and .readers_requested == .readers_completed
+            and .received_units == .expected_units
+            and .missing_units == 0
+            and .non_contiguous_pts == 0
+            and .deadline_misses == 0
+            and .opus_media_packet_mismatches == 0
+            and .unexpected_errors == []
+            and .edge_pid_stable == true
+          ))
+          and .cleanup.source_process_exited == true
+          and .cleanup.reader_processes_exited == true
+          and .cleanup.benchmark_override_absent == true
+          and .cleanup.all_needletail_services_active == true
+          and .cleanup.normal_lori_source_inactive == true
+          and .cleanup.gcp_lab_retained_for_followup_testing == true
+          and .cleanup.persistent_media_disk_preserved == true
         elif .schema == "needletail.h264-fmp4-llhls-4k-8k.v1" then
           .provider == "gcp"
           and .result == "private_gcp_4k_and_derived_8k_transport_qualified"

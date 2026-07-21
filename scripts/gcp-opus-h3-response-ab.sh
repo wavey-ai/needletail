@@ -344,6 +344,8 @@ run_trial() {
           pcm_media_size_mismatches: (map(.pcm_media_size_mismatches_total) | add),
           unexpected_errors: [.[] | .errors[]? | select(test("deadline misses") | not)],
           media_responses: (map(.media_responses_total) | add),
+          availability_p99_ms: (map(.availability_p99_ms_across_readers.p99) | max),
+          first_part_to_response_p99_ms: (map(.first_part_to_response_p99_ms_across_readers.p99) | max),
           final_part_p99_ms: (map(.final_part_to_response_p99_ms_across_readers.p99) | max),
           cache_to_client_p99_ms: (map(.cache_to_client_p99_ms_across_readers.p99) | max),
           edge_cpu_cores: ((($edge[8] - $edge[1]) / $edge[9]) / (($edge[7] - $edge[0]) / 1000000000)),

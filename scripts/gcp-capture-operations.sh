@@ -45,11 +45,13 @@ gcp_ssh --command="set -eu
       'https://${EDGE_PRIVATE_IP}/mesh?contrib=https%3A%2F%2F${CONTRIB_PRIVATE_IP}%2Fapi%2Fstatus#'\${page} \
       >'${REMOTE_DIR}'/chromium-\${page}.log 2>&1
   done
-  [[ \$(find '${REMOTE_DIR}' -maxdepth 1 -name 'operations-*.png' | wc -l) -eq 8 ]]"
+  [[ \$(find '${REMOTE_DIR}' -maxdepth 1 -name 'operations-*.png' | wc -l) -eq 8 ]]
+  rm -rf '${REMOTE_DIR}'/profile-*"
 
 mkdir -p "${LOCAL_DIR}"
 gcloud compute scp --recurse "${READER_HOST}:${REMOTE_DIR}" "${LOCAL_DIR}" \
   --project="${GCP_PROJECT}" --zone="${ZONE}" --tunnel-through-iap \
   --quiet --scp-flag=-C
+gcp_ssh --command="rm -rf '${REMOTE_DIR}'"
 
 printf '%s\n' "${LOCAL_DIR}/$(basename "${REMOTE_DIR}")"
