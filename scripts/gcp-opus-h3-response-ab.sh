@@ -155,6 +155,12 @@ assert_benchmark_part_ms() {
   done
 }
 
+set_edge_response_ms() {
+  local response_ms="$1"
+  gcp_ssh "${EDGE_HOST}" --command="printf 'NEEDLETAIL_PART_MS=5\\nNEEDLETAIL_RESPONSE_MS=${response_ms}\\n' | sudo tee \
+    /run/needletail-opus-benchmark.env >/dev/null"
+}
+
 wait_for_edge_media() {
   gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 90); do
     if curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
@@ -194,9 +200,13 @@ run_trial() {
   local start_offset_ms before_file after_file
   mkdir -p "${local_dir}"
 
+  set_edge_response_ms "${response_ms}"
   gcp_ssh "${EDGE_HOST}" \
     --command='sudo systemctl restart needletail-mesh.service'
   wait_for_service "${EDGE_HOST}" needletail-mesh.service
+  gcp_ssh "${EDGE_HOST}" --command="pid=\$(systemctl show \
+    needletail-mesh.service --property=MainPID --value)
+  tr '\\0' ' ' </proc/\${pid}/cmdline | grep -Fq -- '--response-ms ${response_ms} '"
   gcp_ssh "${EDGE_HOST}" --command="for _ in \$(seq 1 60); do
     curl --max-time 2 -ksSf https://127.0.0.1:${EDGE_PORT}/api/mesh \
       >/dev/null && exit 0
