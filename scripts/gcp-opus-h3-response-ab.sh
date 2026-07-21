@@ -59,6 +59,15 @@ gcp_scp_from() {
   done
 }
 
+cleanup_remote_load() {
+  gcp_ssh "${READER_HOST}" --command="pkill -x aep1-48k-probe \
+    2>/dev/null || true" >/dev/null 2>&1 || true
+  gcp_ssh "${DAW_HOST}" --command="pkill -x daw-test-source \
+    2>/dev/null || true" >/dev/null 2>&1 || true
+}
+
+trap cleanup_remote_load EXIT
+
 wait_for_service() {
   local host="$1" service="$2"
   gcp_ssh "${host}" --command="for _ in \$(seq 1 60); do
@@ -180,8 +189,8 @@ run_trial() {
     --argjson process_status "${load_status}" \
     --rawfile cpu_before "${before_file}" \
     --rawfile cpu_after "${after_file}" '
-      ($cpu_before | split(" ") | map(select(length > 0) | tonumber)) as $before
-      | ($cpu_after | split(" ") | map(select(length > 0) | tonumber)) as $after
+      ($cpu_before | [splits("\\s+") | select(length > 0) | tonumber]) as $before
+      | ($cpu_after | [splits("\\s+") | select(length > 0) | tonumber]) as $after
       | {
           schema: "needletail.opus-h3-response-ab-trial.v1",
           run_id: $run_id,
@@ -265,6 +274,4 @@ jq -s \
     }
   ' "${RESULT_DIR}"/*/trial.json >"${RESULT_DIR}/result.json"
 
-gcp_ssh "${DAW_HOST}" --command="kill \$(cat '${REMOTE_ROOT}'/source.pid) \
-  2>/dev/null || true"
 jq . "${RESULT_DIR}/result.json"
