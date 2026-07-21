@@ -134,6 +134,7 @@ run_trial() {
     rm -rf '${remote_dir}'
     mkdir -p '${remote_dir}'
     status=0
+    declare -a pids
     for stream_id in \$(seq 1 ${TRACKS}); do
       /usr/local/bin/aep1-48k-probe load-hls \
         --edge ${EDGE_PRIVATE_IP}:${EDGE_PORT} \
@@ -156,11 +157,10 @@ run_trial() {
         --expected-audio-codec soundkit-opus \
         >'${remote_dir}'/stream-\${stream_id}.json \
         2>'${remote_dir}'/stream-\${stream_id}.err &
-      eval pid_\${stream_id}=\$!
+      pids[\${stream_id}]=\$!
     done
     for stream_id in \$(seq 1 ${TRACKS}); do
-      eval stream_pid=\$pid_\${stream_id}
-      wait \"\${stream_pid}\" || status=1
+      wait \"\${pids[\${stream_id}]}\" || status=1
     done
     printf '%s\n' \"\${status}\" >'${remote_dir}'/exit"
 
