@@ -2,227 +2,138 @@
   <img src="image.png" alt="Needletail logo" width="260">
 </p>
 
-<p align="center">
-  The Wavey Goose is our mascot, but the Needletail is the fastest bird in level flight...
-</p>
-
 # Needletail
 
-Needletail is the product-level repo for Wavey realtime media delivery. It
-composes, runs, observes, and tests the service constellation. Core services
-and reusable crates stay in their own repos.
+Needletail is Wavey's adaptive live media delivery system for high-quality video and professional audio.
+It accepts RIST, SRT, and RTMP contribution, then publishes one canonical media stream.
+An adaptive dual-parent relay fabric carries that stream to regional playback edges.
+Each edge serves low-latency playback and gives operators a complete view of stream health.
 
-**Measured 48 kHz lossless latency:** In the London-origin dual-parent GCP run,
-persistent TLS 1.3/H3 LL-HLS used 5 ms parts. It added **2.390–2.452 ms at p50**
-over raw UDP. LL-HLS reached New York, Tokyo, and Sydney in 55.728,
-127.506, and 148.549 ms at p50. Regional cache-to-client delivery stayed below
-1.51 ms at p99. These are publication-to-client availability results, not
-browser-to-speaker latency.
+Needletail lets you:
 
-**Measured eight-track Opus capacity:** A persistent H3 response now carries a
-length-framed synchronized eight-track bundle every 5 ms. On a two-vCPU GCP
-edge, 32 customers repeated with all 2,048,000 total track units exact and no
-response beyond the 20 ms deadline. Availability p99 was 12.627–12.734 ms,
-cache-to-client p99 was 3.768–3.874 ms, and host CPU was 14.336–16.779%. This is
-128 realtime Opus track tails/vCPU with more than 83% measured headroom. A
-64-customer run reached 256 tails/vCPU cleanly, but its repeat had a rare late
-burst, so that higher tier is provisional. The accepted tier is a short-window
-result, not an endurance or production-sizing claim. See the canonical
-[current performance state and gaps](docs/performance/current-state-and-gaps.md).
+- use established broadcast contribution protocols;
+- recover and package each source one time;
+- distribute one publication to many regions and viewers;
+- adapt repair and routes to current network conditions;
+- serve browser playback with Low-Latency HTTP Live Streaming (LL-HLS); and
+- inspect ingest, routes, recovery, latency, and playback from one operations view.
 
-**Measured H.264 video path:** Realtime 3840 x 2160 H.264/AAC at 39.4 Mbit/s
-and derived 7680 x 4320 H.264/AAC at 125.5 Mbit/s passed contributor fMP4
-packaging, dual-parent private-GCP replication, LL-HLS playlist generation, and
-strict decode. The 8K fixture is transport stress derived from a 4K source, not
-a native-8K image-quality claim.
+## Ingest
 
-Needletail owns:
+Needletail accepts these contribution protocols from compatible encoders and production tools:
 
-- multi-service topology and desired-state generation
-- local and deployed orchestration
-- the operations dashboard
-- product observability
-- real-world impairment, failover, latency, and RaptorQ recovery tests
-- deployment composition around native binaries and `systemd`.
-
-Contributor-product integrations live in their owning app repos and integrate
-through Needletail's generic ingest, capability, and session APIs.
-
-## Service constellation
-
-Current components:
-
-| Component | Owner responsibility |
+| Protocol | Role |
 | --- | --- |
-| `av-contrib` | Per-stream origin ingest, FEC recovery, route-selected opaque publication or media boxing, and bounded publication to a dedicated mesh ingress. |
-| `av-mesh` | Playback edge, LL-HLS cache adapter, relay-node behavior, telemetry, and product-asset hosting. |
-| `media-object` | Canonical immutable media-object identity, bounded v1 envelope, payload integrity, dependencies, deadlines, and source-known timestamps. |
-| `raptor-fec` | Adaptive RaptorQ geometry, source-first scheduling, repair policy, deadline outcomes, and FEC-versus-fetch decisions. |
-| `relay-session` | Authenticated carrier sessions, subscriptions, symbol forwarding, reliable object fetch, queue admission, and expiry. |
-| `playlists` | Bounded chunk/manifest caches and immutable slot-write semantics used by playback edges. |
-| `av-service` | Shared HTTP, HLS, and upload-response services. |
+| RIST | Reliable Internet Stream Transport for resilient MPEG-TS contribution. |
+| SRT | Secure Reliable Transport for resilient MPEG-TS contribution. |
+| RTMP | Real-Time Messaging Protocol compatibility input for FLV publishers. |
 
-The hot path is:
+For supported H.264/AAC input, `av-contrib` creates Common Media Application Format (CMAF) fragmented MP4 parts.
+This README uses fMP4 for fragmented MP4.
+RIST and SRT recover MPEG-TS before this packaging step.
+RTMP supplies encoded access units through its FLV input.
+
+The contribution protocol ends at `av-contrib`.
+The relay fabric does not carry raw RIST, SRT, RTMP, FLV, or MPEG-TS data.
+The fabric receives bounded, immutable media objects with stream identity, timing, dependencies, and integrity data.
+
+This boundary keeps protocol recovery near the source.
+It also prevents each relay from repeating demultiplexing and packaging work.
+
+## Adaptive Delivery
+
+Needletail uses RaptorQ forward error correction for live recovery inside the relay fabric.
+It sends source symbols through the primary parent and can send compatible repair symbols through the secondary parent.
+
+Protection changes with media importance, observed loss, jitter, queue pressure, and the remaining delivery deadline.
+Reliable object fetch supplies bounded backfill when forward error correction cannot meet the deadline.
+Expired work leaves the queue before it can delay newer media.
+
+Each relay and playback edge has one primary parent and one independent warm secondary parent.
+Route selection uses measured round-trip time, jitter, loss, queue state, deadlines, and failure-domain diversity.
+Needletail starts a replacement route before it stops the current route.
+Generation fencing prevents an old route from publishing after a route change.
+
+Needletail adapts transport without changing encoded media bytes in the relay fabric.
+This design keeps recovery responsive while preserving one canonical publication.
 
 ```text
-Contributor ingest
-  -> canonical media object
-  -> RaptorQ source and repair symbols
-  -> deadline and path scheduler
-  -> RelayTransport datagram carrier
-  -> dual-parent relay DAG or direct fast path
-  -> playback edge cache
-  -> LL-HLS or interactive delivery
+RIST, SRT, or RTMP source
+  -> contributor recovery and fMP4 packaging
+  -> immutable media objects
+  -> adaptive RaptorQ dual-parent relay fabric
+  -> regional playback cache
+  -> LL-HLS player or interactive media lane
 ```
 
-RaptorQ is the live-media recovery system. QUIC Datagram is an optional carrier
-for authenticated, encrypted, paced datagrams. Reliable streams are for control,
-initialization, and backfill.
+## Playback
 
-48 kHz Audio Epoch publications have three simultaneous delivery lanes. They
-use mandatory format-preserving LL-HLS and optional browser WebTransport
-datagrams. They can also use native UDP+FEC subscriptions at a relay or playback
-edge.
+The playback edge serves same-origin LL-HLS at `/live/<stream-id>/stream.m3u8`.
+Viewers open `/<stream-id>` in the Needletail Player.
+The standard video path uses CMAF-compatible fMP4 parts, not MPEG-TS segments.
 
-An ingress route can publish producer-framed bytes unchanged or explicitly ask
-`av-contrib` to box supported elementary media. The mesh caches and replicates
-either result as immutable bytes without interpreting the payload. See
-[Audio delivery lanes](docs/audio-delivery-lanes.md) for the wire contracts,
-format behavior, and local/GCP qualification commands. The contributor performs
-stream-dependent work once and never doubles as a relay. See the
-[Contributor origin boundary](docs/contributor-origin-boundary.md).
+The player selects native HLS when the browser supports it.
+Other browsers use the bundled HLS.js implementation.
+A two-option control lets viewers select Native or HLS.js for conformance checks.
 
-## Operations dashboard
+The live-delay slider has a range from 100 ms to 5 seconds.
+The player shows the current delay and its one-second rolling average.
+The timeline shows playback position, buffered ranges, and the live edge.
+Viewers can seek within the retained live window.
 
-Needletail Operations shows contributor ingest, delivery routes, RelaySession
-lanes, RaptorQ recovery, publication continuity, latency, and alerts from
-bounded service snapshots.
+![Needletail live player](docs/release/screenshots/live-player.png)
 
-It reads:
+## Operations
 
-- `av-contrib` `GET /api/status`
-- `av-mesh` `GET /api/mesh`.
+Needletail Operations shows the complete route from contribution to playback.
+It reports active ingest protocols, stream continuity, relay parents, RaptorQ recovery, cache health, latency, and actionable alerts.
 
-Default same-origin edge feed: `/api/mesh`.
-Public UI: `https://mission-control.bitneedle.com/mesh`.
-Public Needletail Operations contributor feed:
-`https://mission-control-feed.bitneedle.com/api/status`.
-Local contributor feed: `https://local.bitneedle.com:19443/api/status`.
+The view uses bounded status snapshots from the contributor and playback edge.
+The playback edge remains the browser's single fleet data source.
 
-The local supervisor collects one snapshot every 5 seconds. Remote relays send
-bounded MessagePack snapshots over the project's RaptorQ datagram codec. The
-playback edge receives them and remains the browser's only fleet feed. The TLS
-TCP channel remains available for control commands. See
-[Operations telemetry transport](docs/operations-telemetry-transport.md).
+![Needletail operations overview](docs/release/screenshots/operations.png)
 
-Override feeds with:
+## Measured Performance
 
-```text
-/mesh?edge=https://edge.example/api/mesh&contrib=https://ingress.example/api/status
-```
+Measurements completed on 20 July 2026 show low delivery overhead and useful capacity on small edge hosts.
+The table gives the accepted result and its exact scope.
 
-Build and check the dashboard:
+| Boundary | Accepted result | Scope |
+| --- | --- | --- |
+| Wide-area 5 ms LL-HLS | 2.390-2.452 ms additional p50 latency over raw UDP | London publication to New York, Tokyo, and Sydney clients. Browser decode and device output are excluded. |
+| Persistent eight-track Opus | 128 real-time track tails per vCPU | Two-vCPU edge, 32 customers, 2,048,000 exact track units, and 12.627-12.734 ms availability p99. |
+| 4K LL-HLS video | 350 concurrent viewer tails and 3.626-3.659 Gbit/s | Two repeated 60-second runs on one `n2-standard-2` edge. fMP4 part p99 was 198.95-199.05 ms. |
 
-```sh
-make mission-control-check
-make mission-control-test
-make mission-control-build
-```
+These results are short-window engineering baselines.
+They are not endurance results or production sizing limits.
+The 400-viewer video tier delivered every part, but its 222.71 ms part p99 exceeded the gate.
 
-### Dashboard screenshots from the latest GCP run
+See [Current performance state and gaps](docs/performance/current-state-and-gaps.md) for the current boundaries.
+See the [real-world test index](docs/real-world-tests/README.md) for dated methods and evidence.
 
-Run: `20260716T023139Z`.
-Topology: London contributor, Amsterdam primary relay, Osaka secondary relay,
-Tokyo playback edge. Four `e2-standard-2` GCP instances.
+## Components
 
-#### Overview
+Needletail is the product repository for the service constellation.
+It composes, runs, observes, and validates these components:
 
-![Needletail overview dashboard](docs/performance/screenshots/20260716T023139Z-overview.png)
-
-#### Routes
-
-![Needletail routes dashboard](docs/performance/screenshots/20260716T023139Z-routes.png)
-
-#### Performance
-
-![Needletail performance dashboard](docs/performance/screenshots/20260716T023139Z-performance.png)
-
-## Current performance
-
-The canonical [current performance state and gaps](docs/performance/current-state-and-gaps.md)
-keeps the different capacity boundaries separate and names the next work. In
-brief:
-
-| Question | Current answer |
+| Component | Responsibility |
 | --- | --- |
-| How close is 5 ms LL-HLS to UDP? | 2.390–2.452 ms p50 premium in the measured multi-region GCP run. |
-| Is one playlist or part-cache lookup the limit? | No. Isolated cache reads reach millions/s, the router exceeds one million cached part responses/s, and the live path now uses bounded generation-safe range reads. |
-| What does track bundling change? | One 5 ms H3 response carries all eight tracks, cutting connections and responses/customer 8x while preserving exact media units. |
-| What limits the current edge? | The accepted 24-customer build passes the strict 20 ms short-window gate. Endurance and restart-free churn are the next limits to qualify. |
-| What is the current Opus candidate? | 24 eight-track customers on two vCPUs; two corrected clock-qualified runs were exact with zero late bundles, but the 30-minute endurance gate remains open. |
-| What happens above the candidate? | 28 first misses the provisional 20 ms p99 gate; 32 first misses 30% CPU headroom, but both still deliver every part. |
+| `av-contrib` | Accept contribution protocols, recover input, package supported media, and publish canonical objects. |
+| `media-object` | Define immutable object identity, integrity, dependencies, deadlines, and timestamps. |
+| `raptor-fec` | Select RaptorQ geometry, protection, repair scheduling, and fetch decisions. |
+| `relay-session` | Authenticate carriers, manage subscriptions, send symbols, and fetch missing objects. |
+| `av-mesh` | Relay media, maintain regional caches, serve LL-HLS, and publish telemetry. |
+| `playlists` | Maintain bounded media and manifest caches with generation-safe writes. |
+| `mission-control` | Present ingest, topology, recovery, latency, health, and alerts. |
+| `player` | Play live streams and expose latency, buffer, live-edge, and conformance controls. |
 
-Dated narratives and sanitized JSON live in the
-[real-world test index](docs/real-world-tests/README.md). Detailed geographic
-latency tables and charts remain in
-[latency performance](docs/performance/latency-performance.md).
+## Run Locally
 
-## Relay fabric
-
-Needletail compiles a forwarding graph for every stream and destination cohort.
-It selects one primary and up to one independent warm secondary parent for
-each relay or playback edge. Levels increase from the contributor origin to
-backbone relays and regional edges, keeping every forwarding route acyclic and
-origin egress independent of viewer count. Route choice uses measured RTT,
-jitter, loss, queueing, deadline behavior, and failure-domain diversity.
-
-See [Needletail relay fabric](docs/relay-fabric.md) for forwarding invariants,
-delivery classes, route compilation, session behavior, and scale gates.
-
-## RaptorQ media plane
-
-RaptorQ is the live recovery mechanism. The primary path sends source symbols.
-an independent secondary can provide compatible repair symbols, reliable
-missing-object fetches, or immediate takeover. Deadline-aware scheduling drops
-obsolete work before it delays newer media. `RelaySession` adds authenticated
-subscriptions, generation fencing, bounded queues, and reliable control and
-backfill around either QUIC Datagram or managed private-UDP carriers. The full
-contract and ownership boundaries are documented in
-[Needletail relay fabric](docs/relay-fabric.md#raptorq-media-plane).
-
-## Native control plane
-
-Component repositories produce native service binaries. Needletail deploys and
-supervises them on explicitly provisioned hosts.
-
-The target production control path:
-
-1. Provider adapters create hosts, private networking, DNS, and storage.
-2. Cloud-init installs a short-lived bootstrap identity and the Needletail node
-   agent.
-3. The agent establishes mTLS to the Needletail controller and exchanges a
-   certificate-bound node identity for short-lived workload credentials.
-4. The controller publishes a versioned desired-state generation: approved
-   artifact hashes, service roles, relay parents, stream placement, limits,
-   drain state, and rollout policy.
-5. The agent reconciles native binaries and `systemd` units idempotently, then
-   reports observed state, command IDs, health, and failure reasons.
-6. Durable leases and fencing prevent a replaced or partitioned node from
-   continuing to publish or control traffic.
-
-The first controller store may be PostgreSQL behind a storage trait. It holds
-desired state, observed generations, leases, idempotency keys, and an
-append-only audit log. Realtime media flows directly between ingress, relays,
-and edges.
-
-## Local development
-
-The default checkout layout places Needletail beside its component repos:
+Place Needletail beside its component repositories:
 
 ```text
 wavey.ai/
   needletail/
-    mission-control/
   av-contrib/
   av-mesh/
   av-service/
@@ -233,60 +144,42 @@ wavey.ai/
   tls/
 ```
 
-Run two local playback edges plus one contributor ingress:
+Start two playback edges and one contribution service:
 
 ```sh
 make local
 ```
 
-Use the fast path after component release binaries and dashboard assets have
-already been built:
+Use the fast target after you build the service binaries and web assets:
 
 ```sh
 make local-fast
 ```
 
-Component roots can be overridden:
+The supervisor prints the local RIST, SRT, RTMP, player, and operations addresses.
 
-```sh
-AV_CONTRIB_ROOT=/path/to/av-contrib AV_MESH_ROOT=/path/to/av-mesh make local
-```
-
-The local constellation wires controlled RelaySession lanes by default:
-
-- contributor source traffic: `22301 -> 22001`
-- warm-secondary repair traffic: `22302 -> 22201`
-- desired-state generation/subscription: `1`
-- canonical media-object deadlines enabled.
-
-Observability commands:
-
-```sh
-make observability-check
-make observability-up
-```
-
-Validation commands:
+Validate the workspace:
 
 ```sh
 make fmt
 make check
 make test
-bash -n scripts/*.sh
-./scripts/validate-real-world-evidence.sh
-./scripts/validate-product-boundary.sh
+make player-check
+make mission-control-check
 ```
 
-Use local hosts for unit, integration, build, dashboard, and browser smoke
-checks. Run load, capacity, soak, and profiler qualifications on explicitly
-scoped GCP hosts. Keep source, contributor, relay, edge, and reader traffic on
-private same-region subnets unless the test requires geographic distance. This
-avoids public data-plane noise and unnecessary inter-region egress. The
-dated record must state which links were private, the exact machine/zone,
-binary hash, workload geometry, failed gates, invalid attempts, and cleanup
-state. A complete byte count does not turn a latency or endurance failure into
-a pass.
+Use published crates in Cargo manifests.
+Do not add local `path` dependencies.
+
+## Documentation
+
+- [Relay fabric](docs/relay-fabric.md)
+- [Contributor origin boundary](docs/contributor-origin-boundary.md)
+- [Audio delivery lanes](docs/audio-delivery-lanes.md)
+- [Operations telemetry transport](docs/operations-telemetry-transport.md)
+- [Current performance state and gaps](docs/performance/current-state-and-gaps.md)
+- [Real-world evidence](docs/real-world-tests/README.md)
 
 ## License
 
-Needletail is licensed under the [MIT License](LICENSE).
+Needletail is available under the [MIT License](LICENSE).
