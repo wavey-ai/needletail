@@ -33,15 +33,29 @@ IFS=, read -r -a CUSTOMER_VALUES <<<"${CUSTOMER_VALUES:-1,2,3,4,5,8,12}"
 gcp_ssh() {
   local host="$1"
   shift
-  gcloud compute ssh "${host}" --project="${GCP_PROJECT}" --zone="${ZONE}" \
-    --tunnel-through-iap --quiet "$@"
+  local attempt
+  for attempt in 1 2 3; do
+    if gcloud compute ssh "${host}" --project="${GCP_PROJECT}" --zone="${ZONE}" \
+      --tunnel-through-iap --quiet "$@"; then
+      return 0
+    fi
+    ((attempt < 3)) || return 1
+    sleep 2
+  done
 }
 
 gcp_scp_from() {
   local host="$1" source="$2" destination="$3"
-  gcloud compute scp --recurse "${host}:${source}" "${destination}" \
-    --project="${GCP_PROJECT}" --zone="${ZONE}" --tunnel-through-iap \
-    --quiet --scp-flag=-C
+  local attempt
+  for attempt in 1 2 3; do
+    if gcloud compute scp --recurse "${host}:${source}" "${destination}" \
+      --project="${GCP_PROJECT}" --zone="${ZONE}" --tunnel-through-iap \
+      --quiet --scp-flag=-C; then
+      return 0
+    fi
+    ((attempt < 3)) || return 1
+    sleep 2
+  done
 }
 
 wait_for_service() {
