@@ -5,8 +5,8 @@ edition = "2021"
 rust-version = "1.81"
 license = "MIT"
 description = "Strict Ed25519 media-capability v1 verifier for Needletail media services"
+repository = "https://github.com/wavey-ai/needletail"
 readme = "README.md"
-publish = false
 
 [dependencies]
 base64 = "0.22"
@@ -14,7 +14,7 @@ base64 = "0.22"
 # for ed25519-dalek; base64ct 1.8 switched its manifest to edition 2024.
 base64ct = { version = "=1.7.3", default-features = false, optional = true }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
-media-object = { path = "../../../media-object" }
+media-object = "0.1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Same MSRV lock for ed25519-dalek's key-material hygiene dependency.
