@@ -332,7 +332,7 @@ Operators can inspect the same state that controls route and admission decisions
 Production uses the durable controller, node agents, and `systemd`-supervised native services.
 The Rust supervisor supports local development and qualification.
 
-## Authoritative edge-cache qualification
+## Proven edge-cache failover
 
 The July 22 GCP qualification is the authoritative edge-cache record.
 It used one contributor, one distributor, and two independent playback edges.
@@ -359,47 +359,19 @@ Use the [JSON evidence](docs/real-world-tests/evidence/20260722T001300Z-edge-cap
 Other test categories remain in the [real-world evidence index](docs/real-world-tests/README.md).
 The [current performance record](docs/performance/current-state-and-gaps.md) summarizes their accepted boundaries.
 
-## Components
+## Learn more
 
-Needletail composes service implementations from sibling repositories.
-The Needletail repository owns product topology, lifecycle, operations, and qualification.
+- [Regional edge-cache fabric](docs/edge-cache-fabric.md)
+- [Relay fabric](docs/relay-fabric.md)
+- [Contributor origin boundary](docs/contributor-origin-boundary.md)
+- [Audio delivery lanes](docs/audio-delivery-lanes.md)
+- [Operations telemetry](docs/operations-telemetry-transport.md)
+- [Current performance record](docs/performance/current-state-and-gaps.md)
+- [Real-world evidence](docs/real-world-tests/README.md)
 
-| Component | Responsibility |
-| --- | --- |
-| `av-contrib` | Accept contribution, recover input, package media, and publish canonical objects |
-| `wavey-rist` | Provide RIST transport |
-| `wavey-srt` | Provide SRT transport |
-| `rtmp-ingress` | Parse RTMP and FLV contribution |
-| `media-object` | Define object identity, timing, dependencies, deadlines, and integrity |
-| `raptor-fec` | Select RaptorQ geometry and schedule repair data |
-| `relay-session` | Manage carriers, subscriptions, symbols, and object fetch |
-| `av-mesh` | Relay media, maintain regional caches, and publish telemetry |
-| `playlists` | Maintain media caches and build bounded playlists |
-| `av-hls` | Resolve HLS media requests |
-| `av-web-service` | Serve HTTP, HTTP/2, and HTTP/3 requests |
-| `mission-control` | Implement Needletail Operations |
-| `player` | Play streams and control delay, mode, and timeline position |
+## License
 
-## Development
-
-Cargo resolves published Rust dependencies from crates.io.
-
-Run the repository checks:
-
-```sh
-make fmt
-make check
-make test
-make player-check
-make mission-control-check
-```
-
-Build the browser assets:
-
-```sh
-make player-build
-make mission-control-build
-```
+Needletail is available under the [MIT License](LICENSE).
 
 ## Technical terms
 
@@ -422,17 +394,3 @@ Needletail uses this identifier for session-aware edge admission.
 
 RaptorQ is a forward error correction method.
 Needletail uses RaptorQ symbols to recover media before its delivery deadline.
-
-## Detailed documentation
-
-- [Regional edge-cache fabric](docs/edge-cache-fabric.md)
-- [Relay fabric](docs/relay-fabric.md)
-- [Contributor origin boundary](docs/contributor-origin-boundary.md)
-- [Audio delivery lanes](docs/audio-delivery-lanes.md)
-- [Operations telemetry](docs/operations-telemetry-transport.md)
-- [Current performance record](docs/performance/current-state-and-gaps.md)
-- [Real-world evidence](docs/real-world-tests/README.md)
-
-## License
-
-Needletail is available under the [MIT License](LICENSE).
