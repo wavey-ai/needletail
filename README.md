@@ -4,34 +4,47 @@
 
 # Needletail
 
-Needletail moves live video and professional audio from contribution sources to viewers.
-It combines contribution recovery, canonical media objects, dual-parent routing, regional edge caches, standards-based playback, and service operations.
+Needletail is a real-time distribution mesh for live video and professional audio.
+It moves each stream from contribution to global playback with fast recovery, predictable fanout, and stable edge delivery.
 
-The design keeps source work constant while regions, edges, and viewer counts increase.
-It also keeps active playback sessions stable when an edge reaches its capacity boundary.
-Needletail provides fast, standards-compliant LL-HLS for media that supported native players can decode.
+Needletail packages source-dependent media work once.
+It then sends canonical media objects through an adaptive dual-parent DAG and regional cache tiers.
+Needletail provides fast, standards-compliant LL-HLS for supported native media.
+These streams work in supported native HLS players without HLS.js.
+
+## Scale any media or bounded data on one horizontal mesh
+
+Needletail separates format-specific packaging from distribution.
+Its edges cache and deliver byte-exact payloads from any media source.
+Clients receive packaged media or producer-native data through the same path.
+Regional distributors and edges scale horizontally on CDN-like infrastructure.
+The object model can extend this distribution architecture to any bounded data payload.
+
+When an edge reaches capacity, active sessions remain stable.
+New sessions move to healthy same-region edges, and recovered capacity returns automatically.
 
 ## What Needletail can do
 
 | Capability | Needletail behavior |
 | --- | --- |
 | Contribution | Accept RIST, SRT, and RTMP sources near the publisher |
-| Recovery | Reorder input and recover missing data before publication |
-| Media handling | Preserve producer bytes or create CMAF-compatible fragmented MP4 |
+| Recovery | Restore packet order and recover missing data before publication |
+| Media handling | Keep producer bytes intact or create CMAF-compatible fragmented MP4 |
 | Distribution | Send immutable media objects through an adaptive dual-parent DAG |
 | Regional delivery | Feed independent playback edges through bounded distributor tiers |
 | Resilience | Use RaptorQ repair, reliable object fetch, and warm parent routes |
 | Playback | Serve standards-based LL-HLS to native HLS players and HLS.js |
 | Capacity protection | Keep admitted sessions and send new sessions to healthy edges |
-| Operations | Present topology, routes, streams, capacity, alerts, and performance |
+| Operations | Show topology, routes, streams, capacity, alerts, and performance |
 
-These design choices work together:
+## Why Needletail is different
 
-- The contributor performs source-dependent work once for each stream.
-- The mesh distributes immutable objects instead of repeating source work.
-- Each playback edge is a leaf, so viewer growth does not increase origin fanout.
-- HLS failover uses standard playlist variants instead of media redirects.
-- Supported native HLS players use the LL-HLS stream without HLS.js.
+- Source recovery and packaging occur once for each stream.
+- Opaque media objects carry packaged media, producer-native formats, and other bounded payloads.
+- Warm secondary parents provide fast repair and route takeover.
+- Horizontal distributor and edge tiers keep source fanout constant as demand grows.
+- Standard HLS variants move new sessions between healthy playback edges.
+- Session-aware admission keeps active playback stable during an edge-capacity alarm.
 
 ## End-to-end architecture
 
@@ -55,14 +68,14 @@ flowchart LR
     E --> V
 ```
 
-The contributor validates input, restores order, recovers loss, and packages supported media.
+The contributor validates input, restores packet order, recovers loss, and packages supported media.
 It publishes each ordered output once to the nearest mesh ingress.
 
-The relay DAG performs geographical fanout.
-Regional distributors retain warm objects and feed independent playback edges.
+The relay DAG carries each media object across regions.
+Regional distributors retain a live window and feed independent playback edges.
 
-Each edge verifies, caches, and publishes the same canonical objects.
-The edge serves viewers without a direct contributor connection.
+Each edge verifies, caches, and serves the same canonical media objects.
+This architecture separates viewer demand from the contributor.
 
 ## Contribution and media objects
 
@@ -85,16 +98,13 @@ flowchart TD
     OBJECT --> PUBLISH
 ```
 
-`av-contrib` accepts compatible RIST, SRT, and RTMP contribution.
-RIST means Reliable Internet Stream Transport.
-SRT means Secure Reliable Transport.
-RTMP means Real-Time Messaging Protocol.
+`av-contrib` accepts compatible RIST, SRT, and RTMP sources.
 
 The contributor can package supported H.264 and AAC input as CMAF-compatible fragmented MP4.
-It can also preserve selected professional-audio formats without a compatibility encode.
+It can also preserve selected professional-audio formats in their original encoded form.
 
 Canonical identity lets every relay and edge verify the same media unit.
-The identity also supports exact cache reads, repair, late join, and retained-window playback.
+The identity supports exact cache reads, repair, late join, and retained-window playback.
 
 ## Adaptive distribution mesh
 
@@ -144,20 +154,18 @@ flowchart TB
 Solid lines show primary object flow.
 Dotted lines show warm secondary routes for repair and failover.
 
-Each stream graph has one primary parent and at most one secondary parent.
-Parents always occur at an earlier DAG level than their children.
+The controller places each node in an acyclic parent-to-child order.
+Each stream uses one primary parent and can use one warm secondary parent.
 
-The controller selects different providers, zones, networks, or physical failure domains when possible.
-It uses measured latency, jitter, loss, queue state, and deadline behavior for route selection.
+The controller separates providers, zones, networks, and physical failure domains when possible.
+It selects routes from measured latency, jitter, loss, queue state, and deadline behavior.
 
 The secondary parent keeps subscriptions and object state warm.
-It can supply repair symbols, an immutable object fetch, or an immediate primary takeover.
+It can supply repair symbols, fetch an immutable object, or take over the primary route.
 
-Make-before-break route changes warm the new parent before the old parent closes.
-Generation fencing keeps topology changes in order.
-
-Distributors bound regional fanout and retain a live window.
-Edges never feed other edges and never become regional replication hubs.
+Make-before-break changes warm a new parent before the route moves.
+Regional distributors bound fanout and retain the live window.
+Playback edges remain independent leaves at the end of the distribution mesh.
 
 ## Edge capacity failover and failback
 
@@ -179,35 +187,22 @@ stateDiagram-v2
 ```
 
 Each edge measures response bytes in a bounded rolling window.
-The service default declares 4 Gbit/s of edge capacity.
-
-Admission closes at 85 percent after three seconds of sustained load.
-Admission opens again when egress falls below 75 percent.
-The default rolling window is ten seconds.
+Separate admission and recovery boundaries provide stable capacity control.
+Sustained high egress closes new-session admission until capacity recovers.
 
 An admitted CMCD session continues on the busy edge.
 A new or anonymous session receives HTTP `429` while the alarm is active.
 
-The response includes these advisory headers:
+The response provides a retry time and healthy alternate-edge URLs.
+Managed clients can use this advice immediately.
 
-```text
-Retry-After: 1
-Link: <alternate-media-url>; rel="alternate"
-X-Needletail-Alternate-Edges: <alternate-media-url>
-Access-Control-Expose-Headers: Link, Retry-After, X-Needletail-Alternate-Edges
-```
-
-Needletail selects alternate edges from the same regional DAG.
-It excludes stale, draining, unhealthy, and overloaded edges.
-
-The selection also excludes distributors and nodes without a playback URL.
+Needletail selects healthy playback edges from the same regional DAG.
+Each selected edge accepts traffic, has current telemetry, and provides a playback URL.
 It orders valid edges by utilization, active readers, and node identity.
 
-Needletail does not force an active session back after recovery.
-It restores the recovered edge to new-session admission and future Multivariant Playlists.
-
+After recovery, Needletail restores the edge to new-session admission and future Multivariant Playlists.
+Active sessions keep their stable routes on the selected healthy edges.
 This restoration is capacity failback.
-It makes the recovered edge eligible without moving sessions from a healthy alternate edge.
 
 ## Standards-based HLS failover
 
@@ -245,21 +240,14 @@ stream.m3u8
 https://edge-b.example/live/904/stream.m3u8
 ```
 
-The edge omits itself from each Multivariant Playlist while its alarm is active.
-Healthy remote edges remain as equivalent variants.
+During a capacity alarm, each Multivariant Playlist lists healthy remote edges as equivalent variants.
 
-Needletail does not redirect HLS media requests.
-The duplicate variants provide the standards-based failover route.
-The playlist and failover tags comply with the linked HLS specification.
+These equal variants place failover inside the standard HLS playlist.
+Native HLS players select the listed routes directly.
+Managed clients can also use the alternate-edge response advice.
 
-Supported native HLS players can open the Multivariant Playlist directly.
-They do not require HLS.js.
-
-The standards-based HLS failover route uses the listed variants.
-This route does not depend on HLS.js or the advisory headers.
-
-Needletail can use HLS.js when a supported browser does not provide native HLS.
-The encoded media must also use a codec that the selected player supports.
+Needletail uses HLS.js for browsers that use a JavaScript HLS stack.
+Each player also needs support for the encoded media format.
 
 The design follows these specifications:
 
@@ -290,19 +278,14 @@ flowchart LR
     INTERACTIVE --> CLIENT
 ```
 
-The Needletail Player starts native HLS when the browser supports it.
-It starts HLS.js on other supported browsers.
-
+The Needletail Player selects native HLS or HLS.js for each supported browser.
 Both modes use the same standards-based LL-HLS playlists and short media parts.
-
-The qualified HTTP/3 path had 91.222 ms availability p99.
-Its estimated render p99 was 241.222 ms.
 
 The player shows live delay, buffer state, playback progress, and the retained live window.
 Viewers can rewind within that window and return to the live edge.
 
-Persistent HTTP/3 responses support low-overhead professional-audio delivery.
-Interactive paths can use direct or short relay routes when measured performance permits.
+Persistent HTTP/3 responses support low-overhead professional-audio and opaque-media delivery.
+Interactive paths use direct or short relay routes when measured performance permits.
 
 ## Control and operations
 
@@ -329,12 +312,11 @@ Node agents apply desired state and report fresh service data.
 Needletail Operations presents streams, nodes, routes, capacity, performance, alerts, and recent activity.
 Operators can inspect the same state that controls route and admission decisions.
 
-Production uses the durable controller, node agents, and `systemd`-supervised native services.
-The Rust supervisor supports local development and qualification.
+Production deployments use a durable controller, host node agents, and supervised native services.
 
 ## Proven edge-cache failover
 
-The July 22 GCP qualification is the authoritative edge-cache record.
+The July 22, 2026, GCP qualification is the authoritative edge-cache record.
 It used one contributor, one distributor, and two independent playback edges.
 
 | Check | Result |
@@ -345,13 +327,12 @@ It used one contributor, one distributor, and two independent playback edges.
 | New session | Edge A returned HTTP `429` with alternate-edge advice |
 | Alternate edge | Edge B returned HTTP `200` |
 | Recovery | Edge A reopened admission below the recovery boundary |
-| HTTP/3 probe | 120 of 120 parts arrived without gaps or deadline misses |
+| HTTP/3 probe | 120 of 120 parts arrived in sequence and met their deadlines |
 | Availability | HTTP/3 availability p99 was 91.222 ms |
 | Estimated render | The model estimated end-to-end render p99 at 241.222 ms |
-| Cleanup | All transient services stopped and the initial cloud state returned |
+| Cleanup | All transient edge-cache test services stopped, and the initial cloud state returned |
 
-The test used reduced limits to produce one controlled alarm and recovery cycle.
-It did not measure maximum edge throughput or long-duration session churn.
+The test scope covered one controlled alarm and recovery cycle at reduced limits.
 
 Read the [qualification narrative](docs/real-world-tests/2026-07-22-gcp-edge-capacity-failover.md) for the topology, method, revisions, and limits.
 Use the [JSON evidence](docs/real-world-tests/evidence/20260722T001300Z-edge-capacity-failover.json) for machine-readable results.
@@ -378,7 +359,7 @@ Needletail is available under the [MIT License](LICENSE).
 A canonical media object is a bounded, immutable media unit.
 It contains stream identity, timing, dependencies, deadlines, and integrity data.
 
-A directed acyclic graph (DAG) is a forwarding graph without routing loops.
+A directed acyclic graph (DAG) sets a one-way parent-to-child order for all forwarding routes.
 Needletail creates a DAG for each stream and destination cohort.
 
 A distributor is a regional cache service that feeds playback edges.
