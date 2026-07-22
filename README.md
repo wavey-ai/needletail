@@ -33,28 +33,6 @@ These design choices work together:
 - HLS failover uses standard playlist variants instead of media redirects.
 - Supported native HLS players use the LL-HLS stream without HLS.js.
 
-## Terms
-
-A canonical media object is a bounded, immutable media unit.
-It contains stream identity, timing, dependencies, deadlines, and integrity data.
-
-A directed acyclic graph (DAG) is a forwarding graph without routing loops.
-Needletail creates a DAG for each stream and destination cohort.
-
-A distributor is a regional cache service that feeds playback edges.
-An edge is a leaf cache that serves viewers.
-
-Fanout is the number of child nodes that receive data from one parent.
-
-Low-Latency HTTP Live Streaming (LL-HLS) uses short media parts and blocking playlist reloads.
-A Multivariant Playlist lists equivalent playback routes for one stream.
-
-Common Media Client Data (CMCD) identifies a playback session with its `sid` field.
-Needletail uses this identifier for session-aware edge admission.
-
-RaptorQ is a forward error correction method.
-Needletail uses RaptorQ symbols to recover media before its delivery deadline.
-
 ## End-to-end architecture
 
 ```mermaid
@@ -422,6 +400,28 @@ Build the browser assets:
 make player-build
 make mission-control-build
 ```
+
+## Technical terms
+
+A canonical media object is a bounded, immutable media unit.
+It contains stream identity, timing, dependencies, deadlines, and integrity data.
+
+A directed acyclic graph (DAG) is a forwarding graph without routing loops.
+Needletail creates a DAG for each stream and destination cohort.
+
+A distributor is a regional cache service that feeds playback edges.
+An edge is a leaf cache that serves viewers.
+
+Fanout is the number of child nodes that receive data from one parent.
+
+Low-Latency HTTP Live Streaming (LL-HLS) uses short media parts and blocking playlist reloads.
+A Multivariant Playlist lists equivalent playback routes for one stream.
+
+Common Media Client Data (CMCD) identifies a playback session with its `sid` field.
+Needletail uses this identifier for session-aware edge admission.
+
+RaptorQ is a forward error correction method.
+Needletail uses RaptorQ symbols to recover media before its delivery deadline.
 
 ## Detailed documentation
 
