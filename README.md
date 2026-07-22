@@ -12,13 +12,17 @@ It then sends canonical media objects through an adaptive dual-parent DAG and re
 Needletail provides fast, standards-compliant LL-HLS for supported native media.
 These streams work in supported native HLS players without HLS.js.
 
-## Scale any media or bounded data on one horizontal mesh
+## Scale any streaming data on one horizontal mesh
 
 Needletail separates format-specific packaging from distribution.
-Its edges cache and deliver byte-exact payloads from any media source.
-Clients receive packaged media or producer-native data through the same path.
+Its edges cache and deliver byte-exact payloads from any streaming source.
+Clients receive packaged media or producer-native streaming data through the same path.
 Regional distributors and edges scale horizontally on CDN-like infrastructure.
-The object model can extend this distribution architecture to any bounded data payload.
+The object model can extend this distribution architecture to other continuous data streams.
+
+Each playback edge keeps the newest parts in an adjustable back cache.
+A tail request reads cached parts immediately and waits only for the next available part.
+Operators tune back-cache depth by part count and choose blocking response duration separately.
 
 When an edge reaches capacity, active sessions remain stable.
 New sessions move to healthy same-region edges, and recovered capacity returns automatically.
@@ -33,18 +37,35 @@ New sessions move to healthy same-region edges, and recovered capacity returns a
 | Distribution | Send immutable media objects through an adaptive dual-parent DAG |
 | Regional delivery | Feed independent playback edges through bounded distributor tiers |
 | Resilience | Use RaptorQ repair, reliable object fetch, and warm parent routes |
-| Playback | Serve standards-based LL-HLS to native HLS players and HLS.js |
+| Streaming delivery | Serve standards-based LL-HLS to native HLS players and HLS.js |
 | Capacity protection | Keep admitted sessions and send new sessions to healthy edges |
 | Operations | Show topology, routes, streams, capacity, alerts, and performance |
 
 ## Why Needletail is different
 
 - Source recovery and packaging occur once for each stream.
-- Opaque media objects carry packaged media, producer-native formats, and other bounded payloads.
+- Opaque media objects carry packaged media, producer-native formats, and other streaming payloads.
 - Warm secondary parents provide fast repair and route takeover.
 - Horizontal distributor and edge tiers keep source fanout constant as demand grows.
 - Standard HLS variants move new sessions between healthy playback edges.
 - Session-aware admission keeps active playback stable during an edge-capacity alarm.
+
+## LL-HLS performance for streaming data
+
+Needletail applies LL-HLS concepts to streaming data commonly carried over UDP, RIST, or SRT paths.
+It provides a standards-based HTTP alternative for the tail while preserving near-UDP timing.
+Short parts, blocking reloads, persistent HTTP/3, and the back cache provide rapid tail availability.
+The measured results show near-UDP publication-to-client performance across three regions.
+
+| Qualification | Measured result |
+| --- | --- |
+| Wide-area LL-HLS versus raw UDP | LL-HLS p50 was 2.390–2.452 ms above raw UDP p50 in New York, Tokyo, and Sydney |
+| Wide-area cache-to-client | LL-HLS cache-to-client p99 was 1.274–1.510 ms |
+| Persistent HTTP/3 Opus tails | 128 real-time tails per edge vCPU; availability p99 was 12.627–12.734 ms |
+| Opaque FLAC HTTP/3 probe | 120 of 120 parts arrived; availability p99 was 91.222 ms; estimated render p99 was 241.222 ms |
+
+These results show an HTTP streaming path with performance close to measured raw UDP.
+The [current performance record](docs/performance/current-state-and-gaps.md) links each qualification and its limits.
 
 ## End-to-end architecture
 
@@ -56,8 +77,8 @@ flowchart LR
     I["Mesh ingress"]
     R["Dual-parent<br/>relay DAG"]
     D["Regional<br/>distributors"]
-    E["Playback<br/>edge caches"]
-    V["Viewers<br/>LL-HLS or HTTP/3"]
+    E["Playback edge<br/>adjustable back cache"]
+    V["Streaming clients<br/>LL-HLS, HTTP/3, or tails"]
 
     P --> C
     C --> O
@@ -258,7 +279,7 @@ The design follows these specifications:
 
 ```mermaid
 flowchart LR
-    EDGE["Playback edge cache"]
+    EDGE["Playback edge<br/>adjustable back cache"]
     MASTER["HLS Multivariant Playlist"]
     MEDIA["LL-HLS media playlist and parts"]
     NATIVE["Native HLS player"]
@@ -280,6 +301,9 @@ flowchart LR
 
 The Needletail Player selects native HLS or HLS.js for each supported browser.
 Both modes use the same standards-based LL-HLS playlists and short media parts.
+
+A tail request reads recent parts from the back cache and blocks for the next part.
+Operators can expand the back cache for late join, rewind, and recovery.
 
 The player shows live delay, buffer state, playback progress, and the retained live window.
 Viewers can rewind within that window and return to the live edge.
@@ -372,6 +396,9 @@ A Multivariant Playlist lists equivalent playback routes for one stream.
 
 Common Media Client Data (CMCD) identifies a playback session with its `sid` field.
 Needletail uses this identifier for session-aware edge admission.
+
+A streaming tail is the newest available portion of a live stream.
+A back cache is an adjustable store of recent parts behind the live edge.
 
 RaptorQ is a forward error correction method.
 Needletail uses RaptorQ symbols to recover media before its delivery deadline.
