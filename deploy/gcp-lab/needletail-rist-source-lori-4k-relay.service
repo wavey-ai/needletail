@@ -1,0 +1,16 @@
+[Unit]
+Description=Needletail LORI 4K RIST source on a relay node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=jamie
+Group=jamie
+KillMode=control-group
+ExecStart=/bin/bash -lc 'set -o pipefail; library_path=$(cat /opt/ffmpeg-runtime/library-path); exec env LD_LIBRARY_PATH="$library_path" /opt/ffmpeg-runtime/usr/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 -i /var/lib/needletail-media/lori_4k_no_grain_4k25_ll_capped10.mp4 -map 0:v:0 -map 0:a:0 -c copy -muxdelay 0 -muxpreload 0 -f mpegts - | /usr/local/bin/rist-send --profile main --flow-id 0x11223344 --chunk-bytes 1316 --history-packets 8192 --final-repair-ms 1000 10.84.10.5:27000'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

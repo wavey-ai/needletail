@@ -50,7 +50,7 @@ gcp_ssh --command="set -eu
   for page in overview network streams ingest nodes routes performance activity; do
     timeout 30 chromium --headless=new --no-sandbox --disable-gpu \
       --ignore-certificate-errors --hide-scrollbars \
-      --window-size=1440,1000 --virtual-time-budget=5000 \
+      --window-size=1440,1000 --virtual-time-budget=15000 \
       --user-data-dir='${REMOTE_DIR}'/profile-\${page} \
       --screenshot='${REMOTE_DIR}'/operations-\${page}.png \
       'https://${EDGE_PRIVATE_IP}/mesh?contrib=https%3A%2F%2F${CONTRIB_PRIVATE_IP}%2Fapi%2Fstatus#'\${page} \

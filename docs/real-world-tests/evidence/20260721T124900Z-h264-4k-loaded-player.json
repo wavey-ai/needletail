@@ -1,0 +1,88 @@
+{
+  "schema": "needletail.h264-4k-loaded-player.v1",
+  "run_id": "20260721T124900Z-h264-4k-loaded-player",
+  "provider": "gcp",
+  "passed": true,
+  "result": "loaded_hlsjs_player_qualified",
+  "raw_artifact_directory": "target/gcp-qualification/loaded-player/20260721T124900Z",
+  "revisions": {
+    "needletail_base": "87059bfe1d485d9be8bd9b71072d9ebe1e7ac216",
+    "av_contrib": "f7808b4aba8cb65f71cc4d5033f61f16d7c5e307",
+    "av_mesh": "1e9d314f5ea30103cfcafccca3ae0d057780740f"
+  },
+  "stream": {
+    "source_protocol": "RIST",
+    "video_codec": "H.264",
+    "width": 3840,
+    "height": 2160,
+    "frames_per_second": 25,
+    "audio_codec": "AAC",
+    "audio_sample_rate_hz": 48000,
+    "part_target_ms": 205,
+    "container": "CMAF-compatible fMP4"
+  },
+  "topology": {
+    "zone": "europe-west2-c",
+    "edge_machine": "n2-standard-2",
+    "load_machine": "n2-standard-2",
+    "browser_machine": "n2-standard-4",
+    "load_and_browser_hosts_separate": true,
+    "media_path_private": true,
+    "browser_path_private": true
+  },
+  "load": {
+    "duration_seconds": 60,
+    "viewers": 100,
+    "throughput_mbps": 1056.2540333100826,
+    "minimum_parts_per_viewer": 303,
+    "expected_minimum_parts_per_viewer": 280,
+    "playlist_p99_ms": 39.175565000012284,
+    "part_p99_ms": 171.46464099999866
+  },
+  "player": {
+    "implementation": "HLS.js",
+    "hlsjs_version": "1.6.16",
+    "observation_seconds": 20,
+    "configured_target_ms": 100,
+    "startup_ms": 1309,
+    "live_delay_ms": 506.4309023437445,
+    "waiting_events": 0,
+    "stalled_events": 0,
+    "recovery_seeks": 0,
+    "hls_errors": 0,
+    "maximum_frame_gap_ms": 83.29999999999927,
+    "decoded_frames": 501,
+    "dropped_frames": 0,
+    "resource_protocol": "h2"
+  },
+  "timeline": {
+    "rewind_delay_seconds": 6.127220000000001,
+    "return_to_live_delay_seconds": 0.5422420000000017
+  },
+  "screenshots": {
+    "operations_pages": 8,
+    "player_candidates": 3,
+    "operations_load_duration_seconds": 75,
+    "operations_load_throughput_mbps": 1042.0584906840058,
+    "operations_load_part_p99_ms": 175.92065400001593
+  },
+  "release_gates": {
+    "load_part_p99_below_200_ms": true,
+    "startup_below_10_seconds": true,
+    "live_delay_below_1_second": true,
+    "zero_waits": true,
+    "zero_stalls": true,
+    "zero_recovery_seeks": true,
+    "zero_hls_errors": true,
+    "zero_dropped_frames": true,
+    "timeline_rewind": true,
+    "return_to_live": true,
+    "all_operations_pages_captured": true
+  },
+  "cleanup": {
+    "source_process_exited": false,
+    "gcp_instances_stopped_after_collection": false,
+    "stopped_instances": [],
+    "persistent_media_disks_preserved": true
+  }
+}

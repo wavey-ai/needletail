@@ -307,6 +307,10 @@ async fn main() -> Result<()> {
                 mesh_node_args(MeshNodeLaunch {
                     region: "backbone-primary",
                     node_id: PRIMARY_RELAY_NODE_ID,
+                    cache_mesh_role: "distributor",
+                    cache_mesh_region: "playback-edge",
+                    cache_mesh_peers: vec![args.uk_mesh],
+                    edge_lifecycle: false,
                     mesh_bind: args.us_mesh,
                     peer: None,
                     http_port: args.us_http_port,
@@ -343,6 +347,10 @@ async fn main() -> Result<()> {
                 mesh_node_args(MeshNodeLaunch {
                     region: "backbone-secondary",
                     node_id: SECONDARY_RELAY_NODE_ID,
+                    cache_mesh_role: "distributor",
+                    cache_mesh_region: "playback-edge",
+                    cache_mesh_peers: vec![args.uk_mesh],
+                    edge_lifecycle: false,
                     mesh_bind: args.secondary_relay_mesh,
                     peer: None,
                     http_port: args.secondary_relay_http_port,
@@ -379,6 +387,10 @@ async fn main() -> Result<()> {
                 mesh_node_args(MeshNodeLaunch {
                     region: "playback-edge",
                     node_id: EDGE_NODE_ID,
+                    cache_mesh_role: "edge",
+                    cache_mesh_region: "playback-edge",
+                    cache_mesh_peers: vec![args.us_mesh, args.secondary_relay_mesh],
+                    edge_lifecycle: true,
                     mesh_bind: args.uk_mesh,
                     peer: None,
                     http_port: args.uk_http_port,
@@ -972,6 +984,10 @@ fn resolve_tls_material(args: &Args, contrib_root: &Path) -> Result<TlsMaterial>
 struct MeshNodeLaunch<'a> {
     region: &'a str,
     node_id: &'a str,
+    cache_mesh_role: &'a str,
+    cache_mesh_region: &'a str,
+    cache_mesh_peers: Vec<SocketAddr>,
+    edge_lifecycle: bool,
     mesh_bind: SocketAddr,
     peer: Option<SocketAddr>,
     http_port: u16,
@@ -1000,6 +1016,10 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
         launch.region.into(),
         "--node-id".into(),
         launch.node_id.into(),
+        "--cache-mesh-role".into(),
+        launch.cache_mesh_role.into(),
+        "--cache-mesh-region".into(),
+        launch.cache_mesh_region.into(),
         "--mesh-bind".into(),
         launch.mesh_bind.to_string(),
         "--http-port".into(),
@@ -1029,6 +1049,12 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
     ];
     if let Some(peer) = launch.peer {
         args.extend(["--peer".into(), peer.to_string()]);
+    }
+    for peer in launch.cache_mesh_peers {
+        args.extend(["--peer".into(), peer.to_string()]);
+    }
+    if launch.edge_lifecycle {
+        args.push("--edge-lifecycle".into());
     }
     for telemetry_peer in launch.telemetry_peers {
         args.extend(["--telemetry-peer".into(), telemetry_peer.to_string()]);
@@ -1440,6 +1466,10 @@ mod tests {
         let mesh_args = mesh_node_args(MeshNodeLaunch {
             region: "playback-edge",
             node_id: EDGE_NODE_ID,
+            cache_mesh_role: "edge",
+            cache_mesh_region: "playback-edge",
+            cache_mesh_peers: vec![args.us_mesh, args.secondary_relay_mesh],
+            edge_lifecycle: true,
             mesh_bind: args.uk_mesh,
             peer: None,
             http_port: args.uk_http_port,
@@ -1458,7 +1488,13 @@ mod tests {
             relay_arguments: compiled_relay_arguments(&plan, EDGE_NODE_ID)
                 .expect("edge relay arguments"),
         });
-        assert!(!mesh_args.iter().any(|arg| arg == "--peer"));
+        assert_eq!(
+            value_after(&mesh_args, "--peer").map(str::to_owned),
+            Some(args.us_mesh.to_string())
+        );
+        assert!(mesh_args
+            .windows(2)
+            .any(|pair| pair[0] == "--peer" && pair[1] == args.secondary_relay_mesh.to_string()));
         assert!(mesh_args
             .iter()
             .any(|arg| arg == "--relay-controlled-local"));

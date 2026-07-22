@@ -157,12 +157,13 @@ const minimumParts = Math.min(...results.map((result) => result.partDurations.le
 const partTargetSeconds = results.find((result) => result.partTargetSeconds)?.partTargetSeconds;
 const expectedMinimumParts = Number.isFinite(partTargetSeconds)
   ? Math.max(1, Math.floor(durationSeconds / partTargetSeconds) - 12)
-  : 1;
+  : undefined;
 const report = {
   viewers,
   connectOrigin: connectUrl.origin,
   requestedSeconds: durationSeconds,
   includePreloadHints,
+  partTargetSeconds,
   elapsedSeconds,
   totalBytes,
   throughputMbps: (totalBytes * 8) / elapsedSeconds / 1_000_000,
@@ -173,6 +174,10 @@ const report = {
 };
 
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+assert.ok(
+  partTargetSeconds >= 0.19 && partTargetSeconds <= 0.21,
+  "playlist must declare fMP4 parts within the 200 ms target tolerance",
+);
 assert.ok(minimumParts >= expectedMinimumParts, "one or more viewers missed live parts");
 assert.ok(report.playlistRequests.p99 < requestTimeoutMilliseconds, "playlist p99 reached timeout");
 assert.ok(report.partRequests.p99 < requestTimeoutMilliseconds, "part p99 reached timeout");

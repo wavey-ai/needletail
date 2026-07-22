@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+library_path="$(cat /opt/ffmpeg-runtime/library-path)"
+exec env LD_LIBRARY_PATH="${library_path}" \
+  /opt/ffmpeg-runtime/usr/bin/ffprobe "$@"

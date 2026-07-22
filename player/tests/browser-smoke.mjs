@@ -621,5 +621,10 @@ try {
       delay(1_000),
     ]);
   }
-  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await delay(500);
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch (error) {
+    process.stderr.write(`Chrome profile cleanup failed: ${error.message}\n`);
+  }
 }

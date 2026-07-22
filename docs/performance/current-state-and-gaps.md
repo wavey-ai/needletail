@@ -83,9 +83,51 @@ Browser decode and device output occur after this measurement point.
 
 See the [lossless H3 record](../real-world-tests/2026-07-17-lossless-h3.md).
 
+## 4K video capacity
+
+The GCP capacity test used a realtime RIST source with H.264 3840 by 2160 video and AAC audio.
+The source rate was approximately 10.2 Mbit/s.
+The playback edge used a two-vCPU GCP `n2-standard-2` machine.
+
+Two 60-second runs served 100 concurrent viewer tails.
+Each viewer received at least 303 fMP4 parts.
+The gate required at least 288 parts for each viewer.
+
+| Run | Delivered rate | Playlist p99 | Part p99 | Edge process CPU | Edge host use |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1,065.977 Mbit/s | 34.549 ms | 145.854 ms | 0.305 core | 19.411% |
+| 2 | 1,065.109 Mbit/s | 56.310 ms | 190.693 ms | 0.311 core | 19.133% |
+
+Both runs used 200 ms fMP4 parts.
+Both runs passed the progression, service, playlist, and part-latency gates.
+
+See the [4K capacity and player record](../real-world-tests/2026-07-21-h264-4k-capacity-and-player.md).
+
+## Loaded browser playback
+
+A dedicated four-vCPU GCP host ran Chromium and HLS.js during a 100-viewer load.
+The player used the 100 ms configured delay target.
+
+The 20-second observation measured 506 ms live delay.
+Playback had zero waits, stalls, recovery seeks, HLS.js errors, and dropped frames.
+Chromium decoded 501 frames, and the maximum displayed-frame gap was 83.3 ms.
+
+The player moved 6.1 seconds behind live within the retained window.
+It then returned to 542 ms behind live.
+
+The associated load delivered 1,056.254 Mbit/s.
+Playlist p99 was 39.176 ms, and fMP4 part p99 was 171.465 ms.
+
+The 100 ms value configures the player target.
+The measured 506 ms value is the qualified live delay for this profile.
+
+The dated release set contains three player candidates and all eight Operations pages.
+
+See the [4K capacity and player record](../real-world-tests/2026-07-21-h264-4k-capacity-and-player.md).
+
 ## Video transport
 
-The GCP video test qualified native 3840 by 2160 H.264/AAC contribution and LL-HLS playback.
+An earlier GCP test qualified 3840 by 2160 H.264/AAC transport and strict LL-HLS decode.
 The same path passed a derived 7680 by 4320 transport stress profile.
 
 Both profiles passed strict decode, continuity, publication, and relay checks.
@@ -105,18 +147,18 @@ See the [multi-edge DAG record](../real-world-tests/2026-07-17-linode-dag-replic
 Use each result only with its recorded machine type, media profile, duration, and acceptance gates.
 The short-window capacity results are release baselines for the measured profiles.
 
-The release still requires a repeated 4K viewer-capacity result.
-That result must include edge CPU, reader CPU, response errors, throughput, and p99 latency.
+The release includes repeated 4K viewer capacity and loaded HLS.js playback results.
+These results use the recorded short windows, machine types, and media profile.
 
 A production sizing result also requires a 30-minute endurance run.
 The endurance gate must keep latency, continuity, CPU headroom, and memory within the recorded limits.
 
-The player qualification must measure tuned HLS.js playback on GCP Chromium.
 Native playback remains a separate conformance check on a supported browser.
 
 ## Evidence
 
 - [Matched Opus response duration](../real-world-tests/2026-07-21-opus-h3-response-duration.md)
+- [4K capacity and loaded player](../real-world-tests/2026-07-21-h264-4k-capacity-and-player.md)
 - [Persistent Opus bundle stream](../real-world-tests/2026-07-20-opus-h3-persistent-bundle-stream.md)
 - [Clock-qualified Opus tail](../real-world-tests/2026-07-20-opus-h3-clock-qualified-tail.md)
 - [4K and 8K fMP4 LL-HLS](../real-world-tests/2026-07-20-h264-fmp4-llhls-4k-8k.md)

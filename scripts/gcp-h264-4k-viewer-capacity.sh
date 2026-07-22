@@ -5,12 +5,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ZONE="${GCP_ZONE:-europe-west2-c}"
-DAW_HOST="${GCP_DAW_HOST:-nt-daw-lon}"
+SOURCE_HOST="${GCP_SOURCE_HOST:-${GCP_DAW_HOST:-nt-daw-lon}}"
+CONTRIBUTOR_HOST="${GCP_CONTRIBUTOR_HOST:-nt-contrib-lon}"
 EDGE_HOST="${GCP_EDGE_HOST:-nt-edge-lon}"
 READER_HOST="${GCP_READER_HOST:-nt-opus-reader-lon}"
 EDGE_PRIVATE_IP="${GCP_EDGE_PRIVATE_IP:-10.84.10.6}"
 SOURCE_SERVICE="${GCP_SOURCE_SERVICE:-needletail-rist-source-lori-4k.service}"
+CONTRIBUTOR_SERVICE="${GCP_CONTRIBUTOR_SERVICE:-needletail-contrib.service}"
 MEDIA_FILE="${GCP_MEDIA_FILE:-/mnt/needletail-media/lori_4k_no_grain_4k25_ll_capped10.mp4}"
+MEDIA_MOUNT="${GCP_MEDIA_MOUNT:-/mnt/needletail-media}"
 TLS_CERT="${GCP_TLS_CERT:-${ROOT}/../tls/local.infidelity.io/fullchain.pem}"
 PLAYLIST_URL="${PLAYER_LOAD_PLAYLIST_URL:-https://local.infidelity.io/live/1/stream.m3u8}"
 RUN_ID="${RUN_ID:-$(date -u '+%Y%m%dT%H%M%SZ')-h264-4k-viewer-capacity}"
@@ -21,6 +24,7 @@ POLL_MS="${CAPACITY_POLL_MS:-200}"
 REQUEST_TIMEOUT_MS="${CAPACITY_REQUEST_TIMEOUT_MS:-5000}"
 P99_GATE_MS="${CAPACITY_P99_GATE_MS:-200}"
 COOLDOWN_SECONDS="${CAPACITY_COOLDOWN_SECONDS:-8}"
+SOURCE_WARMUP_SECONDS="${CAPACITY_SOURCE_WARMUP_SECONDS:-12}"
 READER_MIN_VCPUS="${CAPACITY_READER_MIN_VCPUS:-8}"
 TIER_SPECS_CSV="${CAPACITY_TIER_SPECS:-300:1,350:1,350:2,400:1}"
 CAPTURE_OPERATIONS="${CAPACITY_CAPTURE_OPERATIONS:-1}"
@@ -82,14 +86,14 @@ cleanup() {
   fi
   gcp_ssh "${READER_HOST}" --command="pkill -f '${REMOTE_ROOT}/hls-load.mjs' 2>/dev/null || true" \
     >/dev/null 2>&1 || true
-  gcp_ssh "${DAW_HOST}" --command="sudo systemctl stop '${SOURCE_SERVICE}'" \
+  gcp_ssh "${SOURCE_HOST}" --command="sudo systemctl stop '${SOURCE_SERVICE}'" \
     >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
 
 for value_name in TRIAL_SECONDS POLL_MS REQUEST_TIMEOUT_MS P99_GATE_MS \
-  COOLDOWN_SECONDS READER_MIN_VCPUS CAPTURE_OPERATIONS CAPTURE_VIEWERS \
+  COOLDOWN_SECONDS SOURCE_WARMUP_SECONDS READER_MIN_VCPUS CAPTURE_OPERATIONS CAPTURE_VIEWERS \
   CAPTURE_REPEAT; do
   value="${!value_name}"
   [[ "${value}" =~ ^[0-9]+$ ]] || {
@@ -98,7 +102,8 @@ for value_name in TRIAL_SECONDS POLL_MS REQUEST_TIMEOUT_MS P99_GATE_MS \
   }
 done
 ((TRIAL_SECONDS >= 10 && POLL_MS >= 20 && REQUEST_TIMEOUT_MS > P99_GATE_MS \
-  && P99_GATE_MS >= 50 && READER_MIN_VCPUS >= 2 && CAPTURE_OPERATIONS <= 1)) || {
+  && P99_GATE_MS >= 50 && SOURCE_WARMUP_SECONDS >= 5 \
+  && READER_MIN_VCPUS >= 2 && CAPTURE_OPERATIONS <= 1)) || {
   echo "invalid capacity configuration" >&2
   exit 2
 }
@@ -123,9 +128,9 @@ mkdir -p "${RESULT_DIR}/trials"
 cp "${BASH_SOURCE[0]}" "${RESULT_DIR}/harness.sh"
 chmod 0555 "${RESULT_DIR}/harness.sh"
 
-gcp_ssh "${DAW_HOST}" --command="set -eu
+gcp_ssh "${SOURCE_HOST}" --command="set -eu
   test -f '${MEDIA_FILE}'
-  test \"\$(findmnt -n -o TARGET --target '${MEDIA_FILE}')\" = /mnt/needletail-media
+  test \"\$(findmnt -n -o TARGET --target '${MEDIA_FILE}')\" = '${MEDIA_MOUNT}'
   ffprobe -v error \
     -show_entries stream=codec_name,codec_type,width,height,avg_frame_rate,sample_rate,channels \
     -of json '${MEDIA_FILE}'" >"${RESULT_DIR}/source-probe.json"
@@ -153,23 +158,64 @@ gcp_copy_to "${ROOT}/player/tests/hls-load.mjs" "${READER_HOST}" \
   "${REMOTE_ROOT}/hls-load.mjs"
 gcp_copy_to "${TLS_CERT}" "${READER_HOST}" "${REMOTE_ROOT}/fullchain.pem"
 
-gcp_ssh "${DAW_HOST}" --command="sudo systemctl restart '${SOURCE_SERVICE}'"
+pre_source_latest_part="$(gcp_ssh "${EDGE_HOST}" --command="curl -ksSf --max-time 2 \
+  https://127.0.0.1/live/1/stream.m3u8 \
+  | awk -F'part|.mp4' '/#EXT-X-PART:/{last=\$2} END{print last}'" \
+  2>/dev/null | tail -n 1 || true)"
+gcp_ssh "${CONTRIBUTOR_HOST}" \
+  --command="sudo systemctl restart '${CONTRIBUTOR_SERVICE}'"
+gcp_ssh "${CONTRIBUTOR_HOST}" \
+  --command="systemctl is-active --quiet '${CONTRIBUTOR_SERVICE}'"
+gcp_ssh "${SOURCE_HOST}" --command="sudo systemctl restart '${SOURCE_SERVICE}'"
+warmup_start_part=''
 for _ in $(seq 1 90); do
   if gcp_ssh "${EDGE_HOST}" --command="curl -ksSf --max-time 2 \
     https://127.0.0.1/live/1/stream.m3u8" >"${RESULT_DIR}/playlist.m3u8" 2>/dev/null; then
-    if grep -q '#EXT-X-PART-INF:PART-TARGET=0.2' "${RESULT_DIR}/playlist.m3u8" \
+    playlist_part_target="$(awk -F= \
+      '/^#EXT-X-PART-INF:PART-TARGET=/{print $2; exit}' \
+      "${RESULT_DIR}/playlist.m3u8")"
+    if awk -v target="${playlist_part_target}" \
+      'BEGIN { exit !(target >= 0.19 && target <= 0.21) }' \
       && grep -Eq 'part[0-9]+\.mp4' "${RESULT_DIR}/playlist.m3u8"; then
-      break
+      warmup_start_part="$(awk -F'part|.mp4' \
+        '/#EXT-X-PART:/{last=$2} END{print last}' "${RESULT_DIR}/playlist.m3u8")"
+      if [[ "${warmup_start_part}" =~ ^[0-9]+$ \
+        && "${warmup_start_part}" != "${pre_source_latest_part}" ]]; then
+        break
+      fi
     fi
   fi
   sleep 1
 done
-grep -q '#EXT-X-PART-INF:PART-TARGET=0.2' "${RESULT_DIR}/playlist.m3u8"
+playlist_part_target="$(awk -F= \
+  '/^#EXT-X-PART-INF:PART-TARGET=/{print $2; exit}' \
+  "${RESULT_DIR}/playlist.m3u8")"
+awk -v target="${playlist_part_target}" \
+  'BEGIN { exit !(target >= 0.19 && target <= 0.21) }'
 grep -Eq 'part[0-9]+\.mp4' "${RESULT_DIR}/playlist.m3u8"
+[[ "${warmup_start_part}" =~ ^[0-9]+$ \
+  && "${warmup_start_part}" != "${pre_source_latest_part}" ]]
 if grep -Eq '\.(ts|m2ts)([?"[:space:]]|$)' "${RESULT_DIR}/playlist.m3u8"; then
   echo "playlist contains an MPEG-TS media object" >&2
   exit 2
 fi
+sleep "${SOURCE_WARMUP_SECONDS}"
+gcp_ssh "${EDGE_HOST}" --command="curl -ksSf --max-time 2 \
+  https://127.0.0.1/live/1/stream.m3u8" >"${RESULT_DIR}/playlist-warmed.m3u8"
+warmup_end_part="$(awk -F'part|.mp4' \
+  '/#EXT-X-PART:/{last=$2} END{print last}' "${RESULT_DIR}/playlist-warmed.m3u8")"
+[[ "${warmup_end_part}" =~ ^[0-9]+$ \
+  && "${warmup_end_part}" -gt "${warmup_start_part}" ]] || {
+  echo "the live fMP4 part sequence did not advance during warm-up" >&2
+  exit 2
+}
+jq -n \
+  --argjson previous_part "${pre_source_latest_part:-null}" \
+  --argjson start_part "${warmup_start_part}" \
+  --argjson end_part "${warmup_end_part}" \
+  --argjson seconds "${SOURCE_WARMUP_SECONDS}" \
+  '{previous_part:$previous_part,start_part:$start_part,end_part:$end_part,seconds:$seconds}' \
+  >"${RESULT_DIR}/source-warmup.json"
 
 edge_machine="$(gcloud compute instances describe "${EDGE_HOST}" \
   --project="${GCP_PROJECT}" --zone="${ZONE}" \
@@ -276,6 +322,10 @@ for spec in "${TIER_SPECS[@]}"; do
           reader_rx_mbps: (8 * ($ra.rx_bytes - $rb.rx_bytes) / $reader_seconds / 1000000),
           gate: {
             p99_ms_lt: $p99_gate_ms,
+            part_target_met: (
+              ($l.partTargetSeconds // 0) >= 0.19
+              and ($l.partTargetSeconds // 0) <= 0.21
+            ),
             minimum_parts_met: (($l.minimumPartsPerViewer // 0) >= ($l.expectedMinimumPartsPerViewer // 1)),
             playlist_p99_met: (($l.playlistRequests.p99 // 1e12) < $p99_gate_ms),
             part_p99_met: (($l.partRequests.p99 // 1e12) < $p99_gate_ms)
@@ -285,6 +335,7 @@ for spec in "${TIER_SPECS[@]}"; do
           .load_status == 0
           and .edge_service_active
           and (($capture_requested == 0) or ($capture_status == 0))
+          and .gate.part_target_met
           and .gate.minimum_parts_met
           and .gate.playlist_p99_met
           and .gate.part_p99_met
@@ -300,17 +351,20 @@ trap - EXIT
 source_inactive=0
 edge_active=0
 persistent_media=0
-source_state="$(gcp_ssh "${DAW_HOST}" \
+source_state="$(gcp_ssh "${SOURCE_HOST}" \
   --command="systemctl is-active '${SOURCE_SERVICE}'" 2>/dev/null || true)"
 [[ "${source_state##*$'\n'}" == inactive ]] && source_inactive=1
 gcp_ssh "${EDGE_HOST}" --command='systemctl is-active --quiet needletail-mesh.service' \
   && edge_active=1
-gcp_ssh "${DAW_HOST}" --command="test -f '${MEDIA_FILE}' \
-  && test \"\$(findmnt -n -o TARGET --target '${MEDIA_FILE}')\" = /mnt/needletail-media" \
+gcp_ssh "${SOURCE_HOST}" --command="test -f '${MEDIA_FILE}' \
+  && test \"\$(findmnt -n -o TARGET --target '${MEDIA_FILE}')\" = '${MEDIA_MOUNT}'" \
   && persistent_media=1
 
 jq -s \
   --arg run_id "${RUN_ID}" \
+  --arg source_host "${SOURCE_HOST}" \
+  --arg media_file "${MEDIA_FILE}" \
+  --arg media_mount "${MEDIA_MOUNT}" \
   --arg edge_machine "${edge_machine}" \
   --arg reader_machine "${reader_machine}" \
   --arg raw_artifact_directory "${RESULT_DIR#${ROOT}/}" \
@@ -326,6 +380,11 @@ jq -s \
         run_id: $run_id,
         provider: "gcp",
         raw_artifact_directory: $raw_artifact_directory,
+        source: {
+          host: $source_host,
+          media_file: $media_file,
+          media_mount: $media_mount
+        },
         stream: {
           video: "H.264 3840x2160 at 25 fps",
           audio: "AAC stereo at 48 kHz",

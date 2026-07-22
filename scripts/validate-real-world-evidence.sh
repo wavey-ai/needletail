@@ -138,6 +138,69 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.normal_lori_source_inactive == true
           and .cleanup.gcp_lab_retained_for_followup_testing == true
           and .cleanup.persistent_media_disk_preserved == true
+        elif .schema == "needletail.h264-4k-viewer-capacity.v1" then
+          .provider == "gcp"
+          and .result == "repeated_100_viewer_4k_short_window_qualified"
+          and .stream.source_protocol == "RIST"
+          and .stream.video_codec == "H.264"
+          and .stream.width == 3840
+          and .stream.height == 2160
+          and .stream.frames_per_second == 25
+          and .stream.audio_codec == "AAC"
+          and .stream.part_target_ms == 200
+          and .topology.edge_machine == "n2-standard-2"
+          and .topology.edge_vcpus == 2
+          and .highest_repeated_pass_viewers == 100
+          and (.trials | length) == 2
+          and ([.trials[]] | all(.[];
+            .passed == true
+            and .viewers == 100
+            and .duration_seconds == 60
+            and .minimum_parts_per_viewer >= .expected_minimum_parts_per_viewer
+            and .playlist_p99_ms < 200
+            and .part_p99_ms < 200
+          ))
+          and (.release_gates | all(.[]; . == true))
+          and .cleanup.source_process_exited == true
+          and .cleanup.gcp_instances_stopped_after_collection == true
+          and (.cleanup.stopped_instances | length) == 6
+          and .cleanup.persistent_media_disks_preserved == true
+        elif .schema == "needletail.h264-4k-loaded-player.v1" then
+          .provider == "gcp"
+          and .result == "loaded_hlsjs_player_qualified"
+          and .stream.source_protocol == "RIST"
+          and .stream.video_codec == "H.264"
+          and .stream.width == 3840
+          and .stream.height == 2160
+          and .topology.edge_machine == "n2-standard-2"
+          and .topology.load_machine == "n2-standard-2"
+          and .topology.browser_machine == "n2-standard-4"
+          and .topology.load_and_browser_hosts_separate == true
+          and .load.viewers == 100
+          and .load.duration_seconds == 60
+          and .load.minimum_parts_per_viewer >= .load.expected_minimum_parts_per_viewer
+          and .load.playlist_p99_ms < 200
+          and .load.part_p99_ms < 200
+          and .player.implementation == "HLS.js"
+          and .player.configured_target_ms == 100
+          and .player.startup_ms < 10000
+          and .player.live_delay_ms < 1000
+          and .player.waiting_events == 0
+          and .player.stalled_events == 0
+          and .player.recovery_seeks == 0
+          and .player.hls_errors == 0
+          and .player.decoded_frames >= 500
+          and .player.dropped_frames == 0
+          and .timeline.rewind_delay_seconds > 3
+          and .timeline.return_to_live_delay_seconds < 1
+          and .screenshots.operations_pages == 8
+          and .screenshots.player_candidates == 3
+          and .screenshots.operations_load_part_p99_ms < 200
+          and (.release_gates | all(.[]; . == true))
+          and .cleanup.source_process_exited == true
+          and .cleanup.gcp_instances_stopped_after_collection == true
+          and (.cleanup.stopped_instances | length) == 6
+          and .cleanup.persistent_media_disks_preserved == true
         elif .schema == "needletail.h264-fmp4-llhls-4k-8k.v1" then
           .provider == "gcp"
           and .result == "private_gcp_4k_and_derived_8k_transport_qualified"

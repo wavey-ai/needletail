@@ -1,0 +1,75 @@
+{
+  "schema": "needletail.h264-4k-viewer-capacity.v1",
+  "run_id": "20260721T061329Z-h264-4k-viewer-capacity",
+  "provider": "gcp",
+  "passed": true,
+  "result": "repeated_100_viewer_4k_short_window_qualified",
+  "raw_artifact_directory": "target/gcp-qualification/h264-4k-viewer-capacity/20260721T061329Z-h264-4k-viewer-capacity",
+  "revisions": {
+    "needletail_base": "87059bfe1d485d9be8bd9b71072d9ebe1e7ac216",
+    "av_contrib": "f7808b4aba8cb65f71cc4d5033f61f16d7c5e307",
+    "av_mesh": "1e9d314f5ea30103cfcafccca3ae0d057780740f"
+  },
+  "stream": {
+    "source_protocol": "RIST",
+    "video_codec": "H.264",
+    "width": 3840,
+    "height": 2160,
+    "frames_per_second": 25,
+    "audio_codec": "AAC",
+    "audio_sample_rate_hz": 48000,
+    "part_target_ms": 200,
+    "container": "CMAF-compatible fMP4"
+  },
+  "topology": {
+    "zone": "europe-west2-c",
+    "edge_machine": "n2-standard-2",
+    "edge_vcpus": 2,
+    "reader_machine": "n2-standard-4",
+    "reader_vcpus": 4,
+    "media_path_private": true
+  },
+  "trials": [
+    {
+      "trial_id": "v100-r1",
+      "duration_seconds": 60,
+      "viewers": 100,
+      "throughput_mbps": 1065.9765330818157,
+      "minimum_parts_per_viewer": 303,
+      "expected_minimum_parts_per_viewer": 288,
+      "playlist_p99_ms": 34.54913100000704,
+      "part_p99_ms": 145.8537629999919,
+      "edge_process_cpu_cores": 0.304980227741426,
+      "edge_host_cpu_percent": 19.410996663281587,
+      "passed": true
+    },
+    {
+      "trial_id": "v100-r2",
+      "duration_seconds": 60,
+      "viewers": 100,
+      "throughput_mbps": 1065.1094778871568,
+      "minimum_parts_per_viewer": 303,
+      "expected_minimum_parts_per_viewer": 288,
+      "playlist_p99_ms": 56.310376000008546,
+      "part_p99_ms": 190.6926729999832,
+      "edge_process_cpu_cores": 0.310956917406435,
+      "edge_host_cpu_percent": 19.133284777858705,
+      "passed": true
+    }
+  ],
+  "highest_repeated_pass_viewers": 100,
+  "release_gates": {
+    "two_repeated_runs": true,
+    "complete_part_progression": true,
+    "part_p99_below_200_ms": true,
+    "playlist_p99_below_200_ms": true,
+    "edge_service_stable": true,
+    "persistent_media_verified": true
+  },
+  "cleanup": {
+    "source_process_exited": false,
+    "gcp_instances_stopped_after_collection": false,
+    "stopped_instances": [],
+    "persistent_media_disks_preserved": true
+  }
+}
