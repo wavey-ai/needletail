@@ -44,3 +44,4 @@ Evidence index:
 - `20260720T034744Z-h264-fmp4-llhls-4k-8k.json`: private-GCP realtime H.264/AAC ingest, contributor CMAF fMP4 packaging, dual-parent replication, LL-HLS playlist-duration correction, and strict 4K plus derived-8K decode.
 - `20260720T045417Z-opus-h3-persistent-bundle-stream.json`: one persistent H3 bundle response per customer, a repeated strict 128 Opus tails/vCPU result, a provisional 256 tails/vCPU pass, and the measured 64-128 customer rare-tail boundary.
 - `20260721T033000Z-opus-h3-response-ab.json`: matched 5 ms, 100 ms, and 200 ms H3 response durations with exact media, aligned CPU samples, and a 90-second repeat.
+- `20260722T001300Z-edge-capacity-failover.json`: authoritative GCP edge-cache admission, HLS failover, replication, and HTTP/3 evidence.

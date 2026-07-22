@@ -45,6 +45,7 @@ and absence of secret-shaped fields with:
 ```
 
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
+Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).
 Current bundle-capacity record: [2026-07-20 persistent H3 Opus bundle stream](2026-07-20-opus-h3-persistent-bundle-stream.md).
 Current video record: [2026-07-20 H.264 to fMP4 LL-HLS at 4K and 8K](2026-07-20-h264-fmp4-llhls-4k-8k.md).
 Previous tail record: [2026-07-20 clock-qualified Opus H3 tail repeatability](2026-07-20-opus-h3-clock-qualified-tail.md).

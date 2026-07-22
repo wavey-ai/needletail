@@ -4,135 +4,409 @@
 
 # Needletail
 
-Needletail delivers live video and professional audio from contribution source to viewer.
-It accepts RIST, SRT, and RTMP input and publishes one canonical media stream.
-An adaptive dual-parent relay fabric carries that stream to regional playback edges.
-The Needletail Player and Operations view give viewers and operators direct control of the live experience.
+Needletail moves live video and professional audio from contribution sources to viewers.
+It combines contribution recovery, canonical media objects, dual-parent routing, regional edge caches, standards-based playback, and service operations.
 
-Needletail brings together:
+The design keeps source work constant while regions, edges, and viewer counts increase.
+It also keeps active playback sessions stable when an edge reaches its capacity boundary.
+Needletail provides fast, standards-compliant LL-HLS for media that supported native players can decode.
 
-- broadcast-ready contribution input;
-- source-side recovery and packaging;
-- adaptive RaptorQ delivery across independent relay parents;
-- regional caching for low-latency playback;
-- CMAF-compatible fragmented MP4 for browser video; and
-- live visibility for ingest, delivery, recovery, and latency.
+## What Needletail can do
 
-## Contribution
-
-Needletail works with compatible encoders and production tools.
-
-| Protocol | Contribution role |
+| Capability | Needletail behavior |
 | --- | --- |
-| RIST | Reliable Internet Stream Transport for resilient MPEG-TS contribution. |
-| SRT | Secure Reliable Transport for resilient MPEG-TS contribution. |
-| RTMP | Real-Time Messaging Protocol input for FLV publishers. |
+| Contribution | Accept RIST, SRT, and RTMP sources near the publisher |
+| Recovery | Reorder input and recover missing data before publication |
+| Media handling | Preserve producer bytes or create CMAF-compatible fragmented MP4 |
+| Distribution | Send immutable media objects through an adaptive dual-parent DAG |
+| Regional delivery | Feed independent playback edges through bounded distributor tiers |
+| Resilience | Use RaptorQ repair, reliable object fetch, and warm parent routes |
+| Playback | Serve standards-based LL-HLS to native HLS players and HLS.js |
+| Capacity protection | Keep admitted sessions and send new sessions to healthy edges |
+| Operations | Present topology, routes, streams, capacity, alerts, and performance |
 
-RIST and SRT deliver MPEG-TS to `av-contrib`.
-RTMP delivers encoded access units through its FLV input.
-`av-contrib` recovers each contribution and creates the declared media format.
+These design choices work together:
 
-For supported H.264 and AAC input, `av-contrib` creates Common Media Application Format (CMAF) fragmented MP4 parts.
-Needletail uses `fMP4` as the short name for fragmented MP4.
-The contributor publishes each part as a bounded, immutable media object.
-Each object carries stream identity, timing, dependencies, and integrity data.
+- The contributor performs source-dependent work once for each stream.
+- The mesh distributes immutable objects instead of repeating source work.
+- Each playback edge is a leaf, so viewer growth does not increase origin fanout.
+- HLS failover uses standard playlist variants instead of media redirects.
+- Supported native HLS players use the LL-HLS stream without HLS.js.
 
-## Live Delivery
+## Terms
 
-Needletail uses RaptorQ forward error correction for live media recovery.
-The primary parent carries source symbols.
-The independent secondary parent carries compatible repair symbols and supports warm route changes.
+A canonical media object is a bounded, immutable media unit.
+It contains stream identity, timing, dependencies, deadlines, and integrity data.
 
-The recovery policy responds to media importance, packet loss, jitter, queue pressure, and the delivery deadline.
-Reliable object fetch supplies bounded backfill for media that needs another delivery path.
-Expired work leaves the queue so newer media keeps its delivery budget.
+A directed acyclic graph (DAG) is a forwarding graph without routing loops.
+Needletail creates a DAG for each stream and destination cohort.
 
-Each relay and playback edge receives a primary parent and an independent warm secondary parent.
-Route selection uses round-trip time, jitter, loss, queue state, deadline behavior, and failure-domain diversity.
-Generation fencing keeps route changes ordered.
-Make-before-break changes the route before the current route closes.
+A distributor is a regional cache service that feeds playback edges.
+An edge is a leaf cache that serves viewers.
 
-The relay fabric carries canonical media objects between the source, relay parents, and playback edges.
-This arrangement performs protocol recovery and media packaging once near the source.
-It preserves the encoded media while delivery adapts to current network conditions.
+Fanout is the number of child nodes that receive data from one parent.
 
-```text
-RIST, SRT, or RTMP source
-  -> contribution recovery and media packaging
-  -> immutable media objects
-  -> adaptive RaptorQ dual-parent delivery
-  -> regional playback cache
-  -> LL-HLS player or interactive media lane
+Low-Latency HTTP Live Streaming (LL-HLS) uses short media parts and blocking playlist reloads.
+A Multivariant Playlist lists equivalent playback routes for one stream.
+
+Common Media Client Data (CMCD) identifies a playback session with its `sid` field.
+Needletail uses this identifier for session-aware edge admission.
+
+RaptorQ is a forward error correction method.
+Needletail uses RaptorQ symbols to recover media before its delivery deadline.
+
+## End-to-end architecture
+
+```mermaid
+flowchart LR
+    P["Publisher<br/>RIST, SRT, or RTMP"]
+    C["Contributor<br/>Recovery and packaging"]
+    O["Canonical<br/>media objects"]
+    I["Mesh ingress"]
+    R["Dual-parent<br/>relay DAG"]
+    D["Regional<br/>distributors"]
+    E["Playback<br/>edge caches"]
+    V["Viewers<br/>LL-HLS or HTTP/3"]
+
+    P --> C
+    C --> O
+    O --> I
+    I --> R
+    R --> D
+    D --> E
+    E --> V
 ```
 
-## Playback
+The contributor validates input, restores order, recovers loss, and packages supported media.
+It publishes each ordered output once to the nearest mesh ingress.
 
-The playback edge serves Low-Latency HTTP Live Streaming (LL-HLS) at:
+The relay DAG performs geographical fanout.
+Regional distributors retain warm objects and feed independent playback edges.
 
-```text
-/live/<stream-id>/stream.m3u8
+Each edge verifies, caches, and publishes the same canonical objects.
+The edge serves viewers without a direct contributor connection.
+
+## Contribution and media objects
+
+```mermaid
+flowchart TD
+    IN["Contribution input"]
+    CHECK["Validate and identify media"]
+    RECOVER["Reorder and recover loss"]
+    PRESERVE["Preserve producer bytes"]
+    PACKAGE["Create CMAF-compatible fMP4"]
+    OBJECT["Create canonical media object"]
+    PUBLISH["Publish once to mesh ingress"]
+
+    IN --> CHECK
+    CHECK --> RECOVER
+    RECOVER --> PRESERVE
+    RECOVER --> PACKAGE
+    PRESERVE --> OBJECT
+    PACKAGE --> OBJECT
+    OBJECT --> PUBLISH
 ```
 
-Viewers open `/<stream-id>` in the Needletail Player.
-The standard video path uses CMAF-compatible fMP4 parts.
-The player selects native HLS when the browser supports it.
-Other browsers use the bundled HLS.js implementation.
+`av-contrib` accepts compatible RIST, SRT, and RTMP contribution.
+RIST means Reliable Internet Stream Transport.
+SRT means Secure Reliable Transport.
+RTMP means Real-Time Messaging Protocol.
 
-The player provides:
+The contributor can package supported H.264 and AAC input as CMAF-compatible fragmented MP4.
+It can also preserve selected professional-audio formats without a compatibility encode.
 
-- a Native and HLS.js player choice;
-- a live-delay target from 100 ms to 5 seconds;
-- current delay with a one-second rolling average;
-- playback, buffer, and live-edge progress on the timeline; and
-- seeking within the retained live window.
+Canonical identity lets every relay and edge verify the same media unit.
+The identity also supports exact cache reads, repair, late join, and retained-window playback.
 
-## Operations
+## Adaptive distribution mesh
 
-Needletail Operations shows the complete route from contribution to playback.
-It presents active protocols, stream continuity, relay parents, RaptorQ recovery, cache health, latency, and actionable alerts.
+```mermaid
+flowchart TB
+    I["Mesh ingress"]
+    B1["Backbone relay A"]
+    B2["Backbone relay B"]
 
-The view combines contributor and playback-edge snapshots into one live service picture.
-Operators can move from the overview to streams, routes, nodes, performance, and activity.
+    subgraph RA["Region A"]
+        DA1["Distributor A1"]
+        DA2["Distributor A2"]
+        EA1["Edge A1"]
+        EA2["Edge A2"]
+    end
 
-![Needletail operations overview](docs/release/screenshots/operations.png)
+    subgraph RB["Region B"]
+        DB1["Distributor B1"]
+        DB2["Distributor B2"]
+        EB1["Edge B1"]
+        EB2["Edge B2"]
+    end
 
-## Measured Results
+    I --> B1
+    I --> B2
 
-Measurements completed on 20 July 2026 establish the current short-window delivery baselines.
+    B1 --> DA1
+    B2 -.-> DA1
+    B2 --> DA2
+    B1 -.-> DA2
+    B1 --> DB1
+    B2 -.-> DB1
+    B2 --> DB2
+    B1 -.-> DB2
 
-| Delivery area | Current result | Measurement |
-| --- | --- | --- |
-| Wide-area LL-HLS | 2.390-2.452 ms additional p50 latency over raw UDP | 5 ms parts from London to New York, Tokyo, and Sydney. The metric measures publication-to-client availability. |
-| Eight-track Opus | 128 real-time track tails per vCPU | 32 customers with eight tracks each on a two-vCPU edge. All 2,048,000 track units were exact. Availability p99 was 12.627-12.734 ms. |
-| 4K LL-HLS video | 350 concurrent viewer tails at 3.626-3.659 Gbit/s | Two repeated 60-second runs on one `n2-standard-2` edge. fMP4 part p99 was 198.95-199.05 ms. |
+    DA1 --> EA1
+    DA1 --> EA2
+    DA2 -.-> EA1
+    DA2 -.-> EA2
 
-These values provide an engineering baseline for the measured stream and edge configurations.
-Production sizing uses longer endurance profiles and the target deployment topology.
+    DB1 --> EB1
+    DB1 --> EB2
+    DB2 -.-> EB1
+    DB2 -.-> EB2
+```
 
-The [current performance record](docs/performance/current-state-and-gaps.md) contains the latest capacity boundaries.
-The [real-world evidence index](docs/real-world-tests/README.md) contains dated methods and source records.
+Solid lines show primary object flow.
+Dotted lines show warm secondary routes for repair and failover.
 
-## Service Composition
+Each stream graph has one primary parent and at most one secondary parent.
+Parents always occur at an earlier DAG level than their children.
 
-Needletail composes the services that move media from source to viewer.
+The controller selects different providers, zones, networks, or physical failure domains when possible.
+It uses measured latency, jitter, loss, queue state, and deadline behavior for route selection.
 
-| Service or crate | Product role |
+The secondary parent keeps subscriptions and object state warm.
+It can supply repair symbols, an immutable object fetch, or an immediate primary takeover.
+
+Make-before-break route changes warm the new parent before the old parent closes.
+Generation fencing keeps topology changes in order.
+
+Distributors bound regional fanout and retain a live window.
+Edges never feed other edges and never become regional replication hubs.
+
+## Edge capacity failover and failback
+
+```mermaid
+stateDiagram-v2
+    state "Accept new sessions" as Accepting
+    state "Confirm sustained load" as Observing
+    state "Protect edge capacity" as Protecting
+    state "Use another healthy edge" as Alternate
+
+    [*] --> Accepting
+    Accepting --> Observing: Egress reaches admission boundary
+    Observing --> Accepting: Egress falls
+    Observing --> Protecting: Load remains high
+    Protecting --> Protecting: Existing CMCD session continues
+    Protecting --> Alternate: New session receives HTTP 429
+    Protecting --> Accepting: Egress falls below recovery boundary
+    Alternate --> Alternate: Session continues on selected edge
+```
+
+Each edge measures response bytes in a bounded rolling window.
+The service default declares 4 Gbit/s of edge capacity.
+
+Admission closes at 85 percent after three seconds of sustained load.
+Admission opens again when egress falls below 75 percent.
+The default rolling window is ten seconds.
+
+An admitted CMCD session continues on the busy edge.
+A new or anonymous session receives HTTP `429` while the alarm is active.
+
+The response includes these advisory headers:
+
+```text
+Retry-After: 1
+Link: <alternate-media-url>; rel="alternate"
+X-Needletail-Alternate-Edges: <alternate-media-url>
+Access-Control-Expose-Headers: Link, Retry-After, X-Needletail-Alternate-Edges
+```
+
+Needletail selects alternate edges from the same regional DAG.
+It excludes stale, draining, unhealthy, and overloaded edges.
+
+The selection also excludes distributors and nodes without a playback URL.
+It orders valid edges by utilization, active readers, and node identity.
+
+Needletail does not force an active session back after recovery.
+It restores the recovered edge to new-session admission and future Multivariant Playlists.
+
+This restoration is capacity failback.
+It makes the recovered edge eligible without moving sessions from a healthy alternate edge.
+
+## Standards-based HLS failover
+
+```mermaid
+sequenceDiagram
+    participant Player
+    participant EdgeA as Edge A
+    participant EdgeB as Edge B
+
+    Player->>EdgeA: Request Multivariant Playlist
+    EdgeA-->>Player: Equal variants for Edge A and Edge B
+    Player->>EdgeA: Start session with CMCD sid
+    Note over EdgeA: Capacity alarm starts
+    Player->>EdgeA: Continue admitted session
+    EdgeA-->>Player: HTTP 200
+    Player->>EdgeA: Start new session
+    EdgeA-->>Player: HTTP 429 and alternate URLs
+    Player->>EdgeB: Request alternate media route
+    EdgeB-->>Player: HTTP 200
+    Note over EdgeA: Capacity falls below recovery boundary
+    EdgeA-->>Player: Edge A becomes eligible again
+```
+
+The player opens `/live/<stream-id>/master.m3u8`.
+The playlist contains duplicate equal-bandwidth variants for healthy same-region edges.
+
+A healthy playlist can contain these routes:
+
+```text
+#EXTM3U
+#EXT-X-VERSION:9
+#EXT-X-STREAM-INF:BANDWIDTH=4000000
+stream.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=4000000
+https://edge-b.example/live/904/stream.m3u8
+```
+
+The edge omits itself from each Multivariant Playlist while its alarm is active.
+Healthy remote edges remain as equivalent variants.
+
+Needletail does not redirect HLS media requests.
+The duplicate variants provide the standards-based failover route.
+The playlist and failover tags comply with the linked HLS specification.
+
+Supported native HLS players can open the Multivariant Playlist directly.
+They do not require HLS.js.
+
+The standards-based HLS failover route uses the listed variants.
+This route does not depend on HLS.js or the advisory headers.
+
+Needletail can use HLS.js when a supported browser does not provide native HLS.
+The encoded media must also use a codec that the selected player supports.
+
+The design follows these specifications:
+
+- [HLS Authoring Specification for Apple Devices](https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices/)
+- [CTA-5004 Common Media Client Data](https://cta-wave.github.io/Resources/common-media-client-data--cta-5004-a.html)
+
+## Playback paths
+
+```mermaid
+flowchart LR
+    EDGE["Playback edge cache"]
+    MASTER["HLS Multivariant Playlist"]
+    MEDIA["LL-HLS media playlist and parts"]
+    NATIVE["Native HLS player"]
+    HLSJS["HLS.js player"]
+    H3["Persistent HTTP/3 response"]
+    AUDIO["Professional-audio client"]
+    INTERACTIVE["Interactive delivery path"]
+    CLIENT["Interactive client"]
+
+    EDGE --> MASTER
+    MASTER --> MEDIA
+    MEDIA --> NATIVE
+    MEDIA --> HLSJS
+    EDGE --> H3
+    H3 --> AUDIO
+    EDGE --> INTERACTIVE
+    INTERACTIVE --> CLIENT
+```
+
+The Needletail Player starts native HLS when the browser supports it.
+It starts HLS.js on other supported browsers.
+
+Both modes use the same standards-based LL-HLS playlists and short media parts.
+
+The qualified HTTP/3 path had 91.222 ms availability p99.
+Its estimated render p99 was 241.222 ms.
+
+The player shows live delay, buffer state, playback progress, and the retained live window.
+Viewers can rewind within that window and return to the live edge.
+
+Persistent HTTP/3 responses support low-overhead professional-audio delivery.
+Interactive paths can use direct or short relay routes when measured performance permits.
+
+## Control and operations
+
+```mermaid
+flowchart LR
+    AGENTS["Node agents"]
+    TELEMETRY["Topology and service telemetry"]
+    CONTROLLER["Needletail controller"]
+    DESIRED["Desired topology and lifecycle actions"]
+    METRICS["Metrics and activity"]
+    OPS["Needletail Operations"]
+
+    AGENTS --> TELEMETRY
+    TELEMETRY --> CONTROLLER
+    CONTROLLER --> DESIRED
+    DESIRED --> AGENTS
+    TELEMETRY --> METRICS
+    METRICS --> OPS
+```
+
+The controller owns topology, route generations, regional placement, and edge lifecycle.
+Node agents apply desired state and report fresh service data.
+
+Needletail Operations presents streams, nodes, routes, capacity, performance, alerts, and recent activity.
+Operators can inspect the same state that controls route and admission decisions.
+
+Production uses the durable controller, node agents, and `systemd`-supervised native services.
+The Rust supervisor supports local development and qualification.
+
+## Authoritative edge-cache qualification
+
+The July 22 GCP qualification is the authoritative edge-cache record.
+It used one contributor, one distributor, and two independent playback edges.
+
+| Check | Result |
 | --- | --- |
-| `av-contrib` | Accept contribution protocols, recover input, package media, and publish canonical objects. |
-| `media-object` | Define object identity, integrity, dependencies, deadlines, and timestamps. |
-| `raptor-fec` | Select RaptorQ geometry, repair policy, and deadline-aware scheduling. |
-| `relay-session` | Manage authenticated carriers, subscriptions, symbols, and object fetch. |
-| `av-mesh` | Relay media, maintain regional caches, serve LL-HLS, and publish telemetry. |
-| `playlists` | Maintain bounded media and manifest caches with generation-safe writes. |
-| `mission-control` | Present ingest, topology, recovery, latency, health, and alerts. |
-| `player` | Play live streams and expose delay, buffer, live-edge, and player controls. |
+| Byte-identical replication | The distributor and both edges served the same 7,852-byte part |
+| Capacity alarm | Edge A measured 125,632 bit/s against a 50,000 bit/s test boundary |
+| Existing session | Edge A returned HTTP `200` during overload |
+| New session | Edge A returned HTTP `429` with alternate-edge advice |
+| Alternate edge | Edge B returned HTTP `200` |
+| Recovery | Edge A reopened admission below the recovery boundary |
+| HTTP/3 probe | 120 of 120 parts arrived without gaps or deadline misses |
+| Availability | HTTP/3 availability p99 was 91.222 ms |
+| Estimated render | The model estimated end-to-end render p99 at 241.222 ms |
+| Cleanup | All transient services stopped and the initial cloud state returned |
 
-## Local Development
+The test used reduced limits to produce one controlled alarm and recovery cycle.
+It did not measure maximum edge throughput or long-duration session churn.
 
-Needletail uses published registry crates from crates.io.
-The repository contains the orchestration tools, Operations assets, Player assets, and release checks.
+Read the [qualification narrative](docs/real-world-tests/2026-07-22-gcp-edge-capacity-failover.md) for the topology, method, revisions, and limits.
+Use the [JSON evidence](docs/real-world-tests/evidence/20260722T001300Z-edge-capacity-failover.json) for machine-readable results.
 
-Build and check the repository with:
+Other test categories remain in the [real-world evidence index](docs/real-world-tests/README.md).
+The [current performance record](docs/performance/current-state-and-gaps.md) summarizes their accepted boundaries.
+
+## Components
+
+Needletail composes service implementations from sibling repositories.
+The Needletail repository owns product topology, lifecycle, operations, and qualification.
+
+| Component | Responsibility |
+| --- | --- |
+| `av-contrib` | Accept contribution, recover input, package media, and publish canonical objects |
+| `wavey-rist` | Provide RIST transport |
+| `wavey-srt` | Provide SRT transport |
+| `rtmp-ingress` | Parse RTMP and FLV contribution |
+| `media-object` | Define object identity, timing, dependencies, deadlines, and integrity |
+| `raptor-fec` | Select RaptorQ geometry and schedule repair data |
+| `relay-session` | Manage carriers, subscriptions, symbols, and object fetch |
+| `av-mesh` | Relay media, maintain regional caches, and publish telemetry |
+| `playlists` | Maintain media caches and build bounded playlists |
+| `av-hls` | Resolve HLS media requests |
+| `av-web-service` | Serve HTTP, HTTP/2, and HTTP/3 requests |
+| `mission-control` | Implement Needletail Operations |
+| `player` | Play streams and control delay, mode, and timeline position |
+
+## Development
+
+Cargo resolves published Rust dependencies from crates.io.
+
+Run the repository checks:
 
 ```sh
 make fmt
@@ -142,21 +416,20 @@ make player-check
 make mission-control-check
 ```
 
-Build the browser assets with:
+Build the browser assets:
 
 ```sh
 make player-build
 make mission-control-build
 ```
 
-Cargo manifests use published registry crates from crates.io.
+## Detailed documentation
 
-## Documentation
-
+- [Regional edge-cache fabric](docs/edge-cache-fabric.md)
 - [Relay fabric](docs/relay-fabric.md)
 - [Contributor origin boundary](docs/contributor-origin-boundary.md)
 - [Audio delivery lanes](docs/audio-delivery-lanes.md)
-- [Operations telemetry transport](docs/operations-telemetry-transport.md)
+- [Operations telemetry](docs/operations-telemetry-transport.md)
 - [Current performance record](docs/performance/current-state-and-gaps.md)
 - [Real-world evidence](docs/real-world-tests/README.md)
 

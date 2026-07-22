@@ -1,7 +1,7 @@
 const MAX_STREAM_ID = 18446744073709551615n;
 const rawStreamId = streamIdFromPath(window.location.pathname);
 const streamId = validStreamId(rawStreamId) ? rawStreamId : "1";
-const playlistUrl = new URL(`/live/${streamId}/stream.m3u8`, window.location.origin).href;
+const playlistUrl = new URL(`/live/${streamId}/master.m3u8`, window.location.origin).href;
 const SOURCE_PROTOCOL = "RIST";
 const LATENCY_STORAGE_KEY = "needletail.liveLatencyTarget";
 const PLAYER_MODE_STORAGE_KEY = "needletail.playerMode";
@@ -289,6 +289,10 @@ function connectHls() {
   }
 
   hls = new window.Hls({
+    cmcd: {
+      contentId: streamId,
+      useHeaders: false,
+    },
     lowLatencyMode: true,
     preferManagedMediaSource: true,
     enableWorker: true,

@@ -21,10 +21,11 @@ test("player is same-origin, mobile safe, and selects a supported playback engin
   assert.match(html, /src="\/player\.js"/);
   assert.match(html, /href="\/player\.css"/);
   assert.doesNotMatch(html, /(?:src|href)="https?:\/\//);
-  assert.match(script, /new URL\(`\/live\/\$\{streamId\}\/stream\.m3u8`, window\.location\.origin\)/);
+  assert.match(script, /new URL\(`\/live\/\$\{streamId\}\/master\.m3u8`, window\.location\.origin\)/);
   assert.match(script, /streamIdFromPath\(window\.location\.pathname\)/);
   assert.match(script, /window\.Hls\?\.isSupported\(\)/);
   assert.match(script, /lowLatencyMode: true/);
+  assert.match(script, /cmcd: \{\s+contentId: streamId,\s+useHeaders: false,/);
   assert.match(html, /id="header-stream-tag"/);
   assert.match(html, /id="source-protocol"/);
   assert.match(html, /id="latency-target"/);

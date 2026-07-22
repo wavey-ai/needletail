@@ -1,0 +1,102 @@
+{
+  "schema": "needletail.edge-capacity-failover.v1",
+  "run_id": "20260722T001300Z-edge-capacity-failover",
+  "provider": "gcp",
+  "passed": true,
+  "result": "existing_session_continued_new_session_failed_over_and_h3_probe_passed",
+  "raw_artifact_directory": "target/gcp-qualification/edge-capacity-failover/20260722T001300Z-edge-capacity-failover",
+  "revisions": {
+    "needletail_base": "87059bfe1d485d9be8bd9b71072d9ebe1e7ac216",
+    "av_mesh_base": "1e9d314f5ea30103cfcafccca3ae0d057780740f",
+    "av_contrib_base": "f7808b4aba8cb65f71cc4d5033f61f16d7c5e307",
+    "playlists": "2d3043376dec86bca0a8dea33c6fe614089b3ca1",
+    "web_services_base": "0e8c21cc6ad3727e5dd0a7e2e79a83d3464b531c",
+    "tested_working_tree_changes": true
+  },
+  "artifacts": {
+    "av_mesh_linux_sha256": "9848ce7d9152f670b4964054b88d455563a73699acdaafcec8d0c64ce677da74",
+    "probe_linux_sha256": "0ebcd5f572b1255e2cf0e71a2c2be99dba86ff634de40f2a5a1b1aaafd753073"
+  },
+  "topology": {
+    "zone": "europe-west2-c",
+    "subnet": "10.84.10.0/24",
+    "media_path_private": true,
+    "nodes": [
+      {"role": "contributor", "instance": "nt-contrib-lon", "machine_type": "n2-standard-2", "private_address": "10.84.10.5"},
+      {"role": "distributor", "instance": "nt-relay-a-lon", "machine_type": "n1-standard-1", "private_address": "10.84.10.7"},
+      {"role": "edge_a", "instance": "nt-edge-lon", "machine_type": "n2-standard-2", "private_address": "10.84.10.6"},
+      {"role": "edge_b", "instance": "nt-relay-b-lon", "machine_type": "n2-standard-4", "private_address": "10.84.10.8"}
+    ]
+  },
+  "capacity_alarm": {
+    "capacity_bps": 100000,
+    "admission_bps": 50000,
+    "recovery_bps": 25000,
+    "window_seconds": 2,
+    "minimum_sustained_seconds": 1,
+    "observed_bps": 125632,
+    "existing_session_status": 200,
+    "new_session_status": 429,
+    "alternate_session_status": 200,
+    "active_sessions": 1,
+    "admitted_sessions": 1,
+    "rejected_requests": 1,
+    "retry_after_seconds": 1,
+    "link_alternate_present": true,
+    "alternate_edge_header_present": true,
+    "advisory_headers_cors_visible": true,
+    "recovered": true,
+    "post_recovery_status": 200
+  },
+  "hls_failover": {
+    "entry_route": "/live/904/master.m3u8",
+    "healthy_variant_count": 2,
+    "overloaded_variant_count": 1,
+    "overloaded_local_variant_present": false,
+    "remote_edge_status": 200,
+    "redirects_used": false
+  },
+  "replication": {
+    "stream_id": 904,
+    "part": "part79.bin",
+    "part_bytes": 7852,
+    "sha256": "af4363232071e4759fc919ccd21e74e1bb4e563529c856ffd13317dba4c5418c",
+    "distributor_match": true,
+    "edge_a_match": true,
+    "edge_b_match": true
+  },
+  "probe_correction": {
+    "old_edge_http3_listener_enabled": false,
+    "old_declared_codec": "flac_fmp4",
+    "source_codec": "opaque_flac",
+    "independent_http3_option_added": true,
+    "opaque_flac_probe_mode_added": true,
+    "isolated_stream_per_retry": true
+  },
+  "final_h3_probe": {
+    "session_id": 1784680527186537417,
+    "stream_id": 1002,
+    "expected_parts": 120,
+    "received_parts": 120,
+    "missing_parts": 0,
+    "non_contiguous_pts": 0,
+    "deadline_ms": 2000,
+    "deadline_misses": 0,
+    "opaque_flac_parts_verified": 120,
+    "opaque_flac_frame_mismatches": 0,
+    "connection_setup_ms": 3.986923,
+    "availability_p50_ms": 90.577605,
+    "availability_p95_ms": 91.061497,
+    "availability_p99_ms": 91.221875,
+    "availability_max_ms": 92.601135,
+    "estimated_render_p99_ms": 241.221875
+  },
+  "cleanup": {
+    "source_process_exited": true,
+    "original_services_restored_before_shutdown": true,
+    "gcp_instances_stopped_after_collection": true,
+    "stopped_instances": ["nt-relay-a-lon", "nt-edge-lon", "nt-relay-b-lon"],
+    "contributor_remaining_running": true,
+    "persistent_disks_preserved": true
+  }
+}

@@ -161,6 +161,33 @@ for evidence in "${run_files[@]}"; do
           and .cleanup.gcp_instances_stopped_after_collection == true
           and (.cleanup.stopped_instances | length) == 6
           and .cleanup.persistent_disks_preserved == true
+        elif .schema == "needletail.edge-capacity-failover.v1" then
+          .provider == "gcp"
+          and .result == "existing_session_continued_new_session_failed_over_and_h3_probe_passed"
+          and .capacity_alarm.existing_session_status == 200
+          and .capacity_alarm.new_session_status == 429
+          and .capacity_alarm.alternate_session_status == 200
+          and .capacity_alarm.recovered == true
+          and .capacity_alarm.post_recovery_status == 200
+          and .capacity_alarm.link_alternate_present == true
+          and .capacity_alarm.advisory_headers_cors_visible == true
+          and .hls_failover.healthy_variant_count == 2
+          and .hls_failover.overloaded_variant_count == 1
+          and .hls_failover.overloaded_local_variant_present == false
+          and .hls_failover.redirects_used == false
+          and .replication.distributor_match == true
+          and .replication.edge_a_match == true
+          and .replication.edge_b_match == true
+          and .final_h3_probe.received_parts == .final_h3_probe.expected_parts
+          and .final_h3_probe.missing_parts == 0
+          and .final_h3_probe.deadline_misses == 0
+          and .final_h3_probe.opaque_flac_frame_mismatches == 0
+          and .cleanup.source_process_exited == true
+          and .cleanup.original_services_restored_before_shutdown == true
+          and .cleanup.gcp_instances_stopped_after_collection == true
+          and (.cleanup.stopped_instances | length) == 3
+          and .cleanup.contributor_remaining_running == true
+          and .cleanup.persistent_disks_preserved == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
