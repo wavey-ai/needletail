@@ -1,31 +1,31 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title description" viewBox="0 0 1200 900">
-    <title id="title">Global FLAC UDP and LL-HLS latency over time</title>
-    <desc id="description">Five aligned regional plots compare UDP with forward error correction against FLAC LL-HLS availability during one 600-second, eight-track test.</desc>
+    <title id="title">Global FLAC UDP and LL-HLS delivery latency over time</title>
+    <desc id="description">Five regional plots compare UDP with forward error correction against FLAC LL-HLS end-of-part delivery. The LL-HLS series excludes the 250 millisecond part duration.</desc>
 
     <rect width="1200" height="900" fill="#08111f"/>
-    <text x="94" y="44" fill="#f7fbff" font-size="28" font-family="Inter,Arial,sans-serif" font-weight="600">Global FLAC latency over time</text>
+    <text x="94" y="44" fill="#f7fbff" font-size="28" font-family="Inter,Arial,sans-serif" font-weight="600">Global FLAC delivery latency over time</text>
     <text x="94" y="73" fill="#9fb1c7" font-size="16" font-family="Inter,Arial,sans-serif">Eight stereo tracks · 600 seconds · each point is a 10-second median of per-track, one-second P99 values</text>
     <line x1="94" y1="92" x2="128" y2="92" stroke="#55c2ff" stroke-width="4"/>
     <text x="138" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">UDP with FEC</text>
     <line x1="284" y1="92" x2="318" y2="92" stroke="#ffb454" stroke-width="4"/>
-    <text x="328" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">FLAC LL-HLS availability</text>
+    <text x="328" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">FLAC LL-HLS end-of-part delivery</text>
 
 
       <rect x="94" y="112" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
       <text x="106" y="136" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Tokyo</text>
-      <text x="1148" y="136" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 213 ms · LL-HLS 468 ms</text>
+      <text x="1148" y="136" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 213 ms · LL-HLS 218 ms</text>
 
 
-        <line x1="94" y1="220" x2="1160" y2="220" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="225" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+        <line x1="94" y1="222" x2="1160" y2="222" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="227" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">150</text>
 
 
-        <line x1="94" y1="172" x2="1160" y2="172" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="177" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+        <line x1="94" y1="178" x2="1160" y2="178" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="183" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">250</text>
 
 
-        <line x1="94" y1="124" x2="1160" y2="124" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="129" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+        <line x1="94" y1="134" x2="1160" y2="134" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="139" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">350</text>
 
 <line x1="94" y1="112" x2="94" y2="244" stroke="#15263a" stroke-width="1"/>
 <line x1="307.20000000000005" y1="112" x2="307.20000000000005" y2="244" stroke="#15263a" stroke-width="1"/>
@@ -34,8 +34,8 @@
 <line x1="946.8000000000001" y1="112" x2="946.8000000000001" y2="244" stroke="#15263a" stroke-width="1"/>
 <line x1="1160" y1="112" x2="1160" y2="244" stroke="#15263a" stroke-width="1"/>
 
-      <path d="M102.9,167.9L120.7,165.8L138.4,164.8L156.2,164.9L173.9,164.7L191.7,164.2L209.5,163.7L227.3,163.9L245.0,163.4L262.8,163.5L280.5,163.8L298.3,163.6L316.1,163.7L333.9,163.7L351.6,165.2L369.4,165.6L387.2,166.3L404.9,169.8L422.7,171.3L440.4,174.1L458.2,176.7L476.0,176.4L493.8,178.1L511.5,168.1L529.3,165.5L547.0,164.9L564.8,164.9L582.6,164.7L600.3,164.4L618.1,164.6L635.9,163.9L653.6,163.7L671.4,164.0L689.2,163.8L706.9,164.1L724.7,164.1L742.5,163.9L760.3,164.0L778.0,165.6L795.8,155.6L813.6,168.7L831.3,171.6L849.1,172.8L866.9,176.2L884.6,176.2L902.4,176.7L920.1,177.3L937.9,166.6L955.7,165.6L973.4,165.3L991.2,164.5L1009.0,164.5L1026.8,164.2L1044.5,163.8L1062.3,163.6L1080.1,164.0L1097.8,164.2L1115.6,163.8L1133.3,164.0L1151.1,164.3" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="M102.9,229.2L120.7,228.6L138.4,227.0L156.2,227.8L173.9,226.4L191.7,225.2L209.5,225.9L227.3,226.5L245.0,225.3L262.8,225.7L280.5,224.7L298.3,226.9L316.1,226.0L333.9,227.1L351.6,227.4L369.4,228.0L387.2,228.6L404.9,228.8L422.7,229.4L440.4,231.3L458.2,232.2L476.0,232.7L493.8,233.7L511.5,229.5L529.3,227.5L547.0,226.1L564.8,226.6L582.6,225.5L600.3,225.8L618.1,225.9L635.9,225.2L653.6,226.1L671.4,225.5L689.2,225.6L706.9,226.3L724.7,226.6L742.5,225.4L760.3,226.9L778.0,228.2L795.8,216.8L813.6,228.7L831.3,229.9L849.1,229.9L866.9,232.1L884.6,232.6L902.4,233.7L920.1,233.6L937.9,227.4L955.7,227.6L973.4,226.2L991.2,226.3L1009.0,225.7L1026.8,227.4L1044.5,226.0L1062.3,225.7L1080.1,225.7L1097.8,225.6L1115.6,225.6L1133.3,226.1L1151.1,226.7" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,214.4L120.7,210.6L138.4,208.9L156.2,208.9L173.9,208.6L191.7,207.7L209.5,206.8L227.3,207.2L245.0,206.2L262.8,206.3L280.5,206.9L298.3,206.5L316.1,206.8L333.9,206.7L351.6,209.5L369.4,210.3L387.2,211.6L404.9,218.0L422.7,220.7L440.4,225.8L458.2,230.6L476.0,230.2L493.8,233.2L511.5,214.8L529.3,210.0L547.0,208.9L564.8,208.9L582.6,208.7L600.3,208.1L618.1,208.5L635.9,207.2L653.6,206.7L671.4,207.3L689.2,206.9L706.9,207.5L724.7,207.6L742.5,207.2L760.3,207.3L778.0,210.2L795.8,191.9L813.6,215.9L831.3,221.2L849.1,223.4L866.9,229.6L884.6,229.8L902.4,230.7L920.1,231.7L937.9,212.0L955.7,210.3L973.4,209.8L991.2,208.2L1009.0,208.2L1026.8,207.7L1044.5,207.0L1062.3,206.7L1080.1,207.4L1097.8,207.7L1115.6,207.0L1133.3,207.4L1151.1,207.9" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,216.9L120.7,215.8L138.4,212.9L156.2,214.4L173.9,211.8L191.7,209.5L209.5,210.9L227.3,212.0L245.0,209.8L262.8,210.4L280.5,208.6L298.3,212.6L316.1,211.0L333.9,213.0L351.6,213.6L369.4,214.6L387.2,215.8L404.9,216.1L422.7,217.3L440.4,220.7L458.2,222.3L476.0,223.2L493.8,225.2L511.5,217.5L529.3,213.7L547.0,211.1L564.8,212.1L582.6,210.0L600.3,210.7L618.1,210.8L635.9,209.6L653.6,211.2L671.4,210.1L689.2,210.3L706.9,211.5L724.7,212.0L742.5,209.8L760.3,212.7L778.0,215.1L795.8,194.2L813.6,216.0L831.3,218.2L849.1,218.2L866.9,222.1L884.6,223.1L902.4,225.2L920.1,225.0L937.9,213.6L955.7,214.0L973.4,211.3L991.2,211.5L1009.0,210.4L1026.8,213.6L1044.5,211.0L1062.3,210.5L1080.1,210.4L1097.8,210.4L1115.6,210.2L1133.3,211.3L1151.1,212.2" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
 
 
         <line x1="778.0166666666668" y1="146" x2="778.0166666666668" y2="244" stroke="#ff667a" stroke-width="2" stroke-dasharray="5 5"/>
@@ -45,19 +45,19 @@
 
       <rect x="94" y="262" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
       <text x="106" y="286" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Azure Australia</text>
-      <text x="1148" y="286" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 261 ms · LL-HLS 511 ms</text>
+      <text x="1148" y="286" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 261 ms · LL-HLS 261 ms</text>
 
 
-        <line x1="94" y1="370" x2="1160" y2="370" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="375" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+        <line x1="94" y1="372" x2="1160" y2="372" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="377" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">150</text>
 
 
-        <line x1="94" y1="322" x2="1160" y2="322" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="327" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+        <line x1="94" y1="328" x2="1160" y2="328" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="333" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">250</text>
 
 
-        <line x1="94" y1="274" x2="1160" y2="274" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="279" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+        <line x1="94" y1="284" x2="1160" y2="284" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="289" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">350</text>
 
 <line x1="94" y1="262" x2="94" y2="394" stroke="#15263a" stroke-width="1"/>
 <line x1="307.20000000000005" y1="262" x2="307.20000000000005" y2="394" stroke="#15263a" stroke-width="1"/>
@@ -66,25 +66,25 @@
 <line x1="946.8000000000001" y1="262" x2="946.8000000000001" y2="394" stroke="#15263a" stroke-width="1"/>
 <line x1="1160" y1="262" x2="1160" y2="394" stroke="#15263a" stroke-width="1"/>
 
-      <path d="M102.9,304.1L120.7,304.5L138.4,303.4L156.2,303.3L173.9,303.0L191.7,302.8L209.5,302.7L227.3,302.5L245.0,302.0L262.8,302.5L280.5,302.6L298.3,302.5L316.1,302.3L333.9,302.1L351.6,303.4L369.4,304.5L387.2,304.6L404.9,308.3L422.7,310.0L440.4,312.8L458.2,315.5L476.0,315.5L493.8,316.9L511.5,306.7L529.3,304.3L547.0,303.8L564.8,303.6L582.6,303.3L600.3,303.3L618.1,303.2L635.9,302.4L653.6,302.7L671.4,302.8L689.2,302.6L706.9,302.7L724.7,302.9L742.5,302.8L760.3,302.8L778.0,304.1L795.8,295.4L813.6,307.2L831.3,310.0L849.1,311.7L866.9,315.2L884.6,315.3L902.4,315.9L920.1,315.5L937.9,304.8L955.7,304.1L973.4,304.0L991.2,303.1L1009.0,303.1L1026.8,302.8L1044.5,302.7L1062.3,302.3L1080.1,302.7L1097.8,302.5L1115.6,302.1L1133.3,303.0L1151.1,302.7" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="M102.9,367.6L120.7,367.5L138.4,365.3L156.2,366.2L173.9,365.0L191.7,364.1L209.5,365.5L227.3,365.1L245.0,364.5L262.8,364.9L280.5,363.7L298.3,365.7L316.1,364.9L333.9,365.4L351.6,366.4L369.4,366.5L387.2,367.1L404.9,367.7L422.7,368.4L440.4,369.8L458.2,370.7L476.0,371.1L493.8,372.2L511.5,367.9L529.3,366.7L547.0,364.9L564.8,365.8L582.6,364.4L600.3,365.0L618.1,365.1L635.9,365.4L653.6,364.6L671.4,364.3L689.2,364.6L706.9,365.1L724.7,365.3L742.5,364.1L760.3,365.8L778.0,366.6L795.8,355.4L813.6,367.0L831.3,368.4L849.1,368.8L866.9,370.7L884.6,370.9L902.4,372.1L920.1,371.2L937.9,366.1L955.7,366.2L973.4,364.8L991.2,364.8L1009.0,364.6L1026.8,366.0L1044.5,364.5L1062.3,364.0L1080.1,364.3L1097.8,364.3L1115.6,364.3L1133.3,364.7L1151.1,365.0" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,339.3L120.7,339.9L138.4,337.8L156.2,337.7L173.9,337.3L191.7,336.8L209.5,336.7L227.3,336.3L245.0,335.3L262.8,336.3L280.5,336.5L298.3,336.3L316.1,335.8L333.9,335.6L351.6,337.8L369.4,339.9L387.2,340.1L404.9,346.8L422.7,350.0L440.4,355.1L458.2,360.1L476.0,360.0L493.8,362.6L511.5,343.9L529.3,339.6L547.0,338.6L564.8,338.3L582.6,337.8L600.3,337.7L618.1,337.4L635.9,336.1L653.6,336.6L671.4,336.7L689.2,336.5L706.9,336.7L724.7,337.1L742.5,336.7L760.3,336.8L778.0,339.2L795.8,323.3L813.6,344.9L831.3,350.0L849.1,353.1L866.9,359.6L884.6,359.8L902.4,360.8L920.1,360.1L937.9,340.5L955.7,339.3L973.4,339.0L991.2,337.3L1009.0,337.4L1026.8,336.9L1044.5,336.6L1062.3,335.9L1080.1,336.7L1097.8,336.2L1115.6,335.6L1133.3,337.1L1151.1,336.6" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,345.7L120.7,345.4L138.4,341.4L156.2,343.0L173.9,340.9L191.7,339.1L209.5,341.7L227.3,341.1L245.0,340.0L262.8,340.7L280.5,338.5L298.3,342.1L316.1,340.6L333.9,341.6L351.6,343.4L369.4,343.7L387.2,344.7L404.9,345.8L422.7,347.1L440.4,349.6L458.2,351.3L476.0,352.0L493.8,354.0L511.5,346.2L529.3,344.0L547.0,340.7L564.8,342.2L582.6,339.7L600.3,340.9L618.1,341.0L635.9,341.5L653.6,340.2L671.4,339.6L689.2,340.1L706.9,341.0L724.7,341.4L742.5,339.2L760.3,342.4L778.0,343.7L795.8,323.3L813.6,344.5L831.3,347.1L849.1,347.8L866.9,351.3L884.6,351.7L902.4,353.9L920.1,352.2L937.9,342.8L955.7,343.1L973.4,340.4L991.2,340.6L1009.0,340.2L1026.8,342.7L1044.5,339.9L1062.3,338.9L1080.1,339.6L1097.8,339.5L1115.6,339.6L1133.3,340.3L1151.1,340.8" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
 
 
       <rect x="94" y="412" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
       <text x="106" y="436" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Sydney</text>
-      <text x="1148" y="436" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 274 ms · LL-HLS 531 ms</text>
+      <text x="1148" y="436" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 274 ms · LL-HLS 281 ms</text>
 
 
-        <line x1="94" y1="520" x2="1160" y2="520" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="525" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+        <line x1="94" y1="522" x2="1160" y2="522" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="527" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">150</text>
 
 
-        <line x1="94" y1="472" x2="1160" y2="472" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="477" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+        <line x1="94" y1="478" x2="1160" y2="478" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="483" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">250</text>
 
 
-        <line x1="94" y1="424" x2="1160" y2="424" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="429" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+        <line x1="94" y1="434" x2="1160" y2="434" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="439" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">350</text>
 
 <line x1="94" y1="412" x2="94" y2="544" stroke="#15263a" stroke-width="1"/>
 <line x1="307.20000000000005" y1="412" x2="307.20000000000005" y2="544" stroke="#15263a" stroke-width="1"/>
@@ -93,25 +93,25 @@
 <line x1="946.8000000000001" y1="412" x2="946.8000000000001" y2="544" stroke="#15263a" stroke-width="1"/>
 <line x1="1160" y1="412" x2="1160" y2="544" stroke="#15263a" stroke-width="1"/>
 
-      <path d="M102.9,453.5L120.7,451.1L138.4,450.6L156.2,450.3L173.9,450.2L191.7,449.9L209.5,449.5L227.3,449.2L245.0,449.0L262.8,449.4L280.5,449.3L298.3,449.0L316.1,449.7L333.9,449.0L351.6,450.5L369.4,451.1L387.2,452.5L404.9,455.1L422.7,456.6L440.4,459.8L458.2,462.6L476.0,462.3L493.8,464.0L511.5,453.8L529.3,451.1L547.0,450.6L564.8,450.2L582.6,450.2L600.3,450.5L618.1,450.2L635.9,449.5L653.6,449.5L671.4,449.5L689.2,449.6L706.9,449.2L724.7,449.9L742.5,449.7L760.3,449.0L778.0,451.1L795.8,440.5L813.6,454.3L831.3,457.3L849.1,458.3L866.9,461.7L884.6,462.3L902.4,462.8L920.1,463.7L937.9,451.9L955.7,451.2L973.4,450.7L991.2,450.2L1009.0,450.2L1026.8,449.7L1044.5,449.9L1062.3,449.3L1080.1,449.5L1097.8,449.9L1115.6,449.0L1133.3,449.1L1151.1,449.7" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="M102.9,514.6L120.7,513.7L138.4,512.5L156.2,512.9L173.9,511.7L191.7,511.1L209.5,512.0L227.3,512.0L245.0,510.6L262.8,511.6L280.5,510.2L298.3,512.2L316.1,511.9L333.9,512.3L351.6,513.2L369.4,514.0L387.2,514.2L404.9,513.9L422.7,515.4L440.4,516.7L458.2,517.7L476.0,517.9L493.8,519.3L511.5,514.8L529.3,513.3L547.0,511.6L564.8,512.4L582.6,511.3L600.3,511.2L618.1,511.9L635.9,511.7L653.6,511.7L671.4,510.8L689.2,511.2L706.9,511.8L724.7,512.4L742.5,510.9L760.3,512.6L778.0,513.6L795.8,502.2L813.6,514.1L831.3,515.3L849.1,516.0L866.9,517.8L884.6,518.1L902.4,519.3L920.1,518.7L937.9,512.6L955.7,513.1L973.4,511.7L991.2,511.7L1009.0,511.5L1026.8,513.0L1044.5,511.7L1062.3,511.0L1080.1,510.8L1097.8,511.2L1115.6,511.2L1133.3,511.7L1151.1,511.9" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,488.1L120.7,483.7L138.4,482.7L156.2,482.2L173.9,482.1L191.7,481.6L209.5,480.7L227.3,480.2L245.0,479.8L262.8,480.5L280.5,480.3L298.3,479.9L316.1,481.1L333.9,479.8L351.6,482.6L369.4,483.7L387.2,486.2L404.9,491.0L422.7,493.9L440.4,499.7L458.2,504.7L476.0,504.3L493.8,507.3L511.5,488.6L529.3,483.7L547.0,482.9L564.8,482.0L582.6,482.1L600.3,482.6L618.1,482.1L635.9,480.7L653.6,480.8L671.4,480.8L689.2,480.9L706.9,480.3L724.7,481.4L742.5,481.1L760.3,479.8L778.0,483.8L795.8,464.3L813.6,489.6L831.3,495.0L849.1,496.9L866.9,503.1L884.6,504.2L902.4,505.2L920.1,506.7L937.9,485.1L955.7,483.8L973.4,482.9L991.2,482.1L1009.0,482.1L1026.8,481.1L1044.5,481.5L1062.3,480.4L1080.1,480.8L1097.8,481.5L1115.6,479.9L1133.3,480.1L1151.1,481.2" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,490.2L120.7,488.4L138.4,486.3L156.2,487.1L173.9,484.8L191.7,483.6L209.5,485.4L227.3,485.2L245.0,482.8L262.8,484.7L280.5,482.0L298.3,485.8L316.1,485.2L333.9,485.9L351.6,487.5L369.4,489.1L387.2,489.4L404.9,488.8L422.7,491.7L440.4,494.0L458.2,495.7L476.0,496.1L493.8,498.8L511.5,490.5L529.3,487.8L547.0,484.5L564.8,486.1L582.6,484.0L600.3,483.9L618.1,485.2L635.9,484.7L653.6,484.8L671.4,483.2L689.2,483.8L706.9,484.9L724.7,486.1L742.5,483.3L760.3,486.3L778.0,488.3L795.8,467.3L813.6,489.2L831.3,491.4L849.1,492.7L866.9,495.9L884.6,496.5L902.4,498.6L920.1,497.6L937.9,486.5L955.7,487.4L973.4,484.8L991.2,484.9L1009.0,484.5L1026.8,487.2L1044.5,484.8L1062.3,483.5L1080.1,483.1L1097.8,483.9L1115.6,483.9L1133.3,484.8L1151.1,485.2" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
 
 
       <rect x="94" y="562" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
       <text x="106" y="586" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Azure Japan</text>
-      <text x="1148" y="586" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 312 ms · LL-HLS 569 ms</text>
+      <text x="1148" y="586" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 312 ms · LL-HLS 319 ms</text>
 
 
-        <line x1="94" y1="670" x2="1160" y2="670" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="675" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+        <line x1="94" y1="672" x2="1160" y2="672" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="677" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">150</text>
 
 
-        <line x1="94" y1="622" x2="1160" y2="622" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="627" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+        <line x1="94" y1="628" x2="1160" y2="628" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="633" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">250</text>
 
 
-        <line x1="94" y1="574" x2="1160" y2="574" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="579" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+        <line x1="94" y1="584" x2="1160" y2="584" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="589" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">350</text>
 
 <line x1="94" y1="562" x2="94" y2="694" stroke="#15263a" stroke-width="1"/>
 <line x1="307.20000000000005" y1="562" x2="307.20000000000005" y2="694" stroke="#15263a" stroke-width="1"/>
@@ -120,25 +120,25 @@
 <line x1="946.8000000000001" y1="562" x2="946.8000000000001" y2="694" stroke="#15263a" stroke-width="1"/>
 <line x1="1160" y1="562" x2="1160" y2="694" stroke="#15263a" stroke-width="1"/>
 
-      <path d="M102.9,594.2L120.7,592.3L138.4,591.3L156.2,591.1L173.9,590.8L191.7,590.5L209.5,590.3L227.3,590.3L245.0,589.8L262.8,590.2L280.5,590.2L298.3,589.8L316.1,589.9L333.9,589.8L351.6,591.3L369.4,592.3L387.2,592.6L404.9,595.9L422.7,597.7L440.4,610.6L458.2,624.7L476.0,624.7L493.8,625.2L511.5,594.4L529.3,592.0L547.0,591.4L564.8,591.2L582.6,590.9L600.3,590.8L618.1,590.7L635.9,590.3L653.6,590.0L671.4,590.3L689.2,590.4L706.9,590.2L724.7,590.3L742.5,590.4L760.3,590.4L778.0,591.8L795.8,581.5L813.6,594.8L831.3,598.0L849.1,599.0L866.9,624.7L884.6,624.7L902.4,625.0L920.1,624.9L937.9,592.8L955.7,591.7L973.4,591.4L991.2,590.7L1009.0,590.7L1026.8,590.4L1044.5,590.3L1062.3,589.8L1080.1,590.2L1097.8,590.4L1115.6,590.0L1133.3,590.5L1151.1,590.5" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="M102.9,655.6L120.7,655.1L138.4,653.3L156.2,654.1L173.9,652.7L191.7,652.2L209.5,653.2L227.3,652.8L245.0,652.2L262.8,652.6L280.5,651.3L298.3,653.3L316.1,652.7L333.9,653.2L351.6,654.3L369.4,654.8L387.2,655.0L404.9,655.6L422.7,656.0L440.4,657.6L458.2,658.5L476.0,658.7L493.8,660.0L511.5,655.7L529.3,653.5L547.0,652.8L564.8,653.5L582.6,652.0L600.3,652.7L618.1,652.9L635.9,653.0L653.6,652.4L671.4,651.8L689.2,652.1L706.9,652.8L724.7,653.4L742.5,651.7L760.3,653.8L778.0,654.1L795.8,643.1L813.6,654.9L831.3,656.1L849.1,656.6L866.9,658.5L884.6,658.7L902.4,659.8L920.1,659.7L937.9,653.7L955.7,653.9L973.4,652.6L991.2,652.7L1009.0,652.5L1026.8,653.8L1044.5,652.1L1062.3,651.7L1080.1,652.2L1097.8,651.9L1115.6,652.1L1133.3,652.6L1151.1,652.7" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,621.0L120.7,617.5L138.4,615.6L156.2,615.3L173.9,614.8L191.7,614.2L209.5,613.8L227.3,613.8L245.0,613.0L262.8,613.6L280.5,613.7L298.3,612.9L316.1,613.2L333.9,612.9L351.6,615.7L369.4,617.5L387.2,618.1L404.9,624.2L422.7,627.4L440.4,651.1L458.2,676.9L476.0,676.9L493.8,677.9L511.5,621.4L529.3,617.0L547.0,615.9L564.8,615.6L582.6,615.0L600.3,614.8L618.1,614.6L635.9,613.9L653.6,613.3L671.4,613.8L689.2,614.0L706.9,613.7L724.7,613.9L742.5,614.1L760.3,614.0L778.0,616.6L795.8,597.7L813.6,622.1L831.3,628.0L849.1,629.8L866.9,677.0L884.6,677.0L902.4,677.5L920.1,677.4L937.9,618.5L955.7,616.5L973.4,616.0L991.2,614.7L1009.0,614.6L1026.8,614.1L1044.5,614.0L1062.3,613.0L1080.1,613.7L1097.8,614.1L1115.6,613.4L1133.3,614.2L1151.1,614.3" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,623.6L120.7,622.7L138.4,619.3L156.2,620.9L173.9,618.4L191.7,617.3L209.5,619.1L227.3,618.4L245.0,617.3L262.8,618.2L280.5,615.7L298.3,619.3L316.1,618.2L333.9,619.1L351.6,621.3L369.4,622.1L387.2,622.4L404.9,623.6L422.7,624.4L440.4,627.3L458.2,628.9L476.0,629.3L493.8,631.7L511.5,623.9L529.3,619.8L547.0,618.5L564.8,619.7L582.6,617.0L600.3,618.3L618.1,618.6L635.9,618.9L653.6,617.8L671.4,616.5L689.2,617.2L706.9,618.5L724.7,619.5L742.5,616.5L760.3,620.3L778.0,620.9L795.8,600.6L813.6,622.4L831.3,624.5L849.1,625.5L866.9,629.0L884.6,629.2L902.4,631.4L920.1,631.1L937.9,620.1L955.7,620.4L973.4,618.0L991.2,618.3L1009.0,618.0L1026.8,620.2L1044.5,617.2L1062.3,616.5L1080.1,617.3L1097.8,616.9L1115.6,617.3L1133.3,618.0L1151.1,618.3" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
 
 
       <rect x="94" y="712" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
       <text x="106" y="736" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">London</text>
-      <text x="1148" y="736" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 322 ms · LL-HLS 579 ms</text>
+      <text x="1148" y="736" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 322 ms · LL-HLS 329 ms</text>
 
 
-        <line x1="94" y1="820" x2="1160" y2="820" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="825" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+        <line x1="94" y1="822" x2="1160" y2="822" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="827" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">150</text>
 
 
-        <line x1="94" y1="772" x2="1160" y2="772" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="777" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+        <line x1="94" y1="778" x2="1160" y2="778" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="783" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">250</text>
 
 
-        <line x1="94" y1="724" x2="1160" y2="724" stroke="#20334a" stroke-width="1"/>
-        <text x="84" y="729" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+        <line x1="94" y1="734" x2="1160" y2="734" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="739" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">350</text>
 
 <line x1="94" y1="712" x2="94" y2="844" stroke="#15263a" stroke-width="1"/>
 <text x="94" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">0s</text>
@@ -153,11 +153,11 @@
 <line x1="1160" y1="712" x2="1160" y2="844" stroke="#15263a" stroke-width="1"/>
 <text x="1160" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">600s</text>
 
-      <path d="M102.9,741.2L120.7,739.2L138.4,738.8L156.2,738.3L173.9,738.2L191.7,737.7L209.5,737.6L227.3,737.4L245.0,737.0L262.8,737.4L280.5,737.5L298.3,737.3L316.1,737.7L333.9,737.6L351.6,739.1L369.4,740.1L387.2,740.9L404.9,743.3L422.7,745.4L440.4,748.3L458.2,751.1L476.0,751.5L493.8,752.6L511.5,742.2L529.3,739.6L547.0,739.2L564.8,738.4L582.6,738.7L600.3,738.7L618.1,738.8L635.9,738.1L653.6,738.0L671.4,738.4L689.2,738.1L706.9,738.2L724.7,738.2L742.5,738.2L760.3,738.2L778.0,739.4L795.8,729.0L813.6,742.6L831.3,745.1L849.1,746.9L866.9,750.9L884.6,751.0L902.4,751.4L920.1,750.0L937.9,740.5L955.7,739.8L973.4,739.3L991.2,738.5L1009.0,738.8L1026.8,738.0L1044.5,738.1L1062.3,737.8L1080.1,738.1L1097.8,738.0L1115.6,738.1L1133.3,738.2L1151.1,738.3" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="M102.9,802.6L120.7,801.9L138.4,800.0L156.2,800.8L173.9,799.6L191.7,798.8L209.5,800.1L227.3,799.9L245.0,799.0L262.8,799.3L280.5,798.3L298.3,800.0L316.1,799.7L333.9,800.5L351.6,801.3L369.4,802.3L387.2,802.6L404.9,803.2L422.7,803.7L440.4,805.1L458.2,805.9L476.0,806.6L493.8,807.7L511.5,803.1L529.3,801.2L547.0,799.9L564.8,800.6L582.6,799.6L600.3,799.5L618.1,800.0L635.9,799.6L653.6,799.6L671.4,799.1L689.2,799.8L706.9,799.8L724.7,800.7L742.5,799.1L760.3,800.8L778.0,801.7L795.8,790.7L813.6,802.4L831.3,803.7L849.1,804.4L866.9,805.7L884.6,806.3L902.4,807.6L920.1,807.4L937.9,801.1L955.7,801.5L973.4,799.7L991.2,800.2L1009.0,799.7L1026.8,800.2L1044.5,800.0L1062.3,799.5L1080.1,799.7L1097.8,799.2L1115.6,799.2L1133.3,799.9L1151.1,800.6" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,765.5L120.7,761.9L138.4,761.1L156.2,760.2L173.9,760.0L191.7,759.1L209.5,759.0L227.3,758.7L245.0,757.8L262.8,758.5L280.5,758.7L298.3,758.3L316.1,759.0L333.9,758.9L351.6,761.7L369.4,763.4L387.2,765.1L404.9,769.4L422.7,773.3L440.4,778.5L458.2,783.7L476.0,784.4L493.8,786.4L511.5,767.4L529.3,762.7L547.0,761.9L564.8,760.5L582.6,760.9L600.3,761.0L618.1,761.1L635.9,759.8L653.6,759.6L671.4,760.5L689.2,759.9L706.9,760.0L724.7,760.1L742.5,760.0L760.3,760.0L778.0,762.2L795.8,743.2L813.6,768.2L831.3,772.6L849.1,776.0L866.9,783.3L884.6,783.5L902.4,784.3L920.1,781.7L937.9,764.3L955.7,763.0L973.4,762.1L991.2,760.6L1009.0,761.1L1026.8,759.6L1044.5,759.9L1062.3,759.3L1080.1,759.8L1097.8,759.7L1115.6,759.9L1133.3,760.0L1151.1,760.3" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,768.0L120.7,766.8L138.4,763.4L156.2,764.9L173.9,762.5L191.7,761.2L209.5,763.5L227.3,763.2L245.0,761.6L262.8,762.1L280.5,760.3L298.3,763.3L316.1,762.8L333.9,764.2L351.6,765.7L369.4,767.5L387.2,768.1L404.9,769.2L422.7,770.2L440.4,772.6L458.2,774.2L476.0,775.3L493.8,777.4L511.5,769.0L529.3,765.6L547.0,763.2L564.8,764.4L582.6,762.6L600.3,762.4L618.1,763.4L635.9,762.7L653.6,762.7L671.4,761.6L689.2,762.9L706.9,762.9L724.7,764.6L742.5,761.7L760.3,764.8L778.0,766.4L795.8,746.3L813.6,767.8L831.3,770.2L849.1,771.5L866.9,773.8L884.6,774.8L902.4,777.3L920.1,776.9L937.9,765.4L955.7,766.2L973.4,762.8L991.2,763.7L1009.0,762.8L1026.8,763.7L1044.5,763.3L1062.3,762.3L1080.1,762.8L1097.8,761.9L1115.6,761.9L1133.3,763.2L1151.1,764.5" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
 
 
-    <text x="22" y="450" transform="rotate(-90 22 450)" text-anchor="middle" fill="#9fb1c7" font-size="14" font-family="Inter,Arial,sans-serif">capture-to-delivery latency (ms)</text>
-    <text x="1160" y="880" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">Run 20260728T113000Z · loss markers are not interpolated</text>
+    <text x="22" y="450" transform="rotate(-90 22 450)" text-anchor="middle" fill="#9fb1c7" font-size="14" font-family="Inter,Arial,sans-serif">end-of-media-unit delivery latency (ms)</text>
+    <text x="1160" y="880" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">LL-HLS excludes its 250 ms part duration · playback adds packaging and player buffer · loss markers are not interpolated</text>
 
   </svg>

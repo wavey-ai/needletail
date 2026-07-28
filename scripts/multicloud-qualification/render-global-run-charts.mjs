@@ -10,6 +10,7 @@ if (!runDirectory || !outputDirectory) {
 }
 
 const seriesPath = path.join(runDirectory, "edge-latency-time-series.json");
+const runPath = path.join(runDirectory, "run.json");
 const topologyPath = path.join(
   runDirectory,
   "map-data",
@@ -17,7 +18,12 @@ const topologyPath = path.join(
   "relay-program.json",
 );
 const seriesDocument = JSON.parse(await readFile(seriesPath, "utf8"));
+const runDocument = JSON.parse(await readFile(runPath, "utf8"));
 const topologyDocument = JSON.parse(await readFile(topologyPath, "utf8"));
+const llHlsPartMs = runDocument.part_ms;
+if (!Number.isFinite(llHlsPartMs) || llHlsPartMs <= 0) {
+  throw new Error("run.json omitted a valid LL-HLS part duration");
+}
 
 await mkdir(outputDirectory, { recursive: true });
 
@@ -56,6 +62,11 @@ function aggregateLatency(transport, node) {
   const secondBuckets = Array.from({ length: 600 }, (_, second) => {
     const values = matching
       .map((entry) => entry.points[second]?.p99_ms)
+      .map((value) =>
+        transport === "ll_hls" && Number.isFinite(value)
+          ? value - llHlsPartMs
+          : value,
+      )
       .filter(Number.isFinite);
     return median(values);
   });
@@ -100,18 +111,18 @@ function renderLatencyChart() {
   const panelHeight = 132;
   const panelGap = 18;
   const yMinimum = 100;
-  const yMaximum = 650;
+  const yMaximum = 400;
   const xScale = (second) => left + (second / 600) * (right - left);
   const elements = [];
 
   elements.push(`
     <rect width="${width}" height="${height}" fill="#08111f"/>
-    <text x="${left}" y="44" fill="#f7fbff" font-size="28" font-family="Inter,Arial,sans-serif" font-weight="600">Global FLAC latency over time</text>
+    <text x="${left}" y="44" fill="#f7fbff" font-size="28" font-family="Inter,Arial,sans-serif" font-weight="600">Global FLAC delivery latency over time</text>
     <text x="${left}" y="73" fill="#9fb1c7" font-size="16" font-family="Inter,Arial,sans-serif">Eight stereo tracks · 600 seconds · each point is a 10-second median of per-track, one-second P99 values</text>
     <line x1="${left}" y1="92" x2="${left + 34}" y2="92" stroke="#55c2ff" stroke-width="4"/>
     <text x="${left + 44}" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">UDP with FEC</text>
     <line x1="${left + 190}" y1="92" x2="${left + 224}" y2="92" stroke="#ffb454" stroke-width="4"/>
-    <text x="${left + 234}" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">FLAC LL-HLS availability</text>
+    <text x="${left + 234}" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">FLAC LL-HLS end-of-part delivery</text>
   `);
 
   nodes.forEach(([node, label], index) => {
@@ -132,7 +143,7 @@ function renderLatencyChart() {
       <text x="${left + 12}" y="${panelTop + 24}" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">${escapeXml(label)}</text>
       <text x="${right - 12}" y="${panelTop + 24}" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP ${udpP99.toFixed(0)} ms · LL-HLS ${hlsP99.toFixed(0)} ms</text>
     `);
-    for (const tick of [200, 400, 600]) {
+    for (const tick of [150, 250, 350]) {
       const y = yScale(tick);
       elements.push(`
         <line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="#20334a" stroke-width="1"/>
@@ -165,13 +176,13 @@ function renderLatencyChart() {
   });
 
   elements.push(`
-    <text x="22" y="${height / 2}" transform="rotate(-90 22 ${height / 2})" text-anchor="middle" fill="#9fb1c7" font-size="14" font-family="Inter,Arial,sans-serif">capture-to-delivery latency (ms)</text>
-    <text x="${right}" y="${height - 20}" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">Run 20260728T113000Z · loss markers are not interpolated</text>
+    <text x="22" y="${height / 2}" transform="rotate(-90 22 ${height / 2})" text-anchor="middle" fill="#9fb1c7" font-size="14" font-family="Inter,Arial,sans-serif">end-of-media-unit delivery latency (ms)</text>
+    <text x="${right}" y="${height - 20}" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">LL-HLS excludes its ${llHlsPartMs} ms part duration · playback adds packaging and player buffer · loss markers are not interpolated</text>
   `);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title description" viewBox="0 0 ${width} ${height}">
-    <title id="title">Global FLAC UDP and LL-HLS latency over time</title>
-    <desc id="description">Five aligned regional plots compare UDP with forward error correction against FLAC LL-HLS availability during one 600-second, eight-track test.</desc>
+    <title id="title">Global FLAC UDP and LL-HLS delivery latency over time</title>
+    <desc id="description">Five regional plots compare UDP with forward error correction against FLAC LL-HLS end-of-part delivery. The LL-HLS series excludes the 250 millisecond part duration.</desc>
     ${elements.join("\n")}
   </svg>
   `;

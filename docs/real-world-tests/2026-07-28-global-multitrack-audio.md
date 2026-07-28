@@ -158,16 +158,22 @@ Therefore, this run does not prove byte-exact FLAC reconstruction.
 
 | Edge | Complete lanes | Missing parts | Startup deadline misses | FLAC P50 range | FLAC P99 range |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Tokyo | 6/8 | 3 | 17 | 392.381-422.071 ms | 433.740-469.819 ms |
-| Azure Australia | 4/8 | 7 | 33 | 440.776-469.769 ms | 481.140-524.841 ms |
-| Sydney | 8/8 | 0 | 0 | 452.772-482.262 ms | 494.337-531.712 ms |
-| Azure Japan | 6/8 | 3 | 17 | 491.948-520.930 ms | 533.231-569.623 ms |
-| London | 7/8 | 1 | 20 | 501.308-530.948 ms | 543.052-576.113 ms |
+| Tokyo | 6/8 | 3 | 17 | 142.381-172.071 ms | 183.740-219.819 ms |
+| Azure Australia | 4/8 | 7 | 33 | 190.776-219.769 ms | 231.140-274.841 ms |
+| Sydney | 8/8 | 0 | 0 | 202.772-232.262 ms | 244.337-281.712 ms |
+| Azure Japan | 6/8 | 3 | 17 | 241.948-270.930 ms | 283.231-319.623 ms |
+| London | 7/8 | 1 | 20 | 251.308-280.948 ms | 293.052-326.113 ms |
 
 ![UDP and FLAC LL-HLS latency](../performance/charts/2026-07-28-global-flac-latency.svg)
 
 The chart uses ten-second medians.
 Each input point is a one-second P99 value for one track.
+The LL-HLS values measure delivery after the final sample in each part.
+The raw probe used each part's start PTS.
+This method included the full 250 ms part duration.
+The table and chart subtract that fixed duration.
+This correction permits a fair comparison of mesh delivery paths.
+Player latency also includes the part duration and the player buffer.
 
 ## Opus companion result
 

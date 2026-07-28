@@ -254,6 +254,10 @@
   },
   "flac_ll_hls": {
     "strict_gate_passed": false,
+    "latency_metric": "end_of_part_delivery_latency_ms",
+    "raw_probe_metric": "availability_latency_ms_from_part_start_pts",
+    "excluded_part_duration_ms": 250,
+    "latency_note": "The end-of-part metric subtracts the fixed part duration from the raw start-PTS metric. Playback latency also includes packaging and player buffering.",
     "codec_init_verified_lanes": 40,
     "expected_parts": 96000,
     "received_parts": 95986,
@@ -272,12 +276,12 @@
         "missing_parts": 3,
         "deadline_misses": 17,
         "p50_ms": {
-          "minimum": 392.38125,
-          "maximum": 422.071345
+          "minimum": 142.38125,
+          "maximum": 172.071345
         },
         "p99_ms": {
-          "minimum": 433.739529,
-          "maximum": 469.818673
+          "minimum": 183.739529,
+          "maximum": 219.818673
         }
       },
       {
@@ -286,12 +290,12 @@
         "missing_parts": 7,
         "deadline_misses": 33,
         "p50_ms": {
-          "minimum": 440.775966,
-          "maximum": 469.768838
+          "minimum": 190.775966,
+          "maximum": 219.768838
         },
         "p99_ms": {
-          "minimum": 481.139778,
-          "maximum": 524.841202
+          "minimum": 231.139778,
+          "maximum": 274.841202
         }
       },
       {
@@ -300,12 +304,12 @@
         "missing_parts": 0,
         "deadline_misses": 0,
         "p50_ms": {
-          "minimum": 452.771532,
-          "maximum": 482.261773
+          "minimum": 202.771532,
+          "maximum": 232.261773
         },
         "p99_ms": {
-          "minimum": 494.336799,
-          "maximum": 531.712181
+          "minimum": 244.336799,
+          "maximum": 281.712181
         }
       },
       {
@@ -314,12 +318,12 @@
         "missing_parts": 3,
         "deadline_misses": 17,
         "p50_ms": {
-          "minimum": 491.947883,
-          "maximum": 520.930357
+          "minimum": 241.947883,
+          "maximum": 270.930357
         },
         "p99_ms": {
-          "minimum": 533.231147,
-          "maximum": 569.622777
+          "minimum": 283.231147,
+          "maximum": 319.622777
         }
       },
       {
@@ -328,12 +332,12 @@
         "missing_parts": 1,
         "deadline_misses": 20,
         "p50_ms": {
-          "minimum": 501.307969,
-          "maximum": 530.947836
+          "minimum": 251.307969,
+          "maximum": 280.947836
         },
         "p99_ms": {
-          "minimum": 543.051763,
-          "maximum": 576.112962
+          "minimum": 293.051763,
+          "maximum": 326.112962
         }
       }
     ]

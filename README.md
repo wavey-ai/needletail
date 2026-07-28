@@ -76,16 +76,19 @@ Needletail does not claim lossless rendered output until that recovery gate pass
 
 | Edge | UDP P50 range | UDP P99 range | FLAC LL-HLS P50 range | FLAC LL-HLS P99 range |
 | --- | ---: | ---: | ---: | ---: |
-| Tokyo | 137.279-138.600 ms | 184.654-186.796 ms | 392.381-422.071 ms | 433.740-469.819 ms |
-| Azure Australia | 185.383-186.604 ms | 230.584-232.631 ms | 440.776-469.769 ms | 481.140-524.841 ms |
-| Sydney | 197.246-198.567 ms | 244.837-247.089 ms | 452.772-482.262 ms | 494.337-531.712 ms |
-| Azure Japan | 235.797-237.062 ms | 281.725-283.864 ms | 491.948-520.930 ms | 533.231-569.623 ms |
-| London | 246.005-247.352 ms | 293.785-295.921 ms | 501.308-530.948 ms | 543.052-576.113 ms |
+| Tokyo | 137.279-138.600 ms | 184.654-186.796 ms | 142.381-172.071 ms | 183.740-219.819 ms |
+| Azure Australia | 185.383-186.604 ms | 230.584-232.631 ms | 190.776-219.769 ms | 231.140-274.841 ms |
+| Sydney | 197.246-198.567 ms | 244.837-247.089 ms | 202.772-232.262 ms | 244.337-281.712 ms |
+| Azure Japan | 235.797-237.062 ms | 281.725-283.864 ms | 241.948-270.930 ms | 283.231-319.623 ms |
+| London | 246.005-247.352 ms | 293.785-295.921 ms | 251.308-280.948 ms | 293.052-326.113 ms |
 
 ![UDP and FLAC LL-HLS latency over time](docs/performance/charts/2026-07-28-global-flac-latency.svg)
 
 The chart uses ten-second medians.
 Each input point is a one-second P99 value for one track.
+The LL-HLS values measure delivery after the final sample in each part.
+They exclude the 250 ms part duration for a fair mesh delivery comparison.
+Playback latency also includes media accumulation and the player buffer.
 The UDP result includes the one unrecovered Tokyo epoch at source second 385.
 
 ![Global GCP and Azure qualification mesh](docs/performance/charts/2026-07-28-global-mesh.svg)
