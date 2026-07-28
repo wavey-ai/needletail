@@ -1,0 +1,383 @@
+{
+  "schema": "needletail.global-multitrack-audio.v1",
+  "run_id": "20260728T113000Z-linode16-8track-recovery20-combined",
+  "provider": "gcp+azure+linode",
+  "result": "failed",
+  "passed": false,
+  "failed_gate": "strict zero-loss UDP and complete LL-HLS boundary delivery",
+  "raw_artifact_directory": "target/multicloud-qualification/runs/20260728T113000Z-linode16-8track-recovery20-combined",
+  "measurement": {
+    "start_utc": "2026-07-28T11:40:55Z",
+    "end_utc": "2026-07-28T11:50:55Z",
+    "duration_seconds": 600,
+    "session_id": 1785238855286903775,
+    "tracks": 8,
+    "channels": 16,
+    "sample_rate_hz": 48000,
+    "udp_epoch_ms": 5,
+    "ll_hls_part_ms": 250,
+    "formats": [
+      "flac",
+      "opus"
+    ],
+    "timed_source_path_used_ffmpeg": false,
+    "shared_source_clock": true
+  },
+  "topology": {
+    "mesh_nodes": 10,
+    "providers": [
+      "gcp",
+      "azure"
+    ],
+    "playback_edges": 5,
+    "source": {
+      "provider": "linode",
+      "region": "gb-lon",
+      "machine": "g6-dedicated-16",
+      "vcpus": 16,
+      "operating_system": "Debian 12"
+    },
+    "nodes": [
+      {
+        "node": "contrib-london",
+        "provider": "gcp",
+        "region": "europe-west2",
+        "role": "origin",
+        "machine": "n2-standard-2"
+      },
+      {
+        "node": "relay-primary-amsterdam",
+        "provider": "gcp",
+        "region": "europe-west4",
+        "role": "backbone",
+        "machine": "n1-standard-1"
+      },
+      {
+        "node": "relay-secondary-japan",
+        "provider": "azure",
+        "region": "japaneast",
+        "role": "backbone",
+        "machine": null
+      },
+      {
+        "node": "relay-regional-osaka",
+        "provider": "gcp",
+        "region": "asia-northeast2",
+        "role": "regional_relay",
+        "machine": "n1-standard-1"
+      },
+      {
+        "node": "relay-regional-australia",
+        "provider": "azure",
+        "region": "australiaeast",
+        "role": "regional_relay",
+        "machine": null
+      },
+      {
+        "node": "edge-london",
+        "provider": "gcp",
+        "region": "europe-west2",
+        "role": "playback_edge",
+        "machine": "n2-standard-2"
+      },
+      {
+        "node": "edge-tokyo",
+        "provider": "gcp",
+        "region": "asia-northeast1",
+        "role": "playback_edge",
+        "machine": "n2-standard-2"
+      },
+      {
+        "node": "edge-sydney",
+        "provider": "gcp",
+        "region": "australia-southeast1",
+        "role": "playback_edge",
+        "machine": "n2-standard-2"
+      },
+      {
+        "node": "edge-australia",
+        "provider": "azure",
+        "region": "australiaeast",
+        "role": "playback_edge",
+        "machine": null
+      },
+      {
+        "node": "edge-japan",
+        "provider": "azure",
+        "region": "japaneast",
+        "role": "playback_edge",
+        "machine": null
+      }
+    ]
+  },
+  "builds": {
+    "base_revisions": {
+      "needletail": "c340509df41d7500234bd61f50e86c01748c4a20",
+      "av_contrib": "e30c054d4a37958a50e6d1fcad737f4a6dfb49b1",
+      "av_mesh": "7b75c679ab774c6a4744f4abda2f084e3e5a0abf",
+      "daw_nexus": "323a994a4205fb37b44b0d5898d83a56e4986328",
+      "playlists": "2d3043376dec86bca0a8dea33c6fe614089b3ca1"
+    },
+    "tested_working_tree_changes": true,
+    "deployed_sha256": {
+      "daw_test_source": "9bfd9cf6593fd97497a6065bd66d952eaf86554587152ab0fa9c2edd938fcc69",
+      "aep1_48k_probe": "9247236b7ac10ea84b8eeb974be902ab7144d1dc9fd1ee31ab73c78775fdf935",
+      "av_contrib": "9ee0a997a9875038bfeec3f2834bffd5c44f4d62a57869627ef282601eb5b084",
+      "av_mesh": "df296dabfd716ca4098b958e45e5c2d8a577fbd01fb6079941a99826756e03e0"
+    }
+  },
+  "source": {
+    "passed": true,
+    "gates_passed": 15,
+    "gates_total": 15,
+    "encoded_track_packets": 960000,
+    "udp_send_errors": 0,
+    "track_frames_dropped": 0,
+    "encoder_overload_warnings": 0,
+    "minimum_active_connections": 8,
+    "minimum_encoder_rate_packets_per_second": 1596.392551000094,
+    "minimum_encoder_rate_percent": 99.77453443750588,
+    "host_cpu_p99_percent": 4.377736085053158,
+    "process_capacity_p99_percent_of_16_vcpu_host": 4.436659900704252,
+    "minimum_memory_available_percent": 93.55421678681627,
+    "maximum_rss_memory_percent": 4.190746186073113
+  },
+  "contributor": {
+    "passed": true,
+    "expected_audio_groups": 1920000,
+    "completed_audio_groups": 1920000,
+    "source_fragments_recovered_by_raptorq": 7,
+    "hls_worker_errors": 0,
+    "hls_queue_drops": 0,
+    "mesh_queue_drops": 0,
+    "ingress_queue_drops": 0,
+    "ingress_errors": 0,
+    "kernel_udp_socket_drops": 0
+  },
+  "udp_fec": {
+    "strict_gate_passed": false,
+    "expected_edge_track_epochs": 4800000,
+    "received_edge_track_epochs": 4799996,
+    "missing_edge_track_epochs": 4,
+    "loss_percent": 0.00008333333333333333,
+    "complete_edge_track_lanes": 36,
+    "edge_track_lanes": 40,
+    "deadline_misses": 0,
+    "erasure_epochs": 0,
+    "kernel_socket_errors": 0,
+    "service_errors": 0,
+    "queue_drops": 0,
+    "correlated_event": {
+      "edge": "edge-tokyo",
+      "source_second": 385,
+      "epoch_ms": 5,
+      "zero_based_track_indexes": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "missing_epochs_per_track": 1
+    },
+    "edges": [
+      {
+        "node": "edge-tokyo",
+        "expected_epochs": 960000,
+        "received_epochs": 959996,
+        "missing_epochs": 4,
+        "p50_ms": {
+          "minimum": 137.279257,
+          "maximum": 138.60004
+        },
+        "p99_ms": {
+          "minimum": 184.653819,
+          "maximum": 186.796174
+        }
+      },
+      {
+        "node": "edge-australia",
+        "expected_epochs": 960000,
+        "received_epochs": 960000,
+        "missing_epochs": 0,
+        "p50_ms": {
+          "minimum": 185.382551,
+          "maximum": 186.604454
+        },
+        "p99_ms": {
+          "minimum": 230.583579,
+          "maximum": 232.630973
+        }
+      },
+      {
+        "node": "edge-sydney",
+        "expected_epochs": 960000,
+        "received_epochs": 960000,
+        "missing_epochs": 0,
+        "p50_ms": {
+          "minimum": 197.246282,
+          "maximum": 198.56709
+        },
+        "p99_ms": {
+          "minimum": 244.837079,
+          "maximum": 247.089497
+        }
+      },
+      {
+        "node": "edge-japan",
+        "expected_epochs": 960000,
+        "received_epochs": 960000,
+        "missing_epochs": 0,
+        "p50_ms": {
+          "minimum": 235.797096,
+          "maximum": 237.062498
+        },
+        "p99_ms": {
+          "minimum": 281.724961,
+          "maximum": 283.863903
+        }
+      },
+      {
+        "node": "edge-london",
+        "expected_epochs": 960000,
+        "received_epochs": 960000,
+        "missing_epochs": 0,
+        "p50_ms": {
+          "minimum": 246.005351,
+          "maximum": 247.352173
+        },
+        "p99_ms": {
+          "minimum": 293.784652,
+          "maximum": 295.921087
+        }
+      }
+    ]
+  },
+  "flac_ll_hls": {
+    "strict_gate_passed": false,
+    "codec_init_verified_lanes": 40,
+    "expected_parts": 96000,
+    "received_parts": 95986,
+    "missing_parts": 14,
+    "complete_lanes": 31,
+    "lanes": 40,
+    "deadline_misses": 87,
+    "deadline_miss_window": "first three seconds",
+    "missing_part_window": "final one-second window",
+    "startup_discontinuity_markers_in_complete_lanes": 62,
+    "source_packet_hash_comparison_performed": false,
+    "edges": [
+      {
+        "node": "edge-tokyo",
+        "complete_lanes": 6,
+        "missing_parts": 3,
+        "deadline_misses": 17,
+        "p50_ms": {
+          "minimum": 392.38125,
+          "maximum": 422.071345
+        },
+        "p99_ms": {
+          "minimum": 433.739529,
+          "maximum": 469.818673
+        }
+      },
+      {
+        "node": "edge-australia",
+        "complete_lanes": 4,
+        "missing_parts": 7,
+        "deadline_misses": 33,
+        "p50_ms": {
+          "minimum": 440.775966,
+          "maximum": 469.768838
+        },
+        "p99_ms": {
+          "minimum": 481.139778,
+          "maximum": 524.841202
+        }
+      },
+      {
+        "node": "edge-sydney",
+        "complete_lanes": 8,
+        "missing_parts": 0,
+        "deadline_misses": 0,
+        "p50_ms": {
+          "minimum": 452.771532,
+          "maximum": 482.261773
+        },
+        "p99_ms": {
+          "minimum": 494.336799,
+          "maximum": 531.712181
+        }
+      },
+      {
+        "node": "edge-japan",
+        "complete_lanes": 6,
+        "missing_parts": 3,
+        "deadline_misses": 17,
+        "p50_ms": {
+          "minimum": 491.947883,
+          "maximum": 520.930357
+        },
+        "p99_ms": {
+          "minimum": 533.231147,
+          "maximum": 569.622777
+        }
+      },
+      {
+        "node": "edge-london",
+        "complete_lanes": 7,
+        "missing_parts": 1,
+        "deadline_misses": 20,
+        "p50_ms": {
+          "minimum": 501.307969,
+          "maximum": 530.947836
+        },
+        "p99_ms": {
+          "minimum": 543.051763,
+          "maximum": 576.112962
+        }
+      }
+    ]
+  },
+  "opus_ll_hls": {
+    "strict_gate_passed": false,
+    "codec_init_verified_lanes": 40,
+    "expected_parts": 96000,
+    "received_parts": 95987,
+    "missing_parts": 13,
+    "complete_lanes": 27,
+    "lanes": 40,
+    "deadline_misses": 117,
+    "opus_packet_mismatches": 0,
+    "startup_discontinuity_markers_in_complete_lanes": 54
+  },
+  "multitrack_counter_window": {
+    "passed": false,
+    "complete_edges": 4,
+    "expected_edges": 5,
+    "sample_level_alignment_proven": false,
+    "limitation": "The probe summaries did not contain per-epoch PTS values."
+  },
+  "interpretation": {
+    "capacity_collapse_observed": false,
+    "udp_loss_acceptable_for_realtime_lane_alone": true,
+    "udp_fec_guarantees_delivery": false,
+    "more_mesh_to_edge_recovery_symbols_could_reduce_residual_loss": true,
+    "acknowledged_repair_handoff_tested": false,
+    "zero_loss_rendered_pcm_proven": false,
+    "production_sla_proven": false,
+    "endurance_proven": false,
+    "video_performance_proven": false
+  },
+  "charts": {
+    "latency": "../../performance/charts/2026-07-28-global-flac-latency.svg",
+    "topology": "../../performance/charts/2026-07-28-global-mesh.svg",
+    "latency_method": "Ten-second medians of per-track one-second P99 values"
+  },
+  "cleanup": {
+    "attempted": true,
+    "succeeded": true,
+    "source_process_exited": true,
+    "probe_processes_exited": true,
+    "remote_result_directories_preserved": true
+  }
+}

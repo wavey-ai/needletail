@@ -14,6 +14,11 @@ This index records evidence; the overview separates cache, router, H3,
 live-tail, latency, replication, and endurance claims so historical results are
 not compared as if they used the same workload.
 
+Current global audio record:
+[2026-07-28 global multitrack FLAC audio](2026-07-28-global-multitrack-audio.md).
+The run gives the current global latency and capacity measurements.
+Its strict result is `FAIL` because UDP and LL-HLS delivery gates did not pass.
+
 Each dated record includes:
 
 - the product and component revisions, including any tested working-tree patch;

@@ -1,6 +1,6 @@
 # Current performance state
 
-This document summarizes the accepted Needletail performance results from GCP tests.
+This document summarizes the latest global test and the accepted Needletail performance results.
 The dated test records contain the complete setup, revisions, gates, and evidence.
 
 ## Terms
@@ -11,6 +11,29 @@ A media unit is one immutable 5 ms Opus object in the response-duration test.
 Availability latency measures media capture time to complete client response.
 First-part latency measures the oldest unit in one response.
 Final-part latency measures the newest unit in one response.
+
+## Global multitrack audio
+
+The July 28 test used ten Needletail nodes across GCP and Azure.
+It sent eight stereo FLAC tracks from London for 600 seconds.
+Five edges measured UDP with FEC and FLAC LL-HLS from one source clock.
+
+The UDP lane delivered 4,799,996 of 4,800,000 edge-track epochs.
+The missing fraction was 0.000083 percent.
+One Tokyo event caused four tracks to miss one 5 ms epoch.
+
+The FLAC LL-HLS probes received 95,986 of 96,000 expected parts.
+Fourteen final-window parts were missing.
+The probes also recorded 87 deadline misses during the first three seconds.
+
+The source and contributor passed their capacity and integrity gates.
+The source process capacity P99 was 4.437 percent of a 16-vCPU host.
+The strict combined result was `FAIL`.
+
+This run is the current global audio record.
+It does not replace the accepted results for different workloads below.
+
+See the [global multitrack FLAC audio record](../real-world-tests/2026-07-28-global-multitrack-audio.md).
 
 ## Response duration
 
@@ -157,6 +180,7 @@ Native playback remains a separate conformance check on a supported browser.
 
 ## Evidence
 
+- [Global multitrack FLAC audio](../real-world-tests/2026-07-28-global-multitrack-audio.md)
 - [Matched Opus response duration](../real-world-tests/2026-07-21-opus-h3-response-duration.md)
 - [4K capacity and loaded player](../real-world-tests/2026-07-21-h264-4k-capacity-and-player.md)
 - [Persistent Opus bundle stream](../real-world-tests/2026-07-20-opus-h3-persistent-bundle-stream.md)

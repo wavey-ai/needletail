@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title description" viewBox="0 0 1200 900">
+    <title id="title">Global FLAC UDP and LL-HLS latency over time</title>
+    <desc id="description">Five aligned regional plots compare UDP with forward error correction against FLAC LL-HLS availability during one 600-second, eight-track test.</desc>
+
+    <rect width="1200" height="900" fill="#08111f"/>
+    <text x="94" y="44" fill="#f7fbff" font-size="28" font-family="Inter,Arial,sans-serif" font-weight="600">Global FLAC latency over time</text>
+    <text x="94" y="73" fill="#9fb1c7" font-size="16" font-family="Inter,Arial,sans-serif">Eight stereo tracks · 600 seconds · each point is a 10-second median of per-track, one-second P99 values</text>
+    <line x1="94" y1="92" x2="128" y2="92" stroke="#55c2ff" stroke-width="4"/>
+    <text x="138" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">UDP with FEC</text>
+    <line x1="284" y1="92" x2="318" y2="92" stroke="#ffb454" stroke-width="4"/>
+    <text x="328" y="97" fill="#d8e3ef" font-size="15" font-family="Inter,Arial,sans-serif">FLAC LL-HLS availability</text>
+
+
+      <rect x="94" y="112" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
+      <text x="106" y="136" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Tokyo</text>
+      <text x="1148" y="136" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 213 ms · LL-HLS 468 ms</text>
+
+
+        <line x1="94" y1="220" x2="1160" y2="220" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="225" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+
+
+        <line x1="94" y1="172" x2="1160" y2="172" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="177" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+
+
+        <line x1="94" y1="124" x2="1160" y2="124" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="129" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+
+<line x1="94" y1="112" x2="94" y2="244" stroke="#15263a" stroke-width="1"/>
+<line x1="307.20000000000005" y1="112" x2="307.20000000000005" y2="244" stroke="#15263a" stroke-width="1"/>
+<line x1="520.4000000000001" y1="112" x2="520.4000000000001" y2="244" stroke="#15263a" stroke-width="1"/>
+<line x1="733.6" y1="112" x2="733.6" y2="244" stroke="#15263a" stroke-width="1"/>
+<line x1="946.8000000000001" y1="112" x2="946.8000000000001" y2="244" stroke="#15263a" stroke-width="1"/>
+<line x1="1160" y1="112" x2="1160" y2="244" stroke="#15263a" stroke-width="1"/>
+
+      <path d="M102.9,167.9L120.7,165.8L138.4,164.8L156.2,164.9L173.9,164.7L191.7,164.2L209.5,163.7L227.3,163.9L245.0,163.4L262.8,163.5L280.5,163.8L298.3,163.6L316.1,163.7L333.9,163.7L351.6,165.2L369.4,165.6L387.2,166.3L404.9,169.8L422.7,171.3L440.4,174.1L458.2,176.7L476.0,176.4L493.8,178.1L511.5,168.1L529.3,165.5L547.0,164.9L564.8,164.9L582.6,164.7L600.3,164.4L618.1,164.6L635.9,163.9L653.6,163.7L671.4,164.0L689.2,163.8L706.9,164.1L724.7,164.1L742.5,163.9L760.3,164.0L778.0,165.6L795.8,155.6L813.6,168.7L831.3,171.6L849.1,172.8L866.9,176.2L884.6,176.2L902.4,176.7L920.1,177.3L937.9,166.6L955.7,165.6L973.4,165.3L991.2,164.5L1009.0,164.5L1026.8,164.2L1044.5,163.8L1062.3,163.6L1080.1,164.0L1097.8,164.2L1115.6,163.8L1133.3,164.0L1151.1,164.3" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,229.2L120.7,228.6L138.4,227.0L156.2,227.8L173.9,226.4L191.7,225.2L209.5,225.9L227.3,226.5L245.0,225.3L262.8,225.7L280.5,224.7L298.3,226.9L316.1,226.0L333.9,227.1L351.6,227.4L369.4,228.0L387.2,228.6L404.9,228.8L422.7,229.4L440.4,231.3L458.2,232.2L476.0,232.7L493.8,233.7L511.5,229.5L529.3,227.5L547.0,226.1L564.8,226.6L582.6,225.5L600.3,225.8L618.1,225.9L635.9,225.2L653.6,226.1L671.4,225.5L689.2,225.6L706.9,226.3L724.7,226.6L742.5,225.4L760.3,226.9L778.0,228.2L795.8,216.8L813.6,228.7L831.3,229.9L849.1,229.9L866.9,232.1L884.6,232.6L902.4,233.7L920.1,233.6L937.9,227.4L955.7,227.6L973.4,226.2L991.2,226.3L1009.0,225.7L1026.8,227.4L1044.5,226.0L1062.3,225.7L1080.1,225.7L1097.8,225.6L1115.6,225.6L1133.3,226.1L1151.1,226.7" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+
+        <line x1="778.0166666666668" y1="146" x2="778.0166666666668" y2="244" stroke="#ff667a" stroke-width="2" stroke-dasharray="5 5"/>
+        <circle cx="778.0166666666668" cy="236" r="5" fill="#ff667a"/>
+        <text x="786.0166666666668" y="234" fill="#ffb8c2" font-size="12" font-family="Inter,Arial,sans-serif">one unrecovered 5 ms UDP unit</text>
+
+
+      <rect x="94" y="262" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
+      <text x="106" y="286" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Azure Australia</text>
+      <text x="1148" y="286" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 261 ms · LL-HLS 511 ms</text>
+
+
+        <line x1="94" y1="370" x2="1160" y2="370" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="375" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+
+
+        <line x1="94" y1="322" x2="1160" y2="322" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="327" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+
+
+        <line x1="94" y1="274" x2="1160" y2="274" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="279" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+
+<line x1="94" y1="262" x2="94" y2="394" stroke="#15263a" stroke-width="1"/>
+<line x1="307.20000000000005" y1="262" x2="307.20000000000005" y2="394" stroke="#15263a" stroke-width="1"/>
+<line x1="520.4000000000001" y1="262" x2="520.4000000000001" y2="394" stroke="#15263a" stroke-width="1"/>
+<line x1="733.6" y1="262" x2="733.6" y2="394" stroke="#15263a" stroke-width="1"/>
+<line x1="946.8000000000001" y1="262" x2="946.8000000000001" y2="394" stroke="#15263a" stroke-width="1"/>
+<line x1="1160" y1="262" x2="1160" y2="394" stroke="#15263a" stroke-width="1"/>
+
+      <path d="M102.9,304.1L120.7,304.5L138.4,303.4L156.2,303.3L173.9,303.0L191.7,302.8L209.5,302.7L227.3,302.5L245.0,302.0L262.8,302.5L280.5,302.6L298.3,302.5L316.1,302.3L333.9,302.1L351.6,303.4L369.4,304.5L387.2,304.6L404.9,308.3L422.7,310.0L440.4,312.8L458.2,315.5L476.0,315.5L493.8,316.9L511.5,306.7L529.3,304.3L547.0,303.8L564.8,303.6L582.6,303.3L600.3,303.3L618.1,303.2L635.9,302.4L653.6,302.7L671.4,302.8L689.2,302.6L706.9,302.7L724.7,302.9L742.5,302.8L760.3,302.8L778.0,304.1L795.8,295.4L813.6,307.2L831.3,310.0L849.1,311.7L866.9,315.2L884.6,315.3L902.4,315.9L920.1,315.5L937.9,304.8L955.7,304.1L973.4,304.0L991.2,303.1L1009.0,303.1L1026.8,302.8L1044.5,302.7L1062.3,302.3L1080.1,302.7L1097.8,302.5L1115.6,302.1L1133.3,303.0L1151.1,302.7" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,367.6L120.7,367.5L138.4,365.3L156.2,366.2L173.9,365.0L191.7,364.1L209.5,365.5L227.3,365.1L245.0,364.5L262.8,364.9L280.5,363.7L298.3,365.7L316.1,364.9L333.9,365.4L351.6,366.4L369.4,366.5L387.2,367.1L404.9,367.7L422.7,368.4L440.4,369.8L458.2,370.7L476.0,371.1L493.8,372.2L511.5,367.9L529.3,366.7L547.0,364.9L564.8,365.8L582.6,364.4L600.3,365.0L618.1,365.1L635.9,365.4L653.6,364.6L671.4,364.3L689.2,364.6L706.9,365.1L724.7,365.3L742.5,364.1L760.3,365.8L778.0,366.6L795.8,355.4L813.6,367.0L831.3,368.4L849.1,368.8L866.9,370.7L884.6,370.9L902.4,372.1L920.1,371.2L937.9,366.1L955.7,366.2L973.4,364.8L991.2,364.8L1009.0,364.6L1026.8,366.0L1044.5,364.5L1062.3,364.0L1080.1,364.3L1097.8,364.3L1115.6,364.3L1133.3,364.7L1151.1,365.0" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+
+      <rect x="94" y="412" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
+      <text x="106" y="436" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Sydney</text>
+      <text x="1148" y="436" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 274 ms · LL-HLS 531 ms</text>
+
+
+        <line x1="94" y1="520" x2="1160" y2="520" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="525" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+
+
+        <line x1="94" y1="472" x2="1160" y2="472" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="477" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+
+
+        <line x1="94" y1="424" x2="1160" y2="424" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="429" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+
+<line x1="94" y1="412" x2="94" y2="544" stroke="#15263a" stroke-width="1"/>
+<line x1="307.20000000000005" y1="412" x2="307.20000000000005" y2="544" stroke="#15263a" stroke-width="1"/>
+<line x1="520.4000000000001" y1="412" x2="520.4000000000001" y2="544" stroke="#15263a" stroke-width="1"/>
+<line x1="733.6" y1="412" x2="733.6" y2="544" stroke="#15263a" stroke-width="1"/>
+<line x1="946.8000000000001" y1="412" x2="946.8000000000001" y2="544" stroke="#15263a" stroke-width="1"/>
+<line x1="1160" y1="412" x2="1160" y2="544" stroke="#15263a" stroke-width="1"/>
+
+      <path d="M102.9,453.5L120.7,451.1L138.4,450.6L156.2,450.3L173.9,450.2L191.7,449.9L209.5,449.5L227.3,449.2L245.0,449.0L262.8,449.4L280.5,449.3L298.3,449.0L316.1,449.7L333.9,449.0L351.6,450.5L369.4,451.1L387.2,452.5L404.9,455.1L422.7,456.6L440.4,459.8L458.2,462.6L476.0,462.3L493.8,464.0L511.5,453.8L529.3,451.1L547.0,450.6L564.8,450.2L582.6,450.2L600.3,450.5L618.1,450.2L635.9,449.5L653.6,449.5L671.4,449.5L689.2,449.6L706.9,449.2L724.7,449.9L742.5,449.7L760.3,449.0L778.0,451.1L795.8,440.5L813.6,454.3L831.3,457.3L849.1,458.3L866.9,461.7L884.6,462.3L902.4,462.8L920.1,463.7L937.9,451.9L955.7,451.2L973.4,450.7L991.2,450.2L1009.0,450.2L1026.8,449.7L1044.5,449.9L1062.3,449.3L1080.1,449.5L1097.8,449.9L1115.6,449.0L1133.3,449.1L1151.1,449.7" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,514.6L120.7,513.7L138.4,512.5L156.2,512.9L173.9,511.7L191.7,511.1L209.5,512.0L227.3,512.0L245.0,510.6L262.8,511.6L280.5,510.2L298.3,512.2L316.1,511.9L333.9,512.3L351.6,513.2L369.4,514.0L387.2,514.2L404.9,513.9L422.7,515.4L440.4,516.7L458.2,517.7L476.0,517.9L493.8,519.3L511.5,514.8L529.3,513.3L547.0,511.6L564.8,512.4L582.6,511.3L600.3,511.2L618.1,511.9L635.9,511.7L653.6,511.7L671.4,510.8L689.2,511.2L706.9,511.8L724.7,512.4L742.5,510.9L760.3,512.6L778.0,513.6L795.8,502.2L813.6,514.1L831.3,515.3L849.1,516.0L866.9,517.8L884.6,518.1L902.4,519.3L920.1,518.7L937.9,512.6L955.7,513.1L973.4,511.7L991.2,511.7L1009.0,511.5L1026.8,513.0L1044.5,511.7L1062.3,511.0L1080.1,510.8L1097.8,511.2L1115.6,511.2L1133.3,511.7L1151.1,511.9" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+
+      <rect x="94" y="562" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
+      <text x="106" y="586" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">Azure Japan</text>
+      <text x="1148" y="586" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 312 ms · LL-HLS 569 ms</text>
+
+
+        <line x1="94" y1="670" x2="1160" y2="670" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="675" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+
+
+        <line x1="94" y1="622" x2="1160" y2="622" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="627" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+
+
+        <line x1="94" y1="574" x2="1160" y2="574" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="579" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+
+<line x1="94" y1="562" x2="94" y2="694" stroke="#15263a" stroke-width="1"/>
+<line x1="307.20000000000005" y1="562" x2="307.20000000000005" y2="694" stroke="#15263a" stroke-width="1"/>
+<line x1="520.4000000000001" y1="562" x2="520.4000000000001" y2="694" stroke="#15263a" stroke-width="1"/>
+<line x1="733.6" y1="562" x2="733.6" y2="694" stroke="#15263a" stroke-width="1"/>
+<line x1="946.8000000000001" y1="562" x2="946.8000000000001" y2="694" stroke="#15263a" stroke-width="1"/>
+<line x1="1160" y1="562" x2="1160" y2="694" stroke="#15263a" stroke-width="1"/>
+
+      <path d="M102.9,594.2L120.7,592.3L138.4,591.3L156.2,591.1L173.9,590.8L191.7,590.5L209.5,590.3L227.3,590.3L245.0,589.8L262.8,590.2L280.5,590.2L298.3,589.8L316.1,589.9L333.9,589.8L351.6,591.3L369.4,592.3L387.2,592.6L404.9,595.9L422.7,597.7L440.4,610.6L458.2,624.7L476.0,624.7L493.8,625.2L511.5,594.4L529.3,592.0L547.0,591.4L564.8,591.2L582.6,590.9L600.3,590.8L618.1,590.7L635.9,590.3L653.6,590.0L671.4,590.3L689.2,590.4L706.9,590.2L724.7,590.3L742.5,590.4L760.3,590.4L778.0,591.8L795.8,581.5L813.6,594.8L831.3,598.0L849.1,599.0L866.9,624.7L884.6,624.7L902.4,625.0L920.1,624.9L937.9,592.8L955.7,591.7L973.4,591.4L991.2,590.7L1009.0,590.7L1026.8,590.4L1044.5,590.3L1062.3,589.8L1080.1,590.2L1097.8,590.4L1115.6,590.0L1133.3,590.5L1151.1,590.5" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,655.6L120.7,655.1L138.4,653.3L156.2,654.1L173.9,652.7L191.7,652.2L209.5,653.2L227.3,652.8L245.0,652.2L262.8,652.6L280.5,651.3L298.3,653.3L316.1,652.7L333.9,653.2L351.6,654.3L369.4,654.8L387.2,655.0L404.9,655.6L422.7,656.0L440.4,657.6L458.2,658.5L476.0,658.7L493.8,660.0L511.5,655.7L529.3,653.5L547.0,652.8L564.8,653.5L582.6,652.0L600.3,652.7L618.1,652.9L635.9,653.0L653.6,652.4L671.4,651.8L689.2,652.1L706.9,652.8L724.7,653.4L742.5,651.7L760.3,653.8L778.0,654.1L795.8,643.1L813.6,654.9L831.3,656.1L849.1,656.6L866.9,658.5L884.6,658.7L902.4,659.8L920.1,659.7L937.9,653.7L955.7,653.9L973.4,652.6L991.2,652.7L1009.0,652.5L1026.8,653.8L1044.5,652.1L1062.3,651.7L1080.1,652.2L1097.8,651.9L1115.6,652.1L1133.3,652.6L1151.1,652.7" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+
+      <rect x="94" y="712" width="1066" height="132" rx="8" fill="#0d1a2b" stroke="#1d3047"/>
+      <text x="106" y="736" fill="#f7fbff" font-size="16" font-family="Inter,Arial,sans-serif" font-weight="600">London</text>
+      <text x="1148" y="736" text-anchor="end" fill="#9fb1c7" font-size="13" font-family="Inter,Arial,sans-serif">high bucket: UDP 322 ms · LL-HLS 579 ms</text>
+
+
+        <line x1="94" y1="820" x2="1160" y2="820" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="825" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">200</text>
+
+
+        <line x1="94" y1="772" x2="1160" y2="772" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="777" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">400</text>
+
+
+        <line x1="94" y1="724" x2="1160" y2="724" stroke="#20334a" stroke-width="1"/>
+        <text x="84" y="729" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">600</text>
+
+<line x1="94" y1="712" x2="94" y2="844" stroke="#15263a" stroke-width="1"/>
+<text x="94" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">0s</text>
+<line x1="307.20000000000005" y1="712" x2="307.20000000000005" y2="844" stroke="#15263a" stroke-width="1"/>
+<text x="307.20000000000005" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">120s</text>
+<line x1="520.4000000000001" y1="712" x2="520.4000000000001" y2="844" stroke="#15263a" stroke-width="1"/>
+<text x="520.4000000000001" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">240s</text>
+<line x1="733.6" y1="712" x2="733.6" y2="844" stroke="#15263a" stroke-width="1"/>
+<text x="733.6" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">360s</text>
+<line x1="946.8000000000001" y1="712" x2="946.8000000000001" y2="844" stroke="#15263a" stroke-width="1"/>
+<text x="946.8000000000001" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">480s</text>
+<line x1="1160" y1="712" x2="1160" y2="844" stroke="#15263a" stroke-width="1"/>
+<text x="1160" y="868" text-anchor="middle" fill="#9fb1c7" font-size="12" font-family="Inter,Arial,sans-serif">600s</text>
+
+      <path d="M102.9,741.2L120.7,739.2L138.4,738.8L156.2,738.3L173.9,738.2L191.7,737.7L209.5,737.6L227.3,737.4L245.0,737.0L262.8,737.4L280.5,737.5L298.3,737.3L316.1,737.7L333.9,737.6L351.6,739.1L369.4,740.1L387.2,740.9L404.9,743.3L422.7,745.4L440.4,748.3L458.2,751.1L476.0,751.5L493.8,752.6L511.5,742.2L529.3,739.6L547.0,739.2L564.8,738.4L582.6,738.7L600.3,738.7L618.1,738.8L635.9,738.1L653.6,738.0L671.4,738.4L689.2,738.1L706.9,738.2L724.7,738.2L742.5,738.2L760.3,738.2L778.0,739.4L795.8,729.0L813.6,742.6L831.3,745.1L849.1,746.9L866.9,750.9L884.6,751.0L902.4,751.4L920.1,750.0L937.9,740.5L955.7,739.8L973.4,739.3L991.2,738.5L1009.0,738.8L1026.8,738.0L1044.5,738.1L1062.3,737.8L1080.1,738.1L1097.8,738.0L1115.6,738.1L1133.3,738.2L1151.1,738.3" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M102.9,802.6L120.7,801.9L138.4,800.0L156.2,800.8L173.9,799.6L191.7,798.8L209.5,800.1L227.3,799.9L245.0,799.0L262.8,799.3L280.5,798.3L298.3,800.0L316.1,799.7L333.9,800.5L351.6,801.3L369.4,802.3L387.2,802.6L404.9,803.2L422.7,803.7L440.4,805.1L458.2,805.9L476.0,806.6L493.8,807.7L511.5,803.1L529.3,801.2L547.0,799.9L564.8,800.6L582.6,799.6L600.3,799.5L618.1,800.0L635.9,799.6L653.6,799.6L671.4,799.1L689.2,799.8L706.9,799.8L724.7,800.7L742.5,799.1L760.3,800.8L778.0,801.7L795.8,790.7L813.6,802.4L831.3,803.7L849.1,804.4L866.9,805.7L884.6,806.3L902.4,807.6L920.1,807.4L937.9,801.1L955.7,801.5L973.4,799.7L991.2,800.2L1009.0,799.7L1026.8,800.2L1044.5,800.0L1062.3,799.5L1080.1,799.7L1097.8,799.2L1115.6,799.2L1133.3,799.9L1151.1,800.6" fill="none" stroke="#55c2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+
+    <text x="22" y="450" transform="rotate(-90 22 450)" text-anchor="middle" fill="#9fb1c7" font-size="14" font-family="Inter,Arial,sans-serif">capture-to-delivery latency (ms)</text>
+    <text x="1160" y="880" text-anchor="end" fill="#71869e" font-size="12" font-family="Inter,Arial,sans-serif">Run 20260728T113000Z · loss markers are not interpolated</text>
+
+  </svg>

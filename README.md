@@ -50,22 +50,58 @@ New sessions move to healthy same-region edges, and recovered capacity returns a
 - Standard HLS variants move new sessions between healthy playback edges.
 - Session-aware admission keeps active playback stable during an edge-capacity alarm.
 
-## LL-HLS performance for streaming data
+## Measured global multitrack performance
 
-Needletail applies LL-HLS concepts to streaming data commonly carried over UDP, RIST, or SRT paths.
-It provides a standards-based HTTP alternative for the tail while preserving near-UDP timing.
-Short parts, blocking reloads, persistent HTTP/3, and the back cache provide rapid tail availability.
-The measured results show near-UDP publication-to-client performance across three regions.
+The July 28, 2026, test used ten Needletail nodes across GCP and Azure.
+It sent eight independent stereo tracks from London for 600 seconds.
+Each lossless FLAC stream also included an Opus companion stream.
+Five playback edges measured UDP with FEC and FLAC LL-HLS from the same source clock.
 
-| Qualification | Measured result |
-| --- | --- |
-| Wide-area LL-HLS versus raw UDP | LL-HLS p50 was 2.390–2.452 ms above raw UDP p50 in New York, Tokyo, and Sydney |
-| Wide-area cache-to-client | LL-HLS cache-to-client p99 was 1.274–1.510 ms |
-| Persistent HTTP/3 Opus tails | 128 real-time tails per edge vCPU; availability p99 was 12.627–12.734 ms |
-| Opaque FLAC HTTP/3 probe | 120 of 120 parts arrived; availability p99 was 91.222 ms; estimated render p99 was 241.222 ms |
+The source emitted 960,000 encoded track packets with zero send errors.
+It also reported zero dropped frames.
+Source process capacity P99 was 4.44 percent of the 16-vCPU host.
+The contributor completed all 1,920,000 expected audio groups and recovered seven lost source fragments.
 
-These results show an HTTP streaming path with performance close to measured raw UDP.
-The [current performance record](docs/performance/current-state-and-gaps.md) links each qualification and its limits.
+The UDP lane delivered 4,799,996 of 4,800,000 measured edge-track epochs.
+Four tracks missed one shared 5 ms epoch at the Tokyo edge.
+The measured UDP loss was 0.000083 percent.
+All other UDP edge-track lanes were complete.
+
+For the UDP lane alone, this is acceptable loss.
+UDP with FEC trades absolute delivery for bounded latency.
+More mesh-to-edge recovery symbols could reduce the remaining loss probability.
+No UDP or FEC setting can guarantee delivery.
+An acknowledged FLAC repair path must fill an omission before final rendering.
+Needletail does not claim lossless rendered output until that recovery gate passes.
+
+| Edge | UDP P50 range | UDP P99 range | FLAC LL-HLS P50 range | FLAC LL-HLS P99 range |
+| --- | ---: | ---: | ---: | ---: |
+| Tokyo | 137.279-138.600 ms | 184.654-186.796 ms | 392.381-422.071 ms | 433.740-469.819 ms |
+| Azure Australia | 185.383-186.604 ms | 230.584-232.631 ms | 440.776-469.769 ms | 481.140-524.841 ms |
+| Sydney | 197.246-198.567 ms | 244.837-247.089 ms | 452.772-482.262 ms | 494.337-531.712 ms |
+| Azure Japan | 235.797-237.062 ms | 281.725-283.864 ms | 491.948-520.930 ms | 533.231-569.623 ms |
+| London | 246.005-247.352 ms | 293.785-295.921 ms | 501.308-530.948 ms | 543.052-576.113 ms |
+
+![UDP and FLAC LL-HLS latency over time](docs/performance/charts/2026-07-28-global-flac-latency.svg)
+
+The chart uses ten-second medians.
+Each input point is a one-second P99 value for one track.
+The UDP result includes the one unrecovered Tokyo epoch at source second 385.
+
+![Global GCP and Azure qualification mesh](docs/performance/charts/2026-07-28-global-mesh.svg)
+
+The strict combined result is `FAIL`.
+The UDP gate required zero loss.
+The FLAC LL-HLS probes missed 14 final-window parts across nine of 40 lanes.
+They also recorded 87 deadline misses during the first three seconds.
+Complete LL-HLS lanes contained two source-start discontinuity markers.
+
+The run found no sustained overload, queue drop, kernel socket drop, or corrupt Opus packet.
+It supports claims about demonstrated topology, latency, recovery, and source capacity.
+It does not support a production SLA or a zero-loss rendered-audio claim.
+
+Read the [detailed test record](docs/real-world-tests/2026-07-28-global-multitrack-audio.md).
+Use the [machine-readable evidence](docs/real-world-tests/evidence/20260728T113000Z-linode16-8track-recovery20-combined.json) for exact totals and limits.
 
 ## End-to-end architecture
 
@@ -338,32 +374,6 @@ Operators can inspect the same state that controls route and admission decisions
 
 Production deployments use a durable controller, host node agents, and supervised native services.
 
-## Proven edge-cache failover
-
-The July 22, 2026, GCP qualification is the authoritative edge-cache record.
-It used one contributor, one distributor, and two independent playback edges.
-
-| Check | Result |
-| --- | --- |
-| Byte-identical replication | The distributor and both edges served the same 7,852-byte part |
-| Capacity alarm | Edge A measured 125,632 bit/s against a 50,000 bit/s test boundary |
-| Existing session | Edge A returned HTTP `200` during overload |
-| New session | Edge A returned HTTP `429` with alternate-edge advice |
-| Alternate edge | Edge B returned HTTP `200` |
-| Recovery | Edge A reopened admission below the recovery boundary |
-| HTTP/3 probe | 120 of 120 parts arrived in sequence and met their deadlines |
-| Availability | HTTP/3 availability p99 was 91.222 ms |
-| Estimated render | The model estimated end-to-end render p99 at 241.222 ms |
-| Cleanup | All transient edge-cache test services stopped, and the initial cloud state returned |
-
-The test scope covered one controlled alarm and recovery cycle at reduced limits.
-
-Read the [qualification narrative](docs/real-world-tests/2026-07-22-gcp-edge-capacity-failover.md) for the topology, method, revisions, and limits.
-Use the [JSON evidence](docs/real-world-tests/evidence/20260722T001300Z-edge-capacity-failover.json) for machine-readable results.
-
-Other test categories remain in the [real-world evidence index](docs/real-world-tests/README.md).
-The [current performance record](docs/performance/current-state-and-gaps.md) summarizes their accepted boundaries.
-
 ## Learn more
 
 - [Regional edge-cache fabric](docs/edge-cache-fabric.md)
@@ -371,7 +381,7 @@ The [current performance record](docs/performance/current-state-and-gaps.md) sum
 - [Contributor origin boundary](docs/contributor-origin-boundary.md)
 - [Audio delivery lanes](docs/audio-delivery-lanes.md)
 - [Operations telemetry](docs/operations-telemetry-transport.md)
-- [Current performance record](docs/performance/current-state-and-gaps.md)
+- [Global multitrack test record](docs/real-world-tests/2026-07-28-global-multitrack-audio.md)
 - [Real-world evidence](docs/real-world-tests/README.md)
 
 ## License
