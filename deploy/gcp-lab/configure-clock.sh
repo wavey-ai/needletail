@@ -4,15 +4,28 @@ set -euo pipefail
 STAGE=/tmp/needletail-deploy
 MAX_OFFSET_SECONDS="${NEEDLETAIL_MAX_CLOCK_OFFSET_SECONDS:-0.001}"
 
-export DEBIAN_FRONTEND=noninteractive
-if ! dpkg-query -W -f='${db:Status-Abbrev}' chrony 2>/dev/null \
-  | grep -q '^ii '; then
-  if [[ -f "${STAGE}/chrony.deb" ]]; then
-    sudo apt-get install -y "${STAGE}/chrony.deb"
-  else
-    sudo apt-get update
-    sudo apt-get install -y chrony
+chrony_service=chrony.service
+chrony_config=/etc/chrony/chrony.conf
+if command -v dnf >/dev/null 2>&1; then
+  if ! rpm -q chrony >/dev/null 2>&1; then
+    sudo dnf install -y chrony
   fi
+  chrony_service=chronyd.service
+  chrony_config=/etc/chrony.conf
+elif command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  if ! dpkg-query -W -f='${db:Status-Abbrev}' chrony 2>/dev/null \
+    | grep -q '^ii '; then
+    if [[ -f "${STAGE}/chrony.deb" ]]; then
+      sudo apt-get install -y "${STAGE}/chrony.deb"
+    else
+      sudo apt-get update
+      sudo apt-get install -y chrony
+    fi
+  fi
+else
+  echo "unsupported package manager; expected dnf or apt-get" >&2
+  exit 1
 fi
 
 if grep -Eqi 'Google|Compute Engine' /sys/class/dmi/id/product_name 2>/dev/null; then
@@ -20,18 +33,21 @@ if grep -Eqi 'Google|Compute Engine' /sys/class/dmi/id/product_name 2>/dev/null;
     echo "GCP clock configuration is missing" >&2
     exit 1
   fi
-  if [[ -f /etc/chrony/chrony.conf \
-    && ! -f /etc/chrony/chrony.conf.needletail-before ]]; then
-    sudo cp --preserve=mode,timestamps /etc/chrony/chrony.conf \
-      /etc/chrony/chrony.conf.needletail-before
+  if [[ -f "${chrony_config}" \
+    && ! -f "${chrony_config}.needletail-before" ]]; then
+    sudo cp --preserve=mode,timestamps "${chrony_config}" \
+      "${chrony_config}.needletail-before"
   fi
-  sudo install -m 644 "${STAGE}/chrony-gcp.conf" /etc/chrony/chrony.conf
+  sudo install -m 644 "${STAGE}/chrony-gcp.conf" "${chrony_config}"
 fi
 
 sudo systemctl disable --now systemd-timesyncd.service >/dev/null 2>&1 || true
-sudo systemctl enable --now chrony.service
-sudo systemctl restart chrony.service
-sudo chronyc -a burst 4/4 >/dev/null
+sudo systemctl enable --now "${chrony_service}"
+sudo systemctl restart "${chrony_service}"
+# A local PHC refclock does not enter Chrony's online network-source set, so
+# `burst` correctly reports that it has no target. The following qualification
+# loop still requires a synchronized clock and bounded error.
+sudo chronyc -a burst 4/4 >/dev/null || true
 sudo chronyc -a makestep >/dev/null
 
 for _ in $(seq 1 30); do

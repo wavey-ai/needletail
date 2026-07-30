@@ -1,0 +1,435 @@
+{
+  "purpose": "multi_provider_qualification",
+  "carrier": "controlled_public_udp",
+  "subscription_id": 20260727,
+  "media_deadline_ms": 1000,
+  "audio_epoch_redundant_ingress": true,
+  "failover_policy": {
+    "primary_silence_ms": 1000,
+    "primary_recovery_ms": 3000,
+    "secondary_warm_ms": 2000,
+    "heartbeat_ms": 250,
+    "lease_ms": 1500
+  },
+  "failover_control_links": [
+    {
+      "forwarder_node_id": "relay-secondary-japan",
+      "controller_node_id": "relay-regional-osaka",
+      "controller_bind": "192.0.2.1:22500",
+      "controller_peer": "192.0.2.1:22500",
+      "listener_bind": "192.0.2.1:22600",
+      "listener_target": "192.0.2.1:22600"
+    },
+    {
+      "forwarder_node_id": "relay-secondary-japan",
+      "controller_node_id": "edge-london",
+      "controller_bind": "192.0.2.1:22510",
+      "controller_peer": "192.0.2.1:22510",
+      "listener_bind": "192.0.2.1:22610",
+      "listener_target": "192.0.2.1:22610"
+    },
+    {
+      "forwarder_node_id": "relay-secondary-japan",
+      "controller_node_id": "edge-tokyo",
+      "controller_bind": "192.0.2.1:22520",
+      "controller_peer": "192.0.2.1:22520",
+      "listener_bind": "192.0.2.1:22620",
+      "listener_target": "192.0.2.1:22620"
+    },
+    {
+      "forwarder_node_id": "relay-secondary-japan",
+      "controller_node_id": "edge-sydney",
+      "controller_bind": "192.0.2.1:22530",
+      "controller_peer": "192.0.2.1:22530",
+      "listener_bind": "192.0.2.1:22630",
+      "listener_target": "192.0.2.1:22630"
+    },
+    {
+      "forwarder_node_id": "relay-secondary-japan",
+      "controller_node_id": "edge-australia",
+      "controller_bind": "192.0.2.1:22540",
+      "controller_peer": "192.0.2.1:22540",
+      "listener_bind": "192.0.2.1:22640",
+      "listener_target": "192.0.2.1:22640"
+    },
+    {
+      "forwarder_node_id": "relay-secondary-japan",
+      "controller_node_id": "relay-regional-australia",
+      "controller_bind": "192.0.2.1:22550",
+      "controller_peer": "192.0.2.1:22550",
+      "listener_bind": "192.0.2.1:22650",
+      "listener_target": "192.0.2.1:22650"
+    },
+    {
+      "forwarder_node_id": "relay-regional-osaka",
+      "controller_node_id": "edge-japan",
+      "controller_bind": "192.0.2.1:22560",
+      "controller_peer": "192.0.2.1:22560",
+      "listener_bind": "192.0.2.1:22660",
+      "listener_target": "192.0.2.1:22660"
+    }
+  ],
+  "topology": {
+    "generation": 2026072801,
+    "nodes": [
+      {
+        "node_id": "contrib-london",
+        "level": 0,
+        "role": "origin",
+        "failure_domain": {
+          "provider": "gcp",
+          "region": "europe-west2",
+          "asn": 15169,
+          "zone": "europe-west2-c"
+        }
+      },
+      {
+        "node_id": "relay-primary-amsterdam",
+        "level": 1,
+        "role": "backbone",
+        "failure_domain": {
+          "provider": "gcp",
+          "region": "europe-west4",
+          "asn": 15169,
+          "zone": "europe-west4-a"
+        }
+      },
+      {
+        "node_id": "relay-secondary-japan",
+        "level": 1,
+        "role": "backbone",
+        "failure_domain": {
+          "provider": "azure",
+          "region": "japaneast",
+          "asn": 8075,
+          "zone": "japaneast-unzoned"
+        }
+      },
+      {
+        "node_id": "relay-regional-osaka",
+        "level": 2,
+        "role": "regional_relay",
+        "failure_domain": {
+          "provider": "gcp",
+          "region": "asia-northeast2",
+          "asn": 15169,
+          "zone": "asia-northeast2-b"
+        }
+      },
+      {
+        "node_id": "edge-london",
+        "level": 3,
+        "role": "playback_edge",
+        "failure_domain": {
+          "provider": "gcp",
+          "region": "europe-west2",
+          "asn": 15169,
+          "zone": "europe-west2-c"
+        }
+      },
+      {
+        "node_id": "edge-tokyo",
+        "level": 3,
+        "role": "playback_edge",
+        "failure_domain": {
+          "provider": "gcp",
+          "region": "asia-northeast1",
+          "asn": 15169,
+          "zone": "asia-northeast1-c"
+        }
+      },
+      {
+        "node_id": "edge-sydney",
+        "level": 3,
+        "role": "playback_edge",
+        "failure_domain": {
+          "provider": "gcp",
+          "region": "australia-southeast1",
+          "asn": 15169,
+          "zone": "australia-southeast1-b"
+        }
+      },
+      {
+        "node_id": "edge-australia",
+        "level": 3,
+        "role": "playback_edge",
+        "failure_domain": {
+          "provider": "azure",
+          "region": "australiaeast",
+          "asn": 8075,
+          "zone": "australiaeast-unzoned"
+        }
+      },
+      {
+        "node_id": "relay-regional-australia",
+        "level": 3,
+        "role": "regional_relay",
+        "failure_domain": {
+          "provider": "azure",
+          "region": "australiaeast",
+          "asn": 8075,
+          "zone": "australiaeast-unzoned"
+        }
+      },
+      {
+        "node_id": "edge-japan",
+        "level": 4,
+        "role": "playback_edge",
+        "failure_domain": {
+          "provider": "azure",
+          "region": "japaneast",
+          "asn": 8075,
+          "zone": "japaneast-unzoned"
+        }
+      }
+    ],
+    "parent_links": [
+      {
+        "parent_node_id": "contrib-london",
+        "child_node_id": "relay-primary-amsterdam",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "contrib-london",
+        "child_node_id": "relay-secondary-japan",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-primary-amsterdam",
+        "child_node_id": "relay-regional-osaka",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-secondary-japan",
+        "child_node_id": "relay-regional-osaka",
+        "role": "secondary"
+      },
+      {
+        "parent_node_id": "relay-regional-osaka",
+        "child_node_id": "edge-london",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-secondary-japan",
+        "child_node_id": "edge-london",
+        "role": "secondary"
+      },
+      {
+        "parent_node_id": "relay-regional-osaka",
+        "child_node_id": "edge-tokyo",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-secondary-japan",
+        "child_node_id": "edge-tokyo",
+        "role": "secondary"
+      },
+      {
+        "parent_node_id": "relay-regional-osaka",
+        "child_node_id": "edge-sydney",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-secondary-japan",
+        "child_node_id": "edge-sydney",
+        "role": "secondary"
+      },
+      {
+        "parent_node_id": "relay-regional-osaka",
+        "child_node_id": "edge-australia",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-secondary-japan",
+        "child_node_id": "edge-australia",
+        "role": "secondary"
+      },
+      {
+        "parent_node_id": "relay-regional-osaka",
+        "child_node_id": "relay-regional-australia",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-secondary-japan",
+        "child_node_id": "relay-regional-australia",
+        "role": "secondary"
+      },
+      {
+        "parent_node_id": "relay-regional-australia",
+        "child_node_id": "edge-japan",
+        "role": "primary"
+      },
+      {
+        "parent_node_id": "relay-regional-osaka",
+        "child_node_id": "edge-japan",
+        "role": "secondary"
+      }
+    ],
+    "limits": {
+      "max_origin_children": 2,
+      "max_downstream_children": 8
+    }
+  },
+  "carrier_links": [
+    {
+      "parent_node_id": "contrib-london",
+      "child_node_id": "relay-primary-amsterdam",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22301",
+      "sender_peer": "192.0.2.1:22301",
+      "receiver_bind": "192.0.2.1:22001",
+      "receiver_target": "192.0.2.1:22001"
+    },
+    {
+      "parent_node_id": "contrib-london",
+      "child_node_id": "relay-secondary-japan",
+      "role": "primary",
+      "lane": "source_and_repair",
+      "sender_bind": "192.0.2.1:22302",
+      "sender_peer": "192.0.2.1:22302",
+      "receiver_bind": "192.0.2.1:22002",
+      "receiver_target": "192.0.2.1:22002"
+    },
+    {
+      "parent_node_id": "relay-primary-amsterdam",
+      "child_node_id": "relay-regional-osaka",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22401",
+      "sender_peer": "192.0.2.1:22401",
+      "receiver_bind": "192.0.2.1:22200",
+      "receiver_target": "192.0.2.1:22200"
+    },
+    {
+      "parent_node_id": "relay-secondary-japan",
+      "child_node_id": "relay-regional-osaka",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22402",
+      "sender_peer": "192.0.2.1:22402",
+      "receiver_bind": "192.0.2.1:22201",
+      "receiver_target": "192.0.2.1:22201"
+    },
+    {
+      "parent_node_id": "relay-regional-osaka",
+      "child_node_id": "edge-london",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22410",
+      "sender_peer": "192.0.2.1:22410",
+      "receiver_bind": "192.0.2.1:22210",
+      "receiver_target": "192.0.2.1:22210"
+    },
+    {
+      "parent_node_id": "relay-secondary-japan",
+      "child_node_id": "edge-london",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22411",
+      "sender_peer": "192.0.2.1:22411",
+      "receiver_bind": "192.0.2.1:22211",
+      "receiver_target": "192.0.2.1:22211"
+    },
+    {
+      "parent_node_id": "relay-regional-osaka",
+      "child_node_id": "edge-tokyo",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22420",
+      "sender_peer": "192.0.2.1:22420",
+      "receiver_bind": "192.0.2.1:22220",
+      "receiver_target": "192.0.2.1:22220"
+    },
+    {
+      "parent_node_id": "relay-secondary-japan",
+      "child_node_id": "edge-tokyo",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22421",
+      "sender_peer": "192.0.2.1:22421",
+      "receiver_bind": "192.0.2.1:22221",
+      "receiver_target": "192.0.2.1:22221"
+    },
+    {
+      "parent_node_id": "relay-regional-osaka",
+      "child_node_id": "edge-sydney",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22430",
+      "sender_peer": "192.0.2.1:22430",
+      "receiver_bind": "192.0.2.1:22230",
+      "receiver_target": "192.0.2.1:22230"
+    },
+    {
+      "parent_node_id": "relay-secondary-japan",
+      "child_node_id": "edge-sydney",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22431",
+      "sender_peer": "192.0.2.1:22431",
+      "receiver_bind": "192.0.2.1:22231",
+      "receiver_target": "192.0.2.1:22231"
+    },
+    {
+      "parent_node_id": "relay-regional-osaka",
+      "child_node_id": "edge-australia",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22440",
+      "sender_peer": "192.0.2.1:22440",
+      "receiver_bind": "192.0.2.1:22240",
+      "receiver_target": "192.0.2.1:22240"
+    },
+    {
+      "parent_node_id": "relay-secondary-japan",
+      "child_node_id": "edge-australia",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22441",
+      "sender_peer": "192.0.2.1:22441",
+      "receiver_bind": "192.0.2.1:22241",
+      "receiver_target": "192.0.2.1:22241"
+    },
+    {
+      "parent_node_id": "relay-regional-osaka",
+      "child_node_id": "relay-regional-australia",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22450",
+      "sender_peer": "192.0.2.1:22450",
+      "receiver_bind": "192.0.2.1:22250",
+      "receiver_target": "192.0.2.1:22250"
+    },
+    {
+      "parent_node_id": "relay-secondary-japan",
+      "child_node_id": "relay-regional-australia",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22451",
+      "sender_peer": "192.0.2.1:22451",
+      "receiver_bind": "192.0.2.1:22251",
+      "receiver_target": "192.0.2.1:22251"
+    },
+    {
+      "parent_node_id": "relay-regional-australia",
+      "child_node_id": "edge-japan",
+      "role": "primary",
+      "lane": "source",
+      "sender_bind": "192.0.2.1:22460",
+      "sender_peer": "192.0.2.1:22460",
+      "receiver_bind": "192.0.2.1:22260",
+      "receiver_target": "192.0.2.1:22260"
+    },
+    {
+      "parent_node_id": "relay-regional-osaka",
+      "child_node_id": "edge-japan",
+      "role": "secondary",
+      "lane": "repair",
+      "sender_bind": "192.0.2.1:22461",
+      "sender_peer": "192.0.2.1:22461",
+      "receiver_bind": "192.0.2.1:22261",
+      "receiver_target": "192.0.2.1:22261"
+    }
+  ]
+}

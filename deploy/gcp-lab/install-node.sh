@@ -4,18 +4,31 @@ set -euo pipefail
 SERVICE="${1:?expected mesh or contrib}"
 STAGE=/tmp/needletail-deploy
 
-export DEBIAN_FRONTEND=noninteractive
-packages=(ca-certificates jq procps)
 missing_packages=()
-for package in "${packages[@]}"; do
-  if ! dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
-    | grep -q '^ii '; then
-    missing_packages+=("${package}")
+if command -v dnf >/dev/null 2>&1; then
+  packages=(ca-certificates jq procps-ng)
+  for package in "${packages[@]}"; do
+    rpm -q "${package}" >/dev/null 2>&1 || missing_packages+=("${package}")
+  done
+  if (( ${#missing_packages[@]} > 0 )); then
+    sudo dnf install -y "${missing_packages[@]}"
   fi
-done
-if (( ${#missing_packages[@]} > 0 )); then
-  sudo apt-get update
-  sudo apt-get install -y "${missing_packages[@]}"
+elif command -v apt-get >/dev/null 2>&1; then
+  packages=(ca-certificates jq procps)
+  export DEBIAN_FRONTEND=noninteractive
+  for package in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
+      | grep -q '^ii '; then
+      missing_packages+=("${package}")
+    fi
+  done
+  if (( ${#missing_packages[@]} > 0 )); then
+    sudo apt-get update
+    sudo apt-get install -y "${missing_packages[@]}"
+  fi
+else
+  echo "unsupported package manager; expected dnf or apt-get" >&2
+  exit 1
 fi
 
 bash "${STAGE}/configure-clock.sh"
@@ -26,6 +39,17 @@ sudo install -m 600 "${STAGE}/privkey.pem" /etc/needletail/tls/privkey.pem
 sudo install -m 644 "${STAGE}/fullchain.pem" /etc/needletail/tls/fullchain.pem
 sudo install -m 644 "${STAGE}/compiled-plan.json" /etc/needletail/compiled-plan.json
 sudo install -m 600 "${STAGE}/node.env" /etc/needletail/node.env
+if command -v restorecon >/dev/null 2>&1; then
+  sudo restorecon -RF /etc/needletail /usr/local/bin
+fi
+
+if systemctl is-active --quiet firewalld.service 2>/dev/null; then
+  sudo firewall-cmd --permanent --add-port=19443-19448/tcp
+  sudo firewall-cmd --permanent --add-port=22000-22699/udp
+  sudo firewall-cmd --permanent --add-port=27000-27399/udp
+  sudo firewall-cmd --permanent --add-port=29100-29600/udp
+  sudo firewall-cmd --reload
+fi
 
 if [[ "${SERVICE}" == mesh ]]; then
   sudo install -m 755 "${STAGE}/av-mesh" /usr/local/bin/av-mesh
