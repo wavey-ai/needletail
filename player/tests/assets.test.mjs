@@ -70,6 +70,7 @@ test("player is same-origin, mobile safe, and selects a supported playback engin
   assert.match(script, /setAudioFormat\(button\.dataset\.audioFormat\)/);
   assert.match(script, /connect\(\);\s+showToast\(`Switching to \$\{AUDIO_FORMATS\[audioFormat\]\.label\}`\)/);
   assert.match(script, /loadMediaIdentity/);
+  assert.match(script, /fetch\("\/api\/mesh\/local"/);
   assert.match(script, /FLAC · RAPTORQ FEC/);
   assert.match(script, /OPUS · RAPTORQ FEC/);
   assert.match(script, /CODECS="\[\^"\]\*opus/);

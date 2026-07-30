@@ -1165,13 +1165,18 @@ async function toggleFullscreen() {
 
 async function loadEdgeIdentity() {
   try {
-    const response = await fetch("/api/mesh", { cache: "no-store" });
+    const response = await fetch("/api/mesh/local", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const status = await response.json();
     const region = status?.node?.region || "London";
     const node = status?.node?.node_id || "playback edge";
-    const prettyRegion = region.toLowerCase().includes("lon") || region.toLowerCase() === "uk" ? "London" : region;
-    elements.edgeLabel.textContent = `${prettyRegion} edge`;
+    const edgeName = node.startsWith("edge-") ? node.slice("edge-".length) : region;
+    const prettyEdgeName = edgeName
+      .split(/[-_]/)
+      .filter(Boolean)
+      .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
+      .join(" ");
+    elements.edgeLabel.textContent = `${prettyEdgeName || "Playback"} edge`;
     if (elements.delivery) elements.delivery.textContent = `${node} · HTTPS`;
     elements.edgePill.title = `Connected to ${node}`;
   } catch {
