@@ -35,11 +35,11 @@ pass.
 - [x] Keep services-only deployment independent of private-album tooling and
   protect generated runtime trees with an ownership marker.
 - [x] Complete the local combined validation matrix.
-- [ ] Review the final diff, commit it, push `main`, and record the commit in the
+- [x] Review the final diff, commit it, push `main`, and record the commit in the
   audit ledger.
 
-Items checked above are implemented in the current worktree; they are not
-released until the final commit is pushed.
+The implementation was released in Needletail commit `31e6701` on top of the
+previously queued hardening commit `329f47a`.
 
 ## Verified sibling repository updates
 
@@ -53,7 +53,7 @@ media path passes qualification.
 | `rist-rs` | `de2dd7b` | Treat UDP send-buffer pressure as backpressure. |
 | `rtmp-ingress` | `49646a9` | Remove the unused SRT dependency. |
 | `playlists` | `f9037f8` | Add validated `CODECS` attributes to rendered multivariant playlists. |
-| `av-mesh` | `5c3a534` | Improve lossless LL-HLS playback and derive multivariant codec attributes from initialization data. |
+| `av-mesh` | `5c3a534`, then `62e56c0` | Improve lossless LL-HLS playback and derive multivariant codec attributes from initialization data, then serve fail-closed local and canonical global Operations routes. |
 | `av-contrib` | `4799ca1`, then `1164a4d` | Qualify multiformat DAW/RIST delivery, then pin both web-service dependencies to the pure RIST receive-loop fix. |
 
 The live RIST stall had a bounded and reproduced cause: the pure receiver
