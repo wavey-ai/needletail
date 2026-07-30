@@ -98,6 +98,8 @@ composition and qualification.
   reject snapshots that do not match the committed generation.
 - [x] Assemble `needletail.operations-snapshot.v1` with contributor status,
   collector proof, all current nodes, and explicit topology links.
+- [x] Derive a fleet-safe single-stream publication summary from canonical
+  stream rows without combining stream identities or incomplete watermarks.
 - [x] Keep raw snapshots bounded and ephemeral; persist at most an aggregated
   minute batch guarded by the current generation.
 - [x] Keep media forwarding independent when Operations is unavailable.
@@ -167,6 +169,8 @@ composition and qualification.
   separate the Azure admin from the service account, and delete only an
   ownership-tagged Azure resource group.
 - [x] Deploy the complete player tree through a digest-verified atomic swap.
+- [x] Add an Operations-only build scope and atomic collector/UI deployment
+  path that does not rebuild or restart the media services.
 - [ ] Narrow role firewall ranges to the ports present in the compiled plan.
 - [ ] Requalify or retire the older Debian-default GCP and Linode lab scripts;
   the current ten-node GCP/Azure lab is Rocky Linux 9.
@@ -191,6 +195,17 @@ Japan at term/fencing generation 354, restored the global view, and redirected
 the well-known entry point to the new regional UI. All nine mesh nodes then
 reported the same leader, term, fencing generation, and `3/3` quorum. The 4K
 SRT media playlist continued advancing independently.
+
+The live Streams review then exposed empty top-level publication summaries even
+though all nine canonical stream rows carried current watermarks. The elected
+collector now derives the single-stream fleet head, contiguous floor, common
+epoch, and worst retained gap count, and derives the contributor watermark from
+its canonical fMP4 sequence. The Operations-only Rocky build compiled in 2m25s,
+deployed the collector and UI atomically without restarting media services, and
+left all nine nodes converged at term/fence 354 with `10/10` fresh sources. The
+4K SRT playlist advanced through `part36703.mp4` during the deployment. Epoch
+activation remains explicitly `not measured`; the owning mesh service did not
+retain that historical value for this already-active source.
 
 Needletail media nodes remain native `systemd` services on Rocky Linux. Do not
 add k3s unless a measured operational requirement outweighs its control-plane,
@@ -239,6 +254,10 @@ caller-provided codec attribute, but current `av-mesh` `5c3a534` maps the MP4
 - [ ] Alert on an accepting collector without a current committed generation.
 - [ ] Add bounded per-edge and per-lane latency history to the canonical
   snapshot.
+- [x] Populate the Streams summary from canonical publication rows and label
+  absent historical measurements as `not measured` instead of `pending`.
+- [ ] Preserve and report canonical epoch-activation delay in the owning mesh
+  service so an active stream can show that historical measurement.
 - [ ] Export charts and topology from the same qualified evidence source.
 - [ ] Run native `promtool`, `amtool`, and Compose validation in CI and in the
   release environment.

@@ -321,9 +321,9 @@ case "${ENABLE_SRT}" in
     ;;
 esac
 case "${BUILD_SCOPE}" in
-  all|mesh) ;;
+  all|mesh|operations) ;;
   *)
-    echo "NEEDLETAIL_BUILD_SCOPE must be all or mesh" >&2
+    echo "NEEDLETAIL_BUILD_SCOPE must be all, mesh, or operations" >&2
     exit 2
     ;;
 esac
@@ -365,6 +365,21 @@ if [[ "${BUILD_SCOPE}" == mesh ]]; then
       exit 2
     }
   done
+elif [[ "${BUILD_SCOPE}" == operations ]]; then
+  for seed_binary in \
+    av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender \
+    etcd etcdctl; do
+    [[ -f "${SEED_ROOT}/${seed_binary}" \
+      && ! -L "${SEED_ROOT}/${seed_binary}" ]] || {
+      echo "operations build seed is missing ${seed_binary}" >&2
+      exit 2
+    }
+  done
+  [[ -f "${SEED_ROOT}/needletail-chrony.deb" \
+    && ! -L "${SEED_ROOT}/needletail-chrony.deb" ]] || {
+    echo "operations build seed is missing needletail-chrony.deb" >&2
+    exit 2
+  }
 fi
 
 prepare_rust_toolchain
@@ -373,21 +388,25 @@ CARGO_JOBS="${CARGO_BUILD_JOBS:-2}"
   echo "CARGO_BUILD_JOBS must be a positive integer" >&2
   exit 2
 }
-build_pinned_librist
-build_pinned_etcd
+if [[ "${BUILD_SCOPE}" != operations ]]; then
+  build_pinned_librist
+  build_pinned_etcd
+fi
 contrib_feature_args=(--no-default-features)
 if [[ "${ENABLE_SRT}" == 1 ]]; then
   contrib_feature_args+=(--features srt-ingest)
 fi
 
-env \
-  CARGO_BUILD_JOBS="${CARGO_JOBS}" \
-  CARGO_INCREMENTAL=0 \
-  CARGO_NET_GIT_FETCH_WITH_CLI=true \
-  CARGO_TARGET_DIR="${TARGET_ROOT}" \
-  "${CARGO_COMMAND[@]}" build --release --locked \
-  --manifest-path "${SOURCE_ROOT}/av-mesh/Cargo.toml" \
-  --bin av-mesh --bin h3-static-capacity
+if [[ "${BUILD_SCOPE}" != operations ]]; then
+  env \
+    CARGO_BUILD_JOBS="${CARGO_JOBS}" \
+    CARGO_INCREMENTAL=0 \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_TARGET_DIR="${TARGET_ROOT}" \
+    "${CARGO_COMMAND[@]}" build --release --locked \
+    --manifest-path "${SOURCE_ROOT}/av-mesh/Cargo.toml" \
+    --bin av-mesh --bin h3-static-capacity
+fi
 if [[ "${BUILD_SCOPE}" == all ]]; then
   env \
     CARGO_BUILD_JOBS="${CARGO_JOBS}" \
@@ -423,7 +442,12 @@ binaries=(
 )
 for binary in "${binaries[@]}"; do
   source_binary="${TARGET_ROOT}/release/${binary}"
-  if [[ "${BUILD_SCOPE}" == mesh \
+  if [[ "${BUILD_SCOPE}" == operations \
+    && "${binary}" != needletail-controller-agent \
+    && "${binary}" != needletail-operations-collector \
+    && "${binary}" != needletail-ops-entrypoint ]]; then
+    source_binary="${SEED_ROOT}/${binary}"
+  elif [[ "${BUILD_SCOPE}" == mesh \
     && ( "${binary}" == av-contrib || "${binary}" == aep1-48k-probe ) ]]; then
     source_binary="${SEED_ROOT}/${binary}"
   elif [[ "${binary}" == ristsender ]]; then
@@ -439,7 +463,13 @@ for binary in "${binaries[@]}"; do
 done
 assert_no_dynamic_librist_dependency "${ARTIFACT_ROOT}/av-contrib"
 assert_no_dynamic_librist_dependency "${ARTIFACT_ROOT}/ristsender"
-make_chrony_deb "${PUBLISH_ROOT}/needletail-chrony.deb"
+if [[ "${BUILD_SCOPE}" == operations ]]; then
+  install -m 644 \
+    "${SEED_ROOT}/needletail-chrony.deb" \
+    "${PUBLISH_ROOT}/needletail-chrony.deb"
+else
+  make_chrony_deb "${PUBLISH_ROOT}/needletail-chrony.deb"
+fi
 
 : >"${PUBLISH_ROOT}/needletail-binaries.sha256"
 for binary in "${binaries[@]}"; do

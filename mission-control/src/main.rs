@@ -1116,11 +1116,11 @@ mod app {
         view! {
             <article class="watermark">
                 <p>{title}</p>
-                <div><span>"Source epoch"</span><strong>{move || optional_u64(publication.get_value()().canonical_epoch)}</strong></div>
-                <div><span>"Epoch activation"</span><strong>{move || format_optional_duration(publication.get_value()().canonical_epoch_activation_delay_us)}</strong></div>
-                <div><span>"Contiguous"</span><strong>{move || optional_u64(publication.get_value()().contiguous_object)}</strong></div>
-                <div><span>"Head"</span><strong>{move || optional_u64(publication.get_value()().head_object)}</strong></div>
-                <div><span>"Known gaps"</span><strong>{move || optional_u64(publication.get_value()().gap_count)}</strong></div>
+                <div><span>"Source epoch"</span><strong>{move || format_publication_value(publication.get_value()().canonical_epoch)}</strong></div>
+                <div><span>"Epoch activation"</span><strong>{move || format_publication_duration(publication.get_value()().canonical_epoch_activation_delay_us)}</strong></div>
+                <div><span>"Contiguous"</span><strong>{move || format_publication_value(publication.get_value()().contiguous_object)}</strong></div>
+                <div><span>"Head"</span><strong>{move || format_publication_value(publication.get_value()().head_object)}</strong></div>
+                <div><span>"Known gaps"</span><strong>{move || format_publication_value(publication.get_value()().gap_count)}</strong></div>
             </article>
         }
     }
@@ -1136,8 +1136,8 @@ mod app {
                 <div class="summary-metrics four">
                     <SmallMetric label="Contributor streams" value=move || contrib.get().map(|s| s.runtime.streams.len().to_string()).unwrap_or_else(|| "—".to_owned()) />
                     <SmallMetric label="Active delivery streams" value=move || edge.get().map(|s| s.aggregate.active_streams.to_string()).unwrap_or_else(|| "—".to_owned()) />
-                    <SmallMetric label="Latest fMP4" value=move || contrib.get().and_then(|status| status.publication.head_object).map(|v| v.to_string()).unwrap_or_else(|| "pending".to_owned()) />
-                    <SmallMetric label="Known edge gaps" value=move || edge.get().and_then(|status| status.publication.gap_count).map(|v| v.to_string()).unwrap_or_else(|| "pending".to_owned()) />
+                    <SmallMetric label="Latest fMP4" value=move || contrib.get().and_then(|status| status.publication.head_object).map(|v| v.to_string()).unwrap_or_else(|| "not reported".to_owned()) />
+                    <SmallMetric label="Known edge gaps" value=move || edge.get().and_then(|status| status.publication.gap_count).map(|v| v.to_string()).unwrap_or_else(|| "not reported".to_owned()) />
                 </div>
             </section>
         }
@@ -1192,12 +1192,12 @@ mod app {
                                 <tr>
                                     <td class="strong-cell">{nonempty_owned(stream.stream_id_text.clone(), "unnamed")}</td>
                                     <td>{nonempty_owned(stream.node_id.clone(), "edge")}</td>
-                                    <td>{optional_u64(stream.canonical_epoch)}</td>
-                                    <td class="mono-cell">{format_optional_duration(stream.canonical_epoch_activation_delay_us)}</td>
-                                    <td>{optional_u64(stream.head_object)}</td>
-                                    <td>{optional_u64(stream.contiguous_object)}</td>
+                                    <td>{format_publication_value(stream.canonical_epoch)}</td>
+                                    <td class="mono-cell">{format_publication_duration(stream.canonical_epoch_activation_delay_us)}</td>
+                                    <td>{format_publication_value(stream.head_object)}</td>
+                                    <td>{format_publication_value(stream.contiguous_object)}</td>
                                     <td>{stream.mesh_lag_parts.map(|lag| format!("{lag} parts")).unwrap_or_else(|| "pending".to_owned())}</td>
-                                    <td>{optional_u64(stream.gap_count)}</td>
+                                    <td>{format_publication_value(stream.gap_count)}</td>
                                     <td>{stream.last_ingest_age_ms.map(format_age).unwrap_or_else(|| "pending".to_owned())}</td>
                                     <td><StatePill state=edge_stream_state(stream.stale(), stream.mesh_lag_parts) /></td>
                                 </tr>
@@ -2788,6 +2788,18 @@ mod app {
         value
             .map(|value| value.to_string())
             .unwrap_or_else(|| "pending".to_owned())
+    }
+
+    fn format_publication_value(value: Option<u64>) -> String {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "not reported".to_owned())
+    }
+
+    fn format_publication_duration(value: Option<u64>) -> String {
+        value
+            .map(format_duration_us)
+            .unwrap_or_else(|| "not measured".to_owned())
     }
 
     fn format_optional_duration(value: Option<u64>) -> String {

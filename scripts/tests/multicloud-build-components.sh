@@ -6,6 +6,7 @@ SOURCE_HELPER="${ROOT}/deploy/gcp-lab/component-source-archive.sh"
 REMOTE_BUILDER="${ROOT}/deploy/gcp-lab/build-components.sh"
 CONTRIB_RUNNER="${ROOT}/deploy/gcp-lab/av-contrib-run"
 MULTICLOUD_BUILDER="${ROOT}/scripts/multicloud-qualification/build-components.sh"
+OPERATIONS_DEPLOY="${ROOT}/scripts/multicloud-qualification/deploy-operations.sh"
 GCP_DEPLOY="${ROOT}/scripts/gcp-intercontinental-deploy.sh"
 FIXTURE="$(mktemp -d /tmp/needletail-multicloud-build-test.XXXXXXXX)"
 trap 'rm -rf -- "${FIXTURE}"' EXIT
@@ -15,6 +16,7 @@ bash -n \
   "${REMOTE_BUILDER}" \
   "${CONTRIB_RUNNER}" \
   "${MULTICLOUD_BUILDER}" \
+  "${OPERATIONS_DEPLOY}" \
   "${GCP_DEPLOY}"
 
 # shellcheck source=../../deploy/gcp-lab/component-source-archive.sh
@@ -88,6 +90,8 @@ grep -Fq "manifest is the bundle's commit marker" "${MULTICLOUD_BUILDER}"
 grep -Fq -- '--no-default-features' "${REMOTE_BUILDER}"
 grep -Fq -- '--features srt-ingest' "${REMOTE_BUILDER}"
 grep -Fq 'NEEDLETAIL_ENABLE_SRT' "${MULTICLOUD_BUILDER}"
+grep -Fq 'needletail-operations-collector.service' "${OPERATIONS_DEPLOY}"
+grep -Fq 'mission-control' "${OPERATIONS_DEPLOY}"
 grep -Fq 'needletail_append_optional_srt_args' "${CONTRIB_RUNNER}"
 if grep -Fq '/tmp/needletail-source.tar.gz' \
   "${MULTICLOUD_BUILDER}" "${GCP_DEPLOY}"; then

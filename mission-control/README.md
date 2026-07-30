@@ -13,10 +13,12 @@ separate hash-routed views for:
   confidence
 - alerts and recent activity from both services.
 
-![Needletail operations overview](../docs/release/screenshots/operations.png)
+![Needletail Operations overview](../docs/release/screenshots/2026-07-30/operations/operations-overview.png)
 
-_Historical July 21 implementation screenshot. It is retained for comparison,
-not as evidence of the current UI or live global telemetry._
+This July 30 capture is from the live ten-node GCP/Azure qualification
+deployment. See the root [Needletail Operations live UI](../README.md#needletail-operations-live-ui)
+section for all supplied page captures, the live-player capture, and an
+explanation of the state shown on each page.
 
 The browser fetches one bounded, same-origin `/api/mesh` snapshot every five
 seconds. That canonical global snapshot declares
@@ -58,17 +60,23 @@ requires a fresh snapshot, a nonzero term and generation, a majority of an odd
 three-or-more-voter set, and an unexpired lease. Missing or stale proof is never
 displayed as healthy.
 
-The UI consumes only the canonical field names. Removed aliases and synthesized
-publication, delivery, and topology fallbacks are intentionally not accepted.
-If the collector has not populated a canonical value, the corresponding cell
-remains `pending`:
+The UI consumes only the canonical field names. Removed aliases and browser-side
+delivery or topology fallbacks are intentionally not accepted. The collector
+derives the single-publication summary from canonical stream rows: the freshest
+head, fleet-wide contiguous floor, worst retained gap count, common source
+epoch, and slowest fully reported epoch activation. It does not combine
+different stream identities or partially reported fleet watermarks. For a
+single contributor publication, the collector derives its current head and
+continuity from the contributor's canonical fMP4 sequence. Missing historical
+measurements are shown as `not measured` or `not reported`, rather than implying
+that an already-active publication is still pending:
 
 - delivery class, fabric, desired-state generation, installed route state, and
   per-stream/cohort route inventory
 - primary and warm-secondary node identities, failure-domain independence,
   RTT, jitter, loss, deadline-miss rate, and path stretch
 - contributor deadline hit/miss and sender-expiry totals
-- contributor and edge contiguous publication watermarks and known-gap totals
+- incomplete or multi-stream publication watermarks and known-gap totals
 - detailed RIST/SRT session RTT, jitter, loss, reconnect, and end-reason
   telemetry.
 

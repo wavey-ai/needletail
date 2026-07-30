@@ -27,9 +27,9 @@ case "${ENABLE_SRT}" in
     ;;
 esac
 case "${BUILD_SCOPE}" in
-  all|mesh) ;;
+  all|mesh|operations) ;;
   *)
-    echo "NEEDLETAIL_BUILD_SCOPE must be all or mesh" >&2
+    echo "NEEDLETAIL_BUILD_SCOPE must be all, mesh, or operations" >&2
     exit 2
     ;;
 esac
@@ -262,21 +262,45 @@ build_components() {
   node_copy_to contrib-london \
     "${DEPLOY_DIR}/build-components.sh" \
     "${REMOTE_STAGE}/build-components.sh"
-  if [[ "${BUILD_SCOPE}" == mesh ]]; then
+  if [[ "${BUILD_SCOPE}" != all ]]; then
+    local -a seed_binaries=()
+    if [[ "${BUILD_SCOPE}" == mesh ]]; then
+      seed_binaries=(av-contrib aep1-48k-probe)
+    else
+      seed_binaries=(
+        av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender
+        etcd etcdctl
+      )
+    fi
     install -d -m 700 "${seed_root}"
-    for name in av-contrib aep1-48k-probe; do
+    for name in "${seed_binaries[@]}"; do
       [[ -f "${ARTIFACT_ROOT}/${name}" \
         && ! -L "${ARTIFACT_ROOT}/${name}" ]] || {
-        echo "mesh build seed is missing ${ARTIFACT_ROOT}/${name}" >&2
+        echo "${BUILD_SCOPE} build seed is missing ${ARTIFACT_ROOT}/${name}" >&2
         return 2
       }
       install -m 700 "${ARTIFACT_ROOT}/${name}" "${seed_root}/${name}"
     done
+    if [[ "${BUILD_SCOPE}" == operations ]]; then
+      [[ -f "${ARTIFACT_ROOT}/needletail-chrony.deb" \
+        && ! -L "${ARTIFACT_ROOT}/needletail-chrony.deb" ]] || {
+        echo "operations build seed is missing ${ARTIFACT_ROOT}/needletail-chrony.deb" >&2
+        return 2
+      }
+      install -m 600 \
+        "${ARTIFACT_ROOT}/needletail-chrony.deb" \
+        "${seed_root}/needletail-chrony.deb"
+    fi
     node_exec contrib-london "install -d -m 700 '${REMOTE_STAGE}/seed'"
-    for name in av-contrib aep1-48k-probe; do
+    for name in "${seed_binaries[@]}"; do
       node_copy_to contrib-london \
         "${seed_root}/${name}" "${REMOTE_STAGE}/seed/${name}"
     done
+    if [[ "${BUILD_SCOPE}" == operations ]]; then
+      node_copy_to contrib-london \
+        "${seed_root}/needletail-chrony.deb" \
+        "${REMOTE_STAGE}/seed/needletail-chrony.deb"
+    fi
   fi
   node_exec contrib-london "set -euo pipefail
 chmod 600 '${REMOTE_STAGE}/source.tar.gz'

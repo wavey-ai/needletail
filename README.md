@@ -382,6 +382,119 @@ Node agents apply desired state and report fresh service data.
 Needletail Operations presents streams, nodes, routes, capacity, performance, alerts, and recent activity.
 Operators can inspect the same state that controls route and admission decisions.
 
+### Needletail Operations live UI
+
+These screenshots were captured on July 30, 2026 from the live ten-node GCP
+and Azure qualification deployment while one 3840×2160 H.264/AAC stream was
+being contributed over the optional SRT listener. They are point-in-time
+operator views, not production-SLA evidence.
+
+The global telemetry strip identifies the elected collector, Raft term and
+fencing generation, quorum, lease, and fleet freshness. In this capture every
+node agreed on `relay-secondary-japan` at term/generation `354`, the quorum was
+`3/3`, and all ten sources were current. The UI continues to show missing
+service data as unavailable or not reported; a fresh global snapshot does not
+turn an unreported route, role, or measurement into a healthy value.
+
+#### Overview
+
+![Needletail Operations overview](docs/release/screenshots/2026-07-30/operations/operations-overview.png)
+
+Overview is the first diagnosis page. It combines global collector health,
+actionable alerts, route-assignment readiness, sender/receiver deadline state,
+five-second throughput deltas, and the current contributor-to-edge media flow.
+Here the media path is active with substantial deadline headroom and all ten
+snapshots current. It also makes two problems explicit: two active alerts need
+review, and canonical delivery-topology assignment is not reported.
+
+#### Network map
+
+![Needletail Operations network map](docs/release/screenshots/2026-07-30/operations/operations-network.png)
+
+Network map places the ten reported nodes and sixteen configured links on the
+world map. Primary and warm-secondary lanes use separate state colours, and
+selecting a node opens its location, role, stream, capacity, and snapshot
+details. The selected Azure Japan relay is the elected Operations collector;
+the table below the map is the exact link inventory rather than links inferred
+by the browser.
+
+#### Streams
+
+![Needletail Operations streams](docs/release/screenshots/2026-07-30/operations/operations-streams.png)
+
+Streams compares the contributor commit watermark with fleet playback
+availability. The capture shows one contributor publication, nine active
+delivery copies, one common source epoch, zero retained gaps, and current edge
+rows with zero object lag. The contributor is at object `36859`; the fleet-wide
+contiguous floor is `36856` while the freshest edge head is `36857`. That small
+difference is normal in a live distributed snapshot and is not a publication
+gap. Epoch activation says `not measured` because the already-running mesh
+services did not retain that historical measurement.
+
+#### Contributor ingest
+
+![Needletail Operations contributor ingest](docs/release/screenshots/2026-07-30/operations/operations-ingest.png)
+
+Contributor ingest separates configured listeners from active sessions. RIST,
+SRT, and RTMP are listening, while this particular qualification stream is the
+single active SRT session. The summary and session table show input volume,
+MPEG-TS units, fMP4 output, codec routing, last activity, and errors. A listener
+with no active session remains visible as listening rather than being presented
+as traffic.
+
+#### Nodes and edges
+
+![Needletail Operations nodes and edges](docs/release/screenshots/2026-07-30/operations/operations-nodes.png)
+
+Nodes and edges is the fleet inventory and capacity page. It shows ten fresh
+nodes, nine contributor-origin delivery streams, no active readers during the
+capture, and enabled control dispatch. Each row keeps provider, region, role,
+service state, storage, and egress capacity separate. Red or pending cells in
+this view are missing or unavailable role/service telemetry; they are not
+overridden by the healthy `10/10` collector snapshot count.
+
+#### Routes
+
+Routes is the route-assignment drill-down. It shows the canonical delivery
+class, topology generation, installed state, primary and warm-secondary parent
+lanes, path observations, and the bounded route inventory. No Routes screenshot
+was included in this July 30 capture set. With the snapshot shown above, the
+page correctly keeps the delivery assignment pending while still exposing the
+configured relay-fabric links on Network map.
+
+#### Performance
+
+![Needletail Operations performance](docs/release/screenshots/2026-07-30/operations/operations-performance.png)
+
+Performance keeps live counter deltas above the lower-level RelaySession and
+RaptorQ data. The screenshot shows current ingest and relay bit rates, decoded
+objects per second, source and repair symbol totals, repair overhead, lane
+success, deadline outcomes, recovery counters, and bounded latency summaries.
+Zero playback delivery reflects the absence of active readers at that instant.
+Pending failover timings mean no matching failover transition had been
+exercised in the retained runtime state.
+
+#### Alerts and activity
+
+![Needletail Operations alerts and activity](docs/release/screenshots/2026-07-30/operations/operations-activity.png)
+
+Alerts and activity separates current operator work from recent bounded events.
+The capture has two actionable alerts: elevated Osaka relay processing P95 and
+MPEG-TS input damage. The activity column provides the corresponding event
+sequence—input slots and fMP4 publications—with ages and occurrence counts, so
+an operator can correlate an alert with current media progress.
+
+#### Live playback check
+
+![Needletail live 4K player](docs/release/screenshots/2026-07-30/player/live-4k.png)
+
+The viewer is a separate delivery surface, not an Operations page. This capture
+confirms the same stream playing as 4K H.264/AAC from the London edge with
+HLS.js selected. It reports a roughly one-second stable live latency, the
+measured delay and target, current edge, picture format, and live-edge control.
+The player screenshot demonstrates playback during this run; it does not by
+itself qualify long-duration continuity.
+
 The `needletail` Rust binary supervises local development and qualification only.
 Production deployments use a durable controller, host node agents, and supervised native services.
 

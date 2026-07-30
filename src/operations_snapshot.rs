@@ -142,6 +142,7 @@ pub fn assemble_operations_snapshot(
         },
         MAX_STREAMS,
     );
+    let publication = canonical_publication_summary(output.get("publication"), &streams);
     let connections = unique_objects(
         good.iter()
             .flat_map(|snapshot| array_values(snapshot, "connections")),
@@ -237,11 +238,12 @@ pub fn assemble_operations_snapshot(
     output.insert("orchestration".to_owned(), Value::Object(orchestration));
     output.insert("topology_links".to_owned(), Value::Array(topology_links));
     if let Some(contributor) = contributor {
-        output.insert("contributor".to_owned(), contributor);
+        output.insert(
+            "contributor".to_owned(),
+            canonical_contributor_snapshot(contributor),
+        );
     }
-    output
-        .entry("publication".to_owned())
-        .or_insert_with(|| Value::Object(Map::new()));
+    output.insert("publication".to_owned(), publication);
     output
         .entry("delivery".to_owned())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -375,6 +377,139 @@ fn aggregate_nodes(nodes: &[Value]) -> Value {
     })
 }
 
+fn canonical_publication_summary(existing: Option<&Value>, streams: &[Value]) -> Value {
+    let mut publication = existing
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if publication_fields_complete(&publication) || !one_stream_identity(streams) {
+        return Value::Object(publication);
+    }
+
+    insert_if_missing(
+        &mut publication,
+        "canonical_epoch",
+        common_u64(streams, "canonical_epoch"),
+    );
+    insert_if_missing(
+        &mut publication,
+        "canonical_epoch_activation_delay_us",
+        complete_u64_values(streams, "canonical_epoch_activation_delay_us")
+            .and_then(|values| values.into_iter().max()),
+    );
+    insert_if_missing(
+        &mut publication,
+        "contiguous_object",
+        complete_u64_values(streams, "contiguous_object")
+            .and_then(|values| values.into_iter().min()),
+    );
+    insert_if_missing(
+        &mut publication,
+        "head_object",
+        complete_u64_values(streams, "head_object").and_then(|values| values.into_iter().max()),
+    );
+    insert_if_missing(
+        &mut publication,
+        "gap_count",
+        complete_u64_values(streams, "gap_count").and_then(|values| values.into_iter().max()),
+    );
+    Value::Object(publication)
+}
+
+fn canonical_contributor_snapshot(mut contributor: Value) -> Value {
+    let Some(object) = contributor.as_object_mut() else {
+        return contributor;
+    };
+    let mut publication = object
+        .get("publication")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let streams = object
+        .get("runtime")
+        .and_then(|runtime| runtime.get("streams"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if streams.len() == 1 {
+        insert_if_missing(
+            &mut publication,
+            "canonical_epoch",
+            object
+                .get("mesh")
+                .and_then(|mesh| mesh.get("media_object_source_epoch"))
+                .and_then(Value::as_u64),
+        );
+        let head = streams[0]
+            .get("latest_fmp4_sequence")
+            .and_then(Value::as_u64);
+        insert_if_missing(&mut publication, "head_object", head);
+        insert_if_missing(&mut publication, "contiguous_object", head);
+        insert_if_missing(&mut publication, "gap_count", head.map(|_| 0));
+    }
+
+    object.insert("publication".to_owned(), Value::Object(publication));
+    contributor
+}
+
+fn publication_fields_complete(publication: &Map<String, Value>) -> bool {
+    [
+        "canonical_epoch",
+        "canonical_epoch_activation_delay_us",
+        "contiguous_object",
+        "head_object",
+        "gap_count",
+    ]
+    .iter()
+    .all(|field| publication.get(*field).and_then(Value::as_u64).is_some())
+}
+
+fn one_stream_identity(streams: &[Value]) -> bool {
+    let identities = streams
+        .iter()
+        .map(|stream| {
+            stream
+                .get("stream_id_text")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    stream
+                        .get("stream_id")
+                        .and_then(Value::as_u64)
+                        .map(|value| value.to_string())
+                })
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(identities) = identities else {
+        return false;
+    };
+    !identities.is_empty() && identities.into_iter().collect::<BTreeSet<_>>().len() == 1
+}
+
+fn complete_u64_values(streams: &[Value], field: &str) -> Option<Vec<u64>> {
+    let values = streams
+        .iter()
+        .filter_map(|stream| stream.get(field).and_then(Value::as_u64))
+        .collect::<Vec<_>>();
+    (!streams.is_empty() && values.len() == streams.len()).then_some(values)
+}
+
+fn common_u64(streams: &[Value], field: &str) -> Option<u64> {
+    let values = complete_u64_values(streams, field)?;
+    let first = values[0];
+    values.iter().all(|value| *value == first).then_some(first)
+}
+
+fn insert_if_missing(publication: &mut Map<String, Value>, field: &str, value: Option<u64>) {
+    if publication.get(field).and_then(Value::as_u64).is_none() {
+        if let Some(value) = value {
+            publication.insert(field.to_owned(), Value::from(value));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,5 +625,96 @@ mod tests {
             20_000,
             5_000
         ));
+    }
+
+    #[test]
+    fn derives_single_stream_publication_summaries_from_canonical_rows() {
+        let edge_streams = vec![
+            json!({
+                "node_id": "edge-london",
+                "stream_id_text": "1",
+                "canonical_epoch": 42,
+                "canonical_epoch_activation_delay_us": 180_000,
+                "contiguous_object": 98,
+                "head_object": 100,
+                "gap_count": 2
+            }),
+            json!({
+                "node_id": "edge-tokyo",
+                "stream_id_text": "1",
+                "canonical_epoch": 42,
+                "canonical_epoch_activation_delay_us": 220_000,
+                "contiguous_object": 99,
+                "head_object": 101,
+                "gap_count": 1
+            }),
+        ];
+        let publication = canonical_publication_summary(None, &edge_streams);
+        assert_eq!(publication["canonical_epoch"], 42);
+        assert_eq!(publication["canonical_epoch_activation_delay_us"], 220_000);
+        assert_eq!(publication["contiguous_object"], 98);
+        assert_eq!(publication["head_object"], 101);
+        assert_eq!(publication["gap_count"], 2);
+
+        let contributor = canonical_contributor_snapshot(json!({
+            "mesh": {"media_object_source_epoch": 42},
+            "runtime": {
+                "streams": [{
+                    "stream_id_text": "1",
+                    "latest_fmp4_sequence": 103
+                }]
+            }
+        }));
+        assert_eq!(contributor["publication"]["canonical_epoch"], 42);
+        assert_eq!(contributor["publication"]["contiguous_object"], 103);
+        assert_eq!(contributor["publication"]["head_object"], 103);
+        assert_eq!(contributor["publication"]["gap_count"], 0);
+    }
+
+    #[test]
+    fn does_not_conflate_multiple_publications_or_incomplete_fleet_rows() {
+        let multiple_streams = vec![
+            json!({
+                "node_id": "edge-london",
+                "stream_id_text": "1",
+                "canonical_epoch": 42,
+                "contiguous_object": 8,
+                "head_object": 8,
+                "gap_count": 0
+            }),
+            json!({
+                "node_id": "edge-london",
+                "stream_id_text": "2",
+                "canonical_epoch": 52,
+                "contiguous_object": 18,
+                "head_object": 18,
+                "gap_count": 0
+            }),
+        ];
+        assert_eq!(
+            canonical_publication_summary(None, &multiple_streams),
+            json!({})
+        );
+
+        let incomplete = vec![
+            json!({
+                "node_id": "edge-london",
+                "stream_id_text": "1",
+                "canonical_epoch": 42,
+                "contiguous_object": 8,
+                "head_object": 8,
+                "gap_count": 0
+            }),
+            json!({
+                "node_id": "edge-tokyo",
+                "stream_id_text": "1",
+                "canonical_epoch": 42
+            }),
+        ];
+        let publication = canonical_publication_summary(None, &incomplete);
+        assert_eq!(publication["canonical_epoch"], 42);
+        assert!(publication.get("head_object").is_none());
+        assert!(publication.get("contiguous_object").is_none());
+        assert!(publication.get("gap_count").is_none());
     }
 }
