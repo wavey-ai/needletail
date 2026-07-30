@@ -12,6 +12,7 @@ source "${DEPLOY_DIR}/binary-manifest.sh"
 source "${DEPLOY_DIR}/component-source-archive.sh"
 
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "${ROOT}/.." && pwd)}"
+AV_CONTRIB_ROOT="${AV_CONTRIB_ROOT:-${WORKSPACE_ROOT}/av-contrib}"
 QUALIFICATION_ROOT="${ROOT}/target/multicloud-qualification"
 ARTIFACT_ROOT="${QUALIFICATION_ROOT}/artifacts"
 ENABLE_SRT="${NEEDLETAIL_ENABLE_SRT:-0}"

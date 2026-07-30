@@ -30,9 +30,20 @@ declare -ar NEEDLETAIL_COMPONENT_SOURCE_PATHS=(
   needletail
 )
 
+needletail_component_source_path() {
+  local workspace_root="$1"
+  local relative="$2"
+
+  if [[ "${relative}" == av-contrib && -n "${AV_CONTRIB_ROOT:-}" ]]; then
+    printf '%s\n' "${AV_CONTRIB_ROOT}"
+  else
+    printf '%s\n' "${workspace_root}/${relative}"
+  fi
+}
+
 needletail_validate_component_source_root() {
   local workspace_root="$1"
-  local canonical_root canonical_source relative source
+  local canonical_root canonical_source default_source relative source
 
   [[ -d "${workspace_root}" && ! -L "${workspace_root}" ]] || {
     echo "component workspace root must be a regular directory: ${workspace_root}" >&2
@@ -47,31 +58,45 @@ needletail_validate_component_source_root() {
       echo "invalid fixed component source path: ${relative}" >&2
       return 2
     }
-    source="${workspace_root}/${relative}"
+    default_source="${workspace_root}/${relative}"
+    source="$(needletail_component_source_path "${workspace_root}" "${relative}")"
     [[ -d "${source}" && ! -L "${source}" ]] || {
       echo "required component source directory is missing: ${source}" >&2
       return 2
     }
     canonical_source="$(cd "${source}" && pwd -P)" || return
-    case "${canonical_source}" in
-      "${canonical_root}"/*) ;;
-      *)
-        echo "component source escapes the workspace root: ${source}" >&2
-        return 2
-        ;;
-    esac
+    if [[ "${source}" == "${default_source}" ]]; then
+      case "${canonical_source}" in
+        "${canonical_root}"/*) ;;
+        *)
+          echo "component source escapes the workspace root: ${source}" >&2
+          return 2
+          ;;
+      esac
+    elif [[ "${relative}" != av-contrib \
+      || "${source}" != /* \
+      || "$(basename "${canonical_source}")" != av-contrib ]]; then
+      echo "AV_CONTRIB_ROOT must be an absolute av-contrib directory" >&2
+      return 2
+    fi
   done
 }
 
 needletail_create_component_source_archive() {
   local workspace_root="$1"
   local archive="$2"
+  local relative source
+  local -a source_arguments=()
 
   needletail_validate_component_source_root "${workspace_root}" || return
   [[ -f "${archive}" && ! -L "${archive}" ]] || {
     echo "component source archive must be a pre-created regular file: ${archive}" >&2
     return 2
   }
+  for relative in "${NEEDLETAIL_COMPONENT_SOURCE_PATHS[@]}"; do
+    source="$(needletail_component_source_path "${workspace_root}" "${relative}")"
+    source_arguments+=(-C "$(dirname "${source}")" "$(basename "${source}")")
+  done
 
   COPYFILE_DISABLE=1 tar -czf "${archive}" \
     --exclude='.git' \
@@ -108,7 +133,6 @@ needletail_create_component_source_archive() {
     --exclude='credentials.json' \
     --exclude='service-account*.json' \
     --exclude='*-service-account.json' \
-    -C "${workspace_root}" \
-    "${NEEDLETAIL_COMPONENT_SOURCE_PATHS[@]}"
+    "${source_arguments[@]}"
   chmod 600 "${archive}"
 }

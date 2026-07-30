@@ -113,6 +113,9 @@ then atomically replaces the payload files in
 the bundle commit marker, so an interrupted publication fails closed.
 Deployment rejects stale, partial, reordered, or path-bearing manifests.
 
+Set `AV_CONTRIB_ROOT` to an absolute clean checkout when unrelated contributor
+work must remain outside the qualification build.
+
 The default build passes `--no-default-features` to `av-contrib`, so it contains
 RIST ingest without SRT. To qualify SRT, use the same explicit opt-in when the
 lab renders the contributor environment and when the binaries are built:

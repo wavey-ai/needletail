@@ -56,6 +56,18 @@ if grep -Eq \
   exit 1
 fi
 
+OVERRIDE_PARENT="${FIXTURE}/override"
+OVERRIDE_ROOT="${OVERRIDE_PARENT}/av-contrib"
+OVERRIDE_ARCHIVE="${FIXTURE}/override-source.tar.gz"
+install -d -m 700 "${OVERRIDE_ROOT}"
+printf 'clean override\n' >"${OVERRIDE_ROOT}/source.txt"
+install -m 600 /dev/null "${OVERRIDE_ARCHIVE}"
+AV_CONTRIB_ROOT="${OVERRIDE_ROOT}" \
+  needletail_create_component_source_archive \
+    "${SOURCE_ROOT}" "${OVERRIDE_ARCHIVE}"
+[[ "$(tar -xOzf "${OVERRIDE_ARCHIVE}" av-contrib/source.txt)" \
+  == "clean override" ]]
+
 mv "${SOURCE_ROOT}/av-api" "${SOURCE_ROOT}/av-api.missing"
 if needletail_validate_component_source_root \
   "${SOURCE_ROOT}" >"${FIXTURE}/missing-source.log" 2>&1; then
