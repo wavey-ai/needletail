@@ -368,6 +368,7 @@ if [[ "${BUILD_SCOPE}" == mesh ]]; then
 elif [[ "${BUILD_SCOPE}" == operations ]]; then
   for seed_binary in \
     av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender \
+    rist-loss-proxy \
     etcd etcdctl; do
     [[ -f "${SEED_ROOT}/${seed_binary}" \
       && ! -L "${SEED_ROOT}/${seed_binary}" ]] || {
@@ -422,6 +423,16 @@ if [[ "${BUILD_SCOPE}" == all ]]; then
     --manifest-path "${SOURCE_ROOT}/av-contrib/Cargo.toml" \
     --bin av-contrib --bin aep1-48k-probe
 fi
+if [[ "${BUILD_SCOPE}" != operations ]]; then
+  env \
+    CARGO_BUILD_JOBS="${CARGO_JOBS}" \
+    CARGO_INCREMENTAL=0 \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_TARGET_DIR="${TARGET_ROOT}" \
+    "${CARGO_COMMAND[@]}" build --release --locked \
+    --manifest-path "${SOURCE_ROOT}/rist-rs/Cargo.toml" \
+    -p rist-tools --bin rist-loss-proxy
+fi
 env \
   CARGO_BUILD_JOBS="${CARGO_JOBS}" \
   CARGO_INCREMENTAL=0 \
@@ -436,6 +447,7 @@ env \
 # This order is the manifest contract enforced by binary-manifest.sh.
 binaries=(
   av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender
+  rist-loss-proxy
   needletail-controller-agent needletail-operations-collector
   needletail-ops-entrypoint
   etcd etcdctl

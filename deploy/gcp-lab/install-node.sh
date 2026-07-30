@@ -17,7 +17,9 @@ case "${SERVICE}" in
     )
     ;;
   contrib)
-    service_binaries=(av-contrib aep1-48k-probe ristsender)
+    service_binaries=(
+      av-contrib aep1-48k-probe ristsender rist-loss-proxy
+    )
     ;;
   *)
     echo "service role must be mesh or contrib" >&2
@@ -362,6 +364,8 @@ else
   sudo install -m 755 "${STAGE}/av-contrib" /usr/local/bin/av-contrib
   sudo install -m 755 "${STAGE}/aep1-48k-probe" /usr/local/bin/aep1-48k-probe
   sudo install -m 755 "${STAGE}/ristsender" /usr/local/bin/ristsender
+  sudo install -m 755 "${STAGE}/rist-loss-proxy" \
+    /usr/local/bin/rist-loss-proxy
   sudo install -m 755 "${STAGE}/av-contrib-run" /usr/local/bin/needletail-av-contrib-run
   sudo install -m 644 "${STAGE}/needletail-contrib.service" \
     /etc/systemd/system/needletail-contrib.service
@@ -379,6 +383,7 @@ if command -v restorecon >/dev/null 2>&1; then
     /usr/local/bin/av-contrib \
     /usr/local/bin/aep1-48k-probe \
     /usr/local/bin/ristsender \
+    /usr/local/bin/rist-loss-proxy \
     /usr/local/bin/needletail-av-mesh-run \
     /usr/local/bin/needletail-av-contrib-run \
     /usr/local/bin/needletail-controller-agent \

@@ -99,6 +99,7 @@ prepare_deploy_package() {
     "${ARTIFACTS}/av-contrib" \
     "${ARTIFACTS}/aep1-48k-probe" \
     "${ARTIFACTS}/ristsender" \
+    "${ARTIFACTS}/rist-loss-proxy" \
     "${ARTIFACTS}/needletail-controller-agent" \
     "${ARTIFACTS}/needletail-operations-collector" \
     "${ARTIFACTS}/needletail-ops-entrypoint" \
