@@ -10,9 +10,9 @@ RUST_TOOLCHAIN="${NEEDLETAIL_RUST_TOOLCHAIN:-1.96.0}"
 ENABLE_SRT="${NEEDLETAIL_ENABLE_SRT:-0}"
 BUILD_SCOPE="${NEEDLETAIL_BUILD_SCOPE:-all}"
 RUSTUP_VERSION=1.28.2
-LIBRIST_VERSION=0.2.18
+LIBRIST_VERSION=0.2.20
 LIBRIST_ARCHIVE_URL="https://code.videolan.org/rist/librist/-/archive/v${LIBRIST_VERSION}/librist-v${LIBRIST_VERSION}.tar.gz"
-LIBRIST_ARCHIVE_SHA256=9a2d16dcdb9fb067b7ba4259a3976ff6f8df9a62dbec7f32f19a0b60ec0c114a
+LIBRIST_ARCHIVE_SHA256=9e40eeb87f014790531ad41326cc271b930a65962e4b15231b301fc59b29fe31
 ETCD_VERSION=3.7.1
 ETCD_ARCHIVE_URL="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
 ETCD_ARCHIVE_SHA256=e8cd3fa8064c98137c5dbd78b76f969417ace84efb83c481041d7a52ffdd8fb9
@@ -53,7 +53,7 @@ install_build_dependencies() {
   if command -v dnf >/dev/null 2>&1; then
     packages=(
       binutils ca-certificates clang cmake curl gcc gcc-c++ git make
-      meson ninja-build openssl-devel patch pkgconf-pkg-config protobuf-compiler
+      meson ninja-build openssl-devel pkgconf-pkg-config protobuf-compiler
       util-linux
     )
     for package in "${packages[@]}"; do
@@ -72,7 +72,7 @@ install_build_dependencies() {
     export DEBIAN_FRONTEND=noninteractive
     packages=(
       binutils build-essential ca-certificates clang cmake curl git libssl-dev
-      meson ninja-build patch pkg-config protobuf-compiler util-linux
+      meson ninja-build pkg-config protobuf-compiler util-linux
     )
     for package in "${packages[@]}"; do
       if ! dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
@@ -104,9 +104,6 @@ build_pinned_librist() {
     | sha256sum --check --status -
   tar --no-same-owner --no-same-permissions --strip-components=1 \
     -xzf "${archive}" -C "${source_root}"
-  patch --batch --forward -d "${source_root}" -p1 \
-    <"${SOURCE_ROOT}/needletail/deploy/gcp-lab/librist-0.2.18-no-srp-reassociation.patch"
-
   meson setup \
     --prefix="${LIBRIST_PREFIX}" \
     --libdir=lib \

@@ -30,6 +30,14 @@ VIDEO_SAMPLE_DURATION_TOLERANCE_MS="${VIDEO_SAMPLE_DURATION_TOLERANCE_MS:-2000}"
 VIDEO_MINIMUM_SUCCESS_FRACTION="${VIDEO_MINIMUM_SUCCESS_FRACTION:-0.9}"
 VIDEO_MAXIMUM_P95_LIVE_EDGE_LATENCY_MS="${VIDEO_MAXIMUM_P95_LIVE_EDGE_LATENCY_MS:-2000}"
 VIDEO_MAXIMUM_LIVE_EDGE_AGE_MS="${VIDEO_MAXIMUM_LIVE_EDGE_AGE_MS:-3000}"
+RIST_DROP_EVERY="${RIST_DROP_EVERY:-100}"
+RIST_PROXY_TAIL_SECONDS="${RIST_PROXY_TAIL_SECONDS:-5}"
+RIST_MINIMUM_RESOURCE_SAMPLE_COVERAGE="${RIST_MINIMUM_RESOURCE_SAMPLE_COVERAGE:-0.95}"
+RIST_MAXIMUM_RESOURCE_SAMPLE_GAP_MS="${RIST_MAXIMUM_RESOURCE_SAMPLE_GAP_MS:-2500}"
+RIST_MAXIMUM_HOST_CPU_P99_PERCENT="${RIST_MAXIMUM_HOST_CPU_P99_PERCENT:-80}"
+RIST_MAXIMUM_PROCESS_CAPACITY_P99_PERCENT="${RIST_MAXIMUM_PROCESS_CAPACITY_P99_PERCENT:-75}"
+RIST_MINIMUM_MEMORY_AVAILABLE_PERCENT="${RIST_MINIMUM_MEMORY_AVAILABLE_PERCENT:-20}"
+RIST_MAXIMUM_RSS_MEMORY_PERCENT="${RIST_MAXIMUM_RSS_MEMORY_PERCENT:-70}"
 RUN_ID="${RUN_ID:-$(date -u '+%Y%m%dT%H%M%SZ')-video-${PROTOCOL}}"
 needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${ROOT}/target/multicloud-qualification/runs/${RUN_ID}"
@@ -44,6 +52,8 @@ needletail_require_https_origin PUBLIC_PLAYER_BASE "${PUBLIC_PLAYER_BASE}"
 OPEN_PLAYER="${OPEN_PLAYER:-1}"
 PLAYER_URL="${PUBLIC_PLAYER_BASE}/1"
 SAMPLER="${ROOT}/scripts/multicloud-qualification/video-playlist-sampler.py"
+RESOURCE_SAMPLER="${ROOT}/scripts/multicloud-qualification/sample-source-host.py"
+RIST_SUMMARIZER="${ROOT}/scripts/multicloud-qualification/summarize-rist-qualification.py"
 needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${NEEDLETAIL_TLS_SERVER_NAME}"
 needletail_shell_quote MEDIA_FILE_QUOTED "${MEDIA_FILE}"
 
@@ -51,7 +61,9 @@ for value_name in \
   DURATION_SECONDS \
   SAMPLE_INTERVAL_MS \
   SOURCE_START_DELAY_SECONDS \
-  SAMPLER_WAIT_SECONDS; do
+  SAMPLER_WAIT_SECONDS \
+  RIST_DROP_EVERY \
+  RIST_PROXY_TAIL_SECONDS; do
   value="${!value_name}"
   [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
     echo "${value_name} must be a positive decimal integer" >&2
@@ -100,6 +112,34 @@ for name, value in zip(names[3:], values[3:]):
         print(f"{name} must be non-negative", file=sys.stderr)
         raise SystemExit(2)
 PY
+python3 - \
+  "${RIST_MINIMUM_RESOURCE_SAMPLE_COVERAGE}" \
+  "${RIST_MAXIMUM_RESOURCE_SAMPLE_GAP_MS}" \
+  "${RIST_MAXIMUM_HOST_CPU_P99_PERCENT}" \
+  "${RIST_MAXIMUM_PROCESS_CAPACITY_P99_PERCENT}" \
+  "${RIST_MINIMUM_MEMORY_AVAILABLE_PERCENT}" \
+  "${RIST_MAXIMUM_RSS_MEMORY_PERCENT}" <<'PY'
+import math
+import sys
+
+try:
+    values = [float(value) for value in sys.argv[1:]]
+except ValueError as error:
+    print(f"RIST resource gate must be numeric: {error}", file=sys.stderr)
+    raise SystemExit(2)
+if not all(math.isfinite(value) for value in values):
+    print("RIST resource gates must be finite", file=sys.stderr)
+    raise SystemExit(2)
+if not 0 < values[0] <= 1:
+    print(
+        "RIST_MINIMUM_RESOURCE_SAMPLE_COVERAGE must be greater than zero and at most one",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if any(value < 0 for value in values[1:]):
+    print("RIST resource thresholds must be non-negative", file=sys.stderr)
+    raise SystemExit(2)
+PY
 SAMPLER_DURATION_SECONDS="$((
   DURATION_SECONDS
   + TAIL_SECONDS
@@ -130,6 +170,16 @@ rm -rf -- '${REMOTE_DIR}'
 install -d -m 700 '${REMOTE_DIR}'"
   node_copy_to "${node}" "${SAMPLER}" "${REMOTE_DIR}/video-playlist-sampler.py"
 done
+if [[ "${PROTOCOL}" == rist ]]; then
+  node_exec contrib-london \
+    "set -euo pipefail
+rm -rf -- '${REMOTE_DIR}'
+install -d -m 700 '${REMOTE_DIR}'
+test -x /usr/local/bin/rist-loss-proxy
+test -x /usr/local/bin/ristsender"
+  node_copy_to contrib-london \
+    "${RESOURCE_SAMPLER}" "${REMOTE_DIR}/sample-source-host.py"
+fi
 
 sampler_launch_pids=()
 for node in "${EDGE_NODES[@]}"; do
@@ -174,30 +224,112 @@ fi
 source_status=0
 if [[ "${PROTOCOL}" == rist ]]; then
   node_exec contrib-london \
-    "set -o pipefail
-      printf 'NEEDLETAIL_SOURCE_STARTED_AT=%s\n' \
-        \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
-      /usr/local/bin/ristsender \
-        -p 1 \
-        -i 'udp://@127.0.0.1:27120?stream-id=1000' \
-        -o 'rist://127.0.0.1:27000?cname=needletail-qualification&bandwidth=20000&buffer=1000&rtt-min=50&rtt-max=1000&reorder-buffer=50&congestion-control=1' \
-        -S 1000 -v 6 \
-        >'${REMOTE_DIR}/ristsender.log' \
-        2>'${REMOTE_DIR}/ristsender.err' &
-      ristsender_pid=\$!
-      cleanup_ristsender() {
-        kill -TERM \"\${ristsender_pid}\" 2>/dev/null || true
-        wait \"\${ristsender_pid}\" 2>/dev/null || true
-      }
-      trap cleanup_ristsender EXIT HUP INT TERM
-      /usr/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
-        -i ${MEDIA_FILE_QUOTED} -t ${DURATION_SECONDS} \
-        -map 0:v:0 -map 0:a:0 -c copy -muxdelay 0 -muxpreload 0 \
-        -f mpegts 'udp://127.0.0.1:27120?pkt_size=1316'
-      remote_source_status=\$?
-      printf 'NEEDLETAIL_SOURCE_ENDED_AT=%s\n' \
-        \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
-      exit \${remote_source_status}" \
+    "set -uo pipefail
+metrics_url='https://${NEEDLETAIL_TLS_SERVER_NAME}:19443/metrics'
+curl_args=(
+  --fail --silent --show-error
+  --cacert /etc/needletail/tls/fullchain.pem
+  --resolve '${NEEDLETAIL_TLS_SERVER_NAME}:19443:127.0.0.1'
+)
+ristsender_pid=
+proxy_pid=
+resource_sampler_pid=
+cleanup_children() {
+  for child_pid in \
+    \"\${ristsender_pid}\" \"\${proxy_pid}\" \"\${resource_sampler_pid}\"; do
+    [[ -n \"\${child_pid}\" ]] || continue
+    kill -TERM \"\${child_pid}\" 2>/dev/null || true
+  done
+  for child_pid in \
+    \"\${ristsender_pid}\" \"\${proxy_pid}\" \"\${resource_sampler_pid}\"; do
+    [[ -n \"\${child_pid}\" ]] || continue
+    wait \"\${child_pid}\" 2>/dev/null || true
+  done
+}
+trap cleanup_children EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+\"\${curl_args[@]}\" \"\${metrics_url}\" \
+  >'${REMOTE_DIR}/metrics-before.prom' || exit 1
+contrib_pid=\"\$(systemctl show needletail-contrib.service \
+  --property=MainPID --value)\"
+[[ \"\${contrib_pid}\" =~ ^[1-9][0-9]*$ ]] || exit 1
+printf '%s\n' \"\${contrib_pid}\" >'${REMOTE_DIR}/contrib.pid'
+resource_end_unix_ns=\$(( \
+  \$(date +%s%N) + ${DURATION_SECONDS} * 1000000000 \
+))
+python3 '${REMOTE_DIR}/sample-source-host.py' \
+  --pid-file '${REMOTE_DIR}/contrib.pid' \
+  --output '${REMOTE_DIR}/contrib-host.ndjson' \
+  --end-unix-ns \"\${resource_end_unix_ns}\" \
+  >'${REMOTE_DIR}/contrib-host.log' \
+  2>'${REMOTE_DIR}/contrib-host.err' &
+resource_sampler_pid=\$!
+
+/usr/local/bin/rist-loss-proxy \
+  --listen 127.0.0.1:27010 \
+  --target 127.0.0.1:27000 \
+  --drop-every ${RIST_DROP_EVERY} \
+  --duration-seconds $((DURATION_SECONDS + RIST_PROXY_TAIL_SECONDS)) \
+  >'${REMOTE_DIR}/loss-proxy.ndjson' \
+  2>'${REMOTE_DIR}/loss-proxy.err' &
+proxy_pid=\$!
+
+/usr/local/bin/ristsender \
+  -p 1 \
+  -i 'udp://@127.0.0.1:27120?stream-id=1000' \
+  -o 'rist://127.0.0.1:27010?cname=needletail-qualification&bandwidth=20000&buffer=1000&rtt-min=50&rtt-max=1000&reorder-buffer=50&congestion-control=1' \
+  -S 1000 -v 6 \
+  >'${REMOTE_DIR}/ristsender.log' \
+  2>'${REMOTE_DIR}/ristsender.err' &
+ristsender_pid=\$!
+
+printf 'NEEDLETAIL_SOURCE_STARTED_AT=%s\n' \
+  \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
+remote_source_status=0
+/usr/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
+  -i ${MEDIA_FILE_QUOTED} -t ${DURATION_SECONDS} \
+  -map 0:v:0 -map 0:a:0 -c copy -muxdelay 0 -muxpreload 0 \
+  -f mpegts 'udp://127.0.0.1:27120?pkt_size=1316' \
+  || remote_source_status=\$?
+printf 'NEEDLETAIL_SOURCE_ENDED_AT=%s\n' \
+  \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
+
+ristsender_status=0
+if kill -0 \"\${ristsender_pid}\" 2>/dev/null; then
+  kill -TERM \"\${ristsender_pid}\" 2>/dev/null || true
+  wait \"\${ristsender_pid}\" 2>/dev/null || true
+else
+  wait \"\${ristsender_pid}\" || ristsender_status=\$?
+fi
+ristsender_pid=
+if ((remote_source_status != 0 || ristsender_status != 0)); then
+  kill -TERM \"\${proxy_pid}\" \"\${resource_sampler_pid}\" \
+    2>/dev/null || true
+fi
+resource_status=0
+wait \"\${resource_sampler_pid}\" || resource_status=\$?
+resource_sampler_pid=
+proxy_status=0
+wait \"\${proxy_pid}\" || proxy_status=\$?
+proxy_pid=
+metrics_status=0
+\"\${curl_args[@]}\" \"\${metrics_url}\" \
+  >'${REMOTE_DIR}/metrics-after.prom' || metrics_status=\$?
+
+printf 'NEEDLETAIL_RISTSENDER_STATUS=%s\n' \"\${ristsender_status}\"
+printf 'NEEDLETAIL_RIST_PROXY_STATUS=%s\n' \"\${proxy_status}\"
+printf 'NEEDLETAIL_RESOURCE_STATUS=%s\n' \"\${resource_status}\"
+printf 'NEEDLETAIL_METRICS_STATUS=%s\n' \"\${metrics_status}\"
+if ((remote_source_status != 0 \
+  || ristsender_status != 0 \
+  || proxy_status != 0 \
+  || resource_status != 0 \
+  || metrics_status != 0)); then
+  exit 1
+fi" \
     >"${RESULT_DIR}/source.log" 2>"${RESULT_DIR}/source.err" || source_status=$?
 else
   node_exec contrib-london \
@@ -213,6 +345,28 @@ else
         \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
       exit \${remote_source_status}" \
     >"${RESULT_DIR}/source.log" 2>"${RESULT_DIR}/source.err" || source_status=$?
+fi
+rist_artifact_status=0
+if [[ "${PROTOCOL}" == rist ]]; then
+  for artifact in \
+    contrib-host.ndjson \
+    contrib-host.err \
+    loss-proxy.ndjson \
+    loss-proxy.err \
+    metrics-before.prom \
+    metrics-after.prom \
+    ristsender.log \
+    ristsender.err; do
+    node_copy_from contrib-london \
+      "${REMOTE_DIR}/${artifact}" "${RESULT_DIR}/${artifact}" \
+      || rist_artifact_status=1
+  done
+  node_exec contrib-london \
+    "journalctl -u needletail-contrib.service \
+      --since '-$((DURATION_SECONDS + RIST_PROXY_TAIL_SECONDS + 30)) seconds' \
+      --no-pager" \
+    >"${RESULT_DIR}/contrib-service.log" 2>&1 \
+    || rist_artifact_status=1
 fi
 STARTED_AT="$(
   sed -n 's/^NEEDLETAIL_SOURCE_STARTED_AT=//p' \
@@ -285,6 +439,27 @@ for node in "${EDGE_NODES[@]}"; do
   summary_command+=(--expected-edge "${node}")
 done
 "${summary_command[@]}" >"${RESULT_DIR}/summary.json" || summary_status=$?
+rist_summary_status=0
+if [[ "${PROTOCOL}" == rist ]]; then
+  python3 "${RIST_SUMMARIZER}" \
+    --loss-proxy "${RESULT_DIR}/loss-proxy.ndjson" \
+    --metrics-before "${RESULT_DIR}/metrics-before.prom" \
+    --metrics-after "${RESULT_DIR}/metrics-after.prom" \
+    --host "${RESULT_DIR}/contrib-host.ndjson" \
+    --output "${RESULT_DIR}/rist-qualification.json" \
+    --duration-seconds "${DURATION_SECONDS}" \
+    --expected-drop-every "${RIST_DROP_EVERY}" \
+    --minimum-sample-coverage \
+      "${RIST_MINIMUM_RESOURCE_SAMPLE_COVERAGE}" \
+    --maximum-sample-gap-ms "${RIST_MAXIMUM_RESOURCE_SAMPLE_GAP_MS}" \
+    --host-cpu-p99-max "${RIST_MAXIMUM_HOST_CPU_P99_PERCENT}" \
+    --process-capacity-p99-max \
+      "${RIST_MAXIMUM_PROCESS_CAPACITY_P99_PERCENT}" \
+    --memory-available-min "${RIST_MINIMUM_MEMORY_AVAILABLE_PERCENT}" \
+    --rss-memory-max "${RIST_MAXIMUM_RSS_MEMORY_PERCENT}" \
+    2>"${RESULT_DIR}/rist-qualification.err" \
+    || rist_summary_status=$?
+fi
 jq -n \
   --arg run_id "${RUN_ID}" \
   --arg protocol "${PROTOCOL}" \
@@ -295,6 +470,9 @@ jq -n \
   --argjson source_status "${source_status}" \
   --argjson sampler_process_status "${sampler_process_status}" \
   --argjson summary_status "${summary_status}" \
+  --argjson rist_artifact_status "${rist_artifact_status}" \
+  --argjson rist_summary_status "${rist_summary_status}" \
+  --argjson rist_drop_every "${RIST_DROP_EVERY}" \
   '{
     schema: "needletail.multicloud-video-run.v1",
     run_id: $run_id,
@@ -306,10 +484,24 @@ jq -n \
     source_status: $source_status,
     sampler_process_status: $sampler_process_status,
     summary_status: $summary_status,
+    rist_qualification: (
+      if $protocol == "rist" then {
+        drop_every: $rist_drop_every,
+        artifact_status: $rist_artifact_status,
+        summary_status: $rist_summary_status
+      } else null end
+    ),
     passed: (
       $source_status == 0
       and $sampler_process_status == 0
       and $summary_status == 0
+      and (
+        $protocol != "rist"
+        or (
+          $rist_artifact_status == 0
+          and $rist_summary_status == 0
+        )
+      )
     )
   }' >"${RESULT_DIR}/run.json"
 
@@ -317,6 +509,8 @@ if ((
   source_status != 0
   || sampler_process_status != 0
   || summary_status != 0
+  || rist_artifact_status != 0
+  || rist_summary_status != 0
 )); then
   echo "video qualification failed" >&2
   exit 1

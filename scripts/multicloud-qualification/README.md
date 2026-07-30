@@ -315,6 +315,25 @@ Run a 10-minute RIST test:
 scripts/multicloud-qualification/video-run.sh rist
 ```
 
+The RIST lane builds current librist 0.2.20 for the sender.
+It drops every 100th first media transmission by default.
+The gate requires every injected loss to receive a NACK and retransmission.
+It also requires zero new MPEG-TS continuity errors and dropped bytes.
+
+The run records contributor CPU and memory samples.
+Default gates require 20% available memory and keep p99 host CPU below 80%.
+The contributor process must remain below 75% of total CPU capacity.
+Its resident memory must remain below 70% of host memory.
+
+Override these gates with `RIST_DROP_EVERY`,
+`RIST_MINIMUM_RESOURCE_SAMPLE_COVERAGE`,
+`RIST_MAXIMUM_RESOURCE_SAMPLE_GAP_MS`,
+`RIST_MAXIMUM_HOST_CPU_P99_PERCENT`,
+`RIST_MAXIMUM_PROCESS_CAPACITY_P99_PERCENT`,
+`RIST_MINIMUM_MEMORY_AVAILABLE_PERCENT`, and
+`RIST_MAXIMUM_RSS_MEMORY_PERCENT`.
+The run records every selected value in `rist-qualification.json`.
+
 The scripts keep all measurements in `target/multicloud-qualification/runs`.
 They wait for the sampler process on every configured edge and require the
 exact edge set, bounded sampler and active-source count and duration, at least
