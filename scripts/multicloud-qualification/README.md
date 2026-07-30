@@ -319,6 +319,7 @@ scripts/multicloud-qualification/video-run.sh rist
 ```
 
 The RIST lane builds current librist 0.2.20 for the sender.
+It builds pinned FFmpeg 8.1.2 for realtime H.264/AAC remuxing.
 It drops every 100th first media transmission by default.
 The gate requires every injected loss to receive a NACK and retransmission.
 It also requires zero new MPEG-TS continuity errors and dropped bytes.

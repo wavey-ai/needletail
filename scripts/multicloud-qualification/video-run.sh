@@ -154,6 +154,9 @@ SAMPLER_WAIT_ATTEMPTS="$((SAMPLER_WAIT_SECONDS * 4))"
 mkdir -p "${RESULT_DIR}"
 "${ROOT}/scripts/multicloud-qualification/capture-mesh-map-data.sh" \
   "${RESULT_DIR}" before
+node_exec contrib-london \
+  "test -x /usr/local/bin/ffmpeg
+test -r ${MEDIA_FILE_QUOTED}"
 for node in "${EDGE_NODES[@]}"; do
   mkdir -p "${RESULT_DIR}/${node}"
   node_exec "${node}" \
@@ -176,7 +179,8 @@ if [[ "${PROTOCOL}" == rist ]]; then
 rm -rf -- '${REMOTE_DIR}'
 install -d -m 700 '${REMOTE_DIR}'
 test -x /usr/local/bin/rist-loss-proxy
-test -x /usr/local/bin/ristsender"
+test -x /usr/local/bin/ristsender
+test -x /usr/local/bin/ffmpeg"
   node_copy_to contrib-london \
     "${RESOURCE_SAMPLER}" "${REMOTE_DIR}/sample-source-host.py"
 fi
@@ -289,7 +293,7 @@ ristsender_pid=\$!
 printf 'NEEDLETAIL_SOURCE_STARTED_AT=%s\n' \
   \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
 remote_source_status=0
-/usr/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
+/usr/local/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
   -i ${MEDIA_FILE_QUOTED} -t ${DURATION_SECONDS} \
   -map 0:v:0 -map 0:a:0 -c copy -muxdelay 0 -muxpreload 0 \
   -f mpegts 'udp://127.0.0.1:27120?pkt_size=1316' \
@@ -335,7 +339,7 @@ else
   node_exec contrib-london \
     "printf 'NEEDLETAIL_SOURCE_STARTED_AT=%s\n' \
         \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
-      /usr/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
+      /usr/local/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
       -i ${MEDIA_FILE_QUOTED} -t ${DURATION_SECONDS} \
       -map 0:v:0 -map 0:a:0 -c copy -muxdelay 0 -muxpreload 0 \
       -f mpegts \

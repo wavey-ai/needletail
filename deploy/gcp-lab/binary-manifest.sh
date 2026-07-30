@@ -8,6 +8,7 @@ NEEDLETAIL_BINARY_ARTIFACTS=(
   av-contrib
   aep1-48k-probe
   ristsender
+  ffmpeg
   rist-loss-proxy
   needletail-controller-agent
   needletail-operations-collector

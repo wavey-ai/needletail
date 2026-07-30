@@ -13,12 +13,16 @@ RUSTUP_VERSION=1.28.2
 LIBRIST_VERSION=0.2.20
 LIBRIST_ARCHIVE_URL="https://code.videolan.org/rist/librist/-/archive/v${LIBRIST_VERSION}/librist-v${LIBRIST_VERSION}.tar.gz"
 LIBRIST_ARCHIVE_SHA256=9e40eeb87f014790531ad41326cc271b930a65962e4b15231b301fc59b29fe31
+FFMPEG_VERSION=8.1.2
+FFMPEG_ARCHIVE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_ARCHIVE_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
 ETCD_VERSION=3.7.1
 ETCD_ARCHIVE_URL="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
 ETCD_ARCHIVE_SHA256=e8cd3fa8064c98137c5dbd78b76f969417ace84efb83c481041d7a52ffdd8fb9
 BUILD_ROOT=
 PUBLISH_ROOT=
 LIBRIST_PREFIX=
+FFMPEG_PREFIX=
 ETCD_PREFIX=
 
 run_as_root() {
@@ -130,6 +134,48 @@ build_pinned_librist() {
       pkg-config --modversion librist
   )" == "${LIBRIST_VERSION}" ]] || {
     echo "pinned librist pkg-config metadata has an unexpected version" >&2
+    exit 1
+  }
+}
+
+build_pinned_ffmpeg() {
+  local archive="${BUILD_ROOT}/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+  local source_root="${BUILD_ROOT}/ffmpeg-source"
+
+  FFMPEG_PREFIX="${BUILD_ROOT}/ffmpeg-prefix"
+  install -d -m 700 "${source_root}" "${FFMPEG_PREFIX}"
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --connect-timeout 10 --retry 3 \
+    --output "${archive}" "${FFMPEG_ARCHIVE_URL}"
+  printf '%s  %s\n' "${FFMPEG_ARCHIVE_SHA256}" "${archive}" \
+    | sha256sum --check --status -
+  tar --no-same-owner --no-same-permissions --strip-components=1 \
+    -xJf "${archive}" -C "${source_root}"
+  (
+    cd "${source_root}"
+    ./configure \
+      --prefix="${FFMPEG_PREFIX}" \
+      --disable-autodetect \
+      --disable-debug \
+      --disable-doc \
+      --disable-htmlpages \
+      --disable-manpages \
+      --disable-podpages \
+      --disable-txtpages \
+      --disable-x86asm \
+      --disable-everything \
+      --enable-ffmpeg \
+      --enable-protocol=file,udp \
+      --enable-demuxer=mov \
+      --enable-muxer=mpegts \
+      --enable-parser=aac,h264 \
+      --enable-bsf=aac_adtstoasc,h264_mp4toannexb
+    make -j "${CARGO_JOBS}" ffmpeg
+    install -m 755 ffmpeg "${FFMPEG_PREFIX}/ffmpeg"
+  )
+  [[ "$("${FFMPEG_PREFIX}/ffmpeg" -hide_banner -version \
+    | awk 'NR == 1 { print $3 }')" == "${FFMPEG_VERSION}" ]] || {
+    echo "pinned FFmpeg artifact has an unexpected version" >&2
     exit 1
   }
 }
@@ -365,7 +411,7 @@ if [[ "${BUILD_SCOPE}" == mesh ]]; then
 elif [[ "${BUILD_SCOPE}" == operations ]]; then
   for seed_binary in \
     av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender \
-    rist-loss-proxy \
+    ffmpeg rist-loss-proxy \
     etcd etcdctl; do
     [[ -f "${SEED_ROOT}/${seed_binary}" \
       && ! -L "${SEED_ROOT}/${seed_binary}" ]] || {
@@ -388,6 +434,7 @@ CARGO_JOBS="${CARGO_BUILD_JOBS:-2}"
 }
 if [[ "${BUILD_SCOPE}" != operations ]]; then
   build_pinned_librist
+  build_pinned_ffmpeg
   build_pinned_etcd
 fi
 contrib_feature_args=(--no-default-features)
@@ -444,7 +491,7 @@ env \
 # This order is the manifest contract enforced by binary-manifest.sh.
 binaries=(
   av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender
-  rist-loss-proxy
+  ffmpeg rist-loss-proxy
   needletail-controller-agent needletail-operations-collector
   needletail-ops-entrypoint
   etcd etcdctl
@@ -461,6 +508,8 @@ for binary in "${binaries[@]}"; do
     source_binary="${SEED_ROOT}/${binary}"
   elif [[ "${binary}" == ristsender ]]; then
     source_binary="${LIBRIST_PREFIX}/bin/ristsender"
+  elif [[ "${binary}" == ffmpeg ]]; then
+    source_binary="${FFMPEG_PREFIX}/ffmpeg"
   elif [[ "${binary}" == etcd || "${binary}" == etcdctl ]]; then
     source_binary="${ETCD_PREFIX}/${binary}"
   fi

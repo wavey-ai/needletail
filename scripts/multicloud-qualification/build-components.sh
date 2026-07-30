@@ -270,7 +270,7 @@ build_components() {
     else
       seed_binaries=(
         av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender
-        rist-loss-proxy
+        ffmpeg rist-loss-proxy
         etcd etcdctl
       )
     fi
@@ -335,6 +335,7 @@ NEEDLETAIL_BUILD_SCOPE='${BUILD_SCOPE}' \\
     "${download_root}/av-contrib" \
     "${download_root}/aep1-48k-probe" \
     "${download_root}/ristsender" \
+    "${download_root}/ffmpeg" \
     "${download_root}/rist-loss-proxy"
   chmod 600 \
     "${download_root}/needletail-chrony.deb" \
