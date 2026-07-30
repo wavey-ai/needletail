@@ -686,13 +686,13 @@ EOF
   )"
   ensure_gcp_firewall "${NETWORK}-internal" 10.84.0.0/16 tcp,udp,icmp
   ensure_gcp_firewall "${NETWORK}-multicloud" "${peer_sources}" \
-    tcp:22,tcp:19443-19448,tcp:27300,udp:22000-22699,udp:27000-27399,udp:29100-29600
+    tcp:22,tcp:443,tcp:2379-2380,tcp:19443-19547,tcp:27300,udp:22000-22699,udp:27000-27399,udp:29100-29600
 
   local azure_sources
   azure_sources="$(tr ',' ' ' <<<"${peer_sources}")"
   for location in japaneast australiaeast; do
     ensure_azure_rule "${location}" NeedletailControlAndMedia 110 '*' \
-      "${azure_sources}" "22 19443-19448 22000-22699 27000-27399 29100-29600"
+      "${azure_sources}" "22 443 2379-2380 19443-19547 22000-22699 27000-27399 29100-29600"
   done
 
   write_inventory

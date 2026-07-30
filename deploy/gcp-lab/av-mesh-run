@@ -41,6 +41,21 @@ args=(
   --relay-controlled-local
 )
 
+operations_elected="${NEEDLETAIL_OPERATIONS_ELECTED:-0}"
+case "${operations_elected}" in
+  0) ;;
+  1)
+    args+=(
+      --operations-snapshot-file
+      "${NEEDLETAIL_OPERATIONS_SNAPSHOT_FILE:-/run/needletail/operations-snapshot.json}"
+    )
+    ;;
+  *)
+    echo "NEEDLETAIL_OPERATIONS_ELECTED must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+
 if [[ -n "${response_ms}" ]]; then
   args+=(--response-ms "${response_ms}")
 fi
@@ -49,10 +64,12 @@ if [[ "${NEEDLETAIL_EDGE_WEBTRANSPORT:-0}" == 1 ]]; then
   args+=(--edge-webtransport)
 fi
 
-IFS=',' read -r -a telemetry_peers <<<"${NEEDLETAIL_TELEMETRY_PEERS:-}"
-for peer in "${telemetry_peers[@]}"; do
-  [[ -n "${peer}" ]] && args+=(--telemetry-peer "${peer}")
-done
+if [[ "${operations_elected}" == 0 ]]; then
+  IFS=',' read -r -a telemetry_peers <<<"${NEEDLETAIL_TELEMETRY_PEERS:-}"
+  for peer in "${telemetry_peers[@]}"; do
+    [[ -n "${peer}" ]] && args+=(--telemetry-peer "${peer}")
+  done
+fi
 
 primary_bind="$(jq -r '.primary_parent.bind' <<<"${SERVICE}")"
 primary_peer="$(jq -r '.primary_parent.peer' <<<"${SERVICE}")"

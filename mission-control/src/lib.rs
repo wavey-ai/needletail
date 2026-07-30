@@ -621,7 +621,19 @@ pub struct TelemetryNodeHealth {
 pub struct OperationsReadiness {
     pub control_dispatch_ready: bool,
     pub telemetry_fec: TelemetryFecStatus,
+    pub telemetry_collection: OperationsTelemetryCollection,
     pub collector: OperationsCollectorStatus,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OperationsTelemetryCollection {
+    pub mode: String,
+    pub single_fleet_poller: bool,
+    pub sources_expected: usize,
+    pub sources_current: usize,
+    pub sources_stale: usize,
+    pub snapshot_endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -640,7 +652,6 @@ pub struct OperationsCollectorStatus {
     pub last_leadership_change_unix_ms: Option<u64>,
     pub last_change_reason: Option<String>,
     pub public_endpoint: Option<String>,
-    pub ingest_endpoint: Option<String>,
     pub nodes_current: Option<usize>,
     pub nodes_stale: Option<usize>,
     pub nodes_awaiting: Option<usize>,
@@ -1335,7 +1346,7 @@ mod tests {
         "media_object_clock_estimated_error_ms":1000,"media_object_source_epoch":1784151600000001},
       "publication":{"canonical_epoch":1784151600000001,"head_object":8},
       "listeners":[
-        {"protocol":"rist","enabled":true,"bind":"0.0.0.0:27000","output_stream_id":"42","output_hls_path":"/42/stream.m3u8","backend":"pure","profile":"main","flow_id":"0x11223344"},
+        {"protocol":"rist","enabled":true,"bind":"0.0.0.0:27000","output_stream_id":"42","output_hls_path":"/42/stream.m3u8","backend":"librist","profile":"main","flow_id":null},
         {"protocol":"srt","enabled":true,"bind":"0.0.0.0:27001","output_stream_id":"42","output_hls_path":"/42/stream.m3u8"}
       ],
       "runtime":{
@@ -1579,6 +1590,14 @@ mod tests {
                         "nodes_current": 9,
                         "nodes_stale": 1,
                         "nodes_awaiting": 0
+                    },
+                    "telemetry_collection": {
+                        "mode": "elected-https-pull",
+                        "single_fleet_poller": true,
+                        "sources_expected": 10,
+                        "sources_current": 9,
+                        "sources_stale": 1,
+                        "snapshot_endpoint": "https://ops.example.test/api/mesh"
                     }
                 },
                 "topology_links": [{
@@ -1603,6 +1622,18 @@ mod tests {
         );
         assert_eq!(collector.fencing_generation, Some(43));
         assert_eq!(collector.voters_online, Some(3));
+        assert_eq!(
+            edge.orchestration.telemetry_collection.mode,
+            "elected-https-pull"
+        );
+        assert!(edge
+            .orchestration
+            .telemetry_collection
+            .single_fleet_poller);
+        assert_eq!(
+            edge.orchestration.telemetry_collection.sources_expected,
+            10
+        );
         assert_eq!(edge.topology_links.len(), 1);
         assert_eq!(edge.topology_links[0].role, "primary");
         assert_eq!(edge.topology_links[0].throughput_bps, Some(12_000_000));

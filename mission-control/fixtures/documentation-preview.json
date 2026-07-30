@@ -62,9 +62,9 @@
         "bind": "0.0.0.0:27000",
         "output_stream_id": "1",
         "output_hls_path": "/live/1/stream.m3u8",
-        "backend": "pure",
+        "backend": "librist",
         "profile": "main",
-        "flow_id": "0x11223344"
+        "flow_id": null
       }
     ],
     "runtime": {

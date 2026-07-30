@@ -7,6 +7,32 @@
     "parts_per_segment": 4,
     "window_parts": 32
   },
+  "operations": {
+    "enabled": true,
+    "authority": "needletail-controller",
+    "global_entrypoint_host": "needletail-london-20260727.bitneedle.com",
+    "global_entrypoint_node": "edge-london",
+    "global_entrypoint_port": 443,
+    "voter_nodes": [
+      "edge-london",
+      "relay-regional-osaka",
+      "relay-secondary-japan"
+    ],
+    "public_endpoints": {
+      "edge-london": "https://needletail-london-20260727.bitneedle.com:19444/mesh",
+      "relay-regional-osaka": "https://needletail-london-20260727.bitneedle.com:19547/mesh",
+      "relay-secondary-japan": "https://needletail-london-20260727.bitneedle.com:19546/mesh"
+    },
+    "etcd_client_port": 2379,
+    "etcd_peer_port": 2380,
+    "heartbeat_interval_ms": 500,
+    "election_timeout_ms": 5000,
+    "lease_ttl_seconds": 15,
+    "renew_interval_ms": 3000,
+    "lease_safety_margin_ms": 5000,
+    "max_clock_skew_ms": 1000,
+    "stale_after_ms": 5000
+  },
   "default_telemetry_peers": [
     "relay-regional-osaka",
     "relay-secondary-japan"
@@ -15,6 +41,9 @@
     {
       "node_id": "contrib-london",
       "kind": "contributor",
+      "continent": "eu",
+      "latitude": 51.5074,
+      "longitude": -0.1278,
       "environment": {
         "NEEDLETAIL_HTTP_PORT": "19443",
         "NEEDLETAIL_PART_MS": "250",

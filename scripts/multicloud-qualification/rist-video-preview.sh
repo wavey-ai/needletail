@@ -66,33 +66,31 @@ run_pipeline() {
   local media_file="${3:-}"
   local sender_bin="${4:-}"
   local contributor_ip="${5:-}"
+  local sender_input_port="${6:-}"
   local run_dir
-  local fifo_path
   local ffmpeg_pid=""
   local sender_pid=""
   local sender_status=125
 
-  [[ "$#" -eq 5 ]] || {
+  [[ "$#" -eq 6 ]] || {
     echo "invalid internal RIST preview invocation" >&2
     exit 2
   }
   needletail_require_safe_component RUN_ID "${run_id}"
   needletail_require_absolute_path FFMPEG_BIN "${ffmpeg_bin}"
   needletail_require_absolute_path VIDEO_MEDIA_FILE "${media_file}"
-  needletail_require_absolute_path RIST_SEND_BINARY "${sender_bin}"
+  needletail_require_absolute_path RIST_SENDER_BINARY "${sender_bin}"
   require_public_ipv4_address CONTRIBUTOR_IP "${contributor_ip}"
+  [[ "${sender_input_port}" =~ ^[0-9]+$ ]] \
+    && ((sender_input_port >= 1024 && sender_input_port <= 65535)) || {
+    echo "invalid internal librist input port" >&2
+    exit 2
+  }
   run_dir="${RUNS_ROOT}/${run_id}"
   [[ -d "${run_dir}" ]] || {
     echo "RIST preview run directory is missing: ${run_dir}" >&2
     exit 2
   }
-  fifo_path="${run_dir}/mpegts.fifo"
-  [[ ! -e "${fifo_path}" ]] || {
-    echo "RIST preview FIFO already exists: ${fifo_path}" >&2
-    exit 2
-  }
-  mkfifo -m 600 "${fifo_path}"
-
   terminate_children() {
     trap - TERM INT HUP
     if [[ -n "${ffmpeg_pid}" ]] && process_alive "${ffmpeg_pid}"; then
@@ -123,15 +121,15 @@ run_pipeline() {
     -c copy \
     -muxdelay 0 \
     -muxpreload 0 \
-    -f mpegts - >"${fifo_path}" &
+    -f mpegts \
+    "udp://127.0.0.1:${sender_input_port}?pkt_size=1316" &
   ffmpeg_pid="$!"
   "${sender_bin}" \
-    --profile main \
-    --flow-id 0x11223344 \
-    --chunk-bytes 1316 \
-    --history-packets 8192 \
-    --final-repair-ms 1000 \
-    "${contributor_ip}:27000" <"${fifo_path}" &
+    -p 1 \
+    -i "udp://@127.0.0.1:${sender_input_port}?stream-id=1000" \
+    -o "rist://${contributor_ip}:27000?cname=needletail-preview&bandwidth=20000&buffer=1000&rtt-min=50&rtt-max=1000&reorder-buffer=50&congestion-control=1" \
+    -S 1000 \
+    -v 6 &
   sender_pid="$!"
 
   set +e
@@ -370,7 +368,8 @@ validate_media() {
 
 start_preview() {
   local media_file="${VIDEO_MEDIA_FILE:-}"
-  local sender_bin="${RIST_SEND_BINARY:-}"
+  local sender_bin="${RIST_SENDER_BINARY:-$(command -v ristsender 2>/dev/null || true)}"
+  local sender_input_port="${RIST_SENDER_INPUT_PORT:-28977}"
   local public_player_base="${PUBLIC_PLAYER_BASE:-}"
   local expected_media_sha256="${EXPECTED_VIDEO_SHA256:-}"
   local ready_timeout_seconds="${RIST_PREVIEW_READY_SECONDS:-120}"
@@ -405,16 +404,24 @@ start_preview() {
   local runner_status
 
   : "${VIDEO_MEDIA_FILE:?set VIDEO_MEDIA_FILE to an absolute local 4K media path}"
-  : "${RIST_SEND_BINARY:?set RIST_SEND_BINARY to an absolute local rist-send path}"
+  [[ -n "${sender_bin}" ]] || {
+    echo "ristsender is required; install librist or set RIST_SENDER_BINARY" >&2
+    exit 2
+  }
   : "${PUBLIC_PLAYER_BASE:?set PUBLIC_PLAYER_BASE to the deployed player origin}"
   needletail_require_absolute_path VIDEO_MEDIA_FILE "${media_file}"
-  needletail_require_absolute_path RIST_SEND_BINARY "${sender_bin}"
+  needletail_require_absolute_path RIST_SENDER_BINARY "${sender_bin}"
   [[ -r "${media_file}" && -f "${media_file}" && -s "${media_file}" ]] || {
     echo "VIDEO_MEDIA_FILE is not a readable, non-empty regular file: ${media_file}" >&2
     exit 2
   }
   [[ -x "${sender_bin}" && -f "${sender_bin}" ]] || {
-    echo "RIST_SEND_BINARY is not an executable regular file: ${sender_bin}" >&2
+    echo "RIST_SENDER_BINARY is not an executable regular file: ${sender_bin}" >&2
+    exit 2
+  }
+  [[ "${sender_input_port}" =~ ^[0-9]+$ ]] \
+    && ((sender_input_port >= 1024 && sender_input_port <= 65535)) || {
+    echo "RIST_SENDER_INPUT_PORT must be between 1024 and 65535" >&2
     exit 2
   }
   public_player_base="${public_player_base%/}"
@@ -549,6 +556,7 @@ start_preview() {
     --arg started_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg media_file "${media_file}" \
     --arg sender_binary "${sender_bin}" \
+    --argjson sender_input_port "${sender_input_port}" \
     --arg ffmpeg_binary "${ffmpeg_bin}" \
     --arg contributor_ip "${contributor_ip}" \
     --arg player_url "${public_player_base}/1" \
@@ -563,6 +571,8 @@ start_preview() {
       updated_at: $started_at,
       media_file: $media_file,
       sender_binary: $sender_binary,
+      sender_backend: "librist",
+      sender_input_port: $sender_input_port,
       ffmpeg_binary: $ffmpeg_binary,
       contributor: {
         node_id: "contrib-london",
@@ -586,6 +596,7 @@ start_preview() {
     "${media_file}" \
     "${sender_bin}" \
     "${contributor_ip}" \
+    "${sender_input_port}" \
     >"${run_dir}/preview.log" 2>&1 </dev/null &
   runner_pid="$!"
   printf '%s\n' "${runner_pid}" >"${run_dir}/preview.pid"

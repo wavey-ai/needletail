@@ -173,9 +173,6 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:27000")]
     rist_bind: SocketAddr,
 
-    #[arg(long, default_value = "0x11223344")]
-    rist_flow_id: String,
-
     /// Optional SRT listener. The local stack defaults to RIST-only ingest.
     #[arg(long)]
     srt_bind: Option<SocketAddr>,
@@ -1122,8 +1119,6 @@ fn contrib_args(args: &Args, cert: &Path, key: &Path, relay_arguments: Vec<Strin
         args.part_ms.to_string(),
         "--rist-bind".into(),
         args.rist_bind.to_string(),
-        "--rist-flow-id".into(),
-        args.rist_flow_id.clone(),
         "--rtmp-bind".into(),
         args.rtmp_bind.to_string(),
     ];
@@ -1271,10 +1266,9 @@ fn print_ready(args: &Args) {
         );
     }
     println!(
-        "[orchestrator] RIST URL: rist://{}:{} profile=main flow_id={}",
+        "[orchestrator] RIST URL: rist://{}:{} profile=main backend=librist",
         args.host,
-        args.rist_bind.port(),
-        args.rist_flow_id
+        args.rist_bind.port()
     );
     println!(
         "[orchestrator] RTMP compatibility URL: rtmp://{}:{}/live",

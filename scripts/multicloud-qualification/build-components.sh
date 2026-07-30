@@ -15,6 +15,7 @@ WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "${ROOT}/.." && pwd)}"
 QUALIFICATION_ROOT="${ROOT}/target/multicloud-qualification"
 ARTIFACT_ROOT="${QUALIFICATION_ROOT}/artifacts"
 ENABLE_SRT="${NEEDLETAIL_ENABLE_SRT:-0}"
+BUILD_SCOPE="${NEEDLETAIL_BUILD_SCOPE:-all}"
 LOCAL_STAGE=
 REMOTE_STAGE=
 
@@ -22,6 +23,13 @@ case "${ENABLE_SRT}" in
   0|1) ;;
   *)
     echo "NEEDLETAIL_ENABLE_SRT must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+case "${BUILD_SCOPE}" in
+  all|mesh) ;;
+  *)
+    echo "NEEDLETAIL_BUILD_SCOPE must be all or mesh" >&2
     exit 2
     ;;
 esac
@@ -216,7 +224,7 @@ publish_build_outputs() (
 
 build_components() {
   local source_archive download_root remote_chrony_sha256
-  local local_chrony_sha256 name
+  local local_chrony_sha256 name seed_root
 
   if [[ -e "${QUALIFICATION_ROOT}" || -L "${QUALIFICATION_ROOT}" ]]; then
     [[ -d "${QUALIFICATION_ROOT}" && ! -L "${QUALIFICATION_ROOT}" ]] || {
@@ -234,6 +242,7 @@ build_components() {
   }
   source_archive="${LOCAL_STAGE}/source.tar.gz"
   download_root="${LOCAL_STAGE}/download"
+  seed_root="${LOCAL_STAGE}/seed"
   install -m 600 /dev/null "${source_archive}"
   install -d -m 700 "${download_root}"
   needletail_create_component_source_archive \
@@ -253,12 +262,29 @@ build_components() {
   node_copy_to contrib-london \
     "${DEPLOY_DIR}/build-components.sh" \
     "${REMOTE_STAGE}/build-components.sh"
+  if [[ "${BUILD_SCOPE}" == mesh ]]; then
+    install -d -m 700 "${seed_root}"
+    for name in av-contrib aep1-48k-probe; do
+      [[ -f "${ARTIFACT_ROOT}/${name}" \
+        && ! -L "${ARTIFACT_ROOT}/${name}" ]] || {
+        echo "mesh build seed is missing ${ARTIFACT_ROOT}/${name}" >&2
+        return 2
+      }
+      install -m 700 "${ARTIFACT_ROOT}/${name}" "${seed_root}/${name}"
+    done
+    node_exec contrib-london "install -d -m 700 '${REMOTE_STAGE}/seed'"
+    for name in av-contrib aep1-48k-probe; do
+      node_copy_to contrib-london \
+        "${seed_root}/${name}" "${REMOTE_STAGE}/seed/${name}"
+    done
+  fi
   node_exec contrib-london "set -euo pipefail
 chmod 600 '${REMOTE_STAGE}/source.tar.gz'
 chmod 700 '${REMOTE_STAGE}/build-components.sh'
 NEEDLETAIL_SOURCE_ARCHIVE='${REMOTE_STAGE}/source.tar.gz' \\
 NEEDLETAIL_BUILD_OUTPUT_ROOT='${REMOTE_STAGE}/out' \\
 NEEDLETAIL_ENABLE_SRT='${ENABLE_SRT}' \\
+NEEDLETAIL_BUILD_SCOPE='${BUILD_SCOPE}' \\
   '${REMOTE_STAGE}/build-components.sh'"
 
   remote_chrony_sha256="$(
@@ -282,7 +308,7 @@ NEEDLETAIL_ENABLE_SRT='${ENABLE_SRT}' \\
     "${download_root}/h3-static-capacity" \
     "${download_root}/av-contrib" \
     "${download_root}/aep1-48k-probe" \
-    "${download_root}/rist-send"
+    "${download_root}/ristsender"
   chmod 600 \
     "${download_root}/needletail-chrony.deb" \
     "${download_root}/needletail-binaries.sha256"

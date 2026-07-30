@@ -27,7 +27,7 @@ declare -ar NEEDLETAIL_COMPONENT_SOURCE_PATHS=(
   frame-header
   libopus-rs
   web-services
-  needletail/crates/media-capability
+  needletail
 )
 
 needletail_validate_component_source_root() {

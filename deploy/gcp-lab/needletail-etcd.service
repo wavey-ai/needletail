@@ -1,0 +1,37 @@
+[Unit]
+Description=Needletail Operations etcd voter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=needletail-etcd
+Group=needletail-etcd
+EnvironmentFile=/etc/needletail/etcd.env
+ExecStart=/usr/local/bin/etcd
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+LimitNOFILE=65536
+CapabilityBoundingSet=
+LockPersonality=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/needletail-etcd
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

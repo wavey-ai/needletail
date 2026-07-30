@@ -177,17 +177,23 @@ if [[ "${PROTOCOL}" == rist ]]; then
     "set -o pipefail
       printf 'NEEDLETAIL_SOURCE_STARTED_AT=%s\n' \
         \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"
+      /usr/local/bin/ristsender \
+        -p 1 \
+        -i 'udp://@127.0.0.1:27120?stream-id=1000' \
+        -o 'rist://127.0.0.1:27000?cname=needletail-qualification&bandwidth=20000&buffer=1000&rtt-min=50&rtt-max=1000&reorder-buffer=50&congestion-control=1' \
+        -S 1000 -v 6 \
+        >'${REMOTE_DIR}/ristsender.log' \
+        2>'${REMOTE_DIR}/ristsender.err' &
+      ristsender_pid=\$!
+      cleanup_ristsender() {
+        kill -TERM \"\${ristsender_pid}\" 2>/dev/null || true
+        wait \"\${ristsender_pid}\" 2>/dev/null || true
+      }
+      trap cleanup_ristsender EXIT HUP INT TERM
       /usr/bin/ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
         -i ${MEDIA_FILE_QUOTED} -t ${DURATION_SECONDS} \
         -map 0:v:0 -map 0:a:0 -c copy -muxdelay 0 -muxpreload 0 \
-        -f mpegts - \
-      | /usr/local/bin/rist-send \
-        --profile main \
-        --flow-id 0x11223344 \
-        --chunk-bytes 1316 \
-        --history-packets 8192 \
-        --final-repair-ms 1000 \
-        127.0.0.1:27000
+        -f mpegts 'udp://127.0.0.1:27120?pkt_size=1316'
       remote_source_status=\$?
       printf 'NEEDLETAIL_SOURCE_ENDED_AT=%s\n' \
         \"\$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')\"

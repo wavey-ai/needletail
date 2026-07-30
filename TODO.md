@@ -66,19 +66,20 @@ continuing while the first response remains unresolved.
 
 ### 1. Implement the durable authority
 
-- [ ] Implement the Needletail controller and node-agent reconciliation path in
-  this repository.
-- [ ] Use one maintained consensus authority with three or five voters in
+- [x] Implement the Operations election adapter and node-agent projection path
+  in this repository.
+- [x] Use one maintained consensus authority with three or five voters in
   distinct failure domains.
-- [ ] Commit collector term, leader, fencing generation, voter set, lease,
-  public endpoint, and ingest endpoint as one record.
-- [ ] Advance the fencing generation on every new leadership term.
-- [ ] Self-fence a former leader before another generation accepts telemetry.
+- [x] Commit collector term, leader, fencing generation, voter proof, lease,
+  public endpoint, and snapshot endpoint as one record.
+- [x] Advance the fencing generation on every new leadership term.
+- [x] Self-fence a former leader before another generation publishes telemetry.
 - [ ] Add durable desired state, observed generations, idempotency keys, and an
   append-only audit log.
-- [ ] Decide the whole-provider failure policy. With only GCP and Azure, add a
-  third-provider witness or explicitly accept which provider loss makes the
-  control plane unavailable.
+- [x] Decide the qualification whole-provider failure policy: two GCP voters
+  and one Azure voter tolerate Azure loss but fail closed on complete GCP loss.
+- [ ] Add a third-provider witness before claiming whole-provider tolerance in
+  production.
 
 Cloudflare may serve the static UI and global HTTP entry point. A Durable Object
 may replace the node quorum only as an explicit authority migration. Never run
@@ -89,33 +90,37 @@ Raft and a Durable Object as concurrent lease authorities.
 Owning service work belongs in `av-mesh`; Needletail owns the deployed
 composition and qualification.
 
-- [ ] Accept telemetry only when the collector holds the committed generation.
-- [ ] Include the generation on every ingest request and aggregate write.
-- [ ] Point each node at exactly one committed ingest endpoint.
-- [ ] De-duplicate retries by `(node_id, boot_id, sequence)`.
-- [ ] Reject old terms, old generations, duplicate sequences, and uncommitted
-  candidates.
-- [ ] Assemble `needletail.operations-snapshot.v1` with contributor status,
+- [x] Permit only the committed collector generation to poll and publish the
+  fleet snapshot.
+- [x] Poll each configured local node snapshot once from the elected collector;
+  followers copy the canonical snapshot and never poll the fleet.
+- [x] Validate source identities, deduplicate bounded objects and events, and
+  reject snapshots that do not match the committed generation.
+- [x] Assemble `needletail.operations-snapshot.v1` with contributor status,
   collector proof, all current nodes, and explicit topology links.
-- [ ] Keep raw snapshots bounded and in memory; persist at most an aggregated
+- [x] Keep raw snapshots bounded and ephemeral; persist at most an aggregated
   minute batch guarded by the current generation.
-- [ ] Keep media forwarding independent when Operations is unavailable.
+- [x] Keep media forwarding independent when Operations is unavailable.
 
 ### 3. Deploy discovery end to end
 
-- [ ] Integrate the assignment publisher with the real controller adapter.
-- [ ] Install and enable `needletail-ops-entrypoint` on discovery nodes.
-- [ ] Configure a real global hostname and explicit regional endpoint allowlist.
-- [ ] Put the loopback entry point behind the global TLS endpoint.
-- [ ] Verify `/`, `/.well-known/needletail-operations`, `/healthz`, and `/readyz`
-  from outside each discovery region.
-- [ ] Keep discovery at `503` until a fresh quorum-committed assignment exists.
+- [x] Integrate the assignment publisher with the real controller adapter.
+- [x] Serve fail-closed discovery from every mesh node's validated local
+  controller projection.
+- [x] Configure a real global hostname and explicit regional endpoint allowlist.
+- [x] Put the global entry point on standard HTTPS and forward regional
+  candidate ports with the Rocky firewall.
+- [x] Verify the global UI, canonical API, well-known discovery redirect, and
+  the redirected regional UI from outside the lab.
+- [x] Keep discovery at `503` until a fresh quorum-committed assignment exists.
 
 ### 4. Qualify split-brain protection
 
-- [ ] Normal operation has exactly one accepting collector and one snapshot per
+- [x] Normal operation has exactly one accepting collector and one snapshot per
   node per cadence.
-- [ ] Leader process failure elects and rebuilds within the stated budgets.
+- [x] Leader process failure fences the old generation, elects a replacement,
+  and rebuilds the global view. The observed failover window was approximately
+  20 seconds; reducing it remains deployment optimisation work.
 - [ ] An isolated old leader fences before the new leader accepts telemetry.
 - [ ] A minority partition cannot redirect, ingest, or publish healthy state.
 - [ ] Delayed old-generation packets and duplicate retries do not change
@@ -177,6 +182,15 @@ independent LL-HLS advancement probes from 09:06:58 through 09:11:49 UTC,
 advancing from `part131.mp4` to `part1171.mp4` without the former 60-second
 stall. This closes the fresh RIST deployment gate only; it does not qualify the
 global collector election or the failed July 28 lossless-audio run.
+
+Later on July 30, the deployed three-voter mTLS quorum elected one global
+collector and published `10/10` current sources with zero stale sources through
+the standard HTTPS entry point. Stopping the Osaka collector fenced the old
+generation, returned bounded `503` responses during transition, elected Azure
+Japan at term/fencing generation 354, restored the global view, and redirected
+the well-known entry point to the new regional UI. All nine mesh nodes then
+reported the same leader, term, fencing generation, and `3/3` quorum. The 4K
+SRT media playlist continued advancing independently.
 
 Needletail media nodes remain native `systemd` services on Rocky Linux. Do not
 add k3s unless a measured operational requirement outweighs its control-plane,

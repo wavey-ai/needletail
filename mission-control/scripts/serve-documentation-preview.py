@@ -45,7 +45,6 @@ UNREPORTED_COLLECTOR = {
     "last_leadership_change_unix_ms": None,
     "last_change_reason": None,
     "public_endpoint": None,
-    "ingest_endpoint": None,
     "nodes_current": None,
     "nodes_stale": None,
     "nodes_awaiting": None,

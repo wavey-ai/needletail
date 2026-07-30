@@ -350,12 +350,94 @@ if (
   throw new Error("node runtime must define default telemetry peers");
 }
 
+const operations = nodeRuntime.operations;
+assertObject(operations, "Operations runtime");
+if (
+  operations.enabled !== true ||
+  operations.authority !== "needletail-controller"
+) {
+  throw new Error("Operations runtime must enable the Needletail controller");
+}
+if (
+  !Array.isArray(operations.voter_nodes) ||
+  operations.voter_nodes.length < 3 ||
+  operations.voter_nodes.length % 2 === 0 ||
+  new Set(operations.voter_nodes).size !== operations.voter_nodes.length
+) {
+  throw new Error("Operations voters must be a unique odd set of at least three nodes");
+}
+assertObject(operations.public_endpoints, "Operations public endpoints");
+if (runtimeNodes.get(operations.global_entrypoint_node)?.kind !== "mesh") {
+  throw new Error("Operations global entry point must be a mesh node");
+}
+assertPort(
+  operations.global_entrypoint_port,
+  "Operations global entry point port",
+);
+for (const voterNodeId of operations.voter_nodes) {
+  if (runtimeNodes.get(voterNodeId)?.kind !== "mesh") {
+    throw new Error(`Operations voter ${voterNodeId} must be a mesh node`);
+  }
+  const endpoint = operations.public_endpoints[voterNodeId];
+  if (
+    typeof endpoint !== "string" ||
+    !/^https:\/\/[A-Za-z0-9.-]+(?::[1-9][0-9]{0,4})?\/mesh$/.test(endpoint)
+  ) {
+    throw new Error(`Operations voter ${voterNodeId} has an invalid public endpoint`);
+  }
+}
+for (const [name, value] of [
+  ["etcd_client_port", operations.etcd_client_port],
+  ["etcd_peer_port", operations.etcd_peer_port],
+]) {
+  assertPort(value, `Operations ${name}`);
+}
+for (const [name, value] of [
+  ["heartbeat_interval_ms", operations.heartbeat_interval_ms],
+  ["election_timeout_ms", operations.election_timeout_ms],
+  ["lease_ttl_seconds", operations.lease_ttl_seconds],
+  ["renew_interval_ms", operations.renew_interval_ms],
+  ["lease_safety_margin_ms", operations.lease_safety_margin_ms],
+  ["max_clock_skew_ms", operations.max_clock_skew_ms],
+  ["stale_after_ms", operations.stale_after_ms],
+]) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Operations ${name} must be a positive integer`);
+  }
+}
+if (
+  operations.election_timeout_ms < operations.heartbeat_interval_ms * 10 ||
+  operations.renew_interval_ms * 2 >= operations.lease_ttl_seconds * 1000 ||
+  operations.lease_safety_margin_ms >= operations.lease_ttl_seconds * 1000 ||
+  operations.lease_safety_margin_ms < operations.max_clock_skew_ms
+) {
+  throw new Error("Operations election and lease timing is unsafe");
+}
+const operationsAllowedEndpoints = operations.voter_nodes.map(
+  (nodeId) => operations.public_endpoints[nodeId],
+);
+const etcdEndpoints = operations.voter_nodes.map(
+  (nodeId) =>
+    `https://${address(nodeId, "public")}:${operations.etcd_client_port}`,
+);
+const etcdInitialCluster = operations.voter_nodes
+  .map(
+    (nodeId) =>
+      `${nodeId}=https://${address(nodeId, "public")}:${operations.etcd_peer_port}`,
+  )
+  .join(",");
+
 const renderedEnvironments = new Map();
 for (const [nodeId, topologyNode] of topologyNodes) {
   const runtimeNode = runtimeNodes.get(nodeId);
   if (runtimeNode.kind === "contributor") {
     if (topologyNode.role !== "origin") {
       throw new Error(`${nodeId} contributor runtime is not a topology origin`);
+    }
+    assertCoordinate(runtimeNode.latitude, -90, 90, `${nodeId} latitude`);
+    assertCoordinate(runtimeNode.longitude, -180, 180, `${nodeId} longitude`);
+    if (!/^[a-z][a-z0-9-]*$/.test(runtimeNode.continent ?? "")) {
+      throw new Error(`${nodeId} has an invalid continent`);
     }
     assertObject(runtimeNode.environment, `${nodeId} environment`);
     renderedEnvironments.set(
@@ -413,6 +495,67 @@ for (const [nodeId, topologyNode] of topologyNodes) {
     ["NEEDLETAIL_TELEMETRY_PORT", defaults.telemetry_port],
     ["NEEDLETAIL_TELEMETRY_DNS_NAME", tlsServerName],
     ["NEEDLETAIL_TELEMETRY_PEERS", telemetryPeers.join(",")],
+    ["NEEDLETAIL_OPERATIONS_ELECTED", 1],
+    [
+      "NEEDLETAIL_OPERATIONS_SNAPSHOT_FILE",
+      "/run/needletail/operations-snapshot.json",
+    ],
+    [
+      "NEEDLETAIL_OPERATIONS_SOURCES_FILE",
+      "/etc/needletail/operations-sources.json",
+    ],
+    [
+      "NEEDLETAIL_CONTROLLER_STATE_FILE",
+      "/run/needletail/operations-controller-state.json",
+    ],
+    [
+      "NEEDLETAIL_OPS_ASSIGNMENT_FILE",
+      "/run/needletail/operations-collector.json",
+    ],
+    ["NEEDLETAIL_OPS_ENTRYPOINT_HOST", operations.global_entrypoint_host],
+    [
+      "NEEDLETAIL_OPS_ALLOWED_ENDPOINTS",
+      operationsAllowedEndpoints.join(","),
+    ],
+    [
+      "NEEDLETAIL_OPS_LEASE_SAFETY_MARGIN_MS",
+      operations.lease_safety_margin_ms,
+    ],
+    [
+      "NEEDLETAIL_OPS_MAX_CLOCK_SKEW_MS",
+      operations.max_clock_skew_ms,
+    ],
+    ["NEEDLETAIL_CONTROLLER_ETCD_ENDPOINTS", etcdEndpoints.join(",")],
+    [
+      "NEEDLETAIL_CONTROLLER_ETCD_CA_CERT",
+      "/etc/needletail/operations-pki/ca.pem",
+    ],
+    [
+      "NEEDLETAIL_CONTROLLER_ETCD_CLIENT_CERT",
+      "/etc/needletail/operations-pki/client.pem",
+    ],
+    [
+      "NEEDLETAIL_CONTROLLER_ETCD_CLIENT_KEY",
+      "/etc/needletail/operations-pki/client-key.pem",
+    ],
+    [
+      "NEEDLETAIL_CONTROLLER_CANDIDATE",
+      operations.voter_nodes.includes(nodeId) ? "true" : "false",
+    ],
+    ["NEEDLETAIL_CONTROLLER_LEASE_TTL_SECONDS", operations.lease_ttl_seconds],
+    ["NEEDLETAIL_CONTROLLER_RENEW_INTERVAL_MS", operations.renew_interval_ms],
+    [
+      "NEEDLETAIL_OPS_PUBLIC_ENDPOINT",
+      operations.public_endpoints[nodeId] ?? operations.public_endpoints[operations.voter_nodes[0]],
+    ],
+    [
+      "NEEDLETAIL_OPS_SNAPSHOT_ENDPOINT",
+      `https://${tlsServerName}:${runtimeNode.http_port}/api/mesh`,
+    ],
+    [
+      "NEEDLETAIL_OPS_SNAPSHOT_ADDRESS",
+      `${address(nodeId, "public")}:${runtimeNode.http_port}`,
+    ],
     ["NEEDLETAIL_PART_MS", defaults.part_ms],
     ["NEEDLETAIL_SEGMENT_MS", defaults.segment_ms],
     ["NEEDLETAIL_PARTS_PER_SEGMENT", defaults.parts_per_segment],
@@ -425,19 +568,169 @@ for (const [nodeId, topologyNode] of topologyNodes) {
 }
 
 const programPath = resolve(outputRoot, "relay-program.json");
+const operationsSourcesPath = resolve(outputRoot, "operations-sources.json");
 const envDirectory = resolve(outputRoot, "env");
+const etcdEnvDirectory = resolve(outputRoot, "etcd-env");
+const operationsProxyDirectory = resolve(outputRoot, "operations-proxy");
 await prepareOutputRoot(outputRoot);
 await rm(envDirectory, { recursive: true, force: true });
+await rm(etcdEnvDirectory, { recursive: true, force: true });
+await rm(operationsProxyDirectory, { recursive: true, force: true });
 await mkdir(envDirectory, { mode: 0o700 });
+await mkdir(etcdEnvDirectory, { mode: 0o700 });
+await mkdir(operationsProxyDirectory, { mode: 0o700 });
 await writeFile(programPath, `${JSON.stringify(program, null, 2)}\n`, {
   mode: 0o600,
 });
+const operationsSources = {
+  schema: "needletail.operations-sources.v1",
+  stale_after_ms: operations.stale_after_ms,
+  nodes: [...runtimeNodes]
+    .filter(([, runtimeNode]) => runtimeNode.kind === "mesh")
+    .map(([nodeId, runtimeNode]) => ({
+      node_id: nodeId,
+      endpoint: `https://${tlsServerName}:${runtimeNode.http_port}/api/mesh/local`,
+      address: `${address(nodeId, "public")}:${runtimeNode.http_port}`,
+    })),
+  contributor: (() => {
+    const runtimeNode = runtimeNodes.get("contrib-london");
+    return runtimeNode
+      ? {
+          node_id: "contrib-london",
+          endpoint: `https://${tlsServerName}:${runtimeNode.environment.NEEDLETAIL_HTTP_PORT}/api/status`,
+          address: `${address("contrib-london", "public")}:${runtimeNode.environment.NEEDLETAIL_HTTP_PORT}`,
+        }
+      : null;
+  })(),
+  contributor_node: (() => {
+    const nodeId = "contrib-london";
+    const runtimeNode = runtimeNodes.get(nodeId);
+    const topologyNode = topologyNodes.get(nodeId);
+    return runtimeNode && topologyNode
+      ? {
+          node_id: nodeId,
+          provider: topologyNode.failure_domain.provider,
+          region: topologyNode.failure_domain.region,
+          zone: topologyNode.failure_domain.zone,
+          role: topologyNode.role,
+          continent: runtimeNode.continent,
+          latitude: runtimeNode.latitude,
+          longitude: runtimeNode.longitude,
+          public_endpoint: `https://${tlsServerName}:${runtimeNode.environment.NEEDLETAIL_HTTP_PORT}`,
+          total_storage_bytes: 0,
+          used_storage_bytes: 0,
+          egress_capacity_bps: 0,
+          contributor_streams: 0,
+          active_streams: 0,
+          draining: false,
+        }
+      : null;
+  })(),
+  topology_links: program.carrier_links.map((link) => ({
+    from_node_id: link.parent_node_id,
+    to_node_id: link.child_node_id,
+    role: link.role,
+    state: "configured",
+    path: link.lane,
+    generation: program.topology.generation,
+  })),
+};
+await writeFile(
+  operationsSourcesPath,
+  `${JSON.stringify(operationsSources, null, 2)}\n`,
+  { mode: 0o600 },
+);
 for (const [nodeId, contents] of renderedEnvironments) {
   await writeFile(resolve(envDirectory, `${nodeId}.env`), contents, {
     mode: 0o600,
   });
 }
+for (const nodeId of operations.voter_nodes) {
+  await writeFile(
+    resolve(etcdEnvDirectory, `${nodeId}.env`),
+    renderEnvironment([
+      ["ETCD_NAME", nodeId],
+      ["ETCD_DATA_DIR", "/var/lib/needletail-etcd"],
+      [
+        "ETCD_LISTEN_PEER_URLS",
+        `https://0.0.0.0:${operations.etcd_peer_port}`,
+      ],
+      [
+        "ETCD_INITIAL_ADVERTISE_PEER_URLS",
+        `https://${address(nodeId, "public")}:${operations.etcd_peer_port}`,
+      ],
+      [
+        "ETCD_LISTEN_CLIENT_URLS",
+        `https://0.0.0.0:${operations.etcd_client_port}`,
+      ],
+      [
+        "ETCD_ADVERTISE_CLIENT_URLS",
+        `https://${address(nodeId, "public")}:${operations.etcd_client_port}`,
+      ],
+      ["ETCD_INITIAL_CLUSTER", etcdInitialCluster],
+      ["ETCD_INITIAL_CLUSTER_STATE", "new"],
+      ["ETCD_INITIAL_CLUSTER_TOKEN", "needletail-operations-20260730"],
+      ["ETCD_HEARTBEAT_INTERVAL", operations.heartbeat_interval_ms],
+      ["ETCD_ELECTION_TIMEOUT", operations.election_timeout_ms],
+      ["ETCD_AUTO_COMPACTION_MODE", "periodic"],
+      ["ETCD_AUTO_COMPACTION_RETENTION", "1h"],
+      ["ETCD_SNAPSHOT_COUNT", 10000],
+      ["ETCD_CERT_FILE", "/etc/needletail/operations-pki/server.pem"],
+      ["ETCD_KEY_FILE", "/etc/needletail/operations-pki/server-key.pem"],
+      ["ETCD_TRUSTED_CA_FILE", "/etc/needletail/operations-pki/ca.pem"],
+      ["ETCD_CLIENT_CERT_AUTH", "true"],
+      ["ETCD_PEER_CERT_FILE", "/etc/needletail/operations-pki/server.pem"],
+      ["ETCD_PEER_KEY_FILE", "/etc/needletail/operations-pki/server-key.pem"],
+      ["ETCD_PEER_TRUSTED_CA_FILE", "/etc/needletail/operations-pki/ca.pem"],
+      ["ETCD_PEER_CLIENT_CERT_AUTH", "true"],
+    ]),
+    { mode: 0o600 },
+  );
+}
+const proxyPorts = new Set([String(operations.global_entrypoint_port)]);
+const entrypointRuntimeNode = runtimeNodes.get(
+  operations.global_entrypoint_node,
+);
+await writeFile(
+  resolve(
+    operationsProxyDirectory,
+    `${operations.global_entrypoint_port}.env`,
+  ),
+  renderEnvironment([
+    [
+      "NEEDLETAIL_OPERATIONS_PROXY_TARGET",
+      `127.0.0.1:${entrypointRuntimeNode.http_port}`,
+    ],
+  ]),
+  { mode: 0o600 },
+);
+for (const nodeId of operations.voter_nodes) {
+  if (nodeId === "edge-london") {
+    continue;
+  }
+  const publicUrl = new URL(operations.public_endpoints[nodeId]);
+  const proxyPort = publicUrl.port;
+  if (
+    !/^[1-9][0-9]{0,4}$/.test(proxyPort) ||
+    Number.parseInt(proxyPort, 10) > 65_535 ||
+    proxyPorts.has(proxyPort)
+  ) {
+    throw new Error(`Operations voter ${nodeId} has an invalid proxy port`);
+  }
+  proxyPorts.add(proxyPort);
+  const runtimeNode = runtimeNodes.get(nodeId);
+  await writeFile(
+    resolve(operationsProxyDirectory, `${proxyPort}.env`),
+    renderEnvironment([
+      [
+        "NEEDLETAIL_OPERATIONS_PROXY_TARGET",
+        `${address(nodeId, "public")}:${runtimeNode.http_port}`,
+      ],
+    ]),
+    { mode: 0o600 },
+  );
+}
 
 console.log(
-  `Rendered ${programPath} and ${renderedEnvironments.size} node environment files`,
+  `Rendered ${programPath}, ${operationsSourcesPath}, ${renderedEnvironments.size} node environments, and ${operations.voter_nodes.length} etcd voter environments`,
 );

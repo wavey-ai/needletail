@@ -58,7 +58,6 @@ main() {
     --fmp4-part-ms "${fmp4_part_ms}"
     --wall-clock-estimated-error-ms "${NEEDLETAIL_CLOCK_ERROR_MS:-5}"
     --rist-bind 0.0.0.0:27000
-    --rist-flow-id 0x11223344
     --rtmp-bind 0.0.0.0:19350
     --relay-local-id "${NEEDLETAIL_NODE_ID}"
     --relay-primary-bind "$(jq -r '.primary.bind' <<<"${service}")"

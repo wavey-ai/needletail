@@ -46,8 +46,7 @@ needletail_create_component_source_archive \
   "${SOURCE_ROOT}" "${SOURCE_ARCHIVE}"
 tar -tzf "${SOURCE_ARCHIVE}" >"${FIXTURE}/source-files.txt"
 grep -qx 'av-mesh/untracked-source.rs' "${FIXTURE}/source-files.txt"
-grep -qx 'needletail/crates/media-capability/source.txt' \
-  "${FIXTURE}/source-files.txt"
+grep -qx 'needletail/source.txt' "${FIXTURE}/source-files.txt"
 if grep -Eq \
   '(^|/)(target|node_modules|roundtrips|test)/|private\.pem$|/\.env$|credentials\.json$' \
   "${FIXTURE}/source-files.txt"; then

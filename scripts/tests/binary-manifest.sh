@@ -40,7 +40,7 @@ printf 'fixture: %s\n' av-mesh >"${ARTIFACT_ROOT}/av-mesh"
 {
   sed -n '2p' "${MANIFEST}"
   sed -n '1p' "${MANIFEST}"
-  sed -n '3,5p' "${MANIFEST}"
+  sed -n "3,${#NEEDLETAIL_BINARY_ARTIFACTS[@]}p" "${MANIFEST}"
 } >"${TEST_ROOT}/reordered.sha256"
 if needletail_validate_binary_manifest \
   "${TEST_ROOT}/reordered.sha256" >/dev/null 2>&1; then
@@ -48,7 +48,8 @@ if needletail_validate_binary_manifest \
   exit 1
 fi
 
-sed -n '1,4p' "${MANIFEST}" >"${TEST_ROOT}/incomplete.sha256"
+sed -n "1,$((${#NEEDLETAIL_BINARY_ARTIFACTS[@]} - 1))p" \
+  "${MANIFEST}" >"${TEST_ROOT}/incomplete.sha256"
 if needletail_validate_binary_manifest \
   "${TEST_ROOT}/incomplete.sha256" >/dev/null 2>&1; then
   echo "incomplete binary manifest unexpectedly passed validation" >&2
@@ -67,7 +68,7 @@ fi
 digest="$(needletail_binary_sha256 "${ARTIFACT_ROOT}/av-mesh")"
 {
   printf '%s\t../../outside\n' "${digest}"
-  sed -n '2,5p' "${MANIFEST}"
+  sed -n "2,${#NEEDLETAIL_BINARY_ARTIFACTS[@]}p" "${MANIFEST}"
 } >"${TEST_ROOT}/traversal.sha256"
 if needletail_validate_binary_manifest \
   "${TEST_ROOT}/traversal.sha256" >/dev/null 2>&1; then
@@ -81,10 +82,10 @@ if needletail_validate_binary_manifest \
   echo "symlinked binary manifest unexpectedly passed validation" >&2
   exit 1
 fi
-mv "${ARTIFACT_ROOT}/rist-send" "${ARTIFACT_ROOT}/rist-send.real"
-ln -s "${ARTIFACT_ROOT}/rist-send.real" "${ARTIFACT_ROOT}/rist-send"
+mv "${ARTIFACT_ROOT}/ristsender" "${ARTIFACT_ROOT}/ristsender.real"
+ln -s "${ARTIFACT_ROOT}/ristsender.real" "${ARTIFACT_ROOT}/ristsender"
 if needletail_verify_binary_manifest_files \
-  "${MANIFEST}" "${ARTIFACT_ROOT}" rist-send >/dev/null 2>&1; then
+  "${MANIFEST}" "${ARTIFACT_ROOT}" ristsender >/dev/null 2>&1; then
   echo "symlinked binary artifact unexpectedly passed verification" >&2
   exit 1
 fi

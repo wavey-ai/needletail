@@ -1,0 +1,22 @@
+--- a/src/rist-common.c
++++ b/src/rist-common.c
+@@ -2724,6 +2724,7 @@
+  * source tuple.  Returns true after killing new_peer. */
+ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64_t now)
+ {
++#if HAVE_SRP_SUPPORT
+ 	struct rist_peer *parent = new_peer->parent;
+ 	if (!parent || !parent->listening || !new_peer->sender_ctx ||
+ 	    new_peer->receiver_mode || new_peer->receiver_name[0] == '\0')
+@@ -2785,6 +2786,11 @@
+ 
+ 	kill_peer(new_peer);
+ 	return true;
++#else
++	(void)new_peer;
++	(void)now;
++	return false;
++#endif
+ }
+ 
+ /* Receiver-caller socket rebind on a NAT source-port rebind / sender

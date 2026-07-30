@@ -35,9 +35,9 @@ if rg -q -- '(^|[[:space:]])-t([[:space:]]|$)|DURATION_SECONDS' "${PREVIEW}"; th
   echo "unbounded RIST preview contains a duration limit" >&2
   exit 1
 fi
-rg -Fq 'RIST_SEND_BINARY must be an absolute path' "${ROOT}/scripts/qualification-config.sh" \
+rg -Fq 'RIST_SENDER_BINARY must be an absolute path' "${ROOT}/scripts/qualification-config.sh" \
   || rg -Fq \
-    'needletail_require_absolute_path RIST_SEND_BINARY' "${PREVIEW}"
+    'needletail_require_absolute_path RIST_SENDER_BINARY' "${PREVIEW}"
 rg -Fq 'contrib-london' "${PREVIEW}"
 rg -Fq '.public_ip' "${PREVIEW}"
 rg -Fq '/live/1/init.mp4' "${PREVIEW}"
@@ -51,7 +51,7 @@ rg -Fq 'runner_matches' "${PREVIEW}"
 rg -Fq 'RIST_PREVIEW_ATTACHED' "${PREVIEW}"
 
 if VIDEO_MEDIA_FILE=relative.mov \
-  RIST_SEND_BINARY=/bin/echo \
+  RIST_SENDER_BINARY=/bin/echo \
   PUBLIC_PLAYER_BASE=https://preview.example \
   NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${PREFLIGHT_STATE_ROOT}" \
   NEEDLETAIL_MULTICLOUD_INVENTORY="${FIXTURE}" \
@@ -64,7 +64,7 @@ rg -Fq 'VIDEO_MEDIA_FILE must be an absolute path' \
   "${TEST_ROOT}/relative.stderr"
 
 if VIDEO_MEDIA_FILE=/bin/echo \
-  RIST_SEND_BINARY=/bin/echo \
+  RIST_SENDER_BINARY=/bin/echo \
   PUBLIC_PLAYER_BASE=https://preview.example \
   EXPECTED_VIDEO_SHA256=invalid \
   NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${PREFLIGHT_STATE_ROOT}" \
@@ -78,7 +78,7 @@ rg -Fq 'EXPECTED_VIDEO_SHA256 must be a lowercase SHA-256 digest' \
   "${TEST_ROOT}/digest.stderr"
 
 if VIDEO_MEDIA_FILE=/bin/echo \
-  RIST_SEND_BINARY=/bin/echo \
+  RIST_SENDER_BINARY=/bin/echo \
   PUBLIC_PLAYER_BASE=https://preview.example \
   RIST_PREVIEW_ATTACHED=invalid \
   NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${PREFLIGHT_STATE_ROOT}" \
@@ -94,7 +94,7 @@ rg -Fq 'RIST_PREVIEW_ATTACHED must be 0 or 1' \
 jq '.nodes[0].public_ip = "not-an-ip"' \
   "${FIXTURE}" >"${TEST_ROOT}/invalid-inventory.json"
 if VIDEO_MEDIA_FILE=/bin/echo \
-  RIST_SEND_BINARY=/bin/echo \
+  RIST_SENDER_BINARY=/bin/echo \
   PUBLIC_PLAYER_BASE=https://preview.example \
   NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${PREFLIGHT_STATE_ROOT}" \
   NEEDLETAIL_MULTICLOUD_INVENTORY="${TEST_ROOT}/invalid-inventory.json" \
@@ -107,7 +107,7 @@ rg -Fq 'CONTRIBUTOR_IP must be a public IPv4 address' \
   "${TEST_ROOT}/inventory.stderr"
 
 if VIDEO_MEDIA_FILE=/bin/echo \
-  RIST_SEND_BINARY=/bin/echo \
+  RIST_SENDER_BINARY=/bin/echo \
   PUBLIC_PLAYER_BASE=https://preview.example \
   EXPECTED_VIDEO_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${PREFLIGHT_STATE_ROOT}" \
@@ -124,7 +124,7 @@ printf 'fixture media\n' >"${TEST_ROOT}/media.mp4"
 FAKE_PREVIEW_STATE_ROOT="${SANDBOX}/target/multicloud-qualification/rist-video-preview" \
 NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${SANDBOX}/target/multicloud-qualification/rist-video-preview" \
 VIDEO_MEDIA_FILE="${TEST_ROOT}/media.mp4" \
-RIST_SEND_BINARY="${FIXTURE_ROOT}/fake-rist-send.sh" \
+RIST_SENDER_BINARY="${FIXTURE_ROOT}/fake-rist-send.sh" \
 PUBLIC_PLAYER_BASE=https://preview.example \
 FFMPEG_BIN="${FIXTURE_ROOT}/fake-ffmpeg.sh" \
 FFPROBE_BIN="${FIXTURE_ROOT}/fake-ffprobe.sh" \
@@ -153,7 +153,7 @@ rg -Fq 'Health: advancing' "${TEST_ROOT}/status.stdout"
 if FAKE_PREVIEW_STATE_ROOT="${SANDBOX}/target/multicloud-qualification/rist-video-preview" \
   NEEDLETAIL_RIST_PREVIEW_STATE_ROOT="${SANDBOX}/target/multicloud-qualification/rist-video-preview" \
   VIDEO_MEDIA_FILE="${TEST_ROOT}/media.mp4" \
-  RIST_SEND_BINARY="${FIXTURE_ROOT}/fake-rist-send.sh" \
+  RIST_SENDER_BINARY="${FIXTURE_ROOT}/fake-rist-send.sh" \
   PUBLIC_PLAYER_BASE=https://preview.example \
   FFMPEG_BIN="${FIXTURE_ROOT}/fake-ffmpeg.sh" \
   FFPROBE_BIN="${FIXTURE_ROOT}/fake-ffprobe.sh" \

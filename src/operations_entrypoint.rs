@@ -49,6 +49,7 @@ pub struct OperationsEntrypointPolicy {
 struct OperationsEndpoint {
     url: String,
     host: String,
+    default_tls_port: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,7 +130,7 @@ impl OperationsEntrypointPolicy {
             let endpoint = parse_operations_endpoint(&configured).ok_or(
                 OperationsAssignmentError::InvalidPolicy("an endpoint allowlist value is invalid"),
             )?;
-            if endpoint.host == entrypoint_host {
+            if endpoint.host == entrypoint_host && endpoint.default_tls_port {
                 return Err(OperationsAssignmentError::InvalidPolicy(
                     "an allowed endpoint points to the global entry point",
                 ));
@@ -192,7 +193,7 @@ impl OperationsEntrypointPolicy {
 
         let requested = parse_operations_endpoint(&assignment.public_endpoint)
             .ok_or(OperationsAssignmentError::InvalidEndpoint)?;
-        if requested.host == self.entrypoint_host {
+        if requested.host == self.entrypoint_host && requested.default_tls_port {
             return Err(OperationsAssignmentError::RedirectLoop);
         }
         if !self.allowed_endpoints.contains(&requested.url) {
@@ -291,6 +292,7 @@ fn parse_operations_endpoint(input: &str) -> Option<OperationsEndpoint> {
     Some(OperationsEndpoint {
         url: format!("https://{host}{port_suffix}/mesh"),
         host,
+        default_tls_port: matches!(port, Some(443) | None),
     })
 }
 
@@ -375,6 +377,25 @@ mod tests {
         assert_eq!(
             policy().resolve(&assignment, NOW).unwrap(),
             "https://ops-eu.example.com/mesh"
+        );
+    }
+
+    #[test]
+    fn allows_a_regional_endpoint_on_a_nondefault_port_of_the_entrypoint_host() {
+        let policy = OperationsEntrypointPolicy::new(
+            "needletail-controller".to_owned(),
+            "ops.example.com".to_owned(),
+            vec!["https://ops.example.com:19444/mesh".to_owned()],
+            5_000,
+            1_000,
+            30_000,
+        )
+        .unwrap();
+        let mut assignment = assignment();
+        assignment.public_endpoint = "https://ops.example.com:19444/mesh".to_owned();
+        assert_eq!(
+            policy.resolve(&assignment, NOW).unwrap(),
+            "https://ops.example.com:19444/mesh"
         );
     }
 

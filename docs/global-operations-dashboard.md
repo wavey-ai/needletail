@@ -23,7 +23,7 @@ leader node id
 lease expiry in the controller clock domain
 fencing generation
 public operations endpoint
-telemetry ingest endpoint
+canonical snapshot endpoint
 ```
 
 Use a maintained Raft implementation rather than a peer-scored election or
@@ -42,28 +42,24 @@ setting.
 
 ## Telemetry flow
 
-Each service creates one bounded snapshot at the existing coarse cadence. The
-node agent keeps the latest unsent snapshot and the source identity tuple:
+Each mesh node exposes one bounded local snapshot at `/api/mesh/local`. Only the
+quorum-elected collector polls those local documents and the contributor status
+endpoint. Followers do not poll the fleet; they copy the elected leader's
+canonical `/api/mesh` document. This leaves one fleet poller, one canonical
+snapshot, and no static telemetry-peer graph.
 
-```text
-node id
-boot id
-monotonic sequence
-observed time
-schema version
-```
-
-The committed collector assignment contains one ingest target. A node sends
-each sequence to that target only. On a leadership change it drops the old
-connection, resolves the newly committed target, and may retry its latest
-snapshot. The collector de-duplicates `(node id, boot id, sequence)`, so a retry
-cannot double-count counters or events.
+The collector validates the configured node identity against every response,
+deduplicates objects and events by stable keys, caps retained arrays, and marks
+missing or old sources stale. It assembles
+`needletail.operations-snapshot.v1` with the contributor, all configured map
+nodes, explicit topology links, and the current term, generation, quorum, and
+lease proof.
 
 Raw telemetry is not replicated between collectors and is not written per
-sample to a database. A new collector rebuilds the fleet view from fresh node
-snapshots within two normal collection intervals. If later history is required,
-the active collector writes one aggregated minute batch with the fencing
-generation; storage rejects a stale generation.
+sample to a database. A new collector rebuilds the fleet view from the current
+local snapshots. If later history is required, the active collector may write
+one aggregated minute batch guarded by the fencing generation; storage must
+reject a stale generation.
 
 ## Split-brain fences
 
@@ -71,7 +67,7 @@ A node may call itself the global collector only while all of these are true:
 
 1. its term and generation are committed by quorum;
 2. its quorum lease is still valid outside a conservative clock/error margin;
-3. the requested ingest and browser API carry its current generation;
+3. the published browser API carries its current generation;
 4. the node agent has not observed a higher term;
 5. any durable aggregate write succeeds conditionally on that generation.
 
@@ -114,40 +110,37 @@ loopback listener directly. Configure the service with
 Run one service instance in each discovery region. The TLS endpoint can select
 any instance. An instance returns `503` when its local committed state is stale.
 
-### Current integration boundary
+### Qualification implementation
 
-The fail-closed discovery service and canonical browser contract are present,
-and the repository now provides an atomic `OperationsAssignmentPublisher`
-handoff. The handoff can publish or withdraw a decision made elsewhere; it
-cannot prove a quorum commit and is not an election implementation. The durable
-controller and node agent that call it do not exist in this repository, so
-nothing currently writes a live assignment to
-`/run/needletail/operations-collector.json`.
+The GCP/Azure composition uses an mTLS etcd quorum and
+`needletail-controller-agent` on every mesh node. Three configured voter nodes
+may campaign. Every node observes the same election record, validates it through
+`OperationsAssignmentPublisher`, and atomically projects the committed
+assignment and controller state under `/run/needletail`.
 
-The current mesh service also does not yet assemble the embedded `contributor`,
-committed `collector`, and complete `topology_links` fields required by
-`schema: "needletail.operations-snapshot.v1"`. Until those producers are
-integrated, the discovery endpoint correctly returns `503` and the UI marks the
-missing state unavailable. Do not substitute DNS affinity, local scoring, or a
-second lease authority to make it redirect.
+`needletail-operations-collector` runs on every mesh node. The elected instance
+polls the fleet once; followers copy its canonical document. `av-mesh` exposes
+the raw local document only at `/api/mesh/local`, serves the validated canonical
+file at `/api/mesh`, and returns `503` when the proof, freshness, or effective
+lease is unsafe. Its well-known route returns `307` only to the endpoint carried
+by that validated snapshot.
 
-The smallest external integration must pass these gates:
+The current qualification entry point is
+`https://needletail-london-20260727.bitneedle.com/.well-known/needletail-operations`.
+The same hostname serves the follower-safe global UI at `/mesh` on port 443.
+Candidate regional masters use the allowlisted ports committed in
+`deploy/multicloud-qualification/node-runtime.json`.
 
-1. A maintained consensus implementation commits the term, fencing generation,
-   leader, endpoints, voter proof, commit time, and bounded lease.
-2. Its node agent projects that record into
-   `OperationsCollectorAssignment` and calls `publish_committed` only after the
-   commit is durable. Quorum loss calls `withdraw`; recovery advances the fence.
-3. The elected collector rejects ingest and aggregate writes carrying any
-   other generation, de-duplicates `(node id, boot id, sequence)`, and emits the
-   canonical snapshot rather than a service-local compatibility shape.
-4. Integration tests partition the old leader, remove one voter, replay an old
-   generation, retry duplicate sequences, and prove there is never an overlap
-   in accepted generations. Contract tests deserialize the resulting
-   `/api/mesh` response with the strict dashboard model.
+The qualification voter placement is two GCP nodes and one Azure node. It
+tolerates one voter loss, including the Azure voter, but deliberately loses
+Operations control-plane availability on a complete GCP outage. Media
+forwarding remains independent. Production needs a third-provider witness or a
+different explicitly accepted provider-outage policy.
 
-Snapshot assembly belongs in the owning mesh service repository; adding it to
-Needletail would cross the product boundary documented in `AGENTS.md`.
+This is the Operations election and composition authority, not the complete
+production desired-state controller described in `deploy/README.md`. Durable
+service reconciliation, audit storage, and conditional aggregate persistence
+remain separate work.
 
 ## Needletail Ops changes
 

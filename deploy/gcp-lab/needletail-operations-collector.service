@@ -1,0 +1,40 @@
+[Unit]
+Description=Needletail elected global Operations snapshot
+After=network-online.target needletail-controller-agent.service needletail-mesh.service
+Wants=network-online.target
+Requires=needletail-controller-agent.service
+
+[Service]
+Type=simple
+User=needletail
+Group=needletail
+EnvironmentFile=/etc/needletail/node.env
+ExecStart=/usr/local/bin/needletail-operations-collector
+Restart=always
+RestartSec=2
+RuntimeDirectory=needletail
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/needletail
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

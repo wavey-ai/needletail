@@ -1,0 +1,39 @@
+[Unit]
+Description=Needletail Operations controller agent
+After=network-online.target needletail-etcd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=needletail
+Group=needletail
+EnvironmentFile=/etc/needletail/node.env
+ExecStart=/usr/local/bin/needletail-controller-agent
+Restart=always
+RestartSec=2
+RuntimeDirectory=needletail
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/needletail
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

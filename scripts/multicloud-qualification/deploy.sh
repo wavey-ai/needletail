@@ -15,42 +15,50 @@ MISSION_CONTROL_DIST="${ROOT}/mission-control/dist"
 MEDIA_PREPARE="${ROOT}/scripts/multicloud-qualification/prepare-full-album-pcm.sh"
 DAW_TEST_SOURCE="${ARTIFACTS}/daw-test-source"
 COMPILED_PLAN="${ROOT}/target/multicloud-qualification/compiled-plan.json"
+OPERATIONS_SOURCES="${ROOT}/target/multicloud-qualification/operations-sources.json"
+OPERATIONS_PKI="${ROOT}/target/multicloud-qualification/operations-pki"
+ETCD_ENV_DIR="${ROOT}/target/multicloud-qualification/etcd-env"
+OPERATIONS_PROXY_DIR="${ROOT}/target/multicloud-qualification/operations-proxy"
+OPERATIONS_PKI_GENERATOR="${ROOT}/scripts/multicloud-qualification/generate-operations-pki.sh"
 STAGE=
 ARCHIVE=
 DEPLOYMENT_PIDS=()
 PREPARE_ALBUM_MEDIA=1
+DEPLOY_SCOPE=all
 
 usage() {
   cat <<'EOF'
-Usage: scripts/multicloud-qualification/deploy.sh [--services-only]
+Usage: scripts/multicloud-qualification/deploy.sh [--services-only] [--mesh-only]
 
 Build and deploy the current Needletail services and web assets to every node.
 By default, also prepare the operator-supplied album media on contrib-london.
 
   --services-only  Skip album download/preparation for a live synthetic preview.
+  --mesh-only      Deploy mesh nodes only; leave the contributor and ingest session running.
 EOF
 }
 
 parse_deploy_arguments() {
-  case "${1:-}" in
-    "")
-      ;;
-    --services-only)
-      PREPARE_ALBUM_MEDIA=0
-      ;;
-    -h|--help)
-      usage
-      return 64
-      ;;
-    *)
-      usage >&2
-      return 2
-      ;;
-  esac
-  [[ "$#" -le 1 ]] || {
-    usage >&2
-    return 2
-  }
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      --services-only)
+        PREPARE_ALBUM_MEDIA=0
+        ;;
+      --mesh-only)
+        DEPLOY_SCOPE=mesh
+        PREPARE_ALBUM_MEDIA=0
+        ;;
+      -h|--help)
+        usage
+        return 64
+        ;;
+      *)
+        usage >&2
+        return 2
+        ;;
+    esac
+  done
 }
 
 cleanup_local_deploy_package() {
@@ -78,6 +86,10 @@ prepare_deploy_package() {
   ARCHIVE="$(mktemp "${DEPLOY_WORK_ROOT}/deploy-archive.XXXXXX")"
 
   install -d -m 755 "${STAGE}/player" "${STAGE}/mission-control"
+  install -d -m 700 \
+    "${STAGE}/operations-pki" \
+    "${STAGE}/etcd-env" \
+    "${STAGE}/operations-proxy"
   cp -R "${PLAYER_DIST}/." "${STAGE}/player/"
   cp -R "${MISSION_CONTROL_DIST}/." "${STAGE}/mission-control/"
   find "${STAGE}/player" "${STAGE}/mission-control" -type d -exec chmod 755 {} +
@@ -86,20 +98,41 @@ prepare_deploy_package() {
     "${ARTIFACTS}/av-mesh" \
     "${ARTIFACTS}/av-contrib" \
     "${ARTIFACTS}/aep1-48k-probe" \
-    "${ARTIFACTS}/rist-send" \
+    "${ARTIFACTS}/ristsender" \
+    "${ARTIFACTS}/needletail-controller-agent" \
+    "${ARTIFACTS}/needletail-operations-collector" \
+    "${ARTIFACTS}/needletail-ops-entrypoint" \
+    "${ARTIFACTS}/etcd" \
+    "${ARTIFACTS}/etcdctl" \
     "${STAGE}/"
   if ((PREPARE_ALBUM_MEDIA != 0)); then
     install -m 755 "${DAW_TEST_SOURCE}" "${STAGE}/"
   fi
   install -m 644 \
     "${COMPILED_PLAN}" \
+    "${OPERATIONS_SOURCES}" \
     "${TLS_DIR}/fullchain.pem" \
     "${DEPLOY_DIR}/chrony-gcp.conf" \
     "${DEPLOY_DIR}/binary-manifest.sh" \
     "${DEPLOY_DIR}/needletail-mesh.service" \
     "${DEPLOY_DIR}/needletail-contrib.service" \
+    "${DEPLOY_DIR}/needletail-controller-agent.service" \
+    "${DEPLOY_DIR}/needletail-operations-collector.service" \
+    "${DEPLOY_DIR}/needletail-etcd.service" \
     "${ARTIFACTS}/needletail-binaries.sha256" \
     "${STAGE}/"
+  install -m 644 \
+    "${OPERATIONS_PKI}/ca.pem" \
+    "${OPERATIONS_PKI}/server.pem" \
+    "${OPERATIONS_PKI}/client.pem" \
+    "${STAGE}/operations-pki/"
+  install -m 600 \
+    "${OPERATIONS_PKI}/server-key.pem" \
+    "${OPERATIONS_PKI}/client-key.pem" \
+    "${STAGE}/operations-pki/"
+  install -m 600 "${ETCD_ENV_DIR}"/*.env "${STAGE}/etcd-env/"
+  install -m 600 "${OPERATIONS_PROXY_DIR}"/*.env \
+    "${STAGE}/operations-proxy/"
   install -m 644 "${ARTIFACTS}/needletail-chrony.deb" \
     "${STAGE}/chrony.deb"
   if ((PREPARE_ALBUM_MEDIA != 0)); then
@@ -206,9 +239,14 @@ ${qualification_install}"
 deploy_all_nodes() {
   local album_url_quoted node pid
   local status=0
+  local -a deployment_nodes=("${ALL_NODES[@]}")
+
+  if [[ "${DEPLOY_SCOPE}" == mesh ]]; then
+    deployment_nodes=("${ALL_NODES[@]:1}")
+  fi
 
   DEPLOYMENT_PIDS=()
-  for node in "${ALL_NODES[@]}"; do
+  for node in "${deployment_nodes[@]}"; do
     deploy_node "${node}" \
       >"${ROOT}/target/multicloud-qualification/deploy-${node}.log" 2>&1 &
     DEPLOYMENT_PIDS+=("$!")
@@ -218,7 +256,7 @@ deploy_all_nodes() {
   done
   DEPLOYMENT_PIDS=()
   if ((status != 0)); then
-    for node in "${ALL_NODES[@]}"; do
+    for node in "${deployment_nodes[@]}"; do
       printf '\n%s\n' "${node}"
       tail -80 \
         "${ROOT}/target/multicloud-qualification/deploy-${node}.log" || true
@@ -226,7 +264,7 @@ deploy_all_nodes() {
     return 1
   fi
 
-  for node in "${ALL_NODES[@]}"; do
+  for node in "${deployment_nodes[@]}"; do
     node_exec "${node}" \
       "systemctl is-active --quiet $(node_service "${node}"); chronyc tracking -n | sed -n '1,12p'; sha256sum /usr/local/bin/$(if [[ "${node}" == contrib-london ]]; then printf av-contrib; else printf av-mesh; fi)"
   done
@@ -235,10 +273,12 @@ deploy_all_nodes() {
   # this operator-owned staging root. Keep it available in --services-only
   # deployments; player-preview.sh writes only its bounded logs here unless
   # bit-exact FLAC reconstruction is explicitly enabled.
-  node_exec contrib-london \
-    "sudo install -d -m 755 -o \$(id -un) -g \$(id -gn) /var/lib/needletail-test-media"
+  if [[ "${DEPLOY_SCOPE}" == all ]]; then
+    node_exec contrib-london \
+      "sudo install -d -m 755 -o \$(id -un) -g \$(id -gn) /var/lib/needletail-test-media"
+  fi
 
-  if ((PREPARE_ALBUM_MEDIA == 0)); then
+  if [[ "${DEPLOY_SCOPE}" != all ]] || ((PREPARE_ALBUM_MEDIA == 0)); then
     return 0
   fi
 
@@ -283,6 +323,7 @@ main() {
   trap 'terminate_multicloud_deployment 129' HUP
   trap 'terminate_multicloud_deployment 130' INT
   trap 'terminate_multicloud_deployment 143' TERM
+  "${OPERATIONS_PKI_GENERATOR}"
   build_web_assets
   prepare_deploy_package
   deploy_all_nodes

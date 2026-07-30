@@ -7,7 +7,12 @@ NEEDLETAIL_BINARY_ARTIFACTS=(
   h3-static-capacity
   av-contrib
   aep1-48k-probe
-  rist-send
+  ristsender
+  needletail-controller-agent
+  needletail-operations-collector
+  needletail-ops-entrypoint
+  etcd
+  etcdctl
 )
 
 needletail_binary_sha256() {

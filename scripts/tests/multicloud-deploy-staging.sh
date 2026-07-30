@@ -18,6 +18,11 @@ source "${ROOT}/scripts/multicloud-qualification/deploy.sh"
 parse_deploy_arguments --services-only
 [[ "${PREPARE_ALBUM_MEDIA}" == 0 ]]
 PREPARE_ALBUM_MEDIA=1
+parse_deploy_arguments --mesh-only
+[[ "${DEPLOY_SCOPE}" == mesh ]]
+[[ "${PREPARE_ALBUM_MEDIA}" == 0 ]]
+DEPLOY_SCOPE=all
+PREPARE_ALBUM_MEDIA=1
 help_status=0
 help_output="$(parse_deploy_arguments --help)" || help_status=$?
 [[ "${help_status}" == 64 ]]
@@ -39,10 +44,15 @@ MISSION_CONTROL_DIST="${TEST_ROOT}/mission-control"
 MEDIA_PREPARE="${TEST_ROOT}/prepare-full-album-pcm.sh"
 DAW_TEST_SOURCE="${ARTIFACTS}/daw-test-source"
 COMPILED_PLAN="${TEST_ROOT}/compiled-plan.json"
+OPERATIONS_SOURCES="${TEST_ROOT}/operations-sources.json"
+OPERATIONS_PKI="${TEST_ROOT}/operations-pki"
+ETCD_ENV_DIR="${TEST_ROOT}/etcd-env"
+OPERATIONS_PROXY_DIR="${TEST_ROOT}/operations-proxy"
 
 mkdir -p \
   "${ARTIFACTS}" "${DEPLOY_WORK_ROOT}/deploy-stage" "${ENV_DIR}" \
-  "${TLS_DIR}" "${DEPLOY_DIR}" "${PLAYER_DIST}" "${MISSION_CONTROL_DIST}"
+  "${TLS_DIR}" "${DEPLOY_DIR}" "${PLAYER_DIST}" "${MISSION_CONTROL_DIST}" \
+  "${OPERATIONS_PKI}" "${ETCD_ENV_DIR}" "${OPERATIONS_PROXY_DIR}"
 printf 'must not enter a new package\n' \
   >"${DEPLOY_WORK_ROOT}/deploy-stage/obsolete.txt"
 printf 'legacy archive\n' >"${DEPLOY_WORK_ROOT}/deploy-stage.tar.gz"
@@ -50,20 +60,29 @@ printf 'current player\n' >"${PLAYER_DIST}/player.js"
 printf 'current operations UI\n' >"${MISSION_CONTROL_DIST}/index.html"
 printf 'private key fixture\n' >"${TLS_DIR}/privkey.pem"
 
+for binary in "${NEEDLETAIL_BINARY_ARTIFACTS[@]}"; do
+  printf 'fixture: %s\n' "${binary}" >"${ARTIFACTS}/${binary}"
+done
 for fixture in \
-  "${ARTIFACTS}/av-mesh" \
-  "${ARTIFACTS}/av-contrib" \
-  "${ARTIFACTS}/h3-static-capacity" \
-  "${ARTIFACTS}/aep1-48k-probe" \
   "${ARTIFACTS}/daw-test-source" \
-  "${ARTIFACTS}/rist-send" \
   "${ARTIFACTS}/needletail-chrony.deb" \
   "${TLS_DIR}/fullchain.pem" \
   "${COMPILED_PLAN}" \
+  "${OPERATIONS_SOURCES}" \
+  "${OPERATIONS_PKI}/ca.pem" \
+  "${OPERATIONS_PKI}/server.pem" \
+  "${OPERATIONS_PKI}/server-key.pem" \
+  "${OPERATIONS_PKI}/client.pem" \
+  "${OPERATIONS_PKI}/client-key.pem" \
+  "${ETCD_ENV_DIR}/edge-london.env" \
+  "${OPERATIONS_PROXY_DIR}/19546.env" \
   "${DEPLOY_DIR}/chrony-gcp.conf" \
   "${DEPLOY_DIR}/binary-manifest.sh" \
   "${DEPLOY_DIR}/needletail-mesh.service" \
   "${DEPLOY_DIR}/needletail-contrib.service" \
+  "${DEPLOY_DIR}/needletail-controller-agent.service" \
+  "${DEPLOY_DIR}/needletail-operations-collector.service" \
+  "${DEPLOY_DIR}/needletail-etcd.service" \
   "${DEPLOY_DIR}/av-mesh-run" \
   "${DEPLOY_DIR}/av-contrib-run" \
   "${DEPLOY_DIR}/configure-clock.sh" \

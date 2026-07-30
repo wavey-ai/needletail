@@ -65,9 +65,11 @@ returns `503 Service Unavailable` when the assignment is absent, invalid, or
 near lease expiry. `/healthz` reports process health. `/readyz` reports whether
 the current assignment can cause a redirect.
 
-Installing this service does not make the still-missing durable controller
-operational. A fresh quorum-committed assignment and the public TLS/DNS proxy
-are both required before the well-known URL can redirect.
+The multicloud qualification composition supplies the assignment with an mTLS
+etcd quorum and `needletail-controller-agent`; production still requires the
+broader desired-state controller described above. A fresh quorum-committed
+assignment and the public TLS endpoint are required before the well-known URL
+can redirect.
 
 ## GCP performance lab
 

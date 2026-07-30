@@ -496,8 +496,8 @@ NEEDLETAIL_BUILD_OUTPUT_ROOT='${remote_stage}/out' \\
     "${ARTIFACT_DIR}/av-contrib"
   provider_scp_from contributor "${remote_stage}/out/aep1-48k-probe" \
     "${ARTIFACT_DIR}/aep1-48k-probe"
-  provider_scp_from contributor "${remote_stage}/out/rist-send" \
-    "${ARTIFACT_DIR}/rist-send"
+  provider_scp_from contributor "${remote_stage}/out/ristsender" \
+    "${ARTIFACT_DIR}/ristsender"
   provider_scp_from contributor "${remote_stage}/out/needletail-chrony.deb" \
     "${ARTIFACT_DIR}/chrony.deb"
   provider_scp_from contributor \
@@ -514,7 +514,7 @@ if [[ "${SKIP_BUILD}" == 1 ]]; then
     && -x "${ARTIFACT_DIR}/h3-static-capacity" \
     && -x "${ARTIFACT_DIR}/av-contrib" \
     && -x "${ARTIFACT_DIR}/aep1-48k-probe" \
-    && -x "${ARTIFACT_DIR}/rist-send" \
+    && -x "${ARTIFACT_DIR}/ristsender" \
     && -f "${ARTIFACT_DIR}/chrony.deb" \
     && -f "${BINARY_MANIFEST}" ]] || {
     echo "NEEDLETAIL_DEPLOY_SKIP_BUILD=1 requires cached, checksummed Linux binaries" >&2
@@ -541,7 +541,7 @@ else
   SOURCE_ARCHIVE=
   chmod +x "${ARTIFACT_DIR}/av-mesh" "${ARTIFACT_DIR}/h3-static-capacity" \
     "${ARTIFACT_DIR}/av-contrib" "${ARTIFACT_DIR}/aep1-48k-probe" \
-    "${ARTIFACT_DIR}/rist-send"
+    "${ARTIFACT_DIR}/ristsender"
 fi
 needletail_verify_binary_manifest_files \
   "${BINARY_MANIFEST}" "${ARTIFACT_DIR}" \
@@ -709,7 +709,7 @@ deploy_contributor() (
   gcp_scp_to "${role}" \
     "${ARTIFACT_DIR}/av-contrib" \
     "${ARTIFACT_DIR}/aep1-48k-probe" \
-    "${ARTIFACT_DIR}/rist-send" \
+    "${ARTIFACT_DIR}/ristsender" \
     "${ARTIFACT_DIR}/chrony.deb" \
     "${BINARY_MANIFEST}" \
     "${DEPLOY_DIR}/av-contrib-run" \

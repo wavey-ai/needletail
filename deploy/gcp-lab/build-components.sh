@@ -8,9 +8,18 @@ OUTPUT_ROOT="${NEEDLETAIL_BUILD_OUTPUT_ROOT}"
 BUILD_PARENT=/opt/needletail-build
 RUST_TOOLCHAIN="${NEEDLETAIL_RUST_TOOLCHAIN:-1.96.0}"
 ENABLE_SRT="${NEEDLETAIL_ENABLE_SRT:-0}"
+BUILD_SCOPE="${NEEDLETAIL_BUILD_SCOPE:-all}"
 RUSTUP_VERSION=1.28.2
+LIBRIST_VERSION=0.2.18
+LIBRIST_ARCHIVE_URL="https://code.videolan.org/rist/librist/-/archive/v${LIBRIST_VERSION}/librist-v${LIBRIST_VERSION}.tar.gz"
+LIBRIST_ARCHIVE_SHA256=9a2d16dcdb9fb067b7ba4259a3976ff6f8df9a62dbec7f32f19a0b60ec0c114a
+ETCD_VERSION=3.7.1
+ETCD_ARCHIVE_URL="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
+ETCD_ARCHIVE_SHA256=e8cd3fa8064c98137c5dbd78b76f969417ace84efb83c481041d7a52ffdd8fb9
 BUILD_ROOT=
 PUBLISH_ROOT=
+LIBRIST_PREFIX=
+ETCD_PREFIX=
 
 run_as_root() {
   if (( EUID == 0 )); then
@@ -37,26 +46,33 @@ trap 'exit 143' TERM
 
 install_build_dependencies() {
   local package
+  local -a dnf_repo_args=()
   local -a packages=()
   local -a missing_packages=()
 
   if command -v dnf >/dev/null 2>&1; then
     packages=(
       binutils ca-certificates clang cmake curl gcc gcc-c++ git make
-      openssl-devel pkgconf-pkg-config util-linux
+      meson ninja-build openssl-devel patch pkgconf-pkg-config protobuf-compiler
+      util-linux
     )
     for package in "${packages[@]}"; do
       rpm -q "${package}" >/dev/null 2>&1 \
         || missing_packages+=("${package}")
     done
     if (( ${#missing_packages[@]} > 0 )); then
-      run_as_root dnf install -y "${missing_packages[@]}"
+      if dnf -q repolist all \
+        | awk '$1 == "crb" { found = 1 } END { exit !found }'; then
+        dnf_repo_args+=(--enablerepo=crb)
+      fi
+      run_as_root dnf install -y \
+        "${dnf_repo_args[@]}" "${missing_packages[@]}"
     fi
   elif command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     packages=(
       binutils build-essential ca-certificates clang cmake curl git libssl-dev
-      pkg-config util-linux
+      meson ninja-build patch pkg-config protobuf-compiler util-linux
     )
     for package in "${packages[@]}"; do
       if ! dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
@@ -70,6 +86,91 @@ install_build_dependencies() {
     fi
   else
     echo "unsupported package manager; expected dnf or apt-get" >&2
+    exit 1
+  fi
+}
+
+build_pinned_librist() {
+  local archive="${BUILD_ROOT}/librist-v${LIBRIST_VERSION}.tar.gz"
+  local source_root="${BUILD_ROOT}/librist-source"
+  local build_root="${BUILD_ROOT}/librist-build"
+
+  LIBRIST_PREFIX="${BUILD_ROOT}/librist-prefix"
+  install -d -m 700 "${source_root}" "${LIBRIST_PREFIX}"
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --connect-timeout 10 --retry 3 \
+    --output "${archive}" "${LIBRIST_ARCHIVE_URL}"
+  printf '%s  %s\n' "${LIBRIST_ARCHIVE_SHA256}" "${archive}" \
+    | sha256sum --check --status -
+  tar --no-same-owner --no-same-permissions --strip-components=1 \
+    -xzf "${archive}" -C "${source_root}"
+  patch --batch --forward -d "${source_root}" -p1 \
+    <"${SOURCE_ROOT}/needletail/deploy/gcp-lab/librist-0.2.18-no-srp-reassociation.patch"
+
+  meson setup \
+    --prefix="${LIBRIST_PREFIX}" \
+    --libdir=lib \
+    --buildtype=release \
+    --default-library=static \
+    --wrap-mode=nodownload \
+    -Dbuiltin_cjson=true \
+    -Dbuiltin_lz4=true \
+    -Duse_mbedtls=false \
+    -Dbuilt_tools=true \
+    -Dtest=false \
+    "${build_root}" "${source_root}"
+  meson compile -C "${build_root}" -j "${CARGO_JOBS}"
+  meson install -C "${build_root}"
+
+  [[ -f "${LIBRIST_PREFIX}/lib/librist.a" \
+    && -f "${LIBRIST_PREFIX}/lib/pkgconfig/librist.pc" \
+    && -x "${LIBRIST_PREFIX}/bin/ristsender" ]] || {
+    echo "pinned librist build did not produce the required static artifacts" >&2
+    exit 1
+  }
+  [[ "$(
+    PKG_CONFIG_LIBDIR="${LIBRIST_PREFIX}/lib/pkgconfig" \
+      pkg-config --modversion librist
+  )" == "${LIBRIST_VERSION}" ]] || {
+    echo "pinned librist pkg-config metadata has an unexpected version" >&2
+    exit 1
+  }
+}
+
+build_pinned_etcd() {
+  local archive="${BUILD_ROOT}/etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
+  local source_root="${BUILD_ROOT}/etcd-source"
+
+  [[ "$(uname -m)" == x86_64 ]] || {
+    echo "the pinned etcd qualification artifact currently supports x86_64 only" >&2
+    exit 1
+  }
+  ETCD_PREFIX="${BUILD_ROOT}/etcd-prefix"
+  install -d -m 700 "${source_root}" "${ETCD_PREFIX}"
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --connect-timeout 10 --retry 3 \
+    --output "${archive}" "${ETCD_ARCHIVE_URL}"
+  printf '%s  %s\n' "${ETCD_ARCHIVE_SHA256}" "${archive}" \
+    | sha256sum --check --status -
+  tar --no-same-owner --no-same-permissions --strip-components=1 \
+    -xzf "${archive}" -C "${source_root}"
+  install -m 755 \
+    "${source_root}/etcd" \
+    "${source_root}/etcdctl" \
+    "${ETCD_PREFIX}/"
+  [[ "$("${ETCD_PREFIX}/etcd" --version | awk '/etcd Version/{print $3}')" \
+    == "${ETCD_VERSION}" ]] || {
+    echo "pinned etcd artifact has an unexpected version" >&2
+    exit 1
+  }
+}
+
+assert_no_dynamic_librist_dependency() {
+  local binary="$1"
+
+  if readelf -d "${binary}" 2>/dev/null \
+    | grep -Eq 'Shared library: \[librist(\.so[^]]*)?\]'; then
+    echo "$(basename "${binary}") unexpectedly depends on dynamic librist" >&2
     exit 1
   fi
 }
@@ -195,6 +296,7 @@ EOF
 }
 
 TRANSFER_ROOT="${OUTPUT_ROOT%/out}"
+SEED_ROOT="${TRANSFER_ROOT}/seed"
 [[ "${TRANSFER_ROOT}" =~ ^/tmp/needletail-build-transfer\.[A-Za-z0-9]{8}$ \
   && "${OUTPUT_ROOT}" == "${TRANSFER_ROOT}/out" \
   && "${SOURCE_ARCHIVE}" == "${TRANSFER_ROOT}/source.tar.gz" \
@@ -215,6 +317,13 @@ case "${ENABLE_SRT}" in
   0|1) ;;
   *)
     echo "NEEDLETAIL_ENABLE_SRT must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+case "${BUILD_SCOPE}" in
+  all|mesh) ;;
+  *)
+    echo "NEEDLETAIL_BUILD_SCOPE must be all or mesh" >&2
     exit 2
     ;;
 esac
@@ -248,12 +357,24 @@ install -d -m 700 "${SOURCE_ROOT}" "${TARGET_ROOT}" "${ARTIFACT_ROOT}"
 tar --no-same-owner --no-same-permissions -xzf "${SOURCE_ARCHIVE}" \
   -C "${SOURCE_ROOT}"
 
+if [[ "${BUILD_SCOPE}" == mesh ]]; then
+  for seed_binary in av-contrib aep1-48k-probe; do
+    [[ -f "${SEED_ROOT}/${seed_binary}" \
+      && ! -L "${SEED_ROOT}/${seed_binary}" ]] || {
+      echo "mesh build seed is missing ${seed_binary}" >&2
+      exit 2
+    }
+  done
+fi
+
 prepare_rust_toolchain
 CARGO_JOBS="${CARGO_BUILD_JOBS:-2}"
 [[ "${CARGO_JOBS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "CARGO_BUILD_JOBS must be a positive integer" >&2
   exit 2
 }
+build_pinned_librist
+build_pinned_etcd
 contrib_feature_args=(--no-default-features)
 if [[ "${ENABLE_SRT}" == 1 ]]; then
   contrib_feature_args+=(--features srt-ingest)
@@ -267,28 +388,57 @@ env \
   "${CARGO_COMMAND[@]}" build --release --locked \
   --manifest-path "${SOURCE_ROOT}/av-mesh/Cargo.toml" \
   --bin av-mesh --bin h3-static-capacity
+if [[ "${BUILD_SCOPE}" == all ]]; then
+  env \
+    CARGO_BUILD_JOBS="${CARGO_JOBS}" \
+    CARGO_INCREMENTAL=0 \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_TARGET_DIR="${TARGET_ROOT}" \
+    LIBRIST_STATIC=1 \
+    PKG_CONFIG_ALL_STATIC=1 \
+    PKG_CONFIG_LIBDIR="${LIBRIST_PREFIX}/lib/pkgconfig" \
+    PKG_CONFIG_PATH="${LIBRIST_PREFIX}/lib/pkgconfig" \
+    "${CARGO_COMMAND[@]}" build --release --locked \
+    "${contrib_feature_args[@]}" \
+    --manifest-path "${SOURCE_ROOT}/av-contrib/Cargo.toml" \
+    --bin av-contrib --bin aep1-48k-probe
+fi
 env \
   CARGO_BUILD_JOBS="${CARGO_JOBS}" \
   CARGO_INCREMENTAL=0 \
   CARGO_NET_GIT_FETCH_WITH_CLI=true \
   CARGO_TARGET_DIR="${TARGET_ROOT}" \
   "${CARGO_COMMAND[@]}" build --release --locked \
-  "${contrib_feature_args[@]}" \
-  --manifest-path "${SOURCE_ROOT}/av-contrib/Cargo.toml" \
-  --bin av-contrib --bin aep1-48k-probe --bin rist-send
+  --manifest-path "${SOURCE_ROOT}/needletail/Cargo.toml" \
+  --bin needletail-controller-agent \
+  --bin needletail-operations-collector \
+  --bin needletail-ops-entrypoint
 
 # This order is the manifest contract enforced by binary-manifest.sh.
 binaries=(
-  av-mesh h3-static-capacity av-contrib aep1-48k-probe rist-send
+  av-mesh h3-static-capacity av-contrib aep1-48k-probe ristsender
+  needletail-controller-agent needletail-operations-collector
+  needletail-ops-entrypoint
+  etcd etcdctl
 )
 for binary in "${binaries[@]}"; do
-  install -m 755 "${TARGET_ROOT}/release/${binary}" \
-    "${ARTIFACT_ROOT}/${binary}"
+  source_binary="${TARGET_ROOT}/release/${binary}"
+  if [[ "${BUILD_SCOPE}" == mesh \
+    && ( "${binary}" == av-contrib || "${binary}" == aep1-48k-probe ) ]]; then
+    source_binary="${SEED_ROOT}/${binary}"
+  elif [[ "${binary}" == ristsender ]]; then
+    source_binary="${LIBRIST_PREFIX}/bin/ristsender"
+  elif [[ "${binary}" == etcd || "${binary}" == etcdctl ]]; then
+    source_binary="${ETCD_PREFIX}/${binary}"
+  fi
+  install -m 755 "${source_binary}" "${ARTIFACT_ROOT}/${binary}"
   strip --strip-unneeded "${ARTIFACT_ROOT}/${binary}"
   readelf -h "${ARTIFACT_ROOT}/${binary}" >/dev/null
   install -m 755 "${ARTIFACT_ROOT}/${binary}" \
     "${PUBLISH_ROOT}/${binary}"
 done
+assert_no_dynamic_librist_dependency "${ARTIFACT_ROOT}/av-contrib"
+assert_no_dynamic_librist_dependency "${ARTIFACT_ROOT}/ristsender"
 make_chrony_deb "${PUBLISH_ROOT}/needletail-chrony.deb"
 
 : >"${PUBLISH_ROOT}/needletail-binaries.sha256"
