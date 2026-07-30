@@ -18,7 +18,7 @@ test("player is same-origin, mobile safe, and selects a supported playback engin
   assert.match(html, /id="timeline-buffered"/);
   assert.match(html, /class="timeline-live-edge"/);
   assert.match(html, /hls\.min\.js/);
-  assert.match(html, /src="\/player\.js"/);
+  assert.match(html, /src="\/player\.js\?v=[A-Za-z0-9._-]+"/);
   assert.match(html, /href="\/player\.css"/);
   assert.doesNotMatch(html, /(?:src|href)="https?:\/\//);
   assert.match(script, /function selectedPlaylistUrl\(\)/);
