@@ -8,8 +8,8 @@ mod app {
         bounded_nodes, contributor_latency, effective_delivery, monotonic_rate_per_second,
         operational_activity, operational_alerts, publication_from_contrib, publication_from_edge,
         ContribStatus, DeliverySnapshot, DurationHistogram, EdgeNode, EdgeService, EventSource,
-        IngestSession, ListenerStatus, MeshStatus, OperationalEvent, ProtocolRuntime,
-        PublicationSnapshot, RelayNodeSession, RouteLane, MAX_EVENT_ROWS,
+        IngestSession, ListenerStatus, MeshStatus, OperationalEvent, OperationsCollectorStatus,
+        ProtocolRuntime, PublicationSnapshot, RelayNodeSession, RouteLane, MAX_EVENT_ROWS,
     };
     use serde::de::DeserializeOwned;
     use wasm_bindgen::{closure::Closure, JsCast};
@@ -390,6 +390,7 @@ mod app {
     ) -> impl IntoView {
         view! {
             <div class="page-view overview-page">
+                <CollectorStatusBar edge />
                 <section class="section-block">
                     <SectionHeading kicker="CURRENT STATUS" title="Delivery health" detail="Ingest, relay, and playback edge" />
                     <div class="hero-grid">
@@ -426,6 +427,7 @@ mod app {
     ) -> impl IntoView {
         view! {
             <div class="page-view">
+                <CollectorStatusBar edge />
                 <section class="section-block">
                     <SectionHeading kicker="DEPLOYMENT" title="Network map" detail="Node and link health" />
                     <NetworkMap contrib edge rates />
@@ -468,6 +470,7 @@ mod app {
     fn NodesPage(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <div class="page-view">
+                <CollectorStatusBar edge />
                 <FleetSummary edge />
                 <NodeTable edge />
                 <EdgeServiceTable edge />
@@ -603,6 +606,34 @@ mod app {
         }
     }
 
+    #[component]
+    fn CollectorStatusBar(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        let collector = move || {
+            edge.get()
+                .map(|status| status.orchestration.collector)
+                .unwrap_or_default()
+        };
+        view! {
+            <section class=move || format!("collector-status {}", collector_tone(&collector()))>
+                <div class="collector-identity">
+                    <span class=move || format!("state-mark {}", collector_tone(&collector()))></span>
+                    <div>
+                        <p>"GLOBAL TELEMETRY"</p>
+                        <strong>{move || collector_state_label(&collector())}</strong>
+                        <small>{move || collector_detail(&collector())}</small>
+                    </div>
+                </div>
+                <div class="collector-facts">
+                    <div><span>"Collector"</span><b>{move || collector().leader_node_id.unwrap_or_else(|| "unreported".to_owned())}</b></div>
+                    <div><span>"Term / generation"</span><b>{move || format!("{} / {}", optional_u64(collector().term), optional_u64(collector().fencing_generation))}</b></div>
+                    <div><span>"Quorum"</span><b>{move || format_collector_quorum(&collector())}</b></div>
+                    <div><span>"Lease"</span><b>{move || collector().lease_remaining_ms.map(format_age_ms).unwrap_or_else(|| "unreported".to_owned())}</b></div>
+                    <div><span>"Fleet snapshots"</span><b>{move || format_global_snapshot_freshness(edge.get().as_ref())}</b></div>
+                </div>
+            </section>
+        }
+    }
+
     #[derive(Clone, Debug)]
     struct NetworkLink {
         key: String,
@@ -610,6 +641,9 @@ mod app {
         to: EdgeNode,
         role: String,
         tone: &'static str,
+        throughput_bps: Option<u64>,
+        rtt_us: Option<u64>,
+        generation: Option<u64>,
     }
 
     #[derive(Clone, Debug)]
@@ -640,8 +674,13 @@ mod app {
                         <span>"links"</span>
                         <strong>{move || format_rate(RateMetric::Delivery, rates.get().delivery_bps)}</strong>
                         <span>"delivery"</span>
+                        <strong class="collector-summary">{move || edge.get()
+                            .and_then(|status| status.orchestration.collector.leader_node_id)
+                            .unwrap_or_else(|| "unreported".to_owned())}</strong>
+                        <span>"collector"</span>
                     </div>
                     <div class="map-legend" aria-label="Map status legend">
+                        <span class="selected"><i></i>"Collector"</span>
                         <span class="healthy"><i></i>"Healthy"</span>
                         <span class="warn"><i></i>"Degraded"</span>
                         <span class="error"><i></i>"Unavailable"</span>
@@ -658,10 +697,10 @@ mod app {
                                 }).unwrap_or_default()
                                 key=|link| link.key.clone()
                                 children=move |link| {
-                                    let title = format!("{}: {} to {}", link.role, link.from.node_id, link.to.node_id);
+                                    let title = format_network_link_title(&link);
                                     view! {
                                         <path
-                                            class=format!("network-link {}", link.tone)
+                                            class=format!("network-link {} {}", link.tone, link_role_class(&link.role))
                                             d=map_link_path(&link.from, &link.to, &link.role)
                                         >
                                             <title>{title}</title>
@@ -684,15 +723,23 @@ mod app {
                                     format!("{} · {} nodes", region, cluster.nodes.len())
                                 };
                                 let tone = edge.get().map(|status| cluster_health_tone(&status, &cluster)).unwrap_or("warn");
+                                let is_collector = edge.get().is_some_and(|status| {
+                                    status
+                                        .orchestration
+                                        .collector
+                                        .leader_node_id
+                                        .as_ref()
+                                        .is_some_and(|leader| cluster.nodes.iter().any(|node| &node.node_id == leader))
+                                });
                                 let (left, top) = project_node(&representative);
                                 view! {
                                     <button
-                                        class=format!("map-node {tone}")
+                                        class=format!("map-node {tone} {}", if is_collector { "collector" } else { "" })
                                         style=format!("left:{left:.3}%;top:{top:.3}%")
                                         title=format!("{} · {}", node_names, region)
                                         on:click=move |_| set_selected_node.set(Some(selected_id.clone()))
                                     >
-                                        <i></i><span>{label}</span>
+                                        <i></i><span>{if is_collector { format!("{label} · collector") } else { label }}</span>
                                     </button>
                                 }
                             }
@@ -727,15 +774,42 @@ mod app {
                     match (status.as_ref(), node) {
                         (Some(status), Some(node)) => {
                             let tone = node_health_tone(status, node);
+                            let collector = &status.orchestration.collector;
+                            let cluster_size = status
+                                .nodes
+                                .iter()
+                                .filter(|candidate| {
+                                    (candidate.latitude - node.latitude).abs() < 0.001
+                                        && (candidate.longitude - node.longitude).abs() < 0.001
+                                })
+                                .count();
+                            let collector_role = if collector
+                                .leader_node_id
+                                .as_ref()
+                                .is_some_and(|leader| leader == &node.node_id)
+                            {
+                                "Active collector"
+                            } else if collector.reported() {
+                                "Follower"
+                            } else {
+                                "Unreported"
+                            };
                             view! {
                                 <div class="map-detail-content">
                                     <div class="map-detail-title">
                                         <span class=format!("state-mark {tone}")></span>
-                                        <div><strong>{node.node_id.clone()}</strong><span>{nonempty_owned(node.region.clone(), "Region pending")}</span></div>
+                                        <div>
+                                            <strong>{node.node_id.clone()}</strong>
+                                            <span>{format!("{} · {}", nonempty_owned(node.region.clone(), "Region pending"), collector_role)}</span>
+                                        </div>
                                     </div>
                                     <dl>
                                         <div><dt>"Status"</dt><dd>{node_health_label(status, node)}</dd></div>
+                                        <div><dt>"Role"</dt><dd>{nonempty_owned(node.role.clone(), "unreported")}</dd></div>
+                                        <div><dt>"Provider / zone"</dt><dd>{format!("{} / {}", nonempty_owned(node.provider.clone(), "unreported"), nonempty_owned(node.zone.clone(), "unreported"))}</dd></div>
+                                        <div><dt>"Nodes at location"</dt><dd>{cluster_size}</dd></div>
                                         <div><dt>"Location"</dt><dd>{format!("{:.3}, {:.3}", node.latitude, node.longitude)}</dd></div>
+                                        <div><dt>"Snapshot"</dt><dd>{node_snapshot_label(status, node)}</dd></div>
                                         <div><dt>"Active streams"</dt><dd>{node.active_streams}</dd></div>
                                         <div><dt>"Contributor streams"</dt><dd>{node.contributor_streams}</dd></div>
                                         <div><dt>"Egress capacity"</dt><dd>{format_bps(node.egress_capacity_bps)}</dd></div>
@@ -1245,14 +1319,23 @@ mod app {
                 <PanelTitle title="Node fleet" detail="Capacity, storage, streams, and service state" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Node"</th><th>"Region"</th><th>"State"</th><th>"Active streams"</th><th>"Storage"</th><th>"Egress capacity"</th></tr></thead>
+                        <thead><tr><th>"Node"</th><th>"Role"</th><th>"Provider / region"</th><th>"State"</th><th>"Active streams"</th><th>"Storage"</th><th>"Egress capacity"</th></tr></thead>
                         <tbody>
                             <For
-                                each=move || edge.get().map(|status| bounded_nodes(&status)).unwrap_or_default()
-                                key=|node| node.node_id.clone()
-                                let(node)
+                                each=move || edge.get().map(|status| {
+                                    let leader = status.orchestration.collector.leader_node_id.clone();
+                                    bounded_nodes(&status)
+                                        .into_iter()
+                                        .map(|node| {
+                                            let is_collector = leader.as_ref().is_some_and(|id| id == &node.node_id);
+                                            (node, is_collector)
+                                        })
+                                        .collect::<Vec<_>>()
+                                }).unwrap_or_default()
+                                key=|(node, _)| node.node_id.clone()
+                                let(entry)
                             >
-                                <NodeRow node />
+                                <NodeRow node=entry.0 is_collector=entry.1 />
                             </For>
                         </tbody>
                     </table>
@@ -1263,7 +1346,7 @@ mod app {
     }
 
     #[component]
-    fn NodeRow(node: EdgeNode) -> impl IntoView {
+    fn NodeRow(node: EdgeNode, is_collector: bool) -> impl IntoView {
         let state = if node.draining {
             "draining"
         } else {
@@ -1272,9 +1355,15 @@ mod app {
         let node_id = nonempty_owned(node.node_id.clone(), "node");
         let location = format!(
             "{} · {}",
+            nonempty_owned(node.provider.clone(), "provider pending"),
             nonempty_owned(node.region.clone(), "region pending"),
-            nonempty_owned(node.continent.clone(), "continent pending")
         );
+        let role = nonempty_owned(node.role.clone(), "role unreported");
+        let role = if is_collector {
+            format!("collector · {role}")
+        } else {
+            role
+        };
         let storage = node
             .storage_percent()
             .map(|value| {
@@ -1288,6 +1377,7 @@ mod app {
         view! {
             <tr>
                 <td class="strong-cell">{node_id}</td>
+                <td>{role}</td>
                 <td>{location}</td>
                 <td><StatePill state=state.to_owned() /></td>
                 <td>{format!("{} · {} origin", node.active_streams, node.contributor_streams)}</td>
@@ -2162,6 +2252,35 @@ mod app {
 
     fn network_links(status: &MeshStatus, delivery: &DeliverySnapshot) -> Vec<NetworkLink> {
         let nodes = bounded_nodes(status);
+        if !status.topology_links.is_empty() {
+            return status
+                .topology_links
+                .iter()
+                .take(64)
+                .filter_map(|link| {
+                    let from = nodes
+                        .iter()
+                        .find(|node| node.node_id == link.from_node_id)?;
+                    let to = nodes.iter().find(|node| node.node_id == link.to_node_id)?;
+                    (from.node_id != to.node_id).then(|| NetworkLink {
+                        key: format!("{}:{}:{}", link.role, from.node_id, to.node_id),
+                        from: from.clone(),
+                        to: to.clone(),
+                        role: nonempty_owned(link.role.clone(), "Topology link"),
+                        tone: worst_tone(
+                            tone_for_state(&link.state),
+                            worst_tone(
+                                node_health_tone(status, from),
+                                node_health_tone(status, to),
+                            ),
+                        ),
+                        throughput_bps: link.throughput_bps,
+                        rtt_us: link.rtt_us,
+                        generation: link.generation,
+                    })
+                })
+                .collect();
+        }
         let destination = delivery
             .destination
             .as_deref()
@@ -2203,6 +2322,9 @@ mod app {
                     lane.state.as_deref().map(tone_for_state).unwrap_or("warn"),
                     node_health_tone(status, source),
                 ),
+                throughput_bps: None,
+                rtt_us: lane.rtt_us,
+                generation: delivery.generation,
             });
         }
 
@@ -2217,6 +2339,9 @@ mod app {
                         to: destination.clone(),
                         role: "Mesh link".to_owned(),
                         tone: node_health_tone(status, node),
+                        throughput_bps: None,
+                        rtt_us: None,
+                        generation: delivery.generation,
                     }),
             );
         }
@@ -2251,13 +2376,53 @@ mod app {
                 y
             );
         }
-        format!(
-            "M {:.2} {:.2} L {:.2} {:.2}",
-            from_x * 10.0,
-            from_y * 5.0,
-            to_x * 10.0,
-            to_y * 5.0
-        )
+        let from_x = from_x * 10.0;
+        let from_y = from_y * 5.0;
+        let to_x = to_x * 10.0;
+        let to_y = to_y * 5.0;
+        let dx = to_x - from_x;
+        let dy = to_y - from_y;
+        let distance = (dx * dx + dy * dy).sqrt().max(1.0);
+        let bend = (distance * 0.12).clamp(10.0, 42.0);
+        let direction = if role.to_ascii_lowercase().contains("warm")
+            || role.to_ascii_lowercase().contains("secondary")
+            || role.to_ascii_lowercase().contains("repair")
+        {
+            -1.0
+        } else {
+            1.0
+        };
+        let control_x = (from_x + to_x) / 2.0 - dy / distance * bend * direction;
+        let control_y = (from_y + to_y) / 2.0 + dx / distance * bend * direction;
+        format!("M {from_x:.2} {from_y:.2} Q {control_x:.2} {control_y:.2} {to_x:.2} {to_y:.2}")
+    }
+
+    fn format_network_link_title(link: &NetworkLink) -> String {
+        let mut details = vec![format!(
+            "{}: {} to {}",
+            link.role, link.from.node_id, link.to.node_id
+        )];
+        if let Some(rtt_us) = link.rtt_us {
+            details.push(format!("RTT {}", format_duration_us(rtt_us)));
+        }
+        if let Some(throughput_bps) = link.throughput_bps {
+            details.push(format!("throughput {}", format_bps(throughput_bps)));
+        }
+        if let Some(generation) = link.generation {
+            details.push(format!("generation {generation}"));
+        }
+        details.join(" · ")
+    }
+
+    fn link_role_class(role: &str) -> &'static str {
+        let role = role.to_ascii_lowercase();
+        if role.contains("warm") || role.contains("secondary") || role.contains("repair") {
+            "warm"
+        } else if role.contains("control") {
+            "control"
+        } else {
+            "primary"
+        }
     }
 
     fn node_health_tone(status: &MeshStatus, node: &EdgeNode) -> &'static str {
@@ -2289,6 +2454,26 @@ mod app {
             "warn" => "Degraded",
             _ => "Healthy",
         }
+    }
+
+    fn node_snapshot_label(status: &MeshStatus, node: &EdgeNode) -> String {
+        if let Some(stale) = status
+            .telemetry
+            .stale_nodes
+            .iter()
+            .find(|stale| stale.node_id == node.node_id)
+        {
+            return format!("stale {}", format_age(stale.age_ms));
+        }
+        node.updated_unix_ms
+            .map(|updated| format_age(now_unix_ms().saturating_sub(updated)))
+            .unwrap_or_else(|| {
+                if node.node_id == status.node.node_id {
+                    "current".to_owned()
+                } else {
+                    "age unreported".to_owned()
+                }
+            })
     }
 
     fn relay_health_tone(relay: &needletail_mission_control::RelayIngress) -> &'static str {
@@ -2419,6 +2604,101 @@ mod app {
                 "error"
             }
             _ => "warn",
+        }
+    }
+
+    fn collector_tone(collector: &OperationsCollectorStatus) -> &'static str {
+        if !collector.reported() {
+            "warn"
+        } else if collector.quorum_healthy == Some(false) || collector.lease_remaining_ms == Some(0)
+        {
+            "error"
+        } else if collector.quorum_healthy == Some(true) && collector.leader_node_id.is_some() {
+            "healthy"
+        } else {
+            "warn"
+        }
+    }
+
+    fn collector_state_label(collector: &OperationsCollectorStatus) -> String {
+        if !collector.reported() {
+            "Election telemetry unavailable".to_owned()
+        } else if collector.quorum_healthy == Some(false) {
+            "Quorum unavailable — collector fenced".to_owned()
+        } else if collector.lease_remaining_ms == Some(0) {
+            "Collector lease expired".to_owned()
+        } else {
+            match collector.role.to_ascii_lowercase().as_str() {
+                "leader" | "collector" => "Collecting global snapshots".to_owned(),
+                "candidate" => "Election in progress".to_owned(),
+                _ => collector
+                    .leader_node_id
+                    .as_ref()
+                    .map(|leader| format!("Following {leader}"))
+                    .unwrap_or_else(|| "Collector pending".to_owned()),
+            }
+        }
+    }
+
+    fn collector_detail(collector: &OperationsCollectorStatus) -> String {
+        if !collector.reported() {
+            return "The active feed does not expose quorum, lease, or fencing state.".to_owned();
+        }
+        let authority = nonempty_owned(collector.authority.clone(), "node quorum");
+        let region = collector
+            .leader_region
+            .clone()
+            .unwrap_or_else(|| "region unreported".to_owned());
+        let change = collector
+            .last_change_reason
+            .clone()
+            .unwrap_or_else(|| "leadership reason unreported".to_owned());
+        let changed = collector
+            .last_leadership_change_unix_ms
+            .map(format_event_time)
+            .unwrap_or_else(|| "change time unreported".to_owned());
+        format!("{authority} · {region} · {change} · {changed}")
+    }
+
+    fn format_collector_quorum(collector: &OperationsCollectorStatus) -> String {
+        match (
+            collector.quorum_healthy,
+            collector.voters_online,
+            collector.voters_total,
+        ) {
+            (Some(healthy), Some(online), Some(total)) => format!(
+                "{online}/{total} {}",
+                if healthy { "healthy" } else { "unavailable" }
+            ),
+            (Some(healthy), _, _) => {
+                if healthy {
+                    "healthy".to_owned()
+                } else {
+                    "unavailable".to_owned()
+                }
+            }
+            _ => "unreported".to_owned(),
+        }
+    }
+
+    fn format_global_snapshot_freshness(status: Option<&MeshStatus>) -> String {
+        let Some(status) = status else {
+            return "unavailable".to_owned();
+        };
+        let collector = &status.orchestration.collector;
+        match (
+            collector.nodes_current,
+            collector.nodes_stale,
+            collector.nodes_awaiting,
+        ) {
+            (Some(current), Some(stale), Some(awaiting)) => {
+                format!("{current} current · {stale} stale · {awaiting} awaiting")
+            }
+            _ => format!(
+                "{} current · {} stale",
+                status.telemetry.fresh_remote_count.saturating_add(1),
+                status.telemetry.stale_remote_count
+            ),
         }
     }
 

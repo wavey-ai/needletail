@@ -431,16 +431,22 @@ pub struct MeshStatus {
     pub publication: PublicationSnapshot,
     pub delivery: DeliverySnapshot,
     pub routes: Vec<DeliverySnapshot>,
+    pub topology_links: Vec<NetworkTopologyLink>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct EdgeNode {
     pub node_id: String,
+    pub provider: String,
     pub region: String,
+    pub zone: String,
+    pub role: String,
     pub continent: String,
     pub latitude: f64,
     pub longitude: f64,
+    pub public_endpoint: Option<String>,
+    pub updated_unix_ms: Option<u64>,
     pub total_storage_bytes: u64,
     pub used_storage_bytes: u64,
     pub egress_capacity_bps: u64,
@@ -612,6 +618,50 @@ pub struct TelemetryNodeHealth {
 pub struct OperationsReadiness {
     pub control_dispatch_ready: bool,
     pub telemetry_fec: TelemetryFecStatus,
+    pub collector: OperationsCollectorStatus,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OperationsCollectorStatus {
+    pub authority: String,
+    pub role: String,
+    pub leader_node_id: Option<String>,
+    pub leader_region: Option<String>,
+    pub term: Option<u64>,
+    pub fencing_generation: Option<u64>,
+    pub quorum_healthy: Option<bool>,
+    pub voters_online: Option<usize>,
+    pub voters_total: Option<usize>,
+    pub lease_remaining_ms: Option<u64>,
+    pub last_leadership_change_unix_ms: Option<u64>,
+    pub last_change_reason: Option<String>,
+    pub public_endpoint: Option<String>,
+    pub ingest_endpoint: Option<String>,
+    pub nodes_current: Option<usize>,
+    pub nodes_stale: Option<usize>,
+    pub nodes_awaiting: Option<usize>,
+}
+
+impl OperationsCollectorStatus {
+    pub fn reported(&self) -> bool {
+        self.leader_node_id.is_some()
+            || self.term.is_some()
+            || self.fencing_generation.is_some()
+            || self.quorum_healthy.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct NetworkTopologyLink {
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub role: String,
+    pub state: String,
+    pub throughput_bps: Option<u64>,
+    pub rtt_us: Option<u64>,
+    pub generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1560,6 +1610,53 @@ mod tests {
         assert_eq!(status.snapshots_submitted, 12);
         assert_eq!(status.decoded_snapshots, 11);
         assert_eq!(status.send_drops, 1);
+    }
+
+    #[test]
+    fn global_collector_and_topology_links_parse_as_optional_rollout_state() {
+        let edge: MeshStatus = serde_json::from_str(
+            r#"{
+                "orchestration": {
+                    "collector": {
+                        "authority": "node-raft",
+                        "role": "follower",
+                        "leader_node_id": "relay-primary-amsterdam",
+                        "leader_region": "europe-west4",
+                        "term": 18,
+                        "fencing_generation": 43,
+                        "quorum_healthy": true,
+                        "voters_online": 3,
+                        "voters_total": 3,
+                        "lease_remaining_ms": 1120,
+                        "nodes_current": 9,
+                        "nodes_stale": 1,
+                        "nodes_awaiting": 0
+                    }
+                },
+                "topology_links": [{
+                    "from_node_id": "relay-primary-amsterdam",
+                    "to_node_id": "relay-regional-osaka",
+                    "role": "primary",
+                    "state": "healthy",
+                    "throughput_bps": 12000000,
+                    "rtt_us": 184000,
+                    "generation": 43
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let collector = edge.orchestration.collector;
+        assert!(collector.reported());
+        assert_eq!(
+            collector.leader_node_id.as_deref(),
+            Some("relay-primary-amsterdam")
+        );
+        assert_eq!(collector.fencing_generation, Some(43));
+        assert_eq!(collector.voters_online, Some(3));
+        assert_eq!(edge.topology_links.len(), 1);
+        assert_eq!(edge.topology_links[0].role, "primary");
+        assert_eq!(edge.topology_links[0].throughput_bps, Some(12_000_000));
     }
 
     #[test]

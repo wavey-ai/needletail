@@ -20,8 +20,12 @@ It pauses routine polling while the page is hidden. It calculates throughput
 from monotonic counter changes. It retains at most six minutes of rate samples
 in memory. Counter resets and sub-second observations do not produce rate spikes.
 
-The map uses the node coordinates already present in `/api/mesh`. Its local CC0
-base image does not require a map service at runtime.
+The map uses the node coordinates already present in `/api/mesh`. When the
+snapshot includes `topology_links`, it renders the complete bounded global
+topology, separates primary and warm-secondary paths, and shows link health,
+RTT, throughput, and generation in accessible link labels. During a rolling
+backend deployment it falls back to the current delivery assignment. Its local
+CC0 base image does not require a map service at runtime.
 
 It reads bounded, low-cardinality snapshots from:
 
@@ -35,6 +39,13 @@ Every snapshot field uses a Serde default. A rolling component deployment can
 therefore present a partial snapshot while the operations dashboard marks the
 controller or telemetry fields that are still arriving. Stream, node, session,
 edge, alert, and activity arrays are capped before rendering.
+
+The optional `orchestration.collector` object carries the active global
+collector, authority, role, Raft term, fencing generation, quorum voter counts,
+lease time remaining, leadership-change context, endpoints, and current/stale/
+awaiting node totals. Overview, Network map, and Nodes show this state without
+assuming that the node serving the browser is the collector. Missing election
+telemetry is displayed as unavailable rather than healthy.
 
 The UI consumes the current service shapes. The current backends do not yet
 expose the following values, so their corresponding cells remain `pending`:
@@ -80,7 +91,7 @@ NEEDLETAIL_MISSION_CONTROL_DIST=/path/to/needletail/mission-control/dist \
 `needletail` builds this directory and supplies the dist path to each supervised
 edge automatically.
 
-The proposed node-to-collector transport for this data is documented in
+The node-to-collector transport for this data is documented in
 [`../docs/operations-telemetry-transport.md`](../docs/operations-telemetry-transport.md).
 The current UI remains compatible with the existing bounded status endpoints
 while that transport is implemented and qualified.
