@@ -487,13 +487,20 @@ up() {
 
   local shutdown_time
   shutdown_time="$(date -u -v+6H +%H%M 2>/dev/null || date -u -d '+6 hours' +%H%M)"
-  for vm in nt-az-relay-jpe nt-az-edge-jpe nt-az-edge-aue nt-az-relay-aue; do
+  local vm location
+  while read -r vm location; do
     "${AZ_BIN}" vm auto-shutdown \
       --resource-group="${AZURE_GROUP}" \
       --name="${vm}" \
+      --location="${location}" \
       --time="${shutdown_time}" \
       --output none
-  done
+  done <<'EOF'
+nt-az-relay-jpe japaneast
+nt-az-edge-jpe japaneast
+nt-az-edge-aue australiaeast
+nt-az-relay-aue australiaeast
+EOF
 
   local peer_sources
   peer_sources="$(
