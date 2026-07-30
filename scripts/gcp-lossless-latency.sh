@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 LAB_STATE="${NEEDLETAIL_GCP_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}"
 
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/lossless-runs/${RUN_ID}}"
 
 DURATION_SECONDS="${LOSSLESS_DURATION_SECONDS:-10}"
@@ -54,6 +56,9 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
 : "${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS to the Google service-account JSON path}"
 [[ -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]] || {
   echo "Google credential file does not exist" >&2
@@ -304,7 +309,7 @@ start_receivers() {
     echo \$! >${remote_prefix}-udp.pid
     nohup /usr/local/bin/aep1-48k-probe receive-webtransport \
       --edge 127.0.0.1:19444 \
-      --server-name local.infidelity.io \
+      --server-name ${TLS_SERVER_NAME} \
       --session-id ${session_id} \
       --group-id ${group_id} \
       --duration-seconds ${DURATION_SECONDS} \
@@ -314,7 +319,7 @@ start_receivers() {
     echo \$! >${remote_prefix}-webtransport.pid
     nohup /usr/local/bin/aep1-48k-probe receive-hls \
       --edge 127.0.0.1:19444 \
-      --server-name local.infidelity.io \
+      --server-name ${TLS_SERVER_NAME} \
       --transport h3 \
       --stream-id ${stream_id} \
       --session-id ${session_id} \

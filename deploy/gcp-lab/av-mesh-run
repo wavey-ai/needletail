@@ -4,6 +4,7 @@ set -euo pipefail
 : "${NEEDLETAIL_NODE_ID:?missing NEEDLETAIL_NODE_ID}"
 : "${NEEDLETAIL_REGION:?missing NEEDLETAIL_REGION}"
 : "${NEEDLETAIL_PRIVATE_IP:?missing NEEDLETAIL_PRIVATE_IP}"
+: "${NEEDLETAIL_TELEMETRY_DNS_NAME:?missing NEEDLETAIL_TELEMETRY_DNS_NAME}"
 
 PLAN="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
 SERVICE="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
@@ -29,7 +30,7 @@ args=(
   --fec-bind "0.0.0.0:${NEEDLETAIL_FEC_PORT:-22001}"
   --media-fec-bind "0.0.0.0:${NEEDLETAIL_MEDIA_FEC_PORT:-22101}"
   --telemetry-bind "0.0.0.0:${NEEDLETAIL_TELEMETRY_PORT:-27300}"
-  --telemetry-dns-name "${NEEDLETAIL_TELEMETRY_DNS_NAME:-local.infidelity.io}"
+  --telemetry-dns-name "${NEEDLETAIL_TELEMETRY_DNS_NAME}"
   --telemetry-private-ipv4 "${NEEDLETAIL_PRIVATE_IP}"
   --telemetry-interval-ms "${NEEDLETAIL_TELEMETRY_INTERVAL_MS:-1000}"
   --stream-id 1

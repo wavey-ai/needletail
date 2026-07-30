@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-const DEFAULT_HOST: &str = "local.infidelity.io";
+const DEFAULT_HOST: &str = "local.needletail.test";
 const CONTRIB_NODE_ID: &str = "contrib";
 const PRIMARY_RELAY_NODE_ID: &str = "relay-primary";
 const SECONDARY_RELAY_NODE_ID: &str = "relay-secondary";
@@ -85,12 +85,6 @@ struct Args {
 
     #[arg(long, default_value = "127.0.0.1:29301")]
     secondary_relay_mesh: SocketAddr,
-
-    #[arg(long)]
-    uk_peer: Option<SocketAddr>,
-
-    #[arg(long)]
-    us_peer: Option<SocketAddr>,
 
     #[arg(long, default_value = "127.0.0.1:22001")]
     uk_fec: SocketAddr,
@@ -182,8 +176,9 @@ struct Args {
     #[arg(long, default_value = "0x11223344")]
     rist_flow_id: String,
 
-    #[arg(long, default_value = "127.0.0.1:27001")]
-    srt_bind: SocketAddr,
+    /// Optional SRT listener. The local stack defaults to RIST-only ingest.
+    #[arg(long)]
+    srt_bind: Option<SocketAddr>,
 
     #[arg(long, default_value = "127.0.0.1:19350")]
     rtmp_bind: SocketAddr,
@@ -205,6 +200,7 @@ struct Service {
     stderr_task: Option<JoinHandle<Result<()>>>,
 }
 
+#[derive(Debug)]
 struct TlsMaterial {
     cert: PathBuf,
     key: PathBuf,
@@ -242,7 +238,7 @@ async fn main() -> Result<()> {
         .await?;
         run_build(
             &contrib_root,
-            ["build", "--locked", "--release", "--bin", "av-contrib"],
+            contrib_build_args(args.srt_bind.is_some()),
             "av-contrib build",
         )
         .await?;
@@ -312,7 +308,6 @@ async fn main() -> Result<()> {
                     cache_mesh_peers: vec![args.uk_mesh],
                     edge_lifecycle: false,
                     mesh_bind: args.us_mesh,
-                    peer: None,
                     http_port: args.us_http_port,
                     fec_bind: args.uk_fec,
                     media_fec_bind: args.uk_media_fec,
@@ -352,7 +347,6 @@ async fn main() -> Result<()> {
                     cache_mesh_peers: vec![args.uk_mesh],
                     edge_lifecycle: false,
                     mesh_bind: args.secondary_relay_mesh,
-                    peer: None,
                     http_port: args.secondary_relay_http_port,
                     fec_bind: args.us_fec,
                     media_fec_bind: args.us_media_fec,
@@ -392,7 +386,6 @@ async fn main() -> Result<()> {
                     cache_mesh_peers: vec![args.us_mesh, args.secondary_relay_mesh],
                     edge_lifecycle: true,
                     mesh_bind: args.uk_mesh,
-                    peer: None,
                     http_port: args.uk_http_port,
                     fec_bind: args.edge_relay_primary_bind,
                     media_fec_bind: args.edge_media_fec,
@@ -953,7 +946,8 @@ fn ensure_executable(path: &Path, name: &str) -> Result<()> {
 }
 
 fn resolve_tls_material(args: &Args, contrib_root: &Path) -> Result<TlsMaterial> {
-    let default_tls_dir = contrib_root.join("..").join("tls").join(DEFAULT_HOST);
+    validate_tls_dns_name(&args.host)?;
+    let default_tls_dir = contrib_root.join("..").join("tls").join(&args.host);
     let cert = args
         .cert
         .clone()
@@ -967,18 +961,45 @@ fn resolve_tls_material(args: &Args, contrib_root: &Path) -> Result<TlsMaterial>
         bail!(
             "TLS certificate not found at {}; pass --cert or restore ../tls/{}/fullchain.pem",
             cert.display(),
-            DEFAULT_HOST
+            args.host
         );
     }
     if !key.exists() {
         bail!(
             "TLS key not found at {}; pass --key or restore ../tls/{}/privkey.pem",
             key.display(),
-            DEFAULT_HOST
+            args.host
         );
     }
 
     Ok(TlsMaterial { cert, key })
+}
+
+fn validate_tls_dns_name(host: &str) -> Result<()> {
+    if host.is_empty() || host.len() > 253 {
+        bail!("--host must be a non-empty TLS DNS name no longer than 253 bytes");
+    }
+
+    for label in host.split('.') {
+        let valid_label = !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric);
+        if !valid_label {
+            bail!("--host must be a TLS DNS name with 1-63 byte alphanumeric or hyphen labels");
+        }
+    }
+
+    Ok(())
 }
 
 struct MeshNodeLaunch<'a> {
@@ -989,7 +1010,6 @@ struct MeshNodeLaunch<'a> {
     cache_mesh_peers: Vec<SocketAddr>,
     edge_lifecycle: bool,
     mesh_bind: SocketAddr,
-    peer: Option<SocketAddr>,
     http_port: u16,
     fec_bind: SocketAddr,
     media_fec_bind: SocketAddr,
@@ -1047,9 +1067,6 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
         "--slot-kb".into(),
         "2048".into(),
     ];
-    if let Some(peer) = launch.peer {
-        args.extend(["--peer".into(), peer.to_string()]);
-    }
     for peer in launch.cache_mesh_peers {
         args.extend(["--peer".into(), peer.to_string()]);
     }
@@ -1072,6 +1089,15 @@ fn mesh_node_args(launch: MeshNodeLaunch<'_>) -> Vec<String> {
     args
 }
 
+fn contrib_build_args(enable_srt: bool) -> Vec<&'static str> {
+    let mut args = vec!["build", "--locked", "--release", "--no-default-features"];
+    if enable_srt {
+        args.extend(["--features", "srt-ingest"]);
+    }
+    args.extend(["--bin", "av-contrib"]);
+    args
+}
+
 fn contrib_args(args: &Args, cert: &Path, key: &Path, relay_arguments: Vec<String>) -> Vec<String> {
     let fec_target = args.contrib_fec_target.unwrap_or(args.uk_fec);
     let media_fec_target = args.contrib_media_fec_target.unwrap_or(args.uk_media_fec);
@@ -1090,8 +1116,6 @@ fn contrib_args(args: &Args, cert: &Path, key: &Path, relay_arguments: Vec<Strin
         args.stream_id.to_string(),
         "--rist-stream-id".into(),
         args.stream_id.to_string(),
-        "--srt-stream-id".into(),
-        args.stream_id.to_string(),
         "--rtmp-stream-id".into(),
         args.stream_id.to_string(),
         "--fmp4-part-ms".into(),
@@ -1100,11 +1124,17 @@ fn contrib_args(args: &Args, cert: &Path, key: &Path, relay_arguments: Vec<Strin
         args.rist_bind.to_string(),
         "--rist-flow-id".into(),
         args.rist_flow_id.clone(),
-        "--srt-bind".into(),
-        args.srt_bind.to_string(),
         "--rtmp-bind".into(),
         args.rtmp_bind.to_string(),
     ];
+    if let Some(srt_bind) = args.srt_bind {
+        service_args.extend([
+            "--srt-stream-id".into(),
+            args.stream_id.to_string(),
+            "--srt-bind".into(),
+            srt_bind.to_string(),
+        ]);
+    }
     service_args.extend(relay_arguments);
     service_args
 }
@@ -1233,11 +1263,13 @@ fn print_ready(args: &Args) {
     println!();
     println!("[orchestrator] Needletail local stack ready");
     println!("[orchestrator] generic live-ingest endpoints");
-    println!(
-        "[orchestrator] SRT caller URL: srt://{}:{}?mode=caller",
-        args.host,
-        args.srt_bind.port()
-    );
+    if let Some(srt_bind) = args.srt_bind {
+        println!(
+            "[orchestrator] SRT caller URL: srt://{}:{}?mode=caller",
+            args.host,
+            srt_bind.port()
+        );
+    }
     println!(
         "[orchestrator] RIST URL: rist://{}:{} profile=main flow_id={}",
         args.host,
@@ -1378,6 +1410,28 @@ async fn shutdown_services(services: &mut [Service]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("needletail-main-{}-{sequence}", std::process::id()));
+            fs::create_dir(&path).expect("create unique test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn default_args() -> Args {
         Args::try_parse_from(["needletail"]).expect("default local arguments")
@@ -1387,6 +1441,110 @@ mod tests {
         args.windows(2)
             .find(|pair| pair[0] == flag)
             .map(|pair| pair[1].as_str())
+    }
+
+    #[test]
+    fn local_contributor_defaults_to_no_srt_listener() {
+        let args = default_args();
+        assert_eq!(args.srt_bind, None);
+        let build_args = contrib_build_args(false);
+        assert!(build_args.contains(&"--no-default-features"));
+        assert!(!build_args.contains(&"srt-ingest"));
+
+        let service_args = contrib_args(
+            &args,
+            Path::new("cert.pem"),
+            Path::new("key.pem"),
+            Vec::new(),
+        );
+        assert_eq!(value_after(&service_args, "--srt-bind"), None);
+        assert_eq!(value_after(&service_args, "--srt-stream-id"), None);
+    }
+
+    #[test]
+    fn local_contributor_enables_srt_only_with_an_explicit_bind() {
+        let args = Args::try_parse_from([
+            "needletail",
+            "--srt-bind",
+            "127.0.0.1:32001",
+            "--stream-id",
+            "42",
+        ])
+        .expect("explicit SRT listener arguments");
+        let build_args = contrib_build_args(true);
+        assert!(build_args
+            .windows(2)
+            .any(|pair| pair == ["--features", "srt-ingest"]));
+
+        let service_args = contrib_args(
+            &args,
+            Path::new("cert.pem"),
+            Path::new("key.pem"),
+            Vec::new(),
+        );
+        assert_eq!(
+            value_after(&service_args, "--srt-bind"),
+            Some("127.0.0.1:32001")
+        );
+        assert_eq!(value_after(&service_args, "--srt-stream-id"), Some("42"));
+    }
+
+    #[test]
+    fn default_tls_material_uses_the_configured_host_directory() {
+        let directory = TestDirectory::new();
+        let contrib_root = directory.0.join("av-contrib");
+        let configured_host = "edge.dev.example";
+        let tls_dir = directory.0.join("tls").join(configured_host);
+        fs::create_dir_all(&contrib_root).expect("create contributor directory");
+        fs::create_dir_all(&tls_dir).expect("create configured TLS directory");
+        fs::write(tls_dir.join("fullchain.pem"), "certificate").expect("write certificate");
+        fs::write(tls_dir.join("privkey.pem"), "key").expect("write key");
+
+        let mut args = default_args();
+        args.host = configured_host.to_owned();
+        let tls = resolve_tls_material(&args, &contrib_root).expect("resolve configured TLS files");
+
+        assert_eq!(
+            tls.cert,
+            contrib_root
+                .join("..")
+                .join("tls")
+                .join(configured_host)
+                .join("fullchain.pem")
+        );
+        assert_eq!(
+            tls.key,
+            contrib_root
+                .join("..")
+                .join("tls")
+                .join(configured_host)
+                .join("privkey.pem")
+        );
+    }
+
+    #[test]
+    fn tls_host_rejects_path_traversal_and_non_dns_components() {
+        for host in [
+            "../outside",
+            "/tmp/needletail",
+            "edge..example",
+            "-edge.example",
+            "edge-.example",
+            "edge_example",
+        ] {
+            let mut args = default_args();
+            args.host = host.to_owned();
+            args.cert = Some(PathBuf::from("certificate.pem"));
+            args.key = Some(PathBuf::from("key.pem"));
+
+            assert!(
+                resolve_tls_material(&args, Path::new("av-contrib"))
+                    .expect_err("unsafe host must be rejected")
+                    .to_string()
+                    .contains("--host must be a TLS DNS name"),
+                "unexpected rejection for {host}"
+            );
+        }
     }
 
     #[test]
@@ -1460,7 +1618,7 @@ mod tests {
     }
 
     #[test]
-    fn local_qualification_disables_legacy_mesh_peer_forwarding() {
+    fn local_qualification_uses_only_declared_cache_mesh_peers() {
         let args = default_args();
         let plan = compile_local_relay_plan(&args).expect("compile local plan");
         let mesh_args = mesh_node_args(MeshNodeLaunch {
@@ -1471,7 +1629,6 @@ mod tests {
             cache_mesh_peers: vec![args.us_mesh, args.secondary_relay_mesh],
             edge_lifecycle: true,
             mesh_bind: args.uk_mesh,
-            peer: None,
             http_port: args.uk_http_port,
             fec_bind: args.edge_relay_primary_bind,
             media_fec_bind: args.edge_media_fec,
@@ -1506,6 +1663,14 @@ mod tests {
             value_after(&mesh_args, "--telemetry-fec-bind"),
             Some("127.0.0.1:27300")
         );
+    }
+
+    #[test]
+    fn removed_mesh_peer_flags_are_rejected() {
+        for flag in ["--uk-peer", "--us-peer"] {
+            Args::try_parse_from(["needletail", flag, "127.0.0.1:29999"])
+                .expect_err("removed peer flag must be rejected");
+        }
     }
 
     #[test]

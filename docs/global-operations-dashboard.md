@@ -1,12 +1,12 @@
-# Global Needletail Operations dashboard
+# Global Needletail Operations
 
 ## Outcome
 
-Needletail Ops has one active global telemetry collector at a time. Static UI
-assets may be served from every playback edge, but only the elected collector
-accepts fleet snapshots and publishes the global `/api/mesh` view. A follower
-redirects a browser to the current collector or returns a bounded unavailable
-response when the cluster cannot prove ownership.
+The target state has one active global telemetry collector at a time. Static
+UI assets may be served from every playback edge, but only the elected
+collector accepts fleet snapshots and publishes the global `/api/mesh` view. A
+follower redirects a browser to the current collector or returns a bounded
+unavailable response when the cluster cannot prove ownership.
 
 The design prefers stale or unavailable operations data over two active
 collectors. Media forwarding and playback remain independent of dashboard
@@ -78,6 +78,76 @@ A node may call itself the global collector only while all of these are true:
 An isolated former leader self-fences. It closes ingest listeners, marks its
 local view unavailable, and returns the new endpoint when known. DNS or a load
 balancer is discovery only; it never grants leadership.
+
+## Global entry point
+
+Use `https://<global-operations-host>/.well-known/needletail-operations` as the
+stable discovery URL. `GET /` has the same behavior for an operator.
+
+The `needletail-ops-entrypoint` service reads one controller assignment from a
+local file. The controller must replace the file atomically after a quorum
+commit. The assignment contains these values:
+
+```text
+schema version
+authority
+term and fencing generation
+leader node and region
+online and total voters
+commit time and lease expiry
+public Operations endpoint
+```
+
+The service returns `307 Temporary Redirect` only for a safe assignment. It
+checks the odd voter set, majority, term, generation, clock limit, and lease
+limit. It also checks the public endpoint against a fixed administrator
+allowlist. The endpoint must use HTTPS and the exact `/mesh` path.
+
+The service returns `503 Service Unavailable` if it cannot prove the
+assignment. It sends `Cache-Control: no-store` with all responses. It does not
+select a leader and it does not extend a lease.
+
+Run this HTTP service behind the global TLS endpoint. Do not expose its
+loopback listener directly. Configure the service with
+`deploy/operations-entrypoint.env.example`.
+
+Run one service instance in each discovery region. The TLS endpoint can select
+any instance. An instance returns `503` when its local committed state is stale.
+
+### Current integration boundary
+
+The fail-closed discovery service and canonical browser contract are present,
+and the repository now provides an atomic `OperationsAssignmentPublisher`
+handoff. The handoff can publish or withdraw a decision made elsewhere; it
+cannot prove a quorum commit and is not an election implementation. The durable
+controller and node agent that call it do not exist in this repository, so
+nothing currently writes a live assignment to
+`/run/needletail/operations-collector.json`.
+
+The current mesh service also does not yet assemble the embedded `contributor`,
+committed `collector`, and complete `topology_links` fields required by
+`schema: "needletail.operations-snapshot.v1"`. Until those producers are
+integrated, the discovery endpoint correctly returns `503` and the UI marks the
+missing state unavailable. Do not substitute DNS affinity, local scoring, or a
+second lease authority to make it redirect.
+
+The smallest external integration must pass these gates:
+
+1. A maintained consensus implementation commits the term, fencing generation,
+   leader, endpoints, voter proof, commit time, and bounded lease.
+2. Its node agent projects that record into
+   `OperationsCollectorAssignment` and calls `publish_committed` only after the
+   commit is durable. Quorum loss calls `withdraw`; recovery advances the fence.
+3. The elected collector rejects ingest and aggregate writes carrying any
+   other generation, de-duplicates `(node id, boot id, sequence)`, and emits the
+   canonical snapshot rather than a service-local compatibility shape.
+4. Integration tests partition the old leader, remove one voter, replay an old
+   generation, retry duplicate sequences, and prove there is never an overlap
+   in accepted generations. Contract tests deserialize the resulting
+   `/api/mesh` response with the strict dashboard model.
+
+Snapshot assembly belongs in the owning mesh service repository; adding it to
+Needletail would cross the product boundary documented in `AGENTS.md`.
 
 ## Needletail Ops changes
 

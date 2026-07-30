@@ -4,24 +4,38 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/multicloud-lib.sh"
 
 TRACKS="${1:-1}"
-PUBLIC_PLAYER_BASE="${PUBLIC_PLAYER_BASE:-https://needletail-london-20260727.bitneedle.com:19444}"
+: "${PUBLIC_PLAYER_BASE:?set PUBLIC_PLAYER_BASE to the deployed player origin}"
+PUBLIC_PLAYER_BASE="${PUBLIC_PLAYER_BASE%/}"
+needletail_require_https_origin PUBLIC_PLAYER_BASE "${PUBLIC_PLAYER_BASE}"
 START_LEAD_SECONDS="${START_LEAD_SECONDS:-15}"
 OPEN_PLAYER="${OPEN_PLAYER:-1}"
 VALIDATION_SECONDS="${VALIDATION_SECONDS:-10}"
-EXPECTED_DAW_SHA256="${EXPECTED_DAW_SHA256:-4e44f6c34f3ddf615fcaf85d65d38d500b8b479ddf1a216b800ece7aaed9ac87}"
+PREVIEW_DURATION_SECONDS="${PREVIEW_DURATION_SECONDS:-900}"
+VALIDATE_FLAC_RECONSTRUCTION="${VALIDATE_FLAC_RECONSTRUCTION:-0}"
+: "${EXPECTED_DAW_SHA256:?set EXPECTED_DAW_SHA256 to the deployed source binary digest}"
+[[ "${EXPECTED_DAW_SHA256}" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "EXPECTED_DAW_SHA256 must be a lowercase SHA-256 digest" >&2
+  exit 2
+}
+[[ "${PREVIEW_DURATION_SECONDS}" =~ ^[0-9]+$ \
+  && "${PREVIEW_DURATION_SECONDS}" -ge 60 \
+  && "${PREVIEW_DURATION_SECONDS}" -le 3600 ]] || {
+  echo "PREVIEW_DURATION_SECONDS must be between 60 and 3600" >&2
+  exit 2
+}
+case "${VALIDATE_FLAC_RECONSTRUCTION}" in
+  0|1) ;;
+  *)
+    echo "VALIDATE_FLAC_RECONSTRUCTION must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 VALIDATOR="${ROOT}/scripts/multicloud-qualification/validate-london-flac.py"
 
 case "${TRACKS}" in
   1|2|4|8) ;;
   *) echo "track count must be 1, 2, 4, or 8" >&2; exit 2 ;;
 esac
-TRACK_DIRECTORY="/var/lib/needletail-test-media/daw-nexus-album-${TRACKS}-track"
-actual_tracks="$(node_exec contrib-london \
-  "find -L '${TRACK_DIRECTORY}' -maxdepth 1 -type f -name '*.wav' | wc -l" | tail -n 1)"
-[[ "${actual_tracks}" == "${TRACKS}" ]] || {
-  echo "the DAW Nexus source directory does not contain ${TRACKS} complete tracks" >&2
-  exit 1
-}
 existing="$(node_exec contrib-london \
   "pgrep -af '^/usr/local/bin/(aep1-48k-probe send|daw-test-source)' || true" | tail -n 1)"
 if [[ -n "${existing}" ]]; then
@@ -47,8 +61,19 @@ REMOTE_VALIDATION_ROOT="/var/lib/needletail-test-media/player-preview-${SESSION_
 RESULT_DIR="${ROOT}/target/multicloud-qualification/player-preview/${SESSION_ID}"
 mkdir -p "${RESULT_DIR}"
 printf '%s\n' "${SESSION_ID}" >"${RESULT_DIR}/session-id.txt"
-printf '%s\n' "${REMOTE_PCM_TAP_DIR}" >"${RESULT_DIR}/remote-pcm-tap-dir.txt"
-node_copy_to contrib-london "${VALIDATOR}" "${REMOTE_VALIDATOR}"
+if ((VALIDATE_FLAC_RECONSTRUCTION)); then
+  node_exec contrib-london \
+    "command -v python3 >/dev/null
+command -v curl >/dev/null
+command -v ffmpeg >/dev/null
+command -v ffprobe >/dev/null" || {
+      echo "FLAC reconstruction requires python3, curl, ffmpeg, and ffprobe on contrib-london" >&2
+      exit 1
+    }
+  printf '%s\n' "${REMOTE_PCM_TAP_DIR}" \
+    >"${RESULT_DIR}/remote-pcm-tap-dir.txt"
+  node_copy_to contrib-london "${VALIDATOR}" "${REMOTE_VALIDATOR}"
+fi
 
 formats=(flac opus)
 format_stream_offsets=(0 1000)
@@ -71,19 +96,30 @@ for format_index in "${!formats[@]}"; do
   done
 done
 
-node_exec contrib-london \
-  "nohup env \
-    DAW_TEST_SOURCE_START_UNIX_NS=${SESSION_ID} \
-    DAW_TEST_SOURCE_PCM_TAP_DIR='${REMOTE_PCM_TAP_DIR}' \
-    /usr/local/bin/daw-test-source \
-    --direct-contributor \
-    --until-eof \
-    127.0.0.1:27100 \
-    1 \
-    '${TRACK_DIRECTORY}' \
-    >'/var/lib/needletail-test-media/player-preview-${SESSION_ID}.log' \
-    2>'/var/lib/needletail-test-media/player-preview-${SESSION_ID}.err' \
-    </dev/null &"
+if ((VALIDATE_FLAC_RECONSTRUCTION)); then
+  node_exec contrib-london \
+    "nohup env \
+      DAW_TEST_SOURCE_START_UNIX_NS=${SESSION_ID} \
+      DAW_TEST_SOURCE_PCM_TAP_DIR='${REMOTE_PCM_TAP_DIR}' \
+      /usr/local/bin/daw-test-source \
+      --direct-contributor \
+      127.0.0.1:27100 \
+      '${PREVIEW_DURATION_SECONDS}' \
+      >'/var/lib/needletail-test-media/player-preview-${SESSION_ID}.log' \
+      2>'/var/lib/needletail-test-media/player-preview-${SESSION_ID}.err' \
+      </dev/null &"
+else
+  node_exec contrib-london \
+    "nohup env \
+      DAW_TEST_SOURCE_START_UNIX_NS=${SESSION_ID} \
+      /usr/local/bin/daw-test-source \
+      --direct-contributor \
+      127.0.0.1:27100 \
+      '${PREVIEW_DURATION_SECONDS}' \
+      >'/var/lib/needletail-test-media/player-preview-${SESSION_ID}.log' \
+      2>'/var/lib/needletail-test-media/player-preview-${SESSION_ID}.err' \
+      </dev/null &"
+fi
 
 for ((stream_id = 1; stream_id <= TRACKS; stream_id++)); do
   for format_index in "${!formats[@]}"; do
@@ -135,6 +171,10 @@ done
 
 if [[ "${OPEN_PLAYER}" == 1 ]]; then
   open "${PUBLIC_PLAYER_BASE}/1?format=flac"
+fi
+
+if ((!VALIDATE_FLAC_RECONSTRUCTION)); then
+  exit 0
 fi
 
 validation_command="set -u

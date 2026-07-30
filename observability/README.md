@@ -1,7 +1,7 @@
 # Needletail realtime observability
 
-This product-level bundle persists the `av-contrib` and `av-mesh` metrics that Mission
-Control shows in-process. It provisions:
+This product-level bundle persists the `av-contrib` and `av-mesh` metrics that
+Needletail Operations shows in-process. It provisions:
 
 - Prometheus with 15 days of local TSDB retention
 - p50, p95, and p99 recording rules for contributor forwarding and LL-HLS
@@ -123,5 +123,8 @@ Validate the JSON, YAML, rule uniqueness, and Compose model with:
 make observability-check
 ```
 
-If `promtool` and `amtool` are installed, the validator also runs their native
-rule and Alertmanager checks.
+The validator always runs the structural JSON and YAML checks. It also runs
+`promtool`, `amtool`, and Docker Compose validation when those tools are
+available. A local run reports a partial pass and names any skipped native
+checks. Set `NEEDLETAIL_OBSERVABILITY_REQUIRE_NATIVE_TOOLS=1` to reject a
+partial pass. CI requires every native check.

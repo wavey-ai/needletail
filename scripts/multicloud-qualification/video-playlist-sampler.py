@@ -2,9 +2,11 @@
 import argparse
 import datetime
 import json
+import os
 import re
 import subprocess
 import time
+from pathlib import Path
 
 
 PART_PATTERN = re.compile(r'#EXT-X-PART:DURATION=([0-9.]+),URI="([^"]+)"')
@@ -38,7 +40,9 @@ def parse_playlist(body: str, arrival_ns: int) -> dict:
         latest_part_duration_seconds = duration_seconds
         latest_part_uri = match.group(2)
     if latest_part_uri is None:
-        raise ValueError("playlist has no media part after its latest program date and time")
+        raise ValueError(
+            "playlist has no media part after its latest program date and time"
+        )
 
     number_match = PART_NUMBER_PATTERN.search(latest_part_uri)
     media_end_ns = pdt_ns + int(part_duration_seconds * 1_000_000_000)
@@ -61,10 +65,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=19444)
     parser.add_argument("--path", default="/live/1/stream.m3u8")
     parser.add_argument("--ca", default="/etc/needletail/tls/fullchain.pem")
-    parser.add_argument(
-        "--server-name",
-        default="needletail-london-20260727.bitneedle.com",
-    )
+    parser.add_argument("--server-name", required=True)
+    parser.add_argument("--status-file", type=Path, required=True)
+    parser.add_argument("--stop-file", type=Path)
     args = parser.parse_args()
 
     url = f"https://{args.server_name}:{args.port}{args.path}"
@@ -86,37 +89,50 @@ def main() -> int:
     started = time.monotonic()
     deadline = started + args.duration_seconds
     next_sample = started
-    while time.monotonic() < deadline:
-        request_start_ns = time.time_ns()
-        completed = subprocess.run(curl, capture_output=True, text=True, check=False)
-        arrival_ns = time.time_ns()
-        sample = {
-            "request_start_unix_ns": request_start_ns,
-            "arrival_unix_ns": arrival_ns,
-            "curl_exit_code": completed.returncode,
-        }
-        try:
-            body, metadata = completed.stdout.rsplit("\n__NEEDLETAIL_CURL__", 1)
-            connect, start_transfer, total, http_code = metadata.strip().split(",")
-            sample.update(
-                {
-                    "http_code": int(http_code),
-                    "connect_ms": float(connect) * 1000.0,
-                    "start_transfer_ms": float(start_transfer) * 1000.0,
-                    "request_ms": float(total) * 1000.0,
-                    "playlist_bytes": len(body.encode()),
-                }
+    status = 1
+    try:
+        while time.monotonic() < deadline and not (
+            args.stop_file is not None and args.stop_file.exists()
+        ):
+            request_start_ns = time.time_ns()
+            completed = subprocess.run(
+                curl, capture_output=True, text=True, check=False
             )
-            if completed.returncode == 0:
-                sample.update(parse_playlist(body, arrival_ns))
-        except Exception as error:
-            sample["parse_error"] = str(error)
-        if completed.stderr:
-            sample["curl_error"] = completed.stderr.strip()
-        print(json.dumps(sample, separators=(",", ":")), flush=True)
-        next_sample += args.interval_ms / 1000.0
-        time.sleep(max(0.0, next_sample - time.monotonic()))
-    return 0
+            arrival_ns = time.time_ns()
+            sample = {
+                "request_start_unix_ns": request_start_ns,
+                "arrival_unix_ns": arrival_ns,
+                "curl_exit_code": completed.returncode,
+            }
+            try:
+                body, metadata = completed.stdout.rsplit("\n__NEEDLETAIL_CURL__", 1)
+                connect, start_transfer, total, http_code = metadata.strip().split(",")
+                sample.update(
+                    {
+                        "http_code": int(http_code),
+                        "connect_ms": float(connect) * 1000.0,
+                        "start_transfer_ms": float(start_transfer) * 1000.0,
+                        "request_ms": float(total) * 1000.0,
+                        "playlist_bytes": len(body.encode()),
+                    }
+                )
+                if completed.returncode == 0:
+                    sample.update(parse_playlist(body, arrival_ns))
+            except Exception as error:
+                sample["parse_error"] = str(error)
+            if completed.stderr:
+                sample["curl_error"] = completed.stderr.strip()
+            print(json.dumps(sample, separators=(",", ":")), flush=True)
+            next_sample += args.interval_ms / 1000.0
+            time.sleep(max(0.0, next_sample - time.monotonic()))
+        status = 0
+        return status
+    finally:
+        temporary_status = args.status_file.with_name(
+            f".{args.status_file.name}.{os.getpid()}.tmp"
+        )
+        temporary_status.write_text(f"{status}\n", encoding="ascii")
+        os.replace(temporary_status, args.status_file)
 
 
 if __name__ == "__main__":

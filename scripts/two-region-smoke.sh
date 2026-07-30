@@ -95,8 +95,8 @@ verify_lossless_lanes() {
   LOSSLESS_PIDS+=("$!")
   "${LOSSLESS_PROBE_BIN}" receive-webtransport \
     --edge "127.0.0.1:${UK_HTTP}" \
-    --server-name local.wavey.ai \
-    --tls-ca "${TMPDIR}/local.wavey.ai.crt" \
+    --server-name local.needletail.test \
+    --tls-ca "${TMPDIR}/local.needletail.test.crt" \
     --session-id "${session_id}" \
     --group-id "${group_id}" \
     --duration-seconds "${duration_seconds}" \
@@ -107,8 +107,8 @@ verify_lossless_lanes() {
   LOSSLESS_PIDS+=("$!")
   "${LOSSLESS_PROBE_BIN}" receive-hls \
     --edge "127.0.0.1:${UK_HTTP}" \
-    --server-name local.wavey.ai \
-    --tls-ca "${TMPDIR}/local.wavey.ai.crt" \
+    --server-name local.needletail.test \
+    --tls-ca "${TMPDIR}/local.needletail.test.crt" \
     --transport h3 \
     --stream-id "${stream_id}" \
     --session-id "${session_id}" \
@@ -196,7 +196,7 @@ wait_for_health() {
 }
 
 generate_local_tls() {
-  local openssl_conf="${TMPDIR}/openssl-local-wavey.cnf"
+  local openssl_conf="${TMPDIR}/openssl-local-needletail.cnf"
   cat >"${openssl_conf}" <<EOF
 [req]
 distinguished_name=req_distinguished_name
@@ -204,18 +204,18 @@ x509_extensions=v3_req
 prompt=no
 
 [req_distinguished_name]
-CN=local.wavey.ai
+CN=local.needletail.test
 
 [v3_req]
 subjectAltName=@alt_names
 
 [alt_names]
-DNS.1=local.wavey.ai
+DNS.1=local.needletail.test
 EOF
 
   openssl req -x509 -newkey rsa:2048 -sha256 -days 7 -nodes \
-    -keyout "${TMPDIR}/local.wavey.ai.key" \
-    -out "${TMPDIR}/local.wavey.ai.crt" \
+    -keyout "${TMPDIR}/local.needletail.test.key" \
+    -out "${TMPDIR}/local.needletail.test.crt" \
     -config "${openssl_conf}" >/dev/null 2>&1
 }
 
@@ -360,8 +360,8 @@ generate_local_tls
 
 RUST_LOG="${RUST_LOG:-av_mesh=info,playlists=info,web_service=info}" \
   "${BIN}" \
-  --cert "${TMPDIR}/local.wavey.ai.crt" \
-  --key "${TMPDIR}/local.wavey.ai.key" \
+  --cert "${TMPDIR}/local.needletail.test.crt" \
+  --key "${TMPDIR}/local.needletail.test.key" \
   --region uk \
   --node-id uk-smoke \
   --mesh-bind "${UK_MESH}" \
@@ -372,7 +372,7 @@ RUST_LOG="${RUST_LOG:-av_mesh=info,playlists=info,web_service=info}" \
   --edge-webtransport \
   --telemetry-bind "${UK_TELEMETRY}" \
   --telemetry-peer "${US_TELEMETRY}" \
-  --telemetry-dns-name local.wavey.ai \
+  --telemetry-dns-name local.needletail.test \
   --telemetry-interval-ms 200 \
   --part-ms "${LOSSLESS_PART_MS}" \
   --parts-per-segment "${LOSSLESS_PARTS_PER_SEGMENT}" \
@@ -383,8 +383,8 @@ UK_PID="$!"
 
 RUST_LOG="${RUST_LOG:-av_mesh=info,playlists=info,web_service=info}" \
   "${BIN}" \
-  --cert "${TMPDIR}/local.wavey.ai.crt" \
-  --key "${TMPDIR}/local.wavey.ai.key" \
+  --cert "${TMPDIR}/local.needletail.test.crt" \
+  --key "${TMPDIR}/local.needletail.test.key" \
   --region us \
   --node-id us-smoke \
   --mesh-bind "${US_MESH}" \
@@ -395,7 +395,7 @@ RUST_LOG="${RUST_LOG:-av_mesh=info,playlists=info,web_service=info}" \
   --edge-webtransport \
   --telemetry-bind "${US_TELEMETRY}" \
   --telemetry-peer "${UK_TELEMETRY}" \
-  --telemetry-dns-name local.wavey.ai \
+  --telemetry-dns-name local.needletail.test \
   --telemetry-interval-ms 200 \
   --part-ms "${LOSSLESS_PART_MS}" \
   --parts-per-segment "${LOSSLESS_PARTS_PER_SEGMENT}" \
@@ -406,8 +406,8 @@ US_PID="$!"
 
 RUST_LOG="${RUST_LOG:-av_contrib=info,web_service=info}" \
   "${CONTRIB_BIN}" \
-  --cert "${TMPDIR}/local.wavey.ai.crt" \
-  --key "${TMPDIR}/local.wavey.ai.key" \
+  --cert "${TMPDIR}/local.needletail.test.crt" \
+  --key "${TMPDIR}/local.needletail.test.key" \
   --http-port "${UK_CONTRIB_HTTP}" \
   --mesh-fec-target "${UK_FEC}" \
   --mesh-media-fec-target "${UK_MEDIA_FEC}" \

@@ -2,11 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PROJECT="${GCP_PROJECT:-steadfast-slate-498623-r2}"
-AZ_BIN="${AZ_BIN:-/opt/homebrew/bin/az}"
-AZURE_GROUP="${AZURE_GROUP:-nt-global-pcm-20260727}"
+source "${ROOT}/scripts/qualification-config.sh"
+: "${GCP_PROJECT:?set GCP_PROJECT to the qualification project}"
+: "${AZURE_GROUP:?set AZURE_GROUP to the qualification resource group}"
+PROJECT="${GCP_PROJECT}"
+AZ_BIN="${AZ_BIN:-az}"
+AZURE_ADMIN_USERNAME="${AZURE_ADMIN_USERNAME:-needletail-admin}"
 AZURE_KEY="${AZURE_SSH_KEY:-${ROOT}/target/multicloud-qualification/ssh/azure_ed25519}"
 LAB_INVENTORY="${NEEDLETAIL_MULTICLOUD_INVENTORY:-${ROOT}/target/multicloud-qualification/lab-inventory.json}"
+needletail_require_azure_admin_username \
+  AZURE_ADMIN_USERNAME "${AZURE_ADMIN_USERNAME}"
 
 inventory_public_ip() {
   local node="$1"
@@ -126,7 +131,7 @@ node_exec() {
       -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
       -o ConnectTimeout=10 \
-      "needletail@$(node_host "${node}")" "$*"
+      "${AZURE_ADMIN_USERNAME}@$(node_host "${node}")" "$*"
   fi
 }
 
@@ -147,7 +152,7 @@ node_copy_to() {
       -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
       "${source}" \
-      "needletail@$(node_host "${node}"):${destination}"
+      "${AZURE_ADMIN_USERNAME}@$(node_host "${node}"):${destination}"
   fi
 }
 
@@ -168,7 +173,7 @@ node_copy_from() {
       -i "${AZURE_KEY}" \
       -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
-      "needletail@$(node_host "${node}"):${source}" \
+      "${AZURE_ADMIN_USERNAME}@$(node_host "${node}"):${source}" \
       "${destination}"
   fi
 }

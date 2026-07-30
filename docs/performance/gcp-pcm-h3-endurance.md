@@ -80,12 +80,10 @@ journals, stderr, and any complete reports. Missing reports become `{}` and
 fail qualification; a non-empty truncated report is also preserved with an
 `.invalid` or `.partial` suffix before the normalized placeholder is written.
 
-For compatibility, `ENDURANCE_BURST_READER_STEPS` remains an alias when the new
-environment variable is unset. `run.json` retains `readers` and
-`burst_reader_steps`; `result.json` retains `continuous_renditions` and
-`capacity_bursts` and the former NYC-only `edge_kernel_udp_receive_drops`;
-`bursts.json` mirrors `reader-steps.json`. These aliases contain sustained-step
-data, so new evidence consumers should use the v2 names.
+The harness emits only the v2 field names. Configure
+`ENDURANCE_SUSTAINED_READER_STEPS`; consume `baseline_continuous_renditions`,
+`sustained_reader_steps`, and `kernel_udp_receive_drops`; and read the aggregate
+step evidence from `reader-steps.json`.
 
 The exit trap terminates the contributor source, baseline readers, and every
 nested reader-step process after either success or failure.

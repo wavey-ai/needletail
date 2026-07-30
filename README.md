@@ -31,7 +31,7 @@ New sessions move to healthy same-region edges, and recovered capacity returns a
 
 | Capability | Needletail behavior |
 | --- | --- |
-| Contribution | Accept RIST, SRT, and RTMP sources near the publisher |
+| Contribution | Accept RIST and RTMP sources near the publisher, with optional SRT ingest |
 | Recovery | Restore packet order and recover missing data before publication |
 | Media handling | Keep producer bytes intact or create CMAF-compatible fragmented MP4 |
 | Distribution | Send immutable media objects through an adaptive dual-parent DAG |
@@ -110,7 +110,7 @@ Use the [machine-readable evidence](docs/real-world-tests/evidence/20260728T1130
 
 ```mermaid
 flowchart LR
-    P["Publisher<br/>RIST, SRT, or RTMP"]
+    P["Publisher<br/>RIST or RTMP; optional SRT"]
     C["Contributor<br/>Recovery and packaging"]
     O["Canonical<br/>media objects"]
     I["Mesh ingress"]
@@ -158,7 +158,14 @@ flowchart TD
     OBJECT --> PUBLISH
 ```
 
-`av-contrib` accepts compatible RIST, SRT, and RTMP sources.
+`av-contrib` accepts compatible RIST and RTMP sources. SRT ingest is an
+explicit build-and-runtime option; the deployed default is RIST without SRT.
+The local supervisor follows the same default. To build and enable its SRT
+listener explicitly, run:
+
+```sh
+make local STACK_ARGS='--srt-bind 127.0.0.1:27001'
+```
 
 The contributor can package supported H.264 and AAC input as CMAF-compatible fragmented MP4.
 It can also preserve selected professional-audio formats in their original encoded form.
@@ -375,6 +382,7 @@ Node agents apply desired state and report fresh service data.
 Needletail Operations presents streams, nodes, routes, capacity, performance, alerts, and recent activity.
 Operators can inspect the same state that controls route and admission decisions.
 
+The `needletail` Rust binary supervises local development and qualification only.
 Production deployments use a durable controller, host node agents, and supervised native services.
 
 ## Learn more

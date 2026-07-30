@@ -2,8 +2,10 @@
 set -euo pipefail
 
 : "${GCP_PROJECT:?set GCP_PROJECT to the qualification project}"
+: "${GCP_TRACK_DIRECTORY:?set GCP_TRACK_DIRECTORY to the externally prepared source tracks}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 ZONE="${GCP_ZONE:-europe-west2-c}"
 DAW_HOST="${GCP_DAW_HOST:-nt-daw-lon}"
 CONTRIB_HOST="${GCP_CONTRIB_HOST:-nt-contrib-lon}"
@@ -13,12 +15,26 @@ EDGE_HOST="${GCP_EDGE_HOST:-nt-edge-lon}"
 READER_HOST="${GCP_READER_HOST:-nt-opus-reader-lon}"
 CONTRIB_PRIVATE_IP="${GCP_CONTRIB_PRIVATE_IP:-10.84.10.5}"
 EDGE_PRIVATE_IP="${GCP_EDGE_PRIVATE_IP:-10.84.10.6}"
-EDGE_PORT="${GCP_EDGE_PORT:-443}"
-TRACK_DIRECTORY="${GCP_TRACK_DIRECTORY:-/opt/needletail/lori-pray4me-8}"
-TLS_CERT="${GCP_TLS_CERT:-${ROOT}/../tls/local.infidelity.io/fullchain.pem}"
+EDGE_PORT="${GCP_EDGE_PORT:-19444}"
+TRACK_DIRECTORY="${GCP_TRACK_DIRECTORY}"
+: "${GCP_TLS_CERT:?set GCP_TLS_CERT to the qualification certificate}"
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_CERT="${GCP_TLS_CERT}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
+needletail_require_ipv4_address GCP_CONTRIB_PRIVATE_IP "${CONTRIB_PRIVATE_IP}"
+needletail_require_ipv4_address GCP_EDGE_PRIVATE_IP "${EDGE_PRIVATE_IP}"
+for host_variable in DAW_HOST CONTRIB_HOST RELAY_A_HOST RELAY_B_HOST \
+  EDGE_HOST READER_HOST; do
+  needletail_require_gcp_instance_name \
+    "${host_variable}" "${!host_variable}"
+done
+needletail_require_absolute_path GCP_TRACK_DIRECTORY "${TRACK_DIRECTORY}"
 RUN_ID="${RUN_ID:-$(date -u '+%Y%m%dT%H%M%SZ')-opus-h3-response-ab}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/opus-h3-response-ab/${RUN_ID}}"
 REMOTE_ROOT="/tmp/${RUN_ID}"
+needletail_shell_quote TRACK_DIRECTORY_QUOTED "${TRACK_DIRECTORY}"
 TRACKS="${TRACKS:-8}"
 SOURCE_SECONDS="${SOURCE_SECONDS:-2400}"
 WINDOW_SECONDS="${WINDOW_SECONDS:-8}"
@@ -32,6 +48,36 @@ FULL_WINDOW_SECONDS="${FULL_WINDOW_SECONDS:-90}"
 BENCHMARK_CONFIGURED=0
 IFS=, read -r -a RESPONSE_VALUES <<<"${RESPONSE_VALUES:-5,100,200}"
 IFS=, read -r -a CUSTOMER_VALUES <<<"${CUSTOMER_VALUES:-1,2,3,4,5,8,12}"
+
+for value_name in EDGE_PORT TRACKS SOURCE_SECONDS WINDOW_SECONDS DEADLINE_MS \
+  ARRIVAL_WINDOW_MS START_LEAD_MS FULL_RESPONSE_MS FULL_CUSTOMERS \
+  FULL_WINDOW_SECONDS; do
+  value="${!value_name}"
+  if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${value_name} must be a positive decimal integer" >&2
+    exit 2
+  fi
+done
+if [[ ! "${ARRIVAL_SEED}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "ARRIVAL_SEED must be a non-negative decimal integer" >&2
+  exit 2
+fi
+if ((EDGE_PORT > 65535)); then
+  echo "GCP_EDGE_PORT must fit a TCP port" >&2
+  exit 2
+fi
+for value in "${RESPONSE_VALUES[@]}"; do
+  if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "RESPONSE_VALUES must contain positive decimal integers" >&2
+    exit 2
+  fi
+done
+for value in "${CUSTOMER_VALUES[@]}"; do
+  if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "CUSTOMER_VALUES must contain positive decimal integers" >&2
+    exit 2
+  fi
+done
 
 gcp_ssh() {
   local host="$1"
@@ -274,7 +320,7 @@ run_trial() {
     for stream_id in \$(seq 1 ${TRACKS}); do
       /usr/local/bin/aep1-48k-probe load-hls \
         --edge ${EDGE_PRIVATE_IP}:${EDGE_PORT} \
-        --server-name local.infidelity.io \
+        --server-name ${TLS_SERVER_NAME} \
         --tls-ca /tmp/fullchain.pem \
         --transport h3 \
         --path-prefix /live \
@@ -384,9 +430,7 @@ gcloud compute scp "${TLS_CERT}" "${READER_HOST}:/tmp/fullchain.pem" \
   --project="${GCP_PROJECT}" --zone="${ZONE}" --tunnel-through-iap \
   --quiet --scp-flag=-C
 
-gcp_ssh "${DAW_HOST}" --command="sudo systemctl stop \
-  needletail-rist-source-lori-4k.service 2>/dev/null || true
-  pkill -x daw-test-source 2>/dev/null || true"
+gcp_ssh "${DAW_HOST}" --command="pkill -x daw-test-source 2>/dev/null || true"
 gcp_ssh "${READER_HOST}" --command="pkill -x aep1-48k-probe \
   2>/dev/null || true"
 configure_benchmark_part_ms
@@ -399,7 +443,7 @@ gcp_ssh "${DAW_HOST}" --command="rm -rf '${REMOTE_ROOT}'
   mkdir -p '${REMOTE_ROOT}'
   nohup env DAW_TEST_SOURCE_START_UNIX_NS=${session_id} \
     /usr/local/bin/daw-test-source --direct-contributor --loop \
-    ${CONTRIB_PRIVATE_IP}:27100 ${SOURCE_SECONDS} '${TRACK_DIRECTORY}' \
+    ${CONTRIB_PRIVATE_IP}:27100 ${SOURCE_SECONDS} ${TRACK_DIRECTORY_QUOTED} \
     >'${REMOTE_ROOT}'/source.log 2>'${REMOTE_ROOT}'/source.err </dev/null &
   echo \$! >'${REMOTE_ROOT}'/source.pid"
 

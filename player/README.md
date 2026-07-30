@@ -17,7 +17,12 @@ The Player control contains `Native` and `HLS.js`. The initial selection uses
 native HLS when the browser reports support. Other browsers use the bundled
 HLS.js player. The bundle has no runtime CDN dependency.
 
-The latency slider has a range of 100 ms to 5 seconds. The delay value includes
+For native Opus playback, the player probes the registered `Opus` MP4 codec
+token. On engines that reject the lower-case token advertised by the current
+master playlist but accept the MP4 sample entry, it loads the corresponding
+media playlist directly. HLS.js continues to use the multivariant master.
+
+The latency slider has a range of 750 ms to 5 seconds. The delay value includes
 a one-second rolling average. The timeline shows playback, buffered ranges, and
 the live edge.
 
@@ -28,7 +33,7 @@ Run the browser smoke check while a live stream is available:
 
 ```sh
 npm run test:browser --prefix player -- \
-  'https://local.infidelity.io:19444/1'
+  'https://player.needletail.test:19444/1'
 ```
 
 Set `CHROME_BINARY` if Google Chrome is not in its default macOS location. The

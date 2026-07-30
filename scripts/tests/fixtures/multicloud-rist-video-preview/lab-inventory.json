@@ -1,0 +1,16 @@
+{
+  "schema": "needletail.multicloud-lab.v1",
+  "gcp_project": "fixture-project",
+  "azure_group": "fixture-group",
+  "nodes": [
+    {
+      "node_id": "contrib-london",
+      "provider": "gcp",
+      "name": "nt-contrib-lon",
+      "zone": "europe-west2-c",
+      "private_ip": "10.84.10.5",
+      "public_ip": "34.1.2.3",
+      "state": "RUNNING"
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 SHELL := /bin/sh
 
 CARGO ?= cargo
-HOST ?= local.infidelity.io
+HOST ?=
 STREAM_ID ?= 1
 PART_MS ?= 50
 RUST_LOG ?= info
 STACK_ARGS ?=
+HOST_ARG = $(if $(strip $(HOST)),--host $(HOST),)
 
 .DEFAULT_GOAL := help
 
@@ -18,7 +19,7 @@ STACK_ARGS ?=
 help:
 	@printf '%s\n' 'Needletail product orchestration'
 	@printf '%s\n' ''
-	@printf '%s\n' '  make local                  Build and run the local contributor + two-edge constellation'
+	@printf '%s\n' '  make local                  Run one contributor, two backbone relays, and one playback edge'
 	@printf '%s\n' '  make local-fast             Run existing release binaries and Operations assets'
 	@printf '%s\n' '  make mission-control-build Build Needletail Operations assets'
 	@printf '%s\n' '  make mission-control-serve Serve Operations with Trunk'
@@ -36,22 +37,22 @@ help:
 	@printf '%s\n' '  make product-boundary-check Check that product integrations stay outside Needletail'
 	@printf '%s\n' '  make check                  Check the standalone Needletail Rust tools'
 	@printf '%s\n' ''
-	@printf '%s\n' 'Common overrides: STREAM_ID=1 PART_MS=50 RUST_LOG=info HOST=local.infidelity.io'
+	@printf '%s\n' 'Common overrides: STREAM_ID=1 PART_MS=50 RUST_LOG=info HOST=<TLS DNS name>'
 
 local:
 	AV_LL_HLS_PART_MS=$(PART_MS) RUST_LOG=$(RUST_LOG) \
 	$(CARGO) run --locked --release --bin needletail -- \
-		--host $(HOST) --stream-id $(STREAM_ID) --part-ms $(PART_MS) $(STACK_ARGS)
+		$(HOST_ARG) --stream-id $(STREAM_ID) --part-ms $(PART_MS) $(STACK_ARGS)
 
 local-debug:
 	AV_LL_HLS_PART_MS=$(PART_MS) RUST_LOG=$(RUST_LOG) \
 	$(CARGO) run --locked --bin needletail -- \
-		--host $(HOST) --stream-id $(STREAM_ID) --part-ms $(PART_MS) $(STACK_ARGS)
+		$(HOST_ARG) --stream-id $(STREAM_ID) --part-ms $(PART_MS) $(STACK_ARGS)
 
 local-fast:
 	AV_LL_HLS_PART_MS=$(PART_MS) RUST_LOG=$(RUST_LOG) \
 	$(CARGO) run --locked --release --bin needletail -- \
-		--host $(HOST) --stream-id $(STREAM_ID) --part-ms $(PART_MS) \
+		$(HOST_ARG) --stream-id $(STREAM_ID) --part-ms $(PART_MS) \
 		--no-build --no-mission-control-build $(STACK_ARGS)
 
 mission-control-build:

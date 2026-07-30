@@ -26,6 +26,49 @@ The existing provider bootstrap script under `scripts/` remains a lab migration
 tool invoked explicitly by an operator. The durable controller becomes the
 authoritative source for production reconciliation.
 
+## Operations discovery
+
+The durable controller must publish the committed Operations collector
+assignment to `/run/needletail/operations-collector.json`. It must write a new
+file and use `rename(2)` to replace the current file. Set the file mode to
+`0644`. Do not put credentials in this file.
+
+`OperationsAssignmentPublisher` is the in-process handoff for a future durable
+controller or node agent. It validates the public projection, rejects term and
+fencing rollback, retains a withdrawn fence, writes a `0644` regular file, and
+uses file and directory `fsync` around the atomic replacement. It does not
+elect a collector, acquire quorum, or create a lease. There is deliberately no
+CLI that accepts a leader hostname and fabricates an assignment.
+
+Build `needletail-ops-entrypoint`, copy
+`deploy/operations-entrypoint.env.example` to a private working file, replace
+every example hostname, and install it:
+
+```sh
+cargo build --release --locked --bin needletail-ops-entrypoint
+deploy/install-operations-entrypoint.sh --check ./operations-entrypoint.env
+sudo deploy/install-operations-entrypoint.sh \
+  target/release/needletail-ops-entrypoint \
+  ./operations-entrypoint.env
+```
+
+The installer rejects placeholder hostnames and non-loopback listeners. It
+creates `/run/needletail` as `root:root` mode `0755`, installs the policy file
+for systemd, and enables the hardened DynamicUser service. The external
+root-privileged node agent writes the regular `0644` assignment; the entrypoint
+can read but cannot replace it. Put the loopback service behind the global
+HTTPS endpoint.
+
+The service redirects `/` and
+`/.well-known/needletail-operations` to the committed regional collector. It
+returns `503 Service Unavailable` when the assignment is absent, invalid, or
+near lease expiry. `/healthz` reports process health. `/readyz` reports whether
+the current assignment can cause a redirect.
+
+Installing this service does not make the still-missing durable controller
+operational. A fresh quorum-committed assignment and the public TLS/DNS proxy
+are both required before the well-known URL can redirect.
+
 ## GCP performance lab
 
 Use local hosts for correctness, build, UI, and browser checks. Run load,

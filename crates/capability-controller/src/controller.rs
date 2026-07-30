@@ -419,9 +419,6 @@ impl fmt::Debug for BrowserExchangeAuthorization {
     }
 }
 
-/// Backward-compatible name for the original browser playback exchange shape.
-pub type BrowserPlaybackAuthorization = BrowserExchangeAuthorization;
-
 /// Authenticated native broker response carrying the short-lived JWS.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

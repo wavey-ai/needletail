@@ -576,7 +576,7 @@ run_propagation_probes() {
   failed=0
   for probe in $(seq 1 "${PROPAGATION_PROBES}"); do
     sleep "$(awk -v target_ms="${PART_TARGET_MS}" 'BEGIN { printf "%.3f", (target_ms + 5) / 1000 }')"
-    marker="wavey-propagation-${probe}-$(date +%s)-${RANDOM}"
+    marker="needletail-propagation-${probe}-$(date +%s)-${RANDOM}"
     started="$(now_seconds)"
     status_code="$(printf '%s' "${marker}" | curl_common -o /dev/null -w '%{http_code}' -X POST --data-binary @- "${INGEST_URL}")"
     if [[ "${status_code}" != "202" ]]; then
@@ -643,7 +643,7 @@ write_result_json() {
     --argjson h2_streams_per_client "${H2_STREAMS_PER_CLIENT}" \
     --argjson payload_bytes "${PAYLOAD_BYTES}" \
     '{
-      schema: "wavey.realtime-benchmark.v1",
+      schema: "needletail.realtime-benchmark.v1",
       generated_at: $generated_at,
       git_head: $git_head,
       revisions: $revisions,

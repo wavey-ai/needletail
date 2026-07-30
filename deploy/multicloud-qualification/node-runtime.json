@@ -1,0 +1,145 @@
+{
+  "schema": "needletail.multicloud-node-runtime.v1",
+  "mesh_defaults": {
+    "telemetry_port": 27300,
+    "part_ms": 250,
+    "segment_ms": 1000,
+    "parts_per_segment": 4,
+    "window_parts": 32
+  },
+  "default_telemetry_peers": [
+    "relay-regional-osaka",
+    "relay-secondary-japan"
+  ],
+  "nodes": [
+    {
+      "node_id": "contrib-london",
+      "kind": "contributor",
+      "environment": {
+        "NEEDLETAIL_HTTP_PORT": "19443",
+        "NEEDLETAIL_PART_MS": "250",
+        "NEEDLETAIL_FMP4_PART_MS": "250",
+        "NEEDLETAIL_DAW_MEDIA_PORT": "27100",
+        "NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY": "4096",
+        "NEEDLETAIL_DAW_HLS_PACKAGING": "fmp4",
+        "NEEDLETAIL_DAW_HLS_FORMATS": "flac,opus",
+        "NEEDLETAIL_RELAY_MIN_REPAIR_SYMBOLS": "3"
+      }
+    },
+    {
+      "node_id": "relay-primary-amsterdam",
+      "kind": "mesh",
+      "continent": "eu",
+      "latitude": 52.3676,
+      "longitude": 4.9041,
+      "mesh_port": 29201,
+      "http_port": 19445,
+      "fec_port": 22001,
+      "media_fec_port": 22101
+    },
+    {
+      "node_id": "relay-secondary-japan",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "mesh_port": 29301,
+      "http_port": 19446,
+      "fec_port": 22002,
+      "media_fec_port": 22102,
+      "telemetry_peers": [
+        "relay-regional-osaka",
+        "edge-australia"
+      ]
+    },
+    {
+      "node_id": "relay-regional-osaka",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": 34.6937,
+      "longitude": 135.5023,
+      "mesh_port": 29401,
+      "http_port": 19447,
+      "fec_port": 22200,
+      "media_fec_port": 22103,
+      "telemetry_peers": [
+        "relay-primary-amsterdam",
+        "relay-secondary-japan"
+      ]
+    },
+    {
+      "node_id": "relay-regional-australia",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "mesh_port": 29402,
+      "http_port": 19448,
+      "fec_port": 22250,
+      "media_fec_port": 22105,
+      "telemetry_peers": [
+        "relay-regional-osaka",
+        "relay-secondary-japan"
+      ]
+    },
+    {
+      "node_id": "edge-london",
+      "kind": "mesh",
+      "continent": "eu",
+      "latitude": 51.5074,
+      "longitude": -0.1278,
+      "mesh_port": 29501,
+      "http_port": 19444,
+      "fec_port": 22210,
+      "media_fec_port": 22110
+    },
+    {
+      "node_id": "edge-tokyo",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "mesh_port": 29502,
+      "http_port": 19444,
+      "fec_port": 22220,
+      "media_fec_port": 22120
+    },
+    {
+      "node_id": "edge-sydney",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "mesh_port": 29503,
+      "http_port": 19444,
+      "fec_port": 22230,
+      "media_fec_port": 22130
+    },
+    {
+      "node_id": "edge-australia",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "mesh_port": 29504,
+      "http_port": 19444,
+      "fec_port": 22240,
+      "media_fec_port": 22140
+    },
+    {
+      "node_id": "edge-japan",
+      "kind": "mesh",
+      "continent": "apac",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "mesh_port": 29505,
+      "http_port": 19444,
+      "fec_port": 22260,
+      "media_fec_port": 22160,
+      "telemetry_peers": [
+        "relay-regional-australia",
+        "relay-regional-osaka"
+      ]
+    }
+  ]
+}

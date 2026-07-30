@@ -2,13 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 LAB_STATE="${NEEDLETAIL_GCP_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}"
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 ARTIFACT_DIR="${NEEDLETAIL_GCP_ARTIFACT_DIR:-${ROOT}/target/gcp-qualification/artifacts}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-pcm-h3-capacity}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/capacity-search/${RUN_ID}}"
 ATTESTATION_LIB_SOURCE="${ROOT}/scripts/gcp-deployment-attestation.sh"
-LOAD_HOSTS_CSV="${NEEDLETAIL_LOAD_HOSTS:-45.33.64.58,172.235.175.51}"
 LOAD_USER="${NEEDLETAIL_LOAD_USER:-root}"
 LOAD_SSH_KEY="${NEEDLETAIL_LOAD_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 SOURCE_DURATION_SECONDS="${CAPACITY_SOURCE_DURATION_SECONDS:-600}"
@@ -47,6 +48,11 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   exit 0
 fi
 
+: "${NEEDLETAIL_LOAD_HOSTS:?set NEEDLETAIL_LOAD_HOSTS to the comma-separated load hosts}"
+LOAD_HOSTS_CSV="${NEEDLETAIL_LOAD_HOSTS}"
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
 : "${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS to the Google service-account JSON path}"
 for required_file in "${GOOGLE_APPLICATION_CREDENTIALS}" "${LAB_STATE}" \
   "${LOAD_SSH_KEY}" "${ARTIFACT_DIR}/av-mesh" \
@@ -400,7 +406,7 @@ run_trial() {
     ((readers_for_host == 0)) && continue
     load_ssh "${host}" "mkdir -p ${remote_trial}
       /usr/local/bin/aep1-48k-probe load-hls \
-        --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
+        --edge ${EDGE_PUBLIC_IP}:19444 --server-name ${TLS_SERVER_NAME} \
         --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
         --stream-id ${trial_stream_0} --session-id ${session_id} \
         --duration-seconds ${SOURCE_DURATION_SECONDS} \
@@ -410,7 +416,7 @@ run_trial() {
         --expected-pcm-channels 8 \
         >${remote_trial}/group-0.json 2>${remote_trial}/group-0.err & p0=\$!
       /usr/local/bin/aep1-48k-probe load-hls \
-        --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
+        --edge ${EDGE_PUBLIC_IP}:19444 --server-name ${TLS_SERVER_NAME} \
         --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
         --stream-id ${trial_stream_1} --session-id ${session_id} \
         --duration-seconds ${SOURCE_DURATION_SECONDS} \

@@ -43,6 +43,9 @@ jq -e '
   and .evidence_complete == true
   and .target_active_customers == 2
   and .edge_udp_rcvbuf_errors_delta == 0
+  and (has("burst_index") | not)
+  and (has("readers") | not)
+  and (has("window_seconds") | not)
 ' "${TEST_ROOT}/step-pass.json" >/dev/null
 
 jq -n \
@@ -97,8 +100,9 @@ jq -e '
   .passed == true
   and .kernel_udp_receive_drops.passed == true
   and (.kernel_udp_receive_drops.roles | length) == 6
-  and .edge_kernel_udp_receive_drops
-    == .kernel_udp_receive_drops.roles.edge_new_york
+  and (has("edge_kernel_udp_receive_drops") | not)
+  and (has("continuous_renditions") | not)
+  and (has("capacity_bursts") | not)
 ' "${TEST_ROOT}/run-pass.json" >/dev/null
 
 UDP_PRIMARY_DROP="$(jq -c '.primary = 8' <<<"${UDP_START}")"

@@ -5,13 +5,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=needletail
+Group=needletail
 EnvironmentFile=/etc/needletail/node.env
 Environment=RUST_LOG=av_contrib=info,av_web_service=warn
 ExecStart=/usr/local/bin/needletail-av-contrib-run
 Restart=always
 RestartSec=2
 NoNewPrivileges=yes
+PrivateDevices=yes
 PrivateTmp=yes
+ProtectHome=yes
 LimitNOFILE=1048576
 
 [Install]

@@ -1,5 +1,6 @@
 import { PcmLlHlsPlayer } from "/pcm-player.js";
 import { RollingLatencyWindow, StableLatencyController } from "/adaptive-latency.js";
+import { selectNativePlaylistUrl } from "/native-playback.js";
 import { livePlaylistIsStale } from "/stream-freshness.js";
 
 const MAX_STREAM_ID = 18446744073709551615n;
@@ -823,7 +824,12 @@ function connectNative() {
     return;
   }
   elements.start.hidden = false;
-  elements.video.src = selectedPlaylistUrl();
+  elements.video.src = selectNativePlaylistUrl({
+    audioFormat,
+    masterPlaylistUrl: selectedPlaylistUrl(),
+    mediaPlaylistUrl: selectedMediaPlaylistUrl(),
+    canPlayType: elements.video.canPlayType.bind(elements.video),
+  });
   elements.video.load();
   elements.transport.textContent = "Native LL-HLS · system-managed latency";
   updateLatencyControls();

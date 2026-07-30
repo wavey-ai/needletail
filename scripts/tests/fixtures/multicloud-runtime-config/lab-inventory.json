@@ -1,0 +1,101 @@
+{
+  "schema": "needletail.multicloud-lab.v1",
+  "gcp_project": "fixture-project",
+  "azure_group": "fixture-group",
+  "nodes": [
+    {
+      "node_id": "contrib-london",
+      "provider": "gcp",
+      "name": "nt-contrib-lon",
+      "zone": "europe-west2-c",
+      "private_ip": "10.84.10.5",
+      "public_ip": "203.0.113.5",
+      "state": "RUNNING"
+    },
+    {
+      "node_id": "edge-london",
+      "provider": "gcp",
+      "name": "nt-edge-lon",
+      "zone": "europe-west2-c",
+      "private_ip": "10.84.10.6",
+      "public_ip": "203.0.113.6",
+      "state": "RUNNING"
+    },
+    {
+      "node_id": "relay-primary-amsterdam",
+      "provider": "gcp",
+      "name": "nt-relay-ams",
+      "zone": "europe-west4-a",
+      "private_ip": "10.84.20.6",
+      "public_ip": "203.0.113.20",
+      "state": "RUNNING"
+    },
+    {
+      "node_id": "relay-regional-osaka",
+      "provider": "gcp",
+      "name": "nt-relay-osa",
+      "zone": "asia-northeast2-b",
+      "private_ip": "10.84.30.6",
+      "public_ip": "203.0.113.30",
+      "state": "RUNNING"
+    },
+    {
+      "node_id": "edge-tokyo",
+      "provider": "gcp",
+      "name": "nt-edge-tyo",
+      "zone": "asia-northeast1-c",
+      "private_ip": "10.84.40.7",
+      "public_ip": "203.0.113.40",
+      "state": "RUNNING"
+    },
+    {
+      "node_id": "edge-sydney",
+      "provider": "gcp",
+      "name": "nt-edge-syd",
+      "zone": "australia-southeast1-b",
+      "private_ip": "10.84.60.5",
+      "public_ip": "203.0.113.60",
+      "state": "RUNNING"
+    },
+    {
+      "node_id": "relay-secondary-japan",
+      "provider": "azure",
+      "name": "nt-az-relay-jpe",
+      "region": "japaneast",
+      "private_ip": "10.71.1.4",
+      "public_ip": "198.51.100.14",
+      "state": "VM running",
+      "size": "Standard_D2s_v5"
+    },
+    {
+      "node_id": "edge-japan",
+      "provider": "azure",
+      "name": "nt-az-edge-jpe",
+      "region": "japaneast",
+      "private_ip": "10.71.1.5",
+      "public_ip": "198.51.100.15",
+      "state": "VM running",
+      "size": "Standard_D2s_v5"
+    },
+    {
+      "node_id": "edge-australia",
+      "provider": "azure",
+      "name": "nt-az-edge-aue",
+      "region": "australiaeast",
+      "private_ip": "10.74.1.4",
+      "public_ip": "198.51.100.24",
+      "state": "VM running",
+      "size": "Standard_D2s_v5"
+    },
+    {
+      "node_id": "relay-regional-australia",
+      "provider": "azure",
+      "name": "nt-az-relay-aue",
+      "region": "australiaeast",
+      "private_ip": "10.74.1.5",
+      "public_ip": "198.51.100.25",
+      "state": "VM running",
+      "size": "Standard_D2s_v5"
+    }
+  ]
+}

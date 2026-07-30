@@ -14,6 +14,9 @@ pub const MAX_NODE_ROWS: usize = 16;
 pub const MAX_EDGE_ROWS: usize = 12;
 pub const MAX_SESSION_ROWS: usize = 12;
 pub const MAX_EVENT_ROWS: usize = 16;
+pub const OPERATIONS_SNAPSHOT_SCHEMA: &str = "needletail.operations-snapshot.v1";
+pub const OPERATIONS_AUTHORITY: &str = "needletail-controller";
+pub const MAX_OPERATIONS_LEASE_MS: u64 = 30_000;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
@@ -415,9 +418,10 @@ pub struct ContribActivity {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct MeshStatus {
+    pub schema: String,
     pub updated_unix_ms: u64,
+    pub contributor: Option<ContribStatus>,
     pub node: EdgeNode,
-    #[serde(alias = "relay_ingress")]
     pub relay_session: RelayIngress,
     pub relay_nodes: Vec<RelayNodeSession>,
     pub aggregate: FleetAggregate,
@@ -443,8 +447,8 @@ pub struct EdgeNode {
     pub zone: String,
     pub role: String,
     pub continent: String,
-    pub latitude: f64,
-    pub longitude: f64,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub public_endpoint: Option<String>,
     pub updated_unix_ms: Option<u64>,
     pub total_storage_bytes: u64,
@@ -479,7 +483,6 @@ pub struct RelayIngress {
     pub repair_datagrams: u64,
     pub duplicate_datagrams: u64,
     pub decoded_objects: u64,
-    #[serde(alias = "repaired_objects")]
     pub repair_assisted_objects: u64,
     pub fec_recovered_objects: u64,
     pub fec_recovered_source_symbols: u64,
@@ -650,6 +653,33 @@ impl OperationsCollectorStatus {
             || self.fencing_generation.is_some()
             || self.quorum_healthy.is_some()
     }
+
+    pub fn has_committed_live_lease(&self) -> bool {
+        self.quorum_healthy == Some(true)
+            && self.authority == OPERATIONS_AUTHORITY
+            && matches!(
+                self.role.to_ascii_lowercase().as_str(),
+                "leader" | "collector"
+            )
+            && self
+                .leader_node_id
+                .as_ref()
+                .is_some_and(|leader| !leader.trim().is_empty())
+            && self.term.is_some_and(|term| term > 0)
+            && self
+                .fencing_generation
+                .is_some_and(|generation| generation > 0)
+            && self
+                .voters_total
+                .is_some_and(|total| total >= 3 && total % 2 == 1)
+            && self
+                .voters_online
+                .zip(self.voters_total)
+                .is_some_and(|(online, total)| online <= total && online > total / 2)
+            && self
+                .lease_remaining_ms
+                .is_some_and(|remaining| (1..=MAX_OPERATIONS_LEASE_MS).contains(&remaining))
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -791,27 +821,20 @@ pub struct MeshActivity {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PublicationSnapshot {
-    #[serde(alias = "source_epoch")]
     pub canonical_epoch: Option<u64>,
     pub canonical_epoch_activation_delay_us: Option<u64>,
-    #[serde(alias = "contiguous_watermark")]
     pub contiguous_object: Option<u64>,
-    #[serde(alias = "head_watermark")]
     pub head_object: Option<u64>,
-    #[serde(alias = "gaps")]
     pub gap_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DeliverySnapshot {
-    #[serde(alias = "class")]
     pub delivery_class: Option<String>,
-    #[serde(alias = "topology_generation")]
     pub generation: Option<u64>,
     pub route_state: Option<String>,
     pub route_ready: Option<bool>,
-    #[serde(alias = "topology", alias = "lane")]
     pub fabric: Option<String>,
     pub path_stretch: Option<f64>,
     pub stream_id_text: Option<String>,
@@ -825,44 +848,49 @@ impl DeliverySnapshot {
         self.delivery_class.is_some()
             || self.generation.is_some()
             || self.route_state.is_some()
+            || self.route_ready.is_some()
             || self.fabric.is_some()
             || self.primary.is_some()
             || self.secondary.is_some()
     }
 
     pub fn fabric_label(&self) -> Option<&'static str> {
-        if let Some(fabric) = self.fabric.as_deref() {
-            let lower = fabric.to_ascii_lowercase();
-            if lower.contains("latency") || lower.contains("fast") || lower.contains("direct") {
-                return Some("Direct / one-hop overlay");
-            }
-            if lower.contains("dag") || lower.contains("scalable") || lower.contains("regional") {
-                return Some("Dual-parent DAG");
-            }
-        }
-        match self.delivery_class.as_deref() {
-            Some("interactive") => Some("Direct / one-hop overlay"),
-            Some("premium-live" | "premium_live" | "mass-broadcast" | "mass_broadcast") => {
-                Some("Dual-parent DAG")
-            }
+        match self.fabric.as_deref() {
+            Some("direct_low_latency") => Some("Direct / one-hop overlay"),
+            Some("dual_parent_dag") => Some("Dual-parent DAG"),
             _ => None,
         }
     }
 
     pub fn readiness_label(&self) -> &'static str {
-        if self.route_ready == Some(true)
-            || self.route_state.as_deref().is_some_and(|state| {
-                matches!(
-                    state.to_ascii_lowercase().as_str(),
-                    "ready" | "active" | "compiled" | "installed"
-                )
-            })
-        {
-            "ready"
-        } else if self.primary.is_some() || self.secondary.is_some() {
-            "carrier configured"
-        } else {
-            "awaiting route assignment"
+        if !self.has_assignment() {
+            return "awaiting route assignment";
+        }
+        let complete_assignment = self.generation.is_some_and(|generation| generation > 0)
+            && matches!(
+                self.delivery_class.as_deref(),
+                Some("interactive" | "premium_live" | "mass_broadcast")
+            )
+            && self.fabric_label().is_some()
+            && self.primary.is_some();
+        if !complete_assignment {
+            return "assignment incomplete";
+        }
+        let state = self.route_state.as_deref();
+        let state_ready = matches!(state, Some("ready" | "active"));
+        let state_unready = matches!(
+            state,
+            Some("pending" | "warming" | "degraded" | "failed" | "unavailable")
+        );
+        if state.is_some() && !state_ready && !state_unready {
+            return "route state unrecognized";
+        }
+        match self.route_ready {
+            Some(true) if state_unready => "inconsistent route state",
+            Some(false) if state_ready => "inconsistent route state",
+            Some(true) => "ready",
+            Some(false) => "not ready",
+            None => "readiness unreported",
         }
     }
 }
@@ -935,13 +963,7 @@ pub struct OperationalEvent {
 }
 
 pub fn contributor_latency(status: &ContribStatus) -> &DurationHistogram {
-    if status.runtime.ingest_latency.has_samples() {
-        &status.runtime.ingest_latency
-    } else if status.runtime.mesh_forward.media_duration.has_samples() {
-        &status.runtime.mesh_forward.media_duration
-    } else {
-        &status.runtime.mesh_forward.stream_duration
-    }
+    &status.runtime.ingest_latency
 }
 
 pub fn histogram_percentile_us(count: u64, buckets: &[u64], percentile: u64) -> Option<u64> {
@@ -964,179 +986,9 @@ fn histogram_percentile_us_with_bounds(
         .find_map(|(bucket_count, bound)| (*bucket_count >= rank).then_some(*bound))
 }
 
-pub fn publication_from_contrib(status: &ContribStatus) -> PublicationSnapshot {
-    if status.publication.canonical_epoch.is_some()
-        || status
-            .publication
-            .canonical_epoch_activation_delay_us
-            .is_some()
-        || status.publication.contiguous_object.is_some()
-        || status.publication.head_object.is_some()
-        || status.publication.gap_count.is_some()
-    {
-        return status.publication.clone();
-    }
-    PublicationSnapshot {
-        canonical_epoch: status.mesh.media_object_source_epoch,
-        canonical_epoch_activation_delay_us: None,
-        contiguous_object: None,
-        head_object: status
-            .runtime
-            .streams
-            .iter()
-            .filter_map(|stream| stream.latest_fmp4_sequence)
-            .max(),
-        gap_count: None,
-    }
-}
-
-pub fn publication_from_edge(status: &MeshStatus) -> PublicationSnapshot {
-    if status.publication.canonical_epoch.is_some()
-        || status
-            .publication
-            .canonical_epoch_activation_delay_us
-            .is_some()
-        || status.publication.contiguous_object.is_some()
-        || status.publication.head_object.is_some()
-        || status.publication.gap_count.is_some()
-    {
-        return status.publication.clone();
-    }
-    let gaps = status
-        .streams
-        .iter()
-        .filter_map(|stream| stream.gap_count)
-        .collect::<Vec<_>>();
-    let mut epochs = status
-        .streams
-        .iter()
-        .filter_map(|stream| stream.canonical_epoch)
-        .collect::<Vec<_>>();
-    epochs.sort_unstable();
-    epochs.dedup();
-    PublicationSnapshot {
-        canonical_epoch: (epochs.len() == 1).then(|| epochs[0]),
-        canonical_epoch_activation_delay_us: status
-            .streams
-            .iter()
-            .filter_map(|stream| stream.canonical_epoch_activation_delay_us)
-            .max(),
-        contiguous_object: status
-            .streams
-            .iter()
-            .filter_map(|stream| stream.contiguous_object)
-            .max(),
-        head_object: status
-            .streams
-            .iter()
-            .filter_map(|stream| stream.head_object.or(stream.latest_local_part))
-            .max(),
-        gap_count: (!gaps.is_empty()).then(|| gaps.into_iter().sum()),
-    }
-}
-
-pub fn effective_delivery(
-    contrib: Option<&ContribStatus>,
-    edge: Option<&MeshStatus>,
-) -> DeliverySnapshot {
-    if let Some(delivery) = edge
-        .map(|status| &status.delivery)
-        .filter(|d| d.has_assignment())
-    {
-        return delivery.clone();
-    }
-    if let Some(delivery) = contrib
-        .map(|status| &status.delivery)
-        .filter(|delivery| delivery.has_assignment())
-    {
-        return delivery.clone();
-    }
-    let Some(status) = contrib else {
-        return DeliverySnapshot::default();
-    };
-    let carrier = status.mesh.relay_carrier.clone();
-    let trust = status.mesh.relay_trust.clone().or_else(|| {
-        (carrier.as_deref() == Some("private-udp")).then(|| "controlled network".to_owned())
-    });
-    DeliverySnapshot {
-        delivery_class: Some(if status.mesh.relay_secondary_configured {
-            "premium_live".to_owned()
-        } else {
-            "interactive".to_owned()
-        }),
-        generation: (status.mesh.relay_topology_generation > 0)
-            .then_some(status.mesh.relay_topology_generation),
-        route_state: edge.map(|edge| {
-            if edge.relay_session.primary_sessions > 0
-                && edge.relay_session.secondary_sessions > 0
-                && edge.relay_session.errors() == 0
-            {
-                "active".to_owned()
-            } else {
-                "warming".to_owned()
-            }
-        }),
-        route_ready: edge.map(|edge| {
-            edge.relay_session.primary_sessions > 0
-                && edge.relay_session.secondary_sessions > 0
-                && edge.relay_session.errors() == 0
-        }),
-        fabric: Some(if status.mesh.relay_secondary_configured {
-            "dual_parent_dag".to_owned()
-        } else {
-            "direct_low_latency".to_owned()
-        }),
-        path_stretch: (status.mesh.relay_path_rtt_ms.is_finite()
-            && status.mesh.relay_path_best_direct_rtt_ms.is_finite()
-            && status.mesh.relay_path_rtt_ms > 0.0
-            && status.mesh.relay_path_best_direct_rtt_ms > 0.0)
-            .then(|| status.mesh.relay_path_rtt_ms / status.mesh.relay_path_best_direct_rtt_ms),
-        primary: (status.mesh.relay_primary_configured
-            || status.mesh.relay_primary_target.is_some())
-        .then(|| RouteLane {
-            node_id: status.mesh.relay_primary_id.clone(),
-            target: status.mesh.relay_primary_target.clone(),
-            carrier: carrier.clone(),
-            trust: trust.clone(),
-            state: Some("active source".to_owned()),
-            observation_source: nonempty_string(&status.mesh.relay_path_observation_source),
-            rtt_us: finite_positive_milliseconds_to_us(status.mesh.relay_path_rtt_ms),
-            jitter_us: finite_positive_milliseconds_to_us(status.mesh.relay_path_jitter_ms),
-            loss_ppm: finite_fraction_to_ppm(status.mesh.relay_path_loss_fraction),
-            ..RouteLane::default()
-        }),
-        secondary: (status.mesh.relay_secondary_configured
-            || status.mesh.relay_secondary_target.is_some())
-        .then(|| RouteLane {
-            node_id: status.mesh.relay_secondary_id.clone(),
-            target: status.mesh.relay_secondary_target.clone(),
-            carrier,
-            trust,
-            state: Some("warm repair".to_owned()),
-            observation_source: nonempty_string(
-                &status.mesh.relay_secondary_path_observation_source,
-            ),
-            rtt_us: finite_positive_milliseconds_to_us(status.mesh.relay_secondary_path_rtt_ms),
-            jitter_us: finite_positive_milliseconds_to_us(
-                status.mesh.relay_secondary_path_jitter_ms,
-            ),
-            loss_ppm: finite_fraction_to_ppm(status.mesh.relay_secondary_path_loss_fraction),
-            ..RouteLane::default()
-        }),
-        ..DeliverySnapshot::default()
-    }
-}
-
-fn nonempty_string(value: &str) -> Option<String> {
-    (!value.trim().is_empty()).then(|| value.to_owned())
-}
-
-fn finite_positive_milliseconds_to_us(value: f64) -> Option<u64> {
-    (value.is_finite() && value > 0.0).then(|| (value * 1_000.0).round() as u64)
-}
-
-fn finite_fraction_to_ppm(value: f64) -> Option<u64> {
-    (value.is_finite() && value > 0.0).then(|| (value.clamp(0.0, 1.0) * 1_000_000.0).round() as u64)
+pub fn effective_delivery(edge: Option<&MeshStatus>) -> DeliverySnapshot {
+    edge.map(|status| status.delivery.clone())
+        .unwrap_or_default()
 }
 
 pub fn bounded_contrib_streams(status: &ContribStatus) -> Vec<ContribStream> {
@@ -1167,6 +1019,15 @@ pub fn bounded_edges(status: &MeshStatus) -> Vec<EdgeService> {
         .edge_services
         .iter()
         .take(MAX_EDGE_ROWS)
+        .cloned()
+        .collect()
+}
+
+pub fn bounded_relay_nodes(status: &MeshStatus) -> Vec<RelayNodeSession> {
+    status
+        .relay_nodes
+        .iter()
+        .take(MAX_NODE_ROWS)
         .cloned()
         .collect()
 }
@@ -1211,28 +1072,36 @@ pub fn operational_alerts(
             }
         }));
         if status.runtime.relay_session.deadline_misses.unwrap_or(0) > 0 {
-            events.push(OperationalEvent {
-                source: EventSource::Contributor,
-                level: "warning".to_owned(),
-                code: "relay_emission_deadline_missed".to_owned(),
-                message: "One or more canonical objects missed the contributor emission deadline."
-                    .to_owned(),
-                count: status.runtime.relay_session.deadline_misses.unwrap_or(0),
-                seen_unix_ms: status.updated_unix_ms,
-                context: Some(status.advertised_hls_stream_id.clone()),
-            });
+            push_derived_event(
+                &mut events,
+                OperationalEvent {
+                    source: EventSource::Contributor,
+                    level: "warning".to_owned(),
+                    code: "relay_emission_deadline_missed".to_owned(),
+                    message:
+                        "One or more canonical objects missed the contributor emission deadline."
+                            .to_owned(),
+                    count: status.runtime.relay_session.deadline_misses.unwrap_or(0),
+                    seen_unix_ms: status.updated_unix_ms,
+                    context: Some(status.advertised_hls_stream_id.clone()),
+                },
+            );
         }
         if status.runtime.relay_session.expired_symbols.unwrap_or(0) > 0 {
-            events.push(OperationalEvent {
-                source: EventSource::Contributor,
-                level: "warning".to_owned(),
-                code: "relay_symbol_expired".to_owned(),
-                message: "Deadline expiry dropped one or more RaptorQ symbols at the contributor."
-                    .to_owned(),
-                count: status.runtime.relay_session.expired_symbols.unwrap_or(0),
-                seen_unix_ms: status.updated_unix_ms,
-                context: Some(status.advertised_hls_stream_id.clone()),
-            });
+            push_derived_event(
+                &mut events,
+                OperationalEvent {
+                    source: EventSource::Contributor,
+                    level: "warning".to_owned(),
+                    code: "relay_symbol_expired".to_owned(),
+                    message:
+                        "Deadline expiry dropped one or more RaptorQ symbols at the contributor."
+                            .to_owned(),
+                    count: status.runtime.relay_session.expired_symbols.unwrap_or(0),
+                    seen_unix_ms: status.updated_unix_ms,
+                    context: Some(status.advertised_hls_stream_id.clone()),
+                },
+            );
         }
     }
     if let Some(status) = edge {
@@ -1255,34 +1124,42 @@ pub fn operational_alerts(
                 }),
         );
         if status.relay_session.failover_controller_state == "secondary_unavailable" {
-            events.push(OperationalEvent {
-                source: EventSource::Delivery,
-                level: "error".to_owned(),
-                code: "relay_failover_secondary_unavailable".to_owned(),
-                message: "Primary source is silent and the warm secondary is not ready.".to_owned(),
-                count: status
-                    .relay_session
-                    .failover_secondary_unavailable_events
-                    .max(1),
-                seen_unix_ms: transition_or_snapshot_time(
-                    status
+            push_derived_event(
+                &mut events,
+                OperationalEvent {
+                    source: EventSource::Delivery,
+                    level: "error".to_owned(),
+                    code: "relay_failover_secondary_unavailable".to_owned(),
+                    message: "Primary source is silent and the warm secondary is not ready."
+                        .to_owned(),
+                    count: status
                         .relay_session
-                        .failover_controller_last_transition_unix_ms,
-                    status.updated_unix_ms,
-                ),
-                context: Some(status.node.node_id.clone()),
-            });
+                        .failover_secondary_unavailable_events
+                        .max(1),
+                    seen_unix_ms: transition_or_snapshot_time(
+                        status
+                            .relay_session
+                            .failover_controller_last_transition_unix_ms,
+                        status.updated_unix_ms,
+                    ),
+                    context: Some(status.node.node_id.clone()),
+                },
+            );
         }
         if status.relay_session.failover_command_send_errors > 0 {
-            events.push(OperationalEvent {
-                source: EventSource::Delivery,
-                level: "error".to_owned(),
-                code: "relay_failover_control_send_error".to_owned(),
-                message: "The edge could not refresh its warm-secondary control lease.".to_owned(),
-                count: status.relay_session.failover_command_send_errors,
-                seen_unix_ms: status.updated_unix_ms,
-                context: Some(status.node.node_id.clone()),
-            });
+            push_derived_event(
+                &mut events,
+                OperationalEvent {
+                    source: EventSource::Delivery,
+                    level: "error".to_owned(),
+                    code: "relay_failover_control_send_error".to_owned(),
+                    message: "The edge could not refresh its warm-secondary control lease."
+                        .to_owned(),
+                    count: status.relay_session.failover_command_send_errors,
+                    seen_unix_ms: status.updated_unix_ms,
+                    context: Some(status.node.node_id.clone()),
+                },
+            );
         }
     }
     sort_and_bound_events(&mut events);
@@ -1324,26 +1201,27 @@ pub fn operational_activity(
                         .or_else(|| event.stream_id_text.clone()),
                 }),
         );
-        events.extend(
-            status
-                .relay_nodes
-                .iter()
-                .filter(|node| node.relay_session.failover_lease_expirations > 0)
-                .map(|node| OperationalEvent {
-                    source: EventSource::Delivery,
-                    level: "info".to_owned(),
-                    code: "relay_failover_lease_expired".to_owned(),
-                    message:
-                        "A warm relay returned to repair-only after its promotion lease expired."
-                            .to_owned(),
-                    count: node.relay_session.failover_lease_expirations,
-                    seen_unix_ms: transition_or_snapshot_time(
-                        node.relay_session.failover_listener_last_transition_unix_ms,
-                        status.updated_unix_ms,
-                    ),
-                    context: Some(node.node_id.clone()),
-                }),
-        );
+        let derived_events = status
+            .relay_nodes
+            .iter()
+            .filter(|node| node.relay_session.failover_lease_expirations > 0)
+            .map(|node| OperationalEvent {
+                source: EventSource::Delivery,
+                level: "info".to_owned(),
+                code: "relay_failover_lease_expired".to_owned(),
+                message: "A warm relay returned to repair-only after its promotion lease expired."
+                    .to_owned(),
+                count: node.relay_session.failover_lease_expirations,
+                seen_unix_ms: transition_or_snapshot_time(
+                    node.relay_session.failover_listener_last_transition_unix_ms,
+                    status.updated_unix_ms,
+                ),
+                context: Some(node.node_id.clone()),
+            })
+            .collect::<Vec<_>>();
+        for event in derived_events {
+            push_derived_event(&mut events, event);
+        }
     }
     sort_and_bound_events(&mut events);
     events
@@ -1359,21 +1237,32 @@ fn sort_and_bound_events(events: &mut Vec<OperationalEvent>) {
     events.truncate(MAX_EVENT_ROWS);
 }
 
+fn push_derived_event(events: &mut Vec<OperationalEvent>, event: OperationalEvent) {
+    if events.iter().any(|current| {
+        current.source == event.source
+            && current.code == event.code
+            && current.context == event.context
+    }) {
+        return;
+    }
+    events.push(event);
+}
+
 fn include_delivery_event(code: &str) -> bool {
-    let code = code.to_ascii_lowercase();
-    ![
-        "peer",
-        "replica",
-        "provision",
-        "control_",
-        "private_discovery",
-        "mesh_single_node",
-        "mesh_no_links",
-        "mesh_unknown",
-        "mesh_snapshot",
-    ]
-    .iter()
-    .any(|obsolete| code.contains(obsolete))
+    !matches!(
+        code,
+        "close_node"
+            | "control_failures"
+            | "control_skipped"
+            | "linode_private_discovery_inactive"
+            | "mesh_no_links"
+            | "mesh_single_node"
+            | "mesh_snapshot"
+            | "mesh_unknown_peers"
+            | "provision_node"
+            | "replica_request"
+            | "warm_stream"
+    )
 }
 
 fn delivery_event_message(code: &str, message: &str) -> String {
@@ -1401,6 +1290,27 @@ pub fn monotonic_rate_per_second(previous: u64, current: u64, elapsed_ms: u64) -
     Some(current.saturating_sub(previous) as f64 * 1_000.0 / elapsed_ms as f64)
 }
 
+pub fn state_tone(state: &str) -> &'static str {
+    match state.to_ascii_lowercase().as_str() {
+        "healthy"
+        | "active"
+        | "ready"
+        | "current"
+        | "publishing"
+        | "listening"
+        | "compiled"
+        | "installed"
+        | "accepting traffic"
+        | "serving"
+        | "sessions established"
+        | "active source"
+        | "warm repair" => "healthy",
+        "attention" | "degraded" | "stale" | "lagging" | "pending" | "warming" => "warn",
+        "down" | "stalled" | "error" | "failed" | "fatal" | "unavailable" => "error",
+        _ => "warn",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1423,6 +1333,7 @@ mod tests {
         "relay_secondary_path_observed_at_unix_ms":1784102400000,
         "media_object_clock_id":"av-contrib-wall-v1","media_object_clock_confidence":"estimated",
         "media_object_clock_estimated_error_ms":1000,"media_object_source_epoch":1784151600000001},
+      "publication":{"canonical_epoch":1784151600000001,"head_object":8},
       "listeners":[
         {"protocol":"rist","enabled":true,"bind":"0.0.0.0:27000","output_stream_id":"42","output_hls_path":"/42/stream.m3u8","backend":"pure","profile":"main","flow_id":"0x11223344"},
         {"protocol":"srt","enabled":true,"bind":"0.0.0.0:27001","output_stream_id":"42","output_hls_path":"/42/stream.m3u8"}
@@ -1450,6 +1361,10 @@ mod tests {
       "aggregate":{"node_count":2,"active_streams":1},
       "telemetry":{"fresh_remote_count":1,"stale_remote_count":0},
       "orchestration":{"control_dispatch_ready":true},
+      "publication":{"canonical_epoch":1784151600000001,"canonical_epoch_activation_delay_us":180000,"contiguous_object":8,"head_object":8,"gap_count":0},
+      "delivery":{"delivery_class":"premium_live","generation":7,"route_state":"active","route_ready":true,"fabric":"dual_parent_dag","path_stretch":1.125,
+        "primary":{"node_id":"relay-primary","target":"127.0.0.1:12001","carrier":"private-udp","trust":"controlled network","state":"active source","observation_source":"controller","rtt_us":13500,"jitter_us":300,"loss_ppm":10000},
+        "secondary":{"node_id":"relay-secondary","target":"127.0.0.1:12002","carrier":"private-udp","trust":"controlled network","state":"warm repair","observation_source":"controller","rtt_us":13900,"jitter_us":200,"loss_ppm":2000}},
       "nodes":[{"node_id":"edge-lon","region":"eu-west","total_storage_bytes":1000,"used_storage_bytes":400}],
       "edge_services":[{"node_id":"edge-lon","region":"eu-west","playback_base_url":"https://edge.example","active_readers":4,"responses_total":15,"response_duration_count":10,"response_duration_p95_us":900,"response_duration_buckets":[0,0,2,10]}],
       "streams":[{"node_id":"edge-lon","stream_id_text":"42","latest_local_part":8008,"latest_mesh_part":8,"canonical_epoch":1784151600000001,"canonical_epoch_activation_delay_us":180000,"contiguous_object":8,"head_object":8,"gap_count":0,"mesh_lag_parts":0,"last_ingest_age_ms":20,"stale_threshold_ms":3000}],
@@ -1498,28 +1413,6 @@ mod tests {
                 .percentile_us(95),
             Some(250)
         );
-        let route = effective_delivery(Some(&contrib), None);
-        assert_eq!(
-            route.primary.as_ref().and_then(|lane| lane.rtt_us),
-            Some(13_500)
-        );
-        assert_eq!(
-            route.primary.as_ref().and_then(|lane| lane.jitter_us),
-            Some(300)
-        );
-        assert_eq!(
-            route.primary.as_ref().and_then(|lane| lane.loss_ppm),
-            Some(10_000)
-        );
-        assert_eq!(
-            route.secondary.as_ref().and_then(|lane| lane.rtt_us),
-            Some(13_900)
-        );
-        assert_eq!(
-            route.secondary.as_ref().and_then(|lane| lane.loss_ppm),
-            Some(2_000)
-        );
-
         let edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
         assert_eq!(edge.relay_session.authenticated_sessions, 1);
         assert_eq!(edge.relay_session.fec_recovered_objects, 1);
@@ -1551,16 +1444,25 @@ mod tests {
             Some(500)
         );
         assert_eq!(edge.relay_nodes[0].relay_session.failover_listeners, 1);
-        assert_eq!(publication_from_edge(&edge).contiguous_object, Some(8));
-        assert_eq!(publication_from_edge(&edge).head_object, Some(8));
-        assert_eq!(publication_from_edge(&edge).gap_count, Some(0));
+        assert_eq!(edge.publication.contiguous_object, Some(8));
+        assert_eq!(edge.publication.head_object, Some(8));
+        assert_eq!(edge.publication.gap_count, Some(0));
         assert_eq!(
-            publication_from_edge(&edge).canonical_epoch_activation_delay_us,
+            edge.publication.canonical_epoch_activation_delay_us,
             Some(180_000)
         );
         assert_eq!(
-            publication_from_edge(&edge).canonical_epoch,
+            edge.publication.canonical_epoch,
             Some(1_784_151_600_000_001)
+        );
+        let route = effective_delivery(Some(&edge));
+        assert_eq!(
+            route.primary.as_ref().and_then(|lane| lane.rtt_us),
+            Some(13_500)
+        );
+        assert_eq!(
+            route.secondary.as_ref().and_then(|lane| lane.rtt_us),
+            Some(13_900)
         );
         assert_eq!(
             edge.relay_nodes[0]
@@ -1572,6 +1474,52 @@ mod tests {
             edge.relay_nodes[0].relay_session.forward_percentile_us(95),
             Some(100)
         );
+    }
+
+    #[test]
+    fn global_snapshot_embeds_the_canonical_contributor_snapshot() {
+        let contributor = serde_json::from_str::<serde_json::Value>(CONTRIB_PARTIAL).unwrap();
+        let status: MeshStatus = serde_json::from_value(serde_json::json!({
+            "schema": OPERATIONS_SNAPSHOT_SCHEMA,
+            "updated_unix_ms": 1_784_102_400_300_u64,
+            "contributor": contributor
+        }))
+        .unwrap();
+
+        assert_eq!(status.schema, OPERATIONS_SNAPSHOT_SCHEMA);
+        let contributor = status.contributor.expect("embedded contributor snapshot");
+        assert_eq!(contributor.service, "av-contrib");
+        assert_eq!(contributor.publication.head_object, Some(8));
+    }
+
+    #[test]
+    fn removed_snapshot_aliases_are_not_interpreted() {
+        let status: MeshStatus = serde_json::from_str(
+            r#"{
+                "relay_ingress": {"primary_sessions": 9},
+                "relay_session": {"repaired_objects": 7},
+                "publication": {
+                    "source_epoch": 42,
+                    "contiguous_watermark": 8,
+                    "head_watermark": 9,
+                    "gaps": 1
+                },
+                "delivery": {
+                    "class": "interactive",
+                    "topology_generation": 4,
+                    "topology": "direct"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(status.relay_session.primary_sessions, 0);
+        assert_eq!(status.relay_session.repair_assisted_objects, 0);
+        assert_eq!(status.publication.canonical_epoch, None);
+        assert_eq!(status.publication.contiguous_object, None);
+        assert_eq!(status.publication.head_object, None);
+        assert_eq!(status.publication.gap_count, None);
+        assert!(!status.delivery.has_assignment());
     }
 
     #[test]
@@ -1618,8 +1566,8 @@ mod tests {
             r#"{
                 "orchestration": {
                     "collector": {
-                        "authority": "node-raft",
-                        "role": "follower",
+                        "authority": "needletail-controller",
+                        "role": "collector",
                         "leader_node_id": "relay-primary-amsterdam",
                         "leader_region": "europe-west4",
                         "term": 18,
@@ -1648,6 +1596,7 @@ mod tests {
 
         let collector = edge.orchestration.collector;
         assert!(collector.reported());
+        assert!(collector.has_committed_live_lease());
         assert_eq!(
             collector.leader_node_id.as_deref(),
             Some("relay-primary-amsterdam")
@@ -1657,6 +1606,57 @@ mod tests {
         assert_eq!(edge.topology_links.len(), 1);
         assert_eq!(edge.topology_links[0].role, "primary");
         assert_eq!(edge.topology_links[0].throughput_bps, Some(12_000_000));
+    }
+
+    #[test]
+    fn collector_health_requires_every_split_brain_fence() {
+        let committed = OperationsCollectorStatus {
+            authority: "needletail-controller".to_owned(),
+            role: "collector".to_owned(),
+            leader_node_id: Some("collector-a".to_owned()),
+            term: Some(8),
+            fencing_generation: Some(21),
+            quorum_healthy: Some(true),
+            voters_online: Some(3),
+            voters_total: Some(5),
+            lease_remaining_ms: Some(1_000),
+            ..OperationsCollectorStatus::default()
+        };
+        assert!(committed.has_committed_live_lease());
+
+        let mut incomplete = committed.clone();
+        incomplete.fencing_generation = None;
+        assert!(!incomplete.has_committed_live_lease());
+
+        let mut expired = committed.clone();
+        expired.lease_remaining_ms = Some(0);
+        assert!(!expired.has_committed_live_lease());
+
+        let mut candidate = committed.clone();
+        candidate.role = "candidate".to_owned();
+        assert!(!candidate.has_committed_live_lease());
+
+        let mut unbounded = committed.clone();
+        unbounded.lease_remaining_ms = Some(MAX_OPERATIONS_LEASE_MS + 1);
+        assert!(!unbounded.has_committed_live_lease());
+
+        let mut wrong_authority = committed;
+        wrong_authority.authority = "other-controller".to_owned();
+        assert!(!wrong_authority.has_committed_live_lease());
+
+        let invalid_voters = OperationsCollectorStatus {
+            authority: "needletail-controller".to_owned(),
+            role: "collector".to_owned(),
+            leader_node_id: Some("collector-a".to_owned()),
+            term: Some(8),
+            fencing_generation: Some(21),
+            quorum_healthy: Some(true),
+            voters_online: Some(3),
+            voters_total: Some(4),
+            lease_remaining_ms: Some(1_000),
+            ..OperationsCollectorStatus::default()
+        };
+        assert!(!invalid_voters.has_committed_live_lease());
     }
 
     #[test]
@@ -1675,27 +1675,116 @@ mod tests {
     }
 
     #[test]
-    fn delivery_assignment_supports_both_product_fabrics() {
+    fn operator_state_tones_mark_unavailable_routes_as_errors() {
+        for state in ["down", "error", "failed", "fatal", "stalled", "unavailable"] {
+            assert_eq!(state_tone(state), "error");
+        }
+        assert_eq!(state_tone("degraded"), "warn");
+        assert_eq!(state_tone("active"), "healthy");
+    }
+
+    #[test]
+    fn contributor_latency_does_not_substitute_mesh_histograms() {
+        let mut status = ContribStatus::default();
+        status.runtime.mesh_forward.media_duration = DurationHistogram {
+            count: 1,
+            p95_us: Some(2_500),
+            ..DurationHistogram::default()
+        };
+        assert!(!contributor_latency(&status).has_samples());
+    }
+
+    #[test]
+    fn delivery_assignment_accepts_only_current_fabric_names() {
         let interactive: DeliverySnapshot = serde_json::from_str(
-            r#"{"class":"interactive","topology_generation":42,"path_stretch":1.07,"route_state":"ready"}"#,
+            r#"{"delivery_class":"interactive","generation":42,"path_stretch":1.07,"route_state":"ready","route_ready":true,"fabric":"direct_low_latency","primary":{"node_id":"relay-primary"}}"#,
         )
         .unwrap();
         assert_eq!(interactive.fabric_label(), Some("Direct / one-hop overlay"));
         assert_eq!(interactive.readiness_label(), "ready");
 
-        let broadcast: DeliverySnapshot =
-            serde_json::from_str(r#"{"class":"mass_broadcast","topology":"dual-parent-dag"}"#)
-                .unwrap();
+        let broadcast: DeliverySnapshot = serde_json::from_str(
+            r#"{"delivery_class":"mass_broadcast","generation":9,"fabric":"dual_parent_dag","primary":{"node_id":"relay-primary"}}"#,
+        )
+        .unwrap();
         assert_eq!(broadcast.fabric_label(), Some("Dual-parent DAG"));
+
+        for removed in [
+            r#"{"delivery_class":"premium-live"}"#,
+            r#"{"delivery_class":"mass-broadcast"}"#,
+            r#"{"fabric":"dual-parent-dag"}"#,
+            r#"{"fabric":"regional-scalable"}"#,
+        ] {
+            let delivery: DeliverySnapshot = serde_json::from_str(removed).unwrap();
+            assert_eq!(delivery.fabric_label(), None);
+        }
     }
 
     #[test]
-    fn current_publication_heads_remain_visible_during_rollout() {
+    fn delivery_readiness_surfaces_conflicting_canonical_fields() {
+        for contradictory in [
+            DeliverySnapshot {
+                delivery_class: Some("interactive".to_owned()),
+                generation: Some(1),
+                fabric: Some("direct_low_latency".to_owned()),
+                primary: Some(RouteLane::default()),
+                route_state: Some("active".to_owned()),
+                route_ready: Some(false),
+                ..DeliverySnapshot::default()
+            },
+            DeliverySnapshot {
+                delivery_class: Some("interactive".to_owned()),
+                generation: Some(1),
+                fabric: Some("direct_low_latency".to_owned()),
+                primary: Some(RouteLane::default()),
+                route_state: Some("failed".to_owned()),
+                route_ready: Some(true),
+                ..DeliverySnapshot::default()
+            },
+        ] {
+            assert_eq!(contradictory.readiness_label(), "inconsistent route state");
+        }
+        let state_without_proof = DeliverySnapshot {
+            delivery_class: Some("interactive".to_owned()),
+            generation: Some(1),
+            fabric: Some("direct_low_latency".to_owned()),
+            primary: Some(RouteLane::default()),
+            route_state: Some("active".to_owned()),
+            ..DeliverySnapshot::default()
+        };
+        assert_eq!(
+            state_without_proof.readiness_label(),
+            "readiness unreported"
+        );
+        let readiness_without_assignment = DeliverySnapshot {
+            route_ready: Some(true),
+            ..DeliverySnapshot::default()
+        };
+        assert_eq!(
+            readiness_without_assignment.readiness_label(),
+            "assignment incomplete"
+        );
+        let unknown_state = DeliverySnapshot {
+            delivery_class: Some("interactive".to_owned()),
+            generation: Some(1),
+            fabric: Some("direct_low_latency".to_owned()),
+            primary: Some(RouteLane::default()),
+            route_state: Some("installed".to_owned()),
+            route_ready: Some(true),
+            ..DeliverySnapshot::default()
+        };
+        assert_eq!(unknown_state.readiness_label(), "route state unrecognized");
+    }
+
+    #[test]
+    fn canonical_contributor_publication_is_parsed() {
         let status: ContribStatus = serde_json::from_str(CONTRIB_PARTIAL).unwrap();
-        let publication = publication_from_contrib(&status);
-        assert_eq!(publication.head_object, Some(8));
-        assert!(publication.gap_count.is_none());
-        assert_eq!(publication.canonical_epoch, Some(1_784_151_600_000_001));
+        assert_eq!(status.publication.head_object, Some(8));
+        assert!(status.publication.gap_count.is_none());
+        assert_eq!(
+            status.publication.canonical_epoch,
+            Some(1_784_151_600_000_001)
+        );
     }
 
     #[test]
@@ -1719,9 +1808,11 @@ mod tests {
         let mut edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
         edge.nodes = vec![EdgeNode::default(); 100];
         edge.edge_services = vec![EdgeService::default(); 100];
+        edge.relay_nodes = vec![RelayNodeSession::default(); 100];
         edge.streams = vec![EdgeStream::default(); 100];
         assert_eq!(bounded_nodes(&edge).len(), MAX_NODE_ROWS);
         assert_eq!(bounded_edges(&edge).len(), MAX_EDGE_ROWS);
+        assert_eq!(bounded_relay_nodes(&edge).len(), MAX_NODE_ROWS);
         assert_eq!(bounded_edge_streams(&edge).len(), MAX_STREAM_ROWS);
     }
 
@@ -1755,6 +1846,56 @@ mod tests {
         assert!(alerts
             .iter()
             .any(|event| event.code == "relay_symbol_expired"));
+    }
+
+    #[test]
+    fn delivery_event_filter_removes_only_exact_retired_codes() {
+        for retired in [
+            "close_node",
+            "control_failures",
+            "control_skipped",
+            "linode_private_discovery_inactive",
+            "mesh_no_links",
+            "mesh_single_node",
+            "mesh_snapshot",
+            "mesh_unknown_peers",
+            "provision_node",
+            "replica_request",
+            "warm_stream",
+        ] {
+            assert!(!include_delivery_event(retired));
+        }
+        for current in [
+            "collector_peer_fenced",
+            "operations_control_plane_unavailable",
+            "telemetry_peer_unavailable",
+        ] {
+            assert!(include_delivery_event(current));
+        }
+    }
+
+    #[test]
+    fn canonical_alert_wins_over_a_derived_duplicate() {
+        let mut edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
+        edge.relay_session.failover_controller_state = "secondary_unavailable".to_owned();
+        edge.relay_session.failover_secondary_unavailable_events = 9;
+        edge.alerts.push(MeshAlert {
+            level: "critical".to_owned(),
+            code: "relay_failover_secondary_unavailable".to_owned(),
+            message: "Canonical producer message.".to_owned(),
+            count: 4,
+            last_seen_unix_ms: Some(edge.updated_unix_ms - 10),
+            node_id: Some(edge.node.node_id.clone()),
+            ..MeshAlert::default()
+        });
+
+        let duplicates = operational_alerts(None, Some(&edge))
+            .into_iter()
+            .filter(|event| event.code == "relay_failover_secondary_unavailable")
+            .collect::<Vec<_>>();
+        assert_eq!(duplicates.len(), 1);
+        assert_eq!(duplicates[0].message, "Canonical producer message.");
+        assert_eq!(duplicates[0].count, 4);
     }
 
     #[test]
@@ -1800,32 +1941,16 @@ mod tests {
     }
 
     #[test]
-    fn configured_carriers_do_not_claim_a_compiled_route() {
-        let contrib: ContribStatus = serde_json::from_str(CONTRIB_PARTIAL).unwrap();
-        let delivery = effective_delivery(Some(&contrib), None);
-        assert_eq!(delivery.readiness_label(), "carrier configured");
-        assert!(delivery.generation.is_none());
-        assert_eq!(
-            delivery.primary.unwrap().state.as_deref(),
-            Some("active source")
-        );
-        assert_eq!(
-            delivery.secondary.unwrap().state.as_deref(),
-            Some("warm repair")
-        );
+    fn missing_canonical_delivery_does_not_invent_an_assignment() {
+        let delivery = effective_delivery(None);
+        assert!(!delivery.has_assignment());
+        assert_eq!(delivery.readiness_label(), "awaiting route assignment");
     }
 
     #[test]
-    fn installed_dual_parent_sessions_surface_an_active_compiled_dag() {
-        let mut contrib: ContribStatus = serde_json::from_str(CONTRIB_PARTIAL).unwrap();
-        contrib.mesh.relay_topology_generation = 7;
-        contrib.mesh.relay_primary_id = Some("relay-primary".to_owned());
-        contrib.mesh.relay_secondary_id = Some("relay-secondary".to_owned());
-        let mut edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
-        edge.relay_session.controlled_sessions = 2;
-        edge.relay_session.datagrams_rejected = 0;
-
-        let delivery = effective_delivery(Some(&contrib), Some(&edge));
+    fn canonical_delivery_assignment_is_used_without_synthesis() {
+        let edge: MeshStatus = serde_json::from_str(EDGE_PARTIAL).unwrap();
+        let delivery = effective_delivery(Some(&edge));
         assert_eq!(delivery.fabric_label(), Some("Dual-parent DAG"));
         assert_eq!(delivery.readiness_label(), "ready");
         assert_eq!(delivery.generation, Some(7));

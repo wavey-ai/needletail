@@ -1,17 +1,22 @@
 # Operations telemetry transport
 
-Status: implemented on `main` for local and controlled-private qualification.
+Status: implemented for local and controlled-private regional qualification.
 
 The lane is opt-in in `av-mesh`. The Needletail supervisor configures the two
-remote relays to send snapshots to the playback edge, which remains the single
-fleet aggregator and browser feed.
+remote relays to send snapshots to one playback edge.
+
+This transport does not elect the global Operations collector, fence telemetry
+by a committed generation, or assemble
+`needletail.operations-snapshot.v1`. Those production gates are tracked in
+[`TODO.md`](../TODO.md); this regional lane must not be presented as the global
+authority.
 
 ## Runtime behavior
 
 Each node takes one bounded snapshot every 5 seconds. The same producer serves
-the compatibility TCP path and the FEC path, so enabling both does not collect
-the snapshot twice. TCP admission and UDP transmission are non-blocking with
-respect to the producer.
+the TLS/TCP control transport and the FEC path, so enabling both does not
+collect the snapshot twice. TCP admission and UDP transmission are non-blocking
+with respect to the producer.
 
 The FEC payload is named MessagePack. The browser-facing `/api/mesh` response
 remains JSON. The versioned envelope contains:
@@ -113,7 +118,7 @@ Automated coverage currently proves:
 - oversized FEC geometry is rejected before decoder state is retained;
 - real UDP sender-to-collector ingestion reaches the existing aggregator;
 - the configured wire-rate pacer delays transmission as expected;
-- TCP snapshots and control commands remain compatible.
+- TCP snapshot delivery and control commands continue to function.
 
 On July 19, 2026, the release-mode isolated encoder qualification on an Apple
 M1 completed 1,000 MessagePack + envelope CRC + RaptorQ encodes in 222.8365 ms:

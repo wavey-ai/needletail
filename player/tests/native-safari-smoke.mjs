@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 
-const playerUrl = new URL(process.argv[2] || "https://player.infidelity.io/1");
+assert.ok(process.argv[2], "usage: node native-safari-smoke.mjs PLAYER_URL");
+const playerUrl = new URL(process.argv[2]);
 const observationSeconds = Number.parseFloat(
   process.env.PLAYER_OBSERVATION_SECONDS || "30",
 );
@@ -93,6 +94,7 @@ async function readPlayer() {
       state: document.querySelector("#player-card")?.dataset.state,
       mediaType: document.querySelector("#player-card")?.dataset.mediaType,
       transport: document.querySelector("#transport-label")?.textContent,
+      currentSrc: video?.currentSrc,
       readyState: video?.readyState,
       width: video?.videoWidth,
       height: video?.videoHeight,
@@ -100,6 +102,11 @@ async function readPlayer() {
       paused: video?.paused,
       playbackRate: video?.playbackRate,
       mediaError: video?.error?.message,
+      mediaErrorCode: video?.error?.code,
+      opusCodecSupport: {
+        lowerCaseToken: video?.canPlayType?.('audio/mp4; codecs="opus"'),
+        registeredToken: video?.canPlayType?.('audio/mp4; codecs="Opus"'),
+      },
       seekableEnd,
       liveDelay: Number.isFinite(seekableEnd)
         ? Math.max(0, seekableEnd - video.currentTime)
@@ -275,6 +282,25 @@ try {
   assert.equal(steady.mode, "native", "Safari did not use native HLS playback");
   assert.equal(steady.state, "live", "Native playback did not reach the live state");
   assert.equal(steady.mediaError, null, "Native playback reported a media error");
+  assert.equal(steady.mediaErrorCode, null, "Native playback reported a media error code");
+  if (playerUrl.searchParams.get("format")?.toLowerCase() === "opus") {
+    const baseStreamId = BigInt(
+      playerUrl.pathname.split("/").filter(Boolean).at(-1) || "1",
+    );
+    const codecMismatch =
+      Boolean(steady.opusCodecSupport.registeredToken) &&
+      !steady.opusCodecSupport.lowerCaseToken;
+    const expectedPath = codecMismatch
+      ? `/live/${baseStreamId + 1000n}/stream.m3u8`
+      : `/live/${baseStreamId}/master.m3u8`;
+    assert.equal(
+      new URL(steady.currentSrc).pathname,
+      expectedPath,
+      codecMismatch
+        ? "Native Opus playback did not bypass the incompatible master codec token"
+        : "Native Opus playback did not retain the supported master playlist",
+    );
+  }
   if (steady.mediaType === "video") {
     assert.equal(steady.width, 3840, "Native playback did not decode 4K video");
     assert.equal(steady.height, 2160, "Native playback did not decode 4K video");

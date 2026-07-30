@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 LAB_STATE="${NEEDLETAIL_GCP_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}"
 
 : "${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS to the Google service-account JSON path}"
@@ -32,7 +33,7 @@ SOURCE_RESTART_CONVERGENCE_BUDGET_MS="${SOURCE_RESTART_CONVERGENCE_BUDGET_MS:-10
 SOURCE_RESTART_TIMEOUT_SECONDS="${SOURCE_RESTART_TIMEOUT_SECONDS:-20}"
 RAPTORQ_LOSS_PROBABILITY="${RAPTORQ_LOSS_PROBABILITY:-0.02}"
 RAPTORQ_LOSS_SECONDS="${RAPTORQ_LOSS_SECONDS:-15}"
-RAPTORQ_MIN_FEC_RECOVERED_OBJECTS="${RAPTORQ_MIN_FEC_RECOVERED_OBJECTS:-${RAPTORQ_MIN_REPAIRED_OBJECTS:-1}}"
+RAPTORQ_MIN_FEC_RECOVERED_OBJECTS="${RAPTORQ_MIN_FEC_RECOVERED_OBJECTS:-1}"
 RELAY_PROCESSING_P95_BUDGET_US="${RELAY_PROCESSING_P95_BUDGET_US:-1000}"
 MAX_PATH_STRETCH="${MAX_PATH_STRETCH:-1.15}"
 LOSS_CHAIN="NEEDLETAIL_RQ_QUAL"
@@ -75,6 +76,10 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
 fi
+
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -169,7 +174,7 @@ wall_clock_us() {
 
 start_contributor() {
   gcp_ssh contributor \
-    --command='sudo systemctl start needletail-contrib.service needletail-media.service' \
+    --command='sudo systemctl start needletail-contrib.service' \
     >/dev/null
   CONTRIBUTOR_RESTARTING=0
 }
@@ -177,7 +182,7 @@ start_contributor() {
 restart_contributor() {
   CONTRIBUTOR_RESTARTING=1
   gcp_ssh contributor \
-    --command='sudo systemctl restart needletail-contrib.service needletail-media.service' \
+    --command='sudo systemctl restart needletail-contrib.service' \
     >/dev/null
 }
 
@@ -419,6 +424,7 @@ RESULT_DIR="${LOSSLESS_RESULT_DIR}" \
 RUN_ID="${RUN_ID}" \
 NEEDLETAIL_GCP_LAB_STATE="${LAB_STATE}" \
 GCP_PROJECT="${PROJECT}" \
+NEEDLETAIL_TLS_SERVER_NAME="${TLS_SERVER_NAME}" \
   "${ROOT}/scripts/gcp-lossless-latency.sh"
 
 capture_baseline

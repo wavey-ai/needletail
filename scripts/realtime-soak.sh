@@ -453,7 +453,7 @@ jq -n \
               }
           )) as $paths
     | {
-        schema: "wavey.realtime-soak.v1",
+        schema: "needletail.realtime-soak.v1",
         generated_at: $finished_at,
         started_at: $started_at,
         finished_at: $finished_at,

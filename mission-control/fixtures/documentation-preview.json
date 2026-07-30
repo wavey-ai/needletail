@@ -1,0 +1,1138 @@
+{
+  "schema": "needletail.operations-snapshot.v1",
+  "updated_unix_ms": 0,
+  "preview": {
+    "kind": "documentation_fixture",
+    "label": "Documentation fixture — not live telemetry",
+    "collector_election_proof": "unreported"
+  },
+  "contributor": {
+    "service": "av-contrib",
+    "status": "active",
+    "updated_unix_ms": 0,
+    "default_stream_id": "1",
+    "advertised_hls_stream_id": "1",
+    "advertised_hls_path": "/live/1/stream.m3u8",
+    "mesh": {
+      "relay_primary_configured": true,
+      "relay_secondary_configured": true,
+      "relay_carrier": "rist",
+      "relay_trust": "qualification",
+      "relay_primary_id": "relay-primary-amsterdam",
+      "relay_primary_target": "relay-primary-amsterdam:22001",
+      "relay_secondary_id": "relay-secondary-japan",
+      "relay_secondary_target": "relay-secondary-japan:22002",
+      "relay_secondary_source_seeded": true,
+      "relay_exclusive": true,
+      "relay_topology_generation": 2026072801,
+      "relay_subscription_id": 20260727,
+      "relay_deadline_ms": 1000,
+      "relay_path_observation_source": "documentation fixture",
+      "relay_path_loss_fraction": 0.0002,
+      "relay_path_best_direct_rtt_ms": 8.2,
+      "relay_path_rtt_ms": 9.1,
+      "relay_path_jitter_ms": 0.4,
+      "relay_path_queue_delay_ms": 0.9,
+      "relay_secondary_path_observation_source": "documentation fixture",
+      "relay_secondary_path_loss_fraction": 0.0007,
+      "relay_secondary_path_best_direct_rtt_ms": 229.0,
+      "relay_secondary_path_rtt_ms": 232.6,
+      "relay_secondary_path_jitter_ms": 1.8,
+      "relay_secondary_path_queue_delay_ms": 3.6,
+      "media_object_clock_id": "documentation-fixture-clock",
+      "media_object_clock_confidence": "simulated",
+      "media_object_clock_estimated_error_ms": 2,
+      "media_object_source_epoch": 2026073000000001
+    },
+    "hls": {
+      "part_target_ms": 250,
+      "segment_target_ms": 1000,
+      "playlist_target_duration_ms": 8000,
+      "playlist_count": 1,
+      "playlist_buffer_kb": 2048
+    },
+    "fec": {
+      "repair_symbols": 3,
+      "symbol_size": 1316
+    },
+    "listeners": [
+      {
+        "protocol": "rist",
+        "enabled": true,
+        "bind": "0.0.0.0:27000",
+        "output_stream_id": "1",
+        "output_hls_path": "/live/1/stream.m3u8",
+        "backend": "pure",
+        "profile": "main",
+        "flow_id": "0x11223344"
+      }
+    ],
+    "runtime": {
+      "media_access_units": {
+        "requests": 28420,
+        "payload_bytes": 14680268800,
+        "datagrams": 892344,
+        "last_seen_age_ms": 70
+      },
+      "mesh_forward": {
+        "media_payloads": 28420,
+        "media_payload_bytes": 14680268800,
+        "media_datagrams": 892344,
+        "media_datagram_bytes": 15244081152,
+        "media_errors": 0,
+        "media_last_age_ms": 66,
+        "media_duration": {
+          "count": 28420,
+          "p50_us": 780,
+          "p95_us": 1840,
+          "p99_us": 3210
+        }
+      },
+      "relay_session": {
+        "objects_sent": 28420,
+        "encode_errors": 0,
+        "source_datagrams": 892344,
+        "source_datagram_bytes": 1174300704,
+        "source_errors": 0,
+        "repair_datagrams": 74362,
+        "repair_datagram_bytes": 97820392,
+        "repair_errors": 0,
+        "primary_lane_objects_succeeded": 28420,
+        "primary_lane_objects_failed": 0,
+        "primary_lane_state": "active source",
+        "secondary_lane_objects_succeeded": 28420,
+        "secondary_lane_objects_failed": 0,
+        "secondary_lane_state": "warm repair",
+        "surviving_lane_objects": 0,
+        "all_lanes_failed_objects": 0,
+        "expired_objects": 0,
+        "expired_symbols": 0,
+        "deadline_hits": 28420,
+        "deadline_misses": 0,
+        "last_deadline_headroom_us": 724000,
+        "stages": {
+          "total": {
+            "count": 28420,
+            "p50_us": 1010,
+            "p95_us": 2380,
+            "p99_us": 4050
+          },
+          "encode_wait": {
+            "count": 28420,
+            "p95_us": 110
+          },
+          "encode": {
+            "count": 28420,
+            "p95_us": 790
+          },
+          "schedule": {
+            "count": 28420,
+            "p95_us": 120
+          },
+          "primary_source_send": {
+            "count": 892344,
+            "p95_us": 310
+          },
+          "secondary_source_send": {
+            "count": 892344,
+            "p95_us": 360
+          },
+          "secondary_repair_send": {
+            "count": 74362,
+            "p95_us": 330
+          }
+        }
+      },
+      "mpeg_ts": {
+        "slots": 28420,
+        "bytes": 14680268800,
+        "last_seen_age_ms": 70,
+        "continuity_errors": 0,
+        "continuity_dropped_bytes": 0,
+        "payload_drops": 0,
+        "payload_drop_bytes": 0
+      },
+      "fmp4": {
+        "parts": 28420,
+        "bytes": 14680268800,
+        "init_bytes": 1248,
+        "publish_errors": 0,
+        "last_publish_age_ms": 92,
+        "video_codec": "h264",
+        "video_width": 3840,
+        "video_height": 2160,
+        "video_parts": 28420,
+        "video_access_units": 170520,
+        "audio_codec": "aac",
+        "audio_parts": 28420,
+        "audio_access_units": 682080
+      },
+      "ingest_sessions": {
+        "active": 1,
+        "started": 1,
+        "ended": 0,
+        "recent": [
+          {
+            "session_id": 1,
+            "protocol": "rist",
+            "stream_id_text": "1",
+            "output_stream_id_text": "1",
+            "output_stream_idx": 1,
+            "peer": "127.0.0.1",
+            "path": "rist://127.0.0.1:27000",
+            "state": "active",
+            "started_unix_ms": 0,
+            "last_seen_unix_ms": 0,
+            "age_ms": 180000,
+            "body_slots": 28420,
+            "bytes": 14680268800,
+            "access_units": 852600
+          }
+        ]
+      },
+      "protocols": [
+        {
+          "protocol": "rist",
+          "units": 28420,
+          "bytes": 14680268800,
+          "active_sessions": 1,
+          "ended_sessions": 0,
+          "last_seen_age_ms": 70
+        }
+      ],
+      "streams": [
+        {
+          "stream_id_text": "1",
+          "state": "publishing",
+          "input_units": 28420,
+          "input_bytes": 14680268800,
+          "mesh_payloads": 28420,
+          "mesh_payload_bytes": 14680268800,
+          "mesh_datagrams": 892344,
+          "mesh_datagram_bytes": 15244081152,
+          "mesh_errors": 0,
+          "fmp4_parts": 28420,
+          "fmp4_bytes": 14680268800,
+          "fmp4_init_bytes": 1248,
+          "fmp4_publish_errors": 0,
+          "latest_fmp4_sequence": 28419,
+          "video_codec": "h264",
+          "video_width": 3840,
+          "video_height": 2160,
+          "video_parts": 28420,
+          "video_access_units": 170520,
+          "audio_codec": "aac",
+          "audio_parts": 28420,
+          "audio_access_units": 682080,
+          "last_input_age_ms": 70,
+          "last_mesh_forward_age_ms": 66,
+          "last_fmp4_age_ms": 92
+        }
+      ],
+      "ingest_latency": {
+        "count": 28420,
+        "p50_us": 1210,
+        "p95_us": 2740,
+        "p99_us": 4480
+      }
+    },
+    "alerts": [],
+    "health": {
+      "state": "active",
+      "stale_threshold_ms": 3000,
+      "input_seen": true,
+      "fmp4_input_seen": true,
+      "output_seen": true,
+      "last_input_age_ms": 70,
+      "last_fmp4_input_age_ms": 92,
+      "last_output_age_ms": 66
+    },
+    "activity": [
+      {
+        "level": "info",
+        "code": "rist_media",
+        "message": "RIST media is arriving at the qualification contributor.",
+        "datagrams": 892344,
+        "sequence": 28419,
+        "seen_unix_ms": 0
+      }
+    ],
+    "publication": {
+      "canonical_epoch": 2026073000000001,
+      "canonical_epoch_activation_delay_us": 186000,
+      "contiguous_object": 28419,
+      "head_object": 28419,
+      "gap_count": 0
+    },
+    "delivery": {
+      "delivery_class": "premium_live",
+      "generation": 2026072801,
+      "route_state": "active",
+      "route_ready": true,
+      "fabric": "dual_parent_dag",
+      "path_stretch": 1.08,
+      "stream_id_text": "1",
+      "destination": "global"
+    }
+  },
+  "node": {
+    "node_id": "edge-london",
+    "provider": "gcp",
+    "region": "europe-west2",
+    "zone": "europe-west2-c",
+    "role": "playback_edge",
+    "continent": "eu",
+    "latitude": 51.5074,
+    "longitude": -0.1278,
+    "public_endpoint": "https://edge-london.example.invalid:19444",
+    "updated_unix_ms": 0,
+    "total_storage_bytes": 107374182400,
+    "used_storage_bytes": 27917287424,
+    "egress_capacity_bps": 10000000000,
+    "contributor_streams": 1,
+    "active_streams": 1,
+    "draining": false
+  },
+  "relay_session": {
+    "primary_sessions": 1,
+    "secondary_sessions": 1,
+    "authenticated_sessions": 2,
+    "controlled_sessions": 2,
+    "completed_objects": 28419,
+    "datagrams_received": 966706,
+    "datagrams_rejected": 0,
+    "source_datagrams": 892344,
+    "repair_datagrams": 74362,
+    "duplicate_datagrams": 41,
+    "decoded_objects": 28419,
+    "repair_assisted_objects": 392,
+    "fec_recovered_objects": 392,
+    "fec_recovered_source_symbols": 617,
+    "expired_objects": 0,
+    "conflict_drops": 0,
+    "authentication_drops": 0,
+    "deadline_drops": 0,
+    "processing_duration_count": 28419,
+    "processing_duration_sum_us": 24156150,
+    "processing_duration_max_us": 5940,
+    "processing_duration_buckets": [
+      0,
+      180,
+      11960,
+      26091,
+      28380,
+      28419,
+      28419,
+      28419,
+      28419,
+      28419,
+      28419,
+      28419,
+      28419
+    ],
+    "publication_to_available_count": 28419,
+    "publication_to_available_sum_us": 6355294800,
+    "publication_to_available_max_us": 412000,
+    "publication_to_available_buckets": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      24,
+      290,
+      1530,
+      9100,
+      28010,
+      28419,
+      28419,
+      28419
+    ],
+    "publication_clock_error_max_us": 2800,
+    "publication_clock_unusable_objects": 0,
+    "failover_controller_state": "healthy",
+    "failover_controller_enabled": 1,
+    "failover_commands_sent": 720,
+    "failover_command_send_errors": 0,
+    "failover_promotions": 0,
+    "failover_demotions": 0,
+    "failover_secondary_unavailable_events": 0,
+    "failover_primary_source_age_ms": 72,
+    "failover_secondary_repair_age_ms": 88
+  },
+  "relay_nodes": [
+    {
+      "node_id": "relay-primary-amsterdam",
+      "region": "europe-west4",
+      "relay_session": {
+        "primary_sessions": 1,
+        "authenticated_sessions": 1,
+        "controlled_sessions": 1,
+        "source_datagrams": 892344,
+        "repair_datagrams": 0,
+        "decoded_objects": 28419,
+        "downstream_children": 1,
+        "forwarded_source_datagrams": 892344,
+        "forwarded_repair_datagrams": 0,
+        "forwarded_bytes": 1174300704,
+        "forward_errors": 0,
+        "processing_duration_count": 28419,
+        "processing_duration_max_us": 3110,
+        "processing_duration_buckets": [
+          0,
+          610,
+          18820,
+          28200,
+          28419
+        ],
+        "forward_duration_count": 892344,
+        "forward_duration_max_us": 740,
+        "forward_duration_buckets": [
+          120,
+          890200,
+          892344
+        ]
+      }
+    },
+    {
+      "node_id": "relay-secondary-japan",
+      "region": "japaneast",
+      "relay_session": {
+        "secondary_sessions": 1,
+        "authenticated_sessions": 1,
+        "controlled_sessions": 1,
+        "source_datagrams": 892344,
+        "repair_datagrams": 74362,
+        "decoded_objects": 28419,
+        "downstream_children": 6,
+        "forwarded_source_datagrams": 0,
+        "forwarded_repair_datagrams": 446172,
+        "forwarded_bytes": 587162352,
+        "forward_errors": 0,
+        "warm_source_buffered_datagrams": 32768,
+        "warm_source_replayed_datagrams": 0,
+        "failover_listeners": 6,
+        "failover_commands_received": 4320
+      }
+    },
+    {
+      "node_id": "relay-regional-osaka",
+      "region": "asia-northeast2",
+      "relay_session": {
+        "primary_sessions": 1,
+        "secondary_sessions": 1,
+        "authenticated_sessions": 2,
+        "controlled_sessions": 2,
+        "source_datagrams": 892344,
+        "repair_datagrams": 74362,
+        "decoded_objects": 28419,
+        "repair_assisted_objects": 241,
+        "fec_recovered_objects": 241,
+        "fec_recovered_source_symbols": 388,
+        "downstream_children": 5,
+        "forwarded_source_datagrams": 4461720,
+        "forwarded_repair_datagrams": 371810,
+        "forward_errors": 0,
+        "failover_controller_state": "healthy",
+        "failover_controller_enabled": 1
+      }
+    },
+    {
+      "node_id": "relay-regional-australia",
+      "region": "australiaeast",
+      "relay_session": {
+        "primary_sessions": 1,
+        "secondary_sessions": 1,
+        "authenticated_sessions": 2,
+        "controlled_sessions": 2,
+        "source_datagrams": 892344,
+        "repair_datagrams": 74362,
+        "decoded_objects": 28419,
+        "repair_assisted_objects": 166,
+        "fec_recovered_objects": 166,
+        "fec_recovered_source_symbols": 229,
+        "downstream_children": 1,
+        "forwarded_source_datagrams": 892344,
+        "forwarded_repair_datagrams": 74362,
+        "forward_errors": 0
+      }
+    }
+  ],
+  "aggregate": {
+    "node_count": 10,
+    "total_storage_bytes": 1073741824000,
+    "used_storage_bytes": 231928233984,
+    "total_egress_capacity_bps": 100000000000,
+    "contributor_streams": 1,
+    "active_streams": 5
+  },
+  "telemetry": {
+    "stale_after_ms": 15000,
+    "fresh_remote_count": 9,
+    "stale_remote_count": 0,
+    "stale_nodes": []
+  },
+  "orchestration": {
+    "control_dispatch_ready": false,
+    "telemetry_fec": {
+      "enabled": false,
+      "publisher_targets": 0,
+      "interval_ms": 0,
+      "rate_bps": 0,
+      "queue_blocks": 0,
+      "queue_bytes": 0
+    },
+    "collector": {
+      "authority": "",
+      "role": "unreported",
+      "leader_node_id": null,
+      "leader_region": null,
+      "term": null,
+      "fencing_generation": null,
+      "quorum_healthy": null,
+      "voters_online": null,
+      "voters_total": null,
+      "lease_remaining_ms": null
+    }
+  },
+  "nodes": [
+    {
+      "node_id": "contrib-london",
+      "provider": "gcp",
+      "region": "europe-west2",
+      "zone": "europe-west2-c",
+      "role": "origin",
+      "continent": "eu",
+      "latitude": 51.5074,
+      "longitude": -0.1278,
+      "updated_unix_ms": 0,
+      "active_streams": 1
+    },
+    {
+      "node_id": "relay-primary-amsterdam",
+      "provider": "gcp",
+      "region": "europe-west4",
+      "zone": "europe-west4-a",
+      "role": "backbone",
+      "continent": "eu",
+      "latitude": 52.3676,
+      "longitude": 4.9041,
+      "updated_unix_ms": 0,
+      "active_streams": 1
+    },
+    {
+      "node_id": "relay-secondary-japan",
+      "provider": "azure",
+      "region": "japaneast",
+      "zone": "japaneast-unzoned",
+      "role": "backbone",
+      "continent": "apac",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "updated_unix_ms": 0,
+      "active_streams": 1
+    },
+    {
+      "node_id": "relay-regional-osaka",
+      "provider": "gcp",
+      "region": "asia-northeast2",
+      "zone": "asia-northeast2-b",
+      "role": "regional_relay",
+      "continent": "apac",
+      "latitude": 34.6937,
+      "longitude": 135.5023,
+      "updated_unix_ms": 0,
+      "active_streams": 1
+    },
+    {
+      "node_id": "relay-regional-australia",
+      "provider": "azure",
+      "region": "australiaeast",
+      "zone": "australiaeast-unzoned",
+      "role": "regional_relay",
+      "continent": "apac",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "updated_unix_ms": 0,
+      "active_streams": 1
+    },
+    {
+      "node_id": "edge-london",
+      "provider": "gcp",
+      "region": "europe-west2",
+      "zone": "europe-west2-c",
+      "role": "playback_edge",
+      "continent": "eu",
+      "latitude": 51.5074,
+      "longitude": -0.1278,
+      "updated_unix_ms": 0,
+      "total_storage_bytes": 107374182400,
+      "used_storage_bytes": 27917287424,
+      "egress_capacity_bps": 10000000000,
+      "active_streams": 1
+    },
+    {
+      "node_id": "edge-tokyo",
+      "provider": "gcp",
+      "region": "asia-northeast1",
+      "zone": "asia-northeast1-c",
+      "role": "playback_edge",
+      "continent": "apac",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "updated_unix_ms": 0,
+      "total_storage_bytes": 107374182400,
+      "used_storage_bytes": 24159191040,
+      "egress_capacity_bps": 10000000000,
+      "active_streams": 1
+    },
+    {
+      "node_id": "edge-sydney",
+      "provider": "gcp",
+      "region": "australia-southeast1",
+      "zone": "australia-southeast1-b",
+      "role": "playback_edge",
+      "continent": "apac",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "updated_unix_ms": 0,
+      "total_storage_bytes": 107374182400,
+      "used_storage_bytes": 21474836480,
+      "egress_capacity_bps": 10000000000,
+      "active_streams": 1
+    },
+    {
+      "node_id": "edge-australia",
+      "provider": "azure",
+      "region": "australiaeast",
+      "zone": "australiaeast-unzoned",
+      "role": "playback_edge",
+      "continent": "apac",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "updated_unix_ms": 0,
+      "total_storage_bytes": 107374182400,
+      "used_storage_bytes": 18253611008,
+      "egress_capacity_bps": 10000000000,
+      "active_streams": 1
+    },
+    {
+      "node_id": "edge-japan",
+      "provider": "azure",
+      "region": "japaneast",
+      "zone": "japaneast-unzoned",
+      "role": "playback_edge",
+      "continent": "apac",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "updated_unix_ms": 0,
+      "total_storage_bytes": 107374182400,
+      "used_storage_bytes": 20401094656,
+      "egress_capacity_bps": 10000000000,
+      "active_streams": 1
+    }
+  ],
+  "edge_services": [
+    {
+      "node_id": "edge-london",
+      "region": "europe-west2",
+      "continent": "eu",
+      "playback_base_url": "https://edge-london.example.invalid:19444",
+      "active_readers": 7,
+      "requests_served": 42811,
+      "bytes_served": 21857390592,
+      "llhls_tail_requests": 39210,
+      "responses_total": 42811,
+      "response_errors": 0,
+      "response_not_found": 0,
+      "last_response_unix_ms": 0,
+      "response_duration_count": 42811,
+      "response_duration_p50_us": 610,
+      "response_duration_p95_us": 1720,
+      "response_duration_p99_us": 3890,
+      "draining": false
+    },
+    {
+      "node_id": "edge-tokyo",
+      "region": "asia-northeast1",
+      "continent": "apac",
+      "playback_base_url": "https://edge-tokyo.example.invalid:19444",
+      "active_readers": 4,
+      "requests_served": 27110,
+      "bytes_served": 13839892480,
+      "llhls_tail_requests": 25180,
+      "responses_total": 27110,
+      "response_errors": 0,
+      "response_not_found": 0,
+      "last_response_unix_ms": 0,
+      "response_duration_count": 27110,
+      "response_duration_p50_us": 720,
+      "response_duration_p95_us": 1940,
+      "response_duration_p99_us": 4110,
+      "draining": false
+    },
+    {
+      "node_id": "edge-sydney",
+      "region": "australia-southeast1",
+      "continent": "apac",
+      "playback_base_url": "https://edge-sydney.example.invalid:19444",
+      "active_readers": 3,
+      "requests_served": 18490,
+      "bytes_served": 9446694912,
+      "llhls_tail_requests": 17120,
+      "responses_total": 18490,
+      "response_errors": 0,
+      "response_not_found": 0,
+      "last_response_unix_ms": 0,
+      "response_duration_count": 18490,
+      "response_duration_p50_us": 740,
+      "response_duration_p95_us": 2050,
+      "response_duration_p99_us": 4470,
+      "draining": false
+    },
+    {
+      "node_id": "edge-australia",
+      "region": "australiaeast",
+      "continent": "apac",
+      "playback_base_url": "https://edge-australia.example.invalid:19444",
+      "active_readers": 2,
+      "requests_served": 12940,
+      "bytes_served": 6610350080,
+      "llhls_tail_requests": 11980,
+      "responses_total": 12940,
+      "response_errors": 0,
+      "response_not_found": 0,
+      "last_response_unix_ms": 0,
+      "response_duration_count": 12940,
+      "response_duration_p50_us": 790,
+      "response_duration_p95_us": 2140,
+      "response_duration_p99_us": 4820,
+      "draining": false
+    },
+    {
+      "node_id": "edge-japan",
+      "region": "japaneast",
+      "continent": "apac",
+      "playback_base_url": "https://edge-japan.example.invalid:19444",
+      "active_readers": 2,
+      "requests_served": 11420,
+      "bytes_served": 5830082560,
+      "llhls_tail_requests": 10590,
+      "responses_total": 11420,
+      "response_errors": 0,
+      "response_not_found": 0,
+      "last_response_unix_ms": 0,
+      "response_duration_count": 11420,
+      "response_duration_p50_us": 810,
+      "response_duration_p95_us": 2230,
+      "response_duration_p99_us": 5010,
+      "draining": false
+    }
+  ],
+  "streams": [
+    {
+      "node_id": "edge-london",
+      "stream_id": 1,
+      "stream_id_text": "1",
+      "latest_local_part": 28419,
+      "latest_local_part_bytes": 516544,
+      "latest_local_part_duration_ms": 250,
+      "latest_local_part_age_ms": 92,
+      "latest_mesh_part": 28419,
+      "canonical_epoch": 2026073000000001,
+      "canonical_epoch_activation_delay_us": 186000,
+      "bytes_received": 14680268800,
+      "datagrams_received": 966706,
+      "mesh_lag_parts": 0,
+      "last_ingest_age_ms": 72,
+      "stale_threshold_ms": 3000,
+      "contiguous_object": 28419,
+      "head_object": 28419,
+      "gap_count": 0
+    },
+    {
+      "node_id": "edge-tokyo",
+      "stream_id": 1,
+      "stream_id_text": "1",
+      "latest_local_part": 28419,
+      "latest_local_part_bytes": 516544,
+      "latest_local_part_duration_ms": 250,
+      "latest_local_part_age_ms": 108,
+      "latest_mesh_part": 28419,
+      "canonical_epoch": 2026073000000001,
+      "canonical_epoch_activation_delay_us": 198000,
+      "bytes_received": 14680268800,
+      "datagrams_received": 966706,
+      "mesh_lag_parts": 0,
+      "last_ingest_age_ms": 88,
+      "stale_threshold_ms": 3000,
+      "contiguous_object": 28419,
+      "head_object": 28419,
+      "gap_count": 0
+    },
+    {
+      "node_id": "edge-sydney",
+      "stream_id": 1,
+      "stream_id_text": "1",
+      "latest_local_part": 28419,
+      "latest_local_part_bytes": 516544,
+      "latest_local_part_duration_ms": 250,
+      "latest_local_part_age_ms": 114,
+      "latest_mesh_part": 28419,
+      "canonical_epoch": 2026073000000001,
+      "canonical_epoch_activation_delay_us": 206000,
+      "bytes_received": 14680268800,
+      "datagrams_received": 966706,
+      "mesh_lag_parts": 0,
+      "last_ingest_age_ms": 94,
+      "stale_threshold_ms": 3000,
+      "contiguous_object": 28419,
+      "head_object": 28419,
+      "gap_count": 0
+    },
+    {
+      "node_id": "edge-australia",
+      "stream_id": 1,
+      "stream_id_text": "1",
+      "latest_local_part": 28419,
+      "latest_local_part_bytes": 516544,
+      "latest_local_part_duration_ms": 250,
+      "latest_local_part_age_ms": 119,
+      "latest_mesh_part": 28419,
+      "canonical_epoch": 2026073000000001,
+      "canonical_epoch_activation_delay_us": 211000,
+      "bytes_received": 14680268800,
+      "datagrams_received": 966706,
+      "mesh_lag_parts": 0,
+      "last_ingest_age_ms": 99,
+      "stale_threshold_ms": 3000,
+      "contiguous_object": 28419,
+      "head_object": 28419,
+      "gap_count": 0
+    },
+    {
+      "node_id": "edge-japan",
+      "stream_id": 1,
+      "stream_id_text": "1",
+      "latest_local_part": 28419,
+      "latest_local_part_bytes": 516544,
+      "latest_local_part_duration_ms": 250,
+      "latest_local_part_age_ms": 126,
+      "latest_mesh_part": 28419,
+      "canonical_epoch": 2026073000000001,
+      "canonical_epoch_activation_delay_us": 219000,
+      "bytes_received": 14680268800,
+      "datagrams_received": 966706,
+      "mesh_lag_parts": 0,
+      "last_ingest_age_ms": 106,
+      "stale_threshold_ms": 3000,
+      "contiguous_object": 28419,
+      "head_object": 28419,
+      "gap_count": 0
+    }
+  ],
+  "alerts": [
+    {
+      "level": "info",
+      "code": "documentation_preview_fixture",
+      "message": "Documentation fixture; collector election and lease proof are unreported.",
+      "count": 1,
+      "last_seen_unix_ms": 0
+    }
+  ],
+  "activity": [
+    {
+      "level": "info",
+      "code": "documentation_preview_fixture",
+      "message": "Documentation fixture loaded with representative qualification topology.",
+      "count": 1,
+      "seen_unix_ms": 0
+    }
+  ],
+  "publication": {
+    "canonical_epoch": 2026073000000001,
+    "canonical_epoch_activation_delay_us": 219000,
+    "contiguous_object": 28419,
+    "head_object": 28419,
+    "gap_count": 0
+  },
+  "delivery": {
+    "delivery_class": "premium_live",
+    "generation": 2026072801,
+    "route_state": "active",
+    "route_ready": true,
+    "fabric": "dual_parent_dag",
+    "path_stretch": 1.08,
+    "stream_id_text": "1",
+    "destination": "global",
+    "primary": {
+      "node_id": "relay-regional-osaka",
+      "carrier": "rist",
+      "trust": "qualification",
+      "state": "active source",
+      "observation_source": "documentation fixture",
+      "rtt_us": 229000,
+      "jitter_us": 1800,
+      "loss_ppm": 200,
+      "deadline_miss_ppm": 0
+    },
+    "secondary": {
+      "node_id": "relay-secondary-japan",
+      "carrier": "rist",
+      "trust": "qualification",
+      "state": "warm repair",
+      "observation_source": "documentation fixture",
+      "rtt_us": 232600,
+      "jitter_us": 2100,
+      "loss_ppm": 700,
+      "deadline_miss_ppm": 0
+    }
+  },
+  "routes": [
+    {
+      "delivery_class": "premium_live",
+      "generation": 2026072801,
+      "route_state": "active",
+      "route_ready": true,
+      "fabric": "dual_parent_dag",
+      "path_stretch": 1.08,
+      "stream_id_text": "1",
+      "destination": "eu",
+      "primary": {
+        "node_id": "relay-primary-amsterdam",
+        "carrier": "rist",
+        "trust": "qualification",
+        "state": "active source",
+        "observation_source": "documentation fixture",
+        "rtt_us": 9100,
+        "jitter_us": 400,
+        "loss_ppm": 200,
+        "deadline_miss_ppm": 0
+      },
+      "secondary": {
+        "node_id": "relay-secondary-japan",
+        "carrier": "rist",
+        "trust": "qualification",
+        "state": "warm repair",
+        "observation_source": "documentation fixture",
+        "rtt_us": 232600,
+        "jitter_us": 1800,
+        "loss_ppm": 700,
+        "deadline_miss_ppm": 0
+      }
+    },
+    {
+      "delivery_class": "premium_live",
+      "generation": 2026072801,
+      "route_state": "active",
+      "route_ready": true,
+      "fabric": "dual_parent_dag",
+      "path_stretch": 1.11,
+      "stream_id_text": "1",
+      "destination": "japan",
+      "primary": {
+        "node_id": "relay-regional-osaka",
+        "carrier": "rist",
+        "trust": "qualification",
+        "state": "active source",
+        "observation_source": "documentation fixture",
+        "rtt_us": 9100,
+        "jitter_us": 700,
+        "loss_ppm": 300,
+        "deadline_miss_ppm": 0
+      },
+      "secondary": {
+        "node_id": "relay-secondary-japan",
+        "carrier": "rist",
+        "trust": "qualification",
+        "state": "warm repair",
+        "observation_source": "documentation fixture",
+        "rtt_us": 13500,
+        "jitter_us": 900,
+        "loss_ppm": 500,
+        "deadline_miss_ppm": 0
+      }
+    },
+    {
+      "delivery_class": "premium_live",
+      "generation": 2026072801,
+      "route_state": "active",
+      "route_ready": true,
+      "fabric": "dual_parent_dag",
+      "path_stretch": 1.07,
+      "stream_id_text": "1",
+      "destination": "australia",
+      "primary": {
+        "node_id": "relay-regional-australia",
+        "carrier": "rist",
+        "trust": "qualification",
+        "state": "active source",
+        "observation_source": "documentation fixture",
+        "rtt_us": 22400,
+        "jitter_us": 1100,
+        "loss_ppm": 400,
+        "deadline_miss_ppm": 0
+      },
+      "secondary": {
+        "node_id": "relay-secondary-japan",
+        "carrier": "rist",
+        "trust": "qualification",
+        "state": "warm repair",
+        "observation_source": "documentation fixture",
+        "rtt_us": 104300,
+        "jitter_us": 1400,
+        "loss_ppm": 600,
+        "deadline_miss_ppm": 0
+      }
+    }
+  ],
+  "topology_links": [
+    {
+      "from_node_id": "contrib-london",
+      "to_node_id": "relay-primary-amsterdam",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 41200000,
+      "rtt_us": 9100,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "contrib-london",
+      "to_node_id": "relay-secondary-japan",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 41200000,
+      "rtt_us": 232600,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-primary-amsterdam",
+      "to_node_id": "relay-regional-osaka",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 228400,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-secondary-japan",
+      "to_node_id": "relay-regional-osaka",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 13500,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-osaka",
+      "to_node_id": "edge-london",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 229000,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-secondary-japan",
+      "to_node_id": "edge-london",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 232600,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-osaka",
+      "to_node_id": "edge-tokyo",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 9100,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-secondary-japan",
+      "to_node_id": "edge-tokyo",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 13500,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-osaka",
+      "to_node_id": "edge-sydney",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 116000,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-secondary-japan",
+      "to_node_id": "edge-sydney",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 104300,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-osaka",
+      "to_node_id": "edge-australia",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 117800,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-secondary-japan",
+      "to_node_id": "edge-australia",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 105900,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-osaka",
+      "to_node_id": "relay-regional-australia",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 115200,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-secondary-japan",
+      "to_node_id": "relay-regional-australia",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 102800,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-australia",
+      "to_node_id": "edge-japan",
+      "role": "primary",
+      "state": "active",
+      "throughput_bps": 38800000,
+      "rtt_us": 108200,
+      "generation": 2026072801
+    },
+    {
+      "from_node_id": "relay-regional-osaka",
+      "to_node_id": "edge-japan",
+      "role": "secondary",
+      "state": "warm",
+      "throughput_bps": 3400000,
+      "rtt_us": 10200,
+      "generation": 2026072801
+    }
+  ]
+}

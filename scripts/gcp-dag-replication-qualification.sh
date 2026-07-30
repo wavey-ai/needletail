@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LAB_STATE="${NEEDLETAIL_LAB_STATE:-${NEEDLETAIL_GCP_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}}"
+source "${ROOT}/scripts/qualification-config.sh"
+LAB_STATE="${NEEDLETAIL_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}"
 PROVIDER="${NEEDLETAIL_LAB_PROVIDER:-$(jq -r '.provider // "gcp"' "${LAB_STATE}" 2>/dev/null || printf gcp)}"
 QUALIFICATION_ROOT="${ROOT}/target/${PROVIDER}-qualification"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${RESULT_DIR:-${QUALIFICATION_ROOT}/dag-runs/${RUN_ID}}"
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 LINODE_SSH_KEY="${NEEDLETAIL_LINODE_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
@@ -65,6 +67,9 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   exit 0
 fi
 
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
 [[ -f "${LAB_STATE}" ]] || {
   echo "lab state missing; provision the intercontinental lab first" >&2
   exit 2
@@ -679,7 +684,7 @@ start_edge_receivers() {
     extra_codec_args="$(hls_codec_args "${group_index}")"
     extra_hls_commands+="
     nohup /usr/local/bin/aep1-48k-probe receive-hls \\
-      --edge 127.0.0.1:19444 --server-name local.infidelity.io --transport h3 \\
+      --edge 127.0.0.1:19444 --server-name ${TLS_SERVER_NAME} --transport h3 \\
       --stream-id ${extra_stream_id} --session-id ${session_id} \\
       --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \\
       --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \\
@@ -702,14 +707,14 @@ start_edge_receivers() {
         sleep \"\$delay\"
       fi
       exec /usr/local/bin/aep1-48k-probe receive-webtransport \
-      --edge 127.0.0.1:19444 --server-name local.infidelity.io \
+      --edge 127.0.0.1:19444 --server-name ${TLS_SERVER_NAME} \
       --session-id ${session_id} --group-id ${group_id} \
       --duration-seconds ${DURATION_SECONDS} --deadline-ms 1000 \
       --tail-seconds ${TAIL_SECONDS}' \
       >${remote_prefix}-webtransport.json 2>${remote_prefix}-webtransport.err </dev/null &
     echo \$! >${remote_prefix}-webtransport.pid
     nohup /usr/local/bin/aep1-48k-probe receive-hls \
-      --edge 127.0.0.1:19444 --server-name local.infidelity.io --transport h3 \
+      --edge 127.0.0.1:19444 --server-name ${TLS_SERVER_NAME} --transport h3 \
       --stream-id ${stream_id} --session-id ${session_id} \
       --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
       --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \
@@ -722,7 +727,7 @@ start_edge_receivers() {
         sleep \"\$delay\"
       fi
       exec /usr/local/bin/aep1-48k-probe receive-hls \
-      --edge 127.0.0.1:19444 --server-name local.infidelity.io --transport h3 \
+      --edge 127.0.0.1:19444 --server-name ${TLS_SERVER_NAME} --transport h3 \
       --stream-id ${stream_id} --session-id ${session_id} \
       --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
       --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \
@@ -740,7 +745,7 @@ start_ingress_local_receiver() {
   local primary_codec_args
   primary_codec_args="$(hls_codec_args 0)"
   gcp_ssh primary --command="nohup /usr/local/bin/aep1-48k-probe receive-hls \
-    --edge 127.0.0.1:19445 --server-name local.infidelity.io --transport h3 \
+    --edge 127.0.0.1:19445 --server-name ${TLS_SERVER_NAME} --transport h3 \
     --stream-id ${stream_id} --session-id ${session_id} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
     --deadline-ms 1000 --render-buffer-ms ${RENDER_BUFFER_MS} \

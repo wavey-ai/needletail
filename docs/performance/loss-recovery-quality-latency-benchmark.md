@@ -54,7 +54,7 @@ one at a time:
 - small systematic Reed-Solomon;
 - source-first same-epoch RaptorQ;
 - deadline-aware selective retransmission;
-- the current RIST and SRT profiles.
+- the current RIST profile and the explicitly enabled SRT profile.
 
 LL-HLS is measured as the mandatory viewer/output lane, not as the mechanism
 that repairs contributor-to-edge UDP loss.

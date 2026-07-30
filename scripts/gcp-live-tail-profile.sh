@@ -2,8 +2,13 @@
 set -euo pipefail
 
 : "${GCP_PROJECT:?set GCP_PROJECT to the qualification project}"
+: "${GCP_TRACK_DIRECTORY:?set GCP_TRACK_DIRECTORY to the externally prepared source tracks}"
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qualification-config.sh"
 ZONE="${GCP_ZONE:-europe-west2-c}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
 DAW_HOST="${GCP_DAW_HOST:-nt-daw-lon}"
 CONTRIB_HOST="${GCP_CONTRIB_HOST:-nt-contrib-lon}"
 RELAY_A_HOST="${GCP_RELAY_A_HOST:-nt-relay-a-lon}"
@@ -12,7 +17,15 @@ EDGE_HOST="${GCP_EDGE_HOST:-nt-edge-lon}"
 READER_HOST="${GCP_READER_HOST:-nt-opus-reader-lon}"
 CONTRIB_PRIVATE_IP="${GCP_CONTRIB_PRIVATE_IP:-10.84.10.5}"
 EDGE_PRIVATE_IP="${GCP_EDGE_PRIVATE_IP:-10.84.10.6}"
-TRACK_DIRECTORY="${GCP_TRACK_DIRECTORY:-/opt/needletail/lori-pray4me-8}"
+needletail_require_ipv4_address GCP_CONTRIB_PRIVATE_IP "${CONTRIB_PRIVATE_IP}"
+needletail_require_ipv4_address GCP_EDGE_PRIVATE_IP "${EDGE_PRIVATE_IP}"
+for host_variable in DAW_HOST CONTRIB_HOST RELAY_A_HOST RELAY_B_HOST \
+  EDGE_HOST READER_HOST; do
+  needletail_require_gcp_instance_name \
+    "${host_variable}" "${!host_variable}"
+done
+TRACK_DIRECTORY="${GCP_TRACK_DIRECTORY}"
+needletail_require_absolute_path GCP_TRACK_DIRECTORY "${TRACK_DIRECTORY}"
 RESULT_ROOT="${GCP_PROFILE_RESULT_ROOT:-target/gcp-qualification/live-tail-serialization/profile}"
 RUN_LABEL="${GCP_PROFILE_RUN_LABEL:-clock-qualified-v12}"
 CUSTOMERS="${GCP_PROFILE_CUSTOMERS:-24}"
@@ -58,6 +71,19 @@ if [[ "${REQUIRE_RESOURCE_STABILITY}" != 0 \
   echo "GCP_PROFILE_REQUIRE_RESOURCE_STABILITY must be zero or one" >&2
   exit 2
 fi
+needletail_require_safe_component GCP_PROFILE_RUN_LABEL "${RUN_LABEL}"
+if [[ -n "${READER_PERF_BIN}" ]]; then
+  needletail_require_absolute_path GCP_PROFILE_READER_PERF_BIN "${READER_PERF_BIN}"
+  if [[ -n "${READER_PERF_EXEC_PATH}" ]]; then
+    needletail_require_absolute_path \
+      GCP_PROFILE_READER_PERF_EXEC_PATH "${READER_PERF_EXEC_PATH}"
+  fi
+fi
+needletail_shell_quote TRACK_DIRECTORY_QUOTED "${TRACK_DIRECTORY}"
+needletail_shell_quote READER_PERF_BIN_QUOTED "${READER_PERF_BIN}"
+needletail_shell_quote \
+  READER_PERF_LIBRARY_PATH_QUOTED "${READER_PERF_LIBRARY_PATH}"
+needletail_shell_quote READER_PERF_EXEC_PATH_QUOTED "${READER_PERF_EXEC_PATH}"
 
 LOAD_WAIT_SECONDS="${GCP_PROFILE_LOAD_WAIT_SECONDS:-$((
   START_LEAD_SECONDS + QUALIFICATION_SECONDS + 120
@@ -223,14 +249,14 @@ done
 gcp_ssh "${DAW_HOST}" --command="nohup env \
   DAW_TEST_SOURCE_START_UNIX_NS=${session_id} \
   /usr/local/bin/daw-test-source --direct-contributor --loop \
-  ${CONTRIB_PRIVATE_IP}:27100 ${SOURCE_SECONDS} ${TRACK_DIRECTORY} \
+  ${CONTRIB_PRIVATE_IP}:27100 ${SOURCE_SECONDS} ${TRACK_DIRECTORY_QUOTED} \
   >${REMOTE_DIR}/source.log 2>${REMOTE_DIR}/source.err </dev/null & \
   echo \$! >${REMOTE_DIR}/source.pid"
 
 gcp_ssh "${READER_HOST}" --command="nohup bash -c '
   /usr/local/bin/aep1-48k-probe load-hls \
     --edge ${EDGE_PRIVATE_IP}:19444 \
-    --server-name local.infidelity.io \
+    --server-name ${TLS_SERVER_NAME} \
     --tls-ca /tmp/fullchain.pem \
     --transport h3 \
     --path-prefix /live \
@@ -338,23 +364,23 @@ if [[ -n "${READER_PERF_BIN}" ]]; then
       sleep \"\${delay_seconds}\"
     fi
     reader_perf_status=0
-    sudo env LD_LIBRARY_PATH='${READER_PERF_LIBRARY_PATH}' \
-      PERF_EXEC_PATH='${READER_PERF_EXEC_PATH}' \
-      '${READER_PERF_BIN}' record -e cpu-clock -F 199 -p \"\${load_pid}\" \
+    sudo env LD_LIBRARY_PATH=${READER_PERF_LIBRARY_PATH_QUOTED} \
+      PERF_EXEC_PATH=${READER_PERF_EXEC_PATH_QUOTED} \
+      ${READER_PERF_BIN_QUOTED} record -e cpu-clock -F 199 -p \"\${load_pid}\" \
       -o ${REMOTE_DIR}/reader-perf.data -- sleep ${PERF_SECONDS} \
       >${REMOTE_DIR}/reader-perf.log 2>${REMOTE_DIR}/reader-perf.err || reader_perf_status=\$?
     printf '%s\\n' \"\${reader_perf_status}\" >${REMOTE_DIR}/reader-perf.exit
     if [[ \"\${reader_perf_status}\" != 0 && \"\${reader_perf_status}\" != 143 ]]; then
       exit \"\${reader_perf_status}\"
     fi
-    sudo env LD_LIBRARY_PATH='${READER_PERF_LIBRARY_PATH}' \
-      PERF_EXEC_PATH='${READER_PERF_EXEC_PATH}' \
-      '${READER_PERF_BIN}' report -i ${REMOTE_DIR}/reader-perf.data --stdio \
+    sudo env LD_LIBRARY_PATH=${READER_PERF_LIBRARY_PATH_QUOTED} \
+      PERF_EXEC_PATH=${READER_PERF_EXEC_PATH_QUOTED} \
+      ${READER_PERF_BIN_QUOTED} report -i ${REMOTE_DIR}/reader-perf.data --stdio \
       --no-children --percent-limit 0.05 >${REMOTE_DIR}/reader-perf-flat-full.txt \
       2>${REMOTE_DIR}/reader-perf-report.err
-    sudo env LD_LIBRARY_PATH='${READER_PERF_LIBRARY_PATH}' \
-      PERF_EXEC_PATH='${READER_PERF_EXEC_PATH}' \
-      '${READER_PERF_BIN}' report -i ${REMOTE_DIR}/reader-perf.data --header-only \
+    sudo env LD_LIBRARY_PATH=${READER_PERF_LIBRARY_PATH_QUOTED} \
+      PERF_EXEC_PATH=${READER_PERF_EXEC_PATH_QUOTED} \
+      ${READER_PERF_BIN_QUOTED} report -i ${REMOTE_DIR}/reader-perf.data --header-only \
       --stdio >${REMOTE_DIR}/reader-perf-header.txt \
       2>${REMOTE_DIR}/reader-perf-header.err
     sudo chown \$(id -u):\$(id -g) ${REMOTE_DIR}/reader-perf.data

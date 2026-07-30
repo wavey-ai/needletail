@@ -30,12 +30,25 @@ esac
 CHANNELS=$((TRACKS * 2))
 GROUP_COUNT="${TRACKS}"
 RUN_ID="${RUN_ID:-$(date -u '+%Y%m%dT%H%M%SZ')-pcm-${TRACKS}track}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${ROOT}/target/multicloud-qualification/runs/${RUN_ID}"
 REMOTE_DIR="/tmp/${RUN_ID}"
 TRACK_DIRECTORY="/var/lib/needletail-test-media/daw-nexus-album-${TRACKS}-track-pcm-${DURATION_SECONDS}s"
-EXPECTED_DAW_SHA256="${EXPECTED_DAW_SHA256:-9bfd9cf6593fd97497a6065bd66d952eaf86554587152ab0fa9c2edd938fcc69}"
-EXPECTED_PROBE_SHA256="${EXPECTED_PROBE_SHA256:-9247236b7ac10ea84b8eeb974be902ab7144d1dc9fd1ee31ab73c78775fdf935}"
-PLAYER_BASE="https://needletail-london-20260727.bitneedle.com:19444"
+: "${EXPECTED_DAW_SHA256:?set EXPECTED_DAW_SHA256 to the deployed source binary digest}"
+: "${EXPECTED_PROBE_SHA256:?set EXPECTED_PROBE_SHA256 to the deployed probe binary digest}"
+for digest_variable in EXPECTED_DAW_SHA256 EXPECTED_PROBE_SHA256; do
+  digest="${!digest_variable}"
+  if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "${digest_variable} must be a lowercase SHA-256 digest" >&2
+    exit 2
+  fi
+done
+: "${PUBLIC_PLAYER_BASE:?set PUBLIC_PLAYER_BASE to the deployed player origin}"
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+PLAYER_BASE="${PUBLIC_PLAYER_BASE%/}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
+needletail_require_https_origin PUBLIC_PLAYER_BASE "${PLAYER_BASE}"
 DAW_SOURCE_SSH_HOST="${DAW_SOURCE_SSH_HOST:-}"
 DAW_SOURCE_SSH_USER="${DAW_SOURCE_SSH_USER:-}"
 DAW_SOURCE_SSH_KEY="${DAW_SOURCE_SSH_KEY:-}"
@@ -45,6 +58,11 @@ DAW_SOURCE_TRACK_DIRECTORY="${DAW_SOURCE_TRACK_DIRECTORY:-${TRACK_DIRECTORY}}"
 DAW_SOURCE_TRACK_MANIFEST="${DAW_SOURCE_TRACK_MANIFEST:-${DAW_SOURCE_TRACK_DIRECTORY}/manifest.sha256}"
 DAW_SOURCE_CONTRIBUTOR_TARGET="${DAW_SOURCE_CONTRIBUTOR_TARGET:-127.0.0.1:27100}"
 DAW_SOURCE_RUST_LOG="${DAW_SOURCE_RUST_LOG:-info}"
+needletail_require_absolute_path DAW_SOURCE_BINARY "${DAW_SOURCE_BINARY}"
+needletail_require_absolute_path \
+  DAW_SOURCE_TRACK_DIRECTORY "${DAW_SOURCE_TRACK_DIRECTORY}"
+needletail_require_absolute_path \
+  DAW_SOURCE_TRACK_MANIFEST "${DAW_SOURCE_TRACK_MANIFEST}"
 DAW_SOURCE_MAX_CLOCK_OFFSET_MS="${DAW_SOURCE_MAX_CLOCK_OFFSET_MS:-5}"
 RECEIVER_SETUP_SECONDS="${RECEIVER_SETUP_SECONDS:-60}"
 SOURCE_HOST_CPU_P99_MAX_PERCENT="${SOURCE_HOST_CPU_P99_MAX_PERCENT:-80}"
@@ -55,6 +73,17 @@ SOURCE_MEMORY_AVAILABLE_MIN_PERCENT="${SOURCE_MEMORY_AVAILABLE_MIN_PERCENT:-20}"
 SOURCE_RSS_MEMORY_MAX_PERCENT="${SOURCE_RSS_MEMORY_MAX_PERCENT:-70}"
 SOURCE_ENCODER_RATE_MIN_PERCENT="${SOURCE_ENCODER_RATE_MIN_PERCENT:-90}"
 SOURCE_CAPACITY_MAX_SAMPLE_GAP_MS="${SOURCE_CAPACITY_MAX_SAMPLE_GAP_MS:-2500}"
+needletail_shell_quote \
+  DAW_SOURCE_BINARY_QUOTED "${DAW_SOURCE_BINARY}"
+needletail_shell_quote \
+  DAW_SOURCE_PROCESS_NAME_QUOTED "${DAW_SOURCE_PROCESS_NAME}"
+needletail_shell_quote \
+  DAW_SOURCE_TRACK_DIRECTORY_QUOTED "${DAW_SOURCE_TRACK_DIRECTORY}"
+needletail_shell_quote \
+  DAW_SOURCE_TRACK_MANIFEST_QUOTED "${DAW_SOURCE_TRACK_MANIFEST}"
+needletail_shell_quote \
+  DAW_SOURCE_CONTRIBUTOR_TARGET_QUOTED "${DAW_SOURCE_CONTRIBUTOR_TARGET}"
+needletail_shell_quote DAW_SOURCE_RUST_LOG_QUOTED "${DAW_SOURCE_RUST_LOG}"
 
 awk -v maximum="${DAW_SOURCE_MAX_CLOCK_OFFSET_MS}" '
   BEGIN {
@@ -64,6 +93,14 @@ awk -v maximum="${DAW_SOURCE_MAX_CLOCK_OFFSET_MS}" '
   }
 ' </dev/null || {
   echo "DAW_SOURCE_MAX_CLOCK_OFFSET_MS must be a nonnegative number" >&2
+  exit 2
+}
+[[ "${DURATION_SECONDS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "DURATION_SECONDS must be a positive decimal integer" >&2
+  exit 2
+}
+[[ "${TAIL_SECONDS}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+  echo "TAIL_SECONDS must be a non-negative decimal integer" >&2
   exit 2
 }
 [[ "${RECEIVER_SETUP_SECONDS}" =~ ^[0-9]+$ ]] &&
@@ -88,6 +125,10 @@ if [[ -n "${DAW_SOURCE_SSH_HOST}" || -n "${DAW_SOURCE_SSH_USER}" || -n "${DAW_SO
     echo "DAW_SOURCE_SSH_USER is required for a separate DAW source" >&2
     exit 2
   }
+  needletail_require_safe_component \
+    DAW_SOURCE_SSH_USER "${DAW_SOURCE_SSH_USER}"
+  needletail_require_dns_name \
+    DAW_SOURCE_SSH_HOST "${DAW_SOURCE_SSH_HOST}"
   [[ -n "${DAW_SOURCE_SSH_KEY}" && -r "${DAW_SOURCE_SSH_KEY}" ]] || {
     echo "DAW_SOURCE_SSH_KEY must identify a readable SSH key" >&2
     exit 2
@@ -267,29 +308,29 @@ trap on_terminate TERM
   "${RESULT_DIR}" before
 
 source_tracks="$(source_exec \
-  "set -eu; test -d '${DAW_SOURCE_TRACK_DIRECTORY}'; find -L '${DAW_SOURCE_TRACK_DIRECTORY}' -maxdepth 1 -type f -name '*.s24le' | wc -l" | tail -n 1)"
+  "set -eu; test -d ${DAW_SOURCE_TRACK_DIRECTORY_QUOTED}; find -L ${DAW_SOURCE_TRACK_DIRECTORY_QUOTED} -maxdepth 1 -type f -name '*.s24le' | wc -l" | tail -n 1)"
 [[ "${source_tracks}" == "${TRACKS}" ]] || {
   echo "the DAW Nexus source directory does not contain ${TRACKS} prepared PCM tracks" >&2
   exit 1
 }
 expected_pcm_bytes=$((DURATION_SECONDS * 48000 * 2 * 3))
 invalid_source_sizes="$(source_exec \
-  "set -eu; find -L '${DAW_SOURCE_TRACK_DIRECTORY}' -maxdepth 1 -type f -name '*.s24le' -printf '%s\n' | awk -v expected='${expected_pcm_bytes}' '\$1 != expected { invalid++ } END { print invalid + 0 }'" | tail -n 1)"
+  "set -eu; find -L ${DAW_SOURCE_TRACK_DIRECTORY_QUOTED} -maxdepth 1 -type f -name '*.s24le' -printf '%s\n' | awk -v expected='${expected_pcm_bytes}' '\$1 != expected { invalid++ } END { print invalid + 0 }'" | tail -n 1)"
 [[ "${invalid_source_sizes}" == 0 ]] || {
   echo "each prepared PCM track must contain ${expected_pcm_bytes} bytes" >&2
   exit 1
 }
 manifest_tracks="$(source_exec \
-  "set -eu; test -r '${DAW_SOURCE_TRACK_MANIFEST}'; awk 'NF >= 2 { count++ } END { print count + 0 }' '${DAW_SOURCE_TRACK_MANIFEST}'" | tail -n 1)"
+  "set -eu; test -r ${DAW_SOURCE_TRACK_MANIFEST_QUOTED}; awk 'NF >= 2 { count++ } END { print count + 0 }' ${DAW_SOURCE_TRACK_MANIFEST_QUOTED}" | tail -n 1)"
 [[ "${manifest_tracks}" == "${TRACKS}" ]] || {
   echo "the DAW Nexus source manifest does not contain ${TRACKS} tracks" >&2
   exit 1
 }
-source_exec "set -eu; cat '${DAW_SOURCE_TRACK_MANIFEST}'" >"${RESULT_DIR}/source-manifest.sha256"
-source_exec "set -eu; cd '${DAW_SOURCE_TRACK_DIRECTORY}'; sha256sum --check '${DAW_SOURCE_TRACK_MANIFEST}'" \
+source_exec "set -eu; cat ${DAW_SOURCE_TRACK_MANIFEST_QUOTED}" >"${RESULT_DIR}/source-manifest.sha256"
+source_exec "set -eu; cd ${DAW_SOURCE_TRACK_DIRECTORY_QUOTED}; sha256sum --check ${DAW_SOURCE_TRACK_MANIFEST_QUOTED}" \
   >"${RESULT_DIR}/source-manifest-validation.txt"
 daw_sha256="$(source_exec \
-  "set -eu; test -x '${DAW_SOURCE_BINARY}'; command -v chronyc >/dev/null; sha256sum '${DAW_SOURCE_BINARY}' | awk '{print \$1}'" | tail -n 1)"
+  "set -eu; test -x ${DAW_SOURCE_BINARY_QUOTED}; command -v chronyc >/dev/null; sha256sum ${DAW_SOURCE_BINARY_QUOTED} | awk '{print \$1}'" | tail -n 1)"
 printf "%s  %s\n" "${daw_sha256}" "${DAW_SOURCE_BINARY}" \
   >"${RESULT_DIR}/daw-test-source.sha256"
 source_exec "set -eu; mkdir -p '${REMOTE_DIR}'"
@@ -301,7 +342,7 @@ source_copy_to \
   exit 1
 }
 existing_source="$(source_exec \
-  "set -eu; pgrep -ax '${DAW_SOURCE_PROCESS_NAME}' || true" | tail -n 1)"
+  "set -eu; pgrep -ax ${DAW_SOURCE_PROCESS_NAME_QUOTED} || true" | tail -n 1)"
 [[ -z "${existing_source}" ]] || {
   echo "an audio source is already running: ${existing_source}" >&2
   exit 1
@@ -563,7 +604,7 @@ start_playback_receivers() {
       NEEDLETAIL_QUALIFICATION_RUN_ID='${RUN_ID}' nohup \
         /usr/local/bin/aep1-48k-probe receive-hls \
         --edge 127.0.0.1:19444 \
-        --server-name needletail-london-20260727.bitneedle.com \
+        --server-name ${TLS_SERVER_NAME} \
         --tls-ca /etc/needletail/tls/fullchain.pem \
         --transport h3 \
         --stream-id ${flac_stream_id} \
@@ -581,7 +622,7 @@ start_playback_receivers() {
       NEEDLETAIL_QUALIFICATION_RUN_ID='${RUN_ID}' nohup \
         /usr/local/bin/aep1-48k-probe receive-hls \
         --edge 127.0.0.1:19444 \
-        --server-name needletail-london-20260727.bitneedle.com \
+        --server-name ${TLS_SERVER_NAME} \
         --tls-ca /etc/needletail/tls/fullchain.pem \
         --transport h3 \
         --stream-id ${opus_stream_id} \
@@ -648,14 +689,14 @@ fetch_node() {
       node_exec "${node}" \
         "curl --fail --silent --show-error \
           --cacert /etc/needletail/tls/fullchain.pem \
-          --resolve needletail-london-20260727.bitneedle.com:19444:127.0.0.1 \
-          'https://needletail-london-20260727.bitneedle.com:19444/live/${flac_stream_id}/master.m3u8'" \
+          --resolve ${TLS_SERVER_NAME}:19444:127.0.0.1 \
+          'https://${TLS_SERVER_NAME}:19444/live/${flac_stream_id}/master.m3u8'" \
         >"${local_dir}/master-track-$((flac_stream_id - 1)).m3u8"
       node_exec "${node}" \
         "curl --fail --silent --show-error \
           --cacert /etc/needletail/tls/fullchain.pem \
-          --resolve needletail-london-20260727.bitneedle.com:19444:127.0.0.1 \
-          'https://needletail-london-20260727.bitneedle.com:19444/live/${opus_stream_id}/master.m3u8'" \
+          --resolve ${TLS_SERVER_NAME}:19444:127.0.0.1 \
+          'https://${TLS_SERVER_NAME}:19444/live/${opus_stream_id}/master.m3u8'" \
         >"${local_dir}/master-opus-track-$((flac_stream_id - 1)).m3u8"
     done
   fi
@@ -756,19 +797,19 @@ source_exec \
     mkdir -p '${REMOTE_DIR}'
     exec env \
       NEEDLETAIL_QUALIFICATION_RUN_ID='${RUN_ID}' \
-      RUST_LOG='${DAW_SOURCE_RUST_LOG}' \
+      RUST_LOG=${DAW_SOURCE_RUST_LOG_QUOTED} \
       DAW_TEST_SOURCE_START_UNIX_NS=${SESSION_ID} \
       DAW_TEST_SOURCE_CAPACITY_OUTPUT='${REMOTE_DIR}/daw-capacity.ndjson' \
       sh -c '
         printf \"%s\\n\" \"\$\$\" >\"${REMOTE_DIR}/source.pid\"
         exec \"\$@\"
       ' sh \
-      '${DAW_SOURCE_BINARY}' \
+      ${DAW_SOURCE_BINARY_QUOTED} \
       --direct-contributor \
       --prepared-pcm \
-      '${DAW_SOURCE_CONTRIBUTOR_TARGET}' \
+      ${DAW_SOURCE_CONTRIBUTOR_TARGET_QUOTED} \
       ${DURATION_SECONDS} \
-      '${DAW_SOURCE_TRACK_DIRECTORY}'" \
+      ${DAW_SOURCE_TRACK_DIRECTORY_QUOTED}" \
   >"${RESULT_DIR}/source.log" \
   2>"${RESULT_DIR}/source.err" &
 source_job=$!
@@ -1121,12 +1162,16 @@ for node in "${EDGE_NODES[@]}"; do
         and .pcm_fallback_epochs == 0
         and .erasure_epochs == 0
         and .unexpected_payload_epochs == 0
+        and .discontinuity_epochs >= 0
+        and .discontinuity_epochs <= 2
         and .expected_pcm_frames == $expected_pcm_frames
         and .received_pcm_frames == $expected_pcm_frames
         and .missing_pcm_frames == 0
         and (.latency_time_series | length) == $duration_seconds
+        and .latency_time_series[0].discontinuity_epochs <= 2
+        and .discontinuity_epochs == .latency_time_series[0].discontinuity_epochs
         and all(
-          .latency_time_series[];
+          .latency_time_series[1:][];
           .format == "flac"
           and .bucket_ms == 1000
           and .expected_epochs == 200

@@ -16,19 +16,28 @@ await rm(destination, { recursive: true, force: true });
 await mkdir(destination, { recursive: true });
 await Promise.all(assets.map(([from, to]) => copyFile(from, to)));
 
-const [playerSource, pcmPlayerSource, adaptiveLatencySource, streamFreshnessSource] = await Promise.all([
+const [
+  playerSource,
+  pcmPlayerSource,
+  adaptiveLatencySource,
+  nativePlaybackSource,
+  streamFreshnessSource,
+] = await Promise.all([
   readFile(resolve(source, "player.js"), "utf8"),
   readFile(resolve(source, "pcm-player.js"), "utf8"),
   readFile(resolve(source, "adaptive-latency.js"), "utf8"),
+  readFile(resolve(source, "native-playback.js"), "utf8"),
   readFile(resolve(source, "stream-freshness.js"), "utf8"),
 ]);
 const bundledPlayer = [
   adaptiveLatencySource.replaceAll("export class ", "class "),
+  nativePlaybackSource.replaceAll("export function ", "function "),
   streamFreshnessSource.replaceAll("export function ", "function "),
   pcmPlayerSource.replaceAll("export function ", "function ").replace("export class ", "class "),
   playerSource
     .replace('import { PcmLlHlsPlayer } from "/pcm-player.js";\n', "")
     .replace('import { RollingLatencyWindow, StableLatencyController } from "/adaptive-latency.js";\n', "")
+    .replace('import { selectNativePlaylistUrl } from "/native-playback.js";\n', "")
     .replace('import { livePlaylistIsStale } from "/stream-freshness.js";\n\n', ""),
 ].join("\n");
 await writeFile(resolve(destination, "player.js"), bundledPlayer);

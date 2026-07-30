@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const playerUrl = new URL(process.argv[2] || "https://local.infidelity.io:19444/1");
+assert.ok(process.argv[2], "usage: node browser-smoke.mjs PLAYER_URL");
+const playerUrl = new URL(process.argv[2]);
 playerUrl.searchParams.set("player", "hls");
 const maxLatencySeconds = Number.parseFloat(process.env.PLAYER_MAX_LATENCY_SECONDS || "2.5");
 const maxStartupSeconds = Number.parseFloat(process.env.PLAYER_MAX_STARTUP_SECONDS || "5");

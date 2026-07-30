@@ -1,83 +1,120 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${NEEDLETAIL_NODE_ID:=contrib}"
-PLAN="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
-SERVICE="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
-  '.services[] | select(.service == "av_contrib" and .node_id == $node)' "${PLAN}")"
-fmp4_part_ms="${NEEDLETAIL_FMP4_PART_MS:-${NEEDLETAIL_PART_MS:-50}}"
+needletail_append_optional_srt_args() {
+  local enabled="${NEEDLETAIL_ENABLE_SRT:-0}"
+  local bind="${NEEDLETAIL_SRT_BIND:-0.0.0.0:27001}"
+  local stream_id="${NEEDLETAIL_SRT_STREAM_ID:-1}"
 
-args=(
-  /usr/local/bin/av-contrib
-  --cert /etc/needletail/tls/fullchain.pem
-  --key /etc/needletail/tls/privkey.pem
-  --http-port "${NEEDLETAIL_HTTP_PORT:-19443}"
-  --mesh-fec-target "$(jq -r '.primary.target' <<<"${SERVICE}")"
-  --mesh-media-fec-target "$(jq -r '.primary.target' <<<"${SERVICE}")"
-  --audio-epoch-ingress-target "$(jq -r '.audio_epoch_ingress_target' <<<"${SERVICE}")"
-  --daw-media-bind "0.0.0.0:${NEEDLETAIL_DAW_MEDIA_PORT:-27100}"
-  --daw-hls-queue-capacity "${NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY:-4096}"
-  --daw-hls-packaging "${NEEDLETAIL_DAW_HLS_PACKAGING:-opaque}"
-  --daw-hls-formats "${NEEDLETAIL_DAW_HLS_FORMATS:-flac,opus}"
-  --stream-id 1
-  --rist-stream-id 1
-  --srt-stream-id 1
-  --rtmp-stream-id 1
-  --fmp4-part-ms "${fmp4_part_ms}"
-  --wall-clock-estimated-error-ms "${NEEDLETAIL_CLOCK_ERROR_MS:-5}"
-  --rist-bind 0.0.0.0:27000
-  --rist-flow-id 0x11223344
-  --srt-bind 0.0.0.0:27001
-  --rtmp-bind 0.0.0.0:19350
-  --relay-local-id "${NEEDLETAIL_NODE_ID}"
-  --relay-primary-bind "$(jq -r '.primary.bind' <<<"${SERVICE}")"
-  --relay-primary-target "$(jq -r '.primary.target' <<<"${SERVICE}")"
-  --relay-primary-id "$(jq -r '.primary.child_node_id' <<<"${SERVICE}")"
-  --relay-secondary-bind "$(jq -r '.warm_secondary.bind' <<<"${SERVICE}")"
-  --relay-secondary-target "$(jq -r '.warm_secondary.target' <<<"${SERVICE}")"
-  --relay-secondary-id "$(jq -r '.warm_secondary.child_node_id' <<<"${SERVICE}")"
-  --relay-secondary-seed-source
-  --relay-exclusive
-  --relay-topology-generation "$(jq -r '.topology_generation' <<<"${SERVICE}")"
-  --relay-subscription-id "$(jq -r '.subscription_id' <<<"${SERVICE}")"
-  --relay-deadline-ms "$(jq -r '.media_deadline_ms' <<<"${SERVICE}")"
-  --relay-min-repair-symbols "${NEEDLETAIL_RELAY_MIN_REPAIR_SYMBOLS:-0}"
-)
+  case "${enabled}" in
+    0)
+      return
+      ;;
+    1)
+      ;;
+    *)
+      echo "NEEDLETAIL_ENABLE_SRT must be 0 or 1" >&2
+      return 2
+      ;;
+  esac
+  [[ "${stream_id}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+    echo "NEEDLETAIL_SRT_STREAM_ID must be a decimal integer" >&2
+    return 2
+  }
+  [[ -n "${bind}" && "${bind}" != *$'\n'* && "${bind}" != *$'\r'* ]] || {
+    echo "NEEDLETAIL_SRT_BIND must be a non-empty socket address" >&2
+    return 2
+  }
 
-if jq -e '.audio_epoch_redundant_ingress_target != null' <<<"${SERVICE}" >/dev/null; then
-  args+=(
-    --audio-epoch-redundant-ingress-target "$(jq -r '.audio_epoch_redundant_ingress_target' <<<"${SERVICE}")"
+  # A RIST-only av-contrib rejects --srt-bind before loading TLS or opening any
+  # listener. This makes a runtime/build mismatch fail closed.
+  args+=(--srt-stream-id "${stream_id}" --srt-bind "${bind}")
+}
+
+main() {
+  : "${NEEDLETAIL_NODE_ID:=contrib}"
+  local plan="${NEEDLETAIL_PLAN:-/etc/needletail/compiled-plan.json}"
+  local service
+  local fmp4_part_ms="${NEEDLETAIL_FMP4_PART_MS:-50}"
+  local -a args
+  service="$(jq -cer --arg node "${NEEDLETAIL_NODE_ID}" \
+    '.services[] | select(.service == "av_contrib" and .node_id == $node)' "${plan}")"
+
+  args=(
+    /usr/local/bin/av-contrib
+    --cert /etc/needletail/tls/fullchain.pem
+    --key /etc/needletail/tls/privkey.pem
+    --http-port "${NEEDLETAIL_HTTP_PORT:-19443}"
+    --mesh-fec-target "$(jq -r '.primary.target' <<<"${service}")"
+    --mesh-media-fec-target "$(jq -r '.primary.target' <<<"${service}")"
+    --audio-epoch-ingress-target "$(jq -r '.audio_epoch_ingress_target' <<<"${service}")"
+    --daw-media-bind "0.0.0.0:${NEEDLETAIL_DAW_MEDIA_PORT:-27100}"
+    --daw-hls-queue-capacity "${NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY:-4096}"
+    --daw-hls-packaging "${NEEDLETAIL_DAW_HLS_PACKAGING:-opaque}"
+    --daw-hls-formats "${NEEDLETAIL_DAW_HLS_FORMATS:-flac,opus}"
+    --stream-id 1
+    --rist-stream-id 1
+    --rtmp-stream-id 1
+    --fmp4-part-ms "${fmp4_part_ms}"
+    --wall-clock-estimated-error-ms "${NEEDLETAIL_CLOCK_ERROR_MS:-5}"
+    --rist-bind 0.0.0.0:27000
+    --rist-flow-id 0x11223344
+    --rtmp-bind 0.0.0.0:19350
+    --relay-local-id "${NEEDLETAIL_NODE_ID}"
+    --relay-primary-bind "$(jq -r '.primary.bind' <<<"${service}")"
+    --relay-primary-target "$(jq -r '.primary.target' <<<"${service}")"
+    --relay-primary-id "$(jq -r '.primary.child_node_id' <<<"${service}")"
+    --relay-secondary-bind "$(jq -r '.warm_secondary.bind' <<<"${service}")"
+    --relay-secondary-target "$(jq -r '.warm_secondary.target' <<<"${service}")"
+    --relay-secondary-id "$(jq -r '.warm_secondary.child_node_id' <<<"${service}")"
+    --relay-secondary-seed-source
+    --relay-exclusive
+    --relay-topology-generation "$(jq -r '.topology_generation' <<<"${service}")"
+    --relay-subscription-id "$(jq -r '.subscription_id' <<<"${service}")"
+    --relay-deadline-ms "$(jq -r '.media_deadline_ms' <<<"${service}")"
+    --relay-min-repair-symbols "${NEEDLETAIL_RELAY_MIN_REPAIR_SYMBOLS:-0}"
   )
-fi
+  needletail_append_optional_srt_args
 
-if jq -e '.source_path_observation != null' <<<"${SERVICE}" >/dev/null; then
-  args+=(
-    --relay-path-loss-fraction "$(jq -r '.source_path_observation.loss_ppm / 1000000' <<<"${SERVICE}")"
-    --relay-path-best-direct-rtt-ms "$(jq -r '.source_path_observation.best_direct_rtt_us / 1000' <<<"${SERVICE}")"
-    --relay-path-rtt-ms "$(jq -r '.source_path_observation.rtt_us / 1000' <<<"${SERVICE}")"
-    --relay-path-jitter-ms "$(jq -r '.source_path_observation.jitter_us / 1000' <<<"${SERVICE}")"
-    --relay-path-queue-delay-ms "$(jq -r '.source_path_observation.queue_delay_us / 1000' <<<"${SERVICE}")"
-  )
-  if jq -e '.source_path_observation.observed_at_unix_ms != null' <<<"${SERVICE}" >/dev/null; then
+  if jq -e '.audio_epoch_redundant_ingress_target != null' <<<"${service}" >/dev/null; then
     args+=(
-      --relay-path-observed-at-unix-ms "$(jq -r '.source_path_observation.observed_at_unix_ms' <<<"${SERVICE}")"
+      --audio-epoch-redundant-ingress-target "$(jq -r '.audio_epoch_redundant_ingress_target' <<<"${service}")"
     )
   fi
-fi
 
-if jq -e '.secondary_path_observation != null' <<<"${SERVICE}" >/dev/null; then
-  args+=(
-    --relay-secondary-path-loss-fraction "$(jq -r '.secondary_path_observation.loss_ppm / 1000000' <<<"${SERVICE}")"
-    --relay-secondary-path-best-direct-rtt-ms "$(jq -r '.secondary_path_observation.best_direct_rtt_us / 1000' <<<"${SERVICE}")"
-    --relay-secondary-path-rtt-ms "$(jq -r '.secondary_path_observation.rtt_us / 1000' <<<"${SERVICE}")"
-    --relay-secondary-path-jitter-ms "$(jq -r '.secondary_path_observation.jitter_us / 1000' <<<"${SERVICE}")"
-    --relay-secondary-path-queue-delay-ms "$(jq -r '.secondary_path_observation.queue_delay_us / 1000' <<<"${SERVICE}")"
-  )
-  if jq -e '.secondary_path_observation.observed_at_unix_ms != null' <<<"${SERVICE}" >/dev/null; then
+  if jq -e '.source_path_observation != null' <<<"${service}" >/dev/null; then
     args+=(
-      --relay-secondary-path-observed-at-unix-ms "$(jq -r '.secondary_path_observation.observed_at_unix_ms' <<<"${SERVICE}")"
+      --relay-path-loss-fraction "$(jq -r '.source_path_observation.loss_ppm / 1000000' <<<"${service}")"
+      --relay-path-best-direct-rtt-ms "$(jq -r '.source_path_observation.best_direct_rtt_us / 1000' <<<"${service}")"
+      --relay-path-rtt-ms "$(jq -r '.source_path_observation.rtt_us / 1000' <<<"${service}")"
+      --relay-path-jitter-ms "$(jq -r '.source_path_observation.jitter_us / 1000' <<<"${service}")"
+      --relay-path-queue-delay-ms "$(jq -r '.source_path_observation.queue_delay_us / 1000' <<<"${service}")"
     )
+    if jq -e '.source_path_observation.observed_at_unix_ms != null' <<<"${service}" >/dev/null; then
+      args+=(
+        --relay-path-observed-at-unix-ms "$(jq -r '.source_path_observation.observed_at_unix_ms' <<<"${service}")"
+      )
+    fi
   fi
-fi
 
-exec "${args[@]}"
+  if jq -e '.secondary_path_observation != null' <<<"${service}" >/dev/null; then
+    args+=(
+      --relay-secondary-path-loss-fraction "$(jq -r '.secondary_path_observation.loss_ppm / 1000000' <<<"${service}")"
+      --relay-secondary-path-best-direct-rtt-ms "$(jq -r '.secondary_path_observation.best_direct_rtt_us / 1000' <<<"${service}")"
+      --relay-secondary-path-rtt-ms "$(jq -r '.secondary_path_observation.rtt_us / 1000' <<<"${service}")"
+      --relay-secondary-path-jitter-ms "$(jq -r '.secondary_path_observation.jitter_us / 1000' <<<"${service}")"
+      --relay-secondary-path-queue-delay-ms "$(jq -r '.secondary_path_observation.queue_delay_us / 1000' <<<"${service}")"
+    )
+    if jq -e '.secondary_path_observation.observed_at_unix_ms != null' <<<"${service}" >/dev/null; then
+      args+=(
+        --relay-secondary-path-observed-at-unix-ms "$(jq -r '.secondary_path_observation.observed_at_unix_ms' <<<"${service}")"
+      )
+    fi
+  fi
+
+  exec "${args[@]}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

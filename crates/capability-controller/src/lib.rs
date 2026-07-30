@@ -18,9 +18,9 @@ mod telemetry;
 
 pub use controller::{
     AdmissionMetadata, AuthorizationMode, BrokerAuthorizationRequest, BrokerCaller,
-    BrowserExchangeAuthorization, BrowserExchangeGrant, BrowserPlaybackAuthorization,
-    CapabilityController, ControllerConfig, DesiredMediaState, FeatureGates, FeatureState,
-    IssuedAuthorization, KillSwitch, NativeMediaAuthorization,
+    BrowserExchangeAuthorization, BrowserExchangeGrant, CapabilityController, ControllerConfig,
+    DesiredMediaState, FeatureGates, FeatureState, IssuedAuthorization, KillSwitch,
+    NativeMediaAuthorization,
 };
 pub use entropy::{EntropyError, EntropySource, SystemEntropy};
 pub use error::{

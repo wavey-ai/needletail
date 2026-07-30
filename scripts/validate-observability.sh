@@ -54,14 +54,21 @@ alerts = entries.select { |entry| entry.key?("alert") }
 raise "alert missing provisional SLO label" unless alerts.all? { |entry| entry.dig("labels", "slo") == "provisional" }
 raise "alert missing runbook annotation" unless alerts.all? { |entry| !entry.dig("annotations", "runbook").to_s.empty? }
 raise "high-cardinality stream label in alert expression" if alerts.any? { |entry| entry.fetch("expr").include?("stream_id") }
+raise "high-cardinality stream label in alert annotation" if alerts.any? { |entry|
+  entry.fetch("annotations", {}).values.any? { |value| value.to_s.include?("$labels.stream_id") }
+}
+publication_gap_alert = alerts.find { |entry| entry["alert"] == "AvMeshCanonicalPublicationGap" }
+raise "canonical publication gap alert missing" if publication_gap_alert.nil?
+unless publication_gap_alert.fetch("expr").match?(
+  /sum\s+by\s*\(\s*job\s*,\s*instance\s*,\s*node_id\s*\)/
+)
+  raise "canonical publication gap alert must aggregate away stream cardinality"
+end
 
 required_recordings = %w[
   av:contrib_forward_p50_seconds:5m
   av:contrib_forward_p95_seconds:5m
   av:contrib_forward_p99_seconds:5m
-  av:contrib_forward_stage_p50_seconds:5m
-  av:contrib_forward_stage_p95_seconds:5m
-  av:contrib_forward_stage_p99_seconds:5m
   av:contrib_relay_stage_p50_seconds:5m
   av:contrib_relay_stage_p95_seconds:5m
   av:contrib_relay_stage_p99_seconds:5m
@@ -233,6 +240,15 @@ raise "legacy topology assumption remains in product observability assets" if as
 
 jobs = prometheus.fetch("scrape_configs").map { |job| job.fetch("job_name") }
 raise "required scrape jobs missing" unless %w[av-contrib av-mesh].all? { |job| jobs.include?(job) }
+mesh_job = prometheus.fetch("scrape_configs").find { |job| job["job_name"] == "av-mesh" }
+mesh_targets = mesh_job.fetch("static_configs").flat_map { |config| config.fetch("targets") }
+required_mesh_targets = %w[
+  host.docker.internal:19444
+  host.docker.internal:19445
+  host.docker.internal:19446
+]
+missing_mesh_targets = required_mesh_targets - mesh_targets
+raise "local mesh scrape targets missing: #{missing_mesh_targets.join(', ')}" unless missing_mesh_targets.empty?
 raise "alertmanager target missing" if prometheus.dig("alerting", "alertmanagers").to_a.empty?
 raise "local alert route missing" if alertmanager.dig("route", "receiver").to_s.empty?
 
@@ -246,17 +262,55 @@ services = compose.fetch("services")
 raise "observability services missing" unless %w[prometheus alertmanager grafana].all? { |service| services.key?(service) }
 RUBY
 
+required_native_tools="${NEEDLETAIL_OBSERVABILITY_REQUIRE_NATIVE_TOOLS:-${CI:-false}}"
+case "${required_native_tools}" in
+  1|true|TRUE|yes|YES|on|ON)
+    require_native_tools=1
+    ;;
+  0|false|FALSE|no|NO|off|OFF|"")
+    require_native_tools=0
+    ;;
+  *)
+    echo "invalid NEEDLETAIL_OBSERVABILITY_REQUIRE_NATIVE_TOOLS value: ${required_native_tools}" >&2
+    exit 2
+    ;;
+esac
+
+skipped_native_checks=()
 if command -v promtool >/dev/null 2>&1; then
   promtool check rules "${RULES}"
   promtool check config "${PROMETHEUS_CONFIG}"
+else
+  skipped_native_checks+=(promtool)
 fi
 
 if command -v amtool >/dev/null 2>&1; then
   amtool check-config "${ALERTMANAGER_CONFIG}"
+else
+  skipped_native_checks+=(amtool)
 fi
 
-if docker compose version >/dev/null 2>&1; then
+if command -v docker >/dev/null 2>&1 \
+  && docker compose version >/dev/null 2>&1; then
   docker compose -f "${COMPOSE}" config --quiet
+else
+  skipped_native_checks+=("docker compose")
 fi
 
-echo "observability configuration passed"
+if ((${#skipped_native_checks[@]} > 0)); then
+  skipped_text=
+  for skipped_check in "${skipped_native_checks[@]}"; do
+    if [[ -n "${skipped_text}" ]]; then
+      skipped_text+=", "
+    fi
+    skipped_text+="${skipped_check}"
+  done
+  if ((require_native_tools == 1)); then
+    echo "required observability checks unavailable: ${skipped_text}" >&2
+    exit 1
+  fi
+  echo "observability structural validation passed; skipped native checks: ${skipped_text}"
+  echo "set NEEDLETAIL_OBSERVABILITY_REQUIRE_NATIVE_TOOLS=1 to require every native check"
+else
+  echo "observability structural and native validation passed"
+fi

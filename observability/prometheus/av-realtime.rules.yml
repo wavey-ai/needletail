@@ -26,30 +26,6 @@ groups:
               rate(av_contrib_mesh_forward_duration_seconds_bucket[5m])
             )
           )
-      - record: av:contrib_forward_stage_p50_seconds:5m
-        expr: |
-          histogram_quantile(
-            0.50,
-            sum by (job, instance, kind, stage, le) (
-              rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
-            )
-          )
-      - record: av:contrib_forward_stage_p95_seconds:5m
-        expr: |
-          histogram_quantile(
-            0.95,
-            sum by (job, instance, kind, stage, le) (
-              rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
-            )
-          )
-      - record: av:contrib_forward_stage_p99_seconds:5m
-        expr: |
-          histogram_quantile(
-            0.99,
-            sum by (job, instance, kind, stage, le) (
-              rate(av_contrib_mesh_forward_stage_duration_seconds_bucket[5m])
-            )
-          )
       - record: av:contrib_relay_stage_p50_seconds:5m
         expr: |
           histogram_quantile(
@@ -182,22 +158,6 @@ groups:
         expr: |
           sum by (job, instance) (
             rate(av_contrib_relay_session_surviving_lane_objects_total[5m])
-          )
-      - record: av:contrib_relay_send_error_ratio:5m
-        expr: |
-          sum by (job, instance, role) (
-            rate(av_contrib_relay_session_send_errors_total[5m])
-          )
-          /
-          clamp_min(
-            sum by (job, instance, role) (
-              rate(av_contrib_relay_session_send_errors_total[5m])
-            )
-            +
-            sum by (job, instance, role) (
-              rate(av_contrib_relay_session_datagrams_total[5m])
-            ),
-            0.001
           )
       - record: av:contrib_relay_repair_to_source_ratio:5m
         expr: |
@@ -680,15 +640,18 @@ groups:
           runbook: Verify contributor restart propagation, reject stale-epoch objects, and confirm every relay atomically switched its stream publication window.
 
       - alert: AvMeshCanonicalPublicationGap
-        expr: av_mesh_stream_known_gap_count > 0
+        expr: |
+          sum by (job, instance, node_id) (
+            av_mesh_stream_known_gap_count
+          ) > 0
         for: 15s
         labels:
           severity: critical
           slo: provisional
         annotations:
           summary: Canonical LL-HLS publication has a persistent object gap
-          description: '{{ $labels.node_id }} retains {{ $value }} missing canonical object(s) for stream {{ $labels.stream_id }}.'
-          runbook: Inspect RaptorQ expiry, parent-path health, reliable object recovery, and the subscriber publication base before serving this stream.
+          description: '{{ $labels.node_id }} retains {{ $value }} missing canonical object(s) across one or more streams.'
+          runbook: Inspect RaptorQ expiry, parent-path health, reliable object recovery, and the subscriber publication base before serving affected streams.
 
       - alert: AvMeshEdgeHandlerP95High
         expr: av:mesh_edge_handler_p95_seconds:5m > 0.001

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../qualification-config.sh"
+
 STREAM_ID="${1:-1}"
-PUBLIC_EDGE="${PUBLIC_EDGE:-https://needletail-london-20260727.bitneedle.com:19444}"
+: "${PUBLIC_EDGE:?set PUBLIC_EDGE to the deployed edge origin}"
+PUBLIC_EDGE="${PUBLIC_EDGE%/}"
+needletail_require_https_origin PUBLIC_EDGE "${PUBLIC_EDGE}"
 RESULT_DIR="${RESULT_DIR:-target/multicloud-qualification/llhls-validation/$(date -u '+%Y%m%dT%H%M%SZ')-${STREAM_ID}}"
 
 [[ "${STREAM_ID}" =~ ^[0-9]+$ ]] || {

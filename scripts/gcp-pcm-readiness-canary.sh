@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 LAB_STATE="${NEEDLETAIL_GCP_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}"
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/readiness-canaries/${RUN_ID}}"
 DURATION_SECONDS="${CANARY_DURATION_SECONDS:-2}"
 PART_MS="${CANARY_PART_MS:-5}"
@@ -29,6 +31,9 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   exit 0
 fi
 
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
 : "${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS to the Google service-account JSON path}"
 [[ -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]] || {
   echo "Google credential file does not exist" >&2
@@ -110,7 +115,7 @@ start_receiver() {
   local suffix="$2"
   gcp_ssh "${EDGE_NAME}" "${EDGE_ZONE}" --command="
     nohup /usr/local/bin/aep1-48k-probe receive-hls \
-      --edge ${EDGE_IP}:19444 --server-name local.infidelity.io \
+      --edge ${EDGE_IP}:19444 --server-name ${TLS_SERVER_NAME} \
       --tls-ca /etc/needletail/tls/fullchain.pem \
       --transport h3 --path-prefix /live --stream-id ${stream_id} \
       --session-id ${SESSION_ID} --duration-seconds ${DURATION_SECONDS} \

@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import http2 from "node:http2";
 import { performance } from "node:perf_hooks";
 
-const playlistUrl = new URL(
-  process.argv[2] || "https://player.infidelity.io/live/1/stream.m3u8",
-);
+assert.ok(process.argv[2], "usage: node hls-load.mjs PLAYLIST_URL");
+const playlistUrl = new URL(process.argv[2]);
 const connectUrl = new URL(process.env.PLAYER_LOAD_CONNECT_ORIGIN || playlistUrl.origin);
 const viewers = Number.parseInt(process.env.PLAYER_LOAD_VIEWERS || "20", 10);
 const durationSeconds = Number.parseInt(process.env.PLAYER_LOAD_SECONDS || "60", 10);

@@ -14,6 +14,9 @@ def valid_counter_window:
   and .duplicate_or_late_epochs == 0
   and .discontinuity_epochs >= 0
   and .discontinuity_epochs <= 2
+  and (.latency_time_series | length) > 0
+  and .discontinuity_epochs == .latency_time_series[0].discontinuity_epochs
+  and all(.latency_time_series[1:][]; .discontinuity_epochs == 0)
   and .opus_epochs == $expected_epochs
   and .flac_epochs == $expected_epochs
   and .pcm_fallback_epochs == 0

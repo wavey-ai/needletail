@@ -63,7 +63,8 @@ test("player is same-origin, mobile safe, and selects a supported playback engin
   assert.match(script, /return "flac"/);
   assert.match(script, /streamOffset: 1000n/);
   assert.match(script, /hls\?\.loadSource\(selectedPlaylistUrl\(\)\)/);
-  assert.match(script, /elements\.video\.src = selectedPlaylistUrl\(\)/);
+  assert.match(script, /elements\.video\.src = selectNativePlaylistUrl\(\{/);
+  assert.match(script, /mediaPlaylistUrl: selectedMediaPlaylistUrl\(\)/);
   assert.match(script, /url\.searchParams\.set\("format", audioFormat\)/);
   assert.match(script, /function setAudioFormat\(format\)/);
   assert.match(script, /setAudioFormat\(button\.dataset\.audioFormat\)/);

@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const playlistUrl = new URL(process.argv[2] || "https://player.infidelity.io/live/1/stream.m3u8");
+assert.ok(process.argv[2], "usage: node hls-av-continuity.mjs PLAYLIST_URL");
+const playlistUrl = new URL(process.argv[2]);
 const segmentCount = Number.parseInt(process.env.PLAYER_CONTINUITY_SEGMENTS || "15", 10);
 const workingDirectory = mkdtempSync(join(tmpdir(), "needletail-av-continuity-"));
 

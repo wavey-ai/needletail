@@ -2,23 +2,47 @@
 set -euo pipefail
 
 : "${GCP_PROJECT:?set GCP_PROJECT to the qualification project}"
+: "${GCP_SOURCE_HOST:?set GCP_SOURCE_HOST to the source node}"
+: "${GCP_SOURCE_SERVICE:?set GCP_SOURCE_SERVICE to the externally managed source service}"
+: "${GCP_MEDIA_FILE:?set GCP_MEDIA_FILE to the source media path}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 ZONE="${GCP_ZONE:-europe-west2-c}"
-SOURCE_HOST="${GCP_SOURCE_HOST:-${GCP_DAW_HOST:-nt-daw-lon}}"
+SOURCE_HOST="${GCP_SOURCE_HOST}"
 CONTRIBUTOR_HOST="${GCP_CONTRIBUTOR_HOST:-nt-contrib-lon}"
 EDGE_HOST="${GCP_EDGE_HOST:-nt-edge-lon}"
 READER_HOST="${GCP_READER_HOST:-nt-opus-reader-lon}"
 EDGE_PRIVATE_IP="${GCP_EDGE_PRIVATE_IP:-10.84.10.6}"
-SOURCE_SERVICE="${GCP_SOURCE_SERVICE:-needletail-rist-source-lori-4k.service}"
+SOURCE_SERVICE="${GCP_SOURCE_SERVICE}"
 CONTRIBUTOR_SERVICE="${GCP_CONTRIBUTOR_SERVICE:-needletail-contrib.service}"
-MEDIA_FILE="${GCP_MEDIA_FILE:-/mnt/needletail-media/lori_4k_no_grain_4k25_ll_capped10.mp4}"
+MEDIA_FILE="${GCP_MEDIA_FILE}"
 MEDIA_MOUNT="${GCP_MEDIA_MOUNT:-/mnt/needletail-media}"
-TLS_CERT="${GCP_TLS_CERT:-${ROOT}/../tls/local.infidelity.io/fullchain.pem}"
-PLAYLIST_URL="${PLAYER_LOAD_PLAYLIST_URL:-https://local.infidelity.io/live/1/stream.m3u8}"
+: "${GCP_TLS_CERT:?set GCP_TLS_CERT to the qualification certificate}"
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_CERT="${GCP_TLS_CERT}"
+PLAYLIST_URL="${PLAYER_LOAD_PLAYLIST_URL:-https://${NEEDLETAIL_TLS_SERVER_NAME}:19444/live/1/stream.m3u8}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_ipv4_address GCP_EDGE_PRIVATE_IP "${EDGE_PRIVATE_IP}"
+needletail_require_absolute_path GCP_MEDIA_FILE "${MEDIA_FILE}"
+needletail_require_absolute_path GCP_MEDIA_MOUNT "${MEDIA_MOUNT}"
+for host_variable in SOURCE_HOST CONTRIBUTOR_HOST EDGE_HOST READER_HOST; do
+  needletail_require_gcp_instance_name \
+    "${host_variable}" "${!host_variable}"
+done
 RUN_ID="${RUN_ID:-$(date -u '+%Y%m%dT%H%M%SZ')-h264-4k-viewer-capacity}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
+for service_variable in SOURCE_SERVICE CONTRIBUTOR_SERVICE; do
+  needletail_require_systemd_service_unit \
+    "${service_variable}" "${!service_variable}"
+done
 RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/h264-4k-viewer-capacity/${RUN_ID}}"
 REMOTE_ROOT="/tmp/${RUN_ID}"
+needletail_shell_quote SOURCE_SERVICE_QUOTED "${SOURCE_SERVICE}"
+needletail_shell_quote CONTRIBUTOR_SERVICE_QUOTED "${CONTRIBUTOR_SERVICE}"
+needletail_shell_quote MEDIA_FILE_QUOTED "${MEDIA_FILE}"
+needletail_shell_quote MEDIA_MOUNT_QUOTED "${MEDIA_MOUNT}"
+needletail_shell_quote PLAYLIST_URL_QUOTED "${PLAYLIST_URL}"
 TRIAL_SECONDS="${CAPACITY_TRIAL_SECONDS:-60}"
 POLL_MS="${CAPACITY_POLL_MS:-200}"
 REQUEST_TIMEOUT_MS="${CAPACITY_REQUEST_TIMEOUT_MS:-5000}"
@@ -86,7 +110,7 @@ cleanup() {
   fi
   gcp_ssh "${READER_HOST}" --command="pkill -f '${REMOTE_ROOT}/hls-load.mjs' 2>/dev/null || true" \
     >/dev/null 2>&1 || true
-  gcp_ssh "${SOURCE_HOST}" --command="sudo systemctl stop '${SOURCE_SERVICE}'" \
+  gcp_ssh "${SOURCE_HOST}" --command="sudo systemctl stop ${SOURCE_SERVICE_QUOTED}" \
     >/dev/null 2>&1 || true
 }
 
@@ -129,11 +153,11 @@ cp "${BASH_SOURCE[0]}" "${RESULT_DIR}/harness.sh"
 chmod 0555 "${RESULT_DIR}/harness.sh"
 
 gcp_ssh "${SOURCE_HOST}" --command="set -eu
-  test -f '${MEDIA_FILE}'
-  test \"\$(findmnt -n -o TARGET --target '${MEDIA_FILE}')\" = '${MEDIA_MOUNT}'
+  test -f ${MEDIA_FILE_QUOTED}
+  test \"\$(findmnt -n -o TARGET --target ${MEDIA_FILE_QUOTED})\" = ${MEDIA_MOUNT_QUOTED}
   ffprobe -v error \
     -show_entries stream=codec_name,codec_type,width,height,avg_frame_rate,sample_rate,channels \
-    -of json '${MEDIA_FILE}'" >"${RESULT_DIR}/source-probe.json"
+    -of json ${MEDIA_FILE_QUOTED}" >"${RESULT_DIR}/source-probe.json"
 
 jq -e '
   ([.streams[] | select(.codec_type == "video")][0]) as $video
@@ -163,10 +187,10 @@ pre_source_latest_part="$(gcp_ssh "${EDGE_HOST}" --command="curl -ksSf --max-tim
   | awk -F'part|.mp4' '/#EXT-X-PART:/{last=\$2} END{print last}'" \
   2>/dev/null | tail -n 1 || true)"
 gcp_ssh "${CONTRIBUTOR_HOST}" \
-  --command="sudo systemctl restart '${CONTRIBUTOR_SERVICE}'"
+  --command="sudo systemctl restart ${CONTRIBUTOR_SERVICE_QUOTED}"
 gcp_ssh "${CONTRIBUTOR_HOST}" \
-  --command="systemctl is-active --quiet '${CONTRIBUTOR_SERVICE}'"
-gcp_ssh "${SOURCE_HOST}" --command="sudo systemctl restart '${SOURCE_SERVICE}'"
+  --command="systemctl is-active --quiet ${CONTRIBUTOR_SERVICE_QUOTED}"
+gcp_ssh "${SOURCE_HOST}" --command="sudo systemctl restart ${SOURCE_SERVICE_QUOTED}"
 warmup_start_part=''
 for _ in $(seq 1 90); do
   if gcp_ssh "${EDGE_HOST}" --command="curl -ksSf --max-time 2 \
@@ -256,12 +280,12 @@ for spec in "${TIER_SPECS[@]}"; do
   load_status=0
   gcp_ssh "${READER_HOST}" --command="set -o pipefail
     env NODE_EXTRA_CA_CERTS='${REMOTE_ROOT}/fullchain.pem' \
-      PLAYER_LOAD_CONNECT_ORIGIN='https://${EDGE_PRIVATE_IP}' \
+      PLAYER_LOAD_CONNECT_ORIGIN='https://${EDGE_PRIVATE_IP}:19444' \
       PLAYER_LOAD_VIEWERS='${viewers}' \
       PLAYER_LOAD_SECONDS='${TRIAL_SECONDS}' \
       PLAYER_LOAD_POLL_MS='${POLL_MS}' \
       PLAYER_LOAD_REQUEST_TIMEOUT_MS='${REQUEST_TIMEOUT_MS}' \
-      node '${REMOTE_ROOT}/hls-load.mjs' '${PLAYLIST_URL}' \
+      node '${REMOTE_ROOT}/hls-load.mjs' ${PLAYLIST_URL_QUOTED} \
       >'${remote_trial}/load.json' 2>'${remote_trial}/load.err'" || load_status=$?
 
   snapshot_host "${READER_HOST}" '' "${trial_dir}/reader-after.json"
@@ -352,12 +376,12 @@ source_inactive=0
 edge_active=0
 persistent_media=0
 source_state="$(gcp_ssh "${SOURCE_HOST}" \
-  --command="systemctl is-active '${SOURCE_SERVICE}'" 2>/dev/null || true)"
+  --command="systemctl is-active ${SOURCE_SERVICE_QUOTED}" 2>/dev/null || true)"
 [[ "${source_state##*$'\n'}" == inactive ]] && source_inactive=1
 gcp_ssh "${EDGE_HOST}" --command='systemctl is-active --quiet needletail-mesh.service' \
   && edge_active=1
-gcp_ssh "${SOURCE_HOST}" --command="test -f '${MEDIA_FILE}' \
-  && test \"\$(findmnt -n -o TARGET --target '${MEDIA_FILE}')\" = '${MEDIA_MOUNT}'" \
+gcp_ssh "${SOURCE_HOST}" --command="test -f ${MEDIA_FILE_QUOTED} \
+  && test \"\$(findmnt -n -o TARGET --target ${MEDIA_FILE_QUOTED})\" = ${MEDIA_MOUNT_QUOTED}" \
   && persistent_media=1
 
 jq -s \

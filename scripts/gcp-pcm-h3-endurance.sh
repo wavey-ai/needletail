@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT="${NEEDLETAIL_ENDURANCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "${ROOT}/scripts/qualification-config.sh"
 LAB_STATE="${NEEDLETAIL_GCP_LAB_STATE:-${ROOT}/target/gcp-qualification/lab.json}"
 GCLOUD_CONFIG="${NEEDLETAIL_GCLOUD_CONFIG:-${ROOT}/target/gcloud-config}"
 ARTIFACT_DIR="${NEEDLETAIL_GCP_ARTIFACT_DIR:-${ROOT}/target/gcp-qualification/artifacts}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+needletail_require_safe_component RUN_ID "${RUN_ID}"
 RESULT_DIR="${RESULT_DIR:-${ROOT}/target/gcp-qualification/endurance-runs/${RUN_ID}}"
 ATTESTATION_LIB_SOURCE="${ROOT}/scripts/gcp-deployment-attestation.sh"
 ATTESTATION_LIB="${NEEDLETAIL_DEPLOYMENT_ATTESTATION_LIB:-${ATTESTATION_LIB_SOURCE}}"
@@ -17,8 +19,7 @@ KNOWN_HOSTS="${RESULT_DIR}/known_hosts"
 DURATION_SECONDS="${ENDURANCE_DURATION_SECONDS:-14400}"
 PART_MS="${ENDURANCE_PART_MS:-5}"
 READERS="${ENDURANCE_READERS:-1}"
-BURST_READERS="${ENDURANCE_BURST_READERS:-24}"
-SUSTAINED_READER_STEPS="${ENDURANCE_SUSTAINED_READER_STEPS:-${ENDURANCE_BURST_READER_STEPS:-${BURST_READERS}}}"
+SUSTAINED_READER_STEPS="${ENDURANCE_SUSTAINED_READER_STEPS:-24}"
 FIRST_OBSERVATION_SECONDS="${ENDURANCE_FIRST_OBSERVATION_SECONDS:-300}"
 OBSERVATION_INTERVAL_SECONDS="${ENDURANCE_OBSERVATION_INTERVAL_SECONDS:-1800}"
 START_DELAY_SECONDS="${ENDURANCE_START_DELAY_SECONDS:-15}"
@@ -30,7 +31,9 @@ EXPECTED_PARTS_TOTAL="$((EXPECTED_PARTS * READERS))"
 usage() {
   cat <<'EOF'
 Usage: GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json \
-  NEEDLETAIL_LOAD_HOST=203.0.113.10 scripts/gcp-pcm-h3-endurance.sh
+  NEEDLETAIL_LOAD_HOST=203.0.113.10 \
+  NEEDLETAIL_TLS_SERVER_NAME=player.needletail.test \
+  scripts/gcp-pcm-h3-endurance.sh
 
 Runs one continuous 16-channel, 48 kHz, S24 PCM publication for four hours by
 default. Every customer holds two persistent TLS 1.3/H3 LL-HLS connections,
@@ -45,9 +48,9 @@ For a 30-minute five-step ladder, set:
   ENDURANCE_OBSERVATION_INTERVAL_SECONDS=300
   ENDURANCE_SUSTAINED_READER_STEPS=1,4,8,16,24
 
-ENDURANCE_BURST_READER_STEPS remains an accepted compatibility alias. Node,
-process, kernel, and application metrics are retained around every step, and
-each added cohort produces a strict result for both eight-channel renditions.
+Node, process, kernel, and application metrics are retained around every step,
+and each added cohort produces a strict result for both eight-channel
+renditions.
 
 The run starts only when installed and running binaries match
 target/gcp-qualification/artifacts and every GCP node has persistent UDP kernel
@@ -97,6 +100,10 @@ if [[ "${1:-}" == --self-snapshot-check ]]; then
   exit 0
 fi
 
+: "${NEEDLETAIL_TLS_SERVER_NAME:?set NEEDLETAIL_TLS_SERVER_NAME to the qualification certificate DNS name}"
+TLS_SERVER_NAME="${NEEDLETAIL_TLS_SERVER_NAME}"
+needletail_require_dns_name NEEDLETAIL_TLS_SERVER_NAME "${TLS_SERVER_NAME}"
+
 : "${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS to the Google service-account JSON path}"
 : "${LOAD_HOST:?set NEEDLETAIL_LOAD_HOST to the external reader host IPv4 address}"
 for required_file in \
@@ -118,7 +125,7 @@ for command_name in gcloud jq ssh scp; do
     exit 2
   }
 done
-for value_name in DURATION_SECONDS PART_MS READERS BURST_READERS \
+for value_name in DURATION_SECONDS PART_MS READERS \
   FIRST_OBSERVATION_SECONDS OBSERVATION_INTERVAL_SECONDS START_DELAY_SECONDS \
   TAIL_SECONDS BASE_GROUP_ID; do
   value="${!value_name}"
@@ -128,7 +135,7 @@ for value_name in DURATION_SECONDS PART_MS READERS BURST_READERS \
   }
 done
 if ((DURATION_SECONDS == 0 || PART_MS == 0 || READERS == 0 || READERS > 4096 \
-  || BURST_READERS == 0 || FIRST_OBSERVATION_SECONDS >= DURATION_SECONDS \
+  || FIRST_OBSERVATION_SECONDS >= DURATION_SECONDS \
   || OBSERVATION_INTERVAL_SECONDS == 0 \
   || DURATION_SECONDS * 1000 % PART_MS != 0 || START_DELAY_SECONDS < 5 \
   || BASE_GROUP_ID < 1 || BASE_GROUP_ID + 2 > 65535)); then
@@ -474,7 +481,7 @@ launch_sustained_reader_step() {
   mkdir -p "${local_step}"
   load_ssh "mkdir -p ${remote_step}
     nohup /usr/local/bin/aep1-48k-probe load-hls \
-      --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
+      --edge ${EDGE_PUBLIC_IP}:19444 --server-name ${TLS_SERVER_NAME} \
       --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
       --stream-id ${STREAM_0} --session-id ${SESSION_ID} \
       --duration-seconds ${DURATION_SECONDS} --start-offset-ms ${start_offset_ms} \
@@ -483,7 +490,7 @@ launch_sustained_reader_step() {
       --expected-audio-codec ipcm --expected-pcm-channels 8 \
       >${remote_step}/group-0.json 2>${remote_step}/group-0.err & echo \$! >${remote_step}/group-0.pid
     nohup /usr/local/bin/aep1-48k-probe load-hls \
-      --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
+      --edge ${EDGE_PUBLIC_IP}:19444 --server-name ${TLS_SERVER_NAME} \
       --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
       --stream-id ${STREAM_1} --session-id ${SESSION_ID} \
       --duration-seconds ${DURATION_SECONDS} --start-offset-ms ${start_offset_ms} \
@@ -563,10 +570,6 @@ finalize_sustained_reader_step() {
       | ($group0[0] // {}) as $group_0
       | ($group1[0] // {}) as $group_1
       | $step + {
-          # Compatibility aliases for readers of the former capacity-burst array.
-          burst_index: $step.step_index,
-          readers: $step.target_added_readers,
-          window_seconds: ($step.sustained_duration_ms / 1000),
           evidence_complete: ($evidence_complete == 1),
           edge_udp_rcvbuf_errors_at_end: $edge_udp_rcvbuf_errors_at_end,
           edge_udp_rcvbuf_errors_delta: (
@@ -628,7 +631,7 @@ finalize_sustained_reader_step() {
 
 load_ssh "mkdir -p ${REMOTE_ROOT}
   nohup /usr/local/bin/aep1-48k-probe load-hls \
-    --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
+    --edge ${EDGE_PUBLIC_IP}:19444 --server-name ${TLS_SERVER_NAME} \
     --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
     --stream-id ${STREAM_0} --session-id ${SESSION_ID} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
@@ -636,7 +639,7 @@ load_ssh "mkdir -p ${REMOTE_ROOT}
     --expected-audio-codec ipcm --expected-pcm-channels 8 \
     >${REMOTE_ROOT}/group-0.json 2>${REMOTE_ROOT}/group-0.err & echo \$! >${REMOTE_ROOT}/group-0.pid
   nohup /usr/local/bin/aep1-48k-probe load-hls \
-    --edge ${EDGE_PUBLIC_IP}:19444 --server-name local.infidelity.io \
+    --edge ${EDGE_PUBLIC_IP}:19444 --server-name ${TLS_SERVER_NAME} \
     --tls-ca /tmp/fullchain.pem --transport h3 --path-prefix /live \
     --stream-id ${STREAM_1} --session-id ${SESSION_ID} \
     --duration-seconds ${DURATION_SECONDS} --part-ms ${PART_MS} \
@@ -656,6 +659,7 @@ jq -n \
   --arg run_id "${RUN_ID}" \
   --arg load_host "${LOAD_HOST}" \
   --arg edge_public_ip "${EDGE_PUBLIC_IP}" \
+  --arg tls_server_name "${TLS_SERVER_NAME}" \
   --argjson session_id "${SESSION_ID}" \
   --argjson duration_seconds "${DURATION_SECONDS}" \
   --argjson readers "${READERS}" \
@@ -668,12 +672,11 @@ jq -n \
     harness_script: "harness.sh",
     load_host: $load_host,
     edge_public_ip: $edge_public_ip,
+    tls_server_name: $tls_server_name,
     session_id: $session_id,
     duration_seconds: $duration_seconds,
-    readers: $readers,
     baseline_continuous_readers: $readers,
     sustained_reader_steps: ($sustained_reader_steps | split(",") | map(tonumber)),
-    burst_reader_steps: ($sustained_reader_steps | split(",") | map(tonumber)),
     first_observation_seconds: $first_observation_seconds,
     observation_interval_seconds: $observation_interval_seconds,
     part_ms: $part_ms
@@ -829,9 +832,6 @@ if compgen -G "${RESULT_DIR}/reader-steps/*/result.json" >/dev/null; then
 else
   printf '[]\n' >"${RESULT_DIR}/reader-steps.json"
 fi
-# Preserve the former aggregate filename for evidence tooling that has not yet
-# moved to the sustained-reader terminology.
-cp "${RESULT_DIR}/reader-steps.json" "${RESULT_DIR}/bursts.json"
 
 jq -n \
   --arg run_id "${RUN_ID}" \
@@ -909,15 +909,10 @@ jq -n \
           passed: $udp_reports_passed,
           roles: $udp_reports
         },
-        # Compatibility alias for the former NYC-only whole-run counter.
-        edge_kernel_udp_receive_drops: $udp_reports.edge_new_york,
         source: $source_report,
         baseline_continuous_readers: $readers,
         baseline_continuous_renditions: [$group_0, $group_1],
         sustained_reader_steps: $step_reports,
-        # Compatibility aliases retained from the v1 result.
-        continuous_renditions: [$group_0, $group_1],
-        capacity_bursts: $step_reports,
         metrics_directory: "metrics"
       }
     # NEEDLETAIL_ENDURANCE_RUN_RESULT_JQ_END

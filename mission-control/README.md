@@ -1,6 +1,6 @@
-# Needletail operations dashboard
+# Needletail Operations
 
-The Needletail operations dashboard is the product operations UI. It provides
+Needletail Operations is the product operations UI. It provides
 separate hash-routed views for:
 
 - current health and throughput
@@ -15,24 +15,33 @@ separate hash-routed views for:
 
 ![Needletail operations overview](../docs/release/screenshots/operations.png)
 
-The browser fetches the two bounded snapshots concurrently every five seconds.
-It pauses routine polling while the page is hidden. It calculates throughput
-from monotonic counter changes. It retains at most six minutes of rate samples
-in memory. Counter resets and sub-second observations do not produce rate spikes.
+_Historical July 21 implementation screenshot. It is retained for comparison,
+not as evidence of the current UI or live global telemetry._
+
+The browser fetches one bounded, same-origin `/api/mesh` snapshot every five
+seconds. That canonical global snapshot declares
+`schema: "needletail.operations-snapshot.v1"` and embeds contributor status
+under `contributor`; the browser does not poll a second service or accept
+endpoint overrides. Unsupported or missing schemas are unavailable, not
+silently adapted. Polling pauses while the page is hidden and each request is
+aborted after four seconds. Throughput comes from monotonic counter changes,
+with at most six minutes of samples retained in memory. Counter resets and
+sub-second observations do not produce rate spikes.
 
 The map uses the node coordinates already present in `/api/mesh`. When the
 snapshot includes `topology_links`, it renders the complete bounded global
 topology, separates primary and warm-secondary paths, and shows link health,
-RTT, throughput, and generation in accessible link labels. During a rolling
-backend deployment it falls back to the current delivery assignment. Its local
-CC0 base image does not require a map service at runtime.
+RTT, throughput, and generation in accessible link labels. It does not invent
+links when topology is unavailable, and it omits nodes with missing or invalid
+coordinates instead of placing them at `0,0`. Its local CC0 base image does not
+require a map service at runtime.
 
-It reads bounded, low-cardinality snapshots from:
+The elected collector assembles one bounded, low-cardinality snapshot from:
 
-- `av-contrib` `GET /api/status` for contributor health, RelaySession carrier
+- embedded contributor status for contributor health, RelaySession carrier
   assignments, primary source traffic, warm-secondary repair traffic, RaptorQ
   emission, deadline headroom, publication heads, and forwarding latency
-- `av-mesh` `GET /api/mesh` for playback-edge health, RelaySession ingress,
+- top-level mesh status for playback-edge health, RelaySession ingress,
   RaptorQ recovery, publication watermarks, and LL-HLS handler latency.
 
 Every snapshot field uses a Serde default. A rolling component deployment can
@@ -40,15 +49,19 @@ therefore present a partial snapshot while the operations dashboard marks the
 controller or telemetry fields that are still arriving. Stream, node, session,
 edge, alert, and activity arrays are capped before rendering.
 
-The optional `orchestration.collector` object carries the active global
+The `orchestration.collector` object carries the active global
 collector, authority, role, Raft term, fencing generation, quorum voter counts,
 lease time remaining, leadership-change context, endpoints, and current/stale/
 awaiting node totals. Overview, Network map, and Nodes show this state without
-assuming that the node serving the browser is the collector. Missing election
-telemetry is displayed as unavailable rather than healthy.
+assuming that the node serving the browser is the collector. Healthy state
+requires a fresh snapshot, a nonzero term and generation, a majority of an odd
+three-or-more-voter set, and an unexpired lease. Missing or stale proof is never
+displayed as healthy.
 
-The UI consumes the current service shapes. The current backends do not yet
-expose the following values, so their corresponding cells remain `pending`:
+The UI consumes only the canonical field names. Removed aliases and synthesized
+publication, delivery, and topology fallbacks are intentionally not accepted.
+If the collector has not populated a canonical value, the corresponding cell
+remains `pending`:
 
 - delivery class, fabric, desired-state generation, installed route state, and
   per-stream/cohort route inventory
@@ -59,8 +72,8 @@ expose the following values, so their corresponding cells remain `pending`:
 - detailed RIST/SRT session RTT, jitter, loss, reconnect, and end-reason
   telemetry.
 
-Configured RelaySession carrier targets are displayed as configured carriers.
-The dashboard displays the route-state value emitted by the controller.
+The dashboard displays only route and publication state emitted by the
+collector/controller contract.
 
 Run locally:
 
@@ -68,17 +81,51 @@ Run locally:
 make serve
 ```
 
+### Documentation and qualification preview
+
+Build the current assets and serve them with the committed documentation
+fixture:
+
+```sh
+make -C mission-control build
+python3 mission-control/scripts/serve-documentation-preview.py
+```
+
+Open `http://127.0.0.1:5188/mesh`. The fixture is representative, not captured
+production telemetry. Its `preview.label` says so, its Activity view carries a
+documentation-fixture event, and its collector authority, leader, term,
+fencing generation, quorum, voters, and lease are all unreported. The
+Operations collector bar therefore remains unavailable by design.
+
+To use current qualification telemetry instead, give the server the deployed
+service-local endpoints:
+
+```sh
+python3 mission-control/scripts/serve-documentation-preview.py \
+  --edge-snapshot https://edge.example/api/mesh \
+  --contributor-snapshot https://contributor.example/api/status
+```
+
+The inputs are reloaded for each dashboard poll. This preview-only adapter adds
+the canonical `needletail.operations-snapshot.v1` envelope and embeds the
+contributor response. It does not synthesize publication, delivery, route, or
+topology state that the inputs did not report. It always removes collector
+election and lease proof, even if an input contains those fields, because it is
+not a consensus-backed collector. `--insecure-upstream` is available only for
+an explicitly trusted qualification certificate.
+
+When capturing the eight hash-routed pages for release documentation, use
+`docs/release/screenshots/YYYY-MM-DD/operations/operations-<page>.png`, where
+`<page>` is `overview`, `network`, `streams`, `ingest`, `nodes`, `routes`,
+`performance`, or `activity`. Captures made from the fixture must be captioned
+as a documentation fixture with collector election state unavailable. Do not
+present them as live or qualification evidence.
+
 `make build` uses Trunk when available. Otherwise, it performs a deterministic
 WASM release build with the pinned local `wasm-bindgen` CLI. It then assembles
 the same static-host asset contract in `dist/`.
 
-The default feeds are same-origin `/api/mesh` and
-`https://local.infidelity.io:19443/api/status`. Override either endpoint with
-the controls in the header or query parameters:
-
-```text
-/mesh?edge=https://edge.example/api/mesh&contrib=https://ingress.example/api/status
-```
+The only browser data endpoint is same-origin `/api/mesh`.
 
 Build the assets served by an `av-mesh` playback edge:
 
@@ -93,8 +140,8 @@ edge automatically.
 
 The node-to-collector transport for this data is documented in
 [`../docs/operations-telemetry-transport.md`](../docs/operations-telemetry-transport.md).
-The current UI remains compatible with the existing bounded status endpoints
-while that transport is implemented and qualified.
+The collector must adapt service-local snapshots into the canonical global
+shape before serving `/api/mesh`.
 
 Validation:
 

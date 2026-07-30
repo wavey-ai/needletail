@@ -1,25 +1,26 @@
 #[cfg(target_arch = "wasm32")]
 mod app {
     use gloo_net::http::Request;
-    use gloo_timers::callback::Interval;
+    use gloo_timers::callback::{Interval, Timeout};
     use leptos::{mount::mount_to_body, prelude::*};
     use needletail_mission_control::{
         bounded_contrib_streams, bounded_edge_streams, bounded_edges, bounded_ingest_sessions,
-        bounded_nodes, contributor_latency, effective_delivery, monotonic_rate_per_second,
-        operational_activity, operational_alerts, publication_from_contrib, publication_from_edge,
+        bounded_nodes, bounded_relay_nodes, contributor_latency, effective_delivery,
+        monotonic_rate_per_second, operational_activity, operational_alerts, state_tone,
         ContribStatus, DeliverySnapshot, DurationHistogram, EdgeNode, EdgeService, EventSource,
         IngestSession, ListenerStatus, MeshStatus, OperationalEvent, OperationsCollectorStatus,
-        ProtocolRuntime, PublicationSnapshot, RelayNodeSession, RouteLane, MAX_EVENT_ROWS,
+        ProtocolRuntime, PublicationSnapshot, RelayNodeSession, RouteLane,
+        OPERATIONS_SNAPSHOT_SCHEMA,
     };
-    use serde::de::DeserializeOwned;
     use wasm_bindgen::{closure::Closure, JsCast};
     use wasm_bindgen_futures::spawn_local;
 
     const DEFAULT_EDGE_API: &str = "/api/mesh";
-    const DEFAULT_CONTRIB_API: &str = "https://local.infidelity.io:19443/api/status";
-    const PUBLIC_OPERATIONS_HOST: &str = "mission-control.infidelity.io";
-    const PUBLIC_CONTRIB_API: &str = "https://mission-control-feed.infidelity.io/api/status";
     const POLL_INTERVAL_MS: u32 = 5_000;
+    const FETCH_TIMEOUT_MS: u32 = 4_000;
+    const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+    const SNAPSHOT_STALE_AFTER_MS: u64 = 15_000;
+    const SNAPSHOT_CLOCK_SKEW_MS: u64 = 2_000;
     const RATE_HISTORY_POINTS: usize = 72;
 
     pub fn run() {
@@ -31,6 +32,7 @@ mod app {
     struct FeedState {
         last_ok_unix_ms: Option<u64>,
         error: Option<String>,
+        attempted: bool,
     }
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,13 +51,13 @@ mod app {
     impl Page {
         fn from_hash(hash: &str) -> Self {
             match hash.trim_start_matches('#').trim_matches('/') {
-                "network" | "topology" => Self::Network,
+                "network" => Self::Network,
                 "streams" => Self::Streams,
-                "ingest" | "contributor" => Self::Ingest,
+                "ingest" => Self::Ingest,
                 "nodes" => Self::Nodes,
                 "routes" => Self::Routes,
                 "performance" => Self::Performance,
-                "activity" | "alerts" => Self::Activity,
+                "activity" => Self::Activity,
                 _ => Self::Overview,
             }
         }
@@ -111,10 +113,11 @@ mod app {
     }
 
     impl FeedState {
-        fn ok() -> Self {
+        fn ok(snapshot_unix_ms: u64) -> Self {
             Self {
-                last_ok_unix_ms: Some(now_unix_ms()),
+                last_ok_unix_ms: (snapshot_unix_ms > 0).then_some(snapshot_unix_ms),
                 error: None,
+                attempted: true,
             }
         }
 
@@ -122,23 +125,31 @@ mod app {
             Self {
                 last_ok_unix_ms: previous.last_ok_unix_ms,
                 error: Some(message),
+                attempted: true,
             }
         }
 
         fn label(&self) -> &'static str {
-            if self.error.is_some() {
+            if !self.attempted {
+                "opening"
+            } else if self.error.is_some() && self.last_ok_unix_ms.is_none() {
                 "unavailable"
-            } else if self.last_ok_unix_ms.is_some() {
+            } else if self
+                .last_ok_unix_ms
+                .and_then(snapshot_age_ms)
+                .is_some_and(|age| age <= SNAPSHOT_STALE_AFTER_MS)
+                && self.error.is_none()
+            {
                 "live"
             } else {
-                "opening"
+                "stale"
             }
         }
 
         fn tone(&self) -> &'static str {
-            if self.error.is_some() {
+            if self.error.is_some() && self.last_ok_unix_ms.is_none() {
                 "error"
-            } else if self.last_ok_unix_ms.is_some() {
+            } else if self.label() == "live" {
                 "healthy"
             } else {
                 "warn"
@@ -146,27 +157,46 @@ mod app {
         }
 
         fn detail(&self) -> String {
+            if !self.attempted {
+                return "opening telemetry feed".to_owned();
+            }
             if let Some(error) = &self.error {
-                return error.clone();
+                return self
+                    .last_ok_unix_ms
+                    .map(|last| {
+                        format!(
+                            "last snapshot {}; request failed: {error}",
+                            snapshot_age_ms(last)
+                                .map(format_age)
+                                .unwrap_or_else(|| "with an invalid timestamp".to_owned())
+                        )
+                    })
+                    .unwrap_or_else(|| error.clone());
             }
             self.last_ok_unix_ms
-                .map(|last| format!("updated {}", format_age(now_unix_ms().saturating_sub(last))))
-                .unwrap_or_else(|| "opening telemetry feed".to_owned())
+                .map(|last| {
+                    snapshot_age_ms(last)
+                        .map(|age| format!("snapshot {}", format_age(age)))
+                        .unwrap_or_else(|| "snapshot timestamp invalid".to_owned())
+                })
+                .unwrap_or_else(|| "snapshot timestamp unavailable".to_owned())
+        }
+
+        fn compact_label(&self) -> String {
+            self.last_ok_unix_ms
+                .and_then(snapshot_age_ms)
+                .map(|age| format!("Snapshot {} · {}", self.label(), format_age(age)))
+                .unwrap_or_else(|| format!("Snapshot {}", self.label()))
         }
     }
 
     #[component]
     fn App() -> impl IntoView {
         let (page, set_page) = signal(current_page());
-        let (edge_api, set_edge_api) = signal(endpoint_from_query("edge", DEFAULT_EDGE_API));
-        let (contrib_api, set_contrib_api) =
-            signal(endpoint_from_query("contrib", default_contrib_api()));
         let (edge, set_edge) = signal(None::<MeshStatus>);
         let (contrib, set_contrib) = signal(None::<ContribStatus>);
-        let (edge_feed, set_edge_feed) = signal(FeedState::default());
-        let (contrib_feed, set_contrib_feed) = signal(FeedState::default());
-        let (edge_in_flight, set_edge_in_flight) = signal(false);
-        let (contrib_in_flight, set_contrib_in_flight) = signal(false);
+        let (fleet_feed, set_fleet_feed) = signal(FeedState::default());
+        let (fetch_in_flight, set_fetch_in_flight) = signal(false);
         let (contrib_counters, set_contrib_counters) = signal(None::<ContribCounters>);
         let (edge_counters, set_edge_counters) = signal(None::<EdgeCounters>);
         let (rates, set_rates) = signal(TrafficRates::default());
@@ -181,82 +211,77 @@ mod app {
         }
 
         let refresh = move || {
-            let edge_url = edge_api.get();
-            let contrib_url = contrib_api.get();
-            if !edge_in_flight.get_untracked() {
-                set_edge_in_flight.set(true);
+            if !fetch_in_flight.get_untracked() {
+                set_fetch_in_flight.set(true);
                 spawn_local(async move {
-                    match fetch_json::<MeshStatus>(&edge_url).await {
+                    match fetch_mesh_snapshot(DEFAULT_EDGE_API).await {
                         Ok(snapshot) => {
-                            let counters = edge_counter_sample(&snapshot, now_unix_ms());
-                            if let Some(previous) = edge_counters.get_untracked() {
-                                set_rates.update(|current| {
-                                    current.at_unix_ms = counters.at_unix_ms;
-                                    current.delivery_bps = monotonic_rate_per_second(
-                                        previous.delivery_bytes,
-                                        counters.delivery_bytes,
-                                        counters.at_unix_ms.saturating_sub(previous.at_unix_ms),
-                                    )
-                                    .map(|rate| rate * 8.0);
-                                    current.objects_per_second = monotonic_rate_per_second(
-                                        previous.decoded_objects,
-                                        counters.decoded_objects,
-                                        counters.at_unix_ms.saturating_sub(previous.at_unix_ms),
-                                    );
-                                });
-                                let current_rates = rates.get_untracked();
-                                set_rate_history
-                                    .update(|history| record_rate_history(history, current_rates));
-                            }
-                            set_edge_counters.set(Some(counters));
-                            set_edge.set(Some(snapshot));
-                            set_edge_feed.set(FeedState::ok());
-                        }
-                        Err(error) => {
-                            set_edge_feed.update(|state| *state = FeedState::error(error, state));
-                        }
-                    }
-                    set_edge_in_flight.set(false);
-                });
-            }
-            if !contrib_in_flight.get_untracked() {
-                set_contrib_in_flight.set(true);
-                spawn_local(async move {
-                    match fetch_json::<ContribStatus>(&contrib_url).await {
-                        Ok(snapshot) => {
-                            let counters = contrib_counter_sample(&snapshot, now_unix_ms());
-                            if let Some(previous) = contrib_counters.get_untracked() {
-                                let elapsed =
-                                    counters.at_unix_ms.saturating_sub(previous.at_unix_ms);
-                                set_rates.update(|current| {
-                                    current.at_unix_ms = counters.at_unix_ms;
-                                    current.input_bps = monotonic_rate_per_second(
+                            let snapshot_unix_ms = snapshot.updated_unix_ms;
+                            let sampled_at_unix_ms = now_unix_ms();
+                            let next_edge = edge_counter_sample(&snapshot, sampled_at_unix_ms);
+                            let previous_edge = edge_counters.get_untracked();
+                            let embedded_contrib = snapshot.contributor.clone();
+                            let next_contrib = embedded_contrib
+                                .as_ref()
+                                .map(|status| contrib_counter_sample(status, sampled_at_unix_ms));
+                            let previous_contrib = contrib_counters.get_untracked();
+
+                            let mut next_rates = rates.get_untracked();
+                            next_rates.at_unix_ms = sampled_at_unix_ms;
+                            next_rates.delivery_bps = previous_edge.and_then(|previous| {
+                                monotonic_rate_per_second(
+                                    previous.delivery_bytes,
+                                    next_edge.delivery_bytes,
+                                    sampled_at_unix_ms.saturating_sub(previous.at_unix_ms),
+                                )
+                                .map(|rate| rate * 8.0)
+                            });
+                            next_rates.objects_per_second = previous_edge.and_then(|previous| {
+                                monotonic_rate_per_second(
+                                    previous.decoded_objects,
+                                    next_edge.decoded_objects,
+                                    sampled_at_unix_ms.saturating_sub(previous.at_unix_ms),
+                                )
+                            });
+                            next_rates.input_bps = previous_contrib.zip(next_contrib).and_then(
+                                |(previous, current)| {
+                                    monotonic_rate_per_second(
                                         previous.input_bytes,
-                                        counters.input_bytes,
-                                        elapsed,
+                                        current.input_bytes,
+                                        sampled_at_unix_ms.saturating_sub(previous.at_unix_ms),
                                     )
-                                    .map(|rate| rate * 8.0);
-                                    current.relay_bps = monotonic_rate_per_second(
+                                    .map(|rate| rate * 8.0)
+                                },
+                            );
+                            next_rates.relay_bps = previous_contrib.zip(next_contrib).and_then(
+                                |(previous, current)| {
+                                    monotonic_rate_per_second(
                                         previous.relay_bytes,
-                                        counters.relay_bytes,
-                                        elapsed,
+                                        current.relay_bytes,
+                                        sampled_at_unix_ms.saturating_sub(previous.at_unix_ms),
                                     )
-                                    .map(|rate| rate * 8.0);
-                                });
-                                let current_rates = rates.get_untracked();
+                                    .map(|rate| rate * 8.0)
+                                },
+                            );
+
+                            set_rates.set(next_rates);
+                            if previous_edge.is_some()
+                                || (previous_contrib.is_some() && next_contrib.is_some())
+                            {
                                 set_rate_history
-                                    .update(|history| record_rate_history(history, current_rates));
+                                    .update(|history| record_rate_history(history, next_rates));
                             }
-                            set_contrib_counters.set(Some(counters));
-                            set_contrib.set(Some(snapshot));
-                            set_contrib_feed.set(FeedState::ok());
+                            set_edge_counters.set(Some(next_edge));
+                            set_contrib_counters.set(next_contrib);
+                            set_contrib.set(embedded_contrib);
+                            set_edge.set(Some(snapshot));
+                            set_fleet_feed.set(FeedState::ok(snapshot_unix_ms));
                         }
                         Err(error) => {
-                            set_contrib_feed
-                                .update(|state| *state = FeedState::error(error, state));
+                            set_fleet_feed.update(|state| *state = FeedState::error(error, state));
                         }
                     }
-                    set_contrib_in_flight.set(false);
+                    set_fetch_in_flight.set(false);
                 });
             }
         };
@@ -292,8 +317,7 @@ mod app {
                         <NavItem target=Page::Activity current=page set_current=set_page />
                     </nav>
                     <div class="sidebar-feeds">
-                        <FeedChip label="Contributor" state=contrib_feed />
-                        <FeedChip label="Playback edge" state=edge_feed />
+                        <FeedChip label="Global snapshot" state=fleet_feed />
                     </div>
                 </aside>
 
@@ -304,28 +328,14 @@ mod app {
                             <h1>{move || page.get().title()}</h1>
                         </div>
                         <div class="workspace-actions">
-                            <span class="cadence"><i></i>"5 second updates"</span>
+                            <span
+                                class=move || format!("cadence {}", fleet_feed.get().tone())
+                                title=move || fleet_feed.get().detail()
+                                aria-live="polite"
+                            >
+                                <i></i><span>{move || fleet_feed.get().compact_label()}</span>
+                            </span>
                             <button class="refresh-button" on:click=move |_| refresh()>"Refresh now"</button>
-                            <details class="feed-settings">
-                                <summary>"Data sources"</summary>
-                                <div class="feed-form">
-                                    <label>
-                                        <span>"Playback edge"</span>
-                                        <input
-                                            prop:value=move || edge_api.get()
-                                            on:input=move |event| set_edge_api.set(event_target_value(&event))
-                                        />
-                                    </label>
-                                    <label>
-                                        <span>"Contributor"</span>
-                                        <input
-                                            prop:value=move || contrib_api.get()
-                                            on:input=move |event| set_contrib_api.set(event_target_value(&event))
-                                        />
-                                    </label>
-                                    <button on:click=move |_| refresh()>"Apply"</button>
-                                </div>
-                            </details>
                         </div>
                     </header>
 
@@ -335,7 +345,7 @@ mod app {
                                 <OverviewPage contrib edge rates rate_history />
                             }.into_any(),
                             Page::Network => view! {
-                                <NetworkPage contrib edge rates />
+                                <NetworkPage edge rates />
                             }.into_any(),
                             Page::Streams => view! {
                                 <StreamsPage contrib edge />
@@ -395,7 +405,7 @@ mod app {
                     <SectionHeading kicker="CURRENT STATUS" title="Delivery health" detail="Ingest, relay, and playback edge" />
                     <div class="hero-grid">
                         <ServiceHealth contrib edge />
-                        <RouteAssignmentSummary contrib edge />
+                        <RouteAssignmentSummary edge />
                         <DeadlineHealth contrib edge />
                     </div>
                 </section>
@@ -421,7 +431,6 @@ mod app {
 
     #[component]
     fn NetworkPage(
-        contrib: ReadSignal<Option<ContribStatus>>,
         edge: ReadSignal<Option<MeshStatus>>,
         rates: ReadSignal<TrafficRates>,
     ) -> impl IntoView {
@@ -430,9 +439,8 @@ mod app {
                 <CollectorStatusBar edge />
                 <section class="section-block">
                     <SectionHeading kicker="DEPLOYMENT" title="Network map" detail="Node and link health" />
-                    <NetworkMap contrib edge rates />
+                    <NetworkMap edge rates />
                 </section>
-                <RouteAssignmentPanel contrib edge />
                 <RelayFabricTable edge />
             </div>
         }
@@ -486,7 +494,7 @@ mod app {
         view! {
             <div class="page-view">
                 <RouteAssignmentPanel contrib edge />
-                <RouteTable contrib edge />
+                <RouteTable edge />
                 <RelayFabricTable edge />
             </div>
         }
@@ -613,21 +621,26 @@ mod app {
                 .map(|status| status.orchestration.collector)
                 .unwrap_or_default()
         };
+        let snapshot_unix_ms = move || {
+            edge.get()
+                .map(|status| status.updated_unix_ms)
+                .unwrap_or_default()
+        };
         view! {
-            <section class=move || format!("collector-status {}", collector_tone(&collector()))>
+            <section class=move || format!("collector-status {}", collector_tone(&collector(), snapshot_unix_ms()))>
                 <div class="collector-identity">
-                    <span class=move || format!("state-mark {}", collector_tone(&collector()))></span>
+                    <span class=move || format!("state-mark {}", collector_tone(&collector(), snapshot_unix_ms()))></span>
                     <div>
                         <p>"GLOBAL TELEMETRY"</p>
-                        <strong>{move || collector_state_label(&collector())}</strong>
+                        <strong>{move || collector_state_label(&collector(), snapshot_unix_ms())}</strong>
                         <small>{move || collector_detail(&collector())}</small>
                     </div>
                 </div>
                 <div class="collector-facts">
-                    <div><span>"Collector"</span><b>{move || collector().leader_node_id.unwrap_or_else(|| "unreported".to_owned())}</b></div>
+                    <div><span>"Collector"</span><b>{move || verified_collector_node_id(&collector(), snapshot_unix_ms()).unwrap_or_else(|| "unavailable".to_owned())}</b></div>
                     <div><span>"Term / generation"</span><b>{move || format!("{} / {}", optional_u64(collector().term), optional_u64(collector().fencing_generation))}</b></div>
                     <div><span>"Quorum"</span><b>{move || format_collector_quorum(&collector())}</b></div>
-                    <div><span>"Lease"</span><b>{move || collector().lease_remaining_ms.map(format_age_ms).unwrap_or_else(|| "unreported".to_owned())}</b></div>
+                    <div><span>"Lease"</span><b>{move || effective_collector_lease_ms(&collector(), snapshot_unix_ms()).map(format_age_ms).unwrap_or_else(|| "unreported".to_owned())}</b></div>
                     <div><span>"Fleet snapshots"</span><b>{move || format_global_snapshot_freshness(edge.get().as_ref())}</b></div>
                 </div>
             </section>
@@ -640,21 +653,24 @@ mod app {
         from: EdgeNode,
         to: EdgeNode,
         role: String,
+        state: String,
         tone: &'static str,
         throughput_bps: Option<u64>,
         rtt_us: Option<u64>,
         generation: Option<u64>,
+        path: String,
     }
 
     #[derive(Clone, Debug)]
     struct MapCluster {
         key: String,
         nodes: Vec<EdgeNode>,
+        left: f64,
+        top: f64,
     }
 
     #[component]
     fn NetworkMap(
-        contrib: ReadSignal<Option<ContribStatus>>,
         edge: ReadSignal<Option<MeshStatus>>,
         rates: ReadSignal<TrafficRates>,
     ) -> impl IntoView {
@@ -663,19 +679,16 @@ mod app {
             <div class="network-tool">
                 <div class="network-toolbar">
                     <div class="network-summary">
-                        <strong>{move || edge.get().map(|status| bounded_nodes(&status).len()).unwrap_or(0)}</strong>
-                        <span>"nodes"</span>
+                        <strong>{move || edge.get().map(|status| format_map_node_scale(&status)).unwrap_or_else(|| "0 / 0".to_owned())}</strong>
+                        <span>"nodes mapped"</span>
                         <strong>{move || {
-                            edge.get().map(|status| {
-                                let delivery = effective_delivery(contrib.get().as_ref(), Some(&status));
-                                network_links(&status, &delivery).len()
-                            }).unwrap_or(0)
+                            edge.get().map(|status| format_map_link_scale(&status)).unwrap_or_else(|| "0 / 0".to_owned())
                         }}</strong>
-                        <span>"links"</span>
+                        <span>"links shown"</span>
                         <strong>{move || format_rate(RateMetric::Delivery, rates.get().delivery_bps)}</strong>
                         <span>"delivery"</span>
                         <strong class="collector-summary">{move || edge.get()
-                            .and_then(|status| status.orchestration.collector.leader_node_id)
+                            .and_then(|status| verified_collector_node_id(&status.orchestration.collector, status.updated_unix_ms))
                             .unwrap_or_else(|| "unreported".to_owned())}</strong>
                         <span>"collector"</span>
                     </div>
@@ -688,12 +701,11 @@ mod app {
                 </div>
                 <div class="network-map-layout">
                     <div class="world-map" aria-label="Deployed Needletail nodes">
-                        <img src="world-map.png" alt="" aria-hidden="true" />
+                        <img src="/world-map.png" alt="" aria-hidden="true" />
                         <svg class="network-links" viewBox="0 0 1000 500" preserveAspectRatio="none" aria-hidden="true">
                             <For
                                 each=move || edge.get().map(|status| {
-                                    let delivery = effective_delivery(contrib.get().as_ref(), Some(&status));
-                                    network_links(&status, &delivery)
+                                    network_links(&status)
                                 }).unwrap_or_default()
                                 key=|link| link.key.clone()
                                 children=move |link| {
@@ -701,7 +713,7 @@ mod app {
                                     view! {
                                         <path
                                             class=format!("network-link {} {}", link.tone, link_role_class(&link.role))
-                                            d=map_link_path(&link.from, &link.to, &link.role)
+                                            d=link.path.clone()
                                         >
                                             <title>{title}</title>
                                         </path>
@@ -724,18 +736,18 @@ mod app {
                                 };
                                 let tone = edge.get().map(|status| cluster_health_tone(&status, &cluster)).unwrap_or("warn");
                                 let is_collector = edge.get().is_some_and(|status| {
-                                    status
-                                        .orchestration
-                                        .collector
-                                        .leader_node_id
-                                        .as_ref()
-                                        .is_some_and(|leader| cluster.nodes.iter().any(|node| &node.node_id == leader))
+                                    verified_collector_node_id(
+                                        &status.orchestration.collector,
+                                        status.updated_unix_ms,
+                                    )
+                                    .is_some_and(|leader| {
+                                        cluster.nodes.iter().any(|node| node.node_id == leader)
+                                    })
                                 });
-                                let (left, top) = project_node(&representative);
                                 view! {
                                     <button
                                         class=format!("map-node {tone} {}", if is_collector { "collector" } else { "" })
-                                        style=format!("left:{left:.3}%;top:{top:.3}%")
+                                        style=format!("left:{:.3}%;top:{:.3}%", cluster.left, cluster.top)
                                         title=format!("{} · {}", node_names, region)
                                         on:click=move |_| set_selected_node.set(Some(selected_id.clone()))
                                     >
@@ -744,13 +756,53 @@ mod app {
                                 }
                             }
                         />
-                        <div class="map-empty" class:hidden=move || edge.get().is_some_and(|status| !status.nodes.is_empty())>
+                        <div class="map-empty" class:hidden=move || edge.get().is_some_and(|status| !map_clusters(&status).is_empty())>
                             "Waiting for node coordinates"
+                        </div>
+                        <div class="map-topology-notice" class:hidden=move || !edge.get().is_some_and(|status| network_links(&status).is_empty())>
+                            "Topology links unavailable"
                         </div>
                     </div>
                     <MapNodeDetail edge selected=selected_node />
                 </div>
+                <NetworkLinkTable edge />
             </div>
+        }
+    }
+
+    #[component]
+    fn NetworkLinkTable(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
+        view! {
+            <section class="map-link-details" aria-label="Topology link details">
+                <div class="map-link-heading">
+                    <strong>"Topology links"</strong>
+                    <span>{move || edge.get().map(|status| format_map_link_scale(&status)).unwrap_or_else(|| "0 / 0".to_owned())}" shown"</span>
+                </div>
+                <div class="table-shell">
+                    <table>
+                        <thead>
+                            <tr><th>"From"</th><th>"To"</th><th>"Lane"</th><th>"State"</th><th>"RTT"</th><th>"Throughput"</th><th>"Generation"</th></tr>
+                        </thead>
+                        <tbody>
+                            <For
+                                each=move || edge.get().map(|status| network_links(&status)).unwrap_or_default()
+                                key=|link| link.key.clone()
+                                let(link)
+                            >
+                                <tr>
+                                    <td class="strong-cell">{link.from.node_id}</td>
+                                    <td class="strong-cell">{link.to.node_id}</td>
+                                    <td>{link.role}</td>
+                                    <td><StatePill state=nonempty_owned(link.state, "unreported") /></td>
+                                    <td class="mono-cell">{format_optional_duration(link.rtt_us)}</td>
+                                    <td class="mono-cell">{link.throughput_bps.map(format_bps).unwrap_or_else(|| "unreported".to_owned())}</td>
+                                    <td class="mono-cell">{optional_u64(link.generation)}</td>
+                                </tr>
+                            </For>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
         }
     }
 
@@ -775,22 +827,25 @@ mod app {
                         (Some(status), Some(node)) => {
                             let tone = node_health_tone(status, node);
                             let collector = &status.orchestration.collector;
+                            let collector_current =
+                                collector_is_current(collector, status.updated_unix_ms);
                             let cluster_size = status
                                 .nodes
                                 .iter()
-                                .filter(|candidate| {
-                                    (candidate.latitude - node.latitude).abs() < 0.001
-                                        && (candidate.longitude - node.longitude).abs() < 0.001
-                                })
+                                .filter(|candidate| same_node_location(candidate, node))
                                 .count();
-                            let collector_role = if collector
+                            let reported_leader = collector
                                 .leader_node_id
                                 .as_ref()
-                                .is_some_and(|leader| leader == &node.node_id)
-                            {
+                                .is_some_and(|leader| leader == &node.node_id);
+                            let collector_role = if collector_current && reported_leader {
                                 "Active collector"
-                            } else if collector.reported() {
+                            } else if reported_leader {
+                                "Reported leader · unverified"
+                            } else if collector_current {
                                 "Follower"
+                            } else if collector.reported() {
+                                "Election state unverified"
                             } else {
                                 "Unreported"
                             };
@@ -808,7 +863,7 @@ mod app {
                                         <div><dt>"Role"</dt><dd>{nonempty_owned(node.role.clone(), "unreported")}</dd></div>
                                         <div><dt>"Provider / zone"</dt><dd>{format!("{} / {}", nonempty_owned(node.provider.clone(), "unreported"), nonempty_owned(node.zone.clone(), "unreported"))}</dd></div>
                                         <div><dt>"Nodes at location"</dt><dd>{cluster_size}</dd></div>
-                                        <div><dt>"Location"</dt><dd>{format!("{:.3}, {:.3}", node.latitude, node.longitude)}</dd></div>
+                                        <div><dt>"Location"</dt><dd>{format_node_location(node)}</dd></div>
                                         <div><dt>"Snapshot"</dt><dd>{node_snapshot_label(status, node)}</dd></div>
                                         <div><dt>"Active streams"</dt><dd>{node.active_streams}</dd></div>
                                         <div><dt>"Contributor streams"</dt><dd>{node.contributor_streams}</dd></div>
@@ -881,38 +936,35 @@ mod app {
                     <span>"Relay ingress errors"</span>
                     <b>{move || edge.get().map(|s| s.relay_session.errors().to_string()).unwrap_or_else(|| "—".to_owned())}</b>
                     <span>"Remote node snapshots"</span>
-                    <b>{move || edge.get().map(|s| format!("{} current / {} stale", s.telemetry.fresh_remote_count, s.telemetry.stale_remote_count)).unwrap_or_else(|| "—".to_owned())}</b>
+                    <b>{move || format_global_snapshot_freshness(edge.get().as_ref())}</b>
                 </div>
             </article>
         }
     }
 
     #[component]
-    fn RouteAssignmentSummary(
-        contrib: ReadSignal<Option<ContribStatus>>,
-        edge: ReadSignal<Option<MeshStatus>>,
-    ) -> impl IntoView {
+    fn RouteAssignmentSummary(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <article class="hero-card delivery">
                 <p class="card-label">"Relay topology"</p>
                 <div class="hero-value">
                     <strong>{move || {
-                        let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
+                        let delivery = effective_delivery(edge.get().as_ref());
                         delivery.fabric_label().unwrap_or("Topology not reported")
                     }}</strong>
                 </div>
                 <div class="detail-row">
                     <span>"Delivery class"</span>
-                    <b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).delivery_class.unwrap_or_else(|| "pending".to_owned())}</b>
+                    <b>{move || effective_delivery(edge.get().as_ref()).delivery_class.unwrap_or_else(|| "pending".to_owned())}</b>
                 </div>
                 <div class="detail-row">
                     <span>"Generation"</span>
-                    <b>{move || optional_u64(effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).generation)}</b>
+                    <b>{move || optional_u64(effective_delivery(edge.get().as_ref()).generation)}</b>
                 </div>
                 <div class="detail-row">
                     <span>"Route state"</span>
                     <b>{move || {
-                        let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
+                        let delivery = effective_delivery(edge.get().as_ref());
                         delivery
                             .route_state
                             .clone()
@@ -921,7 +973,7 @@ mod app {
                 </div>
                 <div class="detail-row">
                     <span>"Path stretch"</span>
-                    <b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).path_stretch.map(|value| format!("{value:.2}×")).unwrap_or_else(|| "pending".to_owned())}</b>
+                    <b>{move || effective_delivery(edge.get().as_ref()).path_stretch.map(|value| format!("{value:.2}×")).unwrap_or_else(|| "pending".to_owned())}</b>
                 </div>
             </article>
         }
@@ -1005,7 +1057,7 @@ mod app {
                 <strong>{move || contrib.get().and_then(|s| s.mesh.relay_primary_target).unwrap_or_else(|| "Awaiting route".to_owned())}</strong>
                 <span>{move || contrib.get().map(|s| {
                     let carrier = s.mesh.relay_carrier.unwrap_or_else(|| "carrier pending".to_owned());
-                    let trust = trust_label(s.mesh.relay_trust.as_deref(), Some(&carrier));
+                    let trust = trust_label(s.mesh.relay_trust.as_deref());
                     format!("{carrier} · {trust}")
                 }).unwrap_or_else(|| "carrier telemetry pending".to_owned())}</span>
                 <small>{move || contrib.get().map(|s| format!("{} source symbols · {}", s.runtime.relay_session.source_datagrams, s.mesh.relay_primary_bind.unwrap_or_else(|| "automatic bind".to_owned()))).unwrap_or_default()}</small>
@@ -1018,9 +1070,9 @@ mod app {
         view! {
             <article class=move || format!("lane-card repair {}", contrib.get().map(|s| if s.mesh.relay_secondary_configured { "healthy" } else { "warn" }).unwrap_or("warn"))>
                 <div class="lane-index">"02B"</div>
-                <p>{move || contrib.get().map(|s| if s.mesh.relay_secondary_configured { "Warm-secondary repair lane" } else { "Primary repair fallback" }).unwrap_or("Repair lane")}</p>
-                <strong>{move || contrib.get().and_then(|s| s.mesh.relay_secondary_target).or_else(|| contrib.get().and_then(|s| s.mesh.relay_primary_target)).unwrap_or_else(|| "Warm path pending".to_owned())}</strong>
-                <span>{move || contrib.get().map(|s| if s.mesh.relay_secondary_configured { "repair path configured; independence telemetry pending" } else { "repair shares the primary carrier" }).unwrap_or("route telemetry pending")}</span>
+                <p>"Warm-secondary repair lane"</p>
+                <strong>{move || contrib.get().and_then(|s| s.mesh.relay_secondary_target).unwrap_or_else(|| "Warm path unavailable".to_owned())}</strong>
+                <span>{move || contrib.get().map(|s| if s.mesh.relay_secondary_configured { "repair path configured; independence telemetry pending" } else { "repair path not reported" }).unwrap_or("route telemetry pending")}</span>
                 <small>{move || contrib.get().map(|s| format!("{} repair symbols · {} fallback objects", s.runtime.relay_session.repair_datagrams, s.runtime.relay_session.repair_primary_fallback_objects)).unwrap_or_default()}</small>
             </article>
         }
@@ -1048,8 +1100,8 @@ mod app {
             <section class="data-panel publication-panel">
                 <SectionHeading kicker="PUBLICATION" title="Contiguous object progress" detail="Contributor and edge commit watermarks." />
                 <div class="watermark-grid">
-                    <Watermark title="Contributor" publication=move || contrib.get().as_ref().map(publication_from_contrib).unwrap_or_default() />
-                    <Watermark title="Playback edge" publication=move || edge.get().as_ref().map(publication_from_edge).unwrap_or_default() />
+                    <Watermark title="Contributor" publication=move || contrib.get().map(|status| status.publication).unwrap_or_default() />
+                    <Watermark title="Playback edge" publication=move || edge.get().map(|status| status.publication).unwrap_or_default() />
                 </div>
             </section>
         }
@@ -1084,8 +1136,8 @@ mod app {
                 <div class="summary-metrics four">
                     <SmallMetric label="Contributor streams" value=move || contrib.get().map(|s| s.runtime.streams.len().to_string()).unwrap_or_else(|| "—".to_owned()) />
                     <SmallMetric label="Active delivery streams" value=move || edge.get().map(|s| s.aggregate.active_streams.to_string()).unwrap_or_else(|| "—".to_owned()) />
-                    <SmallMetric label="Latest fMP4" value=move || contrib.get().and_then(|s| publication_from_contrib(&s).head_object).map(|v| v.to_string()).unwrap_or_else(|| "pending".to_owned()) />
-                    <SmallMetric label="Known edge gaps" value=move || edge.get().and_then(|s| publication_from_edge(&s).gap_count).map(|v| v.to_string()).unwrap_or_else(|| "pending".to_owned()) />
+                    <SmallMetric label="Latest fMP4" value=move || contrib.get().and_then(|status| status.publication.head_object).map(|v| v.to_string()).unwrap_or_else(|| "pending".to_owned()) />
+                    <SmallMetric label="Known edge gaps" value=move || edge.get().and_then(|status| status.publication.gap_count).map(|v| v.to_string()).unwrap_or_else(|| "pending".to_owned()) />
                 </div>
             </section>
         }
@@ -1304,10 +1356,10 @@ mod app {
     fn FleetSummary(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <div class="summary-grid">
-                <SummaryCard label="Visible nodes" value=move || edge.get().map(|s| s.aggregate.node_count.max(s.nodes.len()).to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} current · {} stale snapshots", s.telemetry.fresh_remote_count.saturating_add(1), s.telemetry.stale_remote_count)).unwrap_or_else(|| "telemetry opening".to_owned()) />
+                <SummaryCard label="Visible nodes" value=move || edge.get().map(|s| s.nodes.len().to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || format_global_snapshot_freshness(edge.get().as_ref()) />
                 <SummaryCard label="Active streams" value=move || edge.get().map(|s| s.aggregate.active_streams.to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} contributor-origin streams", s.aggregate.contributor_streams)).unwrap_or_else(|| "telemetry opening".to_owned()) />
                 <SummaryCard label="Active readers" value=move || edge.get().map(|s| s.edge_services.iter().map(|service| service.active_readers).sum::<u64>().to_string()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} edge responses", s.edge_services.iter().map(|service| service.responses_total).sum::<u64>())).unwrap_or_else(|| "telemetry opening".to_owned()) />
-                <SummaryCard label="Control dispatch" value=move || edge.get().map(|s| if s.orchestration.control_dispatch_ready { "enabled" } else { "disabled" }.to_owned()).unwrap_or_else(|| "—".to_owned()) detail=move || edge.get().map(|s| format!("{} stale node snapshots", s.telemetry.stale_remote_count)).unwrap_or_else(|| "telemetry opening".to_owned()) />
+                <SummaryCard label="Control dispatch" value=move || edge.get().map(|s| if s.orchestration.control_dispatch_ready { "enabled" } else { "disabled" }.to_owned()).unwrap_or_else(|| "—".to_owned()) detail=move || format_global_snapshot_freshness(edge.get().as_ref()) />
             </div>
         }
     }
@@ -1323,19 +1375,23 @@ mod app {
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| {
-                                    let leader = status.orchestration.collector.leader_node_id.clone();
+                                    let leader = verified_collector_node_id(
+                                        &status.orchestration.collector,
+                                        status.updated_unix_ms,
+                                    );
                                     bounded_nodes(&status)
                                         .into_iter()
                                         .map(|node| {
                                             let is_collector = leader.as_ref().is_some_and(|id| id == &node.node_id);
-                                            (node, is_collector)
+                                            let state = node_health_label(&status, &node).to_owned();
+                                            (node, is_collector, state)
                                         })
                                         .collect::<Vec<_>>()
                                 }).unwrap_or_default()
-                                key=|(node, _)| node.node_id.clone()
+                                key=|(node, _, _)| node.node_id.clone()
                                 let(entry)
                             >
-                                <NodeRow node=entry.0 is_collector=entry.1 />
+                                <NodeRow node=entry.0 is_collector=entry.1 state=entry.2 />
                             </For>
                         </tbody>
                     </table>
@@ -1346,12 +1402,7 @@ mod app {
     }
 
     #[component]
-    fn NodeRow(node: EdgeNode, is_collector: bool) -> impl IntoView {
-        let state = if node.draining {
-            "draining"
-        } else {
-            "accepting traffic"
-        };
+    fn NodeRow(node: EdgeNode, is_collector: bool, state: String) -> impl IntoView {
         let node_id = nonempty_owned(node.node_id.clone(), "node");
         let location = format!(
             "{} · {}",
@@ -1379,7 +1430,7 @@ mod app {
                 <td class="strong-cell">{node_id}</td>
                 <td>{role}</td>
                 <td>{location}</td>
-                <td><StatePill state=state.to_owned() /></td>
+                <td><StatePill state /></td>
                 <td>{format!("{} · {} origin", node.active_streams, node.contributor_streams)}</td>
                 <td>{storage}</td>
                 <td>{format_bps(node.egress_capacity_bps)}</td>
@@ -1443,25 +1494,25 @@ mod app {
                 <article class="data-panel route-policy">
                     <PanelTitle title="Route assignment" detail="Controller assignment and measured constraints" />
                     <div class="route-assignment-value">
-                        <strong>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).fabric_label().unwrap_or("Awaiting assignment")}</strong>
+                        <strong>{move || effective_delivery(edge.get().as_ref()).fabric_label().unwrap_or("Awaiting assignment")}</strong>
                         <span
-                            class=move || format!("state-pill {}", tone_for_state(effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).readiness_label()))
+                            class=move || format!("state-pill {}", state_tone(effective_delivery(edge.get().as_ref()).readiness_label()))
                         >
-                            {move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).readiness_label()}
+                            {move || effective_delivery(edge.get().as_ref()).readiness_label()}
                         </span>
                     </div>
                     <div class="key-value-grid">
-                        <span>"Delivery class"</span><b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).delivery_class.unwrap_or_else(|| "pending".to_owned())}</b>
-                        <span>"Generation"</span><b>{move || optional_u64(effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).generation)}</b>
-                        <span>"Route state"</span><b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).route_state.unwrap_or_else(|| "pending".to_owned())}</b>
-                        <span>"Path stretch"</span><b>{move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).path_stretch.map(|value| format!("{value:.3}×")).unwrap_or_else(|| "pending".to_owned())}</b>
+                        <span>"Delivery class"</span><b>{move || effective_delivery(edge.get().as_ref()).delivery_class.unwrap_or_else(|| "pending".to_owned())}</b>
+                        <span>"Generation"</span><b>{move || optional_u64(effective_delivery(edge.get().as_ref()).generation)}</b>
+                        <span>"Route state"</span><b>{move || effective_delivery(edge.get().as_ref()).route_state.unwrap_or_else(|| "pending".to_owned())}</b>
+                        <span>"Path stretch"</span><b>{move || effective_delivery(edge.get().as_ref()).path_stretch.map(|value| format!("{value:.3}×")).unwrap_or_else(|| "pending".to_owned())}</b>
                         <span>"RaptorQ path input"</span><b>{move || contrib.get().map(|status| nonempty_owned(status.mesh.relay_path_observation_source, "pending")).unwrap_or_else(|| "pending".to_owned())}</b>
                         <span>"Path observation age"</span><b>{move || contrib.get().and_then(|status| status.mesh.relay_path_observed_at_unix_ms).map(|observed| format_age(now_unix_ms().saturating_sub(observed))).unwrap_or_else(|| "pending".to_owned())}</b>
                         <span>"Observed queue delay"</span><b>{move || contrib.get().filter(|status| status.mesh.relay_path_queue_delay_ms > 0.0).map(|status| format!("{:.2} ms", status.mesh.relay_path_queue_delay_ms)).unwrap_or_else(|| "pending".to_owned())}</b>
                     </div>
                 </article>
-                <RouteLaneCard role="Primary source" lane=move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).primary />
-                <RouteLaneCard role="Warm secondary" lane=move || effective_delivery(contrib.get().as_ref(), edge.get().as_ref()).secondary />
+                <RouteLaneCard role="Primary source" lane=move || effective_delivery(edge.get().as_ref()).primary />
+                <RouteLaneCard role="Warm secondary" lane=move || effective_delivery(edge.get().as_ref()).secondary />
             </div>
         }
     }
@@ -1489,10 +1540,7 @@ mod app {
     }
 
     #[component]
-    fn RouteTable(
-        contrib: ReadSignal<Option<ContribStatus>>,
-        edge: ReadSignal<Option<MeshStatus>>,
-    ) -> impl IntoView {
+    fn RouteTable(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <section class="data-panel table-panel">
                 <PanelTitle title="Active route inventory" detail="Bounded stream/cohort delivery assignments" />
@@ -1501,7 +1549,7 @@ mod app {
                         <thead><tr><th>"Stream / cohort"</th><th>"Fabric"</th><th>"Class"</th><th>"Generation"</th><th>"Primary"</th><th>"Warm secondary"</th><th>"Stretch"</th><th>"Readiness"</th></tr></thead>
                         <tbody>
                             <For
-                                each=move || route_rows(contrib.get().as_ref(), edge.get().as_ref())
+                                each=move || route_rows(edge.get().as_ref())
                                 key=|route| format!("{}:{}:{}", route.stream_id_text.as_deref().unwrap_or("default"), route.destination.as_deref().unwrap_or("default"), route.generation.unwrap_or_default())
                                 let(route)
                             >
@@ -1533,7 +1581,7 @@ mod app {
                         <thead><tr><th>"Node"</th><th>"Assignment"</th><th>"State"</th><th>"Parents"</th><th>"Received source / repair"</th><th>"Children"</th><th>"Forwarded source / repair"</th><th>"Failover"</th><th>"FEC recovered"</th><th>"Warm replay"</th><th>"Publish → available p95"</th><th>"Processing p95 / p99"</th><th>"Forward p95 / max"</th><th>"Errors"</th></tr></thead>
                         <tbody>
                             <For
-                                each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
+                                each=move || edge.get().map(|status| bounded_relay_nodes(&status)).unwrap_or_default()
                                 key=|node| node.node_id.clone()
                                 let(node)
                             >
@@ -1542,6 +1590,12 @@ mod app {
                         </tbody>
                     </table>
                 </div>
+                {move || edge.get().and_then(|status| {
+                    let shown = bounded_relay_nodes(&status).len();
+                    (status.relay_nodes.len() > shown).then(|| view! {
+                        <p class="table-limit-note">{format!("Showing {shown} of {} relay nodes.", status.relay_nodes.len())}</p>
+                    })
+                })}
                 {move || edge.get().is_some_and(|status| status.relay_nodes.is_empty()).then(|| view! { <p class="awaiting">"Waiting for relay-node telemetry."</p> })}
             </section>
         }
@@ -1686,7 +1740,7 @@ mod app {
                     <Metric label="Relay processing p95" value=move || edge.get().and_then(|s| s.relay_session.processing_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="per datagram receive path" />
                     <Metric label="Relay processing p99" value=move || edge.get().and_then(|s| s.relay_session.processing_percentile_us(99)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="per datagram receive path" />
                     <Metric label="Publish → edge p95" value=move || edge.get().and_then(|s| s.relay_session.publication_to_available_percentile_us(95)).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="verified cache availability" />
-                    <Metric label="Epoch activation max" value=move || edge.get().and_then(|s| publication_from_edge(&s).canonical_epoch_activation_delay_us).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="contributor incarnation → first object" />
+                    <Metric label="Epoch activation max" value=move || edge.get().and_then(|status| status.publication.canonical_epoch_activation_delay_us).map(format_duration_us).unwrap_or_else(|| "pending".to_owned()) detail="contributor incarnation → first object" />
                     <Metric label="Latency clock error" value=move || edge.get().filter(|s| s.relay_session.publication_to_available_count > 0).map(|s| format!("±{}", format_duration_us(s.relay_session.publication_clock_error_max_us))).unwrap_or_else(|| "pending".to_owned()) detail="source timestamp bound" />
                     <Metric label="Failover state" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| nonempty_owned(s.relay_session.failover_controller_state, "arming")).unwrap_or_else(|| "pending".to_owned()) detail="automatic warm-secondary control" />
                     <Metric label="Primary source age" value=move || edge.get().filter(|s| s.relay_session.failover_controller_enabled > 0).map(|s| format_age_ms(s.relay_session.failover_primary_source_age_ms)).unwrap_or_else(|| "pending".to_owned()) detail="failure detector input" />
@@ -1809,13 +1863,18 @@ mod app {
     fn RelayProcessingRows(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <For
-                each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
+                each=move || edge.with(|status| {
+                    status
+                        .as_ref()
+                        .map(bounded_relay_nodes)
+                        .unwrap_or_default()
+                })
                 key=|node| format!("relay-processing:{}:{}", node.node_id, node.region)
                 let(node)
             >
                 <RelayProcessingRow node />
             </For>
-            {move || edge.get().is_some_and(|status| status.relay_nodes.iter().all(|node| node.relay_session.processing_duration_count == 0)).then(|| view! {
+            {move || edge.with(|status| status.as_ref().is_some_and(|status| bounded_relay_nodes(status).iter().all(|node| node.relay_session.processing_duration_count == 0))).then(|| view! {
                 <p class="awaiting">"Relay processing latency is waiting for received media datagrams."</p>
             })}
         }
@@ -1851,13 +1910,18 @@ mod app {
     fn RelayAvailabilityRows(edge: ReadSignal<Option<MeshStatus>>) -> impl IntoView {
         view! {
             <For
-                each=move || edge.get().map(|status| status.relay_nodes).unwrap_or_default()
+                each=move || edge.with(|status| {
+                    status
+                        .as_ref()
+                        .map(bounded_relay_nodes)
+                        .unwrap_or_default()
+                })
                 key=|node| format!("relay-availability:{}:{}", node.node_id, node.region)
                 let(node)
             >
                 <RelayAvailabilityRow node />
             </For>
-            {move || edge.get().is_some_and(|status| status.relay_nodes.iter().all(|node| node.relay_session.publication_to_available_count == 0)).then(|| view! {
+            {move || edge.with(|status| status.as_ref().is_some_and(|status| bounded_relay_nodes(status).iter().all(|node| node.relay_session.publication_to_available_count == 0))).then(|| view! {
                 <p class="awaiting">"Publication-to-cache latency is waiting for clock-qualified canonical media."</p>
             })}
         }
@@ -1971,7 +2035,7 @@ mod app {
             EventSource::Delivery => "delivery",
         };
         view! {
-            <article class=format!("event-row {} {}", tone_for_state(&event.level), source_class)>
+            <article class=format!("event-row {} {}", state_tone(&event.level), source_class)>
                 <div class="event-meta">
                     <span>{event.source.label()}</span>
                     <b>{humanize_code(&event.code)}</b>
@@ -1990,7 +2054,7 @@ mod app {
 
     #[component]
     fn StatePill(state: String) -> impl IntoView {
-        let tone = tone_for_state(&state);
+        let tone = state_tone(&state);
         view! { <span class=format!("state-pill {tone}")>{state}</span> }
     }
 
@@ -2004,12 +2068,12 @@ mod app {
                 <div><p>"MISSING TELEMETRY"</p><h2>"Fields not reported by the current services"</h2></div>
                 <ul>
                     {move || {
-                        let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
+                        let delivery = effective_delivery(edge.get().as_ref());
                         (delivery.delivery_class.is_none() || delivery.generation.is_none() || delivery.fabric_label().is_none())
                             .then(|| view! { <li>"Delivery class, fabric, generation, and installed route state"</li> })
                     }}
                     {move || {
-                        let delivery = effective_delivery(contrib.get().as_ref(), edge.get().as_ref());
+                        let delivery = effective_delivery(edge.get().as_ref());
                         (delivery.primary.as_ref().and_then(|lane| lane.node_id.as_ref()).is_none()
                             || delivery.secondary.as_ref().and_then(|lane| lane.node_id.as_ref()).is_none()
                             || delivery.path_stretch.is_none())
@@ -2017,8 +2081,8 @@ mod app {
                     }}
                     {move || contrib.get().is_some_and(|s| s.runtime.relay_session.deadline_hits.is_none() || s.runtime.relay_session.deadline_misses.is_none()).then(|| view! { <li>"Per-object deadline hit/miss and sender expiry totals"</li> })}
                     {move || {
-                        let contributor_publication = contrib.get().as_ref().map(publication_from_contrib).unwrap_or_default();
-                        let edge_publication = edge.get().as_ref().map(publication_from_edge).unwrap_or_default();
+                        let contributor_publication = contrib.get().map(|status| status.publication).unwrap_or_default();
+                        let edge_publication = edge.get().map(|status| status.publication).unwrap_or_default();
                         (contributor_publication.contiguous_object.is_none() || contributor_publication.gap_count.is_none() || edge_publication.contiguous_object.is_none() || edge_publication.gap_count.is_none())
                             .then(|| view! { <li>"Contiguous publication watermarks and known-gap totals"</li> })
                     }}
@@ -2028,14 +2092,11 @@ mod app {
         }
     }
 
-    fn route_rows(
-        contrib: Option<&ContribStatus>,
-        edge: Option<&MeshStatus>,
-    ) -> Vec<DeliverySnapshot> {
+    fn route_rows(edge: Option<&MeshStatus>) -> Vec<DeliverySnapshot> {
         if let Some(status) = edge.filter(|status| !status.routes.is_empty()) {
             return status.routes.iter().take(12).cloned().collect();
         }
-        let delivery = effective_delivery(contrib, edge);
+        let delivery = effective_delivery(edge);
         delivery
             .has_assignment()
             .then_some(delivery)
@@ -2070,30 +2131,18 @@ mod app {
     }
 
     fn listener_detail(listener: &ListenerStatus) -> String {
-        [
-            listener.backend.as_deref(),
-            listener.profile.as_deref(),
-            listener.flow_id.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ")
-        .pipe_nonempty("standard listener")
-    }
-
-    trait NonemptyString {
-        fn pipe_nonempty(self, fallback: &str) -> String;
-    }
-
-    impl NonemptyString for String {
-        fn pipe_nonempty(self, fallback: &str) -> String {
-            if self.is_empty() {
-                fallback.to_owned()
-            } else {
-                self
-            }
-        }
+        nonempty_owned(
+            [
+                listener.backend.as_deref(),
+                listener.profile.as_deref(),
+                listener.flow_id.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · "),
+            "standard listener",
+        )
     }
 
     fn codec_summary(
@@ -2106,12 +2155,14 @@ mod app {
             (Some(width), Some(height)) => format!("{codec} {width}×{height}"),
             _ => codec.to_owned(),
         });
-        [video, audio_codec.clone()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" + ")
-            .pipe_nonempty("codec pending")
+        nonempty_owned(
+            [video, audio_codec.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" + "),
+            "codec pending",
+        )
     }
 
     fn edge_stream_state(stale: Option<bool>, lag: Option<u64>) -> String {
@@ -2250,121 +2301,95 @@ mod app {
             .join(" ")
     }
 
-    fn network_links(status: &MeshStatus, delivery: &DeliverySnapshot) -> Vec<NetworkLink> {
+    fn network_links(status: &MeshStatus) -> Vec<NetworkLink> {
         let nodes = bounded_nodes(status);
-        if !status.topology_links.is_empty() {
-            return status
-                .topology_links
-                .iter()
-                .take(64)
-                .filter_map(|link| {
-                    let from = nodes
-                        .iter()
-                        .find(|node| node.node_id == link.from_node_id)?;
-                    let to = nodes.iter().find(|node| node.node_id == link.to_node_id)?;
-                    (from.node_id != to.node_id).then(|| NetworkLink {
-                        key: format!("{}:{}:{}", link.role, from.node_id, to.node_id),
-                        from: from.clone(),
-                        to: to.clone(),
-                        role: nonempty_owned(link.role.clone(), "Topology link"),
-                        tone: worst_tone(
-                            tone_for_state(&link.state),
-                            worst_tone(
-                                node_health_tone(status, from),
-                                node_health_tone(status, to),
-                            ),
-                        ),
-                        throughput_bps: link.throughput_bps,
-                        rtt_us: link.rtt_us,
-                        generation: link.generation,
-                    })
+        status
+            .topology_links
+            .iter()
+            .take(64)
+            .enumerate()
+            .filter_map(|(index, link)| {
+                let from = nodes
+                    .iter()
+                    .find(|node| node.node_id == link.from_node_id)?;
+                let to = nodes.iter().find(|node| node.node_id == link.to_node_id)?;
+                if from.node_id == to.node_id {
+                    return None;
+                }
+                let path = map_link_path(from, to, &link.role)?;
+                Some(NetworkLink {
+                    key: format!(
+                        "{}:{}:{}:{}:{}",
+                        link.role,
+                        from.node_id,
+                        to.node_id,
+                        link.generation.unwrap_or_default(),
+                        index
+                    ),
+                    from: from.clone(),
+                    to: to.clone(),
+                    role: nonempty_owned(link.role.clone(), "Topology link"),
+                    state: link.state.clone(),
+                    tone: worst_tone(
+                        state_tone(&link.state),
+                        worst_tone(node_health_tone(status, from), node_health_tone(status, to)),
+                    ),
+                    throughput_bps: link.throughput_bps,
+                    rtt_us: link.rtt_us,
+                    generation: link.generation,
+                    path,
                 })
-                .collect();
-        }
-        let destination = delivery
-            .destination
-            .as_deref()
-            .and_then(|id| nodes.iter().find(|node| node.node_id == id))
-            .or_else(|| {
-                nodes
-                    .iter()
-                    .find(|node| node.node_id == status.node.node_id)
             })
-            .or_else(|| nodes.first())
-            .cloned();
-        let Some(destination) = destination else {
-            return Vec::new();
-        };
-
-        let mut links = Vec::new();
-        for (role, lane) in [
-            ("Primary source", delivery.primary.as_ref()),
-            ("Warm repair", delivery.secondary.as_ref()),
-        ] {
-            let Some((lane, source)) = lane.and_then(|lane| {
-                let id = lane.node_id.as_deref()?;
-                nodes
-                    .iter()
-                    .find(|node| node.node_id == id)
-                    .map(|node| (lane, node))
-            }) else {
-                continue;
-            };
-            if source.node_id == destination.node_id {
-                continue;
-            }
-            links.push(NetworkLink {
-                key: format!("{role}:{}:{}", source.node_id, destination.node_id),
-                from: source.clone(),
-                to: destination.clone(),
-                role: role.to_owned(),
-                tone: worst_tone(
-                    lane.state.as_deref().map(tone_for_state).unwrap_or("warn"),
-                    node_health_tone(status, source),
-                ),
-                throughput_bps: None,
-                rtt_us: lane.rtt_us,
-                generation: delivery.generation,
-            });
-        }
-
-        if links.is_empty() {
-            links.extend(
-                nodes
-                    .iter()
-                    .filter(|node| node.node_id != destination.node_id)
-                    .map(|node| NetworkLink {
-                        key: format!("mesh:{}:{}", node.node_id, destination.node_id),
-                        from: node.clone(),
-                        to: destination.clone(),
-                        role: "Mesh link".to_owned(),
-                        tone: node_health_tone(status, node),
-                        throughput_bps: None,
-                        rtt_us: None,
-                        generation: delivery.generation,
-                    }),
-            );
-        }
-        links
+            .collect()
     }
 
-    fn project_node(node: &EdgeNode) -> (f64, f64) {
-        let longitude = node.longitude.clamp(-180.0, 180.0);
-        let latitude = node.latitude.clamp(-90.0, 90.0);
-        (
-            (longitude + 180.0) / 360.0 * 100.0,
-            (90.0 - latitude) / 180.0 * 100.0,
+    fn format_map_node_scale(status: &MeshStatus) -> String {
+        let shown = map_clusters(status)
+            .iter()
+            .map(|cluster| cluster.nodes.len())
+            .sum::<usize>();
+        let total = status.nodes.len().max(status.aggregate.node_count);
+        format!("{shown} / {total}")
+    }
+
+    fn format_map_link_scale(status: &MeshStatus) -> String {
+        format!(
+            "{} / {}",
+            network_links(status).len(),
+            status.topology_links.len()
         )
     }
 
-    fn map_link_path(from: &EdgeNode, to: &EdgeNode, role: &str) -> String {
-        let (from_x, from_y) = project_node(from);
-        let (to_x, to_y) = project_node(to);
+    fn node_coordinates(node: &EdgeNode) -> Option<(f64, f64)> {
+        let latitude = node.latitude?;
+        let longitude = node.longitude?;
+        (latitude.is_finite()
+            && longitude.is_finite()
+            && (-90.0..=90.0).contains(&latitude)
+            && (-180.0..=180.0).contains(&longitude))
+        .then_some((latitude, longitude))
+    }
+
+    fn project_node(node: &EdgeNode) -> Option<(f64, f64)> {
+        let (latitude, longitude) = node_coordinates(node)?;
+        Some((
+            (longitude + 180.0) / 360.0 * 100.0,
+            (90.0 - latitude) / 180.0 * 100.0,
+        ))
+    }
+
+    fn map_link_path(from: &EdgeNode, to: &EdgeNode, role: &str) -> Option<String> {
+        let (from_x, from_y) = project_node(from)?;
+        let (to_x, to_y) = project_node(to)?;
         if (from_x - to_x).abs() < 0.01 && (from_y - to_y).abs() < 0.01 {
             let x = from_x * 10.0;
             let y = from_y * 5.0;
-            let direction = if role.contains("Warm") { 1.0 } else { -1.0 };
-            return format!(
+            let direction = if link_role_class(role) == "warm" {
+                1.0
+            } else {
+                -1.0
+            };
+            return Some(format!(
                 "M {:.2} {:.2} C {:.2} {:.2}, {:.2} {:.2}, {:.2} {:.2}",
                 x - 16.0,
                 y,
@@ -2374,7 +2399,7 @@ mod app {
                 y + 34.0 * direction,
                 x + 16.0,
                 y
-            );
+            ));
         }
         let from_x = from_x * 10.0;
         let from_y = from_y * 5.0;
@@ -2384,17 +2409,16 @@ mod app {
         let dy = to_y - from_y;
         let distance = (dx * dx + dy * dy).sqrt().max(1.0);
         let bend = (distance * 0.12).clamp(10.0, 42.0);
-        let direction = if role.to_ascii_lowercase().contains("warm")
-            || role.to_ascii_lowercase().contains("secondary")
-            || role.to_ascii_lowercase().contains("repair")
-        {
+        let direction = if link_role_class(role) == "warm" {
             -1.0
         } else {
             1.0
         };
         let control_x = (from_x + to_x) / 2.0 - dy / distance * bend * direction;
         let control_y = (from_y + to_y) / 2.0 + dx / distance * bend * direction;
-        format!("M {from_x:.2} {from_y:.2} Q {control_x:.2} {control_y:.2} {to_x:.2} {to_y:.2}")
+        Some(format!(
+            "M {from_x:.2} {from_y:.2} Q {control_x:.2} {control_y:.2} {to_x:.2} {to_y:.2}"
+        ))
     }
 
     fn format_network_link_title(link: &NetworkLink) -> String {
@@ -2426,7 +2450,12 @@ mod app {
     }
 
     fn node_health_tone(status: &MeshStatus, node: &EdgeNode) -> &'static str {
-        if status
+        let snapshot_tone = match snapshot_age_ms(status.updated_unix_ms) {
+            None => "error",
+            Some(age) if age > SNAPSHOT_STALE_AFTER_MS => "warn",
+            Some(_) => "healthy",
+        };
+        let node_tone = if status
             .telemetry
             .stale_nodes
             .iter()
@@ -2444,11 +2473,25 @@ mod app {
         {
             relay_health_tone(&relay.relay_session)
         } else {
-            "healthy"
-        }
+            "error"
+        };
+        worst_tone(snapshot_tone, node_tone)
     }
 
     fn node_health_label(status: &MeshStatus, node: &EdgeNode) -> &'static str {
+        if status
+            .telemetry
+            .stale_nodes
+            .iter()
+            .any(|stale| stale.node_id == node.node_id)
+        {
+            return "Stale";
+        }
+        match snapshot_age_ms(status.updated_unix_ms) {
+            None => return "Unavailable",
+            Some(age) if age > SNAPSHOT_STALE_AFTER_MS => return "Stale",
+            Some(_) => {}
+        }
         match node_health_tone(status, node) {
             "error" => "Unavailable",
             "warn" => "Degraded",
@@ -2504,17 +2547,41 @@ mod app {
     fn map_clusters(status: &MeshStatus) -> Vec<MapCluster> {
         let mut clusters = Vec::<MapCluster>::new();
         for node in bounded_nodes(status) {
-            let key = format!("{:.3}:{:.3}", node.latitude, node.longitude);
+            let Some((latitude, longitude)) = node_coordinates(&node) else {
+                continue;
+            };
+            let Some((left, top)) = project_node(&node) else {
+                continue;
+            };
+            let key = format!("{latitude:.3}:{longitude:.3}");
             if let Some(cluster) = clusters.iter_mut().find(|cluster| cluster.key == key) {
                 cluster.nodes.push(node);
             } else {
                 clusters.push(MapCluster {
                     key,
                     nodes: vec![node],
+                    left,
+                    top,
                 });
             }
         }
         clusters
+    }
+
+    fn same_node_location(left: &EdgeNode, right: &EdgeNode) -> bool {
+        match (node_coordinates(left), node_coordinates(right)) {
+            (Some((left_latitude, left_longitude)), Some((right_latitude, right_longitude))) => {
+                (left_latitude - right_latitude).abs() < 0.001
+                    && (left_longitude - right_longitude).abs() < 0.001
+            }
+            _ => false,
+        }
+    }
+
+    fn format_node_location(node: &EdgeNode) -> String {
+        node_coordinates(node)
+            .map(|(latitude, longitude)| format!("{latitude:.3}, {longitude:.3}"))
+            .unwrap_or_else(|| "unreported".to_owned())
     }
 
     fn cluster_health_tone(status: &MeshStatus, cluster: &MapCluster) -> &'static str {
@@ -2523,46 +2590,55 @@ mod app {
         })
     }
 
-    async fn fetch_json<T: DeserializeOwned>(url: &str) -> Result<T, String> {
+    async fn fetch_mesh_snapshot(url: &str) -> Result<MeshStatus, String> {
+        let controller = web_sys::AbortController::new()
+            .map_err(|_| "feed request: browser abort control unavailable".to_owned())?;
+        let signal = controller.signal();
+        let abort_controller = controller.clone();
+        let timeout = Timeout::new(FETCH_TIMEOUT_MS, move || abort_controller.abort());
         let response = Request::get(url)
             .header("accept", "application/json")
+            .abort_signal(Some(&signal))
             .send()
             .await
             .map_err(|error| format!("feed request: {error}"))?;
         if !response.ok() {
             return Err(format!("feed returned HTTP {}", response.status()));
         }
-        response
-            .json::<T>()
-            .await
-            .map_err(|error| format!("snapshot decode: {error}"))
-    }
-
-    fn endpoint_from_query(name: &str, fallback: &str) -> String {
-        web_sys::window()
-            .and_then(|window| window.location().search().ok())
-            .and_then(|search| web_sys::UrlSearchParams::new_with_str(&search).ok())
-            .and_then(|params| params.get(name))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| fallback.to_owned())
-    }
-
-    fn default_contrib_api() -> &'static str {
-        let public_host = web_sys::window()
-            .and_then(|window| window.location().hostname().ok())
-            .is_some_and(|hostname| hostname == PUBLIC_OPERATIONS_HOST);
-        if public_host {
-            PUBLIC_CONTRIB_API
-        } else {
-            DEFAULT_CONTRIB_API
+        if let Some(length) = response.headers().get("content-length") {
+            let length = length
+                .parse::<usize>()
+                .map_err(|_| "feed returned an invalid content-length".to_owned())?;
+            if length > MAX_SNAPSHOT_BYTES {
+                return Err(format!(
+                    "snapshot exceeds the {} byte limit",
+                    MAX_SNAPSHOT_BYTES
+                ));
+            }
         }
+        let bytes = response
+            .binary()
+            .await
+            .map_err(|error| format!("snapshot body: {error}"))?;
+        if bytes.len() > MAX_SNAPSHOT_BYTES {
+            return Err(format!(
+                "snapshot exceeds the {} byte limit",
+                MAX_SNAPSHOT_BYTES
+            ));
+        }
+        let snapshot = serde_json::from_slice::<MeshStatus>(&bytes)
+            .map_err(|error| format!("snapshot decode: {error}"))?;
+        drop(timeout);
+        if snapshot.schema != OPERATIONS_SNAPSHOT_SCHEMA {
+            return Err(format!(
+                "snapshot schema unsupported: expected {OPERATIONS_SNAPSHOT_SCHEMA}"
+            ));
+        }
+        Ok(snapshot)
     }
 
-    fn trust_label<'a>(trust: Option<&'a str>, carrier: Option<&str>) -> &'a str {
-        trust.unwrap_or(match carrier {
-            Some("private-udp") => "controlled network",
-            _ => "trust profile pending",
-        })
+    fn trust_label(trust: Option<&str>) -> &str {
+        trust.unwrap_or("trust profile pending")
     }
 
     fn actionable_alert_count(contrib: Option<&ContribStatus>, edge: Option<&MeshStatus>) -> usize {
@@ -2585,48 +2661,64 @@ mod app {
             .count()
     }
 
-    fn tone_for_state(state: &str) -> &'static str {
-        match state.to_ascii_lowercase().as_str() {
-            "healthy"
-            | "active"
-            | "ready"
-            | "current"
-            | "publishing"
-            | "listening"
-            | "compiled"
-            | "installed"
-            | "accepting traffic"
-            | "serving"
-            | "sessions established"
-            | "active source"
-            | "warm repair" => "healthy",
-            "attention" | "degraded" | "stale" | "stalled" | "error" | "lagging" | "failed" => {
-                "error"
-            }
-            _ => "warn",
-        }
+    fn effective_collector_lease_ms(
+        collector: &OperationsCollectorStatus,
+        snapshot_unix_ms: u64,
+    ) -> Option<u64> {
+        let snapshot_age_ms = snapshot_age_ms(snapshot_unix_ms)?;
+        collector
+            .lease_remaining_ms
+            .map(|lease| lease.saturating_sub(snapshot_age_ms))
     }
 
-    fn collector_tone(collector: &OperationsCollectorStatus) -> &'static str {
+    fn collector_is_current(collector: &OperationsCollectorStatus, snapshot_unix_ms: u64) -> bool {
+        collector.has_committed_live_lease()
+            && effective_collector_lease_ms(collector, snapshot_unix_ms)
+                .is_some_and(|lease| lease > 0)
+            && snapshot_age_ms(snapshot_unix_ms).is_some_and(|age| age <= SNAPSHOT_STALE_AFTER_MS)
+    }
+
+    fn verified_collector_node_id(
+        collector: &OperationsCollectorStatus,
+        snapshot_unix_ms: u64,
+    ) -> Option<String> {
+        collector_is_current(collector, snapshot_unix_ms)
+            .then(|| collector.leader_node_id.clone())
+            .flatten()
+    }
+
+    fn collector_tone(
+        collector: &OperationsCollectorStatus,
+        snapshot_unix_ms: u64,
+    ) -> &'static str {
+        let effective_lease_ms = effective_collector_lease_ms(collector, snapshot_unix_ms);
         if !collector.reported() {
             "warn"
-        } else if collector.quorum_healthy == Some(false) || collector.lease_remaining_ms == Some(0)
-        {
+        } else if collector.quorum_healthy == Some(false) || effective_lease_ms == Some(0) {
             "error"
-        } else if collector.quorum_healthy == Some(true) && collector.leader_node_id.is_some() {
+        } else if collector_is_current(collector, snapshot_unix_ms) {
             "healthy"
         } else {
             "warn"
         }
     }
 
-    fn collector_state_label(collector: &OperationsCollectorStatus) -> String {
+    fn collector_state_label(
+        collector: &OperationsCollectorStatus,
+        snapshot_unix_ms: u64,
+    ) -> String {
+        let snapshot_age_ms = snapshot_age_ms(snapshot_unix_ms);
+        let effective_lease_ms = effective_collector_lease_ms(collector, snapshot_unix_ms);
         if !collector.reported() {
             "Election telemetry unavailable".to_owned()
         } else if collector.quorum_healthy == Some(false) {
             "Quorum unavailable — collector fenced".to_owned()
-        } else if collector.lease_remaining_ms == Some(0) {
+        } else if effective_lease_ms == Some(0) {
             "Collector lease expired".to_owned()
+        } else if snapshot_age_ms.is_none_or(|age| age > SNAPSHOT_STALE_AFTER_MS) {
+            "Collector proof stale".to_owned()
+        } else if !collector.has_committed_live_lease() {
+            "Election proof incomplete".to_owned()
         } else {
             match collector.role.to_ascii_lowercase().as_str() {
                 "leader" | "collector" => "Collecting global snapshots".to_owned(),
@@ -2694,11 +2786,7 @@ mod app {
             (Some(current), Some(stale), Some(awaiting)) => {
                 format!("{current} current · {stale} stale · {awaiting} awaiting")
             }
-            _ => format!(
-                "{} current · {} stale",
-                status.telemetry.fresh_remote_count.saturating_add(1),
-                status.telemetry.stale_remote_count
-            ),
+            _ => "fleet freshness unavailable".to_owned(),
         }
     }
 
@@ -2787,20 +2875,29 @@ mod app {
     }
 
     fn humanize_code(code: &str) -> String {
-        code.trim_start_matches("mesh_")
-            .replace('_', " ")
-            .pipe_nonempty("service event")
+        nonempty_owned(
+            code.trim_start_matches("mesh_").replace('_', " "),
+            "service event",
+        )
     }
 
     fn nonempty_owned(value: String, fallback: &str) -> String {
-        value.pipe_nonempty(fallback)
+        if value.is_empty() {
+            fallback.to_owned()
+        } else {
+            value
+        }
     }
 
     fn now_unix_ms() -> u64 {
         js_sys::Date::now().max(0.0) as u64
     }
 
-    const _: usize = MAX_EVENT_ROWS;
+    fn snapshot_age_ms(snapshot_unix_ms: u64) -> Option<u64> {
+        let now = now_unix_ms();
+        (snapshot_unix_ms > 0 && snapshot_unix_ms <= now.saturating_add(SNAPSHOT_CLOCK_SKEW_MS))
+            .then_some(now.saturating_sub(snapshot_unix_ms))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2810,5 +2907,5 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    println!("Needletail operations dashboard builds for wasm32-unknown-unknown");
+    println!("Needletail Operations builds for wasm32-unknown-unknown");
 }

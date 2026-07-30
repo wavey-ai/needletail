@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DURATION_SECONDS="${DURATION_SECONDS:-600}"
-TEST_SCOPES="${TEST_SCOPES:-${TEST_SCOPE:-mesh,playback}}"
+TEST_SCOPES="${TEST_SCOPES:-mesh,playback}"
 RUN_PREFIX="${RUN_PREFIX:-$(date -u '+%Y%m%dT%H%M%SZ')-multicloud-lossless}"
 IFS=',' read -r -a scopes <<<"${TEST_SCOPES}"
 

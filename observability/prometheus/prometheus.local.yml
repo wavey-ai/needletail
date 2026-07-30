@@ -30,3 +30,4 @@ scrape_configs:
       - targets:
           - host.docker.internal:19444
           - host.docker.internal:19445
+          - host.docker.internal:19446

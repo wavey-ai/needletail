@@ -2,17 +2,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${ROOT}/scripts/qualification-config.sh"
 ACTION="${1:-status}"
 
-PROJECT="${GCP_PROJECT:-steadfast-slate-498623-r2}"
+PROJECT="${GCP_PROJECT:-}"
 NETWORK="${NEEDLETAIL_GCP_NETWORK:-needletail-qualification}"
 MAX_RUN_DURATION="${NEEDLETAIL_GCP_MAX_RUN_DURATION:-6h}"
-AZ_BIN="${AZ_BIN:-/opt/homebrew/bin/az}"
-AZURE_GROUP="${AZURE_GROUP:-nt-global-pcm-20260727}"
+AZ_BIN="${AZ_BIN:-az}"
+AZURE_GROUP="${AZURE_GROUP:-}"
+AZURE_ADMIN_USERNAME="${AZURE_ADMIN_USERNAME:-needletail-admin}"
 AZURE_VM_SIZE="${AZURE_VM_SIZE:-Standard_D2s_v5}"
 AZURE_ROCKY_IMAGE="${AZURE_ROCKY_IMAGE:-/CommunityGalleries/rocky-dc1c6aa6-905b-4d9c-9577-63ccc28c482a/Images/Rocky-9-x86_64/Versions/9.4.20240509}"
 AZURE_ACCEPT_ROCKY_TERMS="${AZURE_ACCEPT_ROCKY_TERMS:-0}"
 AZURE_SSH_PUBLIC_KEY="${AZURE_SSH_PUBLIC_KEY:-${ROOT}/target/multicloud-qualification/ssh/azure_ed25519.pub}"
+AZURE_GROUP_SCOPE=multicloud-qualification-v1
 OPERATOR_IPV4="${NEEDLETAIL_OPERATOR_IPV4:-}"
 INVENTORY="${ROOT}/target/multicloud-qualification/lab-inventory.json"
 
@@ -25,7 +28,30 @@ qualification. Re-running `up` reuses matching resources. GCP instances delete
 themselves after six hours by default; Azure VMs receive a six-hour automatic
 shutdown schedule. `down` deletes the ten VMs and the Azure resource group but
 retains the GCP network and reserved addresses.
+
+Set GCP_PROJECT and AZURE_GROUP explicitly. AZ_BIN may select a non-PATH Azure
+CLI executable. AZURE_ADMIN_USERNAME selects the Azure login account and
+defaults to needletail-admin; needletail is reserved for the service account.
+An existing Azure resource group is reused or deleted only when its Needletail
+ownership tags exactly match this lab.
 EOF
+}
+
+require_provider_context() {
+  [[ -n "${PROJECT}" ]] || {
+    echo "GCP_PROJECT is required" >&2
+    exit 2
+  }
+  [[ -n "${AZURE_GROUP}" ]] || {
+    echo "AZURE_GROUP is required" >&2
+    exit 2
+  }
+  command -v "${AZ_BIN}" >/dev/null 2>&1 || {
+    echo "Azure CLI not found: ${AZ_BIN}" >&2
+    exit 2
+  }
+  needletail_require_azure_admin_username \
+    AZURE_ADMIN_USERNAME "${AZURE_ADMIN_USERNAME}"
 }
 
 exists() {
@@ -99,18 +125,49 @@ ensure_gcp_instance() {
 
   if exists gcloud compute instances describe "${name}" \
     --zone="${zone}" --project="${PROJECT}" --quiet; then
-    local existing
-    existing="$(
+    local existing_json existing_status expected_address
+    existing_json="$(
       gcloud compute instances describe "${name}" \
         --zone="${zone}" \
         --project="${PROJECT}" \
-        --format='value(labels.os,machineType.basename())' \
+        --format=json \
         --quiet
     )"
-    if [[ "${existing}" != $'rocky9\t'"${machine_type}" ]]; then
-      echo "${name} exists with ${existing}; run lab.sh down before changing its image or size" >&2
+    expected_address="$(gcp_address "${address_name}" "${region}")"
+    if ! jq -e \
+      --arg machine_type "${machine_type}" \
+      --arg private_ip "${private_ip}" \
+      --arg public_ip "${expected_address}" \
+      --arg role "${role}" \
+      --arg subnet "${subnet}" \
+      '
+        .labels.product == "needletail"
+        and .labels.purpose == "multicloud-qualification"
+        and .labels.os == "rocky9"
+        and .labels.role == $role
+        and (.machineType | endswith("/" + $machine_type))
+        and (.tags.items // [] | index("needletail-qualification") != null)
+        and (.networkInterfaces | length == 1)
+        and .networkInterfaces[0].networkIP == $private_ip
+        and (.networkInterfaces[0].subnetwork | endswith("/" + $subnet))
+        and .networkInterfaces[0].accessConfigs[0].natIP == $public_ip
+        and ((.serviceAccounts // []) | length == 0)
+      ' <<<"${existing_json}" >/dev/null; then
+      echo "${name} exists with different ownership, size, network, address, role, or OS metadata; run lab.sh down before reusing it" >&2
       exit 2
     fi
+    existing_status="$(jq -r '.status // "UNKNOWN"' <<<"${existing_json}")"
+    case "${existing_status}" in
+      RUNNING) ;;
+      TERMINATED)
+        gcloud compute instances start "${name}" \
+          --zone="${zone}" --project="${PROJECT}" --quiet
+        ;;
+      *)
+        echo "${name} is in unexpected GCP state ${existing_status}; wait for it to settle or run lab.sh down" >&2
+        exit 2
+        ;;
+    esac
     return
   fi
 
@@ -209,18 +266,98 @@ ensure_azure_vm() {
 
   if exists "${AZ_BIN}" vm show \
     --resource-group "${AZURE_GROUP}" --name="${name}"; then
-    local existing
-    existing="$(
+    local existing_json nic_json power_state
+    existing_json="$(
       "${AZ_BIN}" vm show \
         --resource-group "${AZURE_GROUP}" \
         --name="${name}" \
-        --query='[tags.os,hardwareProfile.vmSize] | join(`\t`, @)' \
-        --output=tsv
+        --output=json
     )"
-    if [[ "${existing}" != $'rocky9\t'"${AZURE_VM_SIZE}" ]]; then
-      echo "${name} exists with ${existing}; run lab.sh down before changing its image or size" >&2
+    if ! jq -e \
+      --arg admin "${AZURE_ADMIN_USERNAME}" \
+      --arg image "${AZURE_ROCKY_IMAGE}" \
+      --arg location "${location}" \
+      --arg nic "${nic}" \
+      --arg size "${AZURE_VM_SIZE}" \
+      '
+        .tags.product == "needletail"
+        and .tags.purpose == "multicloud-qualification"
+        and .tags.os == "rocky9"
+        and .hardwareProfile.vmSize == $size
+        and .osProfile.adminUsername == $admin
+        and .location == $location
+        and .storageProfile.osDisk.diskSizeGB == 10
+        and (
+          (
+            .storageProfile.imageReference.communityGalleryImageId
+            // .storageProfile.imageReference.id
+            // ""
+          ) == $image
+        )
+        and (.networkProfile.networkInterfaces | length == 1)
+        and (
+          .networkProfile.networkInterfaces[0].id
+          | endswith("/networkInterfaces/" + $nic)
+        )
+      ' <<<"${existing_json}" >/dev/null; then
+      echo "${name} exists with different ownership, Rocky image, disk, size, network, or admin username; run lab.sh down before reusing it" >&2
       exit 2
     fi
+    nic_json="$(
+      "${AZ_BIN}" network nic show \
+        --resource-group="${AZURE_GROUP}" \
+        --name="${nic}" \
+        --output=json
+    )"
+    if ! jq -e \
+      --arg location "${location}" \
+      --arg nsg "${nsg}" \
+      --arg private_ip "${private_ip}" \
+      --arg public_ip "${public_ip}" \
+      --arg subnet "${subnet}" \
+      --arg vnet "${vnet}" \
+      '
+        .tags.product == "needletail"
+        and .tags.purpose == "multicloud-qualification"
+        and .location == $location
+        and (.ipConfigurations | length == 1)
+        and .ipConfigurations[0].privateIPAddress == $private_ip
+        and (
+          .ipConfigurations[0].subnet.id
+          | endswith("/virtualNetworks/" + $vnet + "/subnets/" + $subnet)
+        )
+        and (
+          .networkSecurityGroup.id
+          | endswith("/networkSecurityGroups/" + $nsg)
+        )
+        and (
+          .ipConfigurations[0].publicIPAddress.id
+          | endswith("/publicIPAddresses/" + $public_ip)
+        )
+      ' <<<"${nic_json}" >/dev/null; then
+      echo "${name} has a mismatched Azure NIC, address, subnet, or security group; run lab.sh down before reusing it" >&2
+      exit 2
+    fi
+    power_state="$(
+      "${AZ_BIN}" vm get-instance-view \
+        --resource-group="${AZURE_GROUP}" \
+        --name="${name}" \
+        --query="instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" \
+        --output=tsv
+    )"
+    case "${power_state}" in
+      PowerState/running) ;;
+      PowerState/deallocated|PowerState/stopped)
+        "${AZ_BIN}" vm start \
+          --resource-group="${AZURE_GROUP}" \
+          --name="${name}" \
+          --output none
+        ;;
+      *)
+        echo "${name} is in unexpected Azure state ${power_state:-unknown}; wait for it to settle or run lab.sh down" >&2
+        exit 2
+        ;;
+    esac
     return
   fi
   if [[ "${AZURE_ACCEPT_ROCKY_TERMS}" != 1 ]]; then
@@ -266,7 +403,7 @@ EOF
     --image="${AZURE_ROCKY_IMAGE}" \
     --accept-term \
     --size="${AZURE_VM_SIZE}" \
-    --admin-username=needletail \
+    --admin-username="${AZURE_ADMIN_USERNAME}" \
     --ssh-key-values="${AZURE_SSH_PUBLIC_KEY}" \
     --os-disk-size-gb=10 \
     --os-disk-delete-option=Delete \
@@ -340,6 +477,38 @@ azure_inventory() {
     --show-details \
     --query '[].{name:name,location:location,public_ip:publicIps,private_ip:privateIps,power_state:powerState,size:hardwareProfile.vmSize}' \
     --output json
+}
+
+azure_group_ownership() {
+  "${AZ_BIN}" group show \
+    --name="${AZURE_GROUP}" \
+    --query='[tags.product,tags.purpose,tags.needletail_lab_scope] | join(`\t`, @)' \
+    --output=tsv
+}
+
+require_owned_azure_group() {
+  local ownership expected
+  ownership="$(azure_group_ownership)"
+  expected=$'needletail\tmulticloud-qualification\t'"${AZURE_GROUP_SCOPE}"
+  if [[ "${ownership}" != "${expected}" ]]; then
+    echo "refusing Azure resource group ${AZURE_GROUP}: ownership tags are ${ownership:-missing}; expected ${expected}" >&2
+    return 2
+  fi
+}
+
+ensure_azure_group() {
+  if "${AZ_BIN}" group exists --name="${AZURE_GROUP}" | grep -qx true; then
+    require_owned_azure_group
+    return
+  fi
+  "${AZ_BIN}" group create \
+    --name="${AZURE_GROUP}" \
+    --location=uksouth \
+    --tags \
+      product=needletail \
+      purpose=multicloud-qualification \
+      needletail_lab_scope="${AZURE_GROUP_SCOPE}" \
+    --output none
 }
 
 write_inventory() {
@@ -420,6 +589,7 @@ status() {
   '
   printf '%s\n' "Azure"
   if "${AZ_BIN}" group exists --name="${AZURE_GROUP}" | grep -qx true; then
+    require_owned_azure_group || return $?
     azure_inventory | jq -r '.[] | [.name,.location,.size,.private_ip,.public_ip,.power_state] | @tsv'
     write_inventory
     printf 'Inventory: %s\n' "${INVENTORY}"
@@ -433,6 +603,12 @@ up() {
     echo "Azure SSH public key is missing: ${AZURE_SSH_PUBLIC_KEY}" >&2
     exit 2
   }
+  [[ -n "${NEEDLETAIL_TLS_SERVER_NAME:-}" ]] || {
+    echo "NEEDLETAIL_TLS_SERVER_NAME is required" >&2
+    exit 2
+  }
+  needletail_require_dns_name \
+    NEEDLETAIL_TLS_SERVER_NAME "${NEEDLETAIL_TLS_SERVER_NAME}"
   local operator
   operator="$(operator_ipv4)"
 
@@ -473,11 +649,7 @@ up() {
     10.84.60.5 needletail-edge-sydney playback-edge \
     "${NEEDLETAIL_GCP_SYDNEY_MACHINE_TYPE:-e2-standard-2}"
 
-  "${AZ_BIN}" group create \
-    --name="${AZURE_GROUP}" \
-    --location=uksouth \
-    --tags product=needletail purpose=multicloud-qualification \
-    --output none
+  ensure_azure_group || return $?
   ensure_azure_network japaneast 10.71
   ensure_azure_network australiaeast 10.74
   ensure_azure_vm nt-az-relay-jpe japaneast 10.71.1.4
@@ -549,15 +721,18 @@ nt-edge-tyo asia-northeast1-c
 nt-edge-syd australia-southeast1-b
 EOF
   if "${AZ_BIN}" group exists --name="${AZURE_GROUP}" | grep -qx true; then
+    require_owned_azure_group || return $?
     "${AZ_BIN}" group delete --name="${AZURE_GROUP}" --yes --no-wait
   fi
   echo "Needletail multicloud VMs removed; GCP network and addresses retained"
 }
 
-case "${ACTION}" in
-  up) up ;;
-  status) status ;;
-  down) down ;;
-  -h|--help|help) usage ;;
-  *) usage >&2; exit 2 ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${ACTION}" in
+    up) require_provider_context; up ;;
+    status) require_provider_context; status ;;
+    down) require_provider_context; down ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+fi

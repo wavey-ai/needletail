@@ -23,7 +23,6 @@ BYTES_PER_SAMPLE = 3
 BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE
 NETWORK_EPOCH_FRAMES = 240
 MAX_ALIGNMENT_FRAMES = NETWORK_EPOCH_FRAMES
-DEFAULT_PLAYER_BASE = "https://needletail-london-20260727.bitneedle.com:19444"
 MAP_PATTERN = re.compile(r'^#EXT-X-MAP:URI="([^"]+)"')
 SEGMENT_NUMBER_PATTERN = re.compile(r"seg([0-9]+)\.mp4(?:$|[?#])")
 
@@ -55,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--stream-id", type=int, default=1)
-    parser.add_argument("--player-base", default=DEFAULT_PLAYER_BASE)
+    parser.add_argument("--player-base", required=True)
     parser.add_argument(
         "--capture-seconds",
         type=float,
