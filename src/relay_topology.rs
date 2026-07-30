@@ -322,6 +322,15 @@ impl RelayTopology {
         }
 
         for (parent_id, children) in &children_by_parent {
+            if nodes
+                .get(parent_id)
+                .is_some_and(|node| node.role == NodeRole::PlaybackEdge)
+            {
+                violations.push(PolicyViolation::new(
+                    "playback_edge_has_children",
+                    format!("playback edge {parent_id} must be a leaf node"),
+                ));
+            }
             let limit = nodes
                 .get(parent_id)
                 .map(|node| {
@@ -1550,6 +1559,21 @@ mod tests {
         let mut topology = valid_topology();
         topology.limits.max_origin_children = 1;
         assert!(codes(&topology).contains("downstream_fanout_exceeded"));
+    }
+
+    #[test]
+    fn rejects_a_playback_edge_with_a_downstream_child() {
+        let mut topology = valid_topology();
+        topology
+            .nodes
+            .push(node("downstream-edge", 3, NodeRole::PlaybackEdge, 5));
+        topology.parent_links.push(ParentLink {
+            parent_node_id: "edge".to_owned(),
+            child_node_id: "downstream-edge".to_owned(),
+            role: ParentRole::Primary,
+        });
+
+        assert!(codes(&topology).contains("playback_edge_has_children"));
     }
 
     #[test]

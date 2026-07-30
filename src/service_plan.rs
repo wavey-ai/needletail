@@ -20,6 +20,7 @@ use crate::relay_topology::{
 pub enum DeploymentPurpose {
     LocalQualification,
     SingleProviderQualification,
+    MultiProviderQualification,
     Production,
 }
 
@@ -28,7 +29,9 @@ impl DeploymentPurpose {
         match self {
             Self::LocalQualification => FailureDiversityRequirement::DistinctNodes,
             Self::SingleProviderQualification => FailureDiversityRequirement::RegionAndZone,
-            Self::Production => FailureDiversityRequirement::ProviderRegionAsnAndZone,
+            Self::MultiProviderQualification | Self::Production => {
+                FailureDiversityRequirement::ProviderRegionAsnAndZone
+            }
         }
     }
 
@@ -43,6 +46,9 @@ impl DeploymentPurpose {
                 "provider_asn_diversity_pending".to_owned(),
                 "authenticated_public_carrier_pending".to_owned(),
             ],
+            Self::MultiProviderQualification => {
+                vec!["authenticated_public_carrier_pending".to_owned()]
+            }
             Self::Production => Vec::new(),
         }
     }
@@ -527,6 +533,10 @@ impl RelayProgram {
             })
             .collect::<HashMap<_, _>>();
         let mut carrier_keys = HashSet::with_capacity(self.carrier_links.len());
+        let mut incoming_by_child: HashMap<&str, Vec<&CarrierLink>> =
+            HashMap::with_capacity(self.topology.nodes.len());
+        let mut outgoing_by_parent: HashMap<&str, Vec<&CarrierLink>> =
+            HashMap::with_capacity(self.topology.nodes.len());
         let mut sender_binds = HashSet::with_capacity(self.carrier_links.len());
         let mut receiver_binds = HashSet::with_capacity(self.carrier_links.len());
         for link in &self.carrier_links {
@@ -537,6 +547,14 @@ impl RelayProgram {
                     link.parent_node_id, link.child_node_id, link.role
                 ));
             }
+            incoming_by_child
+                .entry(link.child_node_id.as_str())
+                .or_default()
+                .push(link);
+            outgoing_by_parent
+                .entry(link.parent_node_id.as_str())
+                .or_default()
+                .push(link);
             if !topology_links.contains_key(&key) {
                 violations.push(format!(
                     "carrier link {} -> {} {:?} has no topology relationship",
@@ -604,8 +622,23 @@ impl RelayProgram {
             .iter()
             .filter(|link| link.role == ParentRole::Secondary)
             .collect::<Vec<_>>();
+        let secondary_carrier_by_nodes = secondary_carriers
+            .iter()
+            .map(|carrier| {
+                (
+                    (
+                        carrier.parent_node_id.as_str(),
+                        carrier.child_node_id.as_str(),
+                    ),
+                    *carrier,
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let mut control_keys = HashSet::with_capacity(self.failover_control_links.len());
         let mut controller_nodes = HashSet::with_capacity(self.failover_control_links.len());
+        let mut controls_by_forwarder: HashMap<&str, Vec<&FailoverControlLink>> =
+            HashMap::with_capacity(self.failover_control_links.len());
+        let mut control_by_controller = HashMap::with_capacity(self.failover_control_links.len());
         let mut control_binds = HashSet::with_capacity(self.failover_control_links.len() * 2);
         for control in &self.failover_control_links {
             let key = (
@@ -618,16 +651,18 @@ impl RelayProgram {
                     control.forwarder_node_id, control.controller_node_id
                 ));
             }
+            controls_by_forwarder
+                .entry(control.forwarder_node_id.as_str())
+                .or_default()
+                .push(control);
             if !controller_nodes.insert(control.controller_node_id.as_str()) {
                 violations.push(format!(
                     "node {} has more than one failover controller relationship",
                     control.controller_node_id
                 ));
             }
-            let carrier = secondary_carriers.iter().find(|carrier| {
-                carrier.parent_node_id == control.forwarder_node_id
-                    && carrier.child_node_id == control.controller_node_id
-            });
+            control_by_controller.insert(control.controller_node_id.as_str(), control);
+            let carrier = secondary_carrier_by_nodes.get(&key);
             if carrier.is_none() {
                 violations.push(format!(
                     "failover control {} -> {} has no secondary carrier relationship",
@@ -692,11 +727,10 @@ impl RelayProgram {
             .iter()
             .find(|node| node.role == NodeRole::Origin)
             .expect("topology validation requires one origin");
-        let origin_links = self
-            .carrier_links
-            .iter()
-            .filter(|link| link.parent_node_id == origin.node_id)
-            .collect::<Vec<_>>();
+        let origin_links = outgoing_by_parent
+            .get(origin.node_id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let primary_origin_links = origin_links
             .iter()
             .filter(|link| link.lane == RelaySymbolLane::Source)
@@ -718,11 +752,10 @@ impl RelayProgram {
             .iter()
             .filter(|node| node.role != NodeRole::Origin)
         {
-            let incoming = self
-                .carrier_links
-                .iter()
-                .filter(|link| link.child_node_id == node.node_id)
-                .collect::<Vec<_>>();
+            let incoming = incoming_by_child
+                .get(node.node_id.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             let primary = incoming
                 .iter()
                 .filter(|link| link.role == ParentRole::Primary)
@@ -767,34 +800,38 @@ impl RelayProgram {
             .iter()
             .filter(|node| node.role != NodeRole::Origin)
         {
-            let primary = self
-                .carrier_links
+            let incoming = incoming_by_child
+                .get(node.node_id.as_str())
+                .expect("validated incoming carriers");
+            let primary = incoming
                 .iter()
-                .find(|link| link.child_node_id == node.node_id && link.role == ParentRole::Primary)
+                .copied()
+                .find(|link| link.role == ParentRole::Primary)
                 .expect("validated primary carrier");
-            let secondary = self.carrier_links.iter().find(|link| {
-                link.child_node_id == node.node_id && link.role == ParentRole::Secondary
-            });
-            let mut forwards = self
-                .carrier_links
+            let secondary = incoming
                 .iter()
-                .filter(|link| link.parent_node_id == node.node_id)
+                .copied()
+                .find(|link| link.role == ParentRole::Secondary);
+            let mut forwards = outgoing_by_parent
+                .get(node.node_id.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
                 .map(compiled_forward)
                 .collect::<Vec<_>>();
             forwards.sort_by(|left, right| left.child_node_id.cmp(&right.child_node_id));
-            let mut failover_listeners = self
-                .failover_control_links
-                .iter()
-                .filter(|control| control.forwarder_node_id == node.node_id)
+            let mut failover_listeners = controls_by_forwarder
+                .get(node.node_id.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
                 .map(|control| {
-                    let carrier = self
-                        .carrier_links
-                        .iter()
-                        .find(|carrier| {
-                            carrier.parent_node_id == control.forwarder_node_id
-                                && carrier.child_node_id == control.controller_node_id
-                                && carrier.role == ParentRole::Secondary
-                        })
+                    let carrier = secondary_carrier_by_nodes
+                        .get(&(
+                            control.forwarder_node_id.as_str(),
+                            control.controller_node_id.as_str(),
+                        ))
+                        .copied()
                         .expect("validated failover carrier");
                     CompiledFailoverListener {
                         bind: control.listener_bind,
@@ -804,10 +841,9 @@ impl RelayProgram {
                 })
                 .collect::<Vec<_>>();
             failover_listeners.sort_by_key(|listener| listener.forward_target);
-            let failover_controller = self
-                .failover_control_links
-                .iter()
-                .find(|control| control.controller_node_id == node.node_id)
+            let failover_controller = control_by_controller
+                .get(node.node_id.as_str())
+                .copied()
                 .map(|control| CompiledFailoverController {
                     bind: control.controller_bind,
                     target: control.listener_target,
@@ -1326,6 +1362,27 @@ mod tests {
             .compile()
             .expect_err("same-provider production plan");
         assert!(matches!(error, ServicePlanError::Topology(_)));
+    }
+
+    #[test]
+    fn multi_provider_qualification_enforces_diversity_without_claiming_production() {
+        let mut program = qualification_program();
+        program.purpose = DeploymentPurpose::MultiProviderQualification;
+        program.carrier = CarrierProfile::ControlledPublicUdp;
+        let relay_b = program
+            .topology
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "relay-b")
+            .expect("relay-b");
+        relay_b.failure_domain.provider = "independent-cloud".to_owned();
+        relay_b.failure_domain.asn = 64_501;
+
+        let plan = program.compile().expect("multi-provider qualification");
+        assert_eq!(
+            plan.production_readiness_gaps,
+            vec!["authenticated_public_carrier_pending"]
+        );
     }
 
     #[test]

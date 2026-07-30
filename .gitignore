@@ -5,3 +5,5 @@
 /player/node_modules/
 /.bootstrap-tls/
 /.DS_Store
+__pycache__/
+*.py[cod]

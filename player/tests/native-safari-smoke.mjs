@@ -91,6 +91,7 @@ async function readPlayer() {
         '[data-player-mode][aria-pressed="true"]',
       )?.dataset.playerMode,
       state: document.querySelector("#player-card")?.dataset.state,
+      mediaType: document.querySelector("#player-card")?.dataset.mediaType,
       transport: document.querySelector("#transport-label")?.textContent,
       readyState: video?.readyState,
       width: video?.videoWidth,
@@ -118,6 +119,8 @@ async function readPlayer() {
         waitingEvents: telemetry.waitingEvents,
         stalledEvents: telemetry.stalledEvents,
         playingEvents: telemetry.playingEvents,
+        seekingEvents: telemetry.seekingEvents,
+        rateChangeEvents: telemetry.rateChangeEvents,
         totalWaitingMs: telemetry.totalWaitingMs,
         maxFrameGapMs: telemetry.maxFrameGapMs,
         presentedFrames: telemetry.presentedFrames,
@@ -140,7 +143,7 @@ async function waitForPlayback() {
       state.documentReadyState === "complete" &&
       state.mode === "native" &&
       state.readyState >= 3 &&
-      state.width > 0 &&
+      (state.mediaType === "audio" || state.width > 0) &&
       !state.paused
     ) {
       return state;
@@ -185,6 +188,8 @@ try {
       waitingEvents: 0,
       stalledEvents: 0,
       playingEvents: 0,
+      seekingEvents: 0,
+      rateChangeEvents: 0,
       totalWaitingMs: 0,
       maxFrameGapMs: 0,
       presentedFrames: 0,
@@ -204,6 +209,12 @@ try {
         telemetry.totalWaitingMs += performance.now() - telemetry.waitingSince;
         telemetry.waitingSince = undefined;
       }
+    });
+    video.addEventListener("seeking", () => {
+      telemetry.seekingEvents += 1;
+    });
+    video.addEventListener("ratechange", () => {
+      telemetry.rateChangeEvents += 1;
     });
     if (video.requestVideoFrameCallback) {
       const onFrame = (now) => {
@@ -238,12 +249,14 @@ try {
         bufferedEnd: sample.bufferedEnd,
         waitingEvents: sample.telemetry.waitingEvents,
         stalledEvents: sample.telemetry.stalledEvents,
+        seekingEvents: sample.telemetry.seekingEvents,
+        rateChangeEvents: sample.telemetry.rateChangeEvents,
         presentedFrames: sample.telemetry.presentedFrames,
       });
     }
   }
   const steady = await readPlayer();
-  const frameCadenceMeasured =
+  const frameCadenceMeasured = steady.mediaType === "video" &&
     steady.telemetry.presentedFrames >= observationSeconds * 10;
   const result = {
     startupSeconds,
@@ -262,9 +275,14 @@ try {
   assert.equal(steady.mode, "native", "Safari did not use native HLS playback");
   assert.equal(steady.state, "live", "Native playback did not reach the live state");
   assert.equal(steady.mediaError, null, "Native playback reported a media error");
-  assert.equal(steady.width, 3840, "Native playback did not decode 4K video");
-  assert.equal(steady.height, 2160, "Native playback did not decode 4K video");
+  if (steady.mediaType === "video") {
+    assert.equal(steady.width, 3840, "Native playback did not decode 4K video");
+    assert.equal(steady.height, 2160, "Native playback did not decode 4K video");
+  } else {
+    assert.equal(steady.mediaType, "audio", "Native playback did not identify audio");
+  }
   assert.equal(steady.paused, false, "Native playback paused during observation");
+  assert.equal(steady.playbackRate, 1, "Native playback rate changed");
   assert.ok(startupSeconds <= maxStartupSeconds, "Native playback startup was too slow");
   assert.ok(
     result.currentTimeDelta >= observationSeconds * 0.9,
@@ -276,6 +294,8 @@ try {
   );
   assert.equal(steady.telemetry.waitingEvents, 0, "Native playback entered waiting");
   assert.equal(steady.telemetry.stalledEvents, 0, "Native playback stalled");
+  assert.equal(steady.telemetry.seekingEvents, 0, "Native playback sought without a user action");
+  assert.equal(steady.telemetry.rateChangeEvents, 0, "Native playback changed rate without a user action");
   if (frameCadenceMeasured) {
     assert.ok(
       steady.telemetry.maxFrameGapMs <= maxFrameGapMilliseconds,

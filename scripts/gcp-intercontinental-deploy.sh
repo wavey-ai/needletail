@@ -426,7 +426,7 @@ else
     --exclude='*.pem' \
     --exclude='*.key' \
     -C "${WORKSPACE_ROOT}" \
-    access-unit av-mesh av-contrib av-api av-service boxer media-object relay-session playlists raptor-fec rtmp-ingress rist-rs mpeg2ts-reader \
+    access-unit av-mesh av-contrib av-api av-service boxer gcp linode media-object relay-session playlists raptor-fec rtmp-ingress rist-rs mpeg2ts-reader \
     soundkit frame-header libopus-rs web-services \
     needletail/crates/media-capability
 

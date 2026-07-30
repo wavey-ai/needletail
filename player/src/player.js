@@ -1,19 +1,41 @@
+import { PcmLlHlsPlayer } from "/pcm-player.js";
+import { RollingLatencyWindow, StableLatencyController } from "/adaptive-latency.js";
+import { livePlaylistIsStale } from "/stream-freshness.js";
+
 const MAX_STREAM_ID = 18446744073709551615n;
 const rawStreamId = streamIdFromPath(window.location.pathname);
 const streamId = validStreamId(rawStreamId) ? rawStreamId : "1";
-const playlistUrl = new URL(`/live/${streamId}/master.m3u8`, window.location.origin).href;
-const SOURCE_PROTOCOL = "RIST";
+const pcmPlaylistUrl = new URL(`/live/${streamId}/stream.m3u8`, window.location.origin).href;
+const AUDIO_FORMATS = Object.freeze({
+  flac: Object.freeze({
+    streamOffset: 0n,
+    label: "Lossless",
+    qualityLabel: "FLAC",
+    description: "Lossless album audio",
+    protocolLabel: "FLAC · RAPTORQ FEC",
+  }),
+  opus: Object.freeze({
+    streamOffset: 1000n,
+    label: "Opus",
+    qualityLabel: "OPUS",
+    description: "Opus audio",
+    protocolLabel: "OPUS · RAPTORQ FEC",
+  }),
+});
 const LATENCY_STORAGE_KEY = "needletail.liveLatencyTarget";
+const ADAPTIVE_LATENCY_STORAGE_KEY = "needletail.adaptiveLatency";
 const PLAYER_MODE_STORAGE_KEY = "needletail.playerMode";
-const MIN_LATENCY_SECONDS = 0.1;
+const MIN_LATENCY_SECONDS = 0.75;
 const MAX_LATENCY_SECONDS = 5;
-const DEFAULT_LIVE_SYNC_SECONDS = 0.7;
+const DEFAULT_LIVE_SYNC_SECONDS = 0.75;
 const STARTUP_BUFFER_CEILING_SECONDS = 0.55;
 const STARTUP_BUFFER_FLOOR_SECONDS = 0.25;
 const DELAY_AVERAGE_WINDOW_MS = 1000;
 const MIN_RECOVERY_BUFFER_SECONDS = 0.25;
 const CATCH_UP_BUFFER_SECONDS = 0.75;
 const RECOVERY_SEEK_COOLDOWN_MS = 1800;
+const FRESHNESS_CHECK_INTERVAL_MS = 1_000;
+const STALE_LIVE_WINDOW_MS = 5_000;
 
 const elements = {
   card: document.querySelector("#player-card"),
@@ -40,8 +62,13 @@ const elements = {
   latencyBadge: document.querySelector("#latency-badge"),
   feed: document.querySelector("#feed-value"),
   delay: document.querySelector("#delay-value"),
+  stableLatency: document.querySelector("#stable-latency-value"),
+  stableLatencyDetail: document.querySelector("#stable-latency-detail"),
+  pictureCard: document.querySelector("#picture-card"),
   picture: document.querySelector("#picture-value"),
   quality: document.querySelector("#quality-label"),
+  audioFormatCard: document.querySelector("#audio-format-card"),
+  audioFormatControls: [...document.querySelectorAll("[data-audio-format]")],
   delivery: document.querySelector("#delivery-value"),
   edgeLabel: document.querySelector("#edge-label"),
   edgePill: document.querySelector("#edge-pill"),
@@ -49,11 +76,13 @@ const elements = {
   sourceProtocol: document.querySelector("#source-protocol"),
   latencyTarget: document.querySelector("#latency-target"),
   latencyTargetValue: document.querySelector("#latency-target-value"),
+  latencyAuto: document.querySelector("#latency-auto"),
   modeControls: [...document.querySelectorAll("[data-player-mode]")],
   transport: document.querySelector("#transport-label"),
 };
 
 let hls;
+let pcmPlayer;
 let retryTimer;
 let retryAttempt = 0;
 let controlsTimer;
@@ -65,16 +94,29 @@ let seekingTimeline = false;
 let followingLiveEdge = true;
 let bufferedRangesSignature = "";
 let lastRecoverySeekAt = -Infinity;
-let liveSyncSeconds = readLatencyTarget();
+let adaptiveLatencyEnabled = readAdaptiveLatencyEnabled();
+let liveSyncSeconds = adaptiveLatencyEnabled
+  ? DEFAULT_LIVE_SYNC_SECONDS
+  : readLatencyTarget();
 let playerMode = readPlayerMode();
+let audioFormat = audioFormatFromQuery();
+let latencyController;
+let latencyControllerTimer;
+let freshnessTimer;
+let lastPlaybackProgressAt = performance.now();
+let lastObservedPlaybackTime = 0;
+let freshnessCheckPending = false;
+let audioQualityLabel = "AUDIO";
 const delaySamples = [];
+const rollingLatencyWindow = new RollingLatencyWindow();
 
 elements.headerStreamTag.textContent = `STREAM ${streamId}`;
-elements.sourceProtocol.textContent = SOURCE_PROTOCOL;
+elements.sourceProtocol.textContent = sourceProtocolFromQuery() || "DETECTING";
 document.title = `Stream ${streamId} · Needletail Live`;
 elements.video.muted = true;
 updateLatencyControls();
 updateModeControls();
+updateAudioFormatControls();
 
 function validStreamId(value) {
   if (!/^\d{1,20}$/.test(value)) return false;
@@ -142,11 +184,20 @@ function readLatencyTarget() {
   return DEFAULT_LIVE_SYNC_SECONDS;
 }
 
+function readAdaptiveLatencyEnabled() {
+  try {
+    return window.localStorage.getItem(ADAPTIVE_LATENCY_STORAGE_KEY) === "auto";
+  } catch {
+    return false;
+  }
+}
+
 function readPlayerMode() {
   const requestedMode = playerModeFromQuery();
   if (requestedMode) return requestedMode;
   try {
     const stored = window.localStorage.getItem(PLAYER_MODE_STORAGE_KEY);
+    if (stored === "pcm") return "pcm";
     if (stored === "hls") return "hls";
     if (stored === "native" && nativeHlsSupported()) return "native";
   } catch {
@@ -157,9 +208,107 @@ function readPlayerMode() {
 
 function playerModeFromQuery() {
   const mode = new URLSearchParams(window.location.search).get("player");
+  if (mode === "pcm") return "pcm";
   if (mode === "native" && nativeHlsSupported()) return "native";
   if (mode === "hls") return "hls";
   return undefined;
+}
+
+function sourceProtocolFromQuery() {
+  const source = new URLSearchParams(window.location.search).get("source")?.toLowerCase();
+  if (source === "srt" || source === "rist") return source.toUpperCase();
+  return undefined;
+}
+
+function audioFormatFromQuery() {
+  const requested = new URLSearchParams(window.location.search).get("format")?.toLowerCase();
+  if (!Object.hasOwn(AUDIO_FORMATS, requested)) return "flac";
+  return BigInt(streamId) + AUDIO_FORMATS[requested].streamOffset <= MAX_STREAM_ID
+    ? requested
+    : "flac";
+}
+
+function streamIdForAudioFormat(format = audioFormat) {
+  const offset = AUDIO_FORMATS[format]?.streamOffset ?? AUDIO_FORMATS.flac.streamOffset;
+  const selected = BigInt(streamId) + offset;
+  return selected <= MAX_STREAM_ID ? selected.toString() : streamId;
+}
+
+function selectedPlaylistUrl() {
+  const selectedStreamId = streamIdForAudioFormat();
+  return new URL(`/live/${selectedStreamId}/master.m3u8`, window.location.origin).href;
+}
+
+function selectedMediaPlaylistUrl() {
+  const selectedStreamId = streamIdForAudioFormat();
+  return new URL(`/live/${selectedStreamId}/stream.m3u8`, window.location.origin).href;
+}
+
+function updateAudioFormatControls() {
+  const opusUnavailable = BigInt(streamId) + AUDIO_FORMATS.opus.streamOffset > MAX_STREAM_ID;
+  for (const button of elements.audioFormatControls) {
+    const format = button.dataset.audioFormat;
+    const active = format === audioFormat;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = format === "opus" && opusUnavailable;
+  }
+}
+
+function setAudioFormat(format) {
+  if (!Object.hasOwn(AUDIO_FORMATS, format) || format === audioFormat) return;
+  if (BigInt(streamId) + AUDIO_FORMATS[format].streamOffset > MAX_STREAM_ID) return;
+  audioFormat = format;
+  const url = new URL(window.location.href);
+  url.searchParams.set("format", audioFormat);
+  window.history.replaceState(window.history.state, "", url);
+  updateAudioFormatControls();
+  connect();
+  showToast(`Switching to ${AUDIO_FORMATS[audioFormat].label}`);
+}
+
+async function loadMediaIdentity() {
+  const requestedFormat = audioFormat;
+  try {
+    const response = await fetch(selectedPlaylistUrl(), { cache: "no-store" });
+    if (!response.ok) return;
+    const playlist = await response.text();
+    if (requestedFormat !== audioFormat) return;
+    const mediaType = mediaTypeFromMasterPlaylist(playlist);
+    elements.card.dataset.mediaType = mediaType;
+    elements.pictureCard.hidden = mediaType === "audio";
+    elements.audioFormatCard.hidden = mediaType !== "audio";
+    if (mediaType === "audio") {
+      const losslessAudio = /CODECS="[^"]*(?:fLaC|alac|ipcm)[^"]*"/i.test(playlist);
+      const opusAudio = /CODECS="[^"]*opus[^"]*"/i.test(playlist);
+      const detectedFormat = opusAudio ? "opus" : losslessAudio ? "flac" : undefined;
+      const formatDetails = detectedFormat ? AUDIO_FORMATS[detectedFormat] : undefined;
+      audioQualityLabel = formatDetails?.qualityLabel || "AUDIO";
+      elements.sourceProtocol.textContent = formatDetails?.protocolLabel
+        || sourceProtocolFromQuery()
+        || "LIVE AUDIO";
+      elements.picture.textContent = formatDetails?.description || "Live audio";
+      elements.quality.textContent = audioQualityLabel;
+      elements.controls.classList.add("visible");
+    } else {
+      audioQualityLabel = "AUDIO";
+      elements.pictureCard.hidden = false;
+      elements.audioFormatCard.hidden = true;
+      elements.sourceProtocol.textContent = sourceProtocolFromQuery() || "LIVE VIDEO";
+    }
+  } catch {
+    // The next successful manifest load updates the media identity.
+  }
+}
+
+function mediaTypeFromMasterPlaylist(playlist) {
+  const codecLists = [...playlist.matchAll(/CODECS="([^"]+)"/gi)]
+    .map((match) => match[1].split(",").map((codec) => codec.trim()).filter(Boolean));
+  if (!codecLists.length) return "video";
+  const videoCodec = /^(?:avc1|avc3|hev1|hvc1|av01|vp0?9|dvh1|dvhe)/i;
+  return codecLists.every((codecs) => codecs.length > 0 && codecs.every((codec) => !videoCodec.test(codec)))
+    ? "audio"
+    : "video";
 }
 
 function clampLatencyTarget(value) {
@@ -197,7 +346,18 @@ function setLiveEdgeTracking(enabled, windowDuration = 0) {
 
 function updateLatencyControls() {
   elements.latencyTarget.value = String(liveSyncSeconds);
-  elements.latencyTargetValue.textContent = formatLatencyTarget(liveSyncSeconds);
+  const nativeManaged = playerMode === "native";
+  const adaptive = playerMode === "hls" && adaptiveLatencyEnabled;
+  const phase = latencyController?.snapshot().phase || "learning";
+  elements.latencyTargetValue.textContent = nativeManaged
+    ? "Native managed"
+    : adaptive
+      ? `Auto · ${formatLatencyTarget(liveSyncSeconds)} · ${phase}`
+      : formatLatencyTarget(liveSyncSeconds);
+  elements.latencyTarget.disabled = nativeManaged || adaptive;
+  elements.latencyAuto.disabled = playerMode !== "hls";
+  elements.latencyAuto.classList.toggle("active", adaptive);
+  elements.latencyAuto.setAttribute("aria-pressed", String(adaptive));
   elements.latencyTarget.title = liveSyncSeconds < 0.6 ? "Experimental live-edge target" : "Live-edge target";
 }
 
@@ -209,7 +369,7 @@ function updateModeControls() {
   }
 }
 
-function setLatencyTarget(value) {
+function applyLatencyTarget(value, { announce = false, jump = false } = {}) {
   const nextTarget = clampLatencyTarget(value);
   const changed = Math.abs(nextTarget - liveSyncSeconds) >= 0.001;
   liveSyncSeconds = nextTarget;
@@ -224,15 +384,141 @@ function setLatencyTarget(value) {
     hls.config.liveSyncDuration = liveSyncSeconds;
     hls.config.liveMaxLatencyDuration = liveMaxLatencySeconds();
   }
-  seekToLiveEdge();
+  pcmPlayer?.setTargetBufferMs(liveSyncSeconds * 1_000);
   holdLiveEdge();
   updateLiveMetrics();
-  if (changed) showToast(`Target ${formatLatencyTarget(liveSyncSeconds)}`);
-  else jumpToLive();
+  if (jump) seekToLiveEdge();
+  if (announce && changed) showToast(`Target ${formatLatencyTarget(liveSyncSeconds)}`);
+  else if (announce && jump) jumpToLive();
+}
+
+function setLatencyTarget(value) {
+  if (adaptiveLatencyEnabled) setAdaptiveLatency(false);
+  applyLatencyTarget(value, { announce: true, jump: true });
+}
+
+function setAdaptiveLatency(enabled) {
+  adaptiveLatencyEnabled = Boolean(enabled);
+  try {
+    window.localStorage.setItem(
+      ADAPTIVE_LATENCY_STORAGE_KEY,
+      adaptiveLatencyEnabled ? "auto" : "manual",
+    );
+  } catch {
+    // The selected behavior still applies for the current page view.
+  }
+  if (adaptiveLatencyEnabled && playerMode === "hls") {
+    startAdaptiveLatency();
+    showToast("Automatic latency is on");
+  } else {
+    stopAdaptiveLatency();
+    showToast("Set latency manually");
+  }
+  updateLatencyControls();
+}
+
+function startAdaptiveLatency() {
+  stopAdaptiveLatency();
+  latencyController = new StableLatencyController({
+    initialTargetSeconds: DEFAULT_LIVE_SYNC_SECONDS,
+    minimumTargetSeconds: MIN_LATENCY_SECONDS,
+    maximumTargetSeconds: MAX_LATENCY_SECONDS,
+  });
+  observePlaylistTiming(hls?.latestLevelDetails);
+  applyLatencyTarget(latencyController.targetSeconds);
+  latencyControllerTimer = window.setInterval(updateAdaptiveLatency, 1_000);
+  publishLatencySnapshot();
+}
+
+function stopAdaptiveLatency() {
+  clearInterval(latencyControllerTimer);
+  latencyControllerTimer = undefined;
+  latencyController = undefined;
+  publishLatencySnapshot();
+}
+
+function observePlaylistTiming(details) {
+  if (!latencyController || !details) return;
+  const adjustment = latencyController.observeServer({
+    partTargetSeconds: Number(details.partTarget),
+    partHoldBackSeconds: Number(details.partHoldBack),
+  });
+  applyAdaptiveAdjustment(adjustment);
+}
+
+function observeFragmentFetch(data) {
+  if (!latencyController) return;
+  const stats = data?.part?.stats || data?.frag?.stats;
+  const start = Number(stats?.loading?.start);
+  const end = Number(stats?.loading?.end);
+  if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+    latencyController.observeFetch((end - start) / 1_000);
+    publishLatencySnapshot();
+  }
+}
+
+function applyAdaptiveAdjustment(adjustment) {
+  if (!adjustment) {
+    updateLatencyControls();
+    publishLatencySnapshot();
+    return;
+  }
+  applyLatencyTarget(adjustment.target);
+  updateLatencyControls();
+  publishLatencySnapshot();
+}
+
+function updateAdaptiveLatency() {
+  if (!latencyController || playerMode !== "hls") return;
+  const adjustment = latencyController.observePlayback({
+    bufferedSeconds: bufferedAhead(),
+    playing: playbackStarted && !elements.video.paused && followingLiveEdge,
+  });
+  applyAdaptiveAdjustment(adjustment);
+}
+
+function publishLatencySnapshot() {
+  const rollingWindow = rollingLatencyWindow.snapshot();
+  window.__needletailLatency = {
+    mode: playerMode === "native"
+      ? "native-managed"
+      : adaptiveLatencyEnabled
+        ? "adaptive"
+        : "manual",
+    targetSeconds: liveSyncSeconds,
+    liveDelaySeconds: liveDelay(),
+    bufferedSeconds: bufferedAhead(),
+    rollingWindow,
+    controller: latencyController?.snapshot(),
+  };
+  updateStableLatencyIndicator(rollingWindow);
+}
+
+function updateStableLatencyIndicator(snapshot = rollingLatencyWindow.snapshot()) {
+  const phaseLabels = {
+    learning: "Learning",
+    stable: "Stable",
+    variable: "Variable",
+  };
+  const phase = phaseLabels[snapshot.phase] || "Learning";
+  elements.stableLatency.textContent = Number.isFinite(snapshot.latencySeconds)
+    ? `${formatDelay(snapshot.latencySeconds)} · ${phase}`
+    : phase;
+  elements.stableLatency.dataset.phase = snapshot.phase;
+  if (snapshot.phase === "learning") {
+    const coverage = Math.min(snapshot.windowSeconds, Math.round(snapshot.coverageSeconds));
+    elements.stableLatencyDetail.textContent = `${coverage} of ${snapshot.windowSeconds} s measured`;
+  } else {
+    elements.stableLatencyDetail.textContent = `P95 over ${snapshot.windowSeconds} s · ${formatDelay(snapshot.spreadSeconds)} range`;
+  }
 }
 
 function setPlayerMode(mode) {
-  const nextMode = mode === "native" && nativeHlsSupported() ? "native" : "hls";
+  const nextMode = mode === "pcm"
+    ? "pcm"
+    : mode === "native" && nativeHlsSupported()
+      ? "native"
+      : "hls";
   if (nextMode === playerMode) {
     jumpToLive();
     return;
@@ -244,20 +530,38 @@ function setPlayerMode(mode) {
     // The selected mode still applies for the current page view.
   }
   updateModeControls();
+  updateLatencyControls();
   connect();
-  showToast(playerMode === "native" ? "Native player" : "HLS.js player");
+  showToast(
+    playerMode === "native"
+      ? "Native player"
+      : playerMode === "pcm"
+        ? "PCM player"
+        : "HLS.js player",
+  );
 }
 
 function destroyPlayback() {
   clearTimeout(retryTimer);
+  clearInterval(freshnessTimer);
+  freshnessTimer = undefined;
+  freshnessCheckPending = false;
+  stopAdaptiveLatency();
   playbackStarted = false;
   playbackPending = false;
   followingLiveEdge = true;
   delaySamples.length = 0;
+  rollingLatencyWindow.reset();
   lastRecoverySeekAt = -Infinity;
+  lastPlaybackProgressAt = performance.now();
+  lastObservedPlaybackTime = 0;
   if (hls) {
     hls.destroy();
     hls = undefined;
+  }
+  if (pcmPlayer) {
+    pcmPlayer.destroy();
+    pcmPlayer = undefined;
   }
   window.__needletailHls = undefined;
   elements.video.pause();
@@ -265,16 +569,167 @@ function destroyPlayback() {
   elements.video.load();
 }
 
+function notePlaybackProgress() {
+  const currentTime = elements.video.currentTime;
+  if (!Number.isFinite(currentTime)) return;
+  if (currentTime > lastObservedPlaybackTime + 0.02) {
+    lastObservedPlaybackTime = currentTime;
+    lastPlaybackProgressAt = performance.now();
+  }
+}
+
+async function checkLiveStreamFreshness() {
+  if (
+    freshnessCheckPending
+    || playerMode === "pcm"
+    || !playbackStarted
+    || performance.now() - lastPlaybackProgressAt <= STALE_LIVE_WINDOW_MS
+  ) {
+    return;
+  }
+  freshnessCheckPending = true;
+  try {
+    const response = await fetch(selectedMediaPlaylistUrl(), { cache: "no-store" });
+    if (!response.ok) return;
+    const playlist = await response.text();
+    if (!livePlaylistIsStale(playlist, { maximumAgeMs: STALE_LIVE_WINDOW_MS })) return;
+    showWaiting("This live feed has ended. Playback will reconnect when new media arrives.");
+    elements.video.pause();
+    scheduleRetry();
+  } catch {
+    // A temporary request error does not mean that the live feed has ended.
+  } finally {
+    freshnessCheckPending = false;
+  }
+}
+
+function startFreshnessMonitor() {
+  clearInterval(freshnessTimer);
+  lastPlaybackProgressAt = performance.now();
+  lastObservedPlaybackTime = elements.video.currentTime || 0;
+  freshnessTimer = window.setInterval(checkLiveStreamFreshness, FRESHNESS_CHECK_INTERVAL_MS);
+}
+
 function connect() {
   clearTimeout(retryTimer);
   destroyPlayback();
   elements.start.hidden = false;
   setState("connecting");
+  if (playerMode === "pcm") {
+    connectPcm();
+    return;
+  }
+  elements.video.hidden = false;
+  elements.sourceProtocol.textContent = sourceProtocolFromQuery() || "DETECTING";
   if (playerMode === "native") {
     connectNative();
     return;
   }
   connectHls();
+}
+
+async function connectPcm() {
+  elements.sourceProtocol.textContent = "LL-HLS PCM";
+  elements.picture.textContent = "PCM audio";
+  elements.quality.textContent = "PCM";
+  elements.video.hidden = true;
+  elements.empty.hidden = false;
+  elements.emptyKicker.textContent = "LONDON PCM MONITOR";
+  elements.emptyTitle.textContent = "Preparing lossless audio";
+  elements.emptyCopy.textContent = "The player is reading the live PCM rendition.";
+  elements.start.hidden = true;
+  elements.controls.classList.add("visible");
+  elements.seekBar.disabled = true;
+  elements.transport.textContent = "LL-HLS PCM · Web Audio";
+  try {
+    const player = new PcmLlHlsPlayer({
+      playlistUrl: pcmPlaylistUrl,
+      targetBufferMs: Math.max(100, liveSyncSeconds * 1_000),
+      onStatus: updatePcmStatus,
+    });
+    pcmPlayer = player;
+    const profile = await player.initialize();
+    if (player !== pcmPlayer) return;
+    elements.picture.textContent = `${profile.channelCount} channels · PCM 24-bit`;
+    elements.emptyTitle.textContent = "Live PCM audio is ready";
+    elements.emptyCopy.textContent = "Select Start audio to listen from the London edge.";
+    elements.start.querySelector("span").textContent = "Start audio";
+    elements.start.hidden = false;
+    setState("waiting");
+    updateControls();
+  } catch (error) {
+    if (playerMode !== "pcm") return;
+    elements.emptyKicker.textContent = "PCM PLAYER ERROR";
+    elements.emptyTitle.textContent = "Audio could not start";
+    elements.emptyCopy.textContent = error instanceof Error
+      ? error.message
+      : "The PCM stream is unavailable.";
+    elements.start.hidden = false;
+    elements.start.querySelector("span").textContent = "Try again";
+    setState("offline");
+  }
+}
+
+function updatePcmStatus(status) {
+  if (playerMode !== "pcm" || !pcmPlayer) return;
+  elements.video.hidden = true;
+  elements.controls.classList.add("visible");
+  elements.delay.textContent = `${Math.round(status.scheduledMs || 0)} ms buffered`;
+  elements.latencyBadge.textContent = status.missingParts > 0
+    ? `${status.missingParts} missing parts`
+    : `${Math.round(status.scheduledMs || 0)} ms buffered`;
+  elements.live.classList.toggle("behind", status.missingParts > 0);
+  if (status.state === "live") {
+    playbackStarted = true;
+    elements.empty.hidden = false;
+    elements.emptyKicker.textContent = "LONDON PCM MONITOR";
+    elements.emptyTitle.textContent = "Live PCM audio";
+    elements.emptyCopy.textContent = status.missingParts > 0
+      ? `${status.missingParts} LL-HLS parts were unavailable to this browser.`
+      : `${status.receivedParts} LL-HLS parts received with no detected gaps.`;
+    elements.start.hidden = true;
+    setState("live");
+  } else if (status.state === "buffering") {
+    elements.empty.hidden = false;
+    elements.emptyTitle.textContent = "Buffering live PCM audio";
+    elements.emptyCopy.textContent = "Playback will start when the protection buffer is ready.";
+    elements.start.hidden = true;
+    setState("buffering");
+  } else if (status.state === "paused" || status.state === "ready") {
+    playbackStarted = false;
+    elements.empty.hidden = false;
+    elements.emptyTitle.textContent = "Live PCM audio is ready";
+    elements.emptyCopy.textContent = "Select Start audio to listen from the London edge.";
+    elements.start.querySelector("span").textContent = "Start audio";
+    elements.start.hidden = false;
+    setState("waiting");
+  } else if (status.state === "error") {
+    elements.empty.hidden = false;
+    elements.emptyKicker.textContent = "PCM PLAYER ERROR";
+    elements.emptyTitle.textContent = "Audio stopped";
+    elements.emptyCopy.textContent = status.error?.message || "The PCM stream is unavailable.";
+    elements.start.querySelector("span").textContent = "Try again";
+    elements.start.hidden = false;
+    setState("offline");
+  }
+  updateControls();
+}
+
+async function attemptPcmPlayback() {
+  if (!pcmPlayer) {
+    connect();
+    return;
+  }
+  try {
+    await pcmPlayer.resume();
+    playbackStarted = true;
+  } catch (error) {
+    elements.emptyCopy.textContent = error instanceof Error
+      ? error.message
+      : "Audio could not start.";
+    elements.start.hidden = false;
+  }
+  updateControls();
 }
 
 function connectHls() {
@@ -313,12 +768,18 @@ function connectHls() {
     liveDurationInfinity: true,
   });
   window.__needletailHls = hls;
+  if (adaptiveLatencyEnabled) startAdaptiveLatency();
 
-  hls.on(window.Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(playlistUrl));
+  hls.on(window.Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(selectedPlaylistUrl()));
   hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
     retryAttempt = 0;
+    loadMediaIdentity();
     showVideo();
     setState("buffering");
+    startFreshnessMonitor();
+  });
+  hls.on(window.Hls.Events.FRAG_LOADED, (_event, data) => {
+    observeFragmentFetch(data);
   });
   hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
     if (elements.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) showVideo();
@@ -329,7 +790,8 @@ function connectHls() {
     holdLiveEdge();
     updateLiveMetrics();
   });
-  hls.on(window.Hls.Events.LEVEL_LOADED, () => {
+  hls.on(window.Hls.Events.LEVEL_LOADED, (_event, data) => {
+    observePlaylistTiming(data?.details);
     if (!playbackStarted) seekToLiveEdge();
     holdLiveEdge();
   });
@@ -345,7 +807,8 @@ function connectHls() {
     scheduleRetry();
   });
   hls.attachMedia(elements.video);
-  elements.transport.textContent = `HLS.js ${window.Hls.version} · target ${formatLatencyTarget(liveSyncSeconds)}`;
+  elements.transport.textContent = `HLS.js ${window.Hls.version} · adaptive low latency`;
+  updateLatencyControls();
 }
 
 function connectNative() {
@@ -360,10 +823,13 @@ function connectNative() {
     return;
   }
   elements.start.hidden = false;
-  elements.video.src = playlistUrl;
+  elements.video.src = selectedPlaylistUrl();
   elements.video.load();
-  elements.transport.textContent = "Native HLS";
+  elements.transport.textContent = "Native LL-HLS · system-managed latency";
+  updateLatencyControls();
   setState("buffering");
+  startFreshnessMonitor();
+  loadMediaIdentity();
   attemptPlayback(true);
 }
 
@@ -497,6 +963,7 @@ function seekToLiveEdge(force = false) {
 }
 
 function holdLiveEdge() {
+  if (playerMode !== "hls") return;
   if (!playbackStarted || elements.video.paused || !followingLiveEdge) return;
   const delay = liveDelay();
   if (!Number.isFinite(delay)) return;
@@ -593,6 +1060,7 @@ function formatDelay(seconds) {
 
 function updateLiveMetrics() {
   const delay = liveDelay();
+  rollingLatencyWindow.observe(delay);
   const average = rollingDelayAverage(delay);
   const value = Number.isFinite(delay)
     ? `${formatDelay(delay)} (${formatDelay(average)})`
@@ -603,18 +1071,42 @@ function updateLiveMetrics() {
   holdLiveEdge();
   updateTimeline();
   updatePicture();
+  publishLatencySnapshot();
 }
 
 function updatePicture() {
   const width = elements.video.videoWidth;
   const height = elements.video.videoHeight;
-  if (!width || !height) return;
+  if (!width || !height) {
+    if (elements.video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      elements.card.dataset.mediaType = "audio";
+      elements.pictureCard.hidden = true;
+      elements.audioFormatCard.hidden = false;
+      elements.picture.textContent = Object.values(AUDIO_FORMATS)
+        .find(({ qualityLabel }) => qualityLabel === audioQualityLabel)
+        ?.description || "Live audio";
+      elements.quality.textContent = audioQualityLabel;
+      elements.controls.classList.add("visible");
+    }
+    return;
+  }
+  elements.card.dataset.mediaType = "video";
+  elements.pictureCard.hidden = false;
+  elements.audioFormatCard.hidden = true;
   const quality = height >= 4320 ? "8K" : height >= 2160 ? "4K" : height >= 1440 ? "1440p" : height >= 1080 ? "1080p" : height >= 720 ? "720p" : `${height}p`;
   elements.picture.textContent = `${quality} · ${width}×${height}`;
   elements.quality.textContent = quality;
 }
 
 function updateControls() {
+  if (playerMode === "pcm") {
+    const paused = !pcmPlayer?.running;
+    elements.play.classList.toggle("paused", !paused);
+    elements.play.setAttribute("aria-label", paused ? "Play" : "Pause");
+    elements.mute.classList.toggle("muted", pcmPlayer?.muted ?? false);
+    elements.mute.setAttribute("aria-label", pcmPlayer?.muted ? "Unmute" : "Mute");
+    return;
+  }
   const paused = elements.video.paused;
   elements.play.classList.toggle("paused", !paused);
   elements.play.setAttribute("aria-label", paused ? "Play" : "Pause");
@@ -681,13 +1173,39 @@ async function loadEdgeIdentity() {
   }
 }
 
-elements.start.addEventListener("click", () => (sourceReady ? attemptPlayback(false) : connect()));
-elements.play.addEventListener("click", () => (elements.video.paused ? attemptPlayback(false) : elements.video.pause()));
+elements.start.addEventListener("click", () => {
+  if (playerMode === "pcm") {
+    attemptPcmPlayback();
+    return;
+  }
+  sourceReady ? attemptPlayback(false) : connect();
+});
+elements.play.addEventListener("click", () => {
+  if (playerMode === "pcm") {
+    pcmPlayer?.running ? pcmPlayer.pause() : attemptPcmPlayback();
+    return;
+  }
+  elements.video.paused ? attemptPlayback(false) : elements.video.pause();
+});
 elements.mute.addEventListener("click", () => {
+  if (playerMode === "pcm") {
+    pcmPlayer?.setMuted(!pcmPlayer.muted);
+    return;
+  }
   elements.video.muted = !elements.video.muted;
   updateControls();
 });
-elements.live.addEventListener("click", jumpToLive);
+elements.live.addEventListener("click", () => {
+  if (playerMode === "pcm") {
+    pcmPlayer?.jumpToLive();
+    return;
+  }
+  jumpToLive();
+});
+elements.latencyAuto.addEventListener("click", () => {
+  if (playerMode !== "hls") return;
+  setAdaptiveLatency(!adaptiveLatencyEnabled);
+});
 elements.latencyTarget.addEventListener("input", () => setLatencyTarget(Number(elements.latencyTarget.value)));
 elements.seekBar.addEventListener("pointerdown", () => {
   seekingTimeline = true;
@@ -710,6 +1228,9 @@ elements.seekBar.addEventListener("pointercancel", () => {
 for (const button of elements.modeControls) {
   button.addEventListener("click", () => setPlayerMode(button.dataset.playerMode));
 }
+for (const button of elements.audioFormatControls) {
+  button.addEventListener("click", () => setAudioFormat(button.dataset.audioFormat));
+}
 elements.fullscreen.addEventListener("click", () => toggleFullscreen().catch(() => showToast("Full screen is unavailable")));
 elements.share.addEventListener("click", shareStream);
 elements.tapTarget.addEventListener("click", () => (playbackStarted ? scheduleControlsFade() : attemptPlayback(false)));
@@ -719,15 +1240,15 @@ elements.video.addEventListener("loadedmetadata", () => {
   showVideo();
   setState("buffering");
   updatePicture();
-  jumpToLive();
+  loadMediaIdentity();
 });
 elements.video.addEventListener("canplay", () => {
   if (playerMode !== "native") return;
   showVideo();
   if (!playbackStarted) {
-    seekToLiveEdge(true);
     attemptPlayback(true);
   }
+  loadMediaIdentity();
   updateLiveMetrics();
 });
 elements.video.addEventListener("play", () => {
@@ -739,13 +1260,19 @@ elements.video.addEventListener("pause", updateControls);
 elements.video.addEventListener("playing", () => setState("live"));
 elements.video.addEventListener("waiting", () => {
   elements.video.playbackRate = 1;
+  if (playerMode === "hls" && playbackStarted) {
+    applyAdaptiveAdjustment(latencyController?.noteStall());
+  }
   if (sourceReady) setState("buffering");
 });
 elements.video.addEventListener("error", () => {
   if (playerMode !== "native") return;
   showWaiting("Native playback could not start. Switch back to HLS.js to watch the stream.");
 });
-elements.video.addEventListener("timeupdate", updateLiveMetrics);
+elements.video.addEventListener("timeupdate", () => {
+  notePlaybackProgress();
+  updateLiveMetrics();
+});
 elements.video.addEventListener("progress", updateTimeline);
 elements.video.addEventListener("durationchange", updateTimeline);
 elements.video.addEventListener("seeking", updateTimeline);
@@ -755,7 +1282,7 @@ window.addEventListener("online", connect);
 window.addEventListener("offline", () => showWaiting("Reconnect to the internet and the player will rejoin automatically."));
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && sourceReady) {
-    if (followingLiveEdge) jumpToLive();
+    if (followingLiveEdge && playerMode !== "native") jumpToLive();
     else updateLiveMetrics();
   }
 });
@@ -774,4 +1301,5 @@ document.addEventListener("keydown", (event) => {
 
 showWaiting();
 loadEdgeIdentity();
+loadMediaIdentity();
 connect();
