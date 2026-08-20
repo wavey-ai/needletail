@@ -125,6 +125,43 @@ class QualificationPcmTest(unittest.TestCase):
         )
         self.assertEqual(saved_metadata, metadata)
 
+    def test_prepares_sixteen_logical_tracks_from_eight_canonical_sources(self) -> None:
+        sources, _ = self.make_sources()
+        output = self.work / "prepared-16"
+
+        metadata = PREPARE.prepare_fixtures(
+            sources,
+            output,
+            output_track_count=16,
+            target_frames=25,
+        )
+
+        self.assertEqual(metadata["track_count"], 16)
+        self.assertEqual(metadata["canonical_source_track_count"], 8)
+        self.assertEqual(len(metadata["tracks"]), 16)
+        self.assertEqual(metadata["tracks"][8]["canonical_source_index"], 0)
+        self.assertEqual(metadata["tracks"][15]["canonical_source_index"], 7)
+        self.assertEqual(metadata["tracks"][8]["reuses_output_track"], 0)
+        self.assertEqual(
+            (output / "source-track-00.s24le").read_bytes(),
+            (output / "source-track-08.s24le").read_bytes(),
+        )
+        self.assertEqual(
+            len((output / "manifest.sha256").read_text().splitlines()),
+            16,
+        )
+
+    def test_rejects_unsupported_logical_track_count(self) -> None:
+        sources, _ = self.make_sources()
+
+        with self.assertRaisesRegex(PREPARE.PreparationError, "track count"):
+            PREPARE.prepare_fixtures(
+                sources,
+                self.work / "prepared-3",
+                output_track_count=3,
+                target_frames=25,
+            )
+
     def test_rejects_non_pcm_format_without_conversion(self) -> None:
         sources, _ = self.make_sources()
         write_pcm_wav(

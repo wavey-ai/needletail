@@ -14,9 +14,21 @@ cp "${ROOT}/target/multicloud-qualification/compiled-plan.json" \
 cp "${ROOT}/target/multicloud-qualification/relay-program.json" \
   "${MAP_DIR}/relay-program.json"
 
-gcloud compute instances list \
-  --project="${PROJECT}" \
-  --format=json >"${MAP_DIR}/gcp-inventory.json"
+has_gcp_node=0
+for node in "${ALL_NODES[@]}"; do
+  if [[ "$(node_provider "${node}")" == gcp ]]; then
+    has_gcp_node=1
+    break
+  fi
+done
+if ((has_gcp_node != 0)); then
+  : "${PROJECT:?GCP_PROJECT is required when the inventory contains GCP nodes}"
+  gcloud compute instances list \
+    --project="${PROJECT}" \
+    --format=json >"${MAP_DIR}/gcp-inventory.json"
+else
+  printf '[]\n' >"${MAP_DIR}/gcp-inventory.json"
+fi
 azure_inventory >"${MAP_DIR}/azure-inventory.json"
 
 capture_node() {

@@ -77,10 +77,10 @@
         "level": 0,
         "role": "origin",
         "failure_domain": {
-          "provider": "gcp",
-          "region": "europe-west2",
-          "asn": 15169,
-          "zone": "europe-west2-c"
+          "provider": "azure",
+          "region": "uksouth",
+          "asn": 8075,
+          "zone": "uksouth-unzoned"
         }
       },
       {
@@ -100,9 +100,9 @@
         "role": "backbone",
         "failure_domain": {
           "provider": "azure",
-          "region": "japaneast",
+          "region": "eastus",
           "asn": 8075,
-          "zone": "japaneast-unzoned"
+          "zone": "eastus-unzoned"
         }
       },
       {
@@ -155,9 +155,9 @@
         "role": "playback_edge",
         "failure_domain": {
           "provider": "azure",
-          "region": "australiaeast",
+          "region": "eastus",
           "asn": 8075,
-          "zone": "australiaeast-unzoned"
+          "zone": "eastus-unzoned"
         }
       },
       {
@@ -166,9 +166,9 @@
         "role": "regional_relay",
         "failure_domain": {
           "provider": "azure",
-          "region": "australiaeast",
+          "region": "eastus",
           "asn": 8075,
-          "zone": "australiaeast-unzoned"
+          "zone": "eastus-unzoned"
         }
       },
       {
@@ -177,9 +177,9 @@
         "role": "playback_edge",
         "failure_domain": {
           "provider": "azure",
-          "region": "japaneast",
+          "region": "eastus",
           "asn": 8075,
-          "zone": "japaneast-unzoned"
+          "zone": "eastus-unzoned"
         }
       }
     ],

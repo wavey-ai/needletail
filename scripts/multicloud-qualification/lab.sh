@@ -23,7 +23,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/multicloud-qualification/lab.sh up|status|down
 
-Creates the six GCP and four Azure nodes used by the Needletail multicloud
+Creates the five GCP and five Azure nodes used by the Needletail multicloud
 qualification. Re-running `up` reuses matching resources. GCP instances delete
 themselves after six hours by default; Azure VMs receive a six-hour automatic
 shutdown schedule. `down` deletes the ten VMs and the Azure resource group but
@@ -467,7 +467,7 @@ ensure_azure_rule() {
 gcp_inventory() {
   gcloud compute instances list \
     --project="${PROJECT}" \
-    --filter='name=(nt-contrib-lon nt-edge-lon nt-relay-ams nt-relay-osa nt-edge-tyo nt-edge-syd)' \
+    --filter='name=(nt-edge-lon nt-relay-ams nt-relay-osa nt-edge-tyo nt-edge-syd)' \
     --format=json
 }
 
@@ -527,7 +527,6 @@ write_inventory() {
       azure_group: $azure_group,
       nodes: (
         [
-          ["contrib-london", "nt-contrib-lon"],
           ["edge-london", "nt-edge-lon"],
           ["relay-primary-amsterdam", "nt-relay-ams"],
           ["relay-regional-osaka", "nt-relay-osa"],
@@ -549,6 +548,7 @@ write_inventory() {
           )
         + (
           [
+            ["contrib-london", "nt-contrib-lon"],
             ["relay-secondary-japan", "nt-az-relay-jpe"],
             ["edge-japan", "nt-az-edge-jpe"],
             ["edge-australia", "nt-az-edge-aue"],
@@ -628,15 +628,12 @@ up() {
   ensure_gcp_subnet "${NETWORK}-tyo" asia-northeast1 10.84.40.0/24
   ensure_gcp_subnet "${NETWORK}-syd" australia-southeast1 10.84.60.0/24
 
-  ensure_gcp_address needletail-ingest-london europe-west2
   ensure_gcp_address needletail-edge-london europe-west2
   ensure_gcp_address needletail-relay-amsterdam europe-west4
   ensure_gcp_address needletail-relay-osaka asia-northeast2
   ensure_gcp_address needletail-edge-tokyo asia-northeast1
   ensure_gcp_address needletail-edge-sydney australia-southeast1
 
-  ensure_gcp_instance nt-contrib-lon europe-west2-c "${NETWORK}-lon" \
-    10.84.10.5 needletail-ingest-london contributor n2-standard-2
   ensure_gcp_instance nt-edge-lon europe-west2-c "${NETWORK}-lon" \
     10.84.10.6 needletail-edge-london playback-edge n2-standard-2
   ensure_gcp_instance nt-relay-ams europe-west4-a "${NETWORK}-ams" \
@@ -650,12 +647,13 @@ up() {
     "${NEEDLETAIL_GCP_SYDNEY_MACHINE_TYPE:-e2-standard-2}"
 
   ensure_azure_group || return $?
-  ensure_azure_network japaneast 10.71
-  ensure_azure_network australiaeast 10.74
-  ensure_azure_vm nt-az-relay-jpe japaneast 10.71.1.4
-  ensure_azure_vm nt-az-edge-jpe japaneast 10.71.1.5
-  ensure_azure_vm nt-az-edge-aue australiaeast 10.74.1.4
-  ensure_azure_vm nt-az-relay-aue australiaeast 10.74.1.5
+  ensure_azure_network uksouth 10.70
+  ensure_azure_network eastus 10.71
+  ensure_azure_vm nt-contrib-lon uksouth 10.70.1.4
+  ensure_azure_vm nt-az-relay-jpe eastus 10.71.1.4
+  ensure_azure_vm nt-az-edge-jpe eastus 10.71.1.5
+  ensure_azure_vm nt-az-edge-aue eastus 10.71.1.6
+  ensure_azure_vm nt-az-relay-aue eastus 10.71.1.7
 
   local shutdown_time
   shutdown_time="$(date -u -v+6H +%H%M 2>/dev/null || date -u -d '+6 hours' +%H%M)"
@@ -667,11 +665,12 @@ up() {
       --location="${location}" \
       --time="${shutdown_time}" \
       --output none
-  done <<'EOF'
-nt-az-relay-jpe japaneast
-nt-az-edge-jpe japaneast
-nt-az-edge-aue australiaeast
-nt-az-relay-aue australiaeast
+done <<'EOF'
+nt-contrib-lon uksouth
+nt-az-relay-jpe eastus
+nt-az-edge-jpe eastus
+nt-az-edge-aue eastus
+nt-az-relay-aue eastus
 EOF
 
   local peer_sources
@@ -679,7 +678,7 @@ EOF
     {
       printf '%s/32\n' "${operator}"
       gcp_inventory | jq -r '.[].networkInterfaces[0].accessConfigs[0].natIP + "/32"'
-      for vm in nt-az-relay-jpe nt-az-edge-jpe nt-az-edge-aue nt-az-relay-aue; do
+      for vm in nt-contrib-lon nt-az-relay-jpe nt-az-edge-jpe nt-az-edge-aue nt-az-relay-aue; do
         printf '%s/32\n' "$(azure_public_ip "${vm}")"
       done
     } | sort -u | paste -sd, -
@@ -690,7 +689,7 @@ EOF
 
   local azure_sources
   azure_sources="$(tr ',' ' ' <<<"${peer_sources}")"
-  for location in japaneast australiaeast; do
+  for location in uksouth eastus; do
     ensure_azure_rule "${location}" NeedletailControlAndMedia 110 '*' \
       "${azure_sources}" "22 443 2379-2380 19443-19547 22000-22699 27000-27399 29100-29600"
   done

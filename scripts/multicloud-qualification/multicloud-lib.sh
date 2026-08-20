@@ -3,9 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/scripts/qualification-config.sh"
-: "${GCP_PROJECT:?set GCP_PROJECT to the qualification project}"
 : "${AZURE_GROUP:?set AZURE_GROUP to the qualification resource group}"
-PROJECT="${GCP_PROJECT}"
+PROJECT="${GCP_PROJECT:-}"
 AZ_BIN="${AZ_BIN:-az}"
 AZURE_ADMIN_USERNAME="${AZURE_ADMIN_USERNAME:-needletail-admin}"
 AZURE_KEY="${AZURE_SSH_KEY:-${ROOT}/target/multicloud-qualification/ssh/azure_ed25519}"
@@ -21,9 +20,19 @@ inventory_public_ip() {
     "${LAB_INVENTORY}"
 }
 
+inventory_value() {
+  local node="$1"
+  local field="$2"
+  [[ -f "${LAB_INVENTORY}" ]] || return 1
+  jq -er --arg node "${node}" --arg field "${field}" \
+    '.nodes[] | select(.node_id == $node) | .[$field]' \
+    "${LAB_INVENTORY}"
+}
+
 AZURE_RELAY_HOST="${AZURE_RELAY_HOST:-$(inventory_public_ip relay-secondary-japan 2>/dev/null || true)}"
 AZURE_EDGE_HOST="${AZURE_EDGE_HOST:-$(inventory_public_ip edge-australia 2>/dev/null || true)}"
 AZURE_JAPAN_EDGE_HOST="${AZURE_JAPAN_EDGE_HOST:-$(inventory_public_ip edge-japan 2>/dev/null || true)}"
+AZURE_CONTRIB_HOST="${AZURE_CONTRIB_HOST:-$(inventory_public_ip contrib-london 2>/dev/null || true)}"
 AZURE_AUSTRALIA_RELAY_HOST="${AZURE_AUSTRALIA_RELAY_HOST:-$(inventory_public_ip relay-regional-australia 2>/dev/null || true)}"
 
 azure_inventory() {
@@ -35,56 +44,24 @@ azure_inventory() {
 }
 
 node_provider() {
-  case "$1" in
-    contrib-london|edge-london|relay-primary-amsterdam|relay-regional-osaka|edge-tokyo|edge-sydney)
-      printf 'gcp\n'
-      ;;
-    relay-secondary-japan|relay-regional-australia|edge-japan|edge-australia)
-      printf 'azure\n'
-      ;;
-    *)
-      return 2
-      ;;
+  local provider
+  provider="$(inventory_value "$1" provider 2>/dev/null || true)"
+  case "${provider}" in
+    azure|gcp) printf '%s\n' "${provider}" ;;
+    *) return 2 ;;
   esac
 }
 
 node_host() {
-  case "$1" in
-    contrib-london) printf 'nt-contrib-lon\n' ;;
-    edge-london) printf 'nt-edge-lon\n' ;;
-    relay-primary-amsterdam) printf 'nt-relay-ams\n' ;;
-    relay-regional-osaka) printf 'nt-relay-osa\n' ;;
-    edge-tokyo) printf 'nt-edge-tyo\n' ;;
-    edge-sydney) printf 'nt-edge-syd\n' ;;
-    relay-secondary-japan)
-      [[ -n "${AZURE_RELAY_HOST}" ]] || return 2
-      printf '%s\n' "${AZURE_RELAY_HOST}"
-      ;;
-    relay-regional-australia)
-      [[ -n "${AZURE_AUSTRALIA_RELAY_HOST}" ]] || return 2
-      printf '%s\n' "${AZURE_AUSTRALIA_RELAY_HOST}"
-      ;;
-    edge-japan)
-      [[ -n "${AZURE_JAPAN_EDGE_HOST}" ]] || return 2
-      printf '%s\n' "${AZURE_JAPAN_EDGE_HOST}"
-      ;;
-    edge-australia)
-      [[ -n "${AZURE_EDGE_HOST}" ]] || return 2
-      printf '%s\n' "${AZURE_EDGE_HOST}"
-      ;;
-    *) return 2 ;;
-  esac
+  if [[ "$(node_provider "$1")" == azure ]]; then
+    inventory_value "$1" public_ip
+  else
+    inventory_value "$1" name
+  fi
 }
 
 node_zone() {
-  case "$1" in
-    contrib-london|edge-london) printf 'europe-west2-c\n' ;;
-    relay-primary-amsterdam) printf 'europe-west4-a\n' ;;
-    relay-regional-osaka) printf 'asia-northeast2-b\n' ;;
-    edge-tokyo) printf 'asia-northeast1-c\n' ;;
-    edge-sydney) printf 'australia-southeast1-b\n' ;;
-    *) return 2 ;;
-  esac
+  inventory_value "$1" zone
 }
 
 node_service() {
@@ -121,6 +98,10 @@ node_exec() {
   local node="$1"
   shift
   if [[ "$(node_provider "${node}")" == gcp ]]; then
+    [[ -n "${PROJECT}" ]] || {
+      echo "GCP_PROJECT is required for GCP inventory nodes" >&2
+      return 2
+    }
     gcloud compute ssh "$(node_host "${node}")" \
       --project "${PROJECT}" \
       --zone "$(node_zone "${node}")" \
@@ -140,6 +121,10 @@ node_copy_to() {
   local source="$2"
   local destination="$3"
   if [[ "$(node_provider "${node}")" == gcp ]]; then
+    [[ -n "${PROJECT}" ]] || {
+      echo "GCP_PROJECT is required for GCP inventory nodes" >&2
+      return 2
+    }
     gcloud compute scp "${source}" \
       "$(node_host "${node}"):${destination}" \
       --project "${PROJECT}" \
@@ -161,6 +146,10 @@ node_copy_from() {
   local source="$2"
   local destination="$3"
   if [[ "$(node_provider "${node}")" == gcp ]]; then
+    [[ -n "${PROJECT}" ]] || {
+      echo "GCP_PROJECT is required for GCP inventory nodes" >&2
+      return 2
+    }
     gcloud compute scp \
       "$(node_host "${node}"):${source}" \
       "${destination}" \

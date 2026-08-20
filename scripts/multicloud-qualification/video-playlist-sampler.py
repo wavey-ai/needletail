@@ -64,7 +64,10 @@ def main() -> int:
     parser.add_argument("--interval-ms", type=int, default=200)
     parser.add_argument("--port", type=int, default=19444)
     parser.add_argument("--path", default="/live/1/stream.m3u8")
-    parser.add_argument("--ca", default="/etc/needletail/tls/fullchain.pem")
+    parser.add_argument(
+        "--ca",
+        default="/usr/local/share/ca-certificates/needletail-qualification.crt",
+    )
     parser.add_argument("--server-name", required=True)
     parser.add_argument("--status-file", type=Path, required=True)
     parser.add_argument("--stop-file", type=Path)

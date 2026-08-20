@@ -8,12 +8,13 @@ mkdir -p "${RESULT_DIR}"
 
 azure_inventory >"${RESULT_DIR}/azure-inventory.json"
 jq -e '
-  length == 4
+  length == 5
   and all(.power_state == "VM running")
   and any(.name == "nt-az-relay-jpe")
   and any(.name == "nt-az-edge-aue")
   and any(.name == "nt-az-edge-jpe")
   and any(.name == "nt-az-relay-aue")
+  and any(.name == "nt-contrib-lon")
 ' "${RESULT_DIR}/azure-inventory.json" >/dev/null
 
 pids=()

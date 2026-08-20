@@ -149,6 +149,17 @@ pub fn assemble_operations_snapshot(
         |value| string_key(value, &["node_id", "peer_node_id", "peer", "connection_id"]),
         MAX_STREAMS,
     );
+    let link_observations = unique_objects(
+        good.iter()
+            .flat_map(|snapshot| array_values(snapshot, "link_observations")),
+        |value| string_key(value, &["from_node_id", "to_node_id", "role"]),
+        MAX_STREAMS,
+    );
+    let topology_links = enrich_topology_links(
+        topology_links,
+        &link_observations,
+        now_unix_ms,
+    );
     let alerts = recent_unique_events(
         good.iter()
             .flat_map(|snapshot| array_values(snapshot, "alerts")),
@@ -223,6 +234,10 @@ pub fn assemble_operations_snapshot(
     output.insert("relay_nodes".to_owned(), Value::Array(relay_nodes));
     output.insert("streams".to_owned(), Value::Array(streams));
     output.insert("connections".to_owned(), Value::Array(connections));
+    output.insert(
+        "link_observations".to_owned(),
+        Value::Array(link_observations),
+    );
     output.insert("alerts".to_owned(), Value::Array(alerts));
     output.insert("activity".to_owned(), Value::Array(activity));
     output.insert("aggregate".to_owned(), aggregate);
@@ -252,6 +267,69 @@ pub fn assemble_operations_snapshot(
         .or_insert_with(|| Value::Array(Vec::new()));
 
     Ok(Value::Object(output))
+}
+
+fn enrich_topology_links(
+    topology_links: Vec<Value>,
+    observations: &[Value],
+    now_unix_ms: u64,
+) -> Vec<Value> {
+    let observations = observations
+        .iter()
+        .filter_map(|observation| {
+            let key = string_key(observation, &["from_node_id", "to_node_id", "role"])?;
+            Some((key, observation))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    topology_links
+        .into_iter()
+        .map(|mut link| {
+            let Some(object) = link.as_object_mut() else {
+                return link;
+            };
+            let Some(key) = string_key(&Value::Object(object.clone()), &["from_node_id", "to_node_id", "role"]) else {
+                return link;
+            };
+            let Some(observation) = observations.get(&key).and_then(|value| value.as_object()) else {
+                object.insert("reporting".to_owned(), Value::String("unreported".to_owned()));
+                return link;
+            };
+            let observed_unix_ms = observation
+                .get("observed_unix_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let fresh_for_ms = observation
+                .get("fresh_for_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let fresh = observed_unix_ms > 0
+                && fresh_for_ms > 0
+                && now_unix_ms.saturating_sub(observed_unix_ms) <= fresh_for_ms;
+            object.insert(
+                "reporting".to_owned(),
+                Value::String(if fresh { "reported" } else { "stale" }.to_owned()),
+            );
+            object.insert("observed_unix_ms".to_owned(), Value::from(observed_unix_ms));
+            if fresh {
+                for field in [
+                    "state",
+                    "method",
+                    "rtt_ms",
+                    "jitter_ms",
+                    "loss_percent",
+                    "throughput_bps",
+                    "received_bytes_total",
+                    "sample_count",
+                ] {
+                    if let Some(value) = observation.get(field) {
+                        object.insert(field.to_owned(), value.clone());
+                    }
+                }
+            }
+            link
+        })
+        .collect()
 }
 
 pub fn snapshot_matches_controller(
@@ -557,6 +635,7 @@ mod tests {
                 "nodes": [{"node_id": "duplicate-that-must-not-be-imported"}],
                 "edge_services": [{"node_id": node_id}],
                 "streams": [],
+                "link_observations": [],
                 "alerts": [],
                 "activity": [],
                 "orchestration": {}
@@ -593,6 +672,47 @@ mod tests {
             11_000,
             5_000
         ));
+    }
+
+    #[test]
+    fn joins_fresh_link_observations_into_configured_topology() {
+        let mut child = source("edge-tokyo", 10_000);
+        child.snapshot.as_mut().unwrap()["link_observations"] = json!([{
+            "from_node_id": "relay-osaka",
+            "to_node_id": "edge-tokyo",
+            "role": "primary",
+            "state": "measured",
+            "method": "icmp_and_udp_ingress",
+            "rtt_ms": 8.25,
+            "jitter_ms": 0.5,
+            "loss_percent": 0.0,
+            "throughput_bps": 1_500_000,
+            "received_bytes_total": 12_000,
+            "sample_count": 10,
+            "observed_unix_ms": 10_400,
+            "fresh_for_ms": 10_000
+        }]);
+        let snapshot = assemble_operations_snapshot(
+            &controller(),
+            &[source("edge-london", 10_000), child],
+            None,
+            &[],
+            vec![json!({
+                "from_node_id": "relay-osaka",
+                "to_node_id": "edge-tokyo",
+                "role": "primary",
+                "state": "configured"
+            })],
+            10_500,
+            5_000,
+        )
+        .unwrap();
+
+        let link = &snapshot["topology_links"][0];
+        assert_eq!(link["reporting"], "reported");
+        assert_eq!(link["state"], "measured");
+        assert_eq!(link["rtt_ms"], 8.25);
+        assert_eq!(link["throughput_bps"], 1_500_000);
     }
 
     #[test]

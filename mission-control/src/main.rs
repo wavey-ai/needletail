@@ -657,6 +657,12 @@ mod app {
         tone: &'static str,
         throughput_bps: Option<u64>,
         rtt_us: Option<u64>,
+        rtt_ms: Option<f64>,
+        jitter_ms: Option<f64>,
+        loss_percent: Option<f64>,
+        sample_count: u64,
+        observed_unix_ms: u64,
+        reporting: String,
         generation: Option<u64>,
         path: String,
     }
@@ -669,12 +675,24 @@ mod app {
         top: f64,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    struct CloudRegionLocation {
+        label: &'static str,
+        provider: &'static str,
+        latitude: f64,
+        longitude: f64,
+    }
+
     #[component]
     fn NetworkMap(
         edge: ReadSignal<Option<MeshStatus>>,
         rates: ReadSignal<TrafficRates>,
     ) -> impl IntoView {
         let (selected_node, set_selected_node) = signal(None::<String>);
+        let (map_zoom, set_map_zoom) = signal(1.0_f64);
+        let (map_pan_x, set_map_pan_x) = signal(0.0_f64);
+        let (map_pan_y, set_map_pan_y) = signal(0.0_f64);
+        let (drag_start, set_drag_start) = signal(None::<(f64, f64, f64, f64)>);
         view! {
             <div class="network-tool">
                 <div class="network-toolbar">
@@ -688,7 +706,7 @@ mod app {
                         <strong>{move || format_rate(RateMetric::Delivery, rates.get().delivery_bps)}</strong>
                         <span>"delivery"</span>
                         <strong class="collector-summary">{move || edge.get()
-                            .and_then(|status| verified_collector_node_id(&status.orchestration.collector, status.updated_unix_ms))
+                            .and_then(|status| verified_collector_location(&status))
                             .unwrap_or_else(|| "unreported".to_owned())}</strong>
                         <span>"collector"</span>
                     </div>
@@ -700,7 +718,50 @@ mod app {
                     </div>
                 </div>
                 <div class="network-map-layout">
-                    <div class="world-map" aria-label="Deployed Needletail nodes">
+                    <div
+                        class=move || if drag_start.get().is_some() { "world-map dragging" } else { "world-map" }
+                        tabindex="0"
+                        aria-label="Interactive Needletail mesh topology. Drag to pan, use a wheel or trackpad gesture to zoom, and select a node for status."
+                        on:pointerdown=move |event| {
+                            event.prevent_default();
+                            set_drag_start.set(Some((
+                                event.client_x() as f64,
+                                event.client_y() as f64,
+                                map_pan_x.get(),
+                                map_pan_y.get(),
+                            )));
+                        }
+                        on:pointermove=move |event| {
+                            if let Some((start_x, start_y, origin_x, origin_y)) = drag_start.get() {
+                                set_map_pan_x.set(origin_x + event.client_x() as f64 - start_x);
+                                set_map_pan_y.set(origin_y + event.client_y() as f64 - start_y);
+                            }
+                        }
+                        on:pointerup=move |_| set_drag_start.set(None)
+                        on:pointercancel=move |_| set_drag_start.set(None)
+                        on:pointerleave=move |_| set_drag_start.set(None)
+                        on:wheel=move |event| {
+                            event.prevent_default();
+                            let factor = (-event.delta_y() * 0.0015).exp();
+                            set_map_zoom.update(|value| *value = (*value * factor).clamp(1.0, 3.0));
+                        }
+                        on:dblclick=move |event| {
+                            event.prevent_default();
+                            set_map_zoom.update(|value| *value = (*value + 0.5).min(3.0));
+                        }
+                    >
+                        <div class="map-zoom-controls" aria-label="Topology zoom">
+                            <span>"VIEW"</span>
+                            <button class:active=move || (map_zoom.get() - 1.0).abs() < 0.01 on:click=move |event| { event.stop_propagation(); set_map_zoom.set(1.0); }>"100%"</button>
+                            <button class:active=move || (map_zoom.get() - 1.5).abs() < 0.01 on:click=move |event| { event.stop_propagation(); set_map_zoom.set(1.5); }>"150%"</button>
+                            <button class:active=move || (map_zoom.get() - 2.0).abs() < 0.01 on:click=move |event| { event.stop_propagation(); set_map_zoom.set(2.0); }>"200%"</button>
+                            <button class="map-reset" on:click=move |event| { event.stop_propagation(); set_map_zoom.set(1.0); set_map_pan_x.set(0.0); set_map_pan_y.set(0.0); }>"RESET"</button>
+                            <small>{move || format!("{:.0}% · DRAG TO PAN · PINCH OR WHEEL TO ZOOM", map_zoom.get() * 100.0)}</small>
+                        </div>
+                        <div
+                            class="world-map-stage"
+                            style=move || format!("transform: translate3d({:.1}px, {:.1}px, 0) scale({:.3});", map_pan_x.get(), map_pan_y.get(), map_zoom.get())
+                        >
                         <img src="/world-map.png" alt="" aria-hidden="true" />
                         <svg class="network-links" viewBox="0 0 1000 500" preserveAspectRatio="none" aria-hidden="true">
                             <For
@@ -729,10 +790,11 @@ mod app {
                                 let selected_id = representative.node_id.clone();
                                 let node_names = cluster.nodes.iter().map(|node| node.node_id.as_str()).collect::<Vec<_>>().join(", ");
                                 let region = nonempty_owned(representative.region.clone(), "region pending");
+                                let location = node_location_label(&representative);
                                 let label = if cluster.nodes.len() == 1 {
-                                    representative.node_id.clone()
+                                    location.clone()
                                 } else {
-                                    format!("{} · {} nodes", region, cluster.nodes.len())
+                                    format!("{} · {} nodes", location, cluster.nodes.len())
                                 };
                                 let tone = edge.get().map(|status| cluster_health_tone(&status, &cluster)).unwrap_or("warn");
                                 let is_collector = edge.get().is_some_and(|status| {
@@ -748,7 +810,7 @@ mod app {
                                     <button
                                         class=format!("map-node {tone} {}", if is_collector { "collector" } else { "" })
                                         style=format!("left:{:.3}%;top:{:.3}%", cluster.left, cluster.top)
-                                        title=format!("{} · {}", node_names, region)
+                                        title=format!("{} · {} · {}", location, region, node_names)
                                         on:click=move |_| set_selected_node.set(Some(selected_id.clone()))
                                     >
                                         <i></i><span>{if is_collector { format!("{label} · collector") } else { label }}</span>
@@ -761,6 +823,7 @@ mod app {
                         </div>
                         <div class="map-topology-notice" class:hidden=move || !edge.get().is_some_and(|status| network_links(&status).is_empty())>
                             "Topology links unavailable"
+                        </div>
                         </div>
                     </div>
                     <MapNodeDetail edge selected=selected_node />
@@ -781,7 +844,7 @@ mod app {
                 <div class="table-shell">
                     <table>
                         <thead>
-                            <tr><th>"From"</th><th>"To"</th><th>"Lane"</th><th>"State"</th><th>"RTT"</th><th>"Throughput"</th><th>"Generation"</th></tr>
+                            <tr><th>"From"</th><th>"To"</th><th>"Lane"</th><th>"State"</th><th>"RTT"</th><th>"Jitter"</th><th>"Loss"</th><th>"Throughput"</th><th>"Samples"</th><th>"Observed"</th><th>"Generation"</th></tr>
                         </thead>
                         <tbody>
                             <For
@@ -790,12 +853,16 @@ mod app {
                                 let(link)
                             >
                                 <tr>
-                                    <td class="strong-cell">{link.from.node_id}</td>
-                                    <td class="strong-cell">{link.to.node_id}</td>
+                                    <td class="strong-cell link-node"><span>{node_location_label(&link.from)}</span><small>{link.from.node_id.clone()}</small></td>
+                                    <td class="strong-cell link-node"><span>{node_location_label(&link.to)}</span><small>{link.to.node_id.clone()}</small></td>
                                     <td>{link.role}</td>
                                     <td><StatePill state=nonempty_owned(link.state, "unreported") /></td>
-                                    <td class="mono-cell">{format_optional_duration(link.rtt_us)}</td>
+                                    <td class="mono-cell">{link.rtt_ms.map(|value| format!("{value:.1} ms")).or_else(|| link.rtt_us.map(format_duration_us)).unwrap_or_else(|| "unreported".to_owned())}</td>
+                                    <td class="mono-cell">{link.jitter_ms.map(|value| format!("{value:.1} ms")).unwrap_or_else(|| "unreported".to_owned())}</td>
+                                    <td class="mono-cell">{link.loss_percent.map(|value| format!("{value:.2}%")).unwrap_or_else(|| "unreported".to_owned())}</td>
                                     <td class="mono-cell">{link.throughput_bps.map(format_bps).unwrap_or_else(|| "unreported".to_owned())}</td>
+                                    <td class="mono-cell">{link.sample_count}</td>
+                                    <td class="mono-cell">{if link.observed_unix_ms > 0 { snapshot_age_ms(link.observed_unix_ms).map(format_age_ms).unwrap_or_else(|| "now".to_owned()) } else { link.reporting.clone() }}</td>
                                     <td class="mono-cell">{optional_u64(link.generation)}</td>
                                 </tr>
                             </For>
@@ -854,16 +921,17 @@ mod app {
                                     <div class="map-detail-title">
                                         <span class=format!("state-mark {tone}")></span>
                                         <div>
-                                            <strong>{node.node_id.clone()}</strong>
-                                            <span>{format!("{} · {}", nonempty_owned(node.region.clone(), "Region pending"), collector_role)}</span>
+                                            <strong>{node_location_label(node)}</strong>
+                                            <span>{format!("{} · {}", node.node_id, collector_role)}</span>
                                         </div>
                                     </div>
                                     <dl>
                                         <div><dt>"Status"</dt><dd>{node_health_label(status, node)}</dd></div>
+                                        <div><dt>"Node ID"</dt><dd>{node.node_id.clone()}</dd></div>
                                         <div><dt>"Role"</dt><dd>{nonempty_owned(node.role.clone(), "unreported")}</dd></div>
-                                        <div><dt>"Provider / zone"</dt><dd>{format!("{} / {}", nonempty_owned(node.provider.clone(), "unreported"), nonempty_owned(node.zone.clone(), "unreported"))}</dd></div>
+                                        <div><dt>"Cloud region"</dt><dd>{format!("{} / {}", node_provider_label(node), nonempty_owned(node.region.clone(), "unreported"))}</dd></div>
                                         <div><dt>"Nodes at location"</dt><dd>{cluster_size}</dd></div>
-                                        <div><dt>"Location"</dt><dd>{format_node_location(node)}</dd></div>
+                                        <div><dt>"Coordinates"</dt><dd>{format_node_coordinates(node)}</dd></div>
                                         <div><dt>"Snapshot"</dt><dd>{node_snapshot_label(status, node)}</dd></div>
                                         <div><dt>"Active streams"</dt><dd>{node.active_streams}</dd></div>
                                         <div><dt>"Contributor streams"</dt><dd>{node.contributor_streams}</dd></div>
@@ -1182,7 +1250,7 @@ mod app {
                 <PanelTitle title="Playback-edge publications" detail="Canonical object identity, contiguous availability, gaps, and staleness" />
                 <div class="table-shell">
                     <table>
-                        <thead><tr><th>"Stream"</th><th>"Node"</th><th>"Source epoch"</th><th>"Epoch activation"</th><th>"Canonical head"</th><th>"Contiguous"</th><th>"Lag"</th><th>"Known gaps"</th><th>"Last ingest"</th><th>"State"</th></tr></thead>
+                        <thead><tr><th>"Stream"</th><th>"Node"</th><th>"Listen"</th><th>"Source epoch"</th><th>"Epoch activation"</th><th>"Canonical head"</th><th>"Contiguous"</th><th>"Lag"</th><th>"Known gaps"</th><th>"Last ingest"</th><th>"State"</th></tr></thead>
                         <tbody>
                             <For
                                 each=move || edge.get().map(|status| bounded_edge_streams(&status)).unwrap_or_default()
@@ -1191,7 +1259,15 @@ mod app {
                             >
                                 <tr>
                                     <td class="strong-cell">{nonempty_owned(stream.stream_id_text.clone(), "unnamed")}</td>
-                                    <td>{nonempty_owned(stream.node_id.clone(), "edge")}</td>
+                                    <td>{match stream.node_id.as_str() {
+                                        "edge-london" => "Canada East".to_owned(),
+                                        "edge-tokyo" => "Korea Central".to_owned(),
+                                        "edge-sydney" => "Australia Southeast".to_owned(),
+                                        "edge-australia" => "Brazil South".to_owned(),
+                                        "edge-japan" => "East Asia".to_owned(),
+                                        _ => nonempty_owned(stream.node_id.clone(), "edge"),
+                                    }}</td>
+                                    <td><EdgePlayerLinks edge node_id=stream.node_id.clone() stream_id=stream.stream_id_text.clone() /></td>
                                     <td>{format_publication_value(stream.canonical_epoch)}</td>
                                     <td class="mono-cell">{format_publication_duration(stream.canonical_epoch_activation_delay_us)}</td>
                                     <td>{format_publication_value(stream.head_object)}</td>
@@ -1208,6 +1284,59 @@ mod app {
                 {move || edge.get().is_some_and(|status| status.streams.is_empty()).then(|| view! { <p class="awaiting">"Waiting for playback-edge stream telemetry."</p> })}
             </section>
         }
+    }
+
+    #[component]
+    fn EdgePlayerLinks(
+        edge: ReadSignal<Option<MeshStatus>>,
+        node_id: String,
+        stream_id: String,
+    ) -> impl IntoView {
+        let flac_node = node_id.clone();
+        let flac_stream = stream_id.clone();
+        let opus_node = node_id;
+        let opus_stream = stream_id;
+        view! {
+            <div class="player-links">
+                <a
+                    class="player-link lossless"
+                    href=move || edge_player_url(edge.get(), &flac_node, &flac_stream, "flac")
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open the lossless player on this regional edge"
+                >"FLAC"</a>
+                <a
+                    class="player-link"
+                    href=move || edge_player_url(edge.get(), &opus_node, &opus_stream, "opus")
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open the Opus player on this regional edge"
+                >"OPUS"</a>
+            </div>
+        }
+    }
+
+    fn edge_player_url(
+        status: Option<MeshStatus>,
+        node_id: &str,
+        stream_id: &str,
+        format: &str,
+    ) -> String {
+        status
+            .and_then(|status| {
+                status
+                    .nodes
+                    .into_iter()
+                    .find(|node| node.node_id == node_id)
+                    .and_then(|node| node.public_endpoint)
+            })
+            .map(|endpoint| {
+                format!(
+                    "{}/{stream_id}?format={format}",
+                    endpoint.trim_end_matches('/')
+                )
+            })
+            .unwrap_or_else(|| "#".to_owned())
     }
 
     #[component]
@@ -2330,6 +2459,12 @@ mod app {
                     ),
                     throughput_bps: link.throughput_bps,
                     rtt_us: link.rtt_us,
+                    rtt_ms: link.rtt_ms,
+                    jitter_ms: link.jitter_ms,
+                    loss_percent: link.loss_percent,
+                    sample_count: link.sample_count,
+                    observed_unix_ms: link.observed_unix_ms,
+                    reporting: nonempty_owned(link.reporting.clone(), "unreported"),
                     generation: link.generation,
                     path,
                 })
@@ -2354,7 +2489,50 @@ mod app {
         )
     }
 
-    fn node_coordinates(node: &EdgeNode) -> Option<(f64, f64)> {
+    fn cloud_region_location(region: &str) -> Option<CloudRegionLocation> {
+        let region = region.trim().to_ascii_lowercase();
+        match region.as_str() {
+            "canadaeast" => Some(CloudRegionLocation {
+                label: "Canada East",
+                provider: "Azure",
+                latitude: 46.8139,
+                longitude: -71.2080,
+            }),
+            "centralus" => Some(CloudRegionLocation {
+                label: "Central US",
+                provider: "Azure",
+                latitude: 41.5868,
+                longitude: -93.6250,
+            }),
+            "brazilsouth" => Some(CloudRegionLocation {
+                label: "Brazil South",
+                provider: "Azure",
+                latitude: -23.5505,
+                longitude: -46.6333,
+            }),
+            "eastasia" => Some(CloudRegionLocation {
+                label: "East Asia",
+                provider: "Azure",
+                latitude: 22.3193,
+                longitude: 114.1694,
+            }),
+            "australiasoutheast" => Some(CloudRegionLocation {
+                label: "Australia Southeast",
+                provider: "Azure",
+                latitude: -37.8136,
+                longitude: 144.9631,
+            }),
+            "koreacentral" => Some(CloudRegionLocation {
+                label: "Korea Central",
+                provider: "Azure",
+                latitude: 37.5665,
+                longitude: 126.9780,
+            }),
+            _ => None,
+        }
+    }
+
+    fn reported_node_coordinates(node: &EdgeNode) -> Option<(f64, f64)> {
         let latitude = node.latitude?;
         let longitude = node.longitude?;
         (latitude.is_finite()
@@ -2362,6 +2540,31 @@ mod app {
             && (-90.0..=90.0).contains(&latitude)
             && (-180.0..=180.0).contains(&longitude))
         .then_some((latitude, longitude))
+    }
+
+    fn node_coordinates(node: &EdgeNode) -> Option<(f64, f64)> {
+        cloud_region_location(&node.region)
+            .map(|location| (location.latitude, location.longitude))
+            .or_else(|| reported_node_coordinates(node))
+    }
+
+    fn node_location_label(node: &EdgeNode) -> String {
+        cloud_region_location(&node.region)
+            .map(|location| location.label.to_owned())
+            .unwrap_or_else(|| nonempty_owned(node.region.clone(), "Location unreported"))
+    }
+
+    fn node_provider_label(node: &EdgeNode) -> String {
+        if let Some(location) = cloud_region_location(&node.region) {
+            return location.provider.to_owned();
+        }
+        match node.provider.trim().to_ascii_lowercase().as_str() {
+            "azure" => "Azure".to_owned(),
+            "gcp" | "google cloud" | "google-cloud" => "Google Cloud".to_owned(),
+            "aws" | "amazon web services" => "AWS".to_owned(),
+            "" => "unreported".to_owned(),
+            _ => node.provider.clone(),
+        }
     }
 
     fn project_node(node: &EdgeNode) -> Option<(f64, f64)> {
@@ -2417,11 +2620,23 @@ mod app {
 
     fn format_network_link_title(link: &NetworkLink) -> String {
         let mut details = vec![format!(
-            "{}: {} to {}",
-            link.role, link.from.node_id, link.to.node_id
+            "{}: {} ({}) to {} ({})",
+            link.role,
+            node_location_label(&link.from),
+            link.from.node_id,
+            node_location_label(&link.to),
+            link.to.node_id,
         )];
-        if let Some(rtt_us) = link.rtt_us {
+        if let Some(rtt_ms) = link.rtt_ms {
+            details.push(format!("RTT {rtt_ms:.1} ms"));
+        } else if let Some(rtt_us) = link.rtt_us {
             details.push(format!("RTT {}", format_duration_us(rtt_us)));
+        }
+        if let Some(jitter_ms) = link.jitter_ms {
+            details.push(format!("jitter {jitter_ms:.1} ms"));
+        }
+        if let Some(loss_percent) = link.loss_percent {
+            details.push(format!("loss {loss_percent:.2}%"));
         }
         if let Some(throughput_bps) = link.throughput_bps {
             details.push(format!("throughput {}", format_bps(throughput_bps)));
@@ -2572,7 +2787,7 @@ mod app {
         }
     }
 
-    fn format_node_location(node: &EdgeNode) -> String {
+    fn format_node_coordinates(node: &EdgeNode) -> String {
         node_coordinates(node)
             .map(|(latitude, longitude)| format!("{latitude:.3}, {longitude:.3}"))
             .unwrap_or_else(|| "unreported".to_owned())
@@ -2679,6 +2894,21 @@ mod app {
         collector_is_current(collector, snapshot_unix_ms)
             .then(|| collector.leader_node_id.clone())
             .flatten()
+    }
+
+    fn verified_collector_location(status: &MeshStatus) -> Option<String> {
+        let node_id = verified_collector_node_id(
+            &status.orchestration.collector,
+            status.updated_unix_ms,
+        )?;
+        Some(
+            status
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .map(node_location_label)
+                .unwrap_or(node_id),
+        )
     }
 
     fn collector_tone(

@@ -219,6 +219,10 @@ sudo install -d -m 750 -o root -g "${SERVICE_GROUP}" /etc/needletail/tls
 sudo install -m 640 -o root -g "${SERVICE_GROUP}" \
   "${STAGE}/privkey.pem" /etc/needletail/tls/privkey.pem
 sudo install -m 644 "${STAGE}/fullchain.pem" /etc/needletail/tls/fullchain.pem
+sudo install -m 644 "${STAGE}/ca.pem" /etc/needletail/tls/ca.pem
+sudo install -m 644 "${STAGE}/ca.pem" \
+  /usr/local/share/ca-certificates/needletail-qualification.crt
+sudo update-ca-certificates
 sudo install -m 644 "${STAGE}/compiled-plan.json" /etc/needletail/compiled-plan.json
 sudo install -m 640 -o root -g "${SERVICE_GROUP}" \
   "${STAGE}/node.env" /etc/needletail/node.env

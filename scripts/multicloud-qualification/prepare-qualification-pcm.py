@@ -25,7 +25,8 @@ BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE
 DURATION_SECONDS = 600
 TARGET_FRAMES = SAMPLE_RATE_HZ * DURATION_SECONDS
 TARGET_BYTES = TARGET_FRAMES * BYTES_PER_FRAME
-TRACK_COUNT = 8
+SOURCE_TRACK_COUNT = 8
+SUPPORTED_OUTPUT_TRACK_COUNTS = (1, 2, 4, 8, 12, 16, 32)
 COPY_BUFFER_BYTES = 1024 * 1024
 SILENCE_BUFFER = bytes(COPY_BUFFER_BYTES)
 MANIFEST_NAME = "manifest.sha256"
@@ -286,9 +287,11 @@ def _validate_inputs(
     input_paths: Iterable[Path], output_dir: Path, target_frames: int
 ) -> list[PcmWav]:
     paths = [path.resolve() for path in input_paths]
-    if len(paths) != TRACK_COUNT:
-        raise PreparationError(f"give exactly {TRACK_COUNT} input WAVE files")
-    if len(set(paths)) != TRACK_COUNT:
+    if len(paths) != SOURCE_TRACK_COUNT:
+        raise PreparationError(
+            f"give exactly {SOURCE_TRACK_COUNT} canonical input WAVE files"
+        )
+    if len(set(paths)) != SOURCE_TRACK_COUNT:
         raise PreparationError("each input WAVE path must be different")
 
     output_resolved = output_dir.resolve()
@@ -310,13 +313,17 @@ def prepare_fixtures(
     input_paths: Iterable[Path],
     output_dir: Path,
     *,
+    output_track_count: int = SOURCE_TRACK_COUNT,
     target_frames: int = TARGET_FRAMES,
     replace: bool = False,
 ) -> dict:
-    """Prepare and atomically publish one synchronized eight-track fixture set."""
+    """Prepare and atomically publish one synchronized qualification fixture set."""
 
     if target_frames <= 0:
         raise PreparationError("target frame count must be positive")
+    if output_track_count not in SUPPORTED_OUTPUT_TRACK_COUNTS:
+        supported = ", ".join(str(value) for value in SUPPORTED_OUTPUT_TRACK_COUNTS)
+        raise PreparationError(f"track count must be one of: {supported}")
     output_dir = output_dir.resolve()
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     sources = _validate_inputs(input_paths, output_dir, target_frames)
@@ -337,19 +344,32 @@ def prepare_fixtures(
     try:
         tracks = []
         manifest_lines = []
-        for index, source in enumerate(sources):
+        for index in range(output_track_count):
+            source_index = index % len(sources)
+            source = sources[source_index]
             output_name = f"source-track-{index:02d}.s24le"
             output_path = stage / output_name
-            output_hash = _write_track(
-                source,
-                project_frames,
-                target_frames,
-                output_path,
-            )
+            reused_output_track = None
+            if index < len(sources):
+                output_hash = _write_track(
+                    source,
+                    project_frames,
+                    target_frames,
+                    output_path,
+                )
+            else:
+                reused_output_track = source_index
+                os.link(
+                    stage / f"source-track-{source_index:02d}.s24le",
+                    output_path,
+                )
+                output_hash = tracks[source_index]["output_sha256"]
             manifest_lines.append(f"{output_hash}  {output_name}\n")
             tracks.append(
                 {
                     "index": index,
+                    "canonical_source_index": source_index,
+                    "reuses_output_track": reused_output_track,
                     "source_name": source.path.name,
                     "source_wav_bytes": source.file_bytes,
                     "source_wav_sha256": _hash_file(source.path),
@@ -363,8 +383,9 @@ def prepare_fixtures(
             )
 
         metadata = {
-            "schema": "needletail.prepared-pcm-fixtures.v1",
-            "track_count": TRACK_COUNT,
+            "schema": "needletail.prepared-pcm-fixtures.v2",
+            "canonical_source_track_count": SOURCE_TRACK_COUNT,
+            "track_count": output_track_count,
             "sample_format": "s24le",
             "sample_rate_hz": SAMPLE_RATE_HZ,
             "channels": CHANNELS,
@@ -386,7 +407,7 @@ def prepare_fixtures(
         )
 
         expected_names = {
-            *(f"source-track-{index:02d}.s24le" for index in range(TRACK_COUNT)),
+            *(f"source-track-{index:02d}.s24le" for index in range(output_track_count)),
             MANIFEST_NAME,
             METADATA_NAME,
         }
@@ -411,9 +432,22 @@ def prepare_fixtures(
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare eight synchronized 600-second stereo 48 kHz S24LE files "
-            "from RIFF WAVE PCM sources without conversion."
+            "Prepare synchronized stereo 48 kHz S24LE qualification files from "
+            "eight canonical RIFF WAVE PCM sources without codec conversion."
         )
+    )
+    parser.add_argument(
+        "--track-count",
+        type=int,
+        choices=SUPPORTED_OUTPUT_TRACK_COUNTS,
+        default=SOURCE_TRACK_COUNT,
+        help="logical output track count; sources repeat deterministically above eight",
+    )
+    parser.add_argument(
+        "--duration-seconds",
+        type=int,
+        default=DURATION_SECONDS,
+        help="positive output duration in seconds",
     )
     parser.add_argument(
         "--replace",
@@ -423,7 +457,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_directory", type=Path)
     parser.add_argument(
         "input_wav",
-        nargs=TRACK_COUNT,
+        nargs=SOURCE_TRACK_COUNT,
         type=Path,
         metavar="INPUT_WAV",
     )
@@ -434,9 +468,13 @@ def main() -> int:
     parser = _argument_parser()
     arguments = parser.parse_args()
     try:
+        if arguments.duration_seconds <= 0:
+            raise PreparationError("duration seconds must be positive")
         metadata = prepare_fixtures(
             arguments.input_wav,
             arguments.output_directory,
+            output_track_count=arguments.track_count,
+            target_frames=SAMPLE_RATE_HZ * arguments.duration_seconds,
             replace=arguments.replace,
         )
     except (OSError, PreparationError) as error:

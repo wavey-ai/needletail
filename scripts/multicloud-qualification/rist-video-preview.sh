@@ -481,8 +481,8 @@ start_preview() {
       [.nodes[]? | select(.node_id == "contrib-london")] as $nodes
       | if ($nodes | length) != 1 then
           error("lab inventory must contain exactly one contrib-london node")
-        elif $nodes[0].provider != "gcp" then
-          error("contrib-london must be a GCP node")
+        elif ($nodes[0].provider != "gcp" && $nodes[0].provider != "azure") then
+          error("contrib-london must be a GCP or Azure node")
         elif $nodes[0].state != "RUNNING" then
           error("contrib-london is not running")
         else

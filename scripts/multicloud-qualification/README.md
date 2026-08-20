@@ -185,7 +185,7 @@ Run the clock, service, telemetry, GCP, and Azure checks:
 scripts/multicloud-qualification/preflight.sh
 ```
 
-The preflight uses `az` to verify all four Azure virtual machines.
+The preflight uses `az` to verify all five Azure virtual machines.
 
 ## Start a listener preview
 

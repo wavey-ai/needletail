@@ -232,7 +232,7 @@ if [[ "${PROTOCOL}" == rist ]]; then
 metrics_url='https://${NEEDLETAIL_TLS_SERVER_NAME}:19443/metrics'
 curl_args=(
   --fail --silent --show-error
-  --cacert /etc/needletail/tls/fullchain.pem
+  --cacert /usr/local/share/ca-certificates/needletail-qualification.crt
   --resolve '${NEEDLETAIL_TLS_SERVER_NAME}:19443:127.0.0.1'
 )
 ristsender_pid=
@@ -255,7 +255,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-\"\${curl_args[@]}\" \"\${metrics_url}\" \
+curl \"\${curl_args[@]}\" \"\${metrics_url}\" \
   >'${REMOTE_DIR}/metrics-before.prom' || exit 1
 contrib_pid=\"\$(systemctl show needletail-contrib.service \
   --property=MainPID --value)\"
@@ -320,7 +320,7 @@ proxy_status=0
 wait \"\${proxy_pid}\" || proxy_status=\$?
 proxy_pid=
 metrics_status=0
-\"\${curl_args[@]}\" \"\${metrics_url}\" \
+curl \"\${curl_args[@]}\" \"\${metrics_url}\" \
   >'${REMOTE_DIR}/metrics-after.prom' || metrics_status=\$?
 
 printf 'NEEDLETAIL_RISTSENDER_STATUS=%s\n' \"\${ristsender_status}\"

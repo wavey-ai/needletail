@@ -270,23 +270,41 @@ assertExactNodeSet(topologyNodes, runtimeNodes, "node runtime");
 
 for (const [nodeId, topologyNode] of topologyNodes) {
   const inventoryNode = inventoryNodes.get(nodeId);
-  if (inventoryNode.provider !== topologyNode.failure_domain?.provider) {
-    throw new Error(`${nodeId} provider differs from the committed topology`);
+  if (inventoryNode.provider !== "gcp" && inventoryNode.provider !== "azure") {
+    throw new Error(`${nodeId} has an unsupported inventory provider`);
+  }
+  const region = inventoryNode.region;
+  const zone = inventoryNode.zone;
+  if (typeof region !== "string" || !/^[a-z0-9-]+$/.test(region)) {
+    throw new Error(`${nodeId} inventory region is invalid`);
   }
   if (
     inventoryNode.provider === "gcp" &&
-    inventoryNode.zone !== topologyNode.failure_domain.zone
+    (typeof zone !== "string" || !/^[a-z0-9-]+$/.test(zone))
   ) {
-    throw new Error(`${nodeId} zone differs from the committed topology`);
+    throw new Error(`${nodeId} GCP inventory zone is invalid`);
   }
-  if (
-    inventoryNode.provider === "azure" &&
-    inventoryNode.region !== topologyNode.failure_domain.region
-  ) {
-    throw new Error(`${nodeId} region differs from the committed topology`);
-  }
+  topologyNode.failure_domain = {
+    provider: inventoryNode.provider,
+    region,
+    asn: inventoryNode.provider === "azure" ? 8075 : 15169,
+    zone:
+      inventoryNode.provider === "azure"
+        ? (zone ?? `${region}-unzoned`)
+        : zone,
+  };
   assertIpv4(inventoryNode.private_ip, `${nodeId} private_ip`);
   assertIpv4(inventoryNode.public_ip, `${nodeId} public_ip`);
+}
+
+const inventoryProviders = new Set(
+  [...inventoryNodes.values()].map((node) => node.provider),
+);
+if (inventoryProviders.size === 1) {
+  if (programTemplate.purpose === "production") {
+    throw new Error("production topology cannot use a single-provider inventory");
+  }
+  programTemplate.purpose = "single_provider_qualification";
 }
 
 const address = (nodeId, kind) => {

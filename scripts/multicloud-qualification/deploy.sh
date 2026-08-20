@@ -113,6 +113,7 @@ prepare_deploy_package() {
   install -m 644 \
     "${COMPILED_PLAN}" \
     "${OPERATIONS_SOURCES}" \
+    "${TLS_DIR}/ca.pem" \
     "${TLS_DIR}/fullchain.pem" \
     "${DEPLOY_DIR}/chrony-gcp.conf" \
     "${DEPLOY_DIR}/binary-manifest.sh" \
@@ -287,15 +288,19 @@ deploy_all_nodes() {
   node_copy_to contrib-london \
     "${MEDIA_PREPARE}" \
     /var/lib/needletail-test-media/prepare-full-album-pcm.sh
+  node_copy_to contrib-london \
+    "${ROOT}/scripts/multicloud-qualification/prepare-qualification-pcm.py" \
+    /var/lib/needletail-test-media/prepare-qualification-pcm.py
   printf -v album_url_quoted "%q" "${ALBUM_ARCHIVE_URL:-}"
   node_exec contrib-london \
     "ALBUM_ARCHIVE_URL=${album_url_quoted} /var/lib/needletail-test-media/prepare-full-album-pcm.sh"
   node_exec contrib-london \
     "sha256sum /usr/local/bin/daw-test-source
-  for tracks in 1 2 4 8; do
-    test \"\$(find -L /var/lib/needletail-test-media/daw-nexus-album-\${tracks}-track \
-      -maxdepth 1 -type f -name '*.wav' | wc -l)\" = \"\${tracks}\"
-    cat /var/lib/needletail-test-media/daw-nexus-album-\${tracks}-track.manifest.sha256
+  for tracks in 1 2 4 8 12 16; do
+    fixture=/var/lib/needletail-test-media/daw-nexus-album-\${tracks}-track-pcm-600s
+    test \"\$(find \"\${fixture}\" -maxdepth 1 -type f -name '*.s24le' | wc -l)\" = \"\${tracks}\"
+    cd \"\${fixture}\"
+    sha256sum --check manifest.sha256
   done"
 }
 

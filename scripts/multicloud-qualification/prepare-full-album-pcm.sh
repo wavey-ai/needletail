@@ -4,8 +4,10 @@ set -euo pipefail
 SOURCE_DIR="${SOURCE_DIR:-/var/lib/needletail-test-media/lori-album-full}"
 OUTPUT_DIR="${OUTPUT_DIR:-/var/lib/needletail-test-media}"
 ARCHIVE_PATH="${ARCHIVE_PATH:-${OUTPUT_DIR}/lori-album-full.zip}"
-TRACK_COUNTS="${TRACK_COUNTS:-1 2 4 8}"
+TRACK_COUNTS="${TRACK_COUNTS:-1 2 4 8 12 16}"
+DURATION_SECONDS="${DURATION_SECONDS:-600}"
 ALBUM_ARCHIVE_URL="${ALBUM_ARCHIVE_URL:-}"
+PREPARE_PCM="${PREPARE_PCM:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prepare-qualification-pcm.py}"
 
 TRACK_NAMES=(
   "AFTER DARK_MIX 4 CONFIRMATION_130323.wav"
@@ -28,7 +30,15 @@ require_command() {
 require_command curl
 require_command ffprobe
 require_command python3
-require_command sha256sum
+
+[[ "${DURATION_SECONDS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "DURATION_SECONDS must be a positive integer" >&2
+  exit 2
+}
+[[ -f "${PREPARE_PCM}" ]] || {
+  echo "PCM preparer is missing: ${PREPARE_PCM}" >&2
+  exit 1
+}
 
 mkdir -p "${SOURCE_DIR}" "${OUTPUT_DIR}"
 
@@ -81,40 +91,22 @@ done
 
 for tracks in ${TRACK_COUNTS}; do
   case "${tracks}" in
-    1|2|4|8) ;;
+    1|2|4|8|12|16|32) ;;
     *)
-      echo "TRACK_COUNTS can contain only 1, 2, 4, or 8" >&2
+      echo "TRACK_COUNTS can contain only 1, 2, 4, 8, 12, 16, or 32" >&2
       exit 2
       ;;
   esac
 
-  target="${OUTPUT_DIR}/daw-nexus-album-${tracks}-track"
-  stage="${target}.prepare.$$"
-  rm -rf "${stage}"
-  mkdir -p "${stage}"
-
-  for ((index = 0; index < tracks; index++)); do
-    source_file="${TRACK_FILES[${index}]}"
-    ln -s "${source_file}" "${stage}/$(basename "${source_file}")"
-  done
-
-  actual_links="$(find "${stage}" -maxdepth 1 -type l | wc -l | tr -d ' ')"
-  [[ "${actual_links}" == "${tracks}" ]] || {
-    echo "${stage} contains ${actual_links} links; expected ${tracks}" >&2
-    exit 1
-  }
-  while IFS= read -r link; do
-    [[ -f "${link}" ]] || {
-      echo "${link} does not resolve to a complete album file" >&2
-      exit 1
-    }
-  done < <(find "${stage}" -maxdepth 1 -type l -print)
-
-  rm -rf "${target}"
-  mv "${stage}" "${target}"
-  sha256sum "${TRACK_FILES[@]:0:${tracks}}" >"${target}.manifest.sha256"
+  target="${OUTPUT_DIR}/daw-nexus-album-${tracks}-track-pcm-${DURATION_SECONDS}s"
+  python3 "${PREPARE_PCM}" \
+    --replace \
+    --track-count "${tracks}" \
+    --duration-seconds "${DURATION_SECONDS}" \
+    "${target}" \
+    "${TRACK_FILES[@]}"
   printf "track_count=%s source_directory=%s manifest=%s\n" \
     "${tracks}" \
     "${target}" \
-    "${target}.manifest.sha256"
+    "${target}/manifest.sha256"
 done

@@ -7,7 +7,7 @@ use needletail::operations_controller::{
 use needletail::operations_snapshot::{
     assemble_operations_snapshot, snapshot_matches_controller, NodeSnapshot,
 };
-use reqwest::{Client, Url};
+use reqwest::{Certificate, Client, Url};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
@@ -36,6 +36,13 @@ struct Args {
 
     #[arg(long, env = "NEEDLETAIL_OPERATIONS_SOURCES_FILE")]
     sources_file: PathBuf,
+
+    #[arg(
+        long,
+        env = "NEEDLETAIL_TLS_CA_CERT",
+        default_value = "/etc/needletail/tls/ca.pem"
+    )]
+    tls_ca_cert: PathBuf,
 
     #[arg(
         long,
@@ -91,16 +98,21 @@ async fn main() -> Result<()> {
         bail!("Operations poll and request timeouts must be positive");
     }
     let sources = read_sources(&args.sources_file)?;
+    let tls_ca = Certificate::from_pem(
+        &fs::read(&args.tls_ca_cert)
+            .with_context(|| format!("failed to read {}", args.tls_ca_cert.display()))?,
+    )
+    .context("failed to decode the Operations source CA certificate")?;
     let prepared_nodes = sources
         .nodes
         .iter()
         .cloned()
-        .map(|source| prepare_source_for_node(source, &args.node_id))
+        .map(|source| prepare_source_for_node(source, &args.node_id, &tls_ca))
         .collect::<Result<Vec<_>>>()?;
     let prepared_contributor = sources
         .contributor
         .clone()
-        .map(prepare_source)
+        .map(|source| prepare_source(source, &tls_ca))
         .transpose()?;
     ensure_secure_parent(&args.snapshot_file)?;
 
@@ -134,7 +146,13 @@ async fn main() -> Result<()> {
             )
             .await
         } else {
-            copy_leader_snapshot(&controller, sources.stale_after_ms, args.request_timeout_ms).await
+            copy_leader_snapshot(
+                &controller,
+                sources.stale_after_ms,
+                args.request_timeout_ms,
+                &tls_ca,
+            )
+            .await
         };
         match result {
             Ok(snapshot) => {
@@ -214,7 +232,7 @@ fn validate_source(source: &HttpSource, expected_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn prepare_source(source: HttpSource) -> Result<PreparedSource> {
+fn prepare_source(source: HttpSource, tls_ca: &Certificate) -> Result<PreparedSource> {
     let url = Url::parse(&source.endpoint)?;
     let hostname = url
         .host_str()
@@ -222,19 +240,24 @@ fn prepare_source(source: HttpSource) -> Result<PreparedSource> {
     let client = Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
+        .add_root_certificate(tls_ca.clone())
         .resolve(hostname, source.address)
         .build()
         .context("failed to build Operations source client")?;
     Ok(PreparedSource { source, client })
 }
 
-fn prepare_source_for_node(mut source: HttpSource, local_node_id: &str) -> Result<PreparedSource> {
+fn prepare_source_for_node(
+    mut source: HttpSource,
+    local_node_id: &str,
+    tls_ca: &Certificate,
+) -> Result<PreparedSource> {
     if source.node_id == local_node_id {
         source
             .address
             .set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     }
-    prepare_source(source)
+    prepare_source(source, tls_ca)
 }
 
 async fn assemble_leader_snapshot(
@@ -334,6 +357,7 @@ async fn copy_leader_snapshot(
     controller: &OperationsControllerState,
     stale_after_ms: u64,
     request_timeout_ms: u64,
+    tls_ca: &Certificate,
 ) -> Result<Value> {
     let source = HttpSource {
         node_id: controller.assignment.leader_node_id.clone(),
@@ -341,7 +365,7 @@ async fn copy_leader_snapshot(
         address: controller.snapshot_address,
     };
     validate_source(&source, "/api/mesh")?;
-    let prepared = prepare_source(source)?;
+    let prepared = prepare_source(source, tls_ca)?;
     let snapshot = fetch_json(
         &prepared.client,
         &prepared.source.endpoint,

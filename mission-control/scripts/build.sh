@@ -8,6 +8,7 @@ TRUNK=${TRUNK:-trunk}
 WASM_BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
 
 if command -v "${TRUNK}" >/dev/null 2>&1; then
+  cd "${ROOT}"
   exec env -u NO_COLOR TRUNK_COLOR=never "${TRUNK}" build \
     --release --dist "${DIST}"
 fi

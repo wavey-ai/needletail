@@ -1,0 +1,27 @@
+[Unit]
+Description=Needletail NETINT Quadra rendition contributor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=needletail
+Group=needletail
+SupplementaryGroups=disk
+EnvironmentFile=/etc/needletail/quadra.env
+Environment=RUST_LOG=av_contrib=info,av_web_service=warn
+ExecStart=/usr/local/bin/needletail-av-contrib-quadra-run
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateDevices=no
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,45 @@
+name = "bitneedle-tail"
+main = "worker.js"
+compatibility_date = "2026-08-20"
+account_id = "c57bb20727aa3564966d2bb693abddce"
+workers_dev = false
+
+[[routes]]
+pattern = "bitneedle.com/*"
+zone_name = "bitneedle.com"
+
+[[routes]]
+pattern = "www.bitneedle.com/*"
+zone_name = "bitneedle.com"
+
+[[routes]]
+pattern = "tail.bitneedle.com"
+custom_domain = true
+
+[[routes]]
+pattern = "edge-canada.bitneedle.com"
+custom_domain = true
+
+[[routes]]
+pattern = "edge-korea.bitneedle.com"
+custom_domain = true
+
+[[routes]]
+pattern = "edge-australia.bitneedle.com"
+custom_domain = true
+
+[[routes]]
+pattern = "edge-brazil.bitneedle.com"
+custom_domain = true
+
+[[routes]]
+pattern = "edge-eastasia.bitneedle.com"
+custom_domain = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[limits]
+cpu_ms = 10

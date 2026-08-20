@@ -151,7 +151,9 @@ function showWaiting(message = "Playback will join automatically when fresh medi
   sourceReady = false;
   elements.empty.hidden = false;
   elements.start.hidden = false;
-  elements.emptyKicker.textContent = navigator.onLine ? "LONDON EDGE IS READY" : "YOU ARE OFFLINE";
+  elements.emptyKicker.textContent = navigator.onLine
+    ? `${playbackEdgeName().toUpperCase()} EDGE IS READY`
+    : "YOU ARE OFFLINE";
   elements.emptyTitle.textContent = navigator.onLine ? "Waiting for live ingest" : "Reconnect to join the stream";
   elements.emptyCopy.textContent = message;
   elements.start.querySelector("span").textContent = navigator.onLine ? "Check live feed" : "Try again";
@@ -635,7 +637,7 @@ async function connectPcm() {
   elements.quality.textContent = "PCM";
   elements.video.hidden = true;
   elements.empty.hidden = false;
-  elements.emptyKicker.textContent = "LONDON PCM MONITOR";
+  elements.emptyKicker.textContent = `${playbackEdgeName().toUpperCase()} PCM MONITOR`;
   elements.emptyTitle.textContent = "Preparing lossless audio";
   elements.emptyCopy.textContent = "The player is reading the live PCM rendition.";
   elements.start.hidden = true;
@@ -653,7 +655,7 @@ async function connectPcm() {
     if (player !== pcmPlayer) return;
     elements.picture.textContent = `${profile.channelCount} channels · PCM 24-bit`;
     elements.emptyTitle.textContent = "Live PCM audio is ready";
-    elements.emptyCopy.textContent = "Select Start audio to listen from the London edge.";
+    elements.emptyCopy.textContent = `Select Start audio to listen from the ${playbackEdgeName()} edge.`;
     elements.start.querySelector("span").textContent = "Start audio";
     elements.start.hidden = false;
     setState("waiting");
@@ -683,7 +685,7 @@ function updatePcmStatus(status) {
   if (status.state === "live") {
     playbackStarted = true;
     elements.empty.hidden = false;
-    elements.emptyKicker.textContent = "LONDON PCM MONITOR";
+    elements.emptyKicker.textContent = `${playbackEdgeName().toUpperCase()} PCM MONITOR`;
     elements.emptyTitle.textContent = "Live PCM audio";
     elements.emptyCopy.textContent = status.missingParts > 0
       ? `${status.missingParts} LL-HLS parts were unavailable to this browser.`
@@ -700,7 +702,7 @@ function updatePcmStatus(status) {
     playbackStarted = false;
     elements.empty.hidden = false;
     elements.emptyTitle.textContent = "Live PCM audio is ready";
-    elements.emptyCopy.textContent = "Select Start audio to listen from the London edge.";
+    elements.emptyCopy.textContent = `Select Start audio to listen from the ${playbackEdgeName()} edge.`;
     elements.start.querySelector("span").textContent = "Start audio";
     elements.start.hidden = false;
     setState("waiting");
@@ -1163,24 +1165,54 @@ async function toggleFullscreen() {
   if (elements.video.webkitEnterFullscreen) elements.video.webkitEnterFullscreen();
 }
 
+const REGION_LABELS = Object.freeze({
+  canadaeast: "Canada East",
+  centralus: "Central US",
+  eastasia: "East Asia",
+  koreacentral: "Korea Central",
+  australiasoutheast: "Australia Southeast",
+  brazilsouth: "Brazil South",
+});
+
+const PUBLIC_EDGE_REGIONS = Object.freeze({
+  "edge-canada.bitneedle.com": "Canada East",
+  "edge-korea.bitneedle.com": "Korea Central",
+  "edge-australia.bitneedle.com": "Australia Southeast",
+  "edge-brazil.bitneedle.com": "Brazil South",
+  "edge-eastasia.bitneedle.com": "East Asia",
+});
+
+let reportedEdgeRegion = "";
+
+function regionLabel(region) {
+  const normalized = String(region || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (REGION_LABELS[normalized]) return REGION_LABELS[normalized];
+  return String(region || "")
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function playbackEdgeName() {
+  return PUBLIC_EDGE_REGIONS[window.location.hostname.toLowerCase()]
+    || reportedEdgeRegion
+    || "Playback";
+}
+
 async function loadEdgeIdentity() {
   try {
     const response = await fetch("/api/mesh/local", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const status = await response.json();
-    const region = status?.node?.region || "London";
+    const region = status?.node?.region || "";
     const node = status?.node?.node_id || "playback edge";
-    const edgeName = node.startsWith("edge-") ? node.slice("edge-".length) : region;
-    const prettyEdgeName = edgeName
-      .split(/[-_]/)
-      .filter(Boolean)
-      .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
-      .join(" ");
-    elements.edgeLabel.textContent = `${prettyEdgeName || "Playback"} edge`;
+    reportedEdgeRegion = regionLabel(region);
+    elements.edgeLabel.textContent = `${playbackEdgeName()} edge`;
     if (elements.delivery) elements.delivery.textContent = `${node} · HTTPS`;
-    elements.edgePill.title = `Connected to ${node}`;
+    elements.edgePill.title = `Connected to ${playbackEdgeName()} (${node})`;
   } catch {
-    elements.edgeLabel.textContent = "Playback edge";
+    elements.edgeLabel.textContent = `${playbackEdgeName()} edge`;
   }
 }
 

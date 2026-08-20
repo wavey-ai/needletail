@@ -52,6 +52,7 @@ main() {
     --daw-hls-queue-capacity "${NEEDLETAIL_DAW_HLS_QUEUE_CAPACITY:-4096}"
     --daw-hls-packaging "${NEEDLETAIL_DAW_HLS_PACKAGING:-opaque}"
     --daw-hls-formats "${NEEDLETAIL_DAW_HLS_FORMATS:-flac,opus}"
+    --daw-hls-base-stream-id "${NEEDLETAIL_DAW_HLS_BASE_STREAM_ID:-2001}"
     --stream-id 1
     --rist-stream-id 1
     --rtmp-stream-id 1

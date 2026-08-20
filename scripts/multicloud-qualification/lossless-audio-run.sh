@@ -7,12 +7,18 @@ TRACKS="${1:?give the stereo track count}"
 DURATION_SECONDS="${DURATION_SECONDS:-600}"
 TAIL_SECONDS="${TAIL_SECONDS:-8}"
 PART_MS="${PART_MS:-250}"
+DAW_HLS_BASE_STREAM_ID="${DAW_HLS_BASE_STREAM_ID:-2001}"
 TEST_SCOPE="${TEST_SCOPE:-combined}"
 OPEN_PLAYER="${OPEN_PLAYER:-1}"
 case "${TRACKS}" in
-  1|2|4|8|16|32) ;;
-  *) echo "track count must be 1, 2, 4, 8, 16, or 32" >&2; exit 2 ;;
+  1|2|4|8|12|16|32) ;;
+  *) echo "track count must be 1, 2, 4, 8, 12, 16, or 32" >&2; exit 2 ;;
 esac
+[[ "${DAW_HLS_BASE_STREAM_ID}" =~ ^[1-9][0-9]*$ ]] &&
+  ((DAW_HLS_BASE_STREAM_ID <= 9007199254739959)) || {
+  echo "DAW_HLS_BASE_STREAM_ID must be a positive, exact JSON integer with room for all renditions" >&2
+  exit 2
+}
 MESH_ENABLED=0
 PLAYBACK_ENABLED=0
 case "${TEST_SCOPE}" in
@@ -36,7 +42,11 @@ REMOTE_DIR="/tmp/${RUN_ID}"
 TRACK_DIRECTORY="/var/lib/needletail-test-media/daw-nexus-album-${TRACKS}-track-pcm-${DURATION_SECONDS}s"
 : "${EXPECTED_DAW_SHA256:?set EXPECTED_DAW_SHA256 to the deployed source binary digest}"
 : "${EXPECTED_PROBE_SHA256:?set EXPECTED_PROBE_SHA256 to the deployed probe binary digest}"
-for digest_variable in EXPECTED_DAW_SHA256 EXPECTED_PROBE_SHA256; do
+: "${EXPECTED_AV_MESH_SHA256:?set EXPECTED_AV_MESH_SHA256 to the deployed mesh binary digest}"
+for digest_variable in \
+  EXPECTED_DAW_SHA256 \
+  EXPECTED_PROBE_SHA256 \
+  EXPECTED_AV_MESH_SHA256; do
   digest="${!digest_variable}"
   if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
     echo "${digest_variable} must be a lowercase SHA-256 digest" >&2
@@ -598,14 +608,14 @@ start_playback_receivers() {
   local command="set -eu; mkdir -p '${REMOTE_DIR}'"
   local index flac_stream_id opus_stream_id
   for ((index = 0; index < GROUP_COUNT; index++)); do
-    flac_stream_id=$((index + 1))
+    flac_stream_id=$((DAW_HLS_BASE_STREAM_ID + index))
     opus_stream_id=$((flac_stream_id + 1000))
     command+="
       NEEDLETAIL_QUALIFICATION_RUN_ID='${RUN_ID}' nohup \
         /usr/local/bin/aep1-48k-probe receive-hls \
         --edge 127.0.0.1:19444 \
         --server-name ${TLS_SERVER_NAME} \
-        --tls-ca /etc/needletail/tls/fullchain.pem \
+        --tls-ca /usr/local/share/ca-certificates/needletail-qualification.crt \
         --transport h3 \
         --stream-id ${flac_stream_id} \
         --session-id ${session_id} \
@@ -623,7 +633,7 @@ start_playback_receivers() {
         /usr/local/bin/aep1-48k-probe receive-hls \
         --edge 127.0.0.1:19444 \
         --server-name ${TLS_SERVER_NAME} \
-        --tls-ca /etc/needletail/tls/fullchain.pem \
+        --tls-ca /usr/local/share/ca-certificates/needletail-qualification.crt \
         --transport h3 \
         --stream-id ${opus_stream_id} \
         --session-id ${session_id} \
@@ -684,17 +694,18 @@ fetch_node() {
     >"${local_dir}/service.log"
   if ((PLAYBACK_ENABLED)) && [[ "${node}" == edge-* ]]; then
     local flac_stream_id opus_stream_id
-    for ((flac_stream_id = 1; flac_stream_id <= TRACKS; flac_stream_id++)); do
+    for ((index = 0; index < TRACKS; index++)); do
+      flac_stream_id=$((DAW_HLS_BASE_STREAM_ID + index))
       opus_stream_id=$((flac_stream_id + 1000))
       node_exec "${node}" \
         "curl --fail --silent --show-error \
-          --cacert /etc/needletail/tls/fullchain.pem \
+          --cacert /usr/local/share/ca-certificates/needletail-qualification.crt \
           --resolve ${TLS_SERVER_NAME}:19444:127.0.0.1 \
           'https://${TLS_SERVER_NAME}:19444/live/${flac_stream_id}/master.m3u8'" \
         >"${local_dir}/master-track-$((flac_stream_id - 1)).m3u8"
       node_exec "${node}" \
         "curl --fail --silent --show-error \
-          --cacert /etc/needletail/tls/fullchain.pem \
+          --cacert /usr/local/share/ca-certificates/needletail-qualification.crt \
           --resolve ${TLS_SERVER_NAME}:19444:127.0.0.1 \
           'https://${TLS_SERVER_NAME}:19444/live/${opus_stream_id}/master.m3u8'" \
         >"${local_dir}/master-opus-track-$((flac_stream_id - 1)).m3u8"
@@ -714,20 +725,31 @@ wait_for_jobs "${jobs[@]}"
 jq -s \
   --arg expected_daw_test_source_sha256 "${EXPECTED_DAW_SHA256}" \
   --arg expected_aep1_48k_probe_sha256 "${EXPECTED_PROBE_SHA256}" \
+  --arg expected_av_mesh_sha256 "${EXPECTED_AV_MESH_SHA256}" \
   '{
-    schema:"needletail.multicloud-binaries.v2",
+    schema:"needletail.multicloud-binaries.v3",
     expected_daw_test_source_sha256:$expected_daw_test_source_sha256,
     expected_aep1_48k_probe_sha256:$expected_aep1_48k_probe_sha256,
+    expected_av_mesh_sha256:$expected_av_mesh_sha256,
     nodes:.
   }' \
   "${binary_manifests[@]}" >"${RESULT_DIR}/binaries.json"
 jq -e \
   --arg expected_probe_sha256 "${EXPECTED_PROBE_SHA256}" \
+  --arg expected_av_mesh_sha256 "${EXPECTED_AV_MESH_SHA256}" \
   --argjson expected_node_count "${#ALL_NODES[@]}" '
     (.nodes | length) == $expected_node_count
     and all(.nodes[]; .aep1_48k_probe_sha256 == $expected_probe_sha256)
+    and all(
+      .nodes[];
+      if .service_binary == "av-mesh" then
+        .service_sha256 == $expected_av_mesh_sha256
+      else
+        true
+      end
+    )
   ' "${RESULT_DIR}/binaries.json" >/dev/null || {
-    echo "one or more nodes do not have the required audio probe binary" >&2
+    echo "one or more nodes do not have the required audio probe or av-mesh binary" >&2
     exit 1
   }
 
@@ -781,12 +803,14 @@ fi
 jq -n \
   --arg player_base "${PLAYER_BASE}" \
   --argjson tracks "${TRACKS}" \
+  --argjson base_stream_id "${DAW_HLS_BASE_STREAM_ID}" \
   '{
-    flac:[range(1;$tracks + 1) | "\($player_base)/\(.)?format=flac"],
-    opus:[range(1;$tracks + 1) | "\($player_base)/\(.)?format=opus"]
+    flac:[range(0;$tracks) | "\($player_base)/\($base_stream_id + .)?format=flac"],
+    opus:[range(0;$tracks) | "\($player_base)/\($base_stream_id + .)?format=opus"]
   }' \
   >"${RESULT_DIR}/player-urls.json"
-for ((stream_id = 1; stream_id <= TRACKS; stream_id++)); do
+for ((index = 0; index < TRACKS; index++)); do
+  stream_id=$((DAW_HLS_BASE_STREAM_ID + index))
   printf 'London FLAC player: %s/%s?format=flac\n' "${PLAYER_BASE}" "${stream_id}" >&2
   printf 'London Opus player: %s/%s?format=opus\n' "${PLAYER_BASE}" "${stream_id}" >&2
 done
@@ -979,6 +1003,8 @@ ingress_queue_dropped_delta="$(metric_delta "${before_metrics}" "${after_metrics
   av_contrib_audio_epoch_ingress_queue_dropped_total)"
 hls_worker_errors_delta="$(metric_delta "${before_metrics}" "${after_metrics}" \
   av_contrib_audio_epoch_hls_worker_errors_total)"
+normalization_errors_delta="$(metric_delta "${before_metrics}" "${after_metrics}" \
+  av_contrib_audio_epoch_normalization_errors_total)"
 mesh_forward_errors_delta="$(metric_delta "${before_metrics}" "${after_metrics}" \
   av_contrib_audio_epoch_mesh_forward_errors_total)"
 ingress_errors_delta="$(metric_delta "${before_metrics}" "${after_metrics}" \
@@ -993,6 +1019,8 @@ startup_ingress_queue_dropped_delta="$(metric_delta "${prearm_metrics}" "${befor
   av_contrib_audio_epoch_ingress_queue_dropped_total)"
 startup_hls_worker_errors_delta="$(metric_delta "${prearm_metrics}" "${before_metrics}" \
   av_contrib_audio_epoch_hls_worker_errors_total)"
+startup_normalization_errors_delta="$(metric_delta "${prearm_metrics}" "${before_metrics}" \
+  av_contrib_audio_epoch_normalization_errors_total)"
 startup_mesh_forward_errors_delta="$(metric_delta "${prearm_metrics}" "${before_metrics}" \
   av_contrib_audio_epoch_mesh_forward_errors_total)"
 startup_ingress_errors_delta="$(metric_delta "${prearm_metrics}" "${before_metrics}" \
@@ -1001,6 +1029,7 @@ startup_socket_drops_delta="$(metric_delta "${prearm_metrics}" "${before_metrics
   av_contrib_daw_media_udp_socket_drops_total)"
 if ((hls_queue_dropped_delta != 0 || mesh_queue_dropped_delta != 0 || \
   ingress_queue_dropped_delta != 0 || hls_worker_errors_delta != 0 || \
+  normalization_errors_delta != 0 || startup_normalization_errors_delta != 0 || \
   mesh_forward_errors_delta != 0 || ingress_errors_delta != 0 || \
   socket_drops_delta != 0)); then
   CONTRIBUTOR_STATUS=1
@@ -1011,6 +1040,7 @@ jq -n \
   --argjson mesh_queue_dropped "${mesh_queue_dropped_delta}" \
   --argjson ingress_queue_dropped "${ingress_queue_dropped_delta}" \
   --argjson hls_worker_errors "${hls_worker_errors_delta}" \
+  --argjson normalization_errors "${normalization_errors_delta}" \
   --argjson mesh_forward_errors "${mesh_forward_errors_delta}" \
   --argjson ingress_errors "${ingress_errors_delta}" \
   --argjson socket_drops "${socket_drops_delta}" \
@@ -1018,12 +1048,13 @@ jq -n \
   --argjson startup_mesh_queue_dropped "${startup_mesh_queue_dropped_delta}" \
   --argjson startup_ingress_queue_dropped "${startup_ingress_queue_dropped_delta}" \
   --argjson startup_hls_worker_errors "${startup_hls_worker_errors_delta}" \
+  --argjson startup_normalization_errors "${startup_normalization_errors_delta}" \
   --argjson startup_mesh_forward_errors "${startup_mesh_forward_errors_delta}" \
   --argjson startup_ingress_errors "${startup_ingress_errors_delta}" \
   --argjson startup_socket_drops "${startup_socket_drops_delta}" \
   --argjson passed "${CONTRIBUTOR_PASSED}" \
   '{
-    schema:"needletail.multicloud-contributor-delta.v2",
+    schema:"needletail.multicloud-contributor-delta.v3",
     measurement_window:"scheduled-content",
     queue_drops:{
       hls:$hls_queue_dropped,
@@ -1032,6 +1063,7 @@ jq -n \
     },
     errors:{
       hls_worker:$hls_worker_errors,
+      soundkit_v2_normalization:$normalization_errors,
       mesh_forward:$mesh_forward_errors,
       ingress:$ingress_errors,
       kernel_udp_socket_drops:$socket_drops
@@ -1045,6 +1077,7 @@ jq -n \
       },
       errors:{
         hls_worker:$startup_hls_worker_errors,
+        soundkit_v2_normalization:$startup_normalization_errors,
         mesh_forward:$startup_mesh_forward_errors,
         ingress:$startup_ingress_errors,
         kernel_udp_socket_drops:$startup_socket_drops
@@ -1311,6 +1344,7 @@ jq -n \
   --argjson counter_window_selected "${COUNTER_WINDOW_SELECTED}" \
   --argjson counter_window_passed "${COUNTER_WINDOW_PASSED}" \
   --argjson part_ms "${PART_MS}" \
+  --argjson daw_hls_base_stream_id "${DAW_HLS_BASE_STREAM_ID}" \
   --arg daw_test_source_sha256 "${daw_sha256}" \
   --arg aep1_48k_probe_sha256 "${EXPECTED_PROBE_SHA256}" \
   --arg source_mode "${SOURCE_MODE}" \
@@ -1335,6 +1369,7 @@ jq -n \
     channels:$channels,
     duration_seconds:$duration_seconds,
     part_ms:$part_ms,
+    daw_hls_base_stream_id:$daw_hls_base_stream_id,
     group_count:$group_count,
     session_id:$session_id,
     daw_test_source_sha256:$daw_test_source_sha256,
@@ -1354,9 +1389,9 @@ jq -n \
         null
       end
     ),
-    player_urls:[range(1;$tracks + 1) | "\($player_base)/\(.)?format=flac"],
-    flac_player_urls:[range(1;$tracks + 1) | "\($player_base)/\(.)?format=flac"],
-    opus_player_urls:[range(1;$tracks + 1) | "\($player_base)/\(.)?format=opus"],
+    player_urls:[range(0;$tracks) | "\($player_base)/\($daw_hls_base_stream_id + .)?format=flac"],
+    flac_player_urls:[range(0;$tracks) | "\($player_base)/\($daw_hls_base_stream_id + .)?format=flac"],
+    opus_player_urls:[range(0;$tracks) | "\($player_base)/\($daw_hls_base_stream_id + .)?format=opus"],
     outcomes:{
       source:{selected:true,passed:$source_passed},
       contributor:{selected:true,passed:$contributor_passed},

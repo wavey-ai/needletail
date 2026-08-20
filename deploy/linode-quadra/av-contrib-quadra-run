@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${NEEDLETAIL_QUADRA_MESH_FEC_TARGET:?missing NEEDLETAIL_QUADRA_MESH_FEC_TARGET}"
+: "${NEEDLETAIL_QUADRA_MESH_MEDIA_FEC_TARGET:?missing NEEDLETAIL_QUADRA_MESH_MEDIA_FEC_TARGET}"
+: "${NEEDLETAIL_QUADRA_RENDITIONS:?missing NEEDLETAIL_QUADRA_RENDITIONS}"
+
+source_stream_id="${NEEDLETAIL_QUADRA_SOURCE_STREAM_ID:-9001}"
+source_width="${NEEDLETAIL_QUADRA_SOURCE_WIDTH:-3840}"
+source_height="${NEEDLETAIL_QUADRA_SOURCE_HEIGHT:-2160}"
+frame_rate_millihertz="${NEEDLETAIL_QUADRA_FRAME_RATE_MILLIHERTZ:-25000}"
+queue_capacity="${NEEDLETAIL_QUADRA_QUEUE_CAPACITY:-256}"
+rist_bind="${NEEDLETAIL_QUADRA_RIST_BIND:-0.0.0.0:27000}"
+
+for value_name in \
+  source_stream_id \
+  source_width \
+  source_height \
+  frame_rate_millihertz \
+  queue_capacity; do
+  value="${!value_name}"
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "${value_name} must be a positive decimal integer" >&2
+    exit 2
+  }
+done
+
+args=(
+  /usr/local/bin/av-contrib
+  --cert /etc/needletail/tls/fullchain.pem
+  --key /etc/needletail/tls/privkey.pem
+  --http-port "${NEEDLETAIL_QUADRA_HTTP_PORT:-19443}"
+  --mesh-fec-target "${NEEDLETAIL_QUADRA_MESH_FEC_TARGET}"
+  --mesh-media-fec-target "${NEEDLETAIL_QUADRA_MESH_MEDIA_FEC_TARGET}"
+  --stream-id "${source_stream_id}"
+  --rist-stream-id "${source_stream_id}"
+  --rist-bind "${rist_bind}"
+  --fmp4-part-ms "${NEEDLETAIL_QUADRA_FMP4_PART_MS:-50}"
+  --wall-clock-estimated-error-ms "${NEEDLETAIL_CLOCK_ERROR_MS:-5}"
+  --relay-local-id "${NEEDLETAIL_NODE_ID:-contrib-quadra-london}"
+  --quadra-derived-only
+  --quadra-rendition "${NEEDLETAIL_QUADRA_RENDITIONS}"
+  --quadra-source-width "${source_width}"
+  --quadra-source-height "${source_height}"
+  --quadra-frame-rate-millihertz "${frame_rate_millihertz}"
+  --quadra-queue-capacity "${queue_capacity}"
+)
+
+if [[ -n "${NEEDLETAIL_QUADRA_HARDWARE_ID:-}" ]]; then
+  [[ "${NEEDLETAIL_QUADRA_HARDWARE_ID}" =~ ^-?[0-9]+$ ]] || {
+    echo "NEEDLETAIL_QUADRA_HARDWARE_ID must be an integer" >&2
+    exit 2
+  }
+  args+=(--quadra-hardware-id "${NEEDLETAIL_QUADRA_HARDWARE_ID}")
+fi
+
+exec "${args[@]}"

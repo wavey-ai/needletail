@@ -16,6 +16,7 @@ AV_CONTRIB_ROOT="${AV_CONTRIB_ROOT:-${WORKSPACE_ROOT}/av-contrib}"
 QUALIFICATION_ROOT="${ROOT}/target/multicloud-qualification"
 ARTIFACT_ROOT="${QUALIFICATION_ROOT}/artifacts"
 ENABLE_SRT="${NEEDLETAIL_ENABLE_SRT:-0}"
+ENABLE_QUADRA="${NEEDLETAIL_ENABLE_QUADRA:-0}"
 BUILD_SCOPE="${NEEDLETAIL_BUILD_SCOPE:-all}"
 LOCAL_STAGE=
 REMOTE_STAGE=
@@ -24,6 +25,13 @@ case "${ENABLE_SRT}" in
   0|1) ;;
   *)
     echo "NEEDLETAIL_ENABLE_SRT must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+case "${ENABLE_QUADRA}" in
+  0|1) ;;
+  *)
+    echo "NEEDLETAIL_ENABLE_QUADRA must be 0 or 1" >&2
     exit 2
     ;;
 esac
@@ -310,6 +318,7 @@ chmod 700 '${REMOTE_STAGE}/build-components.sh'
 NEEDLETAIL_SOURCE_ARCHIVE='${REMOTE_STAGE}/source.tar.gz' \\
 NEEDLETAIL_BUILD_OUTPUT_ROOT='${REMOTE_STAGE}/out' \\
 NEEDLETAIL_ENABLE_SRT='${ENABLE_SRT}' \\
+NEEDLETAIL_ENABLE_QUADRA='${ENABLE_QUADRA}' \\
 NEEDLETAIL_BUILD_SCOPE='${BUILD_SCOPE}' \\
   '${REMOTE_STAGE}/build-components.sh'"
 

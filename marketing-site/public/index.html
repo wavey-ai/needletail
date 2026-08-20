@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="BITNEEDLE TAIL is a horizontally scalable LL-HLS edge mesh for live audio, video, and media payloads.">
+  <title>BITNEEDLE TAIL | Distributed media edge mesh</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/site.js" defer></script>
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <header class="masthead">
+    <a class="wordmark" href="#top" aria-label="BITNEEDLE TAIL home">
+      <span class="tail-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>BITNEEDLE <b>TAIL</b></span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#architecture">Architecture</a>
+      <a href="#topology">Topology</a>
+      <a href="#operations">Operations</a>
+    </nav>
+    <a class="console-link" href="https://tail.bitneedle.com/mesh#network">Open Needletail UI <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="live-dot"></span> DISTRIBUTED MEDIA DELIVERY</p>
+        <h1>One ingest.<br><em>A measured edge mesh.</em></h1>
+        <p class="hero-summary">A horizontally scalable, multi-parent transport fabric that accepts media payloads at contribution ingress and publishes low-latency HLS at regional playback edges.</p>
+        <div class="hero-actions">
+          <a class="primary-action" href="https://tail.bitneedle.com/mesh#network">Inspect live topology</a>
+          <a class="text-action" href="#architecture">View architecture <span>↓</span></a>
+        </div>
+        <dl class="live-strip" aria-label="Live mesh status">
+          <div><dt>Nodes</dt><dd id="metric-nodes">--</dd></div>
+          <div><dt>Measured links</dt><dd id="metric-links">--</dd></div>
+          <div><dt>Aggregate ingress</dt><dd id="metric-throughput">--</dd></div>
+          <div><dt>Link loss</dt><dd id="metric-loss">--</dd></div>
+        </dl>
+      </div>
+
+      <div class="hero-system" aria-label="BITNEEDLE TAIL system flow">
+        <div class="system-head"><span>LIVE FABRIC</span><span id="snapshot-age">CONNECTING</span></div>
+        <div class="flow-stage">
+          <div class="flow-column ingest-column">
+            <span class="flow-label">INGEST</span>
+            <article><i></i><strong>Contribution</strong><small>Any media payload</small></article>
+          </div>
+          <svg class="flow-lines" viewBox="0 0 600 360" preserveAspectRatio="none" aria-hidden="true">
+            <path class="primary-line" d="M85 180 C185 180 170 70 300 70 S410 180 515 180"></path>
+            <path class="primary-line" d="M85 180 C185 180 170 180 300 180 S410 180 515 180"></path>
+            <path class="warm-line" d="M85 180 C185 180 170 290 300 290 S410 180 515 180"></path>
+          </svg>
+          <div class="mesh-core" aria-hidden="true">
+            <span class="orbit orbit-a"></span><span class="orbit orbit-b"></span>
+            <i class="node n1"></i><i class="node n2"></i><i class="node n3"></i><i class="node n4"></i><i class="node n5"></i>
+            <strong>MESH</strong><small>multi-parent</small>
+          </div>
+          <div class="flow-column edge-column">
+            <span class="flow-label">EDGE</span>
+            <article><i></i><strong>LL-HLS</strong><small>Regional publication</small></article>
+          </div>
+        </div>
+        <div class="system-foot"><span>PRIMARY + WARM SECONDARY PATHS</span><span>PAYLOAD NEUTRAL</span></div>
+      </div>
+    </section>
+
+    <section class="principles" aria-label="System properties">
+      <article><span>01</span><h2>Payload-neutral transport</h2><p>The mesh controls routing, repair, publication timing, and delivery. Codec and container semantics remain with the media payload and edge adapters.</p></article>
+      <article><span>02</span><h2>Horizontal edge scale</h2><p>Relay and playback edges can be added by region without centralizing the media hot path. Each edge publishes locally from the canonical mesh stream.</p></article>
+      <article><span>03</span><h2>Measured paths</h2><p>Every configured parent link reports RTT, jitter, loss, throughput, sample count, and observation freshness from the receiving service.</p></article>
+    </section>
+
+    <section class="architecture section" id="architecture">
+      <header class="section-heading">
+        <p class="eyebrow">SYSTEM MODEL</p>
+        <h2>Ingest, transport, publish.</h2>
+        <p>Media enters once. The transport fabric distributes canonical stream objects across bounded primary and repair paths. Regional edges expose LL-HLS close to playback.</p>
+      </header>
+      <div class="audio-path" aria-labelledby="audio-path-title">
+        <div class="audio-path-head">
+          <div>
+            <p class="eyebrow">CANONICAL AUDIO PATH</p>
+            <h3 id="audio-path-title">Every codec enters the same protected flow.</h3>
+          </div>
+          <p>Preserve the media. Standardize the envelope. Protect the transport.</p>
+        </div>
+
+        <div class="codec-bank" aria-label="Accepted audio codecs">
+          <span>PCM</span><span>FLAC</span><span>OPUS</span><span>AAC</span><span>MP3</span>
+        </div>
+
+        <div class="audio-signal-chain">
+          <article class="signal-stage v2-stage">
+            <div class="stage-number">01</div>
+            <div class="stage-copy">
+              <small>CANONICAL ENVELOPE</small>
+              <strong>Soundkit v2</strong>
+              <p>One self-describing frame around the original codec payload.</p>
+            </div>
+            <div class="packet-visual" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+          </article>
+
+          <div class="chain-link" aria-hidden="true"><span></span><b>SYNC</b></div>
+
+          <article class="signal-stage">
+            <div class="stage-number">02</div>
+            <div class="stage-copy">
+              <small>MULTITRACK CLOCK</small>
+              <strong>AEP1 epoch</strong>
+              <p>Groups synchronized channels and tracks on one deterministic timeline.</p>
+            </div>
+          </article>
+
+          <div class="chain-link" aria-hidden="true"><span></span><b>REPAIR</b></div>
+
+          <article class="signal-stage">
+            <div class="stage-number">03</div>
+            <div class="stage-copy">
+              <small>PACKET PROTECTION</small>
+              <strong>RaptorQ FEC</strong>
+              <p>Encodes source and repair datagrams to recover transport loss.</p>
+            </div>
+          </article>
+
+          <div class="chain-link" aria-hidden="true"><span></span><b>ROUTE</b></div>
+
+          <article class="signal-stage mesh-stage">
+            <div class="mesh-glyph" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="stage-copy">
+              <small>GLOBAL DELIVERY</small>
+              <strong>Needletail mesh</strong>
+              <p>Routes the protected stream to every regional playback edge.</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="v2-fields" aria-label="Soundkit v2 audio metadata">
+          <span>Codec identity</span><span>Channels</span><span>Sample rate</span><span>Frame count</span><span>Timing</span><span>Encryption</span><span>CRC</span>
+        </div>
+
+        <div class="audio-path-note">
+          <p><b>Soundkit v2</b> keeps codec identity and playback metadata explicit without unnecessary transcoding.</p>
+          <p><b>AEP1</b> synchronizes tracks. <b>RaptorQ</b> protects the resulting bytes in transit.</p>
+        </div>
+      </div>
+      <div class="architecture-grid">
+        <article class="arch-card">
+          <div class="arch-index">01 / INGEST</div>
+          <h3>Contribution adapters</h3>
+          <p>Accept live audio, video, and data through format-specific adapters, then convert them into versioned streaming payloads for the mesh.</p>
+          <ul><li>RIST and production contribution</li><li>Soundkit v2 audio payloads</li><li>Media format remains explicit</li></ul>
+        </article>
+        <article class="arch-card featured">
+          <div class="arch-index">02 / MESH</div>
+          <h3>Multi-parent transport</h3>
+          <p>Forward payloads over primary and warm repair paths with bounded queues, erasure repair, deterministic generations, and service-owned telemetry.</p>
+          <ul><li>Horizontally scalable relay DAG</li><li>RaptorQ repair paths</li><li>Measured failover state</li></ul>
+        </article>
+        <article class="arch-card">
+          <div class="arch-index">03 / EDGE</div>
+          <h3>Regional publication</h3>
+          <p>Materialize the same canonical media stream at playback edges and package locally for low-latency HTTP delivery.</p>
+          <ul><li>LL-HLS at every active region</li><li>Audio, video, and sidechannels</li><li>Independent reader capacity</li></ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="topology section" id="topology">
+      <header class="section-heading split-heading">
+        <div><p class="eyebrow">LIVE DEPLOYMENT</p><h2>Topology under load.</h2></div>
+        <p>Needletail is the infrastructure codename, named for one of the fastest birds in level flight. It elects the operations collector shown below, backed by fresh observations from every receiving node.</p>
+      </header>
+      <div class="console-frame">
+        <div class="frame-bar"><span><i></i> NEEDLETAIL / NETWORK</span><a href="https://tail.bitneedle.com/mesh#network">Open full screen ↗</a></div>
+        <iframe title="Live Needletail topology" src="https://tail.bitneedle.com/mesh#network" loading="lazy"></iframe>
+      </div>
+      <p class="frame-note">Live operational data. Node labels describe deployment locations; link metrics are reported by the receiving mesh service.</p>
+    </section>
+
+    <section class="operations section" id="operations">
+      <div class="operations-copy">
+        <p class="eyebrow">OPERATIONS</p>
+        <h2>Telemetry is part of the transport.</h2>
+        <p>The control plane does not infer network quality in the browser. Receiving services continuously measure their exact configured parents, and the elected collector joins those observations to the declared topology.</p>
+      </div>
+      <div class="terminal" aria-label="Link telemetry fields">
+        <div class="terminal-bar"><span></span><span></span><span></span><b>LINK OBSERVATION</b></div>
+        <code><i>state</i>       measured</code>
+        <code><i>method</i>      icmp_echo</code>
+        <code><i>rtt_ms</i>      <span id="terminal-rtt">--</span></code>
+        <code><i>jitter_ms</i>   <span id="terminal-jitter">--</span></code>
+        <code><i>loss</i>        <span id="terminal-loss">--</span></code>
+        <code><i>throughput</i>  <span id="terminal-rate">--</span></code>
+        <code><i>freshness</i>   reported</code>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <a class="wordmark footer-mark" href="#top"><span class="tail-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>BITNEEDLE <b>TAIL</b></span></a>
+    <p>Horizontally scalable low-latency media delivery.</p>
+    <a href="https://tail.bitneedle.com/mesh#network">Needletail control plane ↗</a>
+  </footer>
+</body>
+</html>

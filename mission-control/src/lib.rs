@@ -700,8 +700,16 @@ pub struct NetworkTopologyLink {
     pub to_node_id: String,
     pub role: String,
     pub state: String,
+    pub reporting: String,
+    pub method: String,
     pub throughput_bps: Option<u64>,
     pub rtt_us: Option<u64>,
+    pub rtt_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
+    pub loss_percent: Option<f64>,
+    pub received_bytes_total: u64,
+    pub sample_count: u64,
+    pub observed_unix_ms: u64,
     pub generation: Option<u64>,
 }
 

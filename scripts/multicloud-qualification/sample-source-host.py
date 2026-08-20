@@ -29,20 +29,32 @@ def read_cpu() -> tuple[int, int]:
     return sum(values), idle
 
 
-def read_process(pid: int) -> dict[str, int]:
+def read_process(pid: int) -> dict[str, int | None]:
     process_root = Path("/proc") / str(pid)
     stat_line = (process_root / "stat").read_text(encoding="utf-8")
     fields = stat_line[stat_line.rfind(")") + 2 :].split()
+    if len(fields) < 22:
+        raise ProcessLookupError(f"incomplete process stat for PID {pid}")
     status = {}
     for line in (process_root / "status").read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition(":")
         if separator:
-            status[key] = value.strip().split()[0]
+            value_fields = value.strip().split()
+            if value_fields:
+                status[key] = value_fields[0]
     io_fields = {}
-    for line in (process_root / "io").read_text(encoding="utf-8").splitlines():
+    try:
+        io_lines = (process_root / "io").read_text(encoding="utf-8").splitlines()
+    except PermissionError:
+        io_lines = []
+    for line in io_lines:
         key, separator, value = line.partition(":")
         if separator:
             io_fields[key] = int(value.strip())
+    try:
+        open_fds = len(list((process_root / "fd").iterdir()))
+    except PermissionError:
+        open_fds = None
     return {
         "cpu_ticks": int(fields[11]) + int(fields[12]),
         "minor_faults": int(fields[7]),
@@ -55,7 +67,7 @@ def read_process(pid: int) -> dict[str, int]:
         ),
         "read_bytes": io_fields.get("read_bytes", 0),
         "write_bytes": io_fields.get("write_bytes", 0),
-        "open_fds": len(list((process_root / "fd").iterdir())),
+        "open_fds": open_fds,
     }
 
 
@@ -118,6 +130,9 @@ def main() -> int:
                 host = read_host()
             except FileNotFoundError:
                 break
+            except ProcessLookupError:
+                time.sleep(0.05)
+                continue
             now_unix_ns = time.time_ns()
             now_monotonic = time.monotonic()
             elapsed = (

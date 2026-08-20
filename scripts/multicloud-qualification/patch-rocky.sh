@@ -101,6 +101,7 @@ validate_canonical_node_set() {
 
 azure_vm_name() {
   case "$1" in
+    contrib-london) printf 'nt-contrib-lon\n' ;;
     relay-secondary-japan) printf 'nt-az-relay-jpe\n' ;;
     relay-regional-australia) printf 'nt-az-relay-aue\n' ;;
     edge-japan) printf 'nt-az-edge-jpe\n' ;;

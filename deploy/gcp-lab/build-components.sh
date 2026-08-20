@@ -8,6 +8,7 @@ OUTPUT_ROOT="${NEEDLETAIL_BUILD_OUTPUT_ROOT}"
 BUILD_PARENT=/opt/needletail-build
 RUST_TOOLCHAIN="${NEEDLETAIL_RUST_TOOLCHAIN:-1.96.0}"
 ENABLE_SRT="${NEEDLETAIL_ENABLE_SRT:-0}"
+ENABLE_QUADRA="${NEEDLETAIL_ENABLE_QUADRA:-0}"
 BUILD_SCOPE="${NEEDLETAIL_BUILD_SCOPE:-all}"
 RUSTUP_VERSION=1.28.2
 LIBRIST_VERSION=0.2.20
@@ -363,6 +364,13 @@ case "${ENABLE_SRT}" in
     exit 2
     ;;
 esac
+case "${ENABLE_QUADRA}" in
+  0|1) ;;
+  *)
+    echo "NEEDLETAIL_ENABLE_QUADRA must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 case "${BUILD_SCOPE}" in
   all|mesh|operations) ;;
   *)
@@ -440,6 +448,9 @@ fi
 contrib_feature_args=(--no-default-features)
 if [[ "${ENABLE_SRT}" == 1 ]]; then
   contrib_feature_args+=(--features srt-ingest)
+fi
+if [[ "${ENABLE_QUADRA}" == 1 ]]; then
+  contrib_feature_args+=(--features quadra-renditions)
 fi
 
 if [[ "${BUILD_SCOPE}" != operations ]]; then
