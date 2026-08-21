@@ -113,6 +113,28 @@
               <small>MULTITRACK CLOCK</small>
               <strong>AEP1 epoch</strong>
               <p>Groups synchronized channels and tracks on one deterministic timeline.</p>
+              <details class="aep1-popover">
+                <summary>Why AEP1?</summary>
+                <div class="aep1-popover-panel">
+                  <p>AEP1 sits in an awkward gap between several established layers:</p>
+                  <ul>
+                    <li><b>Audio containers</b> such as fMP4, Matroska and WAV group tracks, but are designed mainly for storage or HTTP delivery.</li>
+                    <li><b>RTP/WebRTC</b> synchronizes live streams using timestamps, SSRCs and RTCP, but treats tracks as separate packet flows.</li>
+                    <li><b>AES67, Ravenna and ST 2110-30</b> handle synchronized professional PCM transport, but not arbitrary codec-independent production payloads.</li>
+                    <li><b>ADM/BWF</b> describes multichannel production relationships, but is primarily file metadata.</li>
+                    <li><b>FEC protocols</b> protect bytes, but generally do not understand synchronized audio-track epochs.</li>
+                  </ul>
+                  <p>AEP1’s useful idea is narrower:</p>
+                  <blockquote>“These Soundkit v2 frames from different tracks belong to the same small, synchronized production instant.”</blockquote>
+                  <p>That makes the whole epoch a convenient unit for routing, buffering, validation, replay and RaptorQ protection. It also keeps codec details inside Soundkit v2 rather than embedding FLAC, Opus or PCM assumptions into the mesh.</p>
+                  <p>There is no dominant standard because most systems historically chose one of two models:</p>
+                  <ol>
+                    <li>Transport every channel or track as an independently timestamped stream.</li>
+                    <li>Package everything into a comparatively heavyweight media container.</li>
+                  </ol>
+                  <p>AEP1 occupies the middle: lightweight like a packet protocol, synchronized like a container, codec-independent, and explicitly designed for multitrack production over a distributed mesh. That is a genuinely useful abstraction.</p>
+                </div>
+              </details>
             </div>
           </article>
 
