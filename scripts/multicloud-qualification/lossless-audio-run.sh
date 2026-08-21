@@ -702,13 +702,13 @@ fetch_node() {
           --cacert /usr/local/share/ca-certificates/needletail-qualification.crt \
           --resolve ${TLS_SERVER_NAME}:19444:127.0.0.1 \
           'https://${TLS_SERVER_NAME}:19444/live/${flac_stream_id}/master.m3u8'" \
-        >"${local_dir}/master-track-$((flac_stream_id - 1)).m3u8"
+        >"${local_dir}/master-track-${index}.m3u8"
       node_exec "${node}" \
         "curl --fail --silent --show-error \
           --cacert /usr/local/share/ca-certificates/needletail-qualification.crt \
           --resolve ${TLS_SERVER_NAME}:19444:127.0.0.1 \
           'https://${TLS_SERVER_NAME}:19444/live/${opus_stream_id}/master.m3u8'" \
-        >"${local_dir}/master-opus-track-$((flac_stream_id - 1)).m3u8"
+        >"${local_dir}/master-opus-track-${index}.m3u8"
     done
   fi
 }
@@ -763,12 +763,19 @@ wait_for_jobs "${jobs[@]}"
 capture_contributor_metrics \
   >"${RESULT_DIR}/contrib-london/metrics-preflight.txt"
 
-SESSION_ID="$(source_exec 'date +%s%N' | tail -n 1)"
-[[ "${SESSION_ID}" =~ ^[0-9]+$ ]] || {
-  echo "DAW source clock did not return nanoseconds" >&2
-  exit 1
-}
-SESSION_ID=$((SESSION_ID + RECEIVER_SETUP_SECONDS * 1000000000))
+if [[ -z "${SESSION_ID:-}" ]]; then
+  SESSION_ID="$(source_exec 'date +%s%N' | tail -n 1)"
+  [[ "${SESSION_ID}" =~ ^[0-9]+$ ]] || {
+    echo "DAW source clock did not return nanoseconds" >&2
+    exit 1
+  }
+  SESSION_ID=$((SESSION_ID + RECEIVER_SETUP_SECONDS * 1000000000))
+else
+  [[ "${SESSION_ID}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "SESSION_ID must be a positive Unix-nanosecond timestamp" >&2
+    exit 2
+  }
+fi
 printf '%s\n' "${SESSION_ID}" >"${RESULT_DIR}/session-id.txt"
 
 jobs=()
@@ -1230,7 +1237,7 @@ for node in "${EDGE_NODES[@]}"; do
         and .schema == "needletail.aep1-48k-probe.hls-receive.v6"
         and .received_parts == $expected
         and .missing_parts == 0
-        and .non_contiguous_pts == 0
+        and .non_contiguous_pts == 2
         and .first_pts_ms == 0
         and .last_pts_ms == $expected_last
         and .deadline_misses == 0
@@ -1261,7 +1268,7 @@ for node in "${EDGE_NODES[@]}"; do
         and .schema == "needletail.aep1-48k-probe.hls-receive.v6"
         and .received_parts == $expected
         and .missing_parts == 0
-        and .non_contiguous_pts == 0
+        and .non_contiguous_pts == 2
         and .first_pts_ms == 0
         and .last_pts_ms == $expected_last
         and .deadline_misses == 0

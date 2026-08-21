@@ -177,9 +177,18 @@
       </header>
       <div class="console-frame">
         <div class="frame-bar"><span><i></i> NEEDLETAIL / NETWORK</span><a href="https://tail.bitneedle.com/mesh#network">Open full screen ↗</a></div>
-        <iframe title="Live Needletail topology" src="https://tail.bitneedle.com/mesh#network" loading="lazy"></iframe>
+        <div class="topology-captures">
+          <figure class="capture-overview">
+            <img src="/captures/needletail-network-overview.png" alt="Needletail operations UI showing the elected collector, global mesh map, and topology link table" loading="lazy">
+            <figcaption><span>GLOBAL OPERATIONS</span><b>10 mapped locations · 16 topology links</b></figcaption>
+          </figure>
+          <figure class="capture-detail">
+            <img src="/captures/needletail-topology-detail.png" alt="Needletail topology map with intercontinental primary and secondary paths and a selected node status panel" loading="lazy">
+            <figcaption><span>NODE INSPECTION</span><b>Collector, health and capacity in context</b></figcaption>
+          </figure>
+        </div>
       </div>
-      <p class="frame-note">Live operational data. Node labels describe deployment locations; link metrics are reported by the receiving mesh service.</p>
+      <p class="frame-note">Captured during a live distributed run. Node labels describe deployment locations; link metrics are reported by the receiving mesh service. Open the control plane for current data.</p>
     </section>
 
     <section class="operations section" id="operations">
@@ -204,6 +213,10 @@
   <footer>
     <a class="wordmark footer-mark" href="#top"><span class="tail-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>BITNEEDLE <b>TAIL</b></span></a>
     <p>Horizontally scalable low-latency media delivery.</p>
+    <a class="wavey-credit" href="https://wavey.ai" aria-label="Made by wavey.ai">
+      <span class="wavey-icon" aria-hidden="true"><img src="/assets/wavey-goose.png" alt=""></span>
+      <span>by <b>wavey.ai</b></span>
+    </a>
     <a href="https://tail.bitneedle.com/mesh#network">Needletail control plane ↗</a>
   </footer>
 </body>

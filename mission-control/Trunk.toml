@@ -2,7 +2,7 @@
 target = "index.html"
 dist = "dist"
 public_url = "/"
+filehash = false
 
 [watch]
 ignore = ["dist"]
-

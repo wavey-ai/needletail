@@ -9,8 +9,12 @@ WASM_BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
 
 if command -v "${TRUNK}" >/dev/null 2>&1; then
   cd "${ROOT}"
-  exec env -u NO_COLOR TRUNK_COLOR=never "${TRUNK}" build \
+  env -u NO_COLOR TRUNK_COLOR=never "${TRUNK}" build \
     --release --dist "${DIST}"
+  cp "${DIST}/style.css" "${DIST}/needletail-mission-control.css"
+  cp "${DIST}/needletail-mission-control.js" "${DIST}/needletail_mission_control.js"
+  cp "${DIST}/needletail-mission-control_bg.wasm" "${DIST}/needletail_mission_control_bg.wasm"
+  exit 0
 fi
 
 command -v "${WASM_BINDGEN}" >/dev/null 2>&1 || {

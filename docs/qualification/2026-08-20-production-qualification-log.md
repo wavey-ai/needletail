@@ -377,3 +377,133 @@ The playback reports do not support the earlier shorthand of one isolated FLAC d
 The source-host evidence is independently failed: the two-vCPU colocated source/contributor host reached 90.95% host CPU p99, 1.21 load per CPU p99, and 7.0 runnable tasks per CPU p99. The DAW source itself exited cleanly with zero dropped frames, zero UDP send errors, and 25.0% process-capacity p99. A clean transport rerun must therefore keep codec correctness separate from host sizing; 12/16-track production qualification should use a dedicated, adequately sized DAW source host rather than the two-vCPU colocated baseline.
 
 No binary was deployed, no service was restarted, no contributor process ran, and no stream was created during this preparation work.
+## Azure SoundKit v2 source-shard deployment and load curve
+
+### Deployment
+
+- Rolled `av-mesh` SHA-256 `061c8ba1f5698401282a78320ece55b1bfb6a7ed994d93fa9ca6b53c52272b23` across all nine Azure relay and edge nodes without taking the mesh down as a whole.
+- Verified every restarted `needletail-mesh.service` active with the expected binary before advancing to the next node.
+- The deployed build uses the canonical RaptorQ datagram implementation and forwards SoundKit v2 source shards as well as repair shards.
+
+### Qualification runs
+
+- `20260820-v2-source-shards-8track-combined-1`: transport fix confirmed on all five observed edges. Each edge received both source and repair datagrams. The colocated two-vCPU source/contributor saturated: host CPU p99 `100%`, `36` source handoff drops, `159,907` contributor ingress/mesh queue drops, `150,937` HLS queue drops, and `95,733` kernel UDP drops. The source completed its media window but deadlocked during shutdown; thread stacks were captured in `source-hang-thread-state.txt` before terminating only the test process.
+- `20260820-v2-source-shards-1track-combined-1`: one stereo track delivered all `12,000` epochs and all `240` FLAC plus `240` Opus LL-HLS parts at every edge with zero erasures, missing PCM frames, missing parts, or deadline misses. This run exposed a qualification filename mismatch and the expected two boundary discontinuity markers.
+- `20260820-v2-source-shards-1track-combined-2`: repeated the clean one-track result after correcting playlist artifact names. Playback still failed only because the predicate incorrectly required zero rather than exactly two defined boundary markers.
+- `20260820-v2-source-shards-2track-combined-1`: mesh, FLAC, Opus, and synchronized multitrack counter-window gates passed on all five edges. Contributor drops and socket drops were zero. Transport render-ready p99 ranged from approximately `100.4 ms` to `243.0 ms`; estimated LL-HLS render p99 ranged from approximately `498.9 ms` to `643.6 ms`.
+- `20260820-v2-source-shards-4track-combined-1`: mesh, FLAC, Opus, and synchronized multitrack counter-window gates passed on all five edges. All `48,000` expected epochs per edge and all `960` parts per edge/codec were received with zero erasures, missing PCM frames, missing parts, or deadline misses. Transport render-ready p99 ranged from approximately `109.1 ms` to `251.4 ms`; estimated LL-HLS render p99 ranged from approximately `505.5 ms` to `650.8 ms`.
+
+### Harness corrections
+
+- Master playlists are now stored by canonical zero-based track index rather than the unrelated `stream_id - 1` value. No legacy filename alias is retained.
+- Playback qualification now requires exactly two defined boundary discontinuity markers for both FLAC and Opus; it does not accept an arbitrary nonzero count.
+
+### Current conclusions and gaps
+
+- The repair-only relay defect is fixed. SoundKit v2 source and RaptorQ repair datagrams are observable at every tested edge.
+- Four simultaneous stereo FLAC plus Opus publications are clean on the present two-vCPU colocated Azure contributor.
+- Eight simultaneous stereo publications are not production-safe on that host shape. The next test must separate the DAW source from the contributor or increase contributor CPU before repeating eight tracks.
+- The source-capacity `runnable_per_cpu_p99 <= 0.75` gate fails even at one track while CPU, load, encoder progress, handoff, and UDP gates are clean. Do not weaken it silently; validate the runnable sampler and threshold on the intended production host shape.
+- Browser control was unavailable during these runs, so no live UI screenshot was captured in this session.
+## Mesh-only fixture replay decision
+
+The PCM-through-`av-contrib` run is now classified only as an end-to-end contributor integration test. Its eight-track saturation result is not a Needletail mesh capacity limit.
+
+Mesh capacity qualification will use `av-contrib` once, outside the measured path, to produce codec-valid SoundKit v2 FLAC and Opus fixture bytes. Every measured run will regenerate fresh AEP1 session/epoch/PTS metadata and fresh RaptorQ source/repair datagrams, pace them directly into the relay ingress, and exclude live codec and contributor work. The implementation and qualification contract is recorded in `soundkit-v2-fixture-replay-mesh-plan.md`.
+
+## 24-node Soundkit v2 fixture replay execution
+
+- Deployed the compiled generation `2026082001` topology across all 24 already-running Azure VMs: one origin, three backbones, eight regional relays, and 12 playback edges.
+- Corrected the deployed `av-mesh` wrapper so `--fec-bind` uses the exact compiled private bind rather than `0.0.0.0`.
+- Corrected the fixture subscriber wire format and normalized codec-specific frame geometry to the common 5 ms AEP1 cadence.
+- Captured a real codec-valid FLAC plus Opus Soundkit v2 fixture from `av-contrib`; file SHA-256 is `fa37d7ba49d2acb232a48d41e7aecb5d7344ca39cc97ff5ec3bd56e3f18c32b7`.
+- Built and installed replay binary SHA-256 `3bc5b42b822ca3d383e63903cd9894f06ef005361a9c15c8751870d1af06b780`.
+- Changed replay multiplication to two synchronized 50 ms canonical objects per part, one per codec, so object-scheduler work does not grow per track while protected bytes still do.
+- Completed 8, 32, 64, 128, and 256-track short load points plus isolated sustained 128, 64, 32, 16, and 8-track measurements.
+- Proved source-side overload at 256 tracks, primary and secondary mesh saturation at 128 tracks, and warm-secondary saturation at 64 tracks.
+- At 32 tracks, 19/23 mesh nodes decoded every object; four nodes expired 1-5 objects with zero kernel loss.
+- At 16 tracks, 21/23 nodes decoded every object; Canada Central relay and edge each expired one object.
+- At 8 tracks for 120 seconds, every playback edge decoded all 4,800 objects with zero expiry, kernel loss, deadline drops, known gaps, or lag. One object expired at the primary backbone, so this is an edge-delivery success but not a strict mesh-wide production qualification.
+- Measured regional source-epoch activation ranges of 55.8-168.7 ms for FLAC and 65.7-178.5 ms for Opus.
+- Restored both temporary replay peers to the compiled contributor ports and verified both backbone services active.
+- Raw evidence is in `target/multicloud-qualification/runs/fixture-24-20260820T222151Z`; the full result is in `docs/qualification/2026-08-20-soundkit-v2-fixture-replay-results.md`.
+- No GCP resource was started. No VM was stopped or deallocated.
+
+Remaining hard gaps are warm-secondary decode throughput, complete source-clock publication latency, native edge playback publication for replicated objects, private-network qualification, a strict zero-expiry sustained point, and 24-node control-plane telemetry/screenshots.
+
+### Ten-minute four-track baseline
+
+- Run session: `1787265958765727824`.
+- Duration: 600 seconds; 120,000 scheduled 5 ms epochs; 960,000 FLAC plus Opus representation epochs.
+- Source: 759,840 source datagram transmissions, 88,080 repair datagrams, 1,217,613,120 wire bytes, zero UDP send errors.
+- Source pacing: 1.051 ms p50, 1.756 ms p95, 1.939 ms p99, 4.964 ms maximum.
+- Every mesh service remained active. Fleet counter windows recorded zero kernel receive-buffer drops and zero relay deadline drops.
+- All three backbones and six of eight regional relays decoded 24,000/24,000 objects.
+- Brazil South relay/edge expired 2 objects; Canada Central relay/edge expired 5; East Asia edge expired 1.
+- Aggregate playback-edge expiry was 8/288,000 objects, approximately 0.0028%.
+- Classification: failed strict zero-expiry gate at low load. This is not CPU saturation; it is insufficient repair coverage or repair arrival on the controlled public-UDP paths.
+- Follow-up started: repeat four tracks with the same 12% proportional FEC and minimum repair symbols increased from 1 to 4.
+
+### FEC comparison and 24-node UI recovery
+
+- The five-minute four-track minimum-four-repair comparison delivered 12,000/12,000 objects to every regional relay and playback edge with zero kernel or deadline drops.
+- The primary backbone alone expired one object because the origin-to-primary lane is source-only and cannot consume the secondary repair set.
+- Comparison source pacing remained clean: 1.045 ms p50, 1.756 ms p95, 1.940 ms p99, 3.466 ms maximum, zero UDP send errors.
+- The extra minimum repair symbols increased normalized wire volume by approximately 1.6% for this small-object load.
+- Restored the two test backbone peers to production ports `22400` and `22401`; both services were active after restoration.
+- Diagnosed the public UI as three independent deployment faults: obsolete `2026072801` operations sources, a no-argument systemd invocation incompatible with the current collector binary, and missing `NEEDLETAIL_OPERATIONS_SNAPSHOT_FILE` on `av-mesh`.
+- Rebuilt operations sources for generation `2026082001`: 23 mesh sources, one contributor, and 44 declared topology links.
+- Reconfigured the three election candidates with current identities and port `19444`; quorum re-elected `edge-canada-east` with three of three voters online.
+- Added the required collector arguments and enabled the elected snapshot route on the leader and public follower, then fleet-wide.
+- Diagnosed the remaining unreachable links as missing unprivileged ICMP capability on newly added nodes, not Azure NSG denial. The NSGs already allowed the exact 24 fleet `/32` addresses.
+- Persisted each node's Needletail service GID in `net.ipv4.ping_group_range` and restarted mesh services without stopping any VM.
+- Final public verification at `https://tail.bitneedle.com/api/mesh`: 24 nodes, 44 topology links, 44 measured, zero unreachable, generation `2026082001`.
+
+## Indefinite replay, playback verification, and Azure shutdown
+
+- Replaced the idle Canada East contributor process with an enabled systemd
+  service, `needletail-v2-fixture-replay.service`, after identifying the actual
+  owning unit as `needletail-contrib.service`. The replay used the immutable
+  Lori FLAC plus Opus Soundkit v2 fixture, eight synchronized tracks, primary
+  and secondary relay-session lanes, 12 percent proportional repair, and a
+  minimum of four repair symbols.
+- The replay command uses a 24-hour run duration and `Restart=always`, so it has
+  no six-hour qualification timeout and restarts continuously while the VM is
+  available.
+- Live collector evidence showed two canonical publication identities on every
+  reporting mesh node: FLAC stream `2001` and Opus stream `3001`. The snapshot
+  reported 46 active replicas across 23 relay/playback nodes. This is two codec
+  publications replicated across the mesh, not 46 independent source streams.
+  The eight synchronized logical tracks are carried inside each codec
+  publication.
+- The global snapshot still reported zero playback publication rows. Transport
+  delivery and cache activation were live, but there was no player-qualified
+  feed contract for the replicated fixture objects.
+- Verified both active stream IDs through every configured public playback
+  origin: Canada East, Korea Central, Australia Southeast, Brazil South, and
+  East Asia. Every LL-HLS playlist advanced and referenced live parts, and each
+  part returned HTTP 200. All sampled parts were labelled `video/mp2t`, but
+  `ffprobe` rejected every FLAC and Opus part as invalid media.
+- Root cause: the edge HLS route exposes complete AEP1/Soundkit v2 transport
+  objects behind `.ts` URLs instead of terminalizing the transport envelope and
+  reboxing the contained codec frames. The required playback boundary is
+  RaptorQ recovery, AEP1 unwrap, Soundkit v2 parsing, codec-frame extraction,
+  and timestamp-preserving fragmented-MP4 publication. This is a rebox/remux
+  operation, not audio transcoding. Opus requires an MP4 `dOps` configuration;
+  FLAC requires `dfLa`; epoch changes require a new init segment or HLS
+  discontinuity.
+- No public listening URL was qualified. Player pages loaded, but their media
+  parts were not decodable. Do not present the regional player links as working
+  audio evidence.
+- The practical capacity interpretation remains: eight tracks passed every
+  playback edge, 16 tracks was nearly clean, 32 tracks exposed low-rate expiry,
+  64 tracks saturated the warm-secondary receive/decode path, and 128 plus 256
+  tracks were overload points. The 256-track run is not a capacity claim.
+- The campaign ended when the Azure credits expired. Azure subsequently
+  reported `nt-cache-cae-b`, the Canada control/UI origin, as `VM stopped` with
+  provisioning failed. Both `tail.bitneedle.com` and
+  `needletail.bitneedle.com` then returned Cloudflare HTTP 530. This shutdown
+  was external credit exhaustion, not an intentional qualification teardown.
+- Live topology and playback screenshots were not captured because no browser
+  instance was attached during the final healthy window.
+- Browser automation was unavailable, so no screenshot was fabricated. The overview was opened through the host browser at `https://tail.bitneedle.com/mesh#overview`.

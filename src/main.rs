@@ -47,6 +47,10 @@ struct Args {
     #[arg(long)]
     no_build: bool,
 
+    /// Run only the mesh topology. Useful for prepared fixture replay.
+    #[arg(long)]
+    no_contrib: bool,
+
     #[arg(long, env = "NEEDLETAIL_MISSION_CONTROL_DIST")]
     mission_control_dist: Option<PathBuf>,
 
@@ -233,12 +237,14 @@ async fn main() -> Result<()> {
             "av-mesh build",
         )
         .await?;
-        run_build(
-            &contrib_root,
-            contrib_build_args(args.srt_bind.is_some()),
-            "av-contrib build",
-        )
-        .await?;
+        if !args.no_contrib {
+            run_build(
+                &contrib_root,
+                contrib_build_args(args.srt_bind.is_some()),
+                "av-contrib build",
+            )
+            .await?;
+        }
     }
 
     let mission_control_dist = resolve_mission_control_dist(&args, &needletail_root);
@@ -276,7 +282,9 @@ async fn main() -> Result<()> {
     let mesh_bin = target_release_bin(&mesh_root, "av-mesh");
     let contrib_bin = target_release_bin(&contrib_root, "av-contrib");
     ensure_executable(&mesh_bin, "av-mesh")?;
-    ensure_executable(&contrib_bin, "av-contrib")?;
+    if !args.no_contrib {
+        ensure_executable(&contrib_bin, "av-contrib")?;
+    }
 
     let relay_plan = compile_local_relay_plan(&args)?;
     let contrib_relay_args = compiled_relay_arguments(&relay_plan, CONTRIB_NODE_ID)?;
@@ -435,33 +443,35 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        services.push(
-            spawn_service(
+        if !args.no_contrib {
+            services.push(
+                spawn_service(
+                    "contrib",
+                    &contrib_bin,
+                    &contrib_root,
+                    contrib_args(&args, &tls.cert, &tls.key, contrib_relay_args),
+                    &rust_log,
+                    &[],
+                )
+                .await?,
+            );
+            wait_for_health(
                 "contrib",
-                &contrib_bin,
-                &contrib_root,
-                contrib_args(&args, &tls.cert, &tls.key, contrib_relay_args),
-                &rust_log,
-                &[],
+                args.contrib_http_port,
+                Duration::from_secs(args.health_timeout_seconds),
+                &args.host,
+                &mut services,
             )
-            .await?,
-        );
-        wait_for_health(
-            "contrib",
-            args.contrib_http_port,
-            Duration::from_secs(args.health_timeout_seconds),
-            &args.host,
-            &mut services,
-        )
-        .await?;
+            .await?;
 
-        require_https_resource(
-            "contributor status snapshot",
-            &args.host,
-            args.contrib_http_port,
-            "/api/status",
-        )
-        .await?;
+            require_https_resource(
+                "contributor status snapshot",
+                &args.host,
+                args.contrib_http_port,
+                "/api/status",
+            )
+            .await?;
+        }
         require_https_resource(
             "playback edge snapshot",
             &args.host,

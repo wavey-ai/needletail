@@ -155,11 +155,7 @@ pub fn assemble_operations_snapshot(
         |value| string_key(value, &["from_node_id", "to_node_id", "role"]),
         MAX_STREAMS,
     );
-    let topology_links = enrich_topology_links(
-        topology_links,
-        &link_observations,
-        now_unix_ms,
-    );
+    let topology_links = enrich_topology_links(topology_links, &link_observations, now_unix_ms);
     let alerts = recent_unique_events(
         good.iter()
             .flat_map(|snapshot| array_values(snapshot, "alerts")),
@@ -288,11 +284,18 @@ fn enrich_topology_links(
             let Some(object) = link.as_object_mut() else {
                 return link;
             };
-            let Some(key) = string_key(&Value::Object(object.clone()), &["from_node_id", "to_node_id", "role"]) else {
+            let Some(key) = string_key(
+                &Value::Object(object.clone()),
+                &["from_node_id", "to_node_id", "role"],
+            ) else {
                 return link;
             };
-            let Some(observation) = observations.get(&key).and_then(|value| value.as_object()) else {
-                object.insert("reporting".to_owned(), Value::String("unreported".to_owned()));
+            let Some(observation) = observations.get(&key).and_then(|value| value.as_object())
+            else {
+                object.insert(
+                    "reporting".to_owned(),
+                    Value::String("unreported".to_owned()),
+                );
                 return link;
             };
             let observed_unix_ms = observation
