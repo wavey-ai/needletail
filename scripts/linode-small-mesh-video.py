@@ -85,14 +85,15 @@ def viewers(edge: dict, plan: dict, offset_ms: int) -> str:
 
 
 def decode_check(plan: dict, node: dict) -> str:
-    """Decode ten seconds of the rendition with ffmpeg, read from the HLS
-    playlist of one node over HTTPS. ffmpeg reads completed segments, not
-    parts, so this also checks the segments that the node serves."""
+    """Decode ten seconds of every track of the rendition with ffmpeg, read
+    from the HLS playlist of one node over HTTPS. ffmpeg reads completed
+    segments, not parts, so this also checks the segments that the node
+    serves."""
     url = (f"https://{node['name']}.{common.TLS_SERVER_NAME}:{HTTP_PORT}"
            f"/live/{STREAM_ID}/stream.m3u8")
     name = f"decode@{node['name']}"
     return (f"(ffmpeg -v error -xerror -nostdin -progress {name}.progress -i {url} -t 10 "
-            f"-map 0:v:0 -f null - >{name}.log 2>&1; echo $? >{name}.rc) &\n")
+            f"-map 0 -f null - >{name}.log 2>&1; echo $? >{name}.rc) &\n")
 
 
 def site_driver(plan: dict, distributors: list[dict], edges: list[dict]) -> str:
