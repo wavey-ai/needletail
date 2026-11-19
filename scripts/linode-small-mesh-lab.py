@@ -435,6 +435,40 @@ def command_replace(args: argparse.Namespace) -> None:
     add_nodes(args, api, state, replacements)
 
 
+def command_hosts(args: argparse.Namespace) -> None:
+    """Show the physical host of every node and each shared failure domain.
+
+    Two distributors of one region protect each other only when they are on
+    different hosts: one stall of a shared host stops both at the same time.
+    The command exits with status 1 when relay nodes that back each other up
+    share a host.
+    """
+    state = read_state(pathlib.Path(args.state))
+    if state is None:
+        sys.exit("No active Needletail small-mesh lab")
+    api = Api()
+    by_host: dict[tuple[str, str], list[dict]] = {}
+    for name in sorted(state["nodes"]):
+        node = state["nodes"][name]
+        live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
+        node["host_uuid"] = live.get("host_uuid")
+        by_host.setdefault((node["region"], node["host_uuid"] or "unknown"), []).append(node)
+    write_state(pathlib.Path(args.state), state)
+    conflicts = []
+    for (region, host), nodes in sorted(by_host.items()):
+        names = ", ".join(node["name"] for node in nodes)
+        print(f"{region:<13} {host[:12]:<12} {names}")
+        relays = [node["name"] for node in nodes
+                  if node["role"] in ("distributor", "backbone")]
+        if len(relays) > 1:
+            conflicts.append((region, relays))
+    for region, relays in conflicts:
+        print(f"SHARED HOST in {region}: {', '.join(relays)}; replace all but one")
+    if conflicts:
+        sys.exit(1)
+    print("every distributor and backbone relay has its own host")
+
+
 def command_status(args: argparse.Namespace) -> None:
     state = read_state(pathlib.Path(args.state))
     if state is None:
@@ -544,6 +578,7 @@ def main() -> None:
     replace.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
     replace.set_defaults(handler=command_replace)
     sub.add_parser("status").set_defaults(handler=command_status)
+    sub.add_parser("hosts").set_defaults(handler=command_hosts)
     sub.add_parser("down").set_defaults(handler=command_down)
     watchdog = sub.add_parser("watchdog")
     watchdog.add_argument("--hours", type=float, default=6.0)

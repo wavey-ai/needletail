@@ -69,6 +69,7 @@ def reader(target: dict, plan: dict, offset_ms: int, window: int, deadline_ms: i
             f"--duration-seconds {plan['media_seconds']} --part-ms {plan['part_ms']} "
             f"--deadline-ms {deadline_ms} --render-buffer-ms 0 --tail-seconds {plan['tail']} "
             f"--start-offset-ms {offset_ms} --window-seconds {window} "
+            f"--abandon-after-ms {soak.ABANDON_AFTER_MS + plan['part_ms']} "
             "--object-sequence-origin 0 --expected-audio-codec h264")
 
 
@@ -78,6 +79,7 @@ def viewers(edge: dict, plan: dict, offset_ms: int) -> str:
             f"--duration-seconds {plan['media_seconds']} --part-ms {plan['part_ms']} "
             f"--deadline-ms {plan['load_deadline_ms']} --tail-seconds {plan['tail']} "
             f"--readers {plan['readers']} --start-offset-ms {offset_ms} "
+            f"--abandon-after-ms {soak.ABANDON_AFTER_MS + plan['part_ms']} "
             f"--window-seconds {plan['window']} --object-sequence-origin 0 "
             "--expected-audio-codec h264")
 
@@ -172,7 +174,9 @@ def start(args: argparse.Namespace) -> dict:
         raise SystemExit(
             f"the mesh is deployed with part_ms={settings['part_ms']} and "
             f"fmp4_part_ms={settings['fmp4_part_ms']}; restart it with {args.part_ms}")
-    sampler_seconds = duration + 150
+    # A run takes about 90 s more than its windows: arming, calibration, the
+    # lead before the first window, and the reader tail.
+    sampler_seconds = duration + 100
 
     def arm_sampler(node: dict) -> None:
         ports = " ".join(plan["sampler_rules"].get(node["name"], []))
@@ -215,6 +219,7 @@ def start(args: argparse.Namespace) -> dict:
         sender = (read_clip + f"-f flv rtmp://{address(contributor)}:{RTMP_PORT}"
                   "/live/needletail-lab")
     common.ssh(source_host, (
+        "pkill -x ffmpeg; pkill -x rist-send; "
         f"mkdir -p {remote} && cd {remote} && test -r {shlex.quote(args.clip)} && "
         f"(setsid nohup sh -c {shlex.quote(sender)} >sender.log 2>&1 </dev/null &)"))
     london = [node for node in distributors if node["site"] == source_host["site"]]
@@ -227,7 +232,7 @@ def start(args: argparse.Namespace) -> dict:
                           - GUARD_MS * 1_000_000)
     # The first window starts on a two-second boundary a little ahead of now.
     elapsed = time.time() - plan["session_id"] / 1e9
-    plan["first_offset"] = int(math.ceil((elapsed + 32) / 2.0) * 2)
+    plan["first_offset"] = int(math.ceil((elapsed + 16) / 2.0) * 2)
     plan["media_seconds"] = media_seconds
 
     def arm_load(node: dict) -> None:

@@ -54,6 +54,9 @@ HTTP_PORT = mesh_run.HTTP_PORT
 REMOTE_RUNS = mesh_run.REMOTE_RUNS
 SAMPLER_PATH = "/usr/local/bin/needletail-soak-sampler.py"
 MEDIA_DEADLINE_MS = 1000
+# A reader gives up a part that its edge still lacks this long after the part
+# was due, counts it as missing, and keeps reading the later parts on time.
+ABANDON_AFTER_MS = 2500
 
 SAMPLER = r'''
 import subprocess, sys, time
@@ -152,7 +155,9 @@ def retry(function, attempts: int = 4, pause: float = 8.0):
 
 
 def launch(name: str, command: str) -> str:
-    return (f"nohup {command} >'{name}.json' 2>'{name}.err' </dev/null &\n"
+    # A reader may reconnect after a reset. Its report counts each reconnect.
+    return (f"NEEDLETAIL_PROBE_H3_RECONNECT_LIMIT=1000 nohup {command} "
+            f">'{name}.json' 2>'{name}.err' </dev/null &\n"
             f"echo $! >'{name}.pid'\n")
 
 
@@ -162,6 +167,7 @@ def hls(target: dict, stream: dict, plan: dict, offset_ms: int, window: int | No
                f"--session-id {plan['session_id']} --duration-seconds {plan['duration']} "
                f"--part-ms {plan['part_ms']} --deadline-ms {MEDIA_DEADLINE_MS} "
                f"--render-buffer-ms 150 --tail-seconds {plan['tail']} "
+               f"--abandon-after-ms {ABANDON_AFTER_MS} "
                f"--expected-audio-codec {stream['codec']}")
     if stream["codec"] == "soundkit-opus":
         command += " --expected-pcm-channels 2 --soundkit-opus-protection plain"
@@ -179,7 +185,7 @@ def load_command(edge: dict, stream: dict, plan: dict, offset_ms: int) -> str:
             f"--session-id {plan['session_id']} --duration-seconds {plan['duration']} "
             f"--part-ms {plan['part_ms']} --deadline-ms {plan['load_deadline_ms']} "
             f"--tail-seconds {plan['tail']} --readers {plan['readers']} "
-            f"--start-offset-ms {offset_ms} "
+            f"--abandon-after-ms {ABANDON_AFTER_MS} --start-offset-ms {offset_ms} "
             f"--window-seconds {plan['window']} "
             f"--expected-audio-codec {stream['codec']}"
             + (f" --object-sequence-origin $(cat origin-{stream['name']})"
@@ -538,6 +544,7 @@ def window_table(plan: dict, result_dir: pathlib.Path, window: int) -> dict:
             if name in latency:
                 row[name].append(latency[name])
         row["wire_mbps"] = round(row["wire_mbps"] + (report.get("wire_mbps") or 0.0), 2)
+        row["reconnects"] = row.get("reconnects", 0) + (report.get("reconnects") or 0)
         if role[node] != "edge":
             continue
         deadline = (plan["load_deadline_ms"] if lane == "load"
@@ -590,10 +597,35 @@ def source_alive(plan: dict) -> bool:
     return bool(common.ssh_text(node, f"pgrep -x {process} | head -1", check=False).strip())
 
 
+def schedule_blackout(plan: dict, site: str, at_seconds: int, milliseconds: int) -> None:
+    """Drop both relay lanes at every distributor of one region for a fixed
+    time. Both distributors then miss the same parts, as they do when they
+    share a host that stalls, so no parent can supply those parts to an edge."""
+    start_ns = plan["session_id"] + at_seconds * 1_000_000_000
+
+    def schedule(node: dict) -> None:
+        port = mesh_run.relay_port(node)
+        rule = f"INPUT ! -i lo -p udp -m multiport --dports {port},{port + 1} -j DROP"
+        common.ssh(node, (
+            f"nohup sh -c 'while [ $(date +%s%N) -lt {start_ns} ]; do sleep 0.01; done; "
+            f"iptables -I {rule}; sleep {milliseconds / 1000}; iptables -D {rule}' "
+            ">/dev/null 2>&1 </dev/null &"))
+
+    targets = [node for node in nodes_of(plan, "distributor") if node["site"] == site]
+    common.parallel(targets, schedule)
+    plan["blackout"] = {"site": site, "at_seconds": at_seconds, "milliseconds": milliseconds,
+                        "nodes": [node["name"] for node in targets]}
+    log(f"blackout of {milliseconds} ms scheduled at +{at_seconds} s on "
+        + ", ".join(node["name"] for node in targets))
+
+
 def run(args: argparse.Namespace) -> None:
     plan = start(args)
     result_dir = common.RUNS_DIR / plan["run_id"]
     session_s = plan["session_id"] / 1e9
+    if args.blackout_site:
+        schedule_blackout(plan, args.blackout_site, args.blackout_at, args.blackout_ms)
+        (result_dir / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
     if plan["windows"] > 1:
         try:
             detect_origins(plan, result_dir)
@@ -889,6 +921,7 @@ def summarize(plan: dict, result_dir: pathlib.Path) -> None:
         "windows": windows,
         "continuous": {f"{node}@{lane}": report
                        for (node, lane), report in sorted(continuous.items())},
+        "blackout": plan.get("blackout"),
         "loss_events": events, "gap_skips": gap_skips,
         "cache_mesh_paths": mesh_paths, "listener_host_stalls": listener_stalls,
         "usage": usage,
@@ -939,6 +972,10 @@ def main() -> None:
     runner.add_argument("--start-delay", type=int, default=50)
     runner.add_argument("--track-directory",
                         default="/var/lib/needletail-test-media/daw-nexus-album-1-track-pcm-600s")
+    runner.add_argument("--blackout-site", default="",
+                        help="drop both relay lanes at every distributor of this region")
+    runner.add_argument("--blackout-at", type=int, default=60)
+    runner.add_argument("--blackout-ms", type=int, default=1500)
     runner.set_defaults(handler=run)
     collector = sub.add_parser("collect")
     collector.add_argument("run_id")
