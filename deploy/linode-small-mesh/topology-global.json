@@ -1,0 +1,221 @@
+{
+  "description": "Four playback regions, three edges each, on per-region private VLANs. Mesh nodes are Nanodes; load hosts are 4-vCPU test clients that run every reader.",
+  "image": "linode/debian13",
+  "nodes": [
+    {
+      "name": "contrib-lon",
+      "role": "contributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.5/24"
+    },
+    {
+      "name": "relay-primary",
+      "role": "backbone",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.6/24"
+    },
+    {
+      "name": "relay-secondary",
+      "role": "backbone",
+      "site": "amsterdam",
+      "region": "nl-ams",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "lon-dist-a",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.11/24"
+    },
+    {
+      "name": "lon-dist-b",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.12/24"
+    },
+    {
+      "name": "lon-edge-1",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.21/24"
+    },
+    {
+      "name": "lon-edge-2",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.22/24"
+    },
+    {
+      "name": "lon-edge-3",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.1.23/24"
+    },
+    {
+      "name": "lon-load",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-standard-4",
+      "vlan_ipv4": "10.77.1.31/24"
+    },
+    {
+      "name": "new-dist-a",
+      "role": "distributor",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.2.11/24"
+    },
+    {
+      "name": "new-dist-b",
+      "role": "distributor",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.2.12/24"
+    },
+    {
+      "name": "new-edge-1",
+      "role": "edge",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.2.21/24"
+    },
+    {
+      "name": "new-edge-2",
+      "role": "edge",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.2.22/24"
+    },
+    {
+      "name": "new-edge-3",
+      "role": "edge",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.2.23/24"
+    },
+    {
+      "name": "new-load",
+      "role": "load",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-standard-4",
+      "vlan_ipv4": "10.77.2.31/24"
+    },
+    {
+      "name": "tok-dist-a",
+      "role": "distributor",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.3.11/24"
+    },
+    {
+      "name": "tok-dist-b",
+      "role": "distributor",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.3.12/24"
+    },
+    {
+      "name": "tok-edge-1",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.3.21/24"
+    },
+    {
+      "name": "tok-edge-2",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.3.22/24"
+    },
+    {
+      "name": "tok-edge-3",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.3.23/24"
+    },
+    {
+      "name": "tok-load",
+      "role": "load",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-standard-4",
+      "vlan_ipv4": "10.77.3.31/24"
+    },
+    {
+      "name": "syd-dist-a",
+      "role": "distributor",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.4.11/24"
+    },
+    {
+      "name": "syd-dist-b",
+      "role": "distributor",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.4.12/24"
+    },
+    {
+      "name": "syd-edge-1",
+      "role": "edge",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.4.21/24"
+    },
+    {
+      "name": "syd-edge-2",
+      "role": "edge",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.4.22/24"
+    },
+    {
+      "name": "syd-edge-3",
+      "role": "edge",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.77.4.23/24"
+    },
+    {
+      "name": "syd-load",
+      "role": "load",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-standard-4",
+      "vlan_ipv4": "10.77.4.31/24"
+    }
+  ]
+}

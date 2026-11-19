@@ -49,6 +49,11 @@ and absence of secret-shaped fields with:
 ./scripts/validate-real-world-evidence.sh
 ```
 
+Current small-instance and private-subnet fabric record:
+[2026-11-19 small-instance Linode mesh](2026-11-19-linode-small-instance-mesh.md).
+The series ran 27 Nanodes in four regions with regional distributors and VLAN edges.
+Its strict result is `FAIL` because the 10-minute soak had late and missing units in Tokyo and Sydney.
+
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
 Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).
 Current 4K record: [2026-07-21 4K capacity and loaded player](2026-07-21-h264-4k-capacity-and-player.md).
