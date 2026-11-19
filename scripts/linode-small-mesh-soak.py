@@ -518,7 +518,8 @@ def window_table(plan: dict, result_dir: pathlib.Path, window: int) -> dict:
         key = ("many" if lane == "load" else f"{role[node]}-{lane.replace('hls-', '')}")
         row = table.setdefault(site[node], {}).setdefault(key, {
             "readers": 0, "errors": 0, "expected": 0, "received": 0, "missing": 0,
-            "deadline_misses": 0, "integrity_mismatches": 0, "p50": [], "p99": [], "max": []})
+            "deadline_misses": 0, "integrity_mismatches": 0, "wire_mbps": 0.0,
+            "p50": [], "p99": [], "max": []})
         if "error" in report:
             row["errors"] += 1
             if role[node] == "edge":
@@ -528,13 +529,19 @@ def window_table(plan: dict, result_dir: pathlib.Path, window: int) -> dict:
         for name in ("expected", "received", "missing", "deadline_misses",
                      "integrity_mismatches"):
             row[name] += report.get(name) or 0
-        latency = report.get("latency_ms") or {}
+        # A video run places its zero a guard before the first-hop
+        # availability, so that no latency is clipped at zero. Remove it here.
+        guard = plan.get("latency_guard_ms", 0)
+        latency = {name: round(value - guard, 3)
+                   for name, value in (report.get("latency_ms") or {}).items()}
         for name in ("p50", "p99", "max"):
             if name in latency:
                 row[name].append(latency[name])
+        row["wire_mbps"] = round(row["wire_mbps"] + (report.get("wire_mbps") or 0.0), 2)
         if role[node] != "edge":
             continue
-        deadline = plan["load_deadline_ms"] if lane == "load" else plan["media_deadline_ms"]
+        deadline = (plan["load_deadline_ms"] if lane == "load"
+                    else plan["media_deadline_ms"]) - guard
         if report.get("missing"):
             failures.append(f"{node} {lane}: {report['missing']} missing units")
         if report.get("readers_failed"):
@@ -550,8 +557,10 @@ def window_table(plan: dict, result_dir: pathlib.Path, window: int) -> dict:
             row["p50"] = round(statistics.mean(row["p50"]), 2) if row["p50"] else None
             row["p99"] = round(max(row["p99"]), 2) if row["p99"] else None
             row["max"] = round(max(row["max"]), 1) if row["max"] else None
+    listener_sites = plan.get("listener_sites")
     expected_edge_reports = sum(
-        len(plan["streams"]) for node in plan["nodes"].values() if node["role"] == "edge")
+        len(plan["streams"]) for node in plan["nodes"].values()
+        if node["role"] == "edge" and (not listener_sites or node["site"] in listener_sites))
     edge_reports = sum(1 for (node, lane) in found if role[node] == "edge" and lane != "load")
     if edge_reports < expected_edge_reports:
         failures.append(f"only {edge_reports} of {expected_edge_reports} edge reader "
@@ -563,14 +572,12 @@ def window_table(plan: dict, result_dir: pathlib.Path, window: int) -> dict:
 def print_window(result: dict) -> None:
     for site_name, lanes in result["sites"].items():
         cells = []
-        for key in ("edge-flac0", "edge-opus0", "many", "distributor-flac0",
-                    "distributor-opus0"):
-            row = lanes.get(key)
-            if not row:
-                continue
+        for key in sorted(lanes, key=lambda name: (not name.startswith("edge"), name)):
+            row = lanes[key]
             cells.append(f"{key} {row['received']}/{row['expected']} miss={row['missing']} "
                          f"dl={row['deadline_misses']} bad={row['integrity_mismatches']} "
                          f"p50={row['p50']} p99={row['p99']}"
+                         + (f" {row['wire_mbps']} Mbit/s" if row.get("wire_mbps") else "")
                          + (f" ERR={row['errors']}" if row["errors"] else ""))
         log(f"  w{result['window']:02d} {site_name:<8} " + " | ".join(cells))
     log(f"  w{result['window']:02d} verdict: "
@@ -578,9 +585,9 @@ def print_window(result: dict) -> None:
 
 
 def source_alive(plan: dict) -> bool:
-    contributor = nodes_of(plan, "contributor")[0]
-    return bool(common.ssh_text(contributor, "pgrep -x daw-test-source | head -1",
-                                check=False).strip())
+    name, process = plan.get("source_process", ["", "daw-test-source"])
+    node = (plan["nodes"][name] | {"name": name}) if name else nodes_of(plan, "contributor")[0]
+    return bool(common.ssh_text(node, f"pgrep -x {process} | head -1", check=False).strip())
 
 
 def run(args: argparse.Namespace) -> None:
@@ -592,6 +599,12 @@ def run(args: argparse.Namespace) -> None:
             detect_origins(plan, result_dir)
         except Exception as error:  # noqa: BLE001
             log(f"WARNING: origin detection failed: {str(error)[-200:]}")
+    watch(plan, result_dir)
+
+
+def watch(plan: dict, result_dir: pathlib.Path) -> None:
+    """Collect each window when it ends, then finish the run."""
+    session_s = plan["session_id"] / 1e9 + plan.get("first_offset", 0)
     for window in range(plan["windows"]):
         end = session_s + min((window + 1) * plan["window"], plan["duration"])
         while time.time() < end + plan["tail"] + 12:
@@ -639,7 +652,7 @@ def finish(plan: dict, result_dir: pathlib.Path) -> None:
             "true"),
             check=False, timeout=300)
         for name in ("sampler.log.gz", "journal.log", "source.log", "source.err",
-                     "driver.log", "listener-stalls.log"):
+                     "sender.log", "driver.log", "listener-stalls.log"):
             try:
                 common.rsync_from(node, f"{remote}/{name}", str(target) + "/")
             except RuntimeError:
@@ -845,7 +858,7 @@ def summarize(plan: dict, result_dir: pathlib.Path) -> None:
     anchor_warnings = []
     for window in windows[1:]:
         for site_name, lanes in window["sites"].items():
-            for key in ("edge-flac0", "edge-opus0"):
+            for key in [name for name in lanes if name.startswith("edge-")]:
                 first = windows[0]["sites"].get(site_name, {}).get(key, {}).get("p50")
                 later = lanes.get(key, {}).get("p50")
                 if first is not None and later is not None and abs(later - first) > 25:
