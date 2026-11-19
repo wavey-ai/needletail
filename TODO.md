@@ -211,6 +211,48 @@ Needletail media nodes remain native `systemd` services on Rocky Linux. Do not
 add k3s unless a measured operational requirement outweighs its control-plane,
 networking, and upgrade overhead.
 
+## P0 — regional LL-HLS cache features
+
+The design is [`docs/edge-cache-fabric.md`](docs/edge-cache-fabric.md). The
+record is
+[`docs/real-world-tests/2026-11-19-regional-llhls-cache-features.md`](docs/real-world-tests/2026-11-19-regional-llhls-cache-features.md).
+The work is on branch `regional-llhls-cache` of `needletail`, `av-mesh` and
+`playlists`. None of it is merged to `main`.
+
+- [x] Replicate a playlist to an edge only while the edge has readers, with a
+  bounded and paced warm-up, and release it when the readers have gone.
+- [x] Render the playlist of the distributor at an edge: part durations,
+  independent parts, segment boundaries, program date and time.
+- [x] Keep a time window of each playlist, so that one small node holds 5 ms
+  audio parts and 4K video.
+- [x] Admit a reader against the bit rate of its playlist and a reader limit.
+- [x] Assign readers to caches from every node of a region, without shared
+  state: by holder, load and session. Sticky for a session.
+- [x] Move the readers of a drained, failed or stalled cache without a missing
+  part.
+- [x] Pin a reader to a named cache.
+- [x] Demonstrate each feature for 4K video and lossless audio on one host and
+  on Linode Nanodes.
+- [ ] Stamp the segment number on each key-frame part at the contributor.
+  Caches number video segments alike only when the key-frame interval is the
+  nominal segment length.
+- [ ] Give the contributor a part duration for each track.
+- [ ] Run the pushed branches on Linode. Seven changes were made after the
+  run of 19 November and have had the local lab only. Check the memory of an
+  edge over many subscribe and release cycles: it still rose by about 3 MB a
+  cycle in the local lab.
+- [ ] Run HQ SoundKit Opus through the demonstrations on Linode. It has run in
+  the local lab only.
+- [ ] Run the local lab with `tc netem`. The operator host needs a restart
+  into its installed kernel before `sch_netem` can load.
+- [ ] Limit the warm-up of an audio copy to the seconds that a reader needs.
+- [ ] Name caches that start after a session began, with Content Steering
+  pathway clones.
+- [ ] Run the edge lifecycle controller with demand replication: provision an
+  edge when a region refuses readers.
+- [ ] Rebase `av-mesh` `regional-llhls-cache` when `edge-hole-repair` and
+  `fix-media-fec-ingest-test` are merged. It contains both.
+
 ## P1 — player and media delivery
 
 - [ ] Change the owning playlist service to advertise the registered

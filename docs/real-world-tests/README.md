@@ -54,6 +54,10 @@ Current small-instance and private-subnet fabric record:
 The series ran 27 Nanodes in four regions with regional distributors and VLAN edges.
 Its strict result is `FAIL` because the 10-minute soak had late and missing units in Tokyo and Sydney.
 
+Current regional cache feature record:
+[2026-11-19 regional LL-HLS cache features on Linode](2026-11-19-regional-llhls-cache-features.md).
+The run passed demand replication, load balance, failover, drain, assignment and pinning for 4K video and lossless audio on Nanodes.
+
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
 Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).
 Current 4K record: [2026-07-21 4K capacity and loaded player](2026-07-21-h264-4k-capacity-and-player.md).

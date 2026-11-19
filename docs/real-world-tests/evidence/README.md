@@ -14,6 +14,7 @@ and names the exact failed check.
 Evidence index:
 
 - `20261119T021701Z-linode-small-mesh.json`: 27-Nanode Linode series with regional distributors and private-VLAN LL-HLS edges: tuning sweeps, loss, relay failover, 200 concurrent readers, a 10-minute soak with a strict failure in Tokyo and Sydney, and ECMP source-port selection.
+- `20261119T200101Z-regional-cache.json`: 15-instance Linode run of the regional LL-HLS cache features on Nanodes: demand replication, load balance with admission, failover, stall and drain without a missing part, reader assignment and pinning, for 4K video and lossless audio, with a cache-mesh symbol size comparison.
 - `20260728T113000Z-linode16-8track-recovery20-combined.json`: current ten-node GCP and Azure multitrack FLAC run with UDP and LL-HLS latency, source capacity, one Tokyo recovery-unit loss, and strict boundary failures.
 - `20260715T223437Z.json`: recovery failed before the controlled-loss phase;
 - `20260715T225642Z.json`: complete passing restart, failover, recovery, and 2% loss run;
