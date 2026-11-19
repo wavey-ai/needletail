@@ -1,5 +1,5 @@
 {
-  "description": "Four playback regions, three edges each, on per-region private VLANs. Mesh nodes are Nanodes; load hosts are 4-vCPU test clients that run every reader.",
+  "description": "Four playback regions, three edges each, on per-region private VLANs. Mesh nodes are Nanodes. Each region has one listener host with two dedicated vCPUs that runs every reader, so that a stall of a shared listener CPU is not measured as late media.",
   "image": "linode/debian13",
   "nodes": [
     {
@@ -70,7 +70,7 @@
       "role": "load",
       "site": "london",
       "region": "gb-lon",
-      "type": "g6-standard-4",
+      "type": "g6-dedicated-2",
       "vlan_ipv4": "10.77.1.31/24"
     },
     {
@@ -118,7 +118,7 @@
       "role": "load",
       "site": "newyork",
       "region": "us-east",
-      "type": "g6-standard-4",
+      "type": "g6-dedicated-2",
       "vlan_ipv4": "10.77.2.31/24"
     },
     {
@@ -166,7 +166,7 @@
       "role": "load",
       "site": "tokyo",
       "region": "ap-northeast",
-      "type": "g6-standard-4",
+      "type": "g6-dedicated-2",
       "vlan_ipv4": "10.77.3.31/24"
     },
     {
@@ -214,7 +214,7 @@
       "role": "load",
       "site": "sydney",
       "region": "ap-southeast",
-      "type": "g6-standard-4",
+      "type": "g6-dedicated-2",
       "vlan_ipv4": "10.77.4.31/24"
     }
   ]

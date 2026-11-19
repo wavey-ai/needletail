@@ -146,7 +146,11 @@ def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
     addresses: set[tuple[str, str]] = set()
     for node in nodes:
         plan = types.get(node["type"])
-        if plan is None or plan["class"] not in ALLOWED_CLASSES:
+        # A listener host is a measurement instrument, not a mesh node. It may
+        # use dedicated cores, so that its own stalls do not appear as late
+        # media. The hourly price ceiling still applies to the whole lab.
+        allowed = ALLOWED_CLASSES | ({"dedicated"} if node.get("role") == "load" else set())
+        if plan is None or plan["class"] not in allowed:
             sys.exit(f"{node['name']}: {node['type']} is not a small shared plan")
         region = regions.get(node["region"])
         if region is None or region["status"] != "ok":
