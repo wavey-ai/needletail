@@ -44,8 +44,26 @@ DEFAULT_SETTINGS = {
     "mesh_repair_symbols": 1,
     "mesh_max_repair_symbols": 32,
     "mesh_symbol_size": 1316,
+    "mesh_max_symbol_size": 0,
     "cache_mesh_max_parents": 2,
     "cache_mesh_max_children": 8,
+    # Regional cache features: a distributor pushes a playlist to an edge only
+    # while the edge has readers for it ("demand"), or always ("all").
+    "cache_mesh_replication": "demand",
+    "cache_mesh_lease_ms": 5000,
+    "cache_mesh_demand_idle_ms": 30000,
+    "cache_mesh_warm_parts": 0,
+    "cache_mesh_warm_kbps": 20000,
+    "cache_mesh_socket_buffer_bytes": 0,
+    # Limits of one edge. They are what admission and assignment enforce.
+    "edge_egress_capacity_bps": None,
+    "edge_session_limit": 0,
+    # Address in the playback URL that a cache advertises: "public", or "vlan"
+    # when readers reach the caches over the private network.
+    "playback_address": "public",
+    "assignment_spread_percent": 60,
+    "assignment_alternates": 2,
+    "steering_ttl_seconds": 5,
     "telemetry_interval_ms": 1000,
     "path_loss_ppm": 20000,
     "relay_min_repair_symbols": 0,
@@ -461,6 +479,8 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         and other["role"] in ("distributor", "edge")
     ]
     private_ip = node.get("vlan_ipv4") or node["public_ipv4"]
+    playback_ip = (private_ip if settings["playback_address"] == "vlan"
+                   else node["public_ipv4"])
     args = [
         "/usr/local/bin/av-mesh",
         "--cert", "/etc/needletail/tls/fullchain.pem",
@@ -468,7 +488,7 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         *geo_args(node),
         "--node-id", relay_node_id(node),
         "--http-port", str(HTTP_PORT),
-        "--playback-base-url", f"https://{node['public_ipv4']}:{HTTP_PORT}/live",
+        "--playback-base-url", f"https://{playback_ip}:{HTTP_PORT}/live",
         "--media-fec-bind", f"0.0.0.0:{MEDIA_FEC_PORT}",
         "--telemetry-bind", f"0.0.0.0:{TELEMETRY_PORT}",
         "--telemetry-dns-name", common.TLS_SERVER_NAME,
@@ -479,8 +499,19 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--parts-per-segment", str(settings["parts_per_segment"]),
         "--window-parts", str(settings["window_parts"]),
         "--slot-kb", str(settings["slot_kb"]),
-        "--egress-capacity-bps", str(settings["egress_capacity_bps"]),
     ]
+    capacity = settings["egress_capacity_bps"]
+    if node["role"] == "edge":
+        capacity = settings["edge_egress_capacity_bps"] or capacity
+        args += ["--edge-session-limit", str(settings["edge_session_limit"])]
+    args += ["--egress-capacity-bps", str(capacity)]
+    if node["role"] in ("distributor", "edge"):
+        # Every node of a region can be an entry point for its readers.
+        args += [
+            "--assignment-spread-percent", str(settings["assignment_spread_percent"]),
+            "--assignment-alternates", str(settings["assignment_alternates"]),
+            "--steering-ttl-seconds", str(settings["steering_ttl_seconds"]),
+        ]
     if settings["response_ms"]:
         args += ["--response-ms", str(settings["response_ms"])]
     if node["role"] in ("distributor", "edge"):
@@ -505,6 +536,14 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--mesh-repair-symbols", str(settings["mesh_repair_symbols"]),
         "--mesh-max-repair-symbols", str(settings["mesh_max_repair_symbols"]),
         "--mesh-symbol-size", str(settings["mesh_symbol_size"]),
+        "--mesh-max-symbol-size", str(settings["mesh_max_symbol_size"]),
+        "--cache-mesh-replication", settings["cache_mesh_replication"],
+        "--cache-mesh-lease-ms", str(settings["cache_mesh_lease_ms"]),
+        "--cache-mesh-demand-idle-ms", str(settings["cache_mesh_demand_idle_ms"]),
+        "--cache-mesh-warm-parts", str(settings["cache_mesh_warm_parts"]),
+        "--cache-mesh-warm-kbps", str(settings["cache_mesh_warm_kbps"]),
+        "--cache-mesh-socket-buffer-bytes",
+        str(settings["cache_mesh_socket_buffer_bytes"]),
     ]
     peer_role = "edge" if node["role"] == "distributor" else "distributor"
     for peer in sorted(state["nodes"].values(), key=lambda item: item["name"]):
@@ -773,7 +812,8 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
-        return [probe, common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
+        return [probe, mesh / "needletail-reader",
+                common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
                 common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                 / target / "soundkit-part-check"]
     checker = (common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"

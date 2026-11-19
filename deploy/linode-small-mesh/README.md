@@ -35,6 +35,7 @@ Edges are not DAG members and send no media to another node.
 | --- | ---: | --- |
 | `topology-core.json` | 13 | London, New York |
 | `topology-global.json` | 27 | London, New York, Tokyo, Sydney |
+| `topology-regional-cache.json` | 15 | London with four edges, New York with two. The London reader host has dedicated cores. |
 
 ## Tools
 
@@ -164,6 +165,99 @@ Build the tool once before `push`:
 (cd deploy/linode-small-mesh/soundkit-part-check && \
   cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.36)
 ```
+
+## Regional cache features
+
+The regional LL-HLS cache features are replication on demand, load balance
+with admission, failover and drain, and assignment of readers to caches. The
+design is in [`docs/edge-cache-fabric.md`](../../docs/edge-cache-fabric.md).
+
+Nine demonstrations exercise them for 4K video and lossless audio:
+
+| Demonstration | What it shows |
+| --- | --- |
+| `replicate` | An edge holds a playlist only while it has readers, and renders the playlist of its distributor. |
+| `pin` | Entry points agree, sessions spread, and a reader can be pinned to a named cache. |
+| `steering` | A reader keeps its cache and is steered away when the cache drains. |
+| `balance` | Readers spread by free capacity, and a full region refuses the surplus. |
+| `failover` | A killed cache loses its readers to the next cache without a missing part. |
+| `drain` | A drained cache redirects its readers. |
+| `stall` | Readers leave a frozen cache after their request timeout. |
+| `parent` | The loss of one distributor is not heard at a reader. |
+| `region` | Readers of a second region are served by the caches of that region. |
+
+### On one host
+
+`scripts/local-region-lab.py` runs the mesh of two regions as 13 processes in
+one rootless network namespace. Every node has its own addresses on the
+loopback interface. The service arguments are the ones that
+`linode-small-mesh-deploy.py` renders.
+
+```sh
+(cd ../av-mesh && cargo build --release --bin av-mesh --bin needletail-reader)
+(cd ../av-contrib && cargo build --release --bin av-contrib --bin aep1-48k-probe)
+cargo build --release --locked --bin needletail-compile
+
+scripts/local-region-lab.py up
+scripts/local-region-lab.py demo            # or: demo replicate failover
+scripts/local-region-lab.py status
+scripts/local-region-lab.py down
+```
+
+The contributor needs SRT ingest for the 4K source, so it is built with the
+default features. `NEEDLETAIL_AV_MESH_ROOT`, `NEEDLETAIL_AV_CONTRIB_BIN`,
+`NEEDLETAIL_VIDEO_CLIP` and `NEEDLETAIL_AUDIO_PCM` select other builds and
+sources. Each demonstration writes a record under
+`target/local-region-lab/demos/`.
+
+`NEEDLETAIL_AUDIO_SOURCE=daw` uses the DAW Nexus qualification source, which
+publishes lossless FLAC as stream 2001 and HQ SoundKit Opus as stream 3001.
+The lab then has a tenth demonstration, `hq`, for the Opus stream: one pinned
+reader, twelve readers, and a failed cache.
+
+Each edge drops 0.2% of the cache-mesh datagrams that it receives
+(`up cache_loss_ppm=N` changes the share). `up netem=on` uses `tc netem` for
+delay and loss on the cache network and the relay lanes instead. It needs the
+`sch_netem`, `sch_prio` and `cls_u32` kernel modules.
+
+### On Linode
+
+```sh
+target=x86_64-unknown-linux-gnu.2.36
+(cd ../av-mesh && cargo zigbuild --release --target $target --bin av-mesh --bin needletail-reader)
+
+scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json
+scripts/linode-small-mesh-lab.py watchdog --hours 2.5
+scripts/linode-small-mesh-lab.py hosts
+scripts/linode-small-mesh-deploy.py push $(scripts/linode-regional-cache.py settings)
+scripts/linode-regional-cache.py prepare
+scripts/linode-regional-cache.py demo
+scripts/linode-regional-cache.py stop-sources
+scripts/linode-small-mesh-lab.py down
+scripts/linode-small-mesh-lab.py status
+```
+
+`prepare` installs `ffmpeg` on the London reader host and uploads the 4K clip
+and the audio fixture. The readers run on the reader host of each region and
+reach the caches over the VLAN. The run of 19 November took 0.43 hours and
+cost $0.21 of instance time.
+
+### Settings for the regional cache features
+
+| Setting | Tool default | Effect |
+| --- | --- | --- |
+| `cache_mesh_replication` | `demand` | `demand`: an edge holds a playlist only while it has readers. `all`: every edge holds every playlist. |
+| `cache_mesh_lease_ms` | 5000 | How long a distributor pushes after the last subscription. |
+| `cache_mesh_demand_idle_ms` | 30000 | An edge releases a playlist this long after the last request. |
+| `cache_mesh_warm_parts` | 0 | Parts that a new copy receives before the live part. Zero uses the window. |
+| `cache_mesh_warm_kbps` | 20000 | Rate limit of that warm-up for each edge. |
+| `mesh_max_symbol_size` | 0 | Largest cache-mesh symbol for a large part. Use 16000 with 4K video. |
+| `edge_egress_capacity_bps` | none | Egress limit of an edge. The edge admits 85% of it. |
+| `edge_session_limit` | 0 | Reader limit of an edge. Zero sets no limit. |
+| `assignment_spread_percent` | 60 | Load below which a cache that holds a playlist takes the next reader. |
+| `assignment_alternates` | 2 | Caches named after the assigned cache. |
+| `steering_ttl_seconds` | 5 | Reload interval of the Content Steering manifest. |
+| `playback_address` | `public` | `vlan` when readers reach the caches on the private network. |
 
 ### Candidate builds
 
