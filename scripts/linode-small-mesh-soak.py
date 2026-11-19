@@ -482,7 +482,8 @@ def collect_window(plan: dict, result_dir: pathlib.Path, prefix: str,
         target = result_dir / "raw" / node["name"]
         target.mkdir(parents=True, exist_ok=True)
         command = ["rsync", "-az", "--include", f"{prefix}@*.json",
-                   "--include", f"{prefix}@*.err", "--exclude", "*",
+                   "--include", f"{prefix}@*.err", "--include", "decode@*",
+                   "--exclude", "*",
                    "-e", "ssh " + " ".join(common.ssh_base()),
                    f"root@{node['public_ipv4']}:{remote}/", str(target) + "/"]
         import subprocess

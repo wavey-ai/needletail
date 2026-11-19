@@ -84,6 +84,17 @@ def viewers(edge: dict, plan: dict, offset_ms: int) -> str:
             "--expected-audio-codec h264")
 
 
+def decode_check(plan: dict, node: dict) -> str:
+    """Decode ten seconds of the rendition with ffmpeg, read from the HLS
+    playlist of one node over HTTPS. ffmpeg reads completed segments, not
+    parts, so this also checks the segments that the node serves."""
+    url = (f"https://{node['name']}.{common.TLS_SERVER_NAME}:{HTTP_PORT}"
+           f"/live/{STREAM_ID}/stream.m3u8")
+    name = f"decode@{node['name']}"
+    return (f"(ffmpeg -v error -xerror -nostdin -progress {name}.progress -i {url} -t 10 "
+            f"-map 0:v:0 -f null - >{name}.log 2>&1; echo $? >{name}.rc) &\n")
+
+
 def site_driver(plan: dict, distributors: list[dict], edges: list[dict]) -> str:
     session_s = plan["session_id"] // 1_000_000_000
     first_ms = plan["first_offset"] * 1000
@@ -103,6 +114,10 @@ def site_driver(plan: dict, distributors: list[dict], edges: list[dict]) -> str:
             for edge in edges[:plan["load_edges"]]:
                 script += soak.launch(f"{prefix}@{edge['name']}@load",
                                       viewers(edge, plan, offset_ms))
+        if window == 0 and plan.get("decode_check") and distributors and edges \
+                and distributors[0]["site"] == plan["decode_check"]:
+            script += f"while [ $(date +%s) -lt {session_s + offset_ms // 1000 + 12} ]; do sleep 1; done\n"
+            script += decode_check(plan, distributors[0]) + decode_check(plan, edges[-1])
     return script + "echo done >driver.done\n"
 
 
@@ -165,6 +180,7 @@ def start(args: argparse.Namespace) -> dict:
         "streams": [{"name": "video", "stream_id": STREAM_ID, "codec": "h264"}],
         "settings": settings, "source_process": [args.source_host, "ffmpeg"],
         "sampler_rules": soak.sampler_rules(distributors, edges),
+        "decode_check": source_host["site"] if args.decode_check else None,
         "listener_sites": sorted({node["site"] for node in loads}),
         "nodes": {node["name"]: {key: node.get(key) for key in (
             "role", "site", "region", "type", "public_ipv4", "vlan_ipv4")}
@@ -194,6 +210,17 @@ def start(args: argparse.Namespace) -> dict:
             f"(setsid nohup python3 {soak.SAMPLER_PATH} {remote}/sampler-cpu$cpu.log "
             f"{sampler_seconds} cpu=$cpu >sampler.err 2>&1 </dev/null &); done"))
 
+    if args.decode_check:
+        # ffmpeg verifies the certificate against the system store and the
+        # host name, so the listener host trusts the lab CA and resolves one
+        # name for each node of its region.
+        names = "\n".join(
+            f"{address(node)} {node['name']}.{common.TLS_SERVER_NAME}"
+            for node in distributors + edges if node["site"] == source_host["site"])
+        common.ssh(source_host, (
+            "update-ca-certificates >/dev/null 2>&1; "
+            f"grep -q '{common.TLS_SERVER_NAME}' /etc/hosts || cat >>/etc/hosts <<'HOSTS'\n"
+            f"{names}\nHOSTS"))
     # A new contributor process starts a new source epoch: object sequence 0.
     common.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
                             "systemctl is-active needletail-contrib.service")
@@ -281,6 +308,8 @@ def main() -> None:
     parser.add_argument("--tail", type=int, default=8)
     parser.add_argument("--sites", default="", help="regions that get viewers (default all)")
     parser.add_argument("--source-host", default="lon-load")
+    parser.add_argument("--decode-check", action="store_true",
+                        help="decode ten seconds with ffmpeg from a distributor and an edge")
     run(parser.parse_args())
 
 
