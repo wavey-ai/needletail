@@ -559,7 +559,9 @@ def edge_rolling_restart(ctx):
           "other, with no drain. What do readers see?",
           "No part is missing and no reader stalls with a 1 s buffer.")
 def edge_restart_no_drain(ctx):
-    jobs = play(ctx, 80, video=3, audio=8)
+    # Every cache that a reader was given at the start is restarted in turn.
+    # A player reloads the steering manifest and learns of the others.
+    jobs = play(ctx, 80, video=3, audio=8, steering=True)
     ctx.at(12)
     for edge in lab.edges():
         lab.terminate_service(edge)
