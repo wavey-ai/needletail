@@ -94,11 +94,17 @@ DEFAULT_SETTINGS = {
     # second: 40% of its fragmented datagrams failed to reassemble, and 4K
     # stopped on every edge while audio, which is not fragmented, played. One
     # second and 64 MB keep the queue empty.
+    #
+    # The kernel also drops a datagram when more than 64 other fragments of
+    # the same sender arrive between two of its fragments. A distributor
+    # sends thousands of fragments a second, so a link that reorders packets
+    # by a few milliseconds lost most 4K symbols. Zero turns that check off.
     "node_sysctls": {
         "net.ipv4.tcp_congestion_control": "bbr",
         "net.ipv4.tcp_slow_start_after_idle": "0",
         "net.ipv4.ipfrag_time": "1",
         "net.ipv4.ipfrag_high_thresh": "67108864",
+        "net.ipv4.ipfrag_max_dist": "0",
     },
     "path_loss_ppm": 20000,
     "relay_min_repair_symbols": 0,
