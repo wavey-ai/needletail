@@ -301,9 +301,9 @@ def restore() -> None:
             lab.stop_sources()
             lab.start_sources(6 * 3600, audio="daw")
         for name in lab.names():
-            limits = lab.load("limits.json").get(name, {})
-            lab.set_limits(name, limits.get("cpu_percent", lab.NANODE["cpu_percent"]),
-                           limits.get("memory_mb", lab.NANODE["memory_mb"]))
+            # The contributor goes back to its own limits, not a node's.
+            limits = lab.service_limits(name)
+            lab.set_limits(name, limits["cpu_percent"], limits["memory_mb"])
         lab.wait_live(VIDEO, "london", 60)
         lab.wait_live(AUDIO, "london", 60)
         lab.wait_live(VIDEO, "newyork", 60)
@@ -417,6 +417,7 @@ def run_scenario(item: Scenario, directory: pathlib.Path, sample: bool = True) -
             context.t0, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "seconds": round(time.time() - context.t0, 1),
         "lab": {"settings": item.needs, "limits_per_service": lab.NANODE,
+                "limits_of_contributor": lab.CONTRIBUTOR_LIMITS,
                 "binaries": binary_digests()},
         "conditions": context.conditions,
         "events": context.events,

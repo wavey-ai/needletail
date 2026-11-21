@@ -154,6 +154,19 @@ else:
     NANODE = {"cpu_percent": 200, "memory_mb": 4096}
     CONTRIBUTOR_LIMITS = {"cpu_percent": 400, "memory_mb": 8192}
 
+
+def default_limits(name: str) -> dict:
+    """The limits a service starts with, and goes back to after a fault:
+    CONTRIBUTOR_LIMITS for the contributor, NANODE for every other node. Read
+    at call time, so a campaign that replaces NANODE or CONTRIBUTOR_LIMITS is
+    followed."""
+    return dict(CONTRIBUTOR_LIMITS if node(name)["role"] == "contributor" else NANODE)
+
+
+def service_limits(name: str) -> dict:
+    """default_limits with the lab's limit.<node>.* overrides of `up`."""
+    return {**default_limits(name), **load("limits.json").get(name, {})}
+
 # One node configuration carries 5 ms audio parts and 4K video parts. The node
 # is sized for the audio parts. Each playlist derives its own window.
 DEFAULT_OVERRIDES = {
@@ -669,8 +682,7 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
                   extra_args: list[str] | None = None) -> int:
     """Start the service of a node in its namespace and in its own cgroup."""
     item = load("rendered.json")[name]
-    base = CONTRIBUTOR_LIMITS if node(name)["role"] == "contributor" else NANODE
-    limits = {**base, **(limits or load("limits.json").get(name, {}))}
+    limits = {**default_limits(name), **(limits or load("limits.json").get(name, {}))}
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],

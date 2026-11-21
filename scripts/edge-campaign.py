@@ -770,7 +770,8 @@ def contributor_kill_restart(ctx):
 def edge_cpu_starved(ctx):
     jobs, edge = with_edge_fault(
         ctx, lambda edge: lab.set_limits(edge, cpu_percent=20),
-        lambda edge: lab.set_limits(edge, cpu_percent=100), "edge limited to 20% of a CPU",
+        lambda edge: lab.set_limits(edge, cpu_percent=lab.default_limits(edge)["cpu_percent"]),
+        "edge limited to 20% of a CPU",
         fault_at=14, heal_at=34, seconds=60, steering=True)
     clean(ctx, jobs)
     # The entry point takes a cache that falls behind out of the steering
@@ -789,7 +790,7 @@ def distributor_cpu_starved(ctx):
     lab.set_limits("lon-dist-a", cpu_percent=20)
     ctx.event("lon-dist-a limited to 20% of a CPU")
     ctx.at(34)
-    lab.set_limits("lon-dist-a", cpu_percent=100)
+    lab.set_limits("lon-dist-a", cpu_percent=lab.default_limits("lon-dist-a")["cpu_percent"])
     ctx.event("lon-dist-a has its CPU again")
     ctx.wait_readers()
     clean(ctx, jobs)

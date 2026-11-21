@@ -653,6 +653,8 @@ def install() -> pathlib.Path:
     lab.read_cgroup = lambda name: sample(name) if name else {}
     lab.read_process = lambda pid: {}
     lab.NANODE = {"cpu_percent": 100, "memory_mb": 1024, "instance": "Linode g6-nanode-1"}
+    # Every Linode node, the contributor too, has the limits of its instance.
+    lab.CONTRIBUTOR_LIMITS = lab.NANODE
     real_sampler = lab.Sampler
     RemoteSampler.summary = real_sampler.summary
     lab.Sampler = RemoteSampler
