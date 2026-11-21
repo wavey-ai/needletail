@@ -69,9 +69,12 @@ What was built, in playlist terms.
   duration (`hls-msn`, `hls-part`, `hls-part-target-ms`,
   `hls-target-duration-ms` on the media object). Every cache renders the same
   playlist from the stamps.
-- Video and audio have their own part durations: `--fmp4-video-part-ms` (200)
-  and `--fmp4-video-segment-ms` (2000) next to the 5 ms audio parts. A key
-  frame starts a part, and a segment is a whole number of groups of pictures.
+- Video and audio have their own part durations: `--video-part` (default
+  `frame`, one access unit per part; `<N>ms` as a setting) and
+  `--fmp4-video-segment-ms` (2000) next to the audio parts (`--audio-part`,
+  default `epoch`: 2.5 ms Opus, 1 ms lossless). A key frame starts a part,
+  and a segment is a whole number of groups of pictures. (Until 22 November
+  2026 audio parts were 5 ms and video parts 200 ms.)
 - The declared part target follows a duration that recurs, so one long first
   part does not widen it for the life of the stream.
 - A cache holds the playlist back until its copy is playable, keeps at least
@@ -180,7 +183,9 @@ while readers play.
 
 What it was. Admission counted bit rate. A reader of lossless audio in 5 ms
 parts sends 200 requests a second, and an edge on one vCPU serves about 60
-such readers. With 80, every reader of the edge stalls, and the bit rate is
+such readers (measured at 5 ms; the default parts are now 2.5 ms Opus and
+1 ms lossless, 400 and 1,000 requests a second for a reader that asks for
+each part). With 80, every reader of the edge stalls, and the bit rate is
 under 2% of the limit.
 
 What was built. A session is charged the larger of its bit rate and its share
@@ -239,7 +244,9 @@ and the other caches. Before, that reader got nothing.
 
 Proof. Scenarios `long-tail-one-stream-too-many` and `long-tail-more-slots`.
 
-What is left. Slots are not the only limit. With audio in 5 ms parts a
+What is left. Slots are not the only limit. With audio in 5 ms parts (the
+measurement predates the smallest-frame default, which doubles to quintuples
+the part rate) a
 Nanode contributor is at 98% of its vCPU with 17 streams and delivers a third
 of the parts. In a 40-minute run with 17 streams every relay and distributor
 went from about 400 MB to about 830 MB of its 1 GB; whether it stops there
@@ -294,9 +301,12 @@ part is a gap with `EXT-X-GAP`. Two to three weeks with the tests.
 
 ### 9. Audio for standard players and narrow uplinks
 
-What it is. Audio parts are 5 ms. A reader sends one request for each part.
-hls.js and AVPlayer do not follow a part target of 5 ms: Apple's authoring
-specification asks for parts no shorter than the round trip. Lossless FLAC
+What it is. Audio parts are the smallest frame by default: 2.5 ms Opus and
+1 ms (down to 0.25 ms) lossless; that is the design, for the lowest latency.
+A reader sends one request for each part, or keeps a time-based window of
+them in flight. hls.js and AVPlayer do not follow a part target of a few
+milliseconds (they failed at 5 ms): Apple's authoring specification asks for
+parts no shorter than the round trip. Lossless FLAC
 and SoundKit Opus are not what Apple devices and many televisions decode.
 
 Why it matters. Three measured costs. A reader of one audio stream sends
@@ -305,9 +315,10 @@ next to anything else. An edge serves 60 readers on one vCPU where the bit
 rate would allow thousands. A browser cannot play the audio streams at the
 latency that they are made for.
 
-What it takes. A second view of the same playlist with the parts in groups:
-the cache serves `part_g{n}` as the concatenation of forty 5 ms parts, in a
-playlist with a 200 ms part target. Nothing changes upstream of the edge.
+What it takes. A second view of the same playlist with the parts in groups,
+as a setting beside the smallest-part default: the cache serves `part_g{n}`
+as the concatenation of eighty 2.5 ms parts, in a playlist with a 200 ms part
+target. Nothing changes upstream of the edge.
 The existing tail-bundle route already returns several parts in one
 response. Then an `EXT-X-MEDIA TYPE=AUDIO` group, so that audio is one
 rendition next to the video ladder, and an AAC rendition from the

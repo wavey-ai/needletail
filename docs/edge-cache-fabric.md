@@ -105,11 +105,11 @@ A part is a canonical media object. It names its sequence, its duration, whether
 
 A cache derives the playlist entry of a part from the part. It does not depend on the path by which the part arrived. An edge and its distributors therefore render the same parts, the same independent-part flags, the same segment boundaries and the same program date and time.
 
-The window of a playlist is a length of time. `--window-parts` and `--part-ms` give that time for the node. A stream with longer parts covers the time with fewer parts, and a node keeps four of those windows of it. A node that is sized for 5 ms audio parts keeps 12 seconds of 4K video, not 2,400 parts of it.
+The window of a playlist is a length of time. `--window-ms` gives it for the node (default 12 s), and `--segment-ms` the segment (1 s), whatever the part; `--part-us` is the nominal part (2.5 ms by default; `--part-ms` stays as an alias, and `--window-parts` and `--parts-per-segment` win when given). Parts are the smallest frame by default: one 2.5 ms Opus frame, one lossless epoch of 1 ms or less, one video frame. A stream with longer parts covers the time with fewer parts, and a node keeps four of those windows of it, so a node keeps 12 seconds of 4K video as it keeps 12 seconds of audio.
 
 The canonical gap hold is also a length of time. A distributor converts it to parts with the part duration of each stream.
 
-A cache-mesh symbol can grow with the part. `--mesh-max-symbol-size` lets a part that needs more than 64 symbols use a multiple of `--mesh-symbol-size`. A 5 ms audio part keeps a small symbol. A 4K part is at most about 64 datagrams.
+A cache-mesh symbol can grow with the part. `--mesh-max-symbol-size` lets a part that needs more than 64 symbols use a multiple of `--mesh-symbol-size`. A small audio part keeps a small symbol. A 4K part is at most about 64 datagrams.
 
 One limit remains. A cache numbers the segments of a video playlist from the key frames that it has seen. Caches agree on the numbers when the key-frame interval is `--parts-per-segment` parts. With another interval, a cache that joined the stream later uses other numbers for the same segments. The parts, the segment boundaries and the program date and time still agree, so a reader can move between the caches. The contributor must stamp the segment number on each key-frame part to remove this limit.
 
@@ -299,7 +299,7 @@ A rendition of a ladder carries the date of its Media Sequence Number times the 
 
 ### Admission by what a reader costs
 
-A session is charged the larger of its bit rate and its share of the request capacity of the node (`--egress-request-capacity`, default 8,000 requests a second for each worker thread). A reader of 5 ms audio parts sends 200 requests a second, and an edge on one vCPU serves about 60 of them.
+A session is charged the larger of its bit rate and its share of the request capacity of the node (`--egress-request-capacity`, default 8,000 requests a second for each worker thread). A reader that asks for each part sends one request for each part: 200 a second at 5 ms parts, 400 at the default 2.5 ms Opus parts and 1,000 at 1 ms lossless parts, so a worker admits about 40, 20 or 8 such readers. An edge on one vCPU served about 60 readers of 5 ms parts (measured before parts became the smallest frame); response bundling (`--response-ms`) is the setting that buys the capacity back.
 
 The HTTP server runs on its own runtime at lower priority (`--http-worker-threads`), so a crowd at the door does not hold back the cache network of the node.
 

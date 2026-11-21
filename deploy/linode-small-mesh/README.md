@@ -98,9 +98,32 @@ and Debian 13.
 `push`, `plan`, and `restart` accept `--set key=value`. The tool stores the
 values in `target/linode-qualification/small-mesh-artifacts/settings.json`.
 
+Parts are the smallest frame by default. The settings file has
+`settings_version` 2.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `part_us` | 2500 | Nominal part of the caches (`av-mesh --part-us`): one 120-sample Opus frame. |
+| `segment_ms` | 1000 | Segment length (`--segment-ms`), whatever the part. |
+| `window_ms` | 12000 | Playlist window (`--window-ms`), whatever the part. |
+| `part_hold_back_ms` | 0 | PART-HOLD-BACK floor; 0 is three part targets. |
+| `audio_part` | `epoch` | Contributor audio part (`--audio-part`): one AEP1 epoch per part, or `<N>samples`, `<N>us`. |
+| `video_part` | `frame` | Contributor video part (`--video-part`): one access unit per part, or `<N>ms`. |
+| `pcm_epoch_samples` | 48 | Epoch of the lab's AEP1 sender for PCM and FLAC (1 ms; FLAC at least 32). Lab tools only. |
+| `opus_epoch_samples` | 120 | Opus frame of the lab's sources (2.5 ms). Lab tools only. |
+
+The version 1 settings `part_ms`, `parts_per_segment`, `window_parts`,
+`fmp4_part_ms` and `fmp4_video_part_ms` still work and are mapped onto these:
+`part_ms` to `part_us`, the part counts win over the lengths of time,
+`fmp4_part_ms` to `audio_part` `<N*1000>us` (and to `video_part` when
+`fmp4_video_part_ms` is not given). They count only when given with `--set`
+in the same run: a saved value is dropped, and the tool says so, so that an
+old settings file never pins 5 ms parts again. `--set part_ms=5 --set
+fmp4_part_ms=5 --set fmp4_video_part_ms=200` restores the parts of the runs
+before 22 November 2026.
+
 | Setting | Tool default | Qualified value | Effect |
 | --- | --- | --- | --- |
-| `fmp4_part_ms` | 200 | 5 | Contributor LL-HLS part duration. Audio needs 5 ms. |
 | `mesh_sync_interval_ms` | 20 | 1 | Distributor-to-edge push tick. |
 | `mesh_symbol_size` | 1316 | 900 | Cache-mesh RaptorQ symbol size. |
 | `path_loss_ppm` | 20000 | 20000 | Loss seed for the contributor RaptorQ policy. Do not use 0. |

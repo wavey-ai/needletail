@@ -22,7 +22,15 @@ The object model can extend this distribution architecture to other continuous d
 
 Each playback edge keeps the newest parts in an adjustable back cache.
 A tail request reads cached parts immediately and waits only for the next available part.
-Operators tune back-cache depth by part count and choose blocking response duration separately.
+Operators tune back-cache depth and choose blocking response duration separately.
+
+Parts are the smallest frame by default.
+An Opus part is one 2.5 ms frame of 120 samples.
+A lossless PCM part is one 1 ms epoch of 48 samples, and 0.5 ms and 0.25 ms parts also work.
+A FLAC part is at least 32 samples.
+A video part is one frame.
+Segments last 1 s and the playlist window 12 s, whatever the part size.
+Larger parts are a setting, never the default.
 
 When an edge reaches capacity, active sessions remain stable.
 New sessions move to healthy same-region edges, and recovered capacity returns automatically.
@@ -347,6 +355,8 @@ flowchart LR
 
 The Needletail Player selects native HLS or HLS.js for each supported browser.
 Both modes use the same standards-based LL-HLS playlists and short media parts.
+Default parts are far shorter than a round trip, so a reader keeps a time-based window of parts in flight.
+A standard player that fetches one part at a time needs a larger part setting.
 
 A tail request reads recent parts from the back cache and blocks for the next part.
 Operators can expand the back cache for late join, rewind, and recovery.

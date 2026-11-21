@@ -3,6 +3,11 @@
 This document summarizes the latest global test and the accepted Needletail performance results.
 The dated test records contain the complete setup, revisions, gates, and evidence.
 
+These results were measured with 5 ms parts.
+Parts are now the smallest frame by default: 2.5 ms Opus, 1 ms lossless PCM, one video frame.
+A reader that asks for each part then sends two to five times the requests of a 5 ms reader.
+Reader counts per edge in this document are 5 ms figures and must be measured again at the new default.
+
 ## Terms
 
 An H3 response is one media response over HTTP/3.
