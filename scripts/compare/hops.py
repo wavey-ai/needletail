@@ -235,6 +235,7 @@ class Journal:
         self.epochs: dict[tuple, dict] = {}        # (stream, seq) -> {stage: max epoch}
         self.stage_names: set[tuple] = set()       # (role, stage)
         self.counts: dict[str, int] = {}
+        self.oldest: dict[str, int] = {}           # node -> its earliest event in the window
         for event in events:
             if stream is not None and int(event["stream"]) != stream:
                 continue
@@ -247,6 +248,8 @@ class Journal:
             key_part = (int(event["stream"]), int(event["seq"]))
             stage = event["stage"]
             self.counts[node] = self.counts.get(node, 0) + 1
+            if node not in self.oldest or t < self.oldest[node]:
+                self.oldest[node] = t
             self.stage_names.add((self.role(node), stage))
             key = (node, stage) + key_part
             if key not in self.first or t < self.first[key]:
@@ -488,8 +491,10 @@ def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
                            "pass); else the listener's complete - latency"},
         "primary_relay": primaries,
         "nodes": {name: {**{k: v for k, v in item.items() if k != "addrs"},
-                         "events": journal.counts.get(name, 0)}
+                         "events": journal.counts.get(name, 0),
+                         "first_event_us": journal.oldest.get(name)}
                   for name, item in sorted(nodes.items())},
+        "journal_starts_late": late_journals(journal, since_us),
         "seq_check": seq_check,
         "probe_spoken_minus_journal_spoken_ms": distribution(spoken_check),
         "stages_seen": sorted(f"{role}.{stage}" for role, stage in journal.stage_names),
@@ -499,9 +504,29 @@ def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
     }
 
 
+LATE_JOURNAL_US = 1_000_000
+
+
+def late_journals(journal: Journal, since_us: int | None) -> dict[str, float]:
+    """Nodes whose earliest event in the window is more than a second after
+    its start, in seconds. A node that journals every part of a live stream
+    has events right from the start of the window, unless its ring was
+    overwritten before the journals were collected (or it began to take the
+    stream later, as an edge that a late reader woke)."""
+    if since_us is None:
+        return {}
+    return {node: round((t - since_us) / 1e6, 3) for node, t in sorted(journal.oldest.items())
+            if t - since_us > LATE_JOURNAL_US}
+
+
 def format_summary(result: dict) -> str:
     lines = [f"stream {result['stream']}; seq = epoch: {result['seq_check']['seq_equals_epoch']} "
              f"({result['seq_check']['parts']} parts; seq - epoch {result['seq_check']['seq_minus_epoch']})"]
+    late = result.get("journal_starts_late") or {}
+    if late:
+        lines.append("WARNING: the journal starts late in the window (ring overwritten? raise "
+                     "--hop-journal-capacity): "
+                     + ", ".join(f"{name} +{seconds:.1f} s" for name, seconds in late.items()))
     clocks = {name: item.get("chrony_offset_s") for name, item in result["nodes"].items()
               if item.get("chrony_offset_s") is not None}
     if clocks:

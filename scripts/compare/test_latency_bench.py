@@ -36,17 +36,47 @@ class Arguments(unittest.TestCase):
                      "--contrib-args", "--publication-shard-mix false",
                      "--set", "extra_distributor_args=[\"--y\"]", "--set", "mesh_sync_interval_ms=20")
         settings = dict(item.split("=", 1) for item in bench.lab_overrides(args))
+        journal = ["--hop-journal-capacity", "450000"]
         self.assertEqual(settings["daw_hls_formats"], "pcm")
-        self.assertEqual(json.loads(settings["extra_backbone_args"]), ["--mesh-sync-on-publish", "false"])
+        self.assertEqual(json.loads(settings["extra_backbone_args"]), ["--mesh-sync-on-publish", "false"] + journal)
         self.assertEqual(json.loads(settings["extra_distributor_args"]),
-                         ["--y", "--mesh-sync-on-publish", "false"])
+                         ["--y", "--mesh-sync-on-publish", "false"] + journal)
         self.assertEqual(json.loads(settings["extra_edge_args"]),
-                         ["--mesh-sync-on-publish", "false", "--x", "1"])
-        self.assertEqual(json.loads(settings["extra_contributor_args"]), ["--publication-shard-mix", "false"])
+                         ["--mesh-sync-on-publish", "false", "--x", "1"] + journal)
+        self.assertEqual(json.loads(settings["extra_contributor_args"]),
+                         ["--publication-shard-mix", "false"] + journal)
         self.assertEqual(settings["mesh_sync_interval_ms"], "20")
 
-    def test_no_flags_change_nothing_but_the_format(self):
-        self.assertEqual(bench.lab_overrides(parse()), ["daw_hls_formats=pcm"])
+    def test_no_flags_change_nothing_but_the_format_and_the_journal(self):
+        journal = json.dumps(["--hop-journal-capacity", "450000"])
+        self.assertEqual(bench.lab_overrides(parse()),
+                         ["daw_hls_formats=pcm"] + [f"extra_{role}_args={journal}" for role in
+                                                    ("backbone", "distributor", "edge", "contributor")])
+
+    def test_the_journal_holds_the_whole_run(self):
+        # 2500 events a second over the run and 120 s, never below the default.
+        self.assertEqual(bench.journal_capacity(parse("--seconds", "10")), 325_000)
+        self.assertEqual(bench.journal_capacity(parse("--seconds", "600")), 1_800_000)
+        self.assertEqual(bench.journal_capacity(parse("--seconds", "600", "--journal-capacity", "7")), 7)
+        # A ring of 262144 at ~1800 events a second lasted ~145 s: a 600 s run
+        # sizes it for more than the busiest node writes.
+        self.assertGreater(bench.journal_capacity(parse("--seconds", "600")), 1800 * (600 + 30))
+        # A role that sets its own keeps it, and the flag is not given twice.
+        args = parse("--seconds", "600", "--edge-args", "--hop-journal-capacity 99",
+                     "--contrib-args=--hop-journal-capacity=5")
+        settings = {key: json.loads(value) for key, value in
+                    (item.split("=", 1) for item in bench.lab_overrides(args)) if key.startswith("extra_")}
+        self.assertEqual(settings["extra_edge_args"], ["--hop-journal-capacity", "99"])
+        self.assertEqual(settings["extra_contributor_args"], ["--hop-journal-capacity=5"])
+        self.assertEqual(settings["extra_backbone_args"], ["--hop-journal-capacity", "1800000"])
+        self.assertEqual(dry_run("--seconds", "600")["hops"]["journal_capacity"], 1_800_000)
+        self.assertIsNone(dry_run("--no-up")["hops"]["journal_capacity"])
+
+    def test_a_full_journal_is_reported(self):
+        events = [{"_node": "contrib-lon"}] * 5 + [{"_node": "lon-edge-1"}] * 4
+        self.assertEqual(bench.journal_full(events, 5), ["contrib-lon"])
+        self.assertEqual(bench.journal_full(events, 6), [])
+        self.assertEqual(bench.journal_full(events, None), [])
 
     def test_loop_start_is_a_64_second_boundary_8_s_away(self):
         self.assertEqual(bench.loop_start(640.0), 704)

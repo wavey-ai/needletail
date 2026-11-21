@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("hops", HERE / "hops.py")
@@ -294,6 +295,24 @@ class Join(unittest.TestCase):
         # The source time comes from the epoch, so the hops are unchanged.
         london = result["regions"]["london"]["edge_parts"]
         self.assertEqual(hop(london, "source -> contrib.src_last")["p50"], 0.2)
+
+    def test_a_journal_that_starts_late_in_the_window_is_reported(self):
+        # lon-edge-1's ring was overwritten: it lost its first 40 parts.
+        events = [item for item in journal()
+                  if not (item["_node"] == "lon-edge-1" and item["seq"] < 140)]
+        since = spoken(100)
+        # The synthetic run is half a second long: count 100 ms as late.
+        with mock.patch.object(hops, "LATE_JOURNAL_US", 100_000):
+            result = hops.analyse(NODES, events, [], STREAM, START_US, since_us=since)
+            whole = hops.analyse(NODES, journal(), [], STREAM, START_US, since_us=since)
+        self.assertEqual(list(result["journal_starts_late"]), ["lon-edge-1"])
+        self.assertEqual(result["journal_starts_late"]["lon-edge-1"], 0.203)
+        # Its mesh_first of part 140; the other stream's event is not counted.
+        self.assertEqual(result["nodes"]["lon-edge-1"]["first_event_us"], spoken(140) + 3300)
+        self.assertIn("WARNING: the journal starts late", hops.format_summary(result))
+        self.assertIn("lon-edge-1 +0.2 s", hops.format_summary(result))
+        self.assertEqual(whole["journal_starts_late"], {})
+        self.assertNotIn("WARNING", hops.format_summary(whole))
 
     def test_time_window(self):
         since = spoken(150) + 0

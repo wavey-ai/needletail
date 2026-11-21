@@ -28,6 +28,11 @@ e.g. the A/B of the event-driven cache-mesh sender:
   latency-bench.py --name p1-on
   latency-bench.py --name p1-off --mesh-args "--mesh-sync-on-publish false"
 
+The journals are read only after the readers finish, so every service is
+started with --hop-journal-capacity sized to the run (--journal-capacity
+overrides); summary.txt warns when a node's ring was full or its journal
+starts late in the window.
+
 --dry-run prints the plan (every command) and touches nothing.
 """
 
@@ -62,6 +67,16 @@ PCM_STREAM = 4001                       # daw_hls_base_stream_id 2001 + the PCM 
 EPOCH_NS = 5_000_000
 READER_HOSTS = ["lon-readers", "new-readers"]
 SKIP_SECONDS = 5
+# The hop journal is a ring that is read only after the readers have
+# finished, so it must hold the whole window. The busiest node journals about
+# 9 events of each 5 ms part (the contributor: src_first..sent_secondary; a
+# distributor: relay_first..watermark and a mesh_sent per edge), about 1800 a
+# second. Rings are sized for 2500 a second over the run and a margin for the
+# start of the readers and the collection, never below the services' default.
+JOURNAL_DEFAULT = 262_144
+JOURNAL_EVENTS_PER_SECOND = 2500
+JOURNAL_MARGIN_SECONDS = 120
+JOURNAL_FLAG = "--hop-journal-capacity"
 
 
 def log(text: str) -> None:
@@ -83,6 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
                             help=f"extra arguments of {role} (one string)")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="a lab setting (value as JSON or a bare string); repeat")
+    parser.add_argument("--journal-capacity", type=int, default=None, metavar="EVENTS",
+                        help="hop journal ring of every node (default: sized to --seconds, at "
+                             f"least {JOURNAL_DEFAULT}); a role whose arguments already set "
+                             f"{JOURNAL_FLAG} keeps its own")
     parser.add_argument("--reader-loss", type=float, default=0.0,
                         help="random loss in percent on the reader hosts' links, both directions")
     parser.add_argument("--reader-netem", default="",
@@ -101,8 +120,23 @@ def split(text: str) -> list[str]:
     return shlex.split(text) if text else []
 
 
+def journal_capacity(args) -> int:
+    """Events that every node's hop journal keeps in this run."""
+    if args.journal_capacity is not None:
+        return args.journal_capacity
+    return max(JOURNAL_DEFAULT, JOURNAL_EVENTS_PER_SECOND * (args.seconds + JOURNAL_MARGIN_SECONDS))
+
+
+def with_journal(extra: list[str], capacity: int) -> list[str]:
+    """extra, with the journal capacity unless it already sets one."""
+    if any(item == JOURNAL_FLAG or item.startswith(JOURNAL_FLAG + "=") for item in extra):
+        return extra
+    return extra + [JOURNAL_FLAG, str(capacity)]
+
+
 def lab_overrides(args) -> list[str]:
     """The `key=value` settings of edge_lab.up for this run."""
+    capacity = journal_capacity(args)
     settings: dict[str, object] = {"daw_hls_formats": "pcm"}
     plain = []
     for item in args.set:
@@ -114,11 +148,9 @@ def lab_overrides(args) -> list[str]:
     mesh = split(args.mesh_args)
     for role in ("backbone", "distributor", "edge"):
         extra = list(settings.get(f"extra_{role}_args") or []) + mesh + split(getattr(args, f"{role}_args"))
-        if extra:
-            settings[f"extra_{role}_args"] = extra
+        settings[f"extra_{role}_args"] = with_journal(extra, capacity)
     contrib = list(settings.get("extra_contributor_args") or []) + split(args.contrib_args)
-    if contrib:
-        settings["extra_contributor_args"] = contrib
+    settings["extra_contributor_args"] = with_journal(contrib, capacity)
     out = [f"{key}={value if isinstance(value, str) else json.dumps(value)}"
            for key, value in settings.items()]
     return out + plain
@@ -191,7 +223,8 @@ def plan(args) -> dict:
         "readers": reader_commands(args, out, index),
         "reader_netem": reader_netem(args),
         "hops": {"stream": PCM_STREAM, "source_start_ns": start * 1_000_000_000,
-                 "skip_seconds": SKIP_SECONDS},
+                 "skip_seconds": SKIP_SECONDS,
+                 "journal_capacity": None if args.no_up else journal_capacity(args)},
     }
 
 
@@ -219,6 +252,18 @@ def reader_summary(report: pathlib.Path) -> dict:
             "gaps": data.get("audio_sequence_gaps"), "error": data.get("error"),
             "latency_ms": {key: latency.get(key) for key in ("p50", "p95", "p99", "max")},
             "server_timing_ms": detail.get("server_timing_ms"), "counts": detail.get("counts")}
+
+
+def journal_full(events: list[dict], capacity: int | None) -> list[str]:
+    """Nodes that returned as many events as their ring holds: the ring was
+    overwritten and the oldest events of the window are gone."""
+    if not capacity:
+        return []
+    counts: dict[str, int] = {}
+    for item in events:
+        node = item.get("_node") or item.get("node")
+        counts[node] = counts.get(node, 0) + 1
+    return sorted(node for node, count in counts.items() if count >= capacity)
 
 
 def run(args, steps: dict) -> int:
@@ -249,15 +294,21 @@ def run(args, steps: dict) -> int:
                           steps["hops"]["source_start_ns"] // 1000, hops.EPOCH_US,
                           since_us=since_us, until_us=ended_us)
     summaries = [reader_summary(path) for path in sorted(out.glob("*.probe*.json"))]
+    capacity = steps["hops"]["journal_capacity"]
+    full = journal_full(events, capacity)
     result["bench"] = {**{key: value for key, value in steps.items() if key != "readers"},
                        "reader_commands": [item["command"] for item in steps["readers"]],
-                       "readers": summaries, "window_us": [since_us, ended_us]}
+                       "readers": summaries, "window_us": [since_us, ended_us],
+                       "journal_full": full}
     (out / "hops.json").write_text(json.dumps(result, indent=1) + "\n")
     lines = [f"latency bench {args.name}: {args.seconds} s, {args.readers} reader(s) of each kind "
              f"on {args.hosts}",
              f"lab settings: {' '.join(steps['lab_up'] or ['(running lab)'])}",
              f"sender: {' '.join(split(args.sender_args)) or '(defaults)'}; "
-             f"reader links: {steps['reader_netem'] or 'clean'}", ""]
+             f"reader links: {steps['reader_netem'] or 'clean'}",
+             f"hop journal: {capacity if capacity is not None else 'as running'} events per node"
+             + (f"; WARNING: full on {', '.join(full)}: the start of the window was overwritten"
+                if full else ""), ""]
     for item in summaries:
         latency = item.get("latency_ms") or {}
         lines.append(f"{item['report']:<36} units {item.get('units')} gaps {item.get('gaps')} "
