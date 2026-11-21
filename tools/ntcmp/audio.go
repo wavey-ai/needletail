@@ -18,13 +18,15 @@ import (
 // a 64-second loop that is locked to the wall clock: sample s of the loop is
 // spoken when the Unix time is s/48000 past a multiple of 64 seconds.
 //
-// A live sender cannot send a unit before its last sample exists. So unit j,
-// which ends with sample (j+1)*N - preskip - 1 of the loop, is sent when that
-// sample has been spoken, and not earlier. N is the unit length in samples and
-// preskip is the look-ahead of the Opus encoder (zero for PCM). Every sender
-// here keeps that schedule, so the latency of a unit at a listener is its
-// arrival time minus the time its last sample was spoken, and a sample that
-// is k samples before the end of its unit is k/48000 older than that.
+// A live sender cannot send a unit before the encoder has its last input
+// sample. Unit j is coded from input samples up to (j+1)*N, and it carries the
+// loop's samples up to (j+1)*N - preskip - 1: N is the unit length in samples
+// and preskip the look-ahead of the Opus encoder (zero for PCM). Every sender
+// here sends unit j at (j+1)*N, as a live encoder would, so an Opus unit pays
+// its encoder's look-ahead. A listener measures a unit from the moment the
+// last sample it carries was spoken: its latency is its arrival time minus
+// that moment, and a sample k samples before the end of its unit is k/48000
+// older than that.
 
 const (
 	sampleRate = 48000
@@ -254,8 +256,15 @@ func runAudioUnits(ctx context.Context, clip *AudioClip, send func(number int64,
 	frame := int64(clip.FrameSamples)
 	count := int64(len(clip.Units))
 	now := nsToSamples(time.Now().UnixNano())
-	for number := (now+int64(clip.PreSkip))/frame + 1; ; number++ {
-		due := samplesToNs((number+1)*frame - int64(clip.PreSkip))
+	// The live rule: an encoder can emit unit j only once its last input
+	// sample, (j+1)*N, exists. An Opus unit represents samples up to
+	// (j+1)*N - preskip (its look-ahead), so it leaves preskip after the last
+	// sample it carries was spoken, as it does from a live encoder (and as
+	// Needletail's AEP1 and DAW senders send). Before 21 November 2026, 23:00
+	// UTC, units left at (j+1)*N - preskip, which a live encoder cannot do:
+	// see compare-audio-analyse.py, WEBRTC_OPUS_EARLY.
+	for number := now/frame + 1; ; number++ {
+		due := samplesToNs((number + 1) * frame)
 		if !sleepUntil(ctx, time.Unix(0, due)) {
 			return
 		}

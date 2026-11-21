@@ -313,6 +313,29 @@ def analyse_udp_probe(report: dict, launch: float | None) -> dict:
     return out
 
 
+# Until 21 November 2026, 23:00 UTC, ntcmp sent a WebRTC Opus unit when the
+# last sample it carries had been spoken, (j+1)*N - preskip: the encoder's
+# look-ahead earlier than a live encoder can send it, while Needletail's
+# senders paid it. Steps whose meta does not say `webrtc_opus_send: live`
+# have those lanes' latencies (probe and Chrome) moved later by the clip's
+# look-ahead, which is exactly what the live rule changes.
+WEBRTC = ("cf", "whep", "lkregion", "lkmulti", "lkcloud")
+WEBRTC_OPUS_EARLY = {"opus-2.5": 2.5, "opus-5": 2.5, "opus-10": 2.5, "opus-20": 2.5, "opus-max510": 6.5}
+
+
+def shift(figures: dict | None, ms: float) -> None:
+    """Move every latency of an analysed probe or player later by ms."""
+    if not figures or not ms:
+        return
+    for key in ("unit_latency_ms", "mouth_to_ear_ms", "marker_mouth_to_ear_ms"):
+        value = figures.get(key)
+        if isinstance(value, dict):
+            for q in ("p50", "p95", "p99", "max", "min"):
+                if isinstance(value.get(q), (int, float)):
+                    value[q] = round(value[q] + ms, 2)
+    figures["webrtc_opus_send_corrected_ms"] = ms
+
+
 def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) -> dict:
     out = {"error": (record.get("error") or "")[:200] or None, "chrome": record.get("chrome")}
     stats = record.get("stats") or []
@@ -365,7 +388,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 9
+ANALYSIS_VERSION = 10
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -417,6 +440,8 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             frame = nt_frame_ms(meta, measured) if lane.startswith("nt-") else FRAME_MS[config]
             analysed = analyse_probe(record, host_dir / f"{lane}.probe.csv", measured, frame, end_ms,
                                      daw_source(meta, measured))
+            if lane in WEBRTC and meta.get("webrtc_opus_send") != "live":
+                shift(analysed, WEBRTC_OPUS_EARLY.get(config, 0.0))
             if name.endswith(".probe"):
                 lanes.setdefault(lane, {})["probe"] = analysed
             else:
@@ -466,7 +491,12 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             lane = name[:-7]
             probe = (lanes.get(lane) or {}).get("probe") or {}
             base = ((probe.get("unit_latency_ms") or {}).get("p50"))
-            lanes.setdefault(lane, {})["chrome"] = analyse_player(record, base, None)
+            if lane in WEBRTC and meta.get("webrtc_opus_send") != "live" and base is not None:
+                base -= WEBRTC_OPUS_EARLY.get(config, 0.0)    # the probe's figure before the shift
+            chrome = analyse_player(record, base, None)
+            if lane in WEBRTC and meta.get("webrtc_opus_send") != "live":
+                shift(chrome, WEBRTC_OPUS_EARLY.get(config, 0.0))
+            lanes.setdefault(lane, {})["chrome"] = chrome
         netem = host_dir / "netem.log"
         host = {"lanes": lanes}
         if netem.is_file():

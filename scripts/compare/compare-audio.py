@@ -400,6 +400,9 @@ class Audio:
         meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
                 "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(),
                 "nt_uc_base": self.nt_base[0] if self.nt_base else None,
+                # ntcmp sends a WebRTC Opus unit when its encoder has the last
+                # input sample (tools/ntcmp/audio.go, the live rule).
+                "webrtc_opus_send": "live",
                 "nt_pcm_epoch_samples": self.pcm_samples, "nt_formats": NT_FORMATS,
                 "nt_daw": {**NT_DAW, "opus_lookahead_samples": run.lab.OPUS_LOOKAHEAD_SAMPLES},
                 "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
