@@ -72,7 +72,7 @@ INDEX = f"{REMOTE}/index"
 SITES = run.SITES
 CONFIGS = ["opus-2.5", "opus-5", "opus-10", "opus-20", "opus-max510", "pcm"]
 WEBRTC = ["cf", "whep", "lkregion", "lkmulti", "lkcloud"]
-NEEDLETAIL = {"nt-popus": (3001, "nt-popus-120s"), "nt-opus": (3001, run.lab.daw_index("nt-opus")[0]),
+NEEDLETAIL = {"nt-popus": (3001, "nt-popus-120s-la"), "nt-opus": (3001, run.lab.daw_index("nt-opus")[0]),
               "nt-flac": (2001, run.lab.daw_index("nt-flac")[0]), "nt-pcm": (4001, "nt-pcm-48s")}
 SAMPLE_RATE = 48_000
 # Samples of one AEP1 epoch (one part) of the Needletail lanes that the AEP1

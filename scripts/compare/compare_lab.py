@@ -358,7 +358,10 @@ NT_INDEXES = [
     ("nt-pcm-48s", ["audio.s24le", "1.0"]),
     ("nt-pcm-24s", ["audio.s24le", "0.5"]),
     ("nt-pcm-12s", ["audio.s24le", "0.25"]),
-    ("nt-popus-120s", ["numbered:nt-popus-120s", "2.5", "0"]),
+    # The AEP1 sender's Opus is libopus CELT low-delay, frame k coded from
+    # samples [k*120, (k+1)*120): it decodes 120 samples (the look-ahead)
+    # late, as every WebRTC lane's Opus does, whose indexes count it too.
+    ("nt-popus-120s-la", ["numbered:nt-popus-120s-la", "2.5", str(OPUS_LOOKAHEAD_SAMPLES)]),
     daw_index("nt-opus"),
     daw_index("nt-flac"),
 ]

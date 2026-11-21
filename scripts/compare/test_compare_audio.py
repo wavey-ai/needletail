@@ -74,7 +74,7 @@ class Lanes(unittest.TestCase):
         a = audio.Audio(FakeSession(), "opus-2.5", lanes)
         hls = a.probe("nt-popus-h3", "lon", 60, 1, "tag")
         self.assertIn("/live/3001/master.m3u8", hls)
-        self.assertIn("/index/nt-popus-120s.index.json", hls)
+        self.assertIn("/index/nt-popus-120s-la.index.json", hls)
         self.assertIn("--window 40 --http3", hls)
         udp = a.probe("nt-udp", "lon", 60, 1, "tag")
         self.assertTrue(udp.startswith("needletail-udp-client --entry https://10.0.0.11:19444 --stream 3001 "))
@@ -196,12 +196,12 @@ class Indexes(unittest.TestCase):
         made = compare_lab.needletail_indexes(media, NTCMP)
         self.assertEqual([path.name for path in made],
                          ["nt-pcm-48s.index.json", "nt-pcm-24s.index.json", "nt-pcm-12s.index.json",
-                          "nt-popus-120s.index.json", "nt-opus-120s-b64.index.json",
+                          "nt-popus-120s-la.index.json", "nt-opus-120s-b64.index.json",
                           "nt-flac-48s-b64.index.json"])
         units = {path.name: json.loads(path.read_text()) for path in made}
         self.assertEqual(units["nt-pcm-12s.index.json"]["frame_samples"], 12)
-        self.assertEqual(units["nt-popus-120s.index.json"]["frame_samples"], 120)
-        self.assertEqual(units["nt-popus-120s.index.json"]["kind"], "numbered")
+        self.assertEqual(units["nt-popus-120s-la.index.json"]["frame_samples"], 120)
+        self.assertEqual(units["nt-popus-120s-la.index.json"]["kind"], "numbered")
         # Every lane's index is among them.
         names = {path.name[:-len(".index.json")] for path in made}
         for samples in audio.NT_PCM_SAMPLES:
