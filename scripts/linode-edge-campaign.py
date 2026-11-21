@@ -495,17 +495,22 @@ def start_sources(seconds: int = 6 * 3600, **_kwargs) -> None:
     common.ssh(source, (
         f"mkdir -p {REMOTE_RUNS}; pgrep -x ffmpeg >/dev/null || "
         f"(nohup {video} >{REMOTE_RUNS}/source-video.log 2>&1 </dev/null &)"))
-    common.ssh(contributor, (
+    # The audio source encodes each track twice. With eight tracks it takes
+    # most of a CPU, so it runs on the load host and not beside the
+    # contributor: on the one vCPU of the contributor it produced a ninth of
+    # the parts.
+    common.ssh(source, (
         f"mkdir -p {REMOTE_RUNS}; pgrep -x daw-test-source >/dev/null || "
         f"(RUST_LOG=info DAW_TEST_SOURCE_START_UNIX_NS=$(( $(date +%s%N) + 3000000000 )) "
-        f"nohup {DAW_SOURCE} --direct-contributor --loop-prepared-pcm 127.0.0.1:27100 "
+        f"nohup {DAW_SOURCE} --direct-contributor --loop-prepared-pcm {target}:27100 "
         f"{seconds} {album_directory()} >{REMOTE_RUNS}/source-audio.log 2>&1 "
         f"</dev/null &)"))
 
 
 def stop_sources() -> None:
     contributor = common.nodes_by_role(state(), "contributor")[0]
-    common.ssh(by_name("lon-readers"), "pkill -x ffmpeg || true", check=False)
+    common.ssh(by_name("lon-readers"), "pkill -x ffmpeg; pkill -x daw-test-source; true",
+               check=False)
     common.ssh(contributor, "pkill -x daw-test-source || true", check=False)
 
 
@@ -522,20 +527,23 @@ def prepare() -> None:
         "(apt-get update -q >/dev/null 2>&1; apt-get install -y -q ffmpeg >/dev/null 2>&1); "
         f"mkdir -p {REMOTE_MEDIA}/video; ffmpeg -version | head -1"), timeout=900)
     common.rsync_to(source, [str(lab.VIDEO_CLIP)], f"{REMOTE_MEDIA}/video/", timeout=1800)
-    common.ssh(contributor, f"mkdir -p {REMOTE_MEDIA}/daw-tracks")
-    common.rsync_to(contributor, [str(lab.DAW_TRACKS) + "/"],
+    daw_source = common.WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" \
+        / "release" / "daw-test-source"
+    common.rsync_to(source, [str(daw_source)], "/usr/local/bin/")
+    common.ssh(source, f"mkdir -p {REMOTE_MEDIA}/daw-tracks")
+    common.rsync_to(source, [str(lab.DAW_TRACKS) + "/"],
                     f"{REMOTE_MEDIA}/daw-tracks/", timeout=1800)
     ladder = [str(path) for _stream, path, *_ in lab.LADDER[1:] if path.exists()]
     if ladder:
         common.rsync_to(source, ladder, f"{REMOTE_MEDIA}/video/", timeout=1800)
     for album in sorted(lab.DAW_TRACKS.parent.glob("daw-nexus-album-8-track-pcm-*"))[-1:]:
-        common.ssh(contributor, f"mkdir -p {REMOTE_MEDIA}/daw-tracks-8")
-        common.rsync_to(contributor, [str(album) + "/"], f"{REMOTE_MEDIA}/daw-tracks-8/",
+        common.ssh(source, f"mkdir -p {REMOTE_MEDIA}/daw-tracks-8")
+        common.rsync_to(source, [str(album) + "/"], f"{REMOTE_MEDIA}/daw-tracks-8/",
                         timeout=3600)
     for host in ("lon-readers", "new-readers"):
         common.ssh(by_name(host), f"{READER} --help >/dev/null && mkdir -p {REMOTE_RUNS}")
-    print(f"prepared: {lab.VIDEO_CLIP.name} on {source['name']}, "
-          f"{lab.DAW_TRACKS.name} on {contributor['name']}")
+    print(f"prepared: {lab.VIDEO_CLIP.name} and {lab.DAW_TRACKS.name} on {source['name']}; "
+          f"the contributor is {contributor['name']}")
 
 
 # ------------------------------------------------------------------ the run
