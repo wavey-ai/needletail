@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Measure where the time of a PCM part goes, on the local namespace lab.
+"""Measure where the time of an audio part goes, on the local namespace lab.
 
 One run: start the lab of scripts/edge_lab.py (tc netem links, a node has 2
 CPUs and 4 GB, the contributor 4 and 8) with a given set of extra service
 flags, so that each low-latency change can be switched off and on; send the
-lossless PCM loop with the AEP1 sender (aep1-48k-probe send, as
+64-second loop with the AEP1 sender (aep1-48k-probe send, as
 compare-audio.py does on lon-src) from the contributor's own host to its
-ingest; run N ntcmp HLS readers of each kind, window 1 over HTTP/2 (as
-needletail-reader) and window 40 over HTTP/3, on each reader host
-(lon-readers and new-readers) for D seconds; then join the hop journals of
-every node with the readers' records (hops.py). Linode is not used.
+ingest, as PCM, FLAC or Opus (--payload) in epochs of --epoch-samples (one
+epoch is one part: 48 samples = 1 ms by default for PCM and FLAC, 120 =
+2.5 ms for Opus); run N ntcmp HLS readers of each kind, window 1 over HTTP/2
+and window 40 over HTTP/3, on each reader host (lon-readers and new-readers)
+for D seconds; then join the hop journals of every node with the readers'
+records (hops.py), with the epoch that the sender reports. Linode is not
+used. scripts/compare/part-sweep.py runs this for each part size.
 
 Results: target/latency-bench/NAME/
   hops.json      hops.py's report, with the run's settings under "bench"
@@ -29,9 +32,9 @@ e.g. the A/B of the event-driven cache-mesh sender:
   latency-bench.py --name p1-off --mesh-args "--mesh-sync-on-publish false"
 
 The journals are read only after the readers finish, so every service is
-started with --hop-journal-capacity sized to the run (--journal-capacity
-overrides); summary.txt warns when a node's ring was full or its journal
-starts late in the window.
+started with --hop-journal-capacity sized to the run and its part rate
+(--journal-capacity overrides); summary.txt warns when a node's ring was
+full or its journal starts late in the window.
 
 --dry-run prints the plan (every command) and touches nothing.
 """
@@ -63,20 +66,26 @@ OUT_ROOT = ROOT / "target" / "latency-bench"
 MEDIA = OUT_ROOT / "media"
 LOOP_SECONDS = 64                       # ntcmp's loop (tools/ntcmp/audio.go loopSecs)
 LOOP_BYTES = LOOP_SECONDS * 48_000 * 6  # stereo 24-bit
-PCM_STREAM = 4001                       # daw_hls_base_stream_id 2001 + the PCM offset 2000
-EPOCH_NS = 5_000_000
+SAMPLE_RATE = hops.SAMPLE_RATE
+# daw_hls_base_stream_id 2001 + the format's offset (Opus 1000, PCM 2000).
+PAYLOAD_STREAM = hops.PAYLOAD_STREAM
+DEFAULT_EPOCH_SAMPLES = hops.DEFAULT_EPOCH_SAMPLES
+OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+MIN_EPOCH_SAMPLES = {"pcm": 12, "flac": 32}
 READER_HOSTS = ["lon-readers", "new-readers"]
 SKIP_SECONDS = 5
 # The hop journal is a ring that is read only after the readers have
 # finished, so it must hold the whole window. The busiest node journals about
-# 9 events of each 5 ms part (the contributor: src_first..sent_secondary; a
-# distributor: relay_first..watermark and a mesh_sent per edge), about 1800 a
-# second. Rings are sized for 2500 a second over the run and a margin for the
-# start of the readers and the collection, never below the services' default.
+# 9 events of each part (the contributor: src_first..sent_secondary; a
+# distributor: relay_first..watermark and a mesh_sent per edge). Rings are
+# sized for 10 events of each part at the run's part rate (1,000 parts a
+# second at 1 ms, 4,000 at 0.25 ms) over the run and a margin for the start
+# of the readers and the collection, never below the services' default.
 JOURNAL_DEFAULT = 262_144
-JOURNAL_EVENTS_PER_SECOND = 2500
-JOURNAL_MARGIN_SECONDS = 120
+JOURNAL_EVENTS_PER_PART = 10
+JOURNAL_MARGIN_SECONDS = 60
 JOURNAL_FLAG = "--hop-journal-capacity"
+SENDER_STOP_SECONDS = 5
 
 
 def log(text: str) -> None:
@@ -91,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seconds", type=int, default=60, help="D: how long the readers listen")
     parser.add_argument("--readers", type=int, default=1, help="N: readers of each kind on each host")
     parser.add_argument("--hosts", default=",".join(READER_HOSTS), help="reader namespaces")
+    parser.add_argument("--payload", choices=sorted(PAYLOAD_STREAM), default="pcm",
+                        help="what the AEP1 sender sends (opus: CELT frames encoded by the probe "
+                             "from the same loop); the stream follows (pcm 4001, flac 2001, opus 3001)")
+    parser.add_argument("--epoch-samples", type=int, default=None,
+                        help="samples of one AEP1 epoch, one part (default pcm and flac 48 = 1 ms, "
+                             "opus 120 = 2.5 ms; pcm >= 12, flac >= 32, opus 120/240/480/960)")
     parser.add_argument("--h2-window", type=int, default=1)
     parser.add_argument("--h3-window", type=int, default=40)
     for role in ("mesh", "backbone", "distributor", "edge", "contrib", "sender"):
@@ -120,11 +135,41 @@ def split(text: str) -> list[str]:
     return shlex.split(text) if text else []
 
 
+def epoch_samples(args) -> int:
+    """Samples of one epoch of this run, checked against what the payload
+    allows."""
+    samples = args.epoch_samples or DEFAULT_EPOCH_SAMPLES[args.payload]
+    if args.payload == "opus" and samples not in OPUS_EPOCH_SAMPLES:
+        raise SystemExit(f"an Opus epoch is {OPUS_EPOCH_SAMPLES} samples, not {samples}")
+    if samples < MIN_EPOCH_SAMPLES.get(args.payload, 1):
+        raise SystemExit(f"a {args.payload} epoch is at least {MIN_EPOCH_SAMPLES[args.payload]} samples")
+    return samples
+
+
+def epoch_ns(samples: int) -> int:
+    """One epoch in ns, rounded (32 samples are 666,666.67 ns)."""
+    return round(samples * 1_000_000_000 / SAMPLE_RATE)
+
+
+def epoch_ms_text(samples: int) -> str:
+    """One epoch in ms as ntcmp audio-index reads it (%g): exact for every
+    size it computes back to `samples` (48 -> "1.0", 12 -> "0.25")."""
+    text = repr(samples * 1000 / SAMPLE_RATE)
+    if int(float(text) * SAMPLE_RATE / 1000) != samples:
+        raise SystemExit(f"{samples} samples cannot be named in ms for ntcmp")
+    return text
+
+
+def parts_per_second(samples: int) -> float:
+    return SAMPLE_RATE / samples
+
+
 def journal_capacity(args) -> int:
     """Events that every node's hop journal keeps in this run."""
     if args.journal_capacity is not None:
         return args.journal_capacity
-    return max(JOURNAL_DEFAULT, JOURNAL_EVENTS_PER_SECOND * (args.seconds + JOURNAL_MARGIN_SECONDS))
+    rate = JOURNAL_EVENTS_PER_PART * parts_per_second(epoch_samples(args))
+    return max(JOURNAL_DEFAULT, int(rate * (args.seconds + JOURNAL_MARGIN_SECONDS)))
 
 
 def with_journal(extra: list[str], capacity: int) -> list[str]:
@@ -137,7 +182,11 @@ def with_journal(extra: list[str], capacity: int) -> list[str]:
 def lab_overrides(args) -> list[str]:
     """The `key=value` settings of edge_lab.up for this run."""
     capacity = journal_capacity(args)
-    settings: dict[str, object] = {"daw_hls_formats": "pcm"}
+    samples = epoch_samples(args)
+    settings: dict[str, object] = {"daw_hls_formats": args.payload}
+    # The lab records the epoch that its sender sends (the parts follow it:
+    # audio_part is "epoch").
+    settings["opus_epoch_samples" if args.payload == "opus" else "pcm_epoch_samples"] = samples
     plain = []
     for item in args.set:
         key, _, value = item.partition("=")
@@ -165,14 +214,16 @@ def loop_start(now: float) -> int:
 
 
 def sender_command(args, start: int, loop_file: str) -> list[str]:
-    """The AEP1 PCM sender. It sends epoch k when its last sample has been
+    """The AEP1 sender. It sends epoch k when its last sample has been
     spoken: the session id is the loop start plus one epoch."""
-    session_id = start * 1_000_000_000 + EPOCH_NS
+    samples = epoch_samples(args)
+    session_id = start * 1_000_000_000 + epoch_ns(samples)
     return [lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
             "--session-id", str(session_id), "--group-id", "0",
             # Long enough for the lab to go live first; it is stopped at the end.
             "--duration-seconds", str(args.seconds + max(0, start - int(time.time())) + 300),
-            "--payload", "pcm", "--channels", "2", "--group-channels", "8",
+            "--payload", args.payload, "--epoch-samples", str(samples),
+            "--channels", "2", "--group-channels", "8",
             "--pcm-s24le-file", loop_file, "--repair-percent", "12", "--min-repair-symbols", "1",
             *split(args.sender_args)]
 
@@ -181,14 +232,15 @@ def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
     """ntcmp hls readers: window 1 over HTTP/2 and window 40 over HTTP/3 on
     each reader host, through the first distributor of the host's site."""
     readers = []
+    stream = PAYLOAD_STREAM[args.payload]
     for host in [item for item in args.hosts.split(",") if item]:
         site = lab.node(host)["site"]
         entry = lab.distributors(site)[0]
         for lane, window, http3 in (("h2", args.h2_window, False), ("h3", args.h3_window, True)):
             stem = out / f"{host}.{lane}"
-            command = [args.ntcmp, "hls", "--lane", f"nt-pcm-{lane}", "--mode", "chase",
+            command = [args.ntcmp, "hls", "--lane", f"nt-{args.payload}-{lane}", "--mode", "chase",
                        "--window", str(window), *(["--http3"] if http3 else []),
-                       "--url", f"{lab.base_url(entry)}/live/{PCM_STREAM}/master.m3u8"
+                       "--url", f"{lab.base_url(entry)}/live/{stream}/master.m3u8"
                                 f"?sid=bench-{args.name}-{host}-{lane}-{{i}}",
                        "--ca", lab.ca_file(), "--server-name", lab.SERVER_NAME,
                        "--audio-index", index, "--duration", str(args.seconds),
@@ -208,21 +260,39 @@ def reader_netem(args) -> str | None:
     return None
 
 
+def index_media(args, loop_file: str) -> tuple[str, list[str]]:
+    """The ntcmp audio index of the run and the command that makes it. PCM
+    parts are the loop's own bytes, recognised by fingerprint in blocks of
+    one epoch; FLAC and Opus parts are recognised by number (part N is epoch
+    N of the loop, no offset)."""
+    samples = epoch_samples(args)
+    ms = epoch_ms_text(samples)
+    if args.payload == "pcm":
+        index = str(MEDIA / f"pcm-{samples}s.index.json")
+        return index, [args.ntcmp, "audio-index", loop_file, index, ms]
+    name = f"nt-{args.payload}-{samples}s"
+    index = str(MEDIA / f"{name}.index.json")
+    return index, [args.ntcmp, "audio-index", f"numbered:{name}", index, ms, "0"]
+
+
 def plan(args) -> dict:
     out = OUT_ROOT / args.name
     loop_file = str(MEDIA / "loop64.s24le")
-    index = str(MEDIA / "pcm-5ms.index.json")
+    index, index_command = index_media(args, loop_file)
     start = loop_start(time.time())
+    samples = epoch_samples(args)
     return {
         "name": args.name, "out": str(out), "seconds": args.seconds, "readers_per_kind": args.readers,
+        "payload": args.payload, "epoch_samples": samples,
+        "epoch_us": hops.epoch_us_of(samples), "parts_per_second": parts_per_second(samples),
         "lab_up": None if args.no_up else lab_overrides(args),
         "media": {"loop": loop_file, "index": index, "from": args.pcm,
-                  "index_command": [args.ntcmp, "audio-index", loop_file, index, "5"]},
+                  "index_command": index_command},
         "loop_start_unix": start,
         "sender": {"namespace": "contrib-lon", "command": sender_command(args, start, loop_file)},
         "readers": reader_commands(args, out, index),
         "reader_netem": reader_netem(args),
-        "hops": {"stream": PCM_STREAM, "source_start_ns": start * 1_000_000_000,
+        "hops": {"stream": PAYLOAD_STREAM[args.payload], "source_start_ns": start * 1_000_000_000,
                  "skip_seconds": SKIP_SECONDS,
                  "journal_capacity": None if args.no_up else journal_capacity(args)},
     }
@@ -271,6 +341,8 @@ def run(args, steps: dict) -> int:
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("*.probe*"):
         old.unlink()
+    # The sender's summary of this run is read from its log.
+    (out / "sender.log").unlink(missing_ok=True)
     (out / "plan.json").write_text(json.dumps(steps, indent=1) + "\n")
     if not pathlib.Path(args.ntcmp).is_file():
         raise SystemExit(f"{args.ntcmp} is missing: build it with scripts/compare/gobuild.sh")
@@ -290,22 +362,32 @@ def run(args, steps: dict) -> int:
     for item in steps["readers"]:
         for path in sorted(out.glob(f"{item['host']}.{item['lane']}.probe*.csv")):
             probes.append(hops.read_probe(f"{item['site']}={path}"))
-    result = hops.analyse(nodes, events, probes, PCM_STREAM,
-                          steps["hops"]["source_start_ns"] // 1000, hops.EPOCH_US,
+    # The epoch of the run: what the sender reports it sent, else the plan's.
+    summary = hops.read_sender_summary(out / "sender.log")
+    epoch = run_epoch(steps, summary)
+    epoch_note = sender_mismatch(steps, summary)
+    result = hops.analyse(nodes, events, probes, steps["hops"]["stream"],
+                          steps["hops"]["source_start_ns"] // 1000, epoch["epoch_us"],
                           since_us=since_us, until_us=ended_us)
+    result["source"].update({"epoch_samples": epoch["epoch_samples"], "epoch_from": epoch["from"],
+                             "payload": args.payload})
     summaries = [reader_summary(path) for path in sorted(out.glob("*.probe*.json"))]
     capacity = steps["hops"]["journal_capacity"]
     full = journal_full(events, capacity)
     result["bench"] = {**{key: value for key, value in steps.items() if key != "readers"},
                        "reader_commands": [item["command"] for item in steps["readers"]],
                        "readers": summaries, "window_us": [since_us, ended_us],
-                       "journal_full": full}
+                       "journal_full": full, "sender": sender_digest(summary),
+                       "epoch_note": epoch_note}
     (out / "hops.json").write_text(json.dumps(result, indent=1) + "\n")
     lines = [f"latency bench {args.name}: {args.seconds} s, {args.readers} reader(s) of each kind "
              f"on {args.hosts}",
              f"lab settings: {' '.join(steps['lab_up'] or ['(running lab)'])}",
-             f"sender: {' '.join(split(args.sender_args)) or '(defaults)'}; "
+             f"sender: {args.payload}, {epoch['epoch_samples']}-sample epochs "
+             f"({epoch['epoch_us'] / 1000:g} ms parts, from {epoch['from']}); "
+             f"{' '.join(split(args.sender_args)) or '(defaults)'}; "
              f"reader links: {steps['reader_netem'] or 'clean'}",
+             *([f"WARNING: {epoch_note}"] if epoch_note else []),
              f"hop journal: {capacity if capacity is not None else 'as running'} events per node"
              + (f"; WARNING: full on {', '.join(full)}: the start of the window was overwritten"
                 if full else ""), ""]
@@ -319,6 +401,35 @@ def run(args, steps: dict) -> int:
     (out / "summary.txt").write_text(text)
     print(text, end="")
     return 0
+
+
+def run_epoch(steps: dict, summary: dict | None) -> dict:
+    """The epoch of the run: what the sender reports it sent, else the
+    plan's."""
+    if hops.sender_epoch_samples(summary):
+        return hops.resolve_epoch(summary=summary, payload=steps["payload"])
+    return hops.resolve_epoch(epoch_samples=steps["epoch_samples"], payload=steps["payload"])
+
+
+def sender_digest(summary: dict | None) -> dict | None:
+    """What the sender says about itself: what it sent and how late."""
+    if not summary:
+        return None
+    keys = ("payload", "epoch_samples", "frame_count", "sample_rate", "epochs", "pace",
+            "stopped_by_signal", "send_lateness_ms", "send_complete_lateness_ms", "encode_ms")
+    return {key: summary[key] for key in keys if key in summary}
+
+
+def sender_mismatch(steps: dict, summary: dict | None) -> str | None:
+    """A sender that sent another epoch or payload than the plan's."""
+    if not summary:
+        return "the sender left no summary: the planned epoch is used"
+    samples = hops.sender_epoch_samples(summary)
+    if samples is not None and samples != steps["epoch_samples"]:
+        return f"the sender sent {samples}-sample epochs, the plan was {steps['epoch_samples']}"
+    if summary.get("payload") not in (None, steps["payload"]):
+        return f"the sender sent {summary['payload']}, the plan was {steps['payload']}"
+    return None
 
 
 def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int, int]:
@@ -340,7 +451,7 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
         log(f"sender starts at {start} ({start - time.time():.1f} s)")
         time.sleep(max(0.0, start - time.time()))
         for site in sorted({item["site"] for item in steps["readers"]}):
-            lab.wait_live(PCM_STREAM, site, timeout=60)
+            lab.wait_live(steps["hops"]["stream"], site, timeout=60)
         if steps["reader_netem"]:
             for host in sorted({item["host"] for item in steps["readers"]}):
                 shaped.append(host)
@@ -360,18 +471,32 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
         ended_us = time.time_ns() // 1000
         since_us = began_us + SKIP_SECONDS * 1_000_000
         log("collecting the hop journals")
-        nodes, events = hops.collect_edge_lab(since_us, PCM_STREAM)
+        nodes, events = hops.collect_edge_lab(since_us, steps["hops"]["stream"])
     finally:
         for host in shaped:
             lab.set_net(host, "pub", "both", None)
         for process in readers:
             if process.poll() is None:
                 process.kill()
-        os_kill_group(sender.pid)
+        stop_sender(sender)
         sources = lab.load("sources.json")
         sources.pop("bench-sender", None)
         lab.save("sources.json", sources)
     return nodes, events, since_us, ended_us
+
+
+def stop_sender(process: subprocess.Popen) -> None:
+    """Stop the sender with SIGTERM, so that it prints its summary (the epoch
+    it sent, its lateness), and kill it if it does not stop."""
+    import os
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        return
+    try:
+        process.wait(timeout=SENDER_STOP_SECONDS)
+    except subprocess.TimeoutExpired:
+        os_kill_group(process.pid)
 
 
 def os_kill_group(pid: int) -> None:
@@ -390,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     for window in (args.h2_window, args.h3_window):
         if not 1 <= window <= 400:
             raise SystemExit("a reader window is 1 to 400 parts")
+    epoch_samples(args)
     steps = plan(args)
     if args.dry_run:
         print(json.dumps(steps, indent=1))
