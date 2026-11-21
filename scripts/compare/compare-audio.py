@@ -17,8 +17,11 @@ Lanes
   lkcloud   LiveKit Cloud: the same
   nt-popus  Needletail, Opus in 2.5 ms parts (120 samples, CELT) that its AEP1
             sender encodes from the same loop (stream 3001)
-  nt-opus   Needletail, SoundKit Opus from its DAW source (stream 3001)
-  nt-flac   Needletail, FLAC from its DAW source (stream 2001)
+  nt-opus   Needletail, SoundKit Opus from its DAW source (stream 3001), one
+            120-sample (2.5 ms) frame per part
+  nt-flac   Needletail, FLAC from its DAW source (stream 2001), one 48-sample
+            (1 ms) epoch per part; the DAW source runs with 64-frame host
+            buffers (NT_DAW, recorded in each step's meta)
   nt-pcm    Needletail, 24-bit PCM from its AEP1 sender, one 48-sample (1 ms)
             epoch per part (--nt-pcm-samples; stream 4001)
   nt-udp    Needletail's RaptorQ FEC UDP client (needletail-udp-client, from
@@ -67,15 +70,28 @@ INDEX = f"{REMOTE}/index"
 SITES = run.SITES
 CONFIGS = ["opus-2.5", "opus-5", "opus-10", "opus-20", "opus-max510", "pcm"]
 WEBRTC = ["cf", "whep", "lkregion", "lkmulti", "lkcloud"]
-NEEDLETAIL = {"nt-popus": (3001, "nt-popus-120s"), "nt-opus": (3001, "nt-opus"),
-              "nt-flac": (2001, "nt-flac"), "nt-pcm": (4001, "nt-pcm-48s")}
+NEEDLETAIL = {"nt-popus": (3001, "nt-popus-120s"), "nt-opus": (3001, run.lab.daw_index("nt-opus")[0]),
+              "nt-flac": (2001, run.lab.daw_index("nt-flac")[0]), "nt-pcm": (4001, "nt-pcm-48s")}
 SAMPLE_RATE = 48_000
 # Samples of one AEP1 epoch (one part) of the Needletail lanes that the AEP1
 # sender feeds; --nt-pcm-samples changes PCM's (24, 12: the halvings).
 NT_EPOCH_SAMPLES = {"nt-popus": 120, "nt-pcm": 48}
 NT_PCM_SAMPLES = (48, 24, 12)
-# The DAW source's lanes: their frame as the analysis takes it.
-NT_DAW_FRAME_MS = {"nt-opus": 2.5, "nt-flac": 5.0}
+# The DAW source's epochs and host buffer, which compare-audio gives it on its
+# command line and records in each step's meta (nt_daw); its lanes' parts
+# are one Opus frame (nt-opus) or one lossless epoch (nt-flac).
+NT_DAW = run.lab.NT_DAW
+NT_DAW_SAMPLES = {"nt-opus": "opus_frame_samples", "nt-flac": "lossless_epoch_samples"}
+
+
+def daw_command(target: str) -> str:
+    """The DAW source of the Needletail DAW lanes, with its epochs and host
+    buffer given (not left to the defaults of the build that is installed)."""
+    return ("env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS=${START}000000000 daw-test-source "
+            f"--direct-contributor --buffer-frames {NT_DAW['buffer_frames']} "
+            f"--opus-frame-samples {NT_DAW['opus_frame_samples']} "
+            f"--lossless-epoch-samples {NT_DAW['lossless_epoch_samples']} "
+            f"--prepared-pcm {target} 1900 {REMOTE}/daw-fixture")
 UDP_LANE = "nt-udp"
 # One Needletail rendition at a time. The contributor is a 1 vCPU Nanode: one
 # audio rendition takes 30% to 38% of it, two take 65% to 70%, and with three
@@ -193,9 +209,7 @@ class Audio:
             # sender is started one epoch later so that it sends an epoch when
             # its last sample has been spoken.
             base = self.nt_base[0]
-            daw = run.background("nt-daw", (
-                "env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS=${START}000000000 daw-test-source "
-                f"--direct-contributor --prepared-pcm {target} 1900 {REMOTE}/daw-fixture"))
+            daw = run.background("nt-daw", daw_command(target))
             producer = daw
             if base in NT_EPOCH_SAMPLES:
                 producer = run.background(base, aep1_command(
@@ -254,7 +268,7 @@ class Audio:
             if base in NT_EPOCH_SAMPLES:
                 out[base] = self.epoch_samples(base) * 1000 / SAMPLE_RATE
             else:
-                out[base] = NT_DAW_FRAME_MS[base]
+                out[base] = NT_DAW[NT_DAW_SAMPLES[base]] * 1000 / SAMPLE_RATE
         return out
 
     def status(self) -> dict:
@@ -353,6 +367,7 @@ class Audio:
         result = run.run_hosts(s, name, scripts, total)
         meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
                 "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(),
+                "nt_daw": {**NT_DAW, "opus_lookahead_samples": run.lab.OPUS_LOOKAHEAD_SAMPLES},
                 "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
                                     for base, frame in self.nt_frame_ms().items()
                                     for lane in lanes if lane.startswith(base)

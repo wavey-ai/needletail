@@ -318,15 +318,49 @@ print("DAW fixture of", frames // 48000, "s")
 """
 
 
-# The ntcmp indexes of the Needletail lanes that the AEP1 sender feeds: PCM
-# by fingerprint in blocks of one epoch (48, 24, 12 samples), and the Opus
-# that the sender encodes (120 samples) by part number, part N being epoch N
-# of the loop. (name, ntcmp audio-index arguments after the output path.)
+# The ntcmp indexes of the Needletail lanes: PCM from the AEP1 sender by
+# fingerprint in blocks of one epoch (48, 24, 12 samples); the Opus that the
+# sender encodes (120 samples), and the DAW source's Opus and FLAC, by part
+# number, part N being epoch N of the loop (offset as daw_index says). (name,
+# ntcmp audio-index arguments after the output path.)
+# The DAW source as compare-audio.py starts it (daw-test-source
+# --buffer-frames, --opus-frame-samples, --lossless-epoch-samples): the
+# low-latency defaults, given explicitly so that an older build is not
+# measured with the wrong index. It plays one host buffer of silence before
+# the loop, so its audio is `buffer_frames` behind the loop, and its Opus is
+# the encoder's look-ahead (120 samples, 2.5 ms) later still. Its lanes'
+# indexes number part N as epoch N of the loop, offset by that: the indexes
+# of the first runs were 240-sample epochs, offsets 512 (FLAC) and 632 (Opus)
+# behind 512-sample buffers.
+NT_DAW = {"buffer_frames": 64, "opus_frame_samples": 120, "lossless_epoch_samples": 48}
+OPUS_LOOKAHEAD_SAMPLES = 120
+
+
+def daw_index(base: str, daw: dict | None = None) -> tuple[str, list[str]]:
+    """(name, ntcmp audio-index arguments after the output path) of the
+    index of a DAW source lane, nt-opus or nt-flac."""
+    daw = daw or NT_DAW
+    buffer = int(daw["buffer_frames"])
+    if base == "nt-opus":
+        samples, offset = int(daw["opus_frame_samples"]), buffer + OPUS_LOOKAHEAD_SAMPLES
+    elif base == "nt-flac":
+        samples, offset = int(daw["lossless_epoch_samples"]), buffer
+    else:
+        raise ValueError(f"{base} is not a DAW source lane")
+    ms = repr(samples * 1000 / 48000)
+    if int(float(ms) * 48000 / 1000) != samples:
+        raise ValueError(f"{samples} samples cannot be named in ms for ntcmp")
+    name = f"{base}-{samples}s-b{buffer}"
+    return name, [f"numbered:{name}", ms, str(offset)]
+
+
 NT_INDEXES = [
     ("nt-pcm-48s", ["audio.s24le", "1.0"]),
     ("nt-pcm-24s", ["audio.s24le", "0.5"]),
     ("nt-pcm-12s", ["audio.s24le", "0.25"]),
     ("nt-popus-120s", ["numbered:nt-popus-120s", "2.5", "0"]),
+    daw_index("nt-opus"),
+    daw_index("nt-flac"),
 ]
 
 

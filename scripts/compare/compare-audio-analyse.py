@@ -20,9 +20,11 @@ gap                consecutive units that never arrived
 bit-exact          the unit at the listener is byte for byte the unit sent
 
 Needletail's Opus and FLAC come from its DAW source, which hands audio to the
-plug-in in buffers of 512 samples, as a DAW does. A sample therefore waits up
-to 10.7 ms for its buffer before Needletail sees it. The other systems are fed
-without such a buffer. Both figures are given: `raw` as measured, and
+plug-in in host buffers, as a DAW does: 64 samples since 22 November 2026 (a
+sample waits up to 1.3 ms), 512 before (up to 10.7 ms). The step's meta
+(nt_daw) names the buffer and the source's epochs; a step without it is from
+before, with 240-sample epochs and 512-sample buffers. The other systems are
+fed without such a buffer. Both figures are given: `raw` as measured, and
 `without_daw_buffer`, in which the known wait of each unit is taken off.
 
 The first five seconds of each listener and the last three of a step are
@@ -44,7 +46,11 @@ RUNS = ROOT / "target" / "compare" / "runs"
 HEAD_MS = 5000.0
 TAIL_MS = 3000.0
 LOOP_SAMPLES = 64 * 48000
+# The DAW source of the runs before 22 November 2026, whose steps have no
+# nt_daw in their meta: 512-sample host buffers, 240-sample epochs.
 DAW_BUFFER = 512
+DAW_EPOCH_SAMPLES = 240
+DAW_SAMPLES_KEY = {"nt-opus": "opus_frame_samples", "nt-flac": "lossless_epoch_samples"}
 FRAME_MS = {"opus-2.5": 2.5, "opus-5": 5.0, "opus-10": 10.0, "opus-20": 20.0, "opus-max510": 10.0,
             "pcm": 2.5}
 # A Needletail part is one producer frame; compare-audio.py records the frame
@@ -70,8 +76,12 @@ def load(path: pathlib.Path):
 
 
 def nt_frame_ms(meta: dict, lane: str) -> float:
-    """The frame of a Needletail lane (`nt-pcm-h3` -> its base `nt-pcm`)."""
+    """The frame of a Needletail lane (`nt-pcm-h3` -> its base `nt-pcm`). A
+    DAW source lane of a step without nt_daw is the first runs' 240-sample
+    epoch, whatever nt_frame_ms says (some steps recorded 2.5 ms for it)."""
     base = "-".join(lane.split("-")[:2])
+    if base in DAW_SAMPLES_KEY and not meta.get("nt_daw"):
+        return DAW_EPOCH_SAMPLES / 48.0
     return float((meta.get("nt_frame_ms") or {}).get(base) or NT_FRAME_MS)
 
 
@@ -114,13 +124,26 @@ def analyse_udp(record: dict, host_dir: pathlib.Path, meta: dict) -> dict:
     return out
 
 
-def daw_wait_ms(index: int) -> float:
+def daw_source(meta: dict, lane: str) -> tuple[int, int]:
+    """(epoch samples, host buffer samples) of a DAW source lane
+    (`nt-flac-h3` -> nt-flac) in a step: from its meta, else the first runs'."""
+    base = "-".join(lane.split("-")[:2])
+    daw = meta.get("nt_daw") or {}
+    epoch = daw.get(DAW_SAMPLES_KEY.get(base, ""))
+    buffer = daw.get("buffer_frames")
+    if not epoch or not buffer:
+        return DAW_EPOCH_SAMPLES, DAW_BUFFER
+    return int(epoch), int(buffer)
+
+
+def daw_wait_ms(index: int, epoch: int = DAW_EPOCH_SAMPLES, buffer: int = DAW_BUFFER) -> float:
     """Time between the last sample of Needletail epoch `index` and the
-    delivery of the 512-sample DAW buffer that contains it."""
-    end = (240 * (index + 1) - DAW_BUFFER) % LOOP_SAMPLES     # one past its last content sample
+    delivery of the DAW host buffer that contains it. The source's audio is
+    one buffer behind the loop (it plays one buffer of silence first)."""
+    end = (epoch * (index + 1) - buffer) % LOOP_SAMPLES     # one past its last content sample
     if end == 0:
         end = LOOP_SAMPLES
-    buffer_end = ((end - 1) // DAW_BUFFER + 1) * DAW_BUFFER
+    buffer_end = ((end - 1) // buffer + 1) * buffer
     return (buffer_end - end) / 48.0
 
 
@@ -130,7 +153,7 @@ def mouth_to_ear(latencies: list[float], frame_ms: float) -> list[float]:
 
 
 def analyse_probe(summary: dict, csv_path: pathlib.Path, lane: str, frame_ms: float,
-                  end_ms: float | None) -> dict:
+                  end_ms: float | None, daw: tuple[int, int] = (DAW_EPOCH_SAMPLES, DAW_BUFFER)) -> dict:
     out = {
         "error": (summary.get("error") or None),
         "connect_ms": round(summary.get("connect_ms") or -1, 1),
@@ -200,8 +223,9 @@ def analyse_probe(summary: dict, csv_path: pathlib.Path, lane: str, frame_ms: fl
     out["longest_silence_between_arrivals_ms"] = round(max(spacing), 1) if spacing else None
     if lane.startswith(("nt-opus", "nt-flac")):
         out["raw"] = figures(latencies)
-        out["daw_buffer_wait_ms"] = dist([daw_wait_ms(row[0]) for row in known])
-        out.update(figures([row[1] - daw_wait_ms(row[0]) for row in known]))
+        out["daw_buffer_wait_ms"] = dist([daw_wait_ms(row[0], *daw) for row in known])
+        out["daw_epoch_and_buffer_samples"] = list(daw)
+        out.update(figures([row[1] - daw_wait_ms(row[0], *daw) for row in known]))
         out["note"] = "top-level figures are without_daw_buffer; raw has the measured values"
     return out
 
@@ -301,7 +325,8 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
                 continue
             lane = name.split(".probe")[0]
             frame = nt_frame_ms(meta, lane) if lane.startswith("nt-") else FRAME_MS[config]
-            analysed = analyse_probe(record, host_dir / f"{lane}.probe.csv", lane, frame, end_ms)
+            analysed = analyse_probe(record, host_dir / f"{lane}.probe.csv", lane, frame, end_ms,
+                                     daw_source(meta, lane))
             if name.endswith(".probe"):
                 lanes.setdefault(lane, {})["probe"] = analysed
             else:
@@ -475,7 +500,10 @@ def main() -> None:
     parser.add_argument("--runs", default=str(RUNS))
     args = parser.parse_args()
     evidence = {"schema": "needletail.compare-audio.v1", "head_ms_left_out": HEAD_MS,
-                "tail_ms_left_out": TAIL_MS, "daw_buffer_samples": DAW_BUFFER, "sessions": {}}
+                "tail_ms_left_out": TAIL_MS, "daw_buffer_samples": DAW_BUFFER,
+                "daw_buffer_note": "daw_buffer_samples is that of steps without nt_daw in their "
+                                   "meta; each DAW lane names its own in "
+                                   "daw_epoch_and_buffer_samples", "sessions": {}}
     for name in args.sessions:
         directory = pathlib.Path(args.runs) / name
         if not directory.is_dir():

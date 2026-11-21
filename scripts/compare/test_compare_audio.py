@@ -108,6 +108,50 @@ class Analysis(unittest.TestCase):
         self.assertEqual(analyse.nt_frame_ms(meta, "nt-pcm"), 1.0)
         self.assertEqual(analyse.nt_frame_ms({}, "nt-pcm-w"), 5.0)   # a run from before
 
+    def test_the_daw_lanes_follow_the_source_they_had(self):
+        lanes = list(audio.NEEDLETAIL)
+        opus = audio.Audio(FakeSession(), "opus-5", lanes)
+        flac = audio.Audio(FakeSession(), "opus-20", lanes)
+        self.assertEqual(opus.nt_frame_ms(), {"nt-opus": 2.5})
+        self.assertEqual(flac.nt_frame_ms(), {"nt-flac": 1.0})
+        # The DAW source is told its epochs and buffer; the index matches them.
+        command = audio.daw_command("10.0.0.2:27100")
+        for flag, value in (("--buffer-frames", "64"), ("--opus-frame-samples", "120"),
+                            ("--lossless-epoch-samples", "48")):
+            self.assertIn(f"{flag} {value} ", command)
+        self.assertIn("/index/nt-opus-120s-b64.index.json", opus.probe("nt-opus", "lon", 60, 1, "t"))
+        self.assertIn("/index/nt-flac-48s-b64.index.json", flac.probe("nt-flac-h3", "lon", 60, 1, "t"))
+        name, spec = audio.run.lab.daw_index("nt-opus")
+        self.assertEqual(spec, [f"numbered:{name}", "2.5", str(64 + 120)])
+        self.assertEqual(audio.run.lab.daw_index("nt-flac")[1], ["numbered:nt-flac-48s-b64", "1.0", "64"])
+        # The first runs' indexes are what this formula gives their source.
+        old = {"buffer_frames": 512, "opus_frame_samples": 240, "lossless_epoch_samples": 240}
+        self.assertEqual(audio.run.lab.daw_index("nt-opus", old)[1][1:], ["5.0", "632"])
+        self.assertEqual(audio.run.lab.daw_index("nt-flac", old)[1][1:], ["5.0", "512"])
+
+    def test_daw_meta_drives_the_analysis(self):
+        meta = {"nt_frame_ms": {"nt-opus": 2.5}, "nt_daw": dict(audio.NT_DAW)}
+        self.assertEqual(analyse.daw_source(meta, "nt-opus-h3"), (120, 64))
+        self.assertEqual(analyse.daw_source(meta, "nt-flac"), (48, 64))
+        self.assertEqual(analyse.nt_frame_ms(meta, "nt-opus-w"), 2.5)
+        # Without nt_daw: the first runs' source, 240-sample epochs, 512-sample
+        # buffers, a 5 ms frame even where nt_frame_ms said 2.5.
+        old = {"nt_frame_ms": {"nt-opus": 2.5}}
+        self.assertEqual(analyse.daw_source(old, "nt-opus"), (240, 512))
+        self.assertEqual(analyse.nt_frame_ms(old, "nt-opus"), 5.0)
+        # The wait for the buffer: epoch 0 ends one buffer into the loop's
+        # silence; with 48-sample epochs in 64-sample buffers the waits repeat
+        # every 4 epochs (3 buffers) and are under one buffer.
+        waits = [analyse.daw_wait_ms(index, 48, 64) for index in range(12)]
+        self.assertEqual(waits[:4], waits[4:8])
+        self.assertTrue(all(0 <= wait < 64 / 48 for wait in waits))
+        self.assertEqual(analyse.daw_wait_ms(3, 48, 64), 0.0)    # 192 - 64 = 128: a buffer edge
+        # Epoch 0's content ends 16 samples before the end of the loop's last
+        # buffer (it is one buffer behind): it waits 16 samples.
+        self.assertAlmostEqual(analyse.daw_wait_ms(0, 48, 64), 16 / 48)
+        # The default is the first runs' formula.
+        self.assertEqual(analyse.daw_wait_ms(5), analyse.daw_wait_ms(5, 240, 512))
+
     def test_udp_lane_with_the_source_to_publish_of_the_hls_probe(self):
         lines = ["kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets,"
                  "published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part"]
@@ -152,7 +196,8 @@ class Indexes(unittest.TestCase):
         made = compare_lab.needletail_indexes(media, NTCMP)
         self.assertEqual([path.name for path in made],
                          ["nt-pcm-48s.index.json", "nt-pcm-24s.index.json", "nt-pcm-12s.index.json",
-                          "nt-popus-120s.index.json"])
+                          "nt-popus-120s.index.json", "nt-opus-120s-b64.index.json",
+                          "nt-flac-48s-b64.index.json"])
         units = {path.name: json.loads(path.read_text()) for path in made}
         self.assertEqual(units["nt-pcm-12s.index.json"]["frame_samples"], 12)
         self.assertEqual(units["nt-popus-120s.index.json"]["frame_samples"], 120)
@@ -162,6 +207,12 @@ class Indexes(unittest.TestCase):
         for samples in audio.NT_PCM_SAMPLES:
             self.assertIn(audio.nt_index("nt-pcm", samples), names)
         self.assertIn(audio.nt_index("nt-popus", 48), names)
+        for base in ("nt-opus", "nt-flac"):
+            self.assertIn(audio.nt_index(base, 48), names)
+        self.assertEqual(units["nt-opus-120s-b64.index.json"]["frame_samples"], 120)
+        self.assertEqual(units["nt-opus-120s-b64.index.json"]["preskip"], 184)
+        self.assertEqual(units["nt-flac-48s-b64.index.json"]["frame_samples"], 48)
+        self.assertEqual(units["nt-flac-48s-b64.index.json"]["preskip"], 64)
 
 
 class Report(unittest.TestCase):
