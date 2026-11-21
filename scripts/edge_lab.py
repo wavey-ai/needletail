@@ -170,8 +170,11 @@ def service_limits(name: str) -> dict:
 # One node configuration carries the smallest parts of every stream: one AEP1
 # epoch per audio part (48 samples, 1 ms, for PCM and FLAC; 120 samples,
 # 2.5 ms, for Opus) and one frame per video part. The caches' nominal part is
-# 2.5 ms; segment and window are lengths of time, so every playlist keeps a
-# 1 s segment and a 12 s window whatever its part. Campaign verdicts taken
+# 2.5 ms. Segments are 1 s whatever the part. The window is 12 s of the
+# shortest part: av-mesh counts a window in nominal parts and holds no stream
+# to more, so the deploy tool renders --window-parts for the shortest part
+# (12,000 at 1 ms, 48,000 at 0.25 ms), and a stream of longer parts keeps
+# more than 12 s (up to 40 s; see window_parts_for). Campaign verdicts taken
 # before 22 November 2026 were at 5 ms audio parts and five-frame video parts
 # (`part_ms=5 fmp4_part_ms=5 fmp4_video_part_ms=200` restores them).
 DEFAULT_OVERRIDES = {

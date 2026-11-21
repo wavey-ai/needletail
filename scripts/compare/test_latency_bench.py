@@ -57,6 +57,22 @@ class Arguments(unittest.TestCase):
         self.assertEqual(bench.lab_overrides(parse("--payload", "opus"))[:2],
                          ["daw_hls_formats=opus", "opus_epoch_samples=120"])
 
+    def test_the_caches_keep_12_s_of_the_run_parts(self):
+        # The lab renders through the deploy tool, which counts the window in
+        # parts of the shortest epoch: 12 s of 0.25 ms parts, not 1.2 s.
+        deploy = bench.lab.ROOT / "scripts" / "linode-small-mesh-deploy.py"
+        spec = importlib.util.spec_from_file_location("deploy_for_bench", deploy)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for argv, parts in ((("--epoch-samples", "12"), "48000"), ((), "12000"),
+                            (("--payload", "opus"), "12000")):
+            plain = [item for item in bench.lab_overrides(parse(*argv))
+                     if not item.startswith("extra_")]
+            settings, _ = module.merge_settings({}, {**bench.lab.DEFAULT_OVERRIDES,
+                                                     **module.parse_overrides(plain)})
+            args = module.part_plan(settings)["mesh_args"]
+            self.assertEqual(args[args.index("--window-parts") + 1], parts, argv)
+
     def test_the_journal_holds_the_whole_run(self):
         # 10 events of each part at the run's part rate over the run and 60 s,
         # never below the default. 48-sample parts: 1,000 a second.

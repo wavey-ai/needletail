@@ -287,6 +287,41 @@ def load_settings(overrides: list[str]) -> dict:
 AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
 VIDEO_PART = re.compile(r"^(frame|[1-9][0-9]*ms)$")
 OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+SAMPLE_RATE = 48_000
+# The lossless epoch of the DAW source (daw-test-source: 1 ms, 48 samples,
+# unless it is given --lossless-epoch-samples). With audio_part "epoch" its
+# FLAC and PCM parts are this long, whatever pcm_epoch_samples says.
+DAW_LOSSLESS_EPOCH_SAMPLES = 48
+
+
+def smallest_audio_part_us(audio_part: str, pcm_samples: int, opus_samples: int) -> float:
+    """The shortest audio part that the deploy publishes, in µs: with
+    "epoch" the smallest epoch of its sources (the lab's AEP1 sender at
+    pcm_epoch_samples, the DAW source's lossless epoch, an Opus frame),
+    else the part that audio_part names."""
+    if audio_part == "epoch":
+        samples = min(pcm_samples, DAW_LOSSLESS_EPOCH_SAMPLES, opus_samples)
+        return samples * 1_000_000 / SAMPLE_RATE
+    if audio_part.endswith("samples"):
+        return int(audio_part[:-len("samples")]) * 1_000_000 / SAMPLE_RATE
+    return float(int(audio_part[:-len("us")]))
+
+
+def window_parts_for(window_ms: int, part_us: int, smallest_us: float) -> int | None:
+    """--window-parts that keep `window_ms` of the shortest part, or None
+    when --window-ms does (no part is shorter than the nominal one).
+
+    av-mesh turns --window-ms into a count of nominal parts
+    (window_ms / part_us: 4800 at 2.5 ms), and then holds no stream to more
+    parts than that count (stream_window_parts clamps to it). A stream of
+    1 ms parts would keep 4.8 s, of 0.25 ms parts 1.2 s: shorter than three
+    target durations (RFC 8216bis 6.2.2) and than HOLD-BACK. A count of
+    shortest parts keeps window_ms of them. A stream of longer parts keeps
+    up to count x part_us x 4/3 (av-mesh's margin), more than window_ms:
+    40 s of video at the defaults, 160 s with 0.25 ms parts."""
+    if smallest_us >= part_us:
+        return None
+    return -(-window_ms * 1000 * 1_000_000 // round(smallest_us * 1_000_000))
 
 
 def whole(value, name: str, scale: int = 1) -> int:
@@ -315,12 +350,10 @@ def part_plan(settings: dict) -> dict:
         mesh += ["--parts-per-segment", str(whole(settings["parts_per_segment"], "parts_per_segment"))]
     else:
         mesh += ["--segment-ms", str(whole(settings["segment_ms"], "segment_ms"))]
-    if settings.get("window_parts") is not None:
-        mesh += ["--window-parts", str(whole(settings["window_parts"], "window_parts"))]
-    else:
-        mesh += ["--window-ms", str(whole(settings["window_ms"], "window_ms"))]
     if settings.get("part_hold_back_ms"):
-        mesh += ["--part-hold-back-ms", str(whole(settings["part_hold_back_ms"], "part_hold_back_ms"))]
+        hold_back = ["--part-hold-back-ms", str(whole(settings["part_hold_back_ms"], "part_hold_back_ms"))]
+    else:
+        hold_back = []
 
     audio = str(settings["audio_part"])
     video = str(settings["video_part"])
@@ -343,8 +376,20 @@ def part_plan(settings: dict) -> dict:
     opus = whole(settings["opus_epoch_samples"], "opus_epoch_samples")
     if opus not in OPUS_EPOCH_SAMPLES:
         raise ValueError(f"opus_epoch_samples={opus}: Opus frames are {OPUS_EPOCH_SAMPLES} samples")
-    return {"part_us": part_us, "mesh_args": mesh, "audio_part": audio, "video_part": video,
-            "pcm_epoch_samples": pcm, "opus_epoch_samples": opus}
+
+    smallest_us = smallest_audio_part_us(audio, pcm, opus)
+    window_ms = whole(settings["window_ms"], "window_ms")
+    if settings.get("window_parts") is not None:
+        window_parts = whole(settings["window_parts"], "window_parts")
+        mesh += ["--window-parts", str(window_parts)]
+    else:
+        window_parts = window_parts_for(window_ms, part_us, smallest_us)
+        mesh += (["--window-ms", str(window_ms)] if window_parts is None
+                 else ["--window-parts", str(window_parts)])
+    return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
+            "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
+            "smallest_part_us": smallest_us,
+            "window_parts": window_parts if window_parts is not None else -(-window_ms * 1000 // part_us)}
 
 
 def epoch_samples(settings: dict, payload: str) -> int:

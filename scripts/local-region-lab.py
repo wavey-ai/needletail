@@ -103,7 +103,8 @@ HQ_STREAM = 3001
 
 # One node configuration carries the smallest parts: one AEP1 epoch per audio
 # part and one frame per video part, on caches with a 2.5 ms nominal part, a
-# 1 s segment and a 12 s window (linode-small-mesh-deploy.py's defaults).
+# 1 s segment and a window of 12 s of the shortest part
+# (linode-small-mesh-deploy.py's defaults; see its window_parts_for).
 DEFAULT_OVERRIDES = {
     "part_us": 2500,
     "segment_ms": 1000,

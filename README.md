@@ -29,7 +29,8 @@ An Opus part is one 2.5 ms frame of 120 samples.
 A lossless PCM part is one 1 ms epoch of 48 samples, and 0.5 ms and 0.25 ms parts also work.
 A FLAC part is at least 32 samples.
 A video part is one frame.
-Segments last 1 s and the playlist window 12 s, whatever the part size.
+Segments last 1 s whatever the part size.
+The playlist window holds at least 12 s of the smallest part; a stream of larger parts keeps more, up to 40 s.
 Larger parts are a setting, never the default.
 
 When an edge reaches capacity, active sessions remain stable.

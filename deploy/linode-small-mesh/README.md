@@ -105,7 +105,7 @@ Parts are the smallest frame by default. The settings file has
 | --- | --- | --- |
 | `part_us` | 2500 | Nominal part of the caches (`av-mesh --part-us`): one 120-sample Opus frame. |
 | `segment_ms` | 1000 | Segment length (`--segment-ms`), whatever the part. |
-| `window_ms` | 12000 | Playlist window (`--window-ms`), whatever the part. |
+| `window_ms` | 12000 | Playlist window of the shortest audio part. av-mesh counts `--window-ms` in parts of `part_us` and holds no stream to more parts than that, so when an audio part is shorter than `part_us` the tool renders `--window-parts` = window / shortest part instead (12,000 at 1 ms, 48,000 at 0.25 ms). A stream of longer parts then keeps more than the window: up to `window-parts x part_us x 4/3`, 40 s of Opus or video at the defaults. |
 | `part_hold_back_ms` | 0 | PART-HOLD-BACK floor; 0 is three part targets. |
 | `audio_part` | `epoch` | Contributor audio part (`--audio-part`): one AEP1 epoch per part, or `<N>samples`, `<N>us`. |
 | `video_part` | `frame` | Contributor video part (`--video-part`): one access unit per part, or `<N>ms`. |

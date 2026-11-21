@@ -62,8 +62,11 @@ class Settings(unittest.TestCase):
                            ("settings_version", 2)):
             self.assertEqual(settings[key], value, key)
         plan = deploy.part_plan(settings)
+        # 12 s of the 1 ms lossless epoch: av-mesh's --window-ms would count
+        # 4,800 parts of 2.5 ms.
         self.assertEqual(plan["mesh_args"], ["--part-us", "2500", "--segment-ms", "1000",
-                                             "--window-ms", "12000"])
+                                             "--window-parts", "12000"])
+        self.assertEqual(plan["smallest_part_us"], 1000)
 
     def test_mesh_and_contributor_arguments(self):
         settings, _ = self.load()
@@ -72,8 +75,8 @@ class Settings(unittest.TestCase):
         args = deploy.common_mesh_args(node, settings, {"nodes": {node["name"]: node}})
         self.assertEqual(value_of(args, "--part-us"), "2500")
         self.assertEqual(value_of(args, "--segment-ms"), "1000")
-        self.assertEqual(value_of(args, "--window-ms"), "12000")
-        for old in ("--part-ms", "--parts-per-segment", "--window-parts", "--part-hold-back-ms"):
+        self.assertEqual(value_of(args, "--window-parts"), "12000")
+        for old in ("--part-ms", "--parts-per-segment", "--window-ms", "--part-hold-back-ms"):
             self.assertNotIn(old, args)
         contrib = deploy.contributor_args(contributor_service(), settings)
         self.assertEqual(value_of(contrib, "--audio-part"), "epoch")
@@ -181,6 +184,95 @@ class Settings(unittest.TestCase):
         self.assertEqual(deploy.epoch_samples(settings, "flac"), 32)
 
 
+# av-mesh (av-mesh-features src/main.rs, LiveState::stream_window_parts and
+# Args::normalized), restated: the parts of one stream that its playlist and
+# ring hold, for a node started with `mesh_args`.
+MIN_STREAM_WINDOW_PARTS = 32
+PLAYLIST_WINDOW_SEGMENTS = 7
+
+
+def av_mesh_window(mesh_args: list[str]) -> tuple[int, int, int]:
+    """(nominal part µs, parts per segment, window parts) of a node."""
+    part_us = int(value_of(mesh_args, "--part-us"))
+    per_segment = int(value_of(mesh_args, "--parts-per-segment")
+                      or -(-int(value_of(mesh_args, "--segment-ms")) * 1000 // part_us))
+    window = (int(value_of(mesh_args, "--window-parts"))
+              if "--window-parts" in mesh_args
+              else -(-int(value_of(mesh_args, "--window-ms")) * 1000 // part_us))
+    return part_us, per_segment, max(window, per_segment * 3, 6)
+
+
+def stream_window_us(mesh_args: list[str], part_us: float, target_us: int) -> float:
+    """Time that a stream of `part_us` parts, declaring them and a segment of
+    `target_us`, keeps in its playlist."""
+    nominal, _, configured = av_mesh_window(mesh_args)
+    window_us = max(configured * nominal, target_us * PLAYLIST_WINDOW_SEGMENTS)
+    parts = -(-window_us * 4 // round(part_us * 3))
+    parts = min(max(parts, min(MIN_STREAM_WINDOW_PARTS, configured)), configured)
+    return parts * part_us
+
+
+class Window(unittest.TestCase):
+    """Every playlist keeps 12 s of its parts at every size of the sweep: at
+    least three target durations (RFC 8216bis 6.2.2) and more than HOLD-BACK
+    (3 s), which a window counted in 2.5 ms parts did not give 1 ms, 0.5 ms
+    and 0.25 ms parts (4.8, 2.4 and 1.2 s)."""
+
+    TARGET_US = 1_000_000
+    HOLD_BACK_US = 3_000_000
+
+    def sizes(self):
+        # (pcm_epoch_samples of the lab, payload, epoch samples of the stream)
+        for pcm in (48, 24, 12):
+            yield pcm, "pcm", pcm
+        yield 48, "flac", 48
+        yield 32, "flac", 32
+        yield 48, "opus", 120
+
+    def test_the_sweep_sizes_keep_the_window(self):
+        for pcm, payload, samples in self.sizes():
+            settings, _ = deploy.merge_settings({}, {**lab.DEFAULT_OVERRIDES,
+                                                     "pcm_epoch_samples": pcm})
+            args = deploy.part_plan(settings)["mesh_args"]
+            kept = stream_window_us(args, samples * 1e6 / 48000, self.TARGET_US)
+            self.assertGreaterEqual(kept, 12_000_000 - 1, (payload, samples, args))
+            self.assertGreaterEqual(kept, 3 * self.TARGET_US + self.HOLD_BACK_US)
+
+    def test_the_old_rendering_was_short(self):
+        # What --window-ms 12000 at --part-us 2500 gave the 0.25 ms stream.
+        old = ["--part-us", "2500", "--segment-ms", "1000", "--window-ms", "12000"]
+        self.assertAlmostEqual(stream_window_us(old, 250, self.TARGET_US), 1_200_000)
+        self.assertLess(stream_window_us(old, 250, self.TARGET_US), 3 * self.TARGET_US)
+
+    def test_window_parts_follow_the_shortest_part(self):
+        for overrides, parts in (({}, 12000), ({"pcm_epoch_samples": 24}, 24000),
+                                 ({"pcm_epoch_samples": 12}, 48000),
+                                 ({"pcm_epoch_samples": 32}, 18000),
+                                 # The DAW source's 1 ms lossless epoch is the shortest.
+                                 ({"pcm_epoch_samples": 96}, 12000),
+                                 ({"audio_part": "24samples"}, 24000),
+                                 ({"audio_part": "500us"}, 24000),
+                                 ({"window_ms": 6000}, 6000)):
+            settings, _ = deploy.merge_settings({}, overrides)
+            plan = deploy.part_plan(settings)
+            self.assertEqual(value_of(plan["mesh_args"], "--window-parts"), str(parts), overrides)
+            self.assertEqual(plan["window_parts"], parts)
+
+    def test_no_part_shorter_than_the_nominal_one_keeps_window_ms(self):
+        for overrides in ({"audio_part": "2500us"}, {"part_ms": 5, "fmp4_part_ms": 5},
+                          {"part_us": 1000}):
+            settings, _ = deploy.merge_settings({}, overrides)
+            args = deploy.part_plan(settings)["mesh_args"]
+            self.assertEqual(value_of(args, "--window-ms"), "12000", overrides)
+            self.assertNotIn("--window-parts", args)
+
+    def test_an_explicit_window_parts_wins(self):
+        settings, _ = deploy.merge_settings({}, {"window_parts": 2400})
+        args = deploy.part_plan(settings)["mesh_args"]
+        self.assertEqual(value_of(args, "--window-parts"), "2400")
+        self.assertNotIn("--window-ms", args)
+
+
 class Lab(unittest.TestCase):
     def test_the_lab_defaults_are_the_smallest_parts(self):
         for key in deploy.LEGACY_PART_KEYS:
@@ -189,7 +281,7 @@ class Lab(unittest.TestCase):
         self.assertFalse(dropped)
         plan = deploy.part_plan(settings)
         self.assertEqual(plan["mesh_args"], ["--part-us", "2500", "--segment-ms", "1000",
-                                             "--window-ms", "12000"])
+                                             "--window-parts", "12000"])
         self.assertEqual((plan["audio_part"], plan["video_part"]), ("epoch", "frame"))
 
     def test_the_probe_sender_follows_the_lab_settings(self):
