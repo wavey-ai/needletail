@@ -105,16 +105,17 @@ def start_sources(seconds: int) -> None:
     video = (f"ffmpeg -hide_banner -loglevel error -nostdin -re -stream_loop -1 "
              f"-i {REMOTE_MEDIA}/video/{lab.VIDEO_CLIP.name} -t {seconds} "
              f"-map 0:v:0 -map 0:a:0 -c copy -f flv rtmp://{target}:{RTMP_PORT}/live/1")
-    daw = (f"env RUST_LOG=info DAW_TEST_SOURCE_START_UNIX_NS=$(( $(date +%s%N) + 3000000000 )) "
-           f"daw-test-source --direct-contributor --loop-prepared-pcm {target}:27100 "
-           f"{seconds} {REMOTE_MEDIA}/daw-tracks")
-    pcm = (f"aep1-48k-probe send --target {target}:27100 "
-           f"--session-id $(( $(date +%s%N) + 2000000000 )) --group-id 0 "
-           f"--duration-seconds {seconds} --payload pcm --channels 2 --group-channels 8 "
-           f"--pcm-s24le-file {REMOTE_MEDIA}/{lab.AUDIO_PCM.name} "
-           f"--repair-percent 12 --min-repair-symbols 1")
+    # The smallest frames by default: 2.5 ms Opus, 5 ms lossless (each epoch
+    # is one part at the contributor's default).
+    def probe(payload: str) -> str:
+        return (f"aep1-48k-probe send --target {target}:27100 "
+                f"--session-id $(( $(date +%s%N) + 2000000000 )) --group-id 0 "
+                f"--duration-seconds {seconds} --payload {payload} --channels 2 "
+                f"--group-channels 2 --pcm-s24le-file {REMOTE_MEDIA}/{lab.AUDIO_PCM.name} "
+                f"--repair-percent 12 --min-repair-symbols 1")
     script = f"mkdir -p {REMOTE_RUNS}; "
-    for name, command in (("video", video), ("daw", daw), ("pcm", pcm)):
+    for name, command in (("video", video), ("opus", probe("opus")), ("flac", probe("flac")),
+                          ("pcm", probe("pcm"))):
         script += f"(nohup {command} >{REMOTE_RUNS}/source-{name}.log 2>&1 </dev/null &); "
     ssh(host, script, check=True)
 

@@ -410,13 +410,39 @@ already carries 1 ms and 0.25 ms parts through the edge to a client. So:
 the edge to the client and waits for the distribution tier. No further
 Linode run was made for this round.
 
+## Smallest frames are the default
+
+On `client-udp` the defaults are now the smallest frames, so a stream set up
+with no options gets them:
+
+| Where | Default |
+| --- | --- |
+| `av-contrib` `--fmp4-part-ms` (was 50) | 1: every audio epoch is one part, and every video frame is one part (`--fmp4-video-part-ms` follows it) |
+| `aep1-48k-probe send --epoch-samples` | 120 (2.5 ms) for `--payload opus`; 240 (5 ms) for lossless, the measured winner of the curve above |
+| deploy `fmp4_part_ms` (was 200), lab `fmp4_part_ms` (was 5) and `fmp4_video_part_ms` (was 200) | 1 and unset: one part per epoch and per frame |
+| `client-udp-lab.py`, `linode-client-udp.py` sources | 2.5 ms Opus, 5 ms PCM and FLAC, 4K one frame per part (`--daw` for the DAW source) |
+
+Larger parts stay a setting for HTTP readers that need them. The local
+end-to-end test with no options passed every step: Opus 2.5 ms (about 8,000
+parts a step), PCM and FLAC 5 ms, 4K one frame per part (24 a second); 0 %,
+1 %, 5 % loss and a drain; no part missing on the UDP lane or on LL-HLS, every
+UDP part identical to LL-HLS (`evidence/local-20261121-client-udp-defaults.json`).
+
+Open with these defaults, for the latency round's microsecond timeline: the
+DAW test source still makes 5 ms Opus; the playlists declare
+`PART-TARGET=0.002` while video parts are 0.042 s and 2.5 ms parts are rounded
+to 0.003, which the LL-HLS rule (no part longer than the part target) does
+not allow. The UDP lane names parts by number and is not affected; an LL-HLS
+player that checks the rule needs the microsecond part targets, or larger
+parts as a setting.
+
 ## Revisions
 
 | Repository | Branch | Commit | On |
 | --- | --- | --- | --- |
 | `av-mesh` | `client-udp` | `7497fc2` | `regional-llhls-cache` `07e7d4a`, with `low-latency` `113386f` merged |
 | `playlists` | `client-udp` | `a225609` | `low-latency` `3317b29` |
-| `av-contrib` | `client-udp` | `4b8a12d` | `edge-hardening` `12abbef`, with `low-latency` merged |
+| `av-contrib` | `client-udp` | head | `edge-hardening` `12abbef`, with `low-latency` merged |
 | `needletail` | `client-udp` | this commit | `regional-llhls-cache` `9a633d1` |
 
 Built as in the edge hardening record (local `playlists`, `raptor-fec` and

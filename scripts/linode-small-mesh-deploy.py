@@ -119,11 +119,14 @@ DEFAULT_SETTINGS = {
     "failover_heartbeat_ms": 25,
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
-    "fmp4_part_ms": 200,
+    # The smallest frames are the default (owner, 21 November 2026): each
+    # audio epoch is one part (2.5 ms Opus, the source's lossless block) and
+    # each video frame is one part. Larger parts are a setting for HTTP
+    # readers that need them.
+    "fmp4_part_ms": 1,
     # Part and segment duration of a stream with video. None uses
-    # `fmp4_part_ms` and the default segment of the contributor. With them one
-    # contributor carries 5 ms audio parts beside video parts of several
-    # frames. Set the segment to the key-frame interval of the encoder.
+    # `fmp4_part_ms` (one frame per part) and the default segment of the
+    # contributor. Set the segment to the key-frame interval of the encoder.
     "fmp4_video_part_ms": None,
     "fmp4_video_segment_ms": None,
     "daw_hls_packaging": "opaque",

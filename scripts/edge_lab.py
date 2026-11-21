@@ -151,10 +151,10 @@ DEFAULT_OVERRIDES = {
     "part_ms": 5,
     "parts_per_segment": 200,
     "window_parts": 2400,
-    "fmp4_part_ms": 5,
-    # Video parts of five frames at 24 frames a second, and segments of one
-    # group of pictures. The audio streams keep 5 ms parts.
-    "fmp4_video_part_ms": 200,
+    # The smallest frames by default: each audio epoch and each video frame
+    # is one part. Segments of one group of pictures.
+    "fmp4_part_ms": 1,
+    "fmp4_video_part_ms": None,
     "fmp4_video_segment_ms": 2000,
     "mesh_sync_interval_ms": 2,
     "mesh_symbol_size": 900,

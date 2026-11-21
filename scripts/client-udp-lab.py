@@ -186,8 +186,12 @@ def step_run(step: str, seconds: int, out: pathlib.Path, udp_port: int | None) -
 # The smallest frames: 2.5 ms Opus (120 samples, Opus's shortest frame),
 # 1 ms PCM and FLAC (48 samples), one video frame per part. Each AEP1 epoch
 # becomes one part (the contributor cuts a part at 1 ms or more).
-SMALLEST = {"opus": ("opus", 120), "pcm": ("pcm", 48), "flac": ("flac", 48)}
-SMALLEST_OVERRIDES = ["fmp4_part_ms=1", "fmp4_video_part_ms=42"]
+# The defaults: Opus at its shortest frame (2.5 ms) and lossless at the
+# smallest block that the distribution tier carried without loss on 21
+# November 2026 (5 ms; see the lossless curve in the record). `--epoch-samples`
+# tries others.
+SMALLEST = {"opus": ("opus", 120), "pcm": ("pcm", 240), "flac": ("flac", 240)}
+SMALLEST_OVERRIDES = ["fmp4_part_ms=1", "fmp4_video_part_ms=null"]
 
 
 def start_probe_sender(name: str, payload: str, epoch_samples: int, seconds: int,
@@ -241,8 +245,11 @@ def main() -> None:
     parser.add_argument("--udp-port", type=int, default=None,
                         help="client UDP port, when the entry point does not name one")
     parser.add_argument("--no-up", action="store_true")
-    parser.add_argument("--smallest", action="store_true",
-                        help="2.5 ms Opus, 1 ms PCM and FLAC, one video frame per part")
+    parser.add_argument("--smallest", action="store_true", default=True,
+                        help="(default) probe sources at the smallest frames: 2.5 ms Opus, "
+                             "5 ms PCM and FLAC, one video frame per part")
+    parser.add_argument("--daw", dest="smallest", action="store_false",
+                        help="the DAW test source for Opus and FLAC (5 ms) instead")
     parser.add_argument("--epoch-samples", default="",
                         help="with --smallest: e.g. opus=120,pcm=240,flac=240")
     parser.add_argument("overrides", nargs="*")
