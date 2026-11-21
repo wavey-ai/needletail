@@ -3,7 +3,7 @@
 file of compare-audio-analyse.py.
 
 A cell holds the median of the sessions and, in brackets, the lowest and the
-highest session. Probe figures are from the Nanode listener of each region,
+highest session. Probe figures are from the smaller listener host of each region,
 Chrome figures from the viewer host of the region.
 """
 
@@ -16,7 +16,6 @@ import statistics
 SITES = [("lon", "London"), ("new", "New York"), ("tok", "Tokyo"), ("syd", "Sydney")]
 SYSTEMS = [
     ("nt-uc", "Needletail, RaptorQ FEC over UDP from the edge"),
-    ("nt-udp", "Needletail, UDP at the distributor (interim, before client-udp)"),
     ("nt", "Needletail, LL-HLS, reader as shipped"),
     ("nt-w", "Needletail, LL-HLS, pipelined reader, HTTP/2"),
     ("nt-h3", "Needletail, LL-HLS, pipelined reader, HTTP/3"),
@@ -120,7 +119,7 @@ def chrome(e: Evidence, config: str) -> None:
                         ("Chrome concealed samples (%)", ["concealed_percent"])):
         print(f"{label}:\n")
         rows = []
-        for system, name in SYSTEMS[5:]:
+        for system, name in SYSTEMS[4:]:
             rows.append([name] + [e.cell(step, f"{site}-view", system, "chrome", path,
                                          3 if "percent" in path[0] else 1) for site, _ in SITES])
         table(header, rows)
@@ -247,7 +246,7 @@ def fanout(e: Evidence, config: str) -> None:
 
 
 def nodes(e: Evidence, config: str) -> None:
-    print(f"### Processor of the Nanodes, {config}\n")
+    print(f"### Processor of the nodes, {config}\n")
     print("Percent of one vCPU used by the service, during the step:\n")
     wanted = [("contrib-lon", "av-contrib", "Needletail contributor"),
               ("relay-primary", "av-mesh", "Needletail backbone relay"),
@@ -255,8 +254,8 @@ def nodes(e: Evidence, config: str) -> None:
               ("lon-edge-1", "av-mesh", "Needletail edge 1, London"),
               ("lon-edge-2", "av-mesh", "Needletail edge 2, London"),
               ("syd-edge-1", "av-mesh", "Needletail edge 1, Sydney"),
-              ("lon-lk", "livekit-server", "LiveKit, London Nanode (both servers)"),
-              ("syd-lk", "livekit-server", "LiveKit, Sydney Nanode (both servers)")]
+              ("lon-lk", "livekit-server", "LiveKit, London node (both servers)"),
+              ("syd-lk", "livekit-server", "LiveKit, Sydney node (both servers)")]
     steps = [("baseline.clean", "1 per host"), ("fanout.10", "10"), ("fanout.100", "100, first pass"),
              ("fanoutb.100", "100, second pass")]
     rows = []

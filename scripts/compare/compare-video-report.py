@@ -237,7 +237,7 @@ def first_frame(e: Evidence, rung: str) -> None:
 
 
 def nodes(e: Evidence) -> None:
-    print("### Processor of the Nanodes\n")
+    print("### Processor of the nodes\n")
     print("Percent of one vCPU used by the service at each bit rate (the highest session).\n")
     wanted = [("contrib-lon", "av-contrib", "Needletail contributor"),
               ("relay-primary", "av-mesh", "Needletail primary relay"),
@@ -246,9 +246,9 @@ def nodes(e: Evidence) -> None:
               ("lon-edge-1", "av-mesh", "Needletail edge 1, London"),
               ("syd-dist-a", "av-mesh", "Needletail distributor, Sydney")]
     for lane, items in (("nt", wanted),
-                        ("lkregion", [("lon-lk", "livekit-server", "LiveKit Nanode, London"),
-                                      ("syd-lk", "livekit-server", "LiveKit Nanode, Sydney")]),
-                        ("lkmulti", [("lon-lk", "livekit-server", "LiveKit Nanode, London (serves every region)")])):
+                        ("lkregion", [("lon-lk", "livekit-server", "LiveKit node, London"),
+                                      ("syd-lk", "livekit-server", "LiveKit node, Sydney")]),
+                        ("lkmulti", [("lon-lk", "livekit-server", "LiveKit node, London (serves every region)")])):
         rungs = [rung for rung in RUNGS if any(e.step(s, lane, "throughput", rung) for s in e.sessions)]
         rows = []
         for node, process, name in items:

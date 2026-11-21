@@ -212,8 +212,10 @@ def pdt_line(stream: dict) -> tuple[float, float] | None:
         # less that part's duration (av-mesh main.rs).
         when = calendar.timegm(time.strptime(sample["pdt"][:19], "%Y-%m-%dT%H:%M:%S"))
         when += float("0." + sample["pdt"][20:23]) if len(sample["pdt"]) > 20 else 0.0
-        if stream["part_ms"] < 10:            # audio: 200 parts in a segment
-            first = sample["media_sequence"] * 200
+        if stream["part_ms"] < 10 and sample.get("first_segment_duration") and stream["part_ms"]:
+            # audio: a fixed number of parts in a segment, from the playlist
+            per_segment = round(sample["first_segment_duration"] * 1000 / stream["part_ms"])
+            first = sample["media_sequence"] * per_segment
         elif sample.get("first_part") is not None:
             continue                            # video: segments are not a fixed number of parts
         else:
@@ -292,8 +294,13 @@ def summary(result: dict) -> dict:
         before, after = stream.get("metrics_before") or {}, stream.get("metrics_after") or {}
         deltas = {}
         for name in after:
+            if name not in before or not before[name]:
+                deltas.setdefault("_scrape_failed", []).append(name)
+                continue
             for key, value in after[name].items():
-                delta = value - before.get(name, {}).get(key, 0.0)
+                if key not in before[name]:
+                    continue
+                delta = value - before[name][key]
                 if delta:
                     deltas.setdefault(name, {})[key] = round(delta)
         if stream_id in out["streams"] and isinstance(out["streams"][stream_id], dict):

@@ -393,14 +393,23 @@ def run_hosts(session: Session, step: str, scripts: dict[str, str], seconds: int
         item = session.node(name)
         script = (f"set +e\n. {REMOTE}/env\nrm -rf {remote}; mkdir -p {remote}; cd {remote}\n"
                   + scripts[name] + "\ntrue\n")
-        result = common.ssh(item, "bash -s", check=False, timeout=seconds + 150,
-                            stdin=script.encode())
         (local / name).mkdir(exist_ok=True)
+        note = ""
+        try:
+            result = common.ssh(item, "bash -s", check=False, timeout=seconds + 150,
+                                stdin=script.encode())
+            note = result.stderr.decode(errors="replace")[-400:]
+        except subprocess.TimeoutExpired:
+            # Keep what the host has: stop its probes, then copy the results.
+            common.ssh(item, "for p in ntcmp ntcmp-lk node chrome needletail-udp-client aep1-48k-probe "
+                             "needletail-reader; do pkill -x $p; done; compare-netem clear >/dev/null 2>&1; true",
+                       check=False, timeout=60)
+            note = f"timed out after {seconds + 150} s; its probes were stopped and the results copied"
         try:
             common.rsync_from(item, remote + "/", str(local / name) + "/", timeout=600)
         except RuntimeError as error:
-            return f"rsync failed: {error}"
-        return result.stderr.decode(errors="replace")[-400:]
+            return f"{note}; rsync failed: {error}"
+        return note
 
     started = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(scripts)) as pool:

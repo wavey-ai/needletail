@@ -1,120 +1,151 @@
 # 21 November 2026: audio against Cloudflare and LiveKit
 
-The owner asked whether Needletail is the fastest network yet, and then put
-audio first: Opus for the lowest latency, PCM for lossless latency. This
-record compares Needletail's regional LL-HLS cache mesh with Cloudflare
-Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud.
-Every system carried the same audio from the same host in London to the same
-listeners in London, New York, Tokyo and Sydney, at the same time.
+The owner put audio first: Opus for the lowest latency, PCM for lossless
+latency. This record compares Needletail with Cloudflare Realtime, Cloudflare
+Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud. Every system carried
+the same audio from the same host in London to the same listeners in London,
+New York, Tokyo and Sydney, at the same time.
+
+The headline results are from a lab of dedicated-CPU instances only (no
+shared instance anywhere), on the Needletail build that has both of its
+client modes: RaptorQ FEC over UDP from the edge, and LL-HLS over HTTP. A
+first pass on shared Nanodes, with LL-HLS only, is superseded; it is
+summarised at the end as a side note.
 
 The 4K video comparison is a separate record.
 
 ## Answer
 
-**Needletail is not the fastest for Opus, and it is not the fastest at the
-median for lossless PCM. It is the only one that carries lossless audio as
-audio, and the only one that loses nothing when the listener's network loses
-packets.**
+**Self-hosted LiveKit is still the fastest, by 2.4 to 2.8 ms for lossless
+PCM and by 1.2 to 6.4 ms for Opus at the median. Needletail's UDP client mode
+is next: it beats Cloudflare for PCM in every region and LiveKit Cloud
+everywhere. It is the only system that carries lossless audio as audio, and
+the only one that loses nothing to random loss of 1% or 5%, at no cost in
+latency.**
 
 Mouth to ear is the age of a sample when a listener that plays audio on
 arrival would play it. Median of three sessions, in milliseconds:
 
 | Lane | System | Frame | London | New York | Tokyo | Sydney |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Opus | LiveKit, self-hosted, SFU in each region | 2.5 ms | 1.9 | 32.6 | 109.1 | 127.8 |
-| Opus | Cloudflare Realtime | 2.5 ms | 6.3 | 40.4 | 115.5 | 129.4 |
-| Opus | **Needletail** | 5 ms | 12.0 | 47.1 | 118.6 | 138.5 |
-| Opus | LiveKit Cloud | 2.5 ms | 15.9 | 58.2 | 131.3 | 140.8 |
-| PCM | LiveKit, self-hosted, data channel | 2.5 ms | 2.5 | 38.0 | 111.1 | 128.1 |
-| PCM | Cloudflare Realtime, data channel | 2.5 ms | 6.6 | 40.9 | 116.2 | 128.3 |
-| PCM | **Needletail** | 5 ms | 10.5 | 45.7 | 116.7 | 136.5 |
-| PCM | LiveKit Cloud, data channel | 2.5 ms | 16.1 | 57.7 | 133.0 | 140.7 |
+| Opus | LiveKit, self-hosted, SFU in each region | 2.5 ms | **2.3** | 38.4 | **110.0** | **128.3** |
+| Opus | LiveKit, self-hosted, multi-region set | 2.5 ms | 2.4 | **33.3** | 111.6 | 128.4 |
+| Opus | Cloudflare Realtime | 2.5 ms | 5.6 | 40.7 | 116.8 | 131.0 |
+| Opus | Cloudflare Stream WHIP/WHEP | 2.5 ms | 6.5 | 40.8 | 115.6 | 129.4 |
+| Opus | **Needletail, RaptorQ FEC over UDP** | 5 ms | 8.6 | 39.6 | 116.4 | 134.7 |
+| Opus | Needletail, LL-HLS over HTTP | 5 ms | 9.2 | 40.1 | 117.1 | 135.5 |
+| Opus | LiveKit Cloud | 2.5 ms | 15.7 | 57.6 | 133.2 | 141.1 |
+| PCM | LiveKit, self-hosted, data channel | 2.5 ms | **2.8** | **33.4** | 110.4 | **128.5** |
+| PCM | LiveKit, multi-region set, data channel | 2.5 ms | 2.9 | 33.4 | **107.7** | 128.7 |
+| PCM | **Needletail, RaptorQ FEC over UDP** | 5 ms | 5.4 | 36.1 | 112.8 | 131.3 |
+| PCM | Needletail, LL-HLS over HTTP | 5 ms | 6.1 | 36.8 | 113.5 | 132.0 |
+| PCM | Cloudflare Realtime, data channel | 2.5 ms | 6.6 | 40.5 | 115.4 | 148.1 |
+| PCM | LiveKit Cloud, data channel | 2.5 ms | 16.0 | 58.1 | 131.6 | 141.7 |
+
+At the 99th percentile the gap to self-hosted LiveKit is wider: Needletail
+UDP was 13.2, 44.1, 122.6 and 139.3 ms for Opus against LiveKit's 4.2, 40.3,
+111.8 and 130.1; and 8.7, 39.6, 116.4 and 135.6 ms for PCM against 5.0, 35.5,
+112.5 and 131.1.
 
 Where Needletail loses:
 
-- **Opus latency.** Needletail is about 10 to 15 ms behind self-hosted LiveKit
-  in every region and 3 to 9 ms behind Cloudflare. It is 2 to 13 ms ahead of
-  LiveKit Cloud. Its frame is 5 ms where the others forward 2.5 ms, which is
-  1.25 ms of the gap. The rest is the path: contributor, relay, distributor
-  and edge, against one SFU.
-- **Jitter.** On quiet hosts, outside London, the 99th percentile of
-  Needletail is 7 to 10 ms above its median. The SFUs are 1.4 to 3 ms above
-  theirs.
-- **The reader as shipped.** `needletail-reader` asks for one 5 ms part at a
-  time. With 5% loss at the listener it fell 22 seconds behind in 35 seconds.
-  With 100 ms of delay each way it fell 30 seconds behind. With 25 listeners
-  on one host it fell 3 to 9 seconds behind. A reader that keeps requests in
-  flight over HTTP/3 has none of these faults. That reader is in the harness,
-  not in the product.
-- **One contributor Nanode carries one audio rendition.** One rendition takes
-  30% to 42% of its vCPU. Opus, FLAC and PCM together take 71% to 78%, and a
-  standing backlog formed.
-- **Noisy hosts.** Needletail puts four 1 vCPU nodes in the path. With the
-  nodes as Linode placed them, the contributor and the primary relay were on
-  hosts with bursts of steal time, and every lane in every region had a spike
-  of about one second about once a minute.
-- **A browser.** Chrome plays every WebRTC lane (66 to 89 ms mouth to ear in
-  London, 202 to 273 ms in Sydney). No browser plays Needletail's Opus or PCM
+- **Latency, against self-hosted LiveKit.** Needletail's UDP mode is 2.4 to
+  2.8 ms behind for PCM in every region, and 6.3 to 6.4 ms behind for Opus
+  (1.2 ms in New York, where LiveKit's own route is slower). Its frame is
+  5 ms where the others forward 2.5 ms, which is 1.25 ms of the gap at the
+  median and 2.5 ms at the top. The rest is the path: contributor, relay,
+  distributor and edge, against one SFU. Needletail's Opus is about 3 ms
+  later than its PCM over the same path; the cause is in the producer's
+  path and was not isolated.
+- **Jitter.** The 99th percentile of Needletail's unit latency is 3.5 to
+  3.8 ms above its median for Opus, 2.5 to 3.6 ms for PCM. Self-hosted
+  LiveKit's (an SFU in each region) is 1.2 to 2.0 ms.
+- **Time to first audio, at a cold edge.** A Needletail edge holds a stream
+  only while someone reads it. The first listener at an edge that does not
+  hold the stream waited 1.0 to 1.9 seconds; at an edge that holds it, 30 to
+  100 ms. Self-hosted LiveKit with an SFU in the region: 30 to 160 ms.
+- **Lossless crowds at one edge pair.** With 25 UDP listeners and 25 HTTP/3
+  listeners of PCM in each region at once, London's two edges reached 100% to
+  171% of a vCPU (of two), and the UDP listeners there were about a second
+  late in two sessions of three, losing up to 5.3% of the parts; in Sydney
+  one session lost 12.6%. The same crowd of Opus was served with nothing
+  lost (unit latency 12, 43, 119 and 138 ms). Self-hosted LiveKit served 100
+  PCM listeners at about the latency of one.
+- **Burst loss on the UDP mode.** With Gilbert-Elliott bursts (4.8% lost,
+  five packets at a time), the UDP mode lost 0.17% to 0.24% of the PCM parts
+  and 0.4% to 0.7% of the Opus parts, in gaps of 5 to 10 ms. The SFUs lost
+  about 5%. LL-HLS lost nothing, late.
+- **A browser.** Chrome plays every WebRTC lane (72 to 91 ms mouth to ear in
+  London, 188 to 229 ms in Sydney). No browser plays Needletail's Opus or PCM
   parts without a player written for them.
-- **The datagram lanes.** The native UDP and WebTransport taps, Needletail's
-  own low-latency lanes, returned no datagram in this deployment.
 
 Where Needletail wins:
 
 - **Lossless audio.** Needletail delivered 24-bit PCM and FLAC bit for bit,
-  as audio renditions. Cloudflare Realtime, Cloudflare Stream and LiveKit all
-  refused an uncompressed track (`L16` and `L24`). Cloudflare Realtime and
-  LiveKit can carry PCM bit for bit on a data channel, to a client written
-  for it. Cloudflare Stream has no such route.
-- **Loss.** With 1% loss, 5% loss and burst loss at the listener, Needletail
-  delivered every unit. Every SFU lost what the network lost: about 1%, 5%
-  and 5% of the Opus packets, and the same of the PCM blocks. With the
-  pipelined HTTP/3 reader the 99th percentile of Needletail under 5% loss
-  was 26 ms in London and 175 ms in Sydney.
-- **Time to first audio.** A Needletail listener had lossless audio 35 to
-  70 ms after it started. LiveKit with an SFU in the region took 50 to
-  190 ms, LiveKit Cloud 0.4 to 1.5 seconds, Cloudflare Realtime 0.9 to 3.5
-  seconds.
-- **A crowd, with the pipelined reader.** 100 listeners of Opus, 25 in each
-  region, were at 20, 54, 127 and 159 ms. One LiveKit Nanode with 100
-  listeners of 2.5 ms Opus lost 8% to 10% of the audio.
+  as audio, in both client modes. Cloudflare Realtime, Cloudflare Stream and
+  LiveKit (self-hosted and Cloud) refused an uncompressed audio track
+  (`L16` and `L24`), again in this pass. Cloudflare Realtime and LiveKit
+  carry PCM bit for bit only on a data channel, to a client written for it,
+  and lose what the network loses.
+- **Random loss, with no cost in latency.** With 1% and 5% loss at the
+  listener, the UDP mode delivered every part and its 99th percentile did not
+  move: Opus 13 and 139 ms in London and Sydney at 0%, 1% and 5% loss. Every
+  SFU lost about 1% and 5%, and Chrome concealed 1.3% to 18% of the samples.
+- **Cloudflare and LiveKit Cloud.** For PCM, Needletail's UDP mode is ahead
+  of Cloudflare Realtime in every region (1.2 to 4.4 ms; 17 ms in Sydney,
+  where Cloudflare's data channel had a 3-second fault in one session), and
+  ahead of LiveKit Cloud by 10 to 22 ms. For Opus it is level with
+  Cloudflare in New York and Tokyo and 6 to 18 ms ahead of LiveKit Cloud.
+- **An Opus crowd.** 100 UDP listeners of Opus, 25 in each region, had a
+  unit latency of 12, 43, 119 and 138 ms, nothing lost; the worst listener's
+  99th percentile was 19, 49, 126 and 145 ms.
+- **The contributor.** On its own g6-dedicated-4 the contributor published
+  Opus, FLAC and PCM at once from two producers at 61% of one vCPU, with no
+  publication backlog in two hours.
 
-What Needletail should fix to win, in order:
+What Needletail should fix to win, in order of what it buys:
 
-1. Ship the pipelined reader, over HTTP/3. It removes the three reader
-   faults at no cost in latency.
-2. Find the 10 ms. Measure each hop of the audio path: the contributor's
-   recovery and packaging, the relay, the distributor's cache-mesh interval
-   (2 ms here), the edge's reply.
-3. Let a producer choose 2.5 ms parts.
-4. Make the native UDP and WebTransport lanes work in the regional cache
-   deployment, and measure them here. They are the fair opponent of RTP.
-5. Give the contributor more than one vCPU, or one contributor for each
-   rendition.
-6. Qualify hosts before use: a 20-second processor burn finds a noisy host
-   (`scripts/compare/steal-check.py`).
-7. Ship a browser player for the audio lanes.
+1. **2.5 ms Opus parts and smaller PCM blocks by default.** Worth 1.25 ms at
+   the median and 2.5 ms at the top. In progress on `low-latency`.
+2. **The hop path and its jitter.** About 1.2 to 1.5 ms of PCM and 5 ms of
+   Opus at the median, and 2 ms of jitter, remain after the frame. The
+   per-hop measurement in the 4K record places them.
+3. **A cold edge.** Subscribe an edge to a stream before its first listener,
+   or answer the first listener from the distributor while the edge fills.
+4. **UDP sending at an edge.** A g6-dedicated-2 edge with 25 PCM UDP
+   listeners and 25 HTTP listeners ran out of processor. Batch sends
+   (`sendmmsg`, GSO) and encode each part once for all subscribers.
+5. **Bursts.** Spread repair across parts, or let the client ask for a part
+   again, so that a burst of five packets does not lose a part.
+6. **The LL-HLS reader as shipped.** One request for each 5 ms part falls
+   behind with any loss or delay (22 s behind at 5% loss). Ship the
+   pipelined HTTP/3 reader with a window longer than the round trip.
+7. A browser player for the audio lanes (WebTransport carrying the UDP
+   mode's datagrams).
 
 ## What was compared
 
 | System | How the audio went in | How a listener got it |
 | --- | --- | --- |
-| Needletail | Its own producers on `lon-src`: the DAW Nexus test source for SoundKit Opus and FLAC, and the AEP1 sender for 24-bit PCM, to the contributor in London. One rendition at a time. | LL-HLS from the edge of the listener's region, in 5 ms parts: stream 3001 (Opus), 2001 (FLAC), 4001 (PCM). |
+| Needletail | Its own producers on `lon-src`: the DAW Nexus test source for SoundKit Opus and FLAC, and the AEP1 sender for 24-bit PCM, to the contributor in London. All three renditions at once. | Two client modes, from the edge of the listener's region, in 5 ms parts of stream 3001 (Opus), 2001 (FLAC) or 4001 (PCM): **RaptorQ FEC over UDP** (`needletail-udp-client`: each part one RaptorQ object), and **LL-HLS over HTTP** (three readers, below). |
 | Cloudflare Realtime | One Opus track to the SFU through its HTTPS API. For PCM, one data channel. | Pull of the track, or of the data channel, through the same API. |
 | Cloudflare Stream WHIP/WHEP | One Opus track by WHIP. | WHEP. It has no data channel. |
-| LiveKit, SFU in each region | `livekit-server` 1.13.11 on one Nanode in each region, no Redis. The source publishes to all four. | The SFU of the listener's region. |
-| LiveKit, multi-region set | The same four Nanodes as one set on one Redis, with the region-aware node selector. The source publishes through the London node. | Signal through the node of the listener's region. The room lives on the London node, so the media comes from London. |
+| LiveKit, SFU in each region | `livekit-server` 1.13.11 on one g6-dedicated-2 in each region, no Redis. The source publishes to all four. | The SFU of the listener's region. |
+| LiveKit, multi-region set | The same four nodes as one set on one Redis (its own g6-dedicated-2), with the region-aware node selector. The source publishes through the London node. | Signal through the node of the listener's region. The room lives on the London node, so the media comes from London. |
 | LiveKit Cloud | The owner's project. | LiveKit Cloud chose the edge: Germany for London, US East, Japan and Australia. |
 
 Cloudflare Stream Live with RTMPS in and HLS or LL-HLS out is not here. It
 carries AAC, not Opus or PCM, and the account cannot use it at all: see
 [Not measured](#not-measured).
 
-All Needletail code is from the pushed heads: `needletail`
-`regional-llhls-cache` at `23dd320`, `av-mesh` at `a9cb1dd` (built on Debian 13
-with cargo 1.100.0), `playlists` at `151eaee`, `av-contrib` from
-`probe-soundkit-opus-plain` (`412014d`, binary of 19 November), `daw-nexus`
-`qualification-source-loop` at `49cfceb`.
+Needletail is the pushed head of the branch on which the product work and the
+UDP client mode were merged, `low-latency`: `av-mesh` `c5d75c8` with one
+measurement option added on `compare-low-latency` (`9c34c98`: the UDP client
+writes the arrival of each part), `av-contrib` `7a41cea`, `playlists`
+`a225609`, built with cargo 1.100.0 on a Debian 13 g6-dedicated-8. `daw-nexus`
+`qualification-source-loop` `49cfceb`. The deploy tool and the harness are on
+`needletail` `compare-cloudflare`. The Nanode sessions of the first pass ran
+`regional-llhls-cache` (`av-mesh` `a9cb1dd`).
 
 ## Method
 
@@ -129,8 +160,7 @@ Every sender plays the 64 seconds in a loop that is locked to the wall clock:
 sample `s` of the loop is spoken when the Unix time is `s / 48000` seconds past
 a multiple of 64. A listener that recognises a unit of audio therefore knows
 when each of its samples was spoken, with no side channel. The hosts keep time
-with chrony: the source and the listeners were within 0.13 ms of true time, and every node
-within 0.24 ms.
+with chrony; the largest offset seen was 0.23 ms.
 
 A live sender cannot send a unit before its last sample exists. Every sender
 here sends a unit at the moment its last sample has been spoken, and not
@@ -188,7 +218,21 @@ each part is known exactly from its position and is taken off. The evidence
 file has the measured values as `raw`. A producer inside a DAW pays the buffer
 with every system.
 
-### Three readers of Needletail
+### Needletail's two client modes
+
+A Needletail client either tails LL-HLS over HTTP, or receives RaptorQ FEC
+over UDP. Both are assigned an edge by the same entry point, from the same
+playlist.
+
+**RaptorQ FEC over UDP** (`needletail-udp-client`, from `client-udp`): the
+client subscribes to its stream at the edge; the edge sends each part, the
+same bytes as its LL-HLS part, as one RaptorQ object of source and repair
+datagrams; the client measures its datagram loss and the edge sizes the
+repair to it. The client writes the arrival time and the bytes of every part;
+`ntcmp udp-ingest` measures them with the same index as every other lane. This
+is the mode that is compared with WebRTC's RTP over UDP.
+
+### Three LL-HLS readers of Needletail
 
 A Needletail audio part is 5 ms. `needletail-reader` and the LL-HLS reader of
 `aep1-48k-probe` ask for one part, wait for it, and ask for the next. That
@@ -221,13 +265,31 @@ plays it without code written for it, and what the network loses is gone.
 `opus-max510` is the nearest that an audio track comes: Opus at 510 kbit/s,
 the top of its range. It is not lossless.
 
+### The lab: dedicated CPU only
+
+Every instance is a dedicated-CPU Linode; none shares its processor with
+another tenant (owner, 21 November: "do not use shared instances"). The lab
+tool refuses any other plan and checks the live type of every instance.
+
+| Role | Instances | Plan |
+| --- | --- | --- |
+| Needletail contributor | 1, London, nothing else on it | g6-dedicated-4 |
+| Needletail backbone relays | London, Amsterdam | g6-dedicated-2 |
+| Needletail distributors | 2 in each region | g6-dedicated-2 |
+| Needletail edges | 2 in each region | g6-dedicated-2 |
+| LiveKit SFU | 1 in each region; Redis of the set in London | g6-dedicated-2 |
+| Source | `lon-src`, London | g6-dedicated-4 |
+| Listeners | in each region one g6-dedicated-2 and one g6-dedicated-4 (Chrome, crowds) | |
+
+`scripts/compare/steal-check.py` ran before each session: no instance had
+steal time above 0.2%.
+
 ### Listeners
 
-In each of London, New York, Tokyo and Sydney: one Nanode (1 vCPU, 1 GB) and
-one host with four vCPUs (dedicated, except in Sydney, where Linode had only a
-shared plan of that size). The Nanode runs the probes. The larger host runs
-the probes too, headless Chrome, and the crowds of 25. A Nanode cannot run
-Chrome with a 4K decoder, and the same hosts serve the video comparison.
+In each of London, New York, Tokyo and Sydney: one g6-dedicated-2 and one
+g6-dedicated-4. Both run the probes; the larger one also runs headless
+Chrome and the crowds of 25. (The tables and the evidence still call the
+smaller host `-nano`, the name it had in the first pass.)
 
 Every system is heard by the same listeners at the same time, so all of them
 see the same network. Systems that share a node are not loaded together in the
@@ -247,15 +309,15 @@ both directions, for IPv4 and IPv6, with SSH left out:
 
 ### Sessions
 
-| Session | Start (UTC, 21 November) | Hosts | Readers of Needletail |
-| --- | --- | --- | --- |
-| A | 14:08 | as Linode placed them | as shipped |
-| B | 14:48 | as Linode placed them | all three |
-| C | 15:38 | after ten Nanodes on noisy hosts were replaced | all three |
+| Session | Start (UTC, 21 November) | Configurations |
+| --- | --- | --- |
+| 1 | 19:44 | every frame length, lossless attempts, impairment and crowds for 2.5 ms Opus and PCM |
+| 2 | 20:26 | 2.5 ms Opus, FLAC beside 20 ms Opus, PCM; impairment and crowds |
+| 3 | 20:57 | the same as session 2 |
 
-See [Noisy hosts](#noisy-hosts) for why the hosts matter. A cell in a table is
-the median of the sessions, with the lowest and the highest session in
-brackets when they differ.
+Before each session `steal-check.py` found no instance with steal time. A
+cell in a table is the median of the sessions, with the lowest and the highest
+session in brackets when they differ.
 
 ## Settings
 
@@ -268,16 +330,17 @@ brackets when they differ.
 | LiveKit | Client | LiveKit `server-sdk-go` v2.20.0 on LiveKit's fork of Pion (v4.2.25-warp.3), `livekit-client` 2.25.0 in Chrome. |
 | LiveKit, self-hosted | `livekit-server` | 1.13.11. UDP 50000 to 54999 (55000 to 59999 for the multi-region set), `node_ip` the public address, TURN off, defaults otherwise. Multi-region: Redis 8.0.2 in London, `node_selector.kind: regionaware`. |
 | Needletail | Mesh | As the regional cache record of 19 November: `part_ms` 5, `mesh_sync_interval_ms` 2, `mesh_symbol_size` 900 up to 16,000, `cache_mesh_replication` `demand`, `telemetry_interval_ms` 500. `playback_address` `public`: listeners reach the edges over the public address, as they reach the other systems. |
-| Needletail | Contributor | `daw_hls_packaging` `opaque`. `daw_hls_formats` one of `opus`, `flac`, `pcm`: one rendition at a time (see [The contributor](#the-contributor)). |
+| Needletail | Contributor | `daw_hls_packaging` `opaque`, `daw_hls_formats` `flac,opus,pcm`: all three renditions at once, from both producers (see [The contributor](#the-contributor)). |
+| Needletail | UDP client | `client_udp_port` 19446 on every distributor and edge; client defaults: repair adapted to the measured loss, a move after 1 s of silence. |
 | Needletail | Opus | The DAW source's SoundKit Opus: 5 ms frames, 60-byte packets (96 kbit/s) with a 20-byte SoundKit header. |
 | Chrome | Listener | Headless Chrome 158.0.8127.36, `jitterBufferTarget = 0`. |
 
 ## Results
 
-Each cell is the median of the sessions. The lowest and highest session are
-in brackets when they differ. All tables are made from the evidence file by
-`scripts/compare/compare-audio-report.py`, and they follow under
-[Tables](#tables).
+Each cell is the median of the three sessions. The lowest and highest
+session are in brackets when they differ. All tables are made from the
+evidence file by `scripts/compare/compare-audio-report.py`, and they follow
+under [Tables](#tables).
 
 ### Opus
 
@@ -285,174 +348,157 @@ Every WebRTC system forwarded Opus frames of 2.5, 5, 10 and 20 ms unchanged:
 every packet at every listener was bit for bit the packet sent. None of them
 forces a frame length on a native sender. Chrome cannot send a frame shorter
 than 10 ms, so a browser source is 3.75 ms worse than these figures at the
-median and 7.5 ms worse at the top.
-Needletail's frame is 5 ms: its producers fix it.
-
-Frame length costs half its length at the median. Self-hosted LiveKit in
-London: 1.9, 3.2, 6.3 and 12.5 ms for frames of 2.5, 5, 10 and 20 ms.
+median and 7.5 ms worse at the top. Needletail's Opus frame is 5 ms: its
+producer fixes it. (For the 20 ms and 510 kbit/s columns of the frame-length
+table, Needletail's lane is FLAC.)
 
 Self-hosted LiveKit is the floor. In London the packet is at the listener
-0.7 ms after its last sample. To New York, Tokyo and Sydney it is the path
-from London plus about a millisecond. The single-region and multi-region
-deployments are the same to within 2 ms: in both, the media of a far listener
-crosses the ocean once.
+about 1 ms after its last sample. The single-region and multi-region
+deployments are the same to within 2 ms, except in New York, where the
+multi-region set's media, relayed from London, was 5 ms earlier than the New
+York SFU's own copy from the source.
 
-Cloudflare is 2 to 8 ms behind self-hosted LiveKit. Realtime and Stream
-WHIP/WHEP are the same network: they differ by less than a millisecond.
+Cloudflare Realtime and Stream WHIP/WHEP are the same network: they differ by
+about a millisecond. LiveKit Cloud is the slowest in every region; it served
+the London listener from Germany.
 
-LiveKit Cloud is the slowest in every region. It served the London listener
-from Germany.
+Needletail's two client modes have nearly the same median: the UDP mode is
+0.5 to 0.8 ms earlier than LL-HLS. Its jitter is lower too, and it does not
+change under loss.
 
-Needletail is between Cloudflare and LiveKit Cloud. Its three readers have
-the same median: the pipelined readers gain nothing while the round trip to
-the edge is half a millisecond.
-
-In Chrome the jitter buffer adds 14 to 56 ms and the decoder and output the
-rest: 66 to 89 ms mouth to ear in London, 101 to 128 ms in New York, 177 to
-199 ms in Tokyo, 202 to 273 ms in Sydney. Self-hosted LiveKit with an SFU in
-the region is the lowest in every region.
+In Chrome, mouth to ear is 72 to 91 ms in London, 97 to 128 ms in New York,
+175 to 203 ms in Tokyo and 188 to 229 ms in Sydney. The jitter buffer holds
+11 to 29 ms of it.
 
 ### Lossless
 
-Each system was asked for an audio track of `audio/L16` and of `audio/L24`,
-48 kHz, stereo:
+Each system was asked again for an audio track of `audio/L16` and of
+`audio/L24`, 48 kHz, stereo:
 
 | System | Answer |
 | --- | --- |
 | Cloudflare Realtime | `unable to start track, codec is not supported by remote` |
 | Cloudflare Stream WHIP | `unable to start track, codec is not supported by remote` |
-| LiveKit 1.13.11, self-hosted | The track is published in signalling, then `could not set remote description: unable to start track, codec is not supported by remote` |
+| LiveKit 1.13.11, self-hosted | The track is published in signalling, then no codec is negotiated (`could not set remote description: unable to start track, codec is not supported by remote`) |
 | LiveKit Cloud | The same as self-hosted |
 
 Their documentation agrees: Cloudflare lists Opus and G.711, and LiveKit
-registers Opus, RED, PCMU and PCMA. So none of them carries lossless PCM as
-audio.
+registers Opus, RED, PCMU and PCMA. None of them carries lossless PCM as
+audio. On a data channel, PCM arrived bit for bit through Cloudflare Realtime
+and LiveKit, and lost what the network lost. Cloudflare Stream has no data
+channel.
 
-Two routes remain. Opus at 510 kbit/s is carried by all of them and is not
-lossless. A data channel carries PCM bit for bit through Cloudflare Realtime
-and through LiveKit, self-hosted and Cloud: 100% of the blocks that arrived
-were bit-exact. Cloudflare Realtime lost 0.03% to 0.1% of the blocks on a
-clean network. Cloudflare Stream has no data channel.
-
-Needletail's PCM and FLAC renditions were bit-exact at every listener, with
-no part missing. FLAC and PCM have the same latency to within 2 ms.
-
-Needletail's lossless tail is long. The 99th percentile of PCM was 85 to
-330 ms above the median in London in all three sessions, and 8 to 75 ms
-elsewhere. The cause is not determined: see [Open](#open).
+Needletail's PCM and FLAC were bit-exact at every listener, in both client
+modes. FLAC was about 1 ms later than PCM at the median (it comes from the DAW
+source, PCM from the AEP1 sender).
 
 ### Impairment
 
-With loss, an SFU and Needletail fail in opposite ways.
+With random loss the UDP mode recovers every part from the repair datagrams
+that travel with it, so nothing is late: the 99th percentile was the same at
+0%, 1% and 5% loss. Its client measured the datagram loss and its edge sized
+the repair to it. It pays in packets: a 5 ms Opus part travelled as one source
+and three repair datagrams.
 
-An SFU sends each packet once. With 1% loss at the listener about 1% of the
-audio is gone, with 5% loss about 5%, with bursts about 5% in gaps of up to
-25 ms.
-What arrives is on time: the 99th percentile does not move. Chrome conceals
-the gaps. With 5% loss it concealed 18% of the samples from Cloudflare and
-1.5% to 2.8% from LiveKit. LiveKit's figure is below the loss, which is
-consistent with LiveKit answering Chrome's requests for retransmission of
-audio; that was not checked in the server.
+With bursts, five packets at a time, the repair of one part was sometimes not
+enough: 0.17% to 0.24% of PCM parts and 0.4% to 0.7% of Opus parts were lost,
+in gaps of 5 to 10 ms.
 
-Needletail delivers every unit, and pays in time. How much depends on the
-reader:
+An SFU sends each packet once. With 1% loss about 1% of the audio is gone,
+with 5% about 5%, with bursts about 5% in gaps of 10 to 25 ms. What arrives
+is on time. Chrome concealed 4% and 18% of the samples from Cloudflare at 1%
+and 5% loss, and only 1.3% to 3.5% from LiveKit, which is consistent with
+LiveKit answering Chrome's requests to retransmit audio (not checked in the
+server).
 
-- As shipped, the reader falls behind and does not recover within the step:
-  0.7 to 1.5 seconds at 1% loss, 22 seconds at 5%, 2 to 16 seconds with
-  bursts.
-- Pipelined over HTTP/2, one lost packet still holds every later part: 0.3
-  to 0.4 seconds at 5% loss.
-- Pipelined over HTTP/3, the 99th percentile at 5% loss was 26 ms in London
-  and 175 ms in Sydney, and 48 and 179 ms with bursts. The median did not
-  move.
+Needletail's LL-HLS mode delivers every part and pays in time:
 
-The 1% loss column of the pipelined readers has a wide range because session
-B, on noisy hosts, had a one-second spike in that step. Session C had 37 and
-158 ms.
+- the reader as shipped falls behind and does not recover within the step:
+  0.4 to 1.6 seconds at 1% loss, 15 to 22 seconds at 5%;
+- pipelined over HTTP/3, the 99th percentile at 5% loss was 21 and 148 ms
+  in London and Sydney for Opus, 49 and 167 ms for PCM.
 
-With 100 ms of delay each way, an SFU is 100 ms later and nothing else
-changes. Needletail's reader as shipped cannot keep up at all: a round trip
-of 200 ms allows five requests a second and the stream has 200 parts a
-second. The pipelined readers held 40 requests in flight, which is exactly
-200 ms of parts and not enough: they ran 0.5 to 1.7 seconds late. A window
-longer than the round trip is needed.
+With 100 ms of delay each way, every SFU and the UDP mode were 100 ms later
+and nothing else changed. The LL-HLS readers fell behind: a window of 40
+parts in flight is 200 ms of audio, the round trip was 200 ms.
 
 LiveKit Cloud dropped 88% of the PCM blocks on its data channel when the
-listener was 100 ms away, in every session. Self-hosted LiveKit did not.
+listener was 100 ms away, in all three sessions, as in the first pass.
 
 ### Listeners
 
-One and ten listeners: every system served them all, at the latency of one.
+One and ten listeners: every system served them all, at about the latency of
+one.
 
-The figures of a crowd are unit latencies as measured. For Needletail's Opus
-they have the DAW buffer in them (5.3 ms at the median).
+One hundred listeners, 25 on one host in each region. The UDP listeners ran
+together with 25 HTTP/3 listeners of the same stream and with the LiveKit
+multi-region set's crowd; the other systems' crowds ran in a pass of their
+own.
 
-One hundred listeners, 25 on one host in each region:
+Figures are the unit latency of the median listener.
 
-- **Needletail, reader as shipped:** all 100 had audio, 3 to 9 seconds late
-  for Opus and 12 seconds late for PCM. No edge was above 57% of a vCPU. The limit is the reader: one request for each 5 ms part leaves no
-  room for a reply that takes longer than 5 ms.
-- **Needletail, pipelined over HTTP/3:** all 100 had audio. Opus was at 20,
-  54, 127 and 159 ms, 3 to 21 ms more than ten listeners. PCM was at 46, 81,
-  154 and 182 ms. In Sydney the worst listener's 99th percentile was above
-  two seconds in one session of two.
-- **Cloudflare:** 89, 96 and 100 of 100 Opus listeners connected. The others
-  did not connect within 20 seconds. The first session started them over 4
-  seconds, the others over 10. Those that connected were at the latency of
-  one listener.
-- **LiveKit, an SFU in each region:** all 100, at the latency of one.
-- **LiveKit, multi-region set:** the room is on one Nanode in London, so it
-  served all 100. With 2.5 ms Opus it lost 8% to 10% of the audio and the
-  99th percentile passed one second. With PCM it ran 6.5 seconds late. The
-  Nanode was at 78% and 97% of its vCPU. LiveKit's own load tester, with its
-  default 20 ms packets, put 100 listeners on the same Nanode with no loss:
-  the limit is packets a second, and 2.5 ms frames are eight times as many.
-- **LiveKit Cloud:** 96 of 96, at the latency of one. The free plan allows
-  100 connections.
+- **Needletail, UDP mode:** Opus at 12, 43, 119 and 138 ms, nothing lost.
+  PCM in London about a second late in two sessions of three (up to 5.3%
+  lost), and 34, 111 and 129 ms elsewhere, with 12.6% lost in Sydney in one
+  session. The London edges were at 100% to 171% of one vCPU.
+- **Needletail, LL-HLS:** the reader as shipped fell 3.6 to 5.2 seconds
+  behind with Opus in London and Tokyo and 8 to 14 seconds with PCM; the pipelined HTTP/3 reader
+  held Opus at 21, 50, 136 and 144 ms and fell behind with PCM.
+- **LiveKit, an SFU in each region:** all 100, Opus at 1.5, 37.6, 109.1 and
+  127.4 ms, PCM at 3.0, 33.6, 110.7 and 128.6 ms.
+- **LiveKit, multi-region set:** the room is on the London node. Opus was
+  served; PCM was 7.7 seconds late, with the London node at 198% of a vCPU.
+- **Cloudflare:** Opus at the latency of one. One or two of 100 Realtime
+  listeners did not connect in two sessions, and two or three of 25 Stream
+  WHIP/WHEP listeners in Sydney in every session. PCM to Tokyo and Sydney had a worst listener
+  6.8 and 8.7 seconds late in two sessions of three.
+- **LiveKit Cloud:** 96 of 96 (the free plan allows 100 connections), at the
+  latency of one.
 
 ### The contributor
 
-Needletail's contributor is one Nanode. Processor of `av-contrib` with each
-set of renditions, at 200 parts a second for each:
+The contributor ran alone on a g6-dedicated-4 (4 dedicated vCPUs) and
+published all three renditions at once, from both producers (the DAW source's
+Opus and FLAC, the AEP1 sender's PCM), 200 parts a second each. `av-contrib`
+used 61% of one vCPU, 15% of the instance, in every step. From the deploy of
+the build measured (19:36) to the end of the sessions (21:30) it logged no
+`publication queue is full`. On the earlier `regional-llhls-cache` build, on
+the same instance, it logged 359 of them in one minute during a crowd step.
+Four vCPUs are more than audio needs; the 4K record says what video needs.
 
-| Renditions published | Processor |
-| --- | ---: |
-| PCM | 27% to 40% |
-| Opus (the DAW source also sends FLAC, which is not published) | 35% to 42% |
-| FLAC and PCM | 64% to 70% |
-| Opus, FLAC and PCM | 71% to 78% |
+The primary relay used 39% of one vCPU of its g6-dedicated-2, a London
+distributor 22%, an edge 9% to 41% with one to ten listeners.
 
-With all three, in the first trial, the contributor logged `publication
-queue is full`, and Opus stayed 210 ms late, FLAC 143 ms and PCM 25 to 80 ms
-for the whole step. The sessions therefore publish one rendition at a time.
+## Side note: the first pass, on shared Nanodes (superseded)
 
-### Noisy hosts
+The first pass (sessions A, B and C, 14:08 to 16:00 UTC) ran every Needletail
+role, every LiveKit node and the smaller listeners on Nanodes, shared-CPU
+instances of 1 vCPU, with Needletail's `regional-llhls-cache` build and LL-HLS
+only. The owner ruled that shared instances measure the neighbours, not the
+system, and those results are superseded. What they showed, for the record:
 
-In sessions A and B every Needletail lane, in every region, had a spike of
-about one second about once a minute. The samplers on the nodes showed the
-cause: steal time. In session B the worst five-second sample was 54% on the
-contributor, 82% on the primary relay and 78% on a Sydney distributor. New
-York and Tokyo had none.
+- Steal time on shared hosts put a spike of about a second, once a minute,
+  into every Needletail lane until ten Nanodes were replaced. Needletail has
+  four nodes in the path; each was a chance of a noisy host.
+- On that build Needletail's Opus was 12.0, 47.1, 118.6 and 138.5 ms mouth to
+  ear (LL-HLS) against self-hosted LiveKit's 1.9, 32.6, 109.1 and 127.8; on
+  the dedicated lab, with the `low-latency` build, it is 9.2, 40.1, 117.1 and
+  135.5 over LL-HLS and 8.6, 39.6, 116.4 and 134.7 over UDP.
+- A contributor on one shared vCPU could publish one audio rendition, not
+  three.
 
-A 20-second processor burn on each Nanode found seven noisy hosts. Ten
-Nanodes of Needletail and LiveKit and one listener Nanode were replaced
-before session C, the primary relay three times before it had a quiet host.
-Outside London, Needletail's jitter was 31 to 36 ms in session B and 7 to
-10 ms in session C.
-
-Self-hosted LiveKit has one node in the path, and its London Nanode happened
-to be quiet. Needletail has four, and each one is a chance of a noisy host.
+Its evidence is kept as
+[`20261121-compare-audio-nanode.json`](evidence/20261121-compare-audio-nanode.json).
 
 ## Not measured
 
-- **Needletail's native UDP and WebTransport lanes.** `aep1-48k-probe
-  receive-udp` at a distributor's relay port and `receive-webtransport` at a
-  distributor received no datagram: 0 of 2,000 epochs in London and Sydney
-  over the public addresses, and 0 of 1,200 over the London VLAN, with the
-  DAW source publishing. LL-HLS from the same nodes worked throughout. The
-  cause was not looked for.
 - **Needletail in a browser.** The Opus parts are SoundKit frames and the PCM
-  parts are raw samples. A browser needs a player written for them.
+  parts are raw samples. A browser needs a player written for them; the UDP
+  mode needs WebTransport to carry its datagrams.
+- **2.5 ms Opus and smaller PCM blocks on Needletail.** The producers of the
+  build measured make 5 ms parts. The owner's default of 2.5 ms Opus and the
+  halving of PCM blocks (1 ms and below) wait for the producer options on
+  `low-latency`; this record will be rerun on them.
 - **Sound quality.** Every lane delivered its packets unchanged, so quality
   is the codec's: 256 kbit/s Opus on the SFUs, 96 kbit/s SoundKit Opus on
   Needletail, and no loss at all on the lossless lanes. No listening score
@@ -471,34 +517,32 @@ to be quiet. Needletail has four, and each one is a chance of a noisy host.
 
 ## Open
 
-- The 99th percentile of Needletail's PCM in London was 85 to 330 ms above
-  its median in every session, on noisy and on quiet hosts, and with every
-  reader. Opus in the same sessions was not. Not explained.
-- The pipelined readers need a window longer than the round trip. With 40
-  parts in flight and a 200 ms round trip they ran late. A window of 100
-  parts was not measured.
-- The DAW source's 512-sample buffer was taken off by calculation. Needletail
-  was not measured with a producer that hands it 5 ms blocks of Opus.
-- `needletail-reader` itself was not run on the audio streams with 25
-  readers. The reader as shipped is `ntcmp hls --window 1`, which reads as it
-  does: one request for each part.
-- Session C's London Nanode listener had one spike of about 0.2 seconds that
-  every system shows in the Opus baseline (the 99th percentile ranges of the
-  London column).
+- Needletail's Opus is about 3 ms later than its PCM over the same path and
+  client mode. The two come from different producers (the DAW source and the
+  AEP1 sender); which step costs the 3 ms was not isolated.
+- The UDP listeners of PCM in the London crowd were about a second late
+  while the edges were near their processor limit. Whether the edge's UDP
+  sender or the 25 HTTP/3 readers sharing the edges took the processor was
+  not separated; the tier record measures UDP listeners alone.
+- The LL-HLS readers need a window longer than the round trip. With 40
+  parts in flight and a 200 ms round trip they ran late.
 - LiveKit Cloud's loss of 88% of data-channel blocks with a 100 ms delay was
   not investigated.
+- Cloudflare Realtime's data channel to Sydney ran about 3 seconds late for a
+  whole step in one session of three.
 
 ## Evidence and harness
 
 - Evidence: [`20261121-compare-audio.json`](evidence/20261121-compare-audio.json).
-  For each session, step, host and lane: the figures of the probe, of Chrome,
-  and the processor of each Nanode. Needletail's Opus and FLAC have both the
-  measured values (`raw`) and the values without the DAW buffer.
+  For each of the three dedicated sessions, each step, host and lane: the
+  figures of the probe, of Chrome, and the processor of each node. Needletail's
+  Opus and FLAC have both the measured values (`raw`) and the values without
+  the DAW buffer.
 - Raw records (every unit of every listener) are under
-  `target/compare/runs/audio-{a,b,c}/` and are not versioned.
+  `target/compare/runs/laudio-{1,2,3}/` and are not versioned.
 - Harness, on branch `compare-cloudflare`:
   - `tools/ntcmp`: the paced source, the WebRTC and data-channel probes, the
-    HLS probe with its three readers;
+    HLS probe with its three readers, and `udp-ingest` for the UDP mode;
   - `scripts/compare/compare-audio.py`: the session runner;
   - `scripts/compare/compare-audio-analyse.py` and
     `compare-audio-report.py`: the evidence file and these tables;
@@ -507,7 +551,8 @@ to be quiet. Needletail has four, and each one is a chance of a noisy host.
     `compare_lab.py`, `prepare-media.py`.
 
 To run it again, with the lab of
-`deploy/compare-cloudflare/topology-compare.json` up and Needletail deployed:
+`deploy/compare-cloudflare/topology-dedicated.json` up and Needletail deployed
+from the builds named above:
 
 ```sh
 scripts/compare/cloudflare.py setup
@@ -515,9 +560,9 @@ scripts/compare/compare_lab.py livekit
 scripts/compare/compare_lab.py prepare
 scripts/compare/compare_lab.py audio
 scripts/compare/compare_lab.py secrets
-scripts/compare/steal-check.py            # replace the nodes it names
-scripts/compare/compare-audio.py --session audio-x
-scripts/compare/compare-audio-analyse.py --out evidence.json audio-x
+scripts/compare/steal-check.py
+scripts/compare/compare-audio.py --session laudio-x --product-reader
+scripts/compare/compare-audio-analyse.py --out evidence.json laudio-x
 scripts/compare/compare-audio-report.py evidence.json
 scripts/compare/cloudflare.py teardown
 ```
@@ -530,74 +575,80 @@ Mouth to ear, played on arrival, median (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 12.0 (11.9–13.0) | 47.1 (41.5–48.0) | 118.6 (118.6–120.6) | 138.5 (137.0–139.1) |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 12.2 (11.8–12.6) | 44.6 (41.9–47.3) | 119.3 (118.3–120.2) | 138.1 (137.8–138.5) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 12.1 (11.7–12.4) | 44.9 (41.9–47.9) | 119.5 (118.9–120.2) | 138.2 (137.7–138.6) |
-| Cloudflare Realtime | 2.5 ms | 6.3 (5.7–6.9) | 40.4 (40.1–40.7) | 115.5 (115.3–119.4) | 129.4 (129.0–129.5) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 6.4 (5.8–6.8) | 40.4 (39.4–40.8) | 115.4 (114.9–115.6) | 128.7 (128.0–129.8) |
-| LiveKit, SFU in each region | 2.5 ms | 1.9 (1.9–2.4) | 32.6 (32.6–32.7) | 109.1 (108.2–111.0) | 127.8 (127.8–128.0) |
-| LiveKit, multi-region set | 2.5 ms | 1.9 (1.8–2.4) | 32.8 (32.6–38.1) | 111.2 (110.7–111.2) | 127.9 |
-| LiveKit Cloud | 2.5 ms | 15.9 | 58.2 (58.0–58.4) | 131.3 (127.5–132.8) | 140.8 (140.6–141.2) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 8.6 (8.5–8.9) | 39.6 (39.5–39.6) | 116.4 (116.2–118.0) | 134.7 (134.4–134.9) |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 9.2 (9.0–9.5) | 40.1 (40.0–40.2) | 117.1 (116.9–118.8) | 135.5 (135.1–135.8) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 9.1 (8.9–9.5) | 40.1 (40.0–40.2) | 117.0 (116.9–118.3) | 135.2 (135.0–135.5) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 9.3 (9.2–9.6) | 40.2 | 117.1 (117.0–118.4) | 135.5 (135.1–135.8) |
+| Cloudflare Realtime | 2.5 ms | 5.6 (5.4–7.8) | 40.7 (40.4–41.5) | 116.8 (114.7–117.7) | 131.0 (130.0–136.3) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 6.5 (6.0–6.7) | 40.8 (40.2–41.2) | 115.6 (114.9–116.9) | 129.4 (127.6–166.0) |
+| LiveKit, SFU in each region | 2.5 ms | 2.3 (2.3–2.6) | 38.4 (38.3–38.5) | 110.0 (109.9–111.6) | 128.3 (128.2–128.5) |
+| LiveKit, multi-region set | 2.5 ms | 2.4 (2.3–2.6) | 33.3 (33.0–38.5) | 111.6 (109.3–111.8) | 128.4 (128.2–128.6) |
+| LiveKit Cloud | 2.5 ms | 15.7 (15.7–16.7) | 57.6 (57.4–57.8) | 133.2 (131.2–133.3) | 141.1 (140.8–141.7) |
 
 Mouth to ear, played on arrival, p95 (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 20.7 (19.3–21.2) | 52.9 (46.5–55.6) | 125.3 (125.2–127.3) | 143.6 (141.5–148.0) |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 20.0 | 50.9 (47.0–54.8) | 125.6 (124.9–126.3) | 144.7 (142.7–146.8) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 21.3 (20.6–22.1) | 51.1 (46.9–55.4) | 126.0 (124.9–127.1) | 144.6 (142.8–146.3) |
-| Cloudflare Realtime | 2.5 ms | 8.7 (8.1–9.0) | 41.7 (41.4–42.1) | 117.1 (117.1–120.9) | 131.0 (130.5–131.2) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 8.6 (8.5–8.8) | 41.8 (40.9–42.2) | 117.3 (116.5–117.5) | 130.2 (129.8–131.4) |
-| LiveKit, SFU in each region | 2.5 ms | 3.9 (3.2–4.0) | 33.9 (33.8–34.0) | 110.4 (109.7–112.3) | 129.2 (129.1–129.5) |
-| LiveKit, multi-region set | 2.5 ms | 3.7 (3.2–3.9) | 34.1 (33.9–39.3) | 112.4 (112.0–112.9) | 129.2 (129.2–129.4) |
-| LiveKit Cloud | 2.5 ms | 18.0 (18.0–18.4) | 60.6 (60.3–60.9) | 134.0 (130.0–135.2) | 143.3 (143.1–143.7) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 11.7 (11.7–12.0) | 42.7 (42.7–42.8) | 119.7 (119.4–121.2) | 137.8 (137.6–138.1) |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 12.4 (12.1–12.7) | 43.4 (43.3–43.5) | 120.5 (120.2–122.0) | 138.7 (138.5–139.3) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 12.4 (12.1–12.6) | 43.3 (43.3–43.5) | 120.3 (120.2–121.5) | 138.7 (138.5–138.7) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 12.5 (12.5–12.8) | 43.5 (43.5–43.6) | 120.5 (120.3–121.7) | 138.7 (138.7–139.3) |
+| Cloudflare Realtime | 2.5 ms | 7.2 (7.1–9.8) | 42.3 (42.0–43.3) | 118.5 (116.3–119.3) | 132.7 (131.5–137.8) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 8.3 (7.5–8.6) | 42.6 (41.6–42.7) | 117.4 (116.3–118.5) | 130.8 (129.3–167.3) |
+| LiveKit, SFU in each region | 2.5 ms | 3.6 (3.6–3.9) | 39.7 (39.6–39.8) | 111.2 (111.2–112.9) | 129.5 (129.4–129.8) |
+| LiveKit, multi-region set | 2.5 ms | 3.7 (3.6–3.9) | 34.5 (34.3–39.8) | 112.9 (110.6–113.1) | 129.6 (129.5–129.9) |
+| LiveKit Cloud | 2.5 ms | 17.7 (17.5–18.6) | 59.9 (59.8–60.2) | 135.5 (133.6–135.7) | 143.5 (143.1–144.0) |
 
 Mouth to ear, played on arrival, p99 (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 57.0 (22.3–358.4) | 55.7 (51.5–79.7) | 128.2 (128.1–155.2) | 146.5 (144.6–174.9) |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 145.2 (46.7–243.7) | 65.1 (51.9–78.3) | 140.2 (127.7–152.6) | 158.7 (146.6–170.7) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 159.3 (51.7–266.8) | 65.6 (51.9–79.3) | 140.6 (127.7–153.4) | 157.6 (146.7–168.4) |
-| Cloudflare Realtime | 2.5 ms | 14.4 (11.5–222.7) | 42.6 (42.4–43.6) | 122.0 (118.9–124.5) | 134.0 (132.1–134.0) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 12.4 (11.2–237.2) | 42.9 (41.9–43.3) | 118.7 (117.9–125.0) | 133.2 (131.4–133.5) |
-| LiveKit, SFU in each region | 2.5 ms | 6.8 (4.6–217.6) | 34.3 (34.0–34.5) | 113.1 (110.6–115.5) | 131.1 (130.7–132.8) |
-| LiveKit, multi-region set | 2.5 ms | 6.8 (4.5–296.3) | 34.7 (34.1–39.9) | 112.8 (112.6–119.2) | 130.6 (130.2–132.2) |
-| LiveKit Cloud | 2.5 ms | 19.9 (19.0–241.9) | 61.4 (61.2–61.6) | 136.0 (130.8–139.7) | 144.9 (144.2–145.1) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 13.2 (12.9–13.3) | 44.1 (44.1–44.2) | 122.6 (120.9–123.6) | 139.3 (139.2–139.7) |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 14.0 (13.5–14.2) | 44.9 | 123.6 (121.7–126.5) | 141.4 (140.7–143.6) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 13.9 (13.6–14.0) | 44.9 (44.8–44.9) | 122.0 (121.6–123.0) | 140.3 (140.0–250.2) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 14.1 (13.9–14.3) | 45.0 (45.0–45.1) | 122.1 (121.8–123.3) | 142.7 (140.3–230.8) |
+| Cloudflare Realtime | 2.5 ms | 10.5 (8.4–11.4) | 43.5 (43.4–44.8) | 120.1 (117.6–125.8) | 134.3 (132.9–139.0) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 9.4 (8.5–10.9) | 43.7 (42.6–44.8) | 119.8 (119.7–120.9) | 132.5 (131.8–167.9) |
+| LiveKit, SFU in each region | 2.5 ms | 4.2 (4.1–4.5) | 40.3 (40.1–40.3) | 111.8 (111.8–113.4) | 130.1 (130.0–130.3) |
+| LiveKit, multi-region set | 2.5 ms | 4.2 (4.1–4.4) | 35.2 (34.9–40.4) | 113.5 (111.2–113.8) | 130.2 (130.0–130.3) |
+| LiveKit Cloud | 2.5 ms | 18.3 (18.2–19.4) | 60.8 (60.6–61.1) | 136.4 (134.5–136.6) | 144.4 (144.2–144.9) |
 
 Jitter: p99 minus median of the unit latency (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 43.7 (10.0–345.4) | 9.7 (8.1–31.5) | 9.2 (7.1–36.3) | 7.4 (7.4–35.7) |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 132.2 (34.2–230.2) | 20.4 (9.9–31.0) | 20.5 (6.8–34.2) | 20.4 (8.6–32.2) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 147.2 (39.8–254.7) | 20.6 (10.0–31.3) | 20.8 (7.2–34.3) | 19.3 (8.8–29.8) |
-| Cloudflare Realtime | 2.5 ms | 8.0 (4.5–217.4) | 2.0 (1.9–2.7) | 3.2 (2.2–9.2) | 4.3 (2.9–4.6) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 6.0 (4.2–231.3) | 2.2 (2.1–2.3) | 3.0 (2.8–9.5) | 3.3 (3.2–4.8) |
-| LiveKit, SFU in each region | 2.5 ms | 4.3 (2.5–214.2) | 1.4 (0.7–1.4) | 1.8 (0.8–7.3) | 3.1 (2.7–4.7) |
-| LiveKit, multi-region set | 2.5 ms | 4.2 (2.6–294.2) | 1.4 (0.7–1.5) | 1.7 (0.8–7.7) | 2.5 (2.2–4.2) |
-| LiveKit Cloud | 2.5 ms | 3.9 (2.7–226.3) | 2.6 | 2.7 (2.6–8.5) | 3.2 (3.1–4.0) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 3.5 (3.4–3.6) | 3.6 | 3.7 (3.6–7.3) | 3.8 (3.6–3.8) |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 3.6 (3.6–4.0) | 3.9 (3.7–4.0) | 4.0 (3.9–8.9) | 5.9 (4.6–7.7) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 3.7 (3.6–4.0) | 3.8 (3.7–4.1) | 3.9 (3.8–4.0) | 3.9 (3.8–115.9) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 3.8 (3.7–4.0) | 4.0 (3.9–4.1) | 4.0 (4.0–4.2) | 6.8 (4.0–95.1) |
+| Cloudflare Realtime | 2.5 ms | 3.4 (2.6–5.1) | 2.7 (2.6–3.1) | 3.1 (2.6–7.9) | 2.7 (2.5–3.1) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 2.5 (2.3–4.4) | 2.3 (2.0–3.8) | 4.2 (2.6–5.8) | 2.1 (1.4–4.9) |
+| LiveKit, SFU in each region | 2.5 ms | 1.5 (1.4–1.5) | 1.5 (1.4–1.5) | 1.5 | 1.2 (1.2–1.7) |
+| LiveKit, multi-region set | 2.5 ms | 1.4 (1.4–1.5) | 1.6 (1.5–1.6) | 1.5 (1.5–1.6) | 1.3 (1.2–1.6) |
+| LiveKit Cloud | 2.5 ms | 2.1 (1.9–2.1) | 2.7 (2.6–2.8) | 2.9 (2.8–3.0) | 2.9 (2.7–2.9) |
 
 Units missing (%):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Cloudflare Realtime | 2.5 ms | 0.015 (0.000–0.133) | 0.005 (0.000–0.005) | 0.000 (0.000–0.010) | 0.041 (0.025–0.100) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 0.030 (0.020–0.076) | 0.010 (0.005–0.051) | 0.005 (0.000–0.053) | 0.053 (0.000–0.272) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Cloudflare Realtime | 2.5 ms | 0.000 (0.000–0.118) | 0.000 (0.000–0.120) | 0.005 (0.000–0.119) | 0.000 (0.000–0.117) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 0.010 (0.000–0.015) | 0.000 (0.000–0.010) | 0.000 (0.000–0.010) | 0.005 (0.000–0.011) |
 | LiveKit, SFU in each region | 2.5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| LiveKit, multi-region set | 2.5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| LiveKit Cloud | 2.5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| LiveKit, multi-region set | 2.5 ms | 0.000 | 0.000 | 0.000 (0.000–0.083) | 0.000 |
+| LiveKit Cloud | 2.5 ms | 0.000 | 0.000 | 0.000 (0.000–0.069) | 0.000 (0.000–0.130) |
 
 Units bit-exact (%):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | Cloudflare Realtime | 2.5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | Cloudflare Stream WHIP/WHEP | 2.5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | LiveKit, SFU in each region | 2.5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
@@ -608,57 +659,59 @@ Time from the listener's start to its first audio (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 373.2 (45.5–1238.6) | 260.0 (27.6–285.8) | 346.1 (57.4–652.0) | 64.5 (51.2–213.0) |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 808.6 (406.2–1211.0) | 145.4 (38.5–252.4) | 438.1 (335.4–540.9) | 116.0 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 781.7 (339.1–1224.2) | 154.9 (48.0–261.8) | 513.8 (329.6–698.0) | 189.9 (80.2–299.7) |
-| Cloudflare Realtime | 2.5 ms | 1040.7 (1033.9–1545.2) | 1758.9 (1200.6–2177.7) | 3520.9 (2557.0–3721.3) | 2674.4 (2574.4–4221.0) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 1305.0 (1231.1–1577.9) | 2454.1 (2422.3–2566.9) | 4815.4 (4750.0–5078.8) | 4500.6 (4006.6–5734.2) |
-| LiveKit, SFU in each region | 2.5 ms | 178.0 (174.2–179.2) | 163.7 (158.7–169.1) | 187.6 (173.0–202.8) | 177.0 (169.0–202.8) |
-| LiveKit, multi-region set | 2.5 ms | 187.5 (181.3–282.1) | 1044.8 (1031.8–1247.3) | 3968.7 (3860.4–3968.7) | 4771.7 (4630.7–4773.7) |
-| LiveKit Cloud | 2.5 ms | 450.0 (306.8–723.8) | 440.6 (424.7–469.3) | 807.0 (760.9–1709.6) | 1103.6 (651.4–1556.2) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 1728.5 (96.0–1851.6) | 1945.5 (1903.8–2011.3) | 193.5 (82.1–277.7) | 84.8 (78.7–102.1) |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 1729.2 (86.0–1775.3) | 1885.5 (1012.2–1950.6) | 73.3 (64.5–198.7) | 1540.4 (88.5–1584.3) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 101.0 (87.0–1771.1) | 1893.3 (1008.9–1949.4) | 167.5 (73.9–193.2) | 94.0 (71.5–1643.1) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 1763.7 (1709.5–1838.8) | 1942.9 (1881.1–2003.3) | 165.9 (59.7–189.3) | 1540.0 (1537.3–1643.9) |
+| Cloudflare Realtime | 2.5 ms | 858.9 (748.2–884.8) | 1757.6 (1629.8–1788.5) | 2068.9 (1891.7–3568.6) | 2791.4 (2560.4–4209.8) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 1379.9 (1165.9–1426.6) | 2479.0 (2320.6–2506.5) | 4714.7 (3186.4–5071.8) | 5930.9 (5444.2–5991.1) |
+| LiveKit, SFU in each region | 2.5 ms | 159.3 (159.3–161.1) | 160.7 (159.0–161.7) | 157.7 (156.9–160.4) | 158.9 (157.8–161.1) |
+| LiveKit, multi-region set | 2.5 ms | 163.4 (162.7–168.9) | 1206.6 (1189.8–1243.2) | 3931.5 (3564.7–3933.2) | 4567.1 (4414.4–4666.4) |
+| LiveKit Cloud | 2.5 ms | 252.8 (247.0–269.3) | 485.2 (289.7–491.7) | 1193.2 (789.7–1214.2) | 1349.3 (1134.5–1911.2) |
 
 Bit rate at the listener (kbit/s):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 5 ms | 128.0 | 128.0 | 128.0 | 128.0 |
-| Needletail, pipelined reader, HTTP/2 (opus) | 5 ms | 128.1 | 128.0 | 128.0 | 128.0 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 5 ms | 128.1 | 128.0 | 128.0 | 128.0 |
-| Cloudflare Realtime | 2.5 ms | 256.0 (255.7–256.0) | 256.0 | 256.0 | 255.9 (255.7–255.9) |
-| Cloudflare Stream WHIP/WHEP | 2.5 ms | 255.9 | 256.0 | 256.0 | 255.9 (255.3–256.0) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 128.0 | 128.0 | 128.0 | 128.0 |
+| Needletail, LL-HLS, reader as shipped (opus) | 5 ms | 128.0 | 128.0 | 128.0 | 128.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 5 ms | 128.0 | 128.0 | 128.0 | 128.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 5 ms | 128.0 | 128.0 | 128.0 | 128.0 |
+| Cloudflare Realtime | 2.5 ms | 256.0 (255.7–256.0) | 256.0 (255.7–256.0) | 256.0 (255.7–256.0) | 256.0 (255.7–256.0) |
+| Cloudflare Stream WHIP/WHEP | 2.5 ms | 256.0 | 256.0 | 256.0 | 256.0 |
 | LiveKit, SFU in each region | 2.5 ms | 256.0 | 256.0 | 256.0 | 256.0 |
-| LiveKit, multi-region set | 2.5 ms | 256.0 | 256.0 | 256.0 | 256.0 |
-| LiveKit Cloud | 2.5 ms | 256.0 | 256.0 | 256.0 | 256.0 |
+| LiveKit, multi-region set | 2.5 ms | 256.0 | 256.0 | 256.0 (255.8–256.0) | 256.0 |
+| LiveKit Cloud | 2.5 ms | 256.0 | 256.0 | 256.0 (255.8–256.0) | 256.0 (255.6–256.0) |
 
 Chrome mouth to ear at the marker, median (ms):
 
 | System | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: |
-| Cloudflare Realtime | 79.3 (66.2–86.3) | 120.1 (99.8–122.5) | 189.1 (181.9–198.3) | 245.4 (244.3–245.4) |
-| Cloudflare Stream WHIP/WHEP | 89.1 (74.0–91.0) | 115.2 (108.3–120.3) | 196.7 (195.8–212.5) | 218.2 (213.4–271.1) |
-| LiveKit, SFU in each region | 65.5 (64.3–76.5) | 101.0 (91.6–111.2) | 176.8 (175.8–177.2) | 202.4 (200.3–401.1) |
-| LiveKit, multi-region set | 80.6 (79.4–85.9) | 112.0 (107.5–125.4) | 177.9 (172.6–183.2) | 204.1 (199.7–205.7) |
-| LiveKit Cloud | 78.8 (75.7–105.3) | 128.2 (126.5–152.8) | 199.3 (195.4–200.5) | 272.9 (231.2–300.9) |
+| Cloudflare Realtime | 87.0 (72.6–96.5) | 122.2 (109.6–134.4) | 199.9 (180.8–204.6) | 200.9 (196.5–214.2) |
+| Cloudflare Stream WHIP/WHEP | 91.0 (69.7–97.0) | 110.0 (109.6–118.3) | 186.7 (178.0–196.8) | 229.3 (193.2–232.8) |
+| LiveKit, SFU in each region | 71.9 (66.5–72.2) | 117.7 (113.0–120.6) | 182.1 (169.3–184.1) | 201.3 (192.9–206.2) |
+| LiveKit, multi-region set | 77.4 (64.8–78.2) | 97.4 (96.6–105.3) | 174.6 (171.4–174.7) | 187.9 (187.8–189.4) |
+| LiveKit Cloud | 86.6 (81.7–86.7) | 128.3 (123.5–128.5) | 202.8 (198.3–204.3) | 202.0 (199.0–215.2) |
 
 Chrome jitter buffer, mean (ms):
 
 | System | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: |
-| Cloudflare Realtime | 20.2 (16.3–21.7) | 25.7 (23.8–29.3) | 26.9 (15.6–28.0) | 32.9 (26.3–41.9) |
-| Cloudflare Stream WHIP/WHEP | 24.5 (18.6–27.9) | 19.5 (16.9–25.6) | 25.1 (22.2–31.5) | 32.2 (21.9–45.1) |
-| LiveKit, SFU in each region | 14.2 (11.9–17.7) | 19.8 (11.0–29.5) | 14.0 (12.4–14.8) | 21.4 (17.9–118.8) |
-| LiveKit, multi-region set | 24.2 (24.0–28.8) | 23.1 (17.3–26.5) | 18.9 (10.6–19.8) | 21.4 (19.7–111.3) |
-| LiveKit Cloud | 14.0 (11.4–30.0) | 19.8 (18.8–31.8) | 16.4 (15.3–18.6) | 55.7 (30.1–84.9) |
+| Cloudflare Realtime | 29.0 (16.3–34.5) | 22.4 (18.0–38.9) | 26.4 (14.6–28.9) | 20.0 (16.1–22.2) |
+| Cloudflare Stream WHIP/WHEP | 24.0 (13.7–30.3) | 20.4 (16.8–28.6) | 19.1 (13.8–22.2) | 24.2 (13.8–24.5) |
+| LiveKit, SFU in each region | 18.5 (12.4–19.1) | 19.8 (19.8–30.2) | 20.8 (12.0–29.6) | 19.8 (14.5–19.8) |
+| LiveKit, multi-region set | 19.2 (14.6–19.8) | 12.3 (12.3–12.5) | 12.9 (11.9–17.6) | 10.9 (10.0–12.0) |
+| LiveKit Cloud | 19.8 (12.9–19.9) | 16.6 (13.7–16.7) | 18.1 (18.0–21.0) | 13.9 (13.3–21.2) |
 
 Chrome concealed samples (%):
 
 | System | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: |
-| Cloudflare Realtime | 0.000 | 0.000 (0.000–0.060) | 0.054 (0.035–0.193) | 0.000 (0.000–0.657) |
-| Cloudflare Stream WHIP/WHEP | 0.000 (0.000–0.263) | 0.000 (0.000–0.171) | 0.066 (0.000–0.221) | 0.086 (0.000–1.622) |
+| Cloudflare Realtime | 0.000 (0.000–0.254) | 0.122 (0.000–0.194) | 0.169 (0.000–0.204) | 0.048 (0.000–0.220) |
+| Cloudflare Stream WHIP/WHEP | 0.000 (0.000–0.051) | 0.000 | 0.000 | 0.000 |
 | LiveKit, SFU in each region | 0.000 | 0.000 | 0.000 | 0.000 |
-| LiveKit, multi-region set | 0.000 (0.000–0.072) | 0.000 (0.000–0.051) | 0.000 | 0.000 |
-| LiveKit Cloud | 0.000 (0.000–0.048) | 0.000 | 0.000 | 0.000 |
+| LiveKit, multi-region set | 0.000 | 0.000 | 0.000 | 0.000 |
+| LiveKit Cloud | 0.000 | 0.000 (0.000–0.038) | 0.000 (0.000–0.040) | 0.000 |
 
 ### Frame length
 
@@ -666,14 +719,15 @@ Mouth to ear, played on arrival, median (ms), London / Sydney:
 
 | System | 2.5 ms | 5 ms | 10 ms | 20 ms | 10 ms at 510 kbit/s |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped | 12.0 / 138.5 (opus) | 12.1 / 138.7 (opus) | 12.3 / 139.1 (opus) | 11.2 / 138.4 (flac) | 10.1 / 136.5 (flac) |
-| Needletail, pipelined reader, HTTP/2 | 12.2 / 138.1 (opus) | 12.8 / 138.5 (opus) | 12.4 / 138.0 (opus) | 15.9 / 142.1 (flac) | 10.9 / 136.9 (flac) |
-| Needletail, pipelined reader, HTTP/3 | 12.1 / 138.2 (opus) | 12.5 / 138.7 (opus) | 12.1 / 138.5 (opus) | 15.8 / 142.3 (flac) | 10.8 / 137.1 (flac) |
-| Cloudflare Realtime | 6.3 / 129.4 | 7.2 / 137.1 | 10.9 / 140.4 | 16.6 / 175.3 | 10.2 / 149.5 |
-| Cloudflare Stream WHIP/WHEP | 6.4 / 128.7 | 8.1 / 129.3 | 10.2 / 134.0 | 17.1 / 139.3 | 11.0 / 133.6 |
-| LiveKit, SFU in each region | 1.9 / 127.8 | 3.2 / 129.1 | 6.3 / 132.3 | 12.5 / 138.6 | 6.3 / 132.3 |
-| LiveKit, multi-region set | 1.9 / 127.9 | 3.3 / 129.2 | 6.3 / 132.1 | 12.5 / 138.6 | 6.4 / 132.2 |
-| LiveKit Cloud | 15.9 / 140.8 | 16.9 / 141.2 | 19.1 / 143.6 | 25.2 / 145.6 | 19.4 / 144.4 |
+| Needletail, RaptorQ FEC over UDP from the edge | 8.6 / 134.7 (uc) | 8.8 / 135.0 (uc) | 8.6 / 135.1 (uc) | 6.5 / 132.3 (uc) | 6.5 / 132.9 (uc) |
+| Needletail, LL-HLS, reader as shipped | 9.2 / 135.5 (opus) | 9.2 / 135.6 (opus) | 9.0 / 135.7 (opus) | 7.3 / 133.1 (flac) | 7.3 / 133.8 (flac) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 | 9.1 / 135.2 (opus) | 9.1 / 135.6 (opus) | 9.0 / 135.5 (opus) | 7.2 / 133.1 (flac) | 7.3 / 133.8 (flac) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 | 9.3 / 135.5 (opus) | 9.5 / 135.7 (opus) | 9.3 / 135.6 (opus) | 7.2 / 133.1 (flac) | 7.3 / 133.8 (flac) |
+| Cloudflare Realtime | 5.6 / 131.0 | 7.8 / – | 11.0 / 133.7 | 17.7 / 141.9 | 12.7 / 136.5 |
+| Cloudflare Stream WHIP/WHEP | 6.5 / 129.4 | 8.0 / 129.8 | 11.3 / 134.9 | 17.1 / 140.7 | 10.1 / 134.5 |
+| LiveKit, SFU in each region | 2.3 / 128.3 | 3.7 / 129.9 | 6.8 / 133.2 | 13.1 / 139.0 | 6.8 / 133.2 |
+| LiveKit, multi-region set | 2.4 / 128.4 | 3.7 / 130.1 | 6.8 / 133.2 | 13.1 / 138.9 | 6.9 / 133.2 |
+| LiveKit Cloud | 15.7 / 141.1 | 16.9 / 142.7 | 20.2 / 145.2 | 25.4 / 149.6 | 19.7 / 141.3 |
 
 ### Lossless (PCM; SFUs by data channel)
 
@@ -681,69 +735,75 @@ Mouth to ear, played on arrival, median (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 10.5 (10.3–12.1) | 45.7 (40.4–46.2) | 116.7 (116.5–118.7) | 136.5 (136.2–137.7) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 10.9 (10.4–11.5) | 43.3 (40.4–46.2) | 117.7 (116.8–118.7) | 136.9 (136.2–137.7) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 11.1 (10.2–11.9) | 43.2 (40.0–46.5) | 117.8 (117.2–118.3) | 136.8 (136.1–137.5) |
-| Cloudflare Realtime | 2.5 ms | 6.6 (6.2–7.1) | 40.9 (40.4–41.1) | 116.2 (115.6–119.2) | 128.3 (127.5–129.7) |
-| LiveKit, SFU in each region | 2.5 ms | 2.5 (2.2–2.6) | 38.0 (32.9–38.0) | 111.1 (108.1–111.3) | 128.1 (128.0–128.8) |
-| LiveKit, multi-region set | 2.5 ms | 2.7 (2.5–2.9) | 33.1 (33.0–33.1) | 111.3 (108.3–111.4) | 128.3 (128.3–128.6) |
-| LiveKit Cloud | 2.5 ms | 16.1 (15.8–16.6) | 57.7 (57.3–57.9) | 133.0 (127.0–133.3) | 140.7 (136.8–141.4) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 5.4 (5.3–5.5) | 36.1 (36.0–36.2) | 112.8 (112.7–113.1) | 131.3 (131.2–131.8) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 6.1 (5.9–6.2) | 36.8 (36.7–36.8) | 113.5 (113.4–113.9) | 132.0 (131.9–132.5) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 6.1 (5.7–6.2) | 36.9 (36.8–37.0) | 113.6 (113.4–113.9) | 132.1 (131.9–132.4) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 6.2 (5.7–6.2) | 36.9 (36.8–37.0) | 113.6 (113.4–113.9) | 132.1 (131.8–132.5) |
+| Cloudflare Realtime | 2.5 ms | 6.6 (5.3–6.7) | 40.5 (39.5–41.0) | 115.4 (114.8–116.7) | 148.1 (130.0–3318.8) |
+| LiveKit, SFU in each region | 2.5 ms | 2.8 (2.6–2.8) | 33.4 (33.2–38.5) | 110.4 (106.8–112.0) | 128.5 (128.4–129.0) |
+| LiveKit, multi-region set | 2.5 ms | 2.9 (2.7–2.9) | 33.4 (33.4–33.5) | 107.7 (107.5–110.2) | 128.7 (128.6–129.2) |
+| LiveKit Cloud | 2.5 ms | 16.0 (15.6–17.2) | 58.1 (58.0–58.3) | 131.6 (127.3–133.3) | 141.7 (141.0–141.7) |
 
 Mouth to ear, played on arrival, p95 (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 39.1 (27.8–147.0) | 53.0 (43.8–60.7) | 124.7 (123.4–134.4) | 151.0 (145.7–156.5) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 32.5 (19.9–45.1) | 52.0 (43.9–60.1) | 128.3 (123.3–133.3) | 148.0 (142.1–154.0) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 40.0 (22.3–57.7) | 52.0 (43.4–60.7) | 129.5 (123.3–135.7) | 148.9 (142.5–155.4) |
-| Cloudflare Realtime | 2.5 ms | 9.1 (7.8–10.1) | 42.5 (42.0–43.2) | 118.8 (117.5–120.8) | 130.9 (129.1–131.7) |
-| LiveKit, SFU in each region | 2.5 ms | 4.9 (3.9–5.1) | 39.3 (34.1–39.3) | 112.7 (109.3–113.0) | 129.8 (129.5–1573.5) |
-| LiveKit, multi-region set | 2.5 ms | 6.0 (4.5–6.1) | 35.0 (34.6–35.1) | 113.0 (110.8–114.2) | 131.0 (130.0–131.7) |
-| LiveKit Cloud | 2.5 ms | 18.6 (18.3–18.8) | 60.1 (59.6–60.4) | 135.6 (129.5–136.0) | 143.4 (139.5–143.8) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 7.7 (7.6–7.8) | 38.3 (38.2–38.4) | 115.0 (115.0–115.3) | 133.8 (133.4–134.1) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 8.6 (8.4–8.6) | 39.3 (39.2–39.4) | 116.0 (115.9–116.4) | 134.9 (134.4–135.0) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 8.6 (8.2–8.7) | 39.5 (39.4–39.5) | 116.1 (116.0–116.5) | 135.0 (134.5–135.2) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 8.7 (8.2–8.8) | 39.5 (39.5–39.6) | 116.2 (116.0–116.5) | 135.0 (134.3–135.2) |
+| Cloudflare Realtime | 2.5 ms | 8.7 (6.8–8.7) | 42.2 (40.9–42.8) | 117.2 (116.4–118.2) | 149.5 (132.2–8263.8) |
+| LiveKit, SFU in each region | 2.5 ms | 4.1 (4.0–4.2) | 34.7 (34.5–39.8) | 111.7 (108.1–113.3) | 129.9 (129.7–130.3) |
+| LiveKit, multi-region set | 2.5 ms | 4.2 (4.1–4.3) | 34.8 (34.8–34.9) | 109.1 (109.0–111.6) | 130.0 (129.9–130.5) |
+| LiveKit Cloud | 2.5 ms | 18.1 (17.5–19.0) | 60.6 (60.4–60.6) | 134.3 (134.1–136.7) | 144.0 (143.4–144.1) |
 
 Mouth to ear, played on arrival, p99 (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 263.7 (177.7–336.9) | 70.7 (48.2–102.2) | 141.9 (131.7–178.8) | 198.6 (166.1–211.6) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 129.4 (126.2–132.6) | 74.5 (48.3–100.7) | 151.2 (129.3–173.2) | 175.7 (156.2–195.1) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 114.2 (95.1–133.2) | 75.3 (47.8–102.9) | 153.4 (132.8–174.1) | 190.1 (186.1–194.2) |
-| Cloudflare Realtime | 2.5 ms | 12.7 (9.7–15.6) | 44.0 (43.2–44.9) | 122.3 (119.6–122.7) | 134.3 (130.9–136.1) |
-| LiveKit, SFU in each region | 2.5 ms | 11.2 (5.7–12.9) | 40.0 (34.4–40.0) | 114.7 (109.8–117.5) | 132.5 (132.4–1664.9) |
-| LiveKit, multi-region set | 2.5 ms | 15.1 (7.6–15.6) | 39.2 (36.9–42.4) | 115.9 (115.3–123.4) | 137.3 (133.0–148.2) |
-| LiveKit Cloud | 2.5 ms | 23.3 (19.4–25.6) | 60.9 (60.6–61.3) | 137.2 (130.4–139.7) | 144.8 (143.3–146.0) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 8.7 (8.7–9.1) | 39.6 (39.3–39.6) | 116.4 (116.0–116.4) | 135.6 (134.6–135.7) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 9.7 (9.5–9.9) | 40.6 (40.5–40.9) | 117.4 (117.1–117.7) | 136.3 (136.0–412.6) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 9.8 (9.4–10.0) | 40.9 (40.7–41.1) | 117.5 (117.3–118.1) | 137.4 (136.0–342.8) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 9.9 (9.6–10.1) | 41.0 (40.8–41.2) | 117.6 (117.6–117.9) | 137.2 (135.6–390.0) |
+| Cloudflare Realtime | 2.5 ms | 10.5 (8.1–10.5) | 44.2 (41.7–44.5) | 119.0 (118.0–119.1) | 150.3 (140.0–8386.9) |
+| LiveKit, SFU in each region | 2.5 ms | 5.0 (4.9–5.2) | 35.5 (35.4–40.6) | 112.5 (109.0–114.2) | 131.1 (130.5–244.5) |
+| LiveKit, multi-region set | 2.5 ms | 5.3 (5.2–5.6) | 36.1 (36.1–36.3) | 110.5 (110.4–113.0) | 131.3 (131.2–132.5) |
+| LiveKit Cloud | 2.5 ms | 18.8 (18.4–19.6) | 61.5 (61.4–61.6) | 136.0 (135.0–403.4) | 144.9 (144.4–145.1) |
 
 Jitter: p99 minus median of the unit latency (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 251.5 (167.9–326.2) | 25.2 (8.0–55.8) | 25.8 (12.9–62.5) | 60.6 (29.9–74.3) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 118.9 (114.7–123.1) | 31.2 (8.2–54.3) | 33.5 (10.4–56.7) | 38.7 (20.3–57.1) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 103.1 (84.8–121.5) | 32.3 (8.0–56.6) | 35.7 (14.2–57.1) | 52.7 (49.0–56.3) |
-| Cloudflare Realtime | 2.5 ms | 6.1 (3.4–8.4) | 3.0 (2.6–3.7) | 3.8 (2.9–6.3) | 4.7 (3.3–7.8) |
-| LiveKit, SFU in each region | 2.5 ms | 8.6 (3.2–10.7) | 1.6 (1.0–1.7) | 3.5 (1.2–6.3) | 4.4 (4.2–1536.1) |
-| LiveKit, multi-region set | 2.5 ms | 12.2 (4.6–13.2) | 6.2 (3.6–9.5) | 7.8 (3.7–12.1) | 8.9 (4.4–19.6) |
-| LiveKit Cloud | 2.5 ms | 7.0 (2.4–9.8) | 2.9 (2.7–2.9) | 3.9 (2.7–6.2) | 5.2 (3.1–6.5) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 2.7 (2.5–3.1) | 2.5 (2.4–3.1) | 2.6 (2.4–3.2) | 3.6 (2.8–4.0) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 2.8 (2.8–3.3) | 3.4 (3.0–3.6) | 3.1 (2.8–3.5) | 3.6 (3.3–278.5) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 3.0 (2.7–3.4) | 3.5 (3.2–3.8) | 3.5 (3.0–3.7) | 4.8 (3.5–209.1) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 3.2 (3.0–3.4) | 3.4 (3.2–4.0) | 3.5 (3.3–3.6) | 4.3 (3.1–255.5) |
+| Cloudflare Realtime | 2.5 ms | 3.7 (2.5–3.8) | 3.4 (1.9–3.6) | 2.9 (2.2–3.5) | 10.0 (1.7–5068.3) |
+| LiveKit, SFU in each region | 2.5 ms | 2.0 | 1.8 (1.7–1.9) | 1.9 | 1.7 (1.7–116.3) |
+| LiveKit, multi-region set | 2.5 ms | 2.2 (2.1–2.5) | 2.4 (2.4–2.5) | 2.5 (2.4–2.6) | 2.5 (2.4–3.1) |
+| LiveKit Cloud | 2.5 ms | 2.2 (2.1–2.3) | 2.8 (2.7–2.9) | 8.4 (3.1–269.1) | 2.9 (2.6–3.0) |
 
 Units missing (%):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Cloudflare Realtime | 2.5 ms | 0.073 (0.029–0.074) | 0.075 (0.035–0.075) | 0.076 (0.031–0.081) | 0.082 (0.031–0.103) |
-| LiveKit, SFU in each region | 2.5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| LiveKit, multi-region set | 2.5 ms | 0.000 | 0.000 | 0.000 | 0.000 (0.000–0.021) |
-| LiveKit Cloud | 2.5 ms | 0.000 (0.000–0.019) | 0.000 | 0.000 | 0.000 (0.000–0.200) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Cloudflare Realtime | 2.5 ms | 0.039 (0.000–0.054) | 0.015 (0.000–0.045) | 0.015 (0.005–0.041) | 0.031 (0.019–0.716) |
+| LiveKit, SFU in each region | 2.5 ms | 0.010 (0.000–0.010) | 0.000 | 0.005 (0.000–0.005) | 0.005 (0.000–0.048) |
+| LiveKit, multi-region set | 2.5 ms | 0.000 | 0.035 (0.030–0.035) | 0.032 (0.021–0.042) | 0.027 (0.016–0.032) |
+| LiveKit Cloud | 2.5 ms | 0.000 | 0.000 | 0.000 (0.000–3.728) | 0.035 (0.000–0.411) |
 
 Units bit-exact (%):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | Cloudflare Realtime | 2.5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | LiveKit, SFU in each region | 2.5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | LiveKit, multi-region set | 2.5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
@@ -753,25 +813,27 @@ Time from the listener's start to its first audio (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 57.4 (50.3–61.4) | 34.6 (29.2–40.0) | 69.7 (43.6–77.4) | 44.7 (39.2–63.6) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 76.5 (75.9–77.0) | 49.5 (38.1–60.9) | 84.8 (52.0–117.6) | 82.8 (62.2–103.3) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 84.0 (70.0–98.1) | 50.9 (42.1–59.7) | 70.2 (57.9–82.5) | 82.2 (73.3–91.1) |
-| Cloudflare Realtime | 2.5 ms | 896.5 (804.3–1081.7) | 1630.5 (1491.5–1650.4) | 2741.1 (2592.6–2782.2) | 3210.6 (3112.7–3305.8) |
-| LiveKit, SFU in each region | 2.5 ms | 93.2 (74.9–170.2) | 50.5 (30.3–83.9) | 82.8 (43.2–154.6) | 129.4 (57.7–180.8) |
-| LiveKit, multi-region set | 2.5 ms | 94.0 (78.6–128.5) | 1161.7 (1131.4–1175.6) | 3978.2 (3797.6–4059.1) | 4841.0 (4659.6–4873.0) |
-| LiveKit Cloud | 2.5 ms | 386.4 (296.8–404.2) | 511.4 (362.7–531.7) | 1534.9 (690.7–1647.0) | 1217.1 (1201.3–1668.9) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 1389.7 (224.8–1910.9) | 1428.5 (1085.3–1569.5) | 216.9 (96.8–1136.1) | 1206.8 (1061.1–1714.3) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 71.7 (71.1–1798.6) | 1270.9 (13.0–1416.9) | 49.1 (32.7–1194.0) | 70.1 (15.4–1518.0) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 86.8 (72.3–101.9) | 1313.4 (956.3–1424.2) | 1014.7 (33.6–1128.3) | 29.6 (27.4–1082.7) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 84.1 (43.9–1262.9) | 1283.9 (944.3–1405.9) | 992.7 (27.1–1119.5) | 916.1 (80.8–1539.9) |
+| Cloudflare Realtime | 2.5 ms | 868.8 (766.9–1001.8) | 1649.8 (1590.5–1679.6) | 2744.5 (2653.2–2776.9) | 3428.1 (3256.1–3717.8) |
+| LiveKit, SFU in each region | 2.5 ms | 52.2 (40.8–52.4) | 27.2 (20.0–30.6) | 37.6 (31.0–38.3) | 32.7 (26.1–46.2) |
+| LiveKit, multi-region set | 2.5 ms | 55.8 (40.1–75.1) | 1215.0 (1109.1–1262.7) | 4164.6 (3695.1–4331.1) | 4932.6 (4834.0–4939.6) |
+| LiveKit Cloud | 2.5 ms | 237.2 (232.2–247.0) | 517.3 (474.3–626.7) | 1761.7 (1283.4–1963.1) | 1910.7 (1462.3–1998.0) |
 
 Bit rate at the listener (kbit/s):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 5 ms | 2304.0 (2303.9–2304.1) | 2303.9 | 2304.0 (2303.9–2304.1) | 2304.0 (2303.9–2304.1) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 5 ms | 2303.9 | 2304.1 | 2303.9 (2303.8–2304.1) | 2303.9 (2303.8–2304.1) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 5 ms | 2304.1 (2303.8–2304.3) | 2304.0 | 2304.1 (2303.9–2304.2) | 2303.9 (2303.8–2304.1) |
-| Cloudflare Realtime | 2.5 ms | 2302.3 (2302.2–2303.3) | 2302.3 (2302.2–2303.1) | 2302.3 (2302.1–2303.1) | 2302.1 (2301.5–2303.2) |
-| LiveKit, SFU in each region | 2.5 ms | 2304.0 | 2304.0 | 2303.9 | 2304.0 |
-| LiveKit, multi-region set | 2.5 ms | 2304.0 | 2304.0 (2303.9–2304.1) | 2304.0 | 2304.0 (2303.6–2304.0) |
-| LiveKit Cloud | 2.5 ms | 2303.9 (2303.6–2303.9) | 2304.0 | 2304.0 (2303.9–2304.1) | 2303.8 (2299.3–2304.2) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 2304.0 (2303.9–2304.2) | 2304.2 (2303.8–2304.2) | 2304.0 (2303.8–2304.1) | 2304.0 (2303.9–2304.1) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 ms | 2304.0 (2303.9–2304.1) | 2304.0 (2303.9–2304.5) | 2303.9 (2303.9–2304.1) | 2304.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 5 ms | 2304.0 | 2304.0 | 2304.0 | 2304.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 ms | 2304.1 (2303.9–2304.2) | 2304.0 (2303.9–2304.1) | 2303.9 (2303.9–2304.1) | 2304.0 (2303.9–2304.1) |
+| Cloudflare Realtime | 2.5 ms | 2303.1 (2302.7–2304.0) | 2303.7 (2302.9–2304.0) | 2303.7 (2303.0–2303.9) | 2303.2 (2287.4–2500.4) |
+| LiveKit, SFU in each region | 2.5 ms | 2303.8 (2303.8–2304.0) | 2304.0 | 2303.9 | 2303.9 (2302.8–2304.0) |
+| LiveKit, multi-region set | 2.5 ms | 2304.0 | 2303.3 (2303.2–2303.4) | 2303.2 (2303.1–2303.5) | 2303.4 (2303.3–2303.6) |
+| LiveKit Cloud | 2.5 ms | 2304.1 | 2304.0 | 2303.6 (2217.8–2303.9) | 2303.2 (2294.4–2304.1) |
 
 ### Needletail FLAC (beside 20 ms Opus on the SFUs)
 
@@ -779,74 +841,80 @@ Mouth to ear, played on arrival, median (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 11.2 (10.5–20.9) | 46.2 (46.2–51.0) | 117.2 (117.2–129.2) | 138.4 (137.4–146.6) |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 15.9 (11.0–20.7) | 48.3 (45.9–50.8) | 122.9 (116.9–128.9) | 142.1 (137.8–146.4) |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 15.8 (10.9–20.6) | 48.5 (45.9–51.2) | 122.9 (116.9–128.9) | 142.3 (137.8–146.9) |
-| Cloudflare Realtime | 20 ms | 16.6 (16.6–18.0) | 51.0 (50.8–51.7) | 126.0 (125.8–126.3) | 175.3 (156.3–178.3) |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 17.1 (16.6–17.6) | 50.1 (50.0–50.1) | 123.6 (123.2–126.6) | 139.3 (137.0–146.4) |
-| LiveKit, SFU in each region | 20 ms | 12.5 (12.4–12.9) | 43.4 (43.3–48.6) | 121.6 (121.2–121.7) | 138.6 (138.5–138.9) |
-| LiveKit, multi-region set | 20 ms | 12.5 (12.4–12.9) | 43.4 | 121.5 (118.0–121.7) | 138.6 (138.5–138.8) |
-| LiveKit Cloud | 20 ms | 25.2 (24.6–25.5) | 66.6 (66.5–67.0) | 139.7 (139.4–140.2) | 145.6 (144.7–150.3) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 6.5 (6.4–6.7) | 37.3 (37.1–37.3) | 114.0 (113.7–115.9) | 132.3 (132.3–132.9) |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 7.3 (7.3–7.4) | 37.9 (37.6–38.0) | 114.7 (114.5–116.4) | 133.1 (132.9–133.9) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 7.2 (7.0–7.2) | 38.0 (37.6–38.0) | 114.7 (114.5–116.4) | 133.1 (133.0–133.8) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 7.2 (7.1–7.3) | 38.0 (37.8–38.1) | 114.8 (114.5–116.6) | 133.1 (133.0–133.8) |
+| Cloudflare Realtime | 20 ms | 17.7 (15.9–18.1) | 51.9 (51.4–52.1) | 128.4 (124.0–128.8) | 141.9 (138.2–147.6) |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 17.1 (16.6–17.2) | 51.5 (50.6–52.2) | 126.8 (126.3–129.8) | 140.7 (140.2–175.8) |
+| LiveKit, SFU in each region | 20 ms | 13.1 (13.1–13.2) | 48.2 (43.8–49.0) | 120.5 (116.9–122.4) | 139.0 (138.9–139.5) |
+| LiveKit, multi-region set | 20 ms | 13.1 (13.1–13.3) | 43.9 (43.7–49.2) | 120.6 (118.9–122.1) | 138.9 (138.9–139.4) |
+| LiveKit Cloud | 20 ms | 25.4 (25.3–25.8) | 67.2 (67.0–67.3) | 141.8 (140.4–142.2) | 149.6 (146.4–150.4) |
 
 Mouth to ear, played on arrival, p95 (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 30.9 (21.4–189.1) | 61.0 (52.5–220.2) | 139.2 (124.9–292.5) | 314.9 (161.4–607.0) |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 26.4 (21.9–30.9) | 56.6 (52.1–61.1) | 131.7 (124.4–139.1) | 156.9 (155.5–158.2) |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 26.3 (21.9–30.8) | 56.7 (52.1–61.3) | 131.7 (124.4–139.0) | 156.8 (155.5–158.0) |
-| Cloudflare Realtime | 20 ms | 23.5 (22.9–24.9) | 57.3 (57.2–58.1) | 132.5 (132.4–132.7) | 181.5 (163.2–184.8) |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 23.8 (23.0–24.3) | 56.4 (56.2–56.4) | 129.9 (129.5–132.8) | 145.4 (143.2–152.6) |
-| LiveKit, SFU in each region | 20 ms | 18.6 (18.4–18.9) | 49.4 (49.3–54.6) | 127.6 (127.2–127.8) | 144.6 (144.6–144.9) |
-| LiveKit, multi-region set | 20 ms | 18.6 (18.3–18.9) | 49.3 (49.3–49.5) | 127.5 (124.1–127.8) | 144.5 (144.5–144.8) |
-| LiveKit Cloud | 20 ms | 32.6 (32.5–33.2) | 75.5 (75.5–76.0) | 148.0 (147.7–148.3) | 154.4 (153.5–159.2) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 9.6 (9.5–9.8) | 40.4 (40.1–40.4) | 117.1 (116.7–119.2) | 135.4 (135.3–136.0) |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 10.6 (10.4–10.6) | 41.0 (40.7–41.2) | 117.9 (117.7–119.5) | 136.2 (136.1–137.2) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 10.3 (10.1–10.4) | 41.2 (40.7–41.2) | 117.8 (117.6–119.6) | 136.3 (136.2–137.1) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 10.4 (10.2–10.5) | 41.1 (40.9–41.2) | 118.0 (117.7–119.8) | 136.3 (136.1–137.1) |
+| Cloudflare Realtime | 20 ms | 24.0 (22.2–24.6) | 58.2 (57.7–72.8) | 134.7 (132.2–135.1) | 148.3 (144.5–153.9) |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 23.8 (23.0–24.2) | 57.9 (57.4–58.5) | 133.1 (133.1–136.2) | 147.0 (147.0–182.1) |
+| LiveKit, SFU in each region | 20 ms | 19.1 (19.0–19.2) | 54.3 (49.9–55.1) | 126.5 (122.9–128.4) | 145.0 (145.0–145.5) |
+| LiveKit, multi-region set | 20 ms | 19.1 (19.1–19.3) | 49.9 (49.7–55.2) | 126.6 (124.9–128.1) | 144.9 (144.9–145.4) |
+| LiveKit Cloud | 20 ms | 33.3 (32.7–33.7) | 75.4 (75.3–75.6) | 150.2 (148.9–151.0) | 157.9 (154.8–159.3) |
 
 Mouth to ear, played on arrival, p99 (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 151.5 (34.2–349.6) | 64.0 (55.3–376.7) | 142.5 (128.3–447.2) | 886.7 (512.8–1099.5) |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 86.0 (34.0–137.9) | 59.3 (54.8–63.9) | 135.0 (127.3–142.7) | 480.5 (198.8–762.2) |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 46.9 (34.1–59.7) | 59.6 (54.8–64.3) | 135.0 (127.5–142.5) | 484.6 (201.6–767.5) |
-| Cloudflare Realtime | 20 ms | 25.5 (24.2–30.3) | 59.0 (58.0–59.1) | 134.4 (133.6–134.8) | 186.0 (182.8–763.5) |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 25.4 (23.9–27.1) | 56.8 (56.7–57.1) | 130.9 (130.3–134.1) | 146.3 (144.0–733.3) |
-| LiveKit, SFU in each region | 20 ms | 19.6 (18.7–20.7) | 49.6 (49.6–54.9) | 128.4 (127.9–128.8) | 146.0 (145.4–706.7) |
-| LiveKit, multi-region set | 20 ms | 19.9 (18.6–20.6) | 49.7 (49.5–49.9) | 127.9 (125.2–128.9) | 145.2 (144.9–750.6) |
-| LiveKit Cloud | 20 ms | 33.6 (33.1–35.1) | 76.6 (76.5–77.0) | 149.4 (149.1–149.7) | 155.5 (154.6–846.3) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 10.9 (10.8–11.3) | 41.8 (41.4–41.8) | 118.6 (118.1–121.0) | 137.2 (136.9–137.5) |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 12.1 (11.9–12.3) | 42.5 (42.2–42.8) | 119.3 (119.2–121.0) | 138.0 (138.0–138.9) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 11.8 (11.6–11.9) | 42.6 (42.1–42.6) | 119.3 (119.2–121.5) | 138.3 (137.8–138.7) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 11.9 (11.7–12.0) | 42.5 (42.4–42.8) | 119.4 (119.2–121.3) | 138.0 (137.9–138.7) |
+| Cloudflare Realtime | 20 ms | 24.7 (22.7–25.8) | 58.9 (58.4–88.2) | 135.4 (132.7–135.8) | 148.9 (144.9–154.6) |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 25.4 (23.8–25.6) | 58.6 (58.5–59.3) | 134.7 (133.8–136.9) | 148.3 (147.7–182.9) |
+| LiveKit, SFU in each region | 20 ms | 19.4 (19.4–19.6) | 54.6 (50.2–55.4) | 126.9 (123.2–128.8) | 145.3 (145.2–145.9) |
+| LiveKit, multi-region set | 20 ms | 19.5 (19.4–19.6) | 50.2 (50.0–55.6) | 126.9 (125.3–128.7) | 145.2 (145.1–145.8) |
+| LiveKit Cloud | 20 ms | 33.5 (33.4–34.0) | 76.4 (76.4–76.6) | 151.2 (150.3–152.1) | 159.2 (156.3–160.3) |
 
 Jitter: p99 minus median of the unit latency (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 141.2 (12.8–339.7) | 12.5 (8.6–330.2) | 13.0 (10.6–329.7) | 740.1 (375.8–961.3) |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 69.7 (12.7–126.6) | 10.4 (8.4–12.4) | 11.7 (10.0–13.4) | 338.0 (60.6–615.3) |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 31.2 (13.0–49.5) | 10.4 (8.4–12.3) | 11.8 (10.2–13.3) | 342.1 (64.2–620.1) |
-| Cloudflare Realtime | 20 ms | 6.1 (3.9–12.4) | 2.6 (2.4–5.0) | 3.6 (2.8–7.8) | 3.4 (3.1–606.5) |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 3.8 (2.2–6.9) | 1.5 (1.3–1.6) | 2.7 (2.3–3.9) | 2.3 (1.8–586.2) |
-| LiveKit, SFU in each region | 20 ms | 3.3 (0.8–5.4) | 1.3 (0.6–1.3) | 2.8 (1.2–3.5) | 4.0 (2.8–557.2) |
-| LiveKit, multi-region set | 20 ms | 3.2 (0.8–5.5) | 1.3 (0.7–1.4) | 2.7 (1.3–3.1) | 2.2 (1.9–596.2) |
-| LiveKit Cloud | 20 ms | 2.6 (2.1–7.5) | 2.4 (2.1–2.8) | 3.5 (3.0–4.1) | 3.3 (2.5–698.9) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 3.5 (3.2–3.6) | 3.4 (3.4–3.5) | 3.5 (3.3–4.0) | 3.6 (3.6–4.0) |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 3.9 (3.7–4.1) | 3.7 (3.6–3.8) | 3.8 | 4.2 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 3.7 (3.6–3.7) | 3.6 (3.4–3.8) | 3.7 (3.7–4.2) | 4.1 (3.9–4.4) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 3.8 | 3.7 (3.5–3.8) | 3.7 (3.7–3.8) | 4.0 |
+| Cloudflare Realtime | 20 ms | 2.0 (1.8–4.2) | 2.1 (1.8–36.7) | 1.9 (1.8–2.3) | 1.6 (1.4–2.1) |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 3.2 (2.4–5.5) | 2.2 (2.0–3.0) | 2.0 (1.9–3.6) | 1.9 (1.9–3.4) |
+| LiveKit, SFU in each region | 20 ms | 1.5 (1.3–1.5) | 1.4 (1.1–1.4) | 1.4 (1.2–1.4) | 1.0 (1.0–1.4) |
+| LiveKit, multi-region set | 20 ms | 1.4 | 1.3 (1.2–1.3) | 1.3 (1.1–1.6) | 0.9 (0.9–1.2) |
+| LiveKit Cloud | 20 ms | 1.8 (1.5–2.0) | 2.5 (2.2–3.0) | 2.8 (2.4–2.9) | 2.9 (2.8–3.2) |
 
 Units missing (%):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 0.005 (0.000–0.010) | 0.000 | 0.000 | 0.000 |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| Cloudflare Realtime | 20 ms | 0.000 | 0.000 | 0.000 (0.000–0.041) | 0.000 |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 0.000 (0.000–0.040) | 0.000 (0.000–0.040) | 0.000 | 0.041 (0.000–0.043) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 0.000 | 0.000 | 0.000 | 0.000 |
+| Cloudflare Realtime | 20 ms | 0.000 (0.000–0.039) | 0.000 (0.000–0.040) | 0.000 | 0.000 |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 0.000 (0.000–0.040) | 0.000 | 0.000 | 0.000 |
 | LiveKit, SFU in each region | 20 ms | 0.000 | 0.000 | 0.000 | 0.000 |
 | LiveKit, multi-region set | 20 ms | 0.000 | 0.000 | 0.000 | 0.000 |
-| LiveKit Cloud | 20 ms | 0.000 | 0.000 | 0.000 | 0.000 (0.000–0.039) |
+| LiveKit Cloud | 20 ms | 0.000 | 0.000 | 0.000 | 0.000 |
 
 Units bit-exact (%):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | Cloudflare Realtime | 20 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | Cloudflare Stream WHIP/WHEP | 20 ms | 100.000 | 100.000 | 100.000 | 100.000 |
 | LiveKit, SFU in each region | 20 ms | 100.000 | 100.000 | 100.000 | 100.000 |
@@ -857,27 +925,29 @@ Time from the listener's start to its first audio (ms):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 96.1 (85.1–271.4) | 58.5 (49.3–73.1) | 253.5 (53.4–282.5) | 61.7 (49.3–63.3) |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 114.0 (91.9–136.0) | 65.5 (54.7–76.3) | 265.4 (259.0–271.9) | 69.5 (54.0–85.0) |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 132.0 (98.2–165.8) | 64.1 (58.1–70.1) | 240.8 (233.7–247.8) | 74.9 (72.8–77.1) |
-| Cloudflare Realtime | 20 ms | 910.3 (891.6–1262.5) | 1893.4 (1802.5–1987.0) | 3542.0 (3450.2–3577.8) | 3572.4 (3539.8–4437.0) |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 1295.7 (1271.3–1694.8) | 2236.7 (1853.1–2355.9) | 4272.2 (3275.5–4624.3) | 3554.2 (3453.8–5694.1) |
-| LiveKit, SFU in each region | 20 ms | 186.7 (180.6–256.8) | 180.8 (162.0–184.1) | 184.0 (178.0–184.1) | 180.1 (171.1–190.6) |
-| LiveKit, multi-region set | 20 ms | 193.4 (171.8–221.1) | 1120.0 (1039.8–1269.6) | 3965.7 (3395.5–3995.5) | 4731.2 (4664.4–4751.2) |
-| LiveKit Cloud | 20 ms | 341.6 (323.2–512.8) | 508.9 (450.6–512.3) | 1354.5 (825.5–1478.6) | 914.9 (843.4–1004.8) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 1132.4 (165.6–1134.0) | 223.6 (180.2–236.3) | 1019.5 (137.6–2017.1) | 158.5 (131.7–179.3) |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 1137.2 (158.5–1138.9) | 226.2 (197.4–254.8) | 1020.5 (49.6–1227.6) | 170.7 (147.2–171.6) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 1138.3 (1126.4–1325.4) | 232.0 (179.0–257.2) | 150.0 (54.2–1002.2) | 169.6 (140.2–177.6) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 1132.3 (1127.1–1322.8) | 212.5 (199.1–230.8) | 1210.8 (1012.7–2024.3) | 150.3 (127.1–169.0) |
+| Cloudflare Realtime | 20 ms | 920.6 (882.4–967.9) | 1935.0 (1173.9–1962.5) | 3688.1 (3583.1–3804.4) | 2942.6 (2806.8–4761.8) |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 1260.0 (1196.5–1308.3) | 2454.8 (2283.8–2505.6) | 4557.7 (2706.8–4623.6) | 3782.9 (3738.7–3886.8) |
+| LiveKit, SFU in each region | 20 ms | 171.9 (160.0–172.6) | 170.6 (166.4–175.7) | 165.7 (163.9–169.8) | 166.5 (163.2–178.1) |
+| LiveKit, multi-region set | 20 ms | 172.2 (163.0–184.4) | 1161.3 (1159.2–1258.0) | 4029.5 (4019.3–4048.5) | 4767.2 (4732.5–4774.7) |
+| LiveKit Cloud | 20 ms | 262.6 (255.1–279.5) | 456.7 (456.2–487.0) | 1449.6 (1305.0–1695.3) | 1267.0 (1166.9–1722.8) |
 
 Bit rate at the listener (kbit/s):
 
 | System | Frame | London | New York | Tokyo | Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (flac) | 5 ms | 1852.6 (1851.6–1858.0) | 1852.6 (1852.2–1855.8) | 1852.7 (1851.6–1857.5) | 1852.6 (1851.9–1860.1) |
-| Needletail, pipelined reader, HTTP/2 (flac) | 5 ms | 1852.4 (1851.4–1853.4) | 1852.4 (1852.2–1852.6) | 1852.1 (1851.6–1852.6) | 1852.0 (1851.6–1852.5) |
-| Needletail, pipelined reader, HTTP/3 (flac) | 5 ms | 1853.2 (1851.7–1854.6) | 1852.2 (1852.1–1852.4) | 1852.0 (1851.6–1852.5) | 1851.9 (1851.6–1852.3) |
-| Cloudflare Realtime | 20 ms | 256.0 (256.0–256.1) | 256.0 (256.0–256.1) | 256.0 | 256.0 |
-| Cloudflare Stream WHIP/WHEP | 20 ms | 256.0 (255.9–256.1) | 255.9 (255.8–256.0) | 256.0 (256.0–256.1) | 255.9 (255.9–256.1) |
-| LiveKit, SFU in each region | 20 ms | 256.0 | 256.0 | 256.0 (256.0–256.1) | 256.0 |
-| LiveKit, multi-region set | 20 ms | 256.0 | 256.1 (256.0–256.1) | 256.0 | 256.0 (256.0–256.1) |
-| LiveKit Cloud | 20 ms | 255.9 | 256.0 | 256.0 (255.9–256.1) | 255.9 (255.8–256.0) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 ms | 1853.1 (1853.1–1853.2) | 1853.0 (1852.8–1853.2) | 1852.6 (1851.4–1852.7) | 1852.2 (1852.1–1852.4) |
+| Needletail, LL-HLS, reader as shipped (flac) | 5 ms | 1853.1 (1853.1–1853.2) | 1853.0 (1852.7–1853.0) | 1852.6 (1852.0–1853.3) | 1852.3 (1852.2–1852.4) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (flac) | 5 ms | 1853.1 (1853.0–1853.4) | 1853.0 (1852.8–1853.0) | 1852.5 (1852.0–1852.8) | 1852.3 (1852.1–1852.3) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (flac) | 5 ms | 1853.3 (1853.2–1853.4) | 1853.0 (1852.8–1853.1) | 1852.7 (1851.2–1853.4) | 1852.3 |
+| Cloudflare Realtime | 20 ms | 256.0 (255.9–256.1) | 256.0 (255.8–256.0) | 256.0 (255.9–256.1) | 256.0 (256.0–256.1) |
+| Cloudflare Stream WHIP/WHEP | 20 ms | 256.0 (255.9–256.1) | 256.0 | 256.0 | 256.0 (256.0–256.1) |
+| LiveKit, SFU in each region | 20 ms | 256.0 | 256.1 (255.9–256.1) | 256.0 | 256.0 (255.9–256.1) |
+| LiveKit, multi-region set | 20 ms | 256.0 (255.9–256.1) | 256.0 | 256.1 (256.0–256.1) | 256.0 (256.0–256.1) |
+| LiveKit Cloud | 20 ms | 256.0 (255.9–256.1) | 256.0 (256.0–256.1) | 256.0 | 256.0 (255.9–256.1) |
 
 ### Impairment, opus-2.5
 
@@ -885,60 +955,63 @@ Units missing at the listener (%), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
-| Needletail, pipelined reader, HTTP/2 (opus) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.01 (0.00–0.02) / 0.00 | 0.00 / 0.00 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
-| Cloudflare Realtime | 0.02 (0.00–0.13) / 0.04 (0.03–0.10) | 1.01 (0.86–1.06) / 1.02 (0.89–1.09) | 5.16 (4.65–5.53) / 5.14 (5.01–5.50) | 4.92 (4.16–5.14) / 5.17 (4.83–5.52) | 0.00 (0.00–0.01) / 0.03 (0.00–0.08) |
-| Cloudflare Stream WHIP/WHEP | 0.03 (0.02–0.08) / 0.05 (0.00–0.27) | 1.14 (0.83–1.19) / 0.98 | 5.04 (5.03–5.28) / 5.10 (4.58–5.17) | 5.11 (4.96–5.23) / 5.21 (5.08–5.34) | 0.00 (0.00–0.02) / 0.00 (0.00–0.12) |
-| LiveKit, SFU in each region | 0.00 / 0.00 | 0.99 (0.94–1.04) / 0.94 (0.80–1.06) | 5.36 (5.09–5.43) / 5.30 (4.88–5.40) | 5.02 (4.44–5.09) / 5.37 (5.05–6.50) | 0.00 / 0.00 |
-| LiveKit, multi-region set | 0.00 / 0.00 | 1.02 (0.99–1.05) / 1.11 (0.93–1.34) | 4.97 (4.67–5.01) / 4.93 (4.47–5.33) | 4.88 (4.56–5.10) / 5.25 (5.03–5.47) | 0.00 / 0.00 |
-| LiveKit Cloud | 0.00 / 0.00 | 0.96 (0.90–1.01) / 1.04 (0.91–1.21) | 4.94 (4.84–4.97) / 5.05 (4.91–5.08) | 4.77 (4.47–5.01) / 5.15 (5.03–5.26) | 0.00 / 0.00 (0.00–0.01) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.67 (0.38–0.67) / 0.67 (0.42–0.73) | 0.00 / 0.00 |
+| Needletail, LL-HLS, reader as shipped (opus) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 (0.00–0.64) / 0.00 | 0.00 / 0.00 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 (0.00–0.02) | 0.00 / 0.00 | 0.00 / 0.00 |
+| Cloudflare Realtime | 0.00 (0.00–0.12) / 0.00 (0.00–0.12) | 0.98 (0.86–0.99) / 0.93 (0.73–0.98) | 5.16 (5.13–5.50) / 5.04 (4.56–5.15) | 4.97 (4.94–5.31) / 4.81 (4.59–5.35) | 0.00 (0.00–0.06) / 0.01 (0.00–0.07) |
+| Cloudflare Stream WHIP/WHEP | 0.01 (0.00–0.01) / 0.01 (0.00–0.01) | 1.02 (0.96–1.23) / 1.12 (0.89–1.17) | 5.14 (4.74–5.35) / 4.98 (4.53–5.01) | 5.25 (4.93–5.32) / 4.93 (4.86–5.16) | 0.00 / 0.00 |
+| LiveKit, SFU in each region | 0.00 / 0.00 | 1.07 (0.97–1.08) / 1.11 (0.88–1.11) | 4.82 (4.65–5.04) / 4.83 (4.72–5.42) | 4.99 (4.80–5.59) / 4.93 (4.86–5.17) | 0.00 / 0.00 |
+| LiveKit, multi-region set | 0.00 / 0.00 | 1.10 (0.93–1.15) / 0.91 | 5.04 (4.85–5.10) / 5.09 (4.97–5.16) | 5.30 (4.78–5.39) / 4.90 (4.84–5.00) | 0.00 / 0.00 |
+| LiveKit Cloud | 0.00 / 0.00 (0.00–0.13) | 1.03 (0.95–1.06) / 0.97 (0.95–1.03) | 5.03 (4.86–5.29) / 5.05 (4.84–5.17) | 5.17 (4.85–5.26) / 4.96 (4.95–5.20) | 0.00 / 0.00 |
 
 Longest gap (ms), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
-| Needletail, pipelined reader, HTTP/2 (opus) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 2.5 (0.0–5.0) / 0.0 | 0.0 / 0.0 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
-| Cloudflare Realtime | 2.5 (0.0–20.0) / 5.0 (2.5–5.0) | 5.0 (2.5–5.0) / 5.0 (2.5–5.0) | 7.5 (7.5–20.0) / 10.0 (7.5–10.0) | 12.5 (10.0–15.0) / 15.0 (10.0–20.0) | 0.0 (0.0–2.5) / 2.5 (0.0–5.0) |
-| Cloudflare Stream WHIP/WHEP | 5.0 (5.0–20.0) / 5.0 (0.0–20.0) | 5.0 / 2.5 (2.5–5.0) | 7.5 (5.0–7.5) / 7.5 | 17.5 (15.0–17.5) / 16.2 (12.5–20.0) | 0.0 (0.0–5.0) / 0.0 (0.0–5.0) |
-| LiveKit, SFU in each region | 0.0 / 0.0 | 5.0 (2.5–5.0) / 5.0 (2.5–7.5) | 7.5 (7.5–10.0) / 7.5 (5.0–7.5) | 20.0 (15.0–22.5) / 20.0 (15.0–25.0) | 0.0 / 0.0 (0.0–2.5) |
-| LiveKit, multi-region set | 0.0 / 0.0 | 5.0 (2.5–5.0) / 5.0 | 7.5 (7.5–10.0) / 7.5 | 15.0 (12.5–20.0) / 16.2 (12.5–20.0) | 0.0 / 0.0 |
-| LiveKit Cloud | 0.0 / 0.0 | 5.0 (2.5–5.0) / 5.0 | 7.5 / 7.5 | 12.5 (12.5–15.0) / 20.0 (15.0–25.0) | 0.0 / 0.0 (0.0–2.5) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 10.0 (5.0–10.0) / 10.0 | 0.0 / 0.0 |
+| Needletail, LL-HLS, reader as shipped (opus) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 (0.0–50.0) / 0.0 | 0.0 / 0.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 (0.0–5.0) | 0.0 / 0.0 | 0.0 / 0.0 |
+| Cloudflare Realtime | 0.0 (0.0–15.0) / 0.0 (0.0–15.0) | 2.5 / 5.0 | 15.0 (10.0–22.5) / 15.0 (7.5–22.5) | 10.0 (10.0–12.5) / 15.0 (10.0–17.5) | 0.0 (0.0–15.0) / 2.5 (0.0–15.0) |
+| Cloudflare Stream WHIP/WHEP | 5.0 (0.0–5.0) / 2.5 (0.0–5.0) | 2.5 (2.5–5.0) / 5.0 (2.5–5.0) | 7.5 (5.0–7.5) / 7.5 (5.0–7.5) | 12.5 (12.5–15.0) / 10.0 (10.0–12.5) | 0.0 / 0.0 |
+| LiveKit, SFU in each region | 0.0 / 0.0 | 2.5 (2.5–5.0) / 5.0 | 7.5 (5.0–7.5) / 7.5 | 12.5 (10.0–12.5) / 12.5 (10.0–15.0) | 0.0 / 0.0 |
+| LiveKit, multi-region set | 0.0 / 0.0 | 2.5 / 2.5 (2.5–5.0) | 7.5 (5.0–7.5) / 7.5 (5.0–7.5) | 10.0 (10.0–12.5) / 10.0 | 0.0 / 0.0 |
+| LiveKit Cloud | 0.0 / 0.0 (0.0–65.0) | 5.0 (2.5–5.0) / 5.0 (2.5–5.0) | 7.5 / 7.5 (5.0–7.5) | 12.5 (10.0–12.5) / 12.5 | 0.0 / 0.0 |
 
 Mouth to ear, played on arrival, p99 (ms), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 57 (22–358) / 147 (145–175) | 1420 (682–1545) / 998 (800–1473) | 21828 (21797–22674) / 21735 (21627–22565) | 9779 (6312–15921) / 6472 (1993–10695) | 29844 (29736–29970) / 29905 (29874–30052) |
-| Needletail, pipelined reader, HTTP/2 (opus) | 145 (47–244) / 159 (147–171) | 597 (36–1157) / 718 (158–1277) | 415 (404–426) / 330 (327–333) | 845 (396–1294) / 464 (375–554) | 733 (729–737) / 855 (842–868) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 159 (52–267) / 158 (147–168) | 596 (37–1154) / 724 (158–1290) | 26 (24–28) / 175 (165–185) | 48 (41–55) / 179 (171–187) | 585 (524–647) / 843 (746–940) |
-| Cloudflare Realtime | 14 (12–223) / 134 (132–134) | 10 (9–13) / 133 (132–134) | 11 (10–11) / 141 (131–168) | 9 (8–11) / 151 (135–167) | 111 (111–113) / 235 (233–238) |
-| Cloudflare Stream WHIP/WHEP | 12 (11–237) / 133 (131–134) | 10 (9–15) / 132 (131–133) | 9 (9–11) / 133 (131–134) | 9 (8–10) / 131 (131–132) | 112 (109–114) / 238 (231–269) |
-| LiveKit, SFU in each region | 7 (5–218) / 131 (131–133) | 4 (3–9) / 130 (129–131) | 4 / 131 (130–131) | 4 (3–7) / 130 (130–135) | 104 (103–106) / 232 (231–234) |
-| LiveKit, multi-region set | 7 (5–296) / 131 (130–132) | 5 (3–9) / 130 (130–131) | 4 / 131 (130–131) | 4 (3–7) / 130 | 104 (103–106) / 231 (231–241) |
-| LiveKit Cloud | 20 (19–242) / 145 | 19 (18–22) / 144 (140–145) | 19 (18–19) / 140 (140–144) | 18 (18–19) / 142 (141–144) | 119 / 245 (244–248) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 13 / 139 | 13 / 139 | 13 / 139 | 13 / 140 (139–204) | 113 / 239 |
+| Needletail, LL-HLS, reader as shipped (opus) | 14 / 141 (141–144) | 860 (855–1626) / 714 (702–839) | 22056 (21861–22216) / 21663 (20281–23031) | 8568 (6768–8920) / 9089 (7953–9465) | 28919 (28325–29900) / 29275 (28660–30026) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (opus) | 14 / 140 (140–250) | 20 (14–98) / 142 (141–146) | 530 (227–542) / 515 (332–544) | 215 (204–479) / 584 (559–654) | 672 (667–683) / 769 (764–831) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 14 / 143 (140–231) | 15 (15–16) / 141 (141–142) | 21 / 148 (147–149) | 65 (58–140) / 293 (165–714) | 520 (513–554) / 1059 (829–1063) |
+| Cloudflare Realtime | 11 (8–11) / 134 (133–139) | 10 (10–11) / 133 (132–139) | 10 (8–12) / 132 (132–139) | 10 (9–11) / 132 (131–133) | 109 (109–110) / 233 (231–252) |
+| Cloudflare Stream WHIP/WHEP | 9 (9–11) / 132 (132–168) | 13 (11–30) / 151 (132–153) | 10 (9–12) / 133 (131–176) | 11 (9–15) / 155 (139–169) | 109 (108–110) / 232 (231–253) |
+| LiveKit, SFU in each region | 4 / 130 | 4 / 130 | 4 / 130 | 4 / 130 (130–133) | 104 / 230 |
+| LiveKit, multi-region set | 4 / 130 | 4 / 130 | 4 / 130 | 4 / 130 | 104 / 230 |
+| LiveKit Cloud | 18 (18–19) / 144 | 18 / 144 (140–145) | 18 (18–21) / 144 (140–191) | 18 (18–32) / 144 (140–146) | 119 / 244 (240–244) |
 
 Chrome concealed samples (%), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Cloudflare Realtime | 0.00 / 0.00 (0.00–0.66) | 4.12 (3.39–4.63) / 3.85 (3.42–4.46) | 17.54 (15.60–19.49) / 19.00 (18.66–19.34) | 14.64 (13.14–15.18) / 14.37 (11.44–15.24) | 0.00 (0.00–0.06) / 0.00 (0.00–0.07) |
-| Cloudflare Stream WHIP/WHEP | 0.00 (0.00–0.26) / 0.09 (0.00–1.62) | 3.63 (2.60–4.30) / 3.88 (3.72–4.40) | 17.97 (17.69–18.64) / 18.13 (16.76–18.36) | 10.62 (9.42–11.30) / 10.90 (9.62–11.41) | 0.09 (0.00–0.16) / 0.15 (0.00–0.29) |
-| LiveKit, SFU in each region | 0.00 / 0.00 | 0.97 (0.88–1.13) / 1.21 (1.02–1.37) | 1.69 (1.38–1.80) / 1.53 (1.42–1.54) | 2.11 (1.53–2.11) / 1.89 (1.73–2.54) | 0.00 / 0.00 (0.00–0.09) |
-| LiveKit, multi-region set | 0.00 (0.00–0.07) / 0.00 | 1.01 (0.72–1.09) / 2.25 (1.88–2.44) | 1.59 (1.37–1.62) / 2.83 (2.83–2.86) | 2.14 (1.73–2.27) / 4.39 (2.77–4.46) | 0.00 (0.00–0.06) / 0.00 (0.00–0.07) |
-| LiveKit Cloud | 0.00 (0.00–0.05) / 0.00 | 1.75 (1.66–1.78) / 1.28 (1.19–1.46) | 2.15 (1.90–2.19) / 1.90 (1.54–2.47) | 3.01 (2.73–3.48) / 1.94 (1.33–2.49) | 0.00 / 0.00 |
+| Cloudflare Realtime | 0.00 (0.00–0.25) / 0.05 (0.00–0.22) | 4.40 (4.06–4.76) / 4.13 (3.17–5.57) | 17.89 (17.56–18.05) / 18.45 (16.97–19.13) | 14.49 (14.37–17.24) / 14.32 (13.60–16.64) | 0.00 (0.00–0.18) / 0.00 (0.00–0.18) |
+| Cloudflare Stream WHIP/WHEP | 0.00 (0.00–0.05) / 0.00 | 4.17 (3.73–4.22) / 3.58 (3.40–3.76) | 17.27 (16.54–17.82) / 18.36 (18.11–18.61) | 13.31 (12.41–15.31) / 12.18 (10.50–12.20) | 0.00 (0.00–0.06) / 0.00 (0.00–0.05) |
+| LiveKit, SFU in each region | 0.00 / 0.00 | 1.28 (1.19–1.50) / 1.39 (1.16–1.54) | 1.55 (1.42–2.03) / 1.59 (1.35–1.61) | 1.97 (1.38–2.21) / 1.95 (1.42–2.77) | 0.00 / 0.00 (0.00–0.08) |
+| LiveKit, multi-region set | 0.00 / 0.00 | 1.08 (1.03–1.19) / 2.29 (2.28–2.51) | 2.02 (1.76–2.15) / 3.51 (3.15–3.62) | 2.40 (1.71–2.46) / 5.09 (5.04–5.39) | 0.00 / 0.00 |
+| LiveKit Cloud | 0.00 / 0.00 | 1.52 (1.42–1.52) / 1.30 (1.28–1.33) | 1.76 (1.70–1.84) / 1.92 (1.64–2.28) | 2.97 (2.70–5.31) / 2.25 (2.07–3.32) | 0.00 / 0.00 |
 
 Chrome mouth to ear at the marker, median (ms), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Cloudflare Realtime | 79 (66–86) / 245 (244–245) | 344 (286–431) / 464 (301–477) | 396 (380–413) / 551 (497–606) | 357 (202–365) / 495 (440–555) | 189 (183–203) / 337 (305–641) |
-| Cloudflare Stream WHIP/WHEP | 89 (74–91) / 218 (213–271) | 233 (180–376) / 402 (340–464) | 321 (317–527) / 496 (405–688) | 267 (198–275) / 429 (413–541) | 190 (176–196) / 390 (324–637) |
-| LiveKit, SFU in each region | 66 (64–77) / 202 (200–401) | 228 (174–235) / 347 (342–357) | 277 (273–281) / 398 (372–415) | 237 (204–248) / 399 (342–412) | 172 (166–181) / 305 (302–310) |
-| LiveKit, multi-region set | 81 (79–86) / 204 (200–206) | 195 (168–209) / 449 (440–457) | 294 (278–298) / 500 (477–523) | 262 (221–287) / 395 (285–448) | 176 (175–186) / 307 (296–449) |
-| LiveKit Cloud | 79 (76–105) / 273 (231–301) | 195 (192–210) / 321 (320–326) | 287 (280–305) / 413 (406–416) | 209 (202–225) / 333 (330–464) | 180 (179–182) / 308 (304–314) |
+| Cloudflare Realtime | 87 (73–97) / 201 (197–214) | 274 (238–355) / 425 (383–429) | 342 (268–395) / 508 (411–566) | 384 (341–396) / 500 (442–503) | 188 (176–188) / 305 (297–313) |
+| Cloudflare Stream WHIP/WHEP | 91 (70–97) / 229 (193–233) | 256 (249–437) / 428 (421–451) | 334 (326–373) / 379 (366–389) | 359 (343–436) / 394 (302–477) | 180 (178–189) / 311 (311–313) |
+| LiveKit, SFU in each region | 72 (66–72) / 201 (193–206) | 125 (100–161) / 281 (272–294) | 250 (246–309) / 372 (359–379) | 254 (250–261) / 380 (297–412) | 168 (163–173) / 300 (289–315) |
+| LiveKit, multi-region set | 77 (65–78) / 188 (188–189) | 201 (188–215) / 442 (436–451) | 268 (251–269) / 456 (451–461) | 204 (202–240) / 398 (379–464) | 169 (167–171) / 293 (293–307) |
+| LiveKit Cloud | 87 (82–87) / 202 (199–215) | 198 (190–217) / 307 (306–330) | 307 (290–347) / 408 (396–433) | 203 (154–211) / 313 | 182 (173–183) / 305 (302–308) |
 
 ### Impairment, pcm
 
@@ -946,37 +1019,40 @@ Units missing at the listener (%), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.01 (0.00–0.02) / 0.00 | 0.00 / 0.00 |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
-| Cloudflare Realtime | 0.07 (0.03–0.07) / 0.08 (0.03–0.10) | 1.10 (0.97–1.11) / 0.98 (0.93–1.12) | 5.13 (4.73–5.42) / 5.19 (4.94–5.38) | 5.31 (5.27–5.43) / 4.70 (3.88–5.52) | 0.04 (0.02–0.08) / 0.06 (0.01–0.09) |
-| LiveKit, SFU in each region | 0.00 / 0.00 | 0.97 (0.89–1.04) / 0.99 (0.94–0.99) | 5.02 (4.64–5.19) / 5.08 (5.08–5.12) | 5.45 (5.35–5.66) / 4.92 (4.60–5.25) | 0.00 / 0.00 |
-| LiveKit, multi-region set | 0.00 / 0.00 (0.00–0.02) | 1.04 (1.00–1.07) / 0.93 (0.85–1.06) | 5.09 (4.97–5.35) / 5.10 (5.00–5.31) | 5.60 (4.60–5.60) / 5.41 (4.90–5.93) | 0.00 / 0.00 (0.00–0.01) |
-| LiveKit Cloud | 0.00 (0.00–0.02) / 0.00 (0.00–0.20) | 0.98 (0.97–1.30) / 1.10 (0.89–1.83) | 5.02 (4.75–5.30) / 5.10 (5.02–5.30) | 5.57 (5.34–5.68) / 8.70 (5.66–11.74) | 88.63 (88.62–88.79) / 88.06 (88.04–88.07) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.17 (0.15–0.18) / 0.24 (0.15–0.30) | 0.00 / 0.00 |
+| Needletail, LL-HLS, reader as shipped (pcm) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 (0.00–0.08) |
+| Cloudflare Realtime | 0.04 (0.00–0.05) / 0.03 (0.02–0.72) | 1.08 (1.08–1.23) / 1.07 (1.05–1.48) | 5.00 (4.76–5.28) / 4.99 (4.96–5.22) | 5.16 (4.61–5.38) / 4.82 (4.72–5.04) | 0.08 (0.08–0.09) / 0.07 (0.03–0.21) |
+| LiveKit, SFU in each region | 0.01 / 0.00 (0.00–0.05) | 0.95 (0.94–1.01) / 0.88 (0.81–0.91) | 4.99 (4.96–5.11) / 5.01 (4.52–5.20) | 5.25 (4.49–5.27) / 4.86 (4.75–5.02) | 0.09 (0.07–0.16) / 0.15 (0.02–0.21) |
+| LiveKit, multi-region set | 0.00 / 0.03 (0.02–0.03) | 1.04 (0.99–1.06) / 0.98 (0.89–1.18) | 5.08 (4.92–5.10) / 5.11 (4.84–5.50) | 5.19 (4.77–5.47) / 4.66 (4.29–5.11) | 0.05 (0.05–0.08) / 0.02 (0.00–0.04) |
+| LiveKit Cloud | 0.00 / 0.04 (0.00–0.41) | 1.04 (0.99–1.07) / 1.02 (0.81–1.03) | 4.84 (4.41–4.94) / 5.07 (4.75–5.09) | 5.19 (4.64–5.62) / 5.07 (4.82–5.08) | 88.69 (88.66–88.70) / 87.99 (87.96–88.01) |
 
 Longest gap (ms), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 2.5 (0.0–5.0) / 0.0 | 0.0 / 0.0 |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
-| Cloudflare Realtime | 5.0 (2.5–7.5) / 5.0 (2.5–7.5) | 5.0 (5.0–7.5) / 2.5 (2.5–7.5) | 7.5 (5.0–7.5) / 7.5 (5.0–7.5) | 17.5 (15.0–17.5) / 35.0 | 2.5 (2.5–5.0) / 2.5 (2.5–5.0) |
-| LiveKit, SFU in each region | 0.0 / 0.0 | 5.0 (2.5–5.0) / 2.5 | 5.0 (5.0–7.5) / 7.5 (5.0–7.5) | 25.0 (12.5–65.0) / 32.5 (17.5–47.5) | 0.0 / 0.0 (0.0–2.5) |
-| LiveKit, multi-region set | 0.0 / 0.0 (0.0–2.5) | 5.0 (2.5–5.0) / 5.0 | 7.5 / 7.5 (5.0–7.5) | 22.5 (12.5–30.0) / 13.8 (12.5–15.0) | 0.0 (0.0–2.5) / 0.0 (0.0–2.5) |
-| LiveKit Cloud | 0.0 (0.0–10.0) / 0.0 (0.0–90.0) | 5.0 (2.5–47.5) / 5.0 (2.5–197.5) | 7.5 (5.0–7.5) / 7.5 | 22.5 (15.0–25.0) / 773.8 (12.5–1535.0) | 152.5 (152.5–157.5) / 142.5 (122.5–145.0) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 5.0 / 5.0 | 0.0 / 0.0 |
+| Needletail, LL-HLS, reader as shipped (pcm) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 (0.0–20.0) |
+| Cloudflare Realtime | 2.5 (0.0–5.0) / 10.0 (7.5–327.5) | 5.0 (5.0–25.0) / 5.0 (5.0–25.0) | 7.5 / 7.5 (5.0–7.5) | 7.5 (7.5–12.5) / 12.5 (10.0–52.5) | 2.5 (2.5–7.5) / 2.5 (2.5–32.5) |
+| LiveKit, SFU in each region | 2.5 (0.0–2.5) / 2.5 (0.0–22.5) | 2.5 (2.5–5.0) / 5.0 (2.5–7.5) | 7.5 (5.0–7.5) / 7.5 (7.5–12.5) | 12.5 (10.0–25.0) / 10.0 (7.5–10.0) | 7.5 (2.5–7.5) / 5.0 (2.5–7.5) |
+| LiveKit, multi-region set | 0.0 / 2.5 (2.5–5.0) | 2.5 (2.5–5.0) / 5.0 (2.5–7.5) | 7.5 / 5.0 (5.0–10.0) | 10.0 (10.0–12.5) / 10.0 (7.5–32.5) | 2.5 (2.5–5.0) / 2.5 (0.0–2.5) |
+| LiveKit Cloud | 0.0 / 17.5 (0.0–200.0) | 2.5 (2.5–5.0) / 5.0 | 7.5 (5.0–7.5) / 7.5 (5.0–12.5) | 12.5 (10.0–12.5) / 10.0 (10.0–12.5) | 165.0 (152.5–172.5) / 125.0 (117.5–155.0) |
 
 Mouth to ear, played on arrival, p99 (ms), London / Sydney:
 
 | System | none | 1% loss | 5% loss | burst loss | 100 ms delay |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 264 (178–337) / 199 (166–212) | 610 (419–851) / 530 (388–764) | 14234 (12541–14685) / 16215 (15882–16589) | 8524 (6424–9296) / 8628 (7475–9781) | 29857 (29820–29919) / 29959 (29890–29972) |
-| Needletail, pipelined reader, HTTP/2 (pcm) | 129 (126–133) / 176 (156–195) | 27 (23–32) / 208 (181–234) | 351 (271–431) / 542 (350–733) | 1186 (846–1527) / 1052 (506–1599) | 1129 (944–1315) / 1184 (1106–1262) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 114 (95–133) / 190 (186–194) | 28 (24–33) / 175 (159–191) | 90 (86–93) / 207 (202–212) | 88 (70–106) / 1029 (270–1789) | 1670 (1273–2068) / 1421 (1403–1440) |
-| Cloudflare Realtime | 13 (10–16) / 134 (131–136) | 12 (10–26) / 135 (131–135) | 11 (11–14) / 171 (133–8473) | 12 (10–21) / 5022 (1679–8365) | 118 (111–119) / 237 (232–9179) |
-| LiveKit, SFU in each region | 11 (6–13) / 132 (132–1665) | 6 (6–33) / 133 (130–1733) | 7 (5–12) / 131 (131–5619) | 18 (6–10998) / 4792 (1624–7961) | 113 (107–125) / 234 (232–236) |
-| LiveKit, multi-region set | 15 (8–16) / 137 (133–148) | 9 (7–59) / 135 (132–144) | 12 (6–14) / 132 (132–143) | 26 (8–6562) / 884 (138–1631) | 114 (111–138) / 239 (235–264) |
-| LiveKit Cloud | 23 (19–26) / 145 (143–146) | 19 (19–52) / 146 (145–147) | 19 (19–25) / 145 (144–147) | 19 (18–28) / 289 (142–436) | 125 (119–130) / 245 (242–251) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 9 / 136 (135–136) | 9 / 135 | 9 (9–12) / 136 (135–138) | 9 / 135 | 109 / 236 (235–241) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 10 / 136 (136–413) | 381 (243–461) / 434 (401–511) | 15261 (13711–15663) / 14778 (13568–14836) | 6279 (4473–7264) / 2715 (1622–4186) | 29911 (29893–29925) / 30041 (30041–30043) |
+| Needletail, LL-HLS, pipelined reader, HTTP/2 (pcm) | 10 / 137 (136–343) | 74 (11–100) / 138 (138–224) | 1026 (436–1228) / 540 (510–619) | 207 (206–1439) / 447 (331–553) | 799 (774–805) / 958 (916–1033) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 10 / 137 (136–390) | 13 (12–13) / 139 (138–139) | 49 (41–60) / 167 (165–194) | 49 (38–56) / 175 (172–194) | 1005 (978–1021) / 1485 (1080–3245) |
+| Cloudflare Realtime | 10 (8–11) / 150 (140–8387) | 9 (8–10) / 132 (130–10894) | 9 (8–9) / 150 (132–9949) | 9 (9–10) / 168 (150–9877) | 109 (108–109) / 232 (231–8749) |
+| LiveKit, SFU in each region | 5 / 131 (130–245) | 5 / 131 | 5 / 130 | 5 (5–3078) / 131 | 105 / 231 |
+| LiveKit, multi-region set | 5 / 131 (131–132) | 6 / 131 | 5 / 131 | 5 / 131 (131–9794) | 106 (106–108) / 232 |
+| LiveKit Cloud | 19 (18–20) / 145 | 19 (19–20) / 145 | 19 (19–33) / 145 (144–145) | 19 (19–33) / 145 (144–145) | 119 (119–120) / 245 |
 
 ### Listeners, opus-2.5
 
@@ -984,49 +1060,53 @@ Listeners with audio, of those started in the region:
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 1/1, 1/1 | 3/3, 3/3 | 2/2, 2/2 | 25/25, 25/25 | 25/25, 25/25 | 25/25, 25/25 | 25/25, 25/25 |
-| Cloudflare Realtime | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 24/25, 25/25, 25/25 | 22/25, 24/25, 25/25 | 25/25, 25/25, 25/25 | 18/25, 22/25, 25/25 |
-| Cloudflare Stream WHIP/WHEP | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 23/25, 25/25, 25/25 | 24/25, 25/25, 25/25 | 16/25, 25/25, 24/25 |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
+| Needletail, LL-HLS, reader as shipped (opus) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
+| Cloudflare Realtime | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 24/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 24/25, 24/25 |
+| Cloudflare Stream WHIP/WHEP | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 22/25, 22/25, 23/25 |
 | LiveKit, SFU in each region | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
-| LiveKit, multi-region set | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 9/25, 25/25, 25/25 | 2/25, 25/25, 25/25 |
+| LiveKit, multi-region set | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
 | LiveKit Cloud | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 24/24, 24/24, 24/24 | 24/24, 24/24, 24/24 | 24/24, 24/24, 24/24 | 24/24, 24/24, 24/24 |
 
 Unit latency, median listener's median (ms):
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 9.1 (8.1–9.5) | 15.0 (14.4–15.4) | 142.9 (140.6–143.3) | 3158.9 (803.2–4061.0) | 5061.6 (4891.2–6158.7) | 4852.6 (2031.5–4882.4) | 9115.6 (5701.5–10198.5) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 9.3 (8.6–10.0) | 14.9 (13.7–16.2) | 142.9 (140.7–145.1) | 19.9 (19.3–20.6) | 54.0 (51.7–56.3) | 126.8 (126.1–127.5) | 158.6 (151.3–165.9) |
-| Cloudflare Realtime | 5.2 (4.4–5.3) | 4.5 (4.1–5.2) | 146.6 (128.2–146.9) | 5.4 (5.0–5.5) | 39.6 (38.9–39.8) | 115.3 (114.3–115.7) | 129.2 (129.1–165.0) |
-| Cloudflare Stream WHIP/WHEP | 4.6 (3.2–5.1) | 4.5 (4.0–5.2) | 127.9 (127.0–128.8) | 5.3 (4.6–6.2) | 39.5 (38.3–39.9) | 115.1 (114.2–116.3) | 128.4 (128.2–129.5) |
-| LiveKit, SFU in each region | 1.0 (0.8–1.1) | 1.0 (0.8–1.1) | 127.0 (126.7–127.0) | 1.6 (1.5–1.8) | 32.0 (31.8–32.1) | 110.2 (107.2–110.4) | 127.5 (127.3–127.8) |
-| LiveKit, multi-region set | 1.0 (0.8–1.1) | 1.1 (0.8–1.1) | 127.0 (126.9–127.2) | 2.1 (2.0–2.3) | 33.3 (33.1–33.6) | 110.3 (109.8–110.9) | 128.0 (127.9–128.4) |
-| LiveKit Cloud | 14.6 (14.2–15.1) | 14.7 (14.5–15.2) | 139.9 (136.0–139.9) | 14.9 (14.8–15.5) | 57.5 (57.1–57.6) | 130.0 (129.8–132.5) | 140.8 (140.1–140.9) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5.9 | 11.3 (11.1–11.3) | 137.3 (137.2–137.3) | 11.9 (11.8–12.0) | 42.8 (42.5–42.9) | 119.4 (119.3–121.3) | 137.8 (137.8–137.9) |
+| Needletail, LL-HLS, reader as shipped (opus) | 6.1 (6.1–6.3) | 11.6 | 137.5 (137.4–137.7) | 3638.3 (3612.1–4890.6) | 64.8 (48.6–1510.6) | 5214.1 (4563.4–5867.9) | 142.2 (141.9–150.1) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 6.3 | 11.9 | 137.8 (137.8–137.9) | 20.5 (19.6–20.7) | 49.9 (49.5–50.5) | 136.3 (133.6–140.7) | 144.1 (144.0–144.2) |
+| Cloudflare Realtime | 5.2 (4.3–6.4) | 4.5 (4.4–6.0) | 135.0 (127.6–138.6) | 5.3 (5.3–6.6) | 39.9 (39.7–40.9) | 114.9 (114.7–115.9) | 130.2 (127.9–135.4) |
+| Cloudflare Stream WHIP/WHEP | 4.9 (4.7–5.0) | 5.7 (4.3–6.0) | 137.1 (129.0–149.0) | 5.9 (5.3–5.9) | 40.1 (39.6–40.5) | 115.0 (114.2–116.8) | 139.1 (128.9–147.5) |
+| LiveKit, SFU in each region | 1.0 (0.9–1.2) | 1.1 (1.0–1.2) | 126.9 (126.9–127.0) | 1.5 (1.5–1.7) | 37.6 (37.5–37.7) | 109.1 (109.0–110.8) | 127.4 (127.3–127.4) |
+| LiveKit, multi-region set | 1.0 (0.9–1.2) | 1.1 (1.1–1.3) | 127.1 (127.0–127.1) | 2.0 (1.9–2.2) | 33.2 (33.0–33.4) | 109.6 (109.5–110.6) | 128.0 (127.8–128.0) |
+| LiveKit Cloud | 14.2 (14.1–15.8) | 14.7 (14.6–14.8) | 139.6 (135.4–139.8) | 15.0 (14.8–15.0) | 56.9 (56.9–57.0) | 130.0 (126.2–130.0) | 140.1 (135.8–140.2) |
 
 Unit latency, worst listener's p99 (ms):
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 20 (13–55) | 55 (30–587) | 720 (155–3150) | 4079 (1899–6151) | 6733 (6059–9333) | 6445 (2845–7388) | 16517 (8598–20731) |
-| Needletail, pipelined reader, HTTP/3 (opus) | 60 (19–101) | 56 (20–93) | 259 (188–330) | 53 (47–59) | 98 (95–102) | 154 (152–156) | 3172 (269–6075) |
-| Cloudflare Realtime | 7 (7–8) | 8 (7–21) | 169 (169–174) | 17 (13–18) | 45 (45–47) | 129 (121–133) | 3043 (171–3654) |
-| Cloudflare Stream WHIP/WHEP | 7 | 10 (8–23) | 133 (132–164) | 14 (13–16) | 46 (44–46) | 128 (125–130) | 3378 (136–3864) |
-| LiveKit, SFU in each region | 2 | 2 | 138 (130–168) | 7 (6–485) | 36 (36–37) | 114 (112–115) | 641 (138–2261) |
-| LiveKit, multi-region set | 2 | 65 (24–72) | 197 (189–198) | 1057 (995–1140) | 1090 (1033–1169) | 1245 (1101–1857) | 1271 (1122–1879) |
-| LiveKit Cloud | 16 | 17 | 145 (139–177) | 20 (19–21) | 63 | 136 (135–137) | 509 (146–1741) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 9 | 16 | 142 | 19 | 49 | 126 (126–128) | 145 (144–147) |
+| Needletail, LL-HLS, reader as shipped (opus) | 9 | 17 | 143 (143–145) | 5129 (4415–6335) | 1316 (792–2317) | 7101 (6238–7316) | 346 (256–2298) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 10 | 17 | 143 | 289 (254–289) | 307 (263–310) | 499 (492–499) | 317 (276–321) |
+| Cloudflare Realtime | 8 (8–17) | 10 (7–11) | 138 (131–150) | 14 (12–15) | 48 (45–49) | 128 (128–129) | 156 (154–1610) |
+| Cloudflare Stream WHIP/WHEP | 7 (7–8) | 8 (7–11) | 148 (131–176) | 13 (12–16) | 45 (44–46) | 128 (127–129) | 169 (134–1833) |
+| LiveKit, SFU in each region | 2 | 2 | 128 | 6 | 41 | 114 (113–115) | 131 (131–1264) |
+| LiveKit, multi-region set | 2 | 3 | 128 | 39 (38–42) | 74 (74–77) | 149 (148–152) | 165 (164–172) |
+| LiveKit Cloud | 16 (16–18) | 17 | 142 (138–142) | 20 (19–22) | 61 | 135 (131–135) | 144 (140–1305) |
 
 Units missing (%):
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (opus) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| Needletail, pipelined reader, HTTP/3 (opus) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 (0.00–0.07) |
-| Cloudflare Realtime | 0.00 | 0.02 (0.00–0.05) | 0.05 (0.01–0.07) | 0.00 | 0.00 | 0.00 | 0.03 (0.00–0.04) |
-| Cloudflare Stream WHIP/WHEP | 0.01 (0.00–0.04) | 0.00 (0.00–0.03) | 0.07 (0.00–0.09) | 0.01 | 0.00 | 0.00 (0.00–0.02) | 0.08 (0.03–0.21) |
-| LiveKit, SFU in each region | 0.00 | 0.00 | 0.00 (0.00–0.01) | 0.00 (0.00–2.85) | 0.00 | 0.00 | 0.00 (0.00–0.07) |
-| LiveKit, multi-region set | 0.00 | 0.00 | 0.00 | 8.00 (7.70–13.43) | 7.91 (7.34–13.23) | 9.12 (8.65–10.20) | 9.72 (9.26–10.39) |
-| LiveKit Cloud | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Needletail, LL-HLS, reader as shipped (opus) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (opus) | 0.00 | 0.00 | 0.00 | 0.00 (0.00–0.01) | 0.00 | 0.00 (0.00–0.01) | 0.00 |
+| Cloudflare Realtime | 0.01 (0.00–0.13) | 0.05 (0.00–0.23) | 0.00 (0.00–0.23) | 0.06 (0.05–0.10) | 0.07 (0.04–0.09) | 0.04 (0.04–0.06) | 0.11 (0.07–1.06) |
+| Cloudflare Stream WHIP/WHEP | 0.00 (0.00–0.02) | 0.00 | 0.00 | 0.00 (0.00–0.02) | 0.00 (0.00–0.02) | 0.00 (0.00–0.02) | 0.00 (0.00–0.93) |
+| LiveKit, SFU in each region | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 (0.00–0.54) |
+| LiveKit, multi-region set | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| LiveKit Cloud | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 (0.00–1.05) |
 
 ### Listeners, pcm
 
@@ -1034,73 +1114,76 @@ Listeners with audio, of those started in the region:
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 1/1, 1/1 | 3/3, 3/3 | 2/2, 2/2 | 25/25, 25/25 | 25/25, 25/25 | 25/25, 25/25 | 25/25, 25/25 |
-| Cloudflare Realtime | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 23/25, 23/25, 25/25 |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
+| Needletail, LL-HLS, reader as shipped (pcm) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
+| Cloudflare Realtime | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
 | LiveKit, SFU in each region | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
-| LiveKit, multi-region set | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 19/25, 25/25, 25/25 | 20/25, 25/25, 25/25 | 1/25, 25/25, 24/25 | 0/25, 22/25, 23/25 |
+| LiveKit, multi-region set | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 | 25/25, 25/25, 25/25 |
 | LiveKit Cloud | 1/1, 1/1, 1/1 | 3/3, 3/3, 3/3 | 2/2, 2/2, 2/2 | 24/24, 24/24, 24/24 | 24/24, 24/24, 24/24 | 24/24, 24/24, 24/24 | 24/24, 24/24, 24/24 |
 
 Unit latency, median listener's median (ms):
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 54.1 (13.6–57.2) | 54.4 (18.4–57.6) | 181.1 (145.9–183.7) | 12647.4 (11126.4–12788.0) | 12833.6 (11550.0–14676.5) | 12090.5 (9501.8–12685.7) | 11797.5 (10039.0–15620.5) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 35.3 (13.3–57.4) | 40.5 (23.5–57.4) | 166.2 (149.3–183.1) | 46.2 (32.6–59.7) | 80.9 (69.9–91.8) | 154.1 (138.5–169.7) | 182.2 (163.2–201.1) |
-| Cloudflare Realtime | 5.5 (4.8–5.8) | 4.8 (4.6–5.4) | 128.9 (126.8–3526.2) | 7.4 (6.5–8.2) | 41.4 (40.9–41.9) | 117.6 (115.9–118.9) | 136.4 (130.7–4547.8) |
-| LiveKit, SFU in each region | 1.1 (1.0–1.3) | 1.1 (1.1–1.3) | 127.2 | 3.5 (3.2–1464.3) | 38.9 (34.1–39.0) | 109.1 (108.9–111.7) | 129.5 (129.1–131.5) |
-| LiveKit, multi-region set | 1.1 (1.0–1.3) | 1.5 (1.3–1.6) | 127.4 (127.3–127.6) | 6485.8 (6347.5–7095.2) | 6487.2 (6438.9–7165.5) | 6586.4 (6337.3–7246.3) | 6839.4 (6498.9–7179.8) |
-| LiveKit Cloud | 14.8 (14.6–15.0) | 14.5 (14.2–15.0) | 140.6 (135.8–140.6) | 15.5 (15.5–16.1) | 57.9 (57.2–58.1) | 130.9 (127.1–133.0) | 137.3 (136.7–141.9) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 2.4 (2.3–2.5) | 2.5 (2.4–2.5) | 128.4 (128.4–128.5) | 1058.1 (3.7–1181.4) | 33.9 (33.7–34.3) | 111.1 (110.9–111.7) | 129.1 (129.1–130.2) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 2.7 (2.5–2.8) | 2.9 (2.7–3.0) | 128.6 (128.6–128.8) | 13666.9 (13443.7–13823.5) | 9246.8 (8914.1–9375.2) | 13786.4 (12766.6–14393.1) | 8007.1 (6820.0–8943.4) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 2.9 (2.7–3.0) | 3.2 (3.1–3.2) | 128.9 (128.8–128.9) | 1721.0 (1083.2–1786.5) | 61.4 (54.6–96.0) | 382.4 (314.9–1646.9) | 326.5 (275.5–462.8) |
+| Cloudflare Realtime | 4.1 (3.5–5.2) | 4.6 (3.8–5.3) | 164.1 (146.2–3333.9) | 6.6 (5.3–7.2) | 40.8 (39.7–41.7) | 116.2 (115.0–1620.6) | 147.3 (130.2–166.3) |
+| LiveKit, SFU in each region | 1.2 (1.1–1.3) | 1.3 (1.2–1.4) | 127.1 (127.1–127.2) | 3.0 (3.0–3.1) | 33.6 (33.5–38.6) | 110.7 (107.4–112.3) | 128.6 |
+| LiveKit, multi-region set | 1.2 (1.1–1.3) | 1.5 (1.4–1.5) | 127.3 (127.3–127.5) | 7723.3 (7682.0–7770.0) | 7658.3 (7655.9–7698.4) | 7875.6 (7499.4–7929.2) | 7915.6 (6626.2–7966.1) |
+| LiveKit Cloud | 14.8 (14.1–15.7) | 14.7 (14.4–15.1) | 139.9 (135.7–140.5) | 15.6 (15.4–16.4) | 57.7 (57.6–58.1) | 133.6 (133.4–133.8) | 140.9 (140.7–141.2) |
 
 Unit latency, worst listener's p99 (ms):
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 56 (43–66) | 81 (71–164) | 1330 (209–3605) | 17560 (16732–18234) | 18457 (17648–20699) | 16512 (14619–17501) | 17349 (16339–21278) |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 97 (67–128) | 160 (77–243) | 286 (190–382) | 78 | 120 (113–127) | 185 (172–198) | 2043 (260–3826) |
-| Cloudflare Realtime | 8 (7–10) | 9 (8–10) | 160 (131–8894) | 31 (27–33) | 69 (68–79) | 148 (146–5962) | 1066 (193–9245) |
-| LiveKit, SFU in each region | 2 | 3 (2–4) | 143 (132–160) | 32 (32–1957) | 73 (68–77) | 141 (137–145) | 165 (162–1263) |
-| LiveKit, multi-region set | 2 (2–120) | 70 (15–86) | 208 (177–862) | 16275 (12780–18823) | 15980 (13442–16090) | 27419 (11192–28369) | 21449 (15747–27151) |
-| LiveKit Cloud | 17 | 17 | 150 (144–183) | 38 (35–42) | 83 (77–91) | 150 (146–153) | 168 (165–178) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 5 | 5 | 131 (131–133) | 2080 (15–2451) | 41 (40–42) | 119 (119–550) | 137 (137–3487) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 5 (5–6) | 5 | 131 (131–138) | 20016 (18926–20068) | 13505 (12688–13628) | 19207 (17877–19512) | 11690 (10653–13126) |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 5 | 6 | 133 (132–134) | 12361 (6618–15771) | 1143 (984–1274) | 3508 (3332–9514) | 2788 (2095–23838) |
+| Cloudflare Realtime | 11 (5–11) | 7 (5–8) | 167 (147–8613) | 39 (29–41) | 63 (55–78) | 6752 (141–6851) | 8681 (163–10042) |
+| LiveKit, SFU in each region | 2 | 2 | 128 | 33 (29–33) | 53 (52–57) | 141 (136–142) | 150 (149–150) |
+| LiveKit, multi-region set | 2 | 6 (5–7) | 131 (130–132) | 13684 (11196–14085) | 13733 (11312–14119) | 14196 (13815–16487) | 14237 (13824–24356) |
+| LiveKit Cloud | 17 (16–18) | 17 | 143 (138–143) | 40 (39–48) | 75 (74–76) | 160 (159–161) | 160 (159–160) |
 
 Units missing (%):
 
 | System | 1, London | 10: London | 10: Sydney | 100: London | 100: New York | 100: Tokyo | 100: Sydney |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Needletail, reader as shipped (pcm) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| Needletail, pipelined reader, HTTP/3 (pcm) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| Cloudflare Realtime | 0.11 (0.01–0.15) | 0.05 (0.02–0.23) | 0.82 (0.05–1.03) | 0.20 (0.02–0.21) | 0.15 (0.02–0.16) | 0.16 (0.02–0.23) | 0.26 (0.12–0.37) |
-| LiveKit, SFU in each region | 0.01 (0.00–0.01) | 0.00 | 0.41 (0.03–0.57) | 0.01 (0.00–0.11) | 0.00 | 0.00 (0.00–0.08) | 0.23 (0.07–0.31) |
-| LiveKit, multi-region set | 0.00 | 0.00 | 0.10 (0.06–0.53) | 0.03 (0.01–0.20) | 0.00 | 0.00 | 0.14 (0.11–0.17) |
-| LiveKit Cloud | 0.00 | 0.00 | 0.36 (0.00–0.40) | 0.04 (0.00–0.04) | 0.00 | 0.00 (0.00–0.05) | 0.05 (0.01–0.11) |
+| Needletail, RaptorQ FEC over UDP from the edge (uc) | 0.00 | 0.00 | 0.00 | 2.01 (0.00–5.25) | 0.00 | 0.00 | 0.00 (0.00–12.64) |
+| Needletail, LL-HLS, reader as shipped (pcm) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Needletail, LL-HLS, pipelined reader, HTTP/3 (pcm) | 0.00 | 0.00 | 0.00 | 0.00 | 0.01 (0.00–0.04) | 0.04 (0.00–0.04) | 0.04 (0.02–0.36) |
+| Cloudflare Realtime | 0.00 (0.00–0.02) | 0.03 (0.01–0.03) | 0.03 (0.01–0.12) | 0.02 | 0.01 (0.00–0.02) | 0.01 (0.00–0.02) | 0.02 (0.00–0.04) |
+| LiveKit, SFU in each region | 0.00 | 0.00 | 0.00 | 0.01 (0.00–0.04) | 0.03 (0.00–0.06) | 0.04 (0.00–0.04) | 0.01 (0.00–0.02) |
+| LiveKit, multi-region set | 0.00 (0.00–0.02) | 0.00 (0.00–0.02) | 0.02 (0.01–0.10) | 0.01 | 0.02 (0.01–0.02) | 0.03 (0.00–0.13) | 0.01 (0.00–11.37) |
+| LiveKit Cloud | 0.00 | 0.00 | 0.00 (0.00–0.01) | 0.00 | 0.00 | 0.01 | 0.00 |
 
-### Processor of the Nanodes, opus-2.5
-
-Percent of one vCPU used by the service, during the step:
-
-| Node | 1 per host | 10 | 100, first pass | 100, second pass |
-| --- | ---: | ---: | ---: | ---: |
-| Needletail contributor | 38 (35–42) | 45 (34–56) | 39 | 39 |
-| Needletail backbone relay | 25 (22–29) | 25 (22–28) | 34 (27–41) | 24 (23–24) |
-| Needletail distributor, London | 15 (13–16) | 16 (13–19) | 16 (15–18) | 17 (14–20) |
-| Needletail edge 1, London | 8 (5–11) | 7 (1–13) | 29 (1–57) | 39 (1–78) |
-| Needletail edge 2, London | 9 (7–10) | 8 (1–14) | 27 (1–54) | 35 (1–69) |
-| Needletail edge 1, Sydney | 9 (6–11) | 6 (2–11) | 20 (2–38) | 33 (2–64) |
-| LiveKit, London Nanode (both servers) | 12 | 9 | 24 | 78 (78–79) |
-| LiveKit, Sydney Nanode (both servers) | 5 (5–6) | 6 | 20 (18–22) | 3 |
-
-### Processor of the Nanodes, pcm
+### Processor of the nodes, opus-2.5
 
 Percent of one vCPU used by the service, during the step:
 
 | Node | 1 per host | 10 | 100, first pass | 100, second pass |
 | --- | ---: | ---: | ---: | ---: |
-| Needletail contributor | 35 (31–40) | 40 (32–47) | 33 (30–35) | 32 (29–36) |
-| Needletail backbone relay | 21 | 18 (16–20) | 26 (16–37) | 20 (16–24) |
-| Needletail distributor, London | 23 (20–25) | 21 | 21 (20–23) | 21 (20–23) |
-| Needletail edge 1, London | 25 (22–27) | 21 (20–22) | 40 (31–49) | 60 (59–61) |
-| Needletail edge 2, London | 31 (28–34) | 18 | 33 (27–39) | 57 (55–59) |
-| Needletail edge 1, Sydney | 38 (37–39) | 11 (2–19) | 22 (2–43) | 32 (2–63) |
-| LiveKit, London Nanode (both servers) | 65 | 20 | 73 | 97 |
-| LiveKit, Sydney Nanode (both servers) | 13 | 14 (14–15) | 72 (67–77) | 7 (6–8) |
+| Needletail contributor | 61 | 61 | 61 (61–62) | 61 (60–61) |
+| Needletail backbone relay | 39 | 38 (38–39) | 39 (38–40) | 38 (38–39) |
+| Needletail distributor, London | 19 | 22 | 22 | 22 |
+| Needletail edge 1, London | 9 (9–12) | 12 | 63 (61–64) | 72 (63–82) |
+| Needletail edge 2, London | 13 | 1 | 1 | 47 (47–53) |
+| Needletail edge 1, Sydney | 14 (9–15) | 8 (1–12) | 35 (1–59) | 62 (62–71) |
+| LiveKit, London node (both servers) | 16 | 11 | 30 | 100 (98–104) |
+| LiveKit, Sydney node (both servers) | 4 | 5 | 21 (20–22) | 3 |
 
+### Processor of the nodes, pcm
+
+Percent of one vCPU used by the service, during the step:
+
+| Node | 1 per host | 10 | 100, first pass | 100, second pass |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail contributor | 61 | 60 (60–62) | 61 | 61 |
+| Needletail backbone relay | 39 | 39 | 39 | 39 |
+| Needletail distributor, London | 23 | 22 | 22 | 23 |
+| Needletail edge 1, London | 32 (25–41) | 12 (2–14) | 31 (2–48) | 123 (46–171) |
+| Needletail edge 2, London | 34 (18–35) | 9 (1–14) | 20 (1–47) | 100 (42–174) |
+| Needletail edge 1, Sydney | 31 (27–35) | 8 | 27 (22–33) | 88 (80–96) |
+| LiveKit, London node (both servers) | 95 (94–96) | 29 | 101 (98–102) | 198 |
+| LiveKit, Sydney node (both servers) | 16 | 15 (15–16) | 87 (86–88) | 6 |

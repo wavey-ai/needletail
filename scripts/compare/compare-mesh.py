@@ -105,10 +105,19 @@ def main() -> None:
                 commands = long_haul(session, spec)
                 applied = apply(session, commands) if spec else {}
                 hops_out = session.dir / f"mesh.{config}.{profile}.hops.json"
-                hops = threading.Thread(target=lambda: subprocess.run(
-                    [sys.executable, str(HERE / "mesh-hops.py"), "run", "--streams", str(STREAM[config]),
-                     "--seconds", "12", "--samples", "300", "--max-age", "9", "--out", str(hops_out),
-                     "--label", f"{config} {profile}"], capture_output=True, timeout=300))
+                outcome: dict = {}
+
+                def sample_hops(out=hops_out, label=f"{config} {profile}", stream=STREAM[config], box=outcome):
+                    try:
+                        done = subprocess.run(
+                            [sys.executable, str(HERE / "mesh-hops.py"), "run", "--streams", str(stream),
+                             "--seconds", "12", "--samples", "300", "--max-age", "9", "--out", str(out),
+                             "--label", label], capture_output=True, timeout=300)
+                        box["returncode"] = done.returncode
+                        box["stderr"] = done.stderr.decode(errors="replace")[-600:]
+                    except Exception as error:  # noqa: BLE001 - recorded in meta
+                        box["error"] = repr(error)[:600]
+                hops = threading.Thread(target=sample_hops)
                 # Start the hop sampler 20 s into the step, so that the parts it
                 # takes are from the impaired period.
                 timer = threading.Timer(20, hops.start)
@@ -125,7 +134,8 @@ def main() -> None:
                 if meta_path.is_file():
                     meta = json.loads(meta_path.read_text())
                     meta.update({"long_haul_netem": spec, "netem_applied": applied, "netem_state": state,
-                                 "hops_file": hops_out.name})
+                                 "hops_file": hops_out.name if hops_out.is_file() else None,
+                                 "hops_run": outcome})
                     meta_path.write_text(json.dumps(meta, indent=1) + "\n")
     finally:
         apply(session, long_haul(session, None))

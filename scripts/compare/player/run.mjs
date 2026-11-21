@@ -67,6 +67,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), "compare-player-"));
 const browser = await puppeteer.launch({
   executablePath: args.chrome || "/usr/bin/google-chrome",
   headless: true,
+  protocolTimeout: 60000,
   userDataDir: profile,
   args: [
     "--no-sandbox", "--autoplay-policy=no-user-gesture-required", "--disable-web-security",
@@ -116,8 +117,12 @@ try {
   await page.evaluate((value) => { window.CONFIG = value; }, config);
   const pids = chromePids(profile);
   const cpu0 = cpuSeconds(pids), wall0 = Date.now();
-  await page.evaluate(() => window.start());
-  await new Promise((resolve) => setTimeout(resolve, duration * 1000));
+  // A start that hangs (a signalling call that never returns) must not hold
+  // the step: give it 20 s, then measure whatever the page has.
+  const started = Date.now();
+  await Promise.race([page.evaluate(() => window.start()),
+                      new Promise((resolve) => setTimeout(resolve, 20000))]);
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, duration * 1000 - (Date.now() - started))));
   const result = await page.evaluate(() => window.result());
   const pidsEnd = chromePids(profile);
   result.chrome_cpu_cores = Math.round((cpuSeconds(pidsEnd) - cpu0) / ((Date.now() - wall0) / 1000) * 100) / 100;
