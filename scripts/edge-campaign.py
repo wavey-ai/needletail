@@ -1008,7 +1008,7 @@ def player_summary(report: pathlib.Path) -> dict:
             "media_played_s": playback.get("media_played_s"),
             "wall_s": playback.get("wall_s"),
             "stalled_ms": stalls.get("total_stalled_ms"),
-            "stalls": (stalls.get("playhead") or 0) + (stalls.get("element_waiting") or 0),
+            "stalls": len(stalls.get("playhead") or []) + len(stalls.get("element_waiting") or []),
             "frames": frames.get("total"), "frames_dropped": frames.get("dropped"),
             "latency_s_p50": latency.get("p50"), "latency_s_max": latency.get("max"),
             "errors": [f"{error.get('details')}" + (" (fatal)" if error.get("fatal") else "")
