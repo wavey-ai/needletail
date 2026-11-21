@@ -794,8 +794,7 @@ def distributor_cpu_starved(ctx):
           "reader stalls.")
 def edge_out_of_memory(ctx):
     def squeeze(edge):
-        directory = lab.cgroup_dir(edge)
-        current = int((directory / "memory.current").read_text()) // (1 << 20)
+        current = lab.read_cgroup(lab.cgroup_dir(edge)).get("memory_bytes", 0) // (1 << 20)
         ctx.measure("memory_mb_before", current)
         # Leave less than the copy needs: the next seconds of parts do not fit.
         lab.set_limits(edge, memory_mb=max(24, current - 20))
