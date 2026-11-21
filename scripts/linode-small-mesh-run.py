@@ -149,13 +149,9 @@ def stream_plan(args: argparse.Namespace, settings: dict, group_id: int) -> dict
          "codec": "opaque-flac" if opaque else "flac", "epoch_samples": args.epoch_samples}]}
 
 
-def class_split_ports(port: int, settings: dict, kind: str) -> list[int]:
-    """A port and, when the deploy splits that kind of endpoint by class
-    ("relay" or "mesh"), its video twin at the port plus class_port_offset:
-    a fault on the audio port alone would leave 4K untouched."""
-    plan = deploy.class_plan({**deploy.DEFAULT_SETTINGS, **settings})
-    split = plan["relay_class_split" if kind == "relay" else "cache_mesh_class_split"]
-    return deploy.class_ports(port, plan["class_port_offset"], split)
+# A port and its video twin when the deploy splits that kind of endpoint by
+# class: a fault on the audio port alone would leave 4K untouched.
+class_split_ports = deploy.class_split_ports
 
 
 def loss_commands(ports: int | list[int], percent: float, chain: str) -> tuple[str, str]:

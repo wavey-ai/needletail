@@ -150,13 +150,35 @@ Audio never shares a socket, a thread or a qdisc band with 4K. Video streams
 use the relay and cache-mesh ports plus `class_port_offset` (22001 -> 23001,
 22200 -> 23200, 29101 -> 30101). Audio streams use the ports themselves. The
 Linode firewall already admits every UDP port between lab nodes, and
-`linode-small-mesh-run.py --loss-relay/--loss-mesh/--blackout-ms` drop on
-both ports. Each flag is rendered on or off explicitly, so `false` gives the
-behaviour from before the change on any binary that has the flags.
+`linode-small-mesh-run.py --loss-relay/--loss-mesh/--blackout-ms`,
+`linode-small-mesh-soak.py`'s blackout and packet counters, and the shaping
+of `local-region-lab.py up netem=on` cover both ports. Each flag is rendered
+on or off explicitly, so a setting of `false` turns its piece off on any
+binary that has the flags.
+
+`class_isolation=false` turns off only the three class pieces. The audio hot
+path, repair on both lanes, the host qdisc and the capabilities stay on. For
+an A/B against the behaviour from before low-latency items 2 and 3, set
+`low_latency_baseline=true`. That setting turns off every piece in the table,
+whatever each one is set to.
+
+The class flags must agree across the services. The contributor, every relay
+and every distributor split the relay ports with one offset or not at all,
+and every cache-mesh node uses one cache-mesh offset. The render refuses
+`extra_*_args` that would break this, such as `--relay-class-threads false`
+on the distributors alone: their parents would still send 4K to a port where
+they no longer listen. Extra arguments may be written `--flag value` or
+`--flag=value`. Either form replaces the rendered flag.
+
+The cache mesh's audio socket is in band 0 only with a playlists build whose
+`CacheMesh` sets SO_PRIORITY 6 on it. Until then, the distributor-to-edge
+audio waits in the fq band with the 4K parts and gets only fq's per-flow
+fairness, not strict priority.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `class_isolation` | true | All pieces below that are None. `false` restores the previous paths. |
+| `low_latency_baseline` | false | `true` turns off every piece below whatever it is set to: the class pieces, `audio_hot_path`, `relay_repair_both_lanes`, `host_qdisc` `none` and `service_capabilities`. This is the baseline for an A/B. |
+| `class_isolation` | true | Sets the three class pieces below that are None (`relay_class_split`, `cache_mesh_class_split`, `client_udp_class_sockets`). It does not change the other settings. |
 | `relay_class_split` | None | Contributor `--relay-class-lanes` and relay/distributor `--relay-class-threads` together, because they share the ports. |
 | `cache_mesh_class_split` | None | `--cache-mesh-class-port-offset` on every av-mesh node (0 when off). |
 | `client_udp_class_sockets` | None | `--client-udp-class-sockets` on distributors and edges. |
@@ -167,7 +189,7 @@ behaviour from before the change on any binary that has the flags.
 | `audio_hot_path` | true | Contributor `--relay-audio-inline` and `--audio-hot-thread`. |
 | `audio_hot_cpu` | `auto` | CPU 2 on instances with 4 or more vCPUs, otherwise -1. |
 | `relay_repair_both_lanes` | true | `--relay-repair-both-lanes`. The primary backbone also gets `--relay-primary-promoted` so that it admits the repair. |
-| `host_qdisc` | `prio` | On every NIC: a `prio bands 3` root, band 0 `pfifo` for SO_PRIORITY 6 (audio sockets), band 1 `fq limit 65536 flow_limit 4096` for everything else. Checked with `tc -s qdisc` and recorded in `qdisc/<node>.txt`. `none` restores the kernel default. In the namespace lab the prio is a child of each link's netem with FIFO bands. |
+| `host_qdisc` | `prio` | On every NIC: a `prio bands 3` root, band 0 `pfifo` for SO_PRIORITY 6 (audio sockets), band 1 `fq limit 65536 flow_limit 4096` for everything else. Checked with `tc -s qdisc` and recorded in `qdisc/<node>.txt`. `none` restores the kernel default. `linode-edge-campaign.py` puts the qdisc back on `eth1` when it clears a fault. During an outbound fault, the netem is the root and the prio (FIFO bands) is its child. In the namespace lab the prio is a child of each link's netem with FIFO bands. That netem has no rate and never holds a queue, so the local bench does not exercise the qdisc. |
 | `service_capabilities` | true | `AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN` in the units. |
 
 ### Source-port selection
@@ -178,6 +200,15 @@ the address and port 5-tuple, so the source port selects one of several
 long-haul paths. The command records the fastest port for each public link in
 `ecmp-ports.json`. `restart` then compiles the relay program with those ports.
 The command stops each distributor for approximately 16 seconds.
+
+With `relay_class_split`, the backbone sends video from the same source port
+to the ingest port plus `class_port_offset`. Routers hash that as a different
+5-tuple, so the video can take a different path. `hunt` therefore probes both
+ports and picks the source port whose slower class is fastest. It records
+`audio_one_way_ms` and `video_one_way_ms` for the chosen port, and the stop
+takes approximately 30 seconds. `hunt --set relay_class_split=false` probes
+the audio port only. Ports hunted before this change were chosen for the
+audio port only.
 
 ### Shared-CPU check
 

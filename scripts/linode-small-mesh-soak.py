@@ -327,20 +327,76 @@ def detect_origins(plan: dict, result_dir: pathlib.Path) -> None:
     log(f"object sequence origins: {origins}")
 
 
-def sampler_rules(distributors: list[dict], edges: list[dict]) -> dict:
+def relay_lane_ports(node: dict, settings: dict) -> list[int]:
+    """The relay ingest ports of a distributor: its primary and secondary
+    lanes, then with the relay class split their video twins."""
+    port = mesh_run.relay_port(node)
+    lanes = [mesh_run.class_split_ports(lane, settings, "relay") for lane in (port, port + 1)]
+    return [ports[0] for ports in lanes] + [ports[1] for ports in lanes if len(ports) > 1]
+
+
+def sampler_rules(distributors: list[dict], edges: list[dict], settings: dict) -> dict:
     """Packet counters for each node: the two relay lanes of a distributor,
-    and each distributor-to-edge cache-mesh path at both of its ends."""
+    and each distributor-to-edge cache-mesh path at both of its ends; with
+    the class split the video twins of each too, after the audio ones (the
+    first two counters stay the audio relay lanes). The sampler reports the
+    received counters first and the sent ones after, each in rule order, and
+    the rules are listed in that order."""
+    mesh_ports = mesh_run.class_split_ports(MESH_PORT, settings, "mesh")
     rules: dict = {}
     for node in distributors:
-        port = mesh_run.relay_port(node)
-        rules[node["name"]] = [f"in:{port}", f"in:{port + 1}"] + [
-            f"out:{edge['vlan_ipv4'].split('/')[0]}:{MESH_PORT}"
-            for edge in edges if edge["site"] == node["site"]]
+        rules[node["name"]] = [f"in:{port}" for port in relay_lane_ports(node, settings)] + [
+            f"out:{edge['vlan_ipv4'].split('/')[0]}:{port}"
+            for port in mesh_ports for edge in edges if edge["site"] == node["site"]]
     for node in edges:
         rules[node["name"]] = [
-            f"insrc:{parent['vlan_ipv4'].split('/')[0]}:{MESH_PORT}"
-            for parent in distributors if parent["site"] == node["site"]]
+            f"insrc:{parent['vlan_ipv4'].split('/')[0]}:{port}"
+            for port in mesh_ports for parent in distributors
+            if parent["site"] == node["site"]]
     return rules
+
+
+def counter_index(rules: list[str], rule: str) -> int:
+    """Where a rule's packet counter is in a sampler `L` row (after the
+    time): the received counters come first, then the sent ones."""
+    received = [item for item in rules if not item.startswith("out:")]
+    sent = [item for item in rules if item.startswith("out:")]
+    position = (received.index(rule) if rule in received
+                else len(received) + sent.index(rule))
+    return position * 2
+
+
+def mesh_paths_of(plan: dict, final: dict) -> list[dict]:
+    """Cache-mesh datagrams sent by each distributor and received by each
+    edge, per path and per class port: "audio" on the cache-mesh port and
+    "video" on its twin when the mesh is split by class, else "all"."""
+    rules = plan.get("sampler_rules", {})
+    distributors = nodes_of(plan, "distributor")
+    out = []
+    for edge in nodes_of(plan, "edge"):
+        mine = rules.get(edge["name"], [])
+        split = any(int(rule.split(":")[2]) != MESH_PORT for rule in mine)
+        for rule in mine:
+            _, address, port = rule.split(":")
+            parent = next((node for node in distributors
+                           if node["vlan_ipv4"].split("/")[0] == address), None)
+            if not parent or edge["name"] not in final or parent["name"] not in final:
+                continue
+            parent_rules = rules.get(parent["name"], [])
+            wanted = f"out:{edge['vlan_ipv4'].split('/')[0]}:{port}"
+            if wanted not in parent_rules:
+                continue
+            sent = final[parent["name"]][counter_index(parent_rules, wanted)]
+            received = final[edge["name"]][counter_index(mine, rule)]
+            out.append({
+                "from": parent["name"], "to": edge["name"], "site": edge["site"],
+                "port": int(port),
+                "class": ("all" if not split else "audio" if int(port) == MESH_PORT
+                          else "video"),
+                "datagrams_sent": int(sent), "datagrams_received": int(received),
+                "datagrams_lost": int(sent - received),
+                "loss_ppm": round((sent - received) * 1e6 / max(sent, 1), 1)})
+    return out
 
 
 def snapshot_all(nodes: list[dict]) -> dict:
@@ -388,7 +444,7 @@ def start(args: argparse.Namespace) -> dict:
         "load_edges": args.load_edges, "load_deadline_ms": args.load_deadline_ms,
         "media_deadline_ms": MEDIA_DEADLINE_MS, "streams": streams,
         "track_directory": args.track_directory, "settings": settings,
-        "sampler_rules": sampler_rules(distributors, edges),
+        "sampler_rules": sampler_rules(distributors, edges, settings),
         "nodes": {node["name"]: {key: node.get(key) for key in (
             "role", "site", "region", "type", "public_ipv4", "vlan_ipv4")}
             for node in state["nodes"].values()},
@@ -606,15 +662,22 @@ def source_alive(plan: dict) -> bool:
     return bool(common.ssh_text(node, f"pgrep -x {process} | head -1", check=False).strip())
 
 
+def blackout_rule(node: dict, settings: dict) -> str:
+    """The iptables rule that drops every relay lane of a distributor, the
+    video twins of the class split included."""
+    ports = ",".join(str(port) for port in relay_lane_ports(node, settings))
+    return f"INPUT ! -i lo -p udp -m multiport --dports {ports} -j DROP"
+
+
 def schedule_blackout(plan: dict, site: str, at_seconds: int, milliseconds: int) -> None:
-    """Drop both relay lanes at every distributor of one region for a fixed
-    time. Both distributors then miss the same parts, as they do when they
-    share a host that stalls, so no parent can supply those parts to an edge."""
+    """Drop both relay lanes (audio and, with the class split, video) at
+    every distributor of one region for a fixed time. Both distributors then
+    miss the same parts, as they do when they share a host that stalls, so
+    no parent can supply those parts to an edge."""
     start_ns = plan["session_id"] + at_seconds * 1_000_000_000
 
     def schedule(node: dict) -> None:
-        port = mesh_run.relay_port(node)
-        rule = f"INPUT ! -i lo -p udp -m multiport --dports {port},{port + 1} -j DROP"
+        rule = blackout_rule(node, plan.get("settings") or {})
         common.ssh(node, (
             f"nohup sh -c 'while [ $(date +%s%N) -lt {start_ns} ]; do sleep 0.01; done; "
             f"iptables -I {rule}; sleep {milliseconds / 1000}; iptables -D {rule}' "
@@ -845,25 +908,7 @@ def summarize(plan: dict, result_dir: pathlib.Path) -> None:
         rows = sampler_rows(result_dir / "raw" / node["name"] / "sampler.log.gz")["L"]
         if rows:
             final[node["name"]] = rows[-1][1:]
-    mesh_paths = []
-    rules = plan.get("sampler_rules", {})
-    for edge in nodes_of(plan, "edge"):
-        for index, rule in enumerate(rules.get(edge["name"], [])):
-            parent = next((node for node in nodes_of(plan, "distributor")
-                           if node["vlan_ipv4"].split("/")[0] == rule.split(":")[1]), None)
-            if not parent or edge["name"] not in final or parent["name"] not in final:
-                continue
-            parent_rules = rules[parent["name"]]
-            wanted = f"out:{edge['vlan_ipv4'].split('/')[0]}:{MESH_PORT}"
-            if wanted not in parent_rules:
-                continue
-            sent = final[parent["name"]][parent_rules.index(wanted) * 2]
-            received = final[edge["name"]][index * 2]
-            mesh_paths.append({
-                "from": parent["name"], "to": edge["name"], "site": edge["site"],
-                "datagrams_sent": int(sent), "datagrams_received": int(received),
-                "datagrams_lost": int(sent - received),
-                "loss_ppm": round((sent - received) * 1e6 / max(sent, 1), 1)})
+    mesh_paths = mesh_paths_of(plan, final)
 
     # Stalls of the listener hosts themselves (any vCPU, above 250 ms).
     listener_stalls = {}
@@ -944,7 +989,7 @@ def summarize(plan: dict, result_dir: pathlib.Path) -> None:
     lossy = [path for path in mesh_paths if path["datagrams_lost"] > 0]
     log(f"cache-mesh paths with datagram loss: {len(lossy)} of {len(mesh_paths)}")
     for path in sorted(lossy, key=lambda item: -item["datagrams_lost"])[:12]:
-        log(f"  {path['from']} -> {path['to']}: {path['datagrams_lost']} of "
+        log(f"  {path['from']} -> {path['to']} ({path['class']}): {path['datagrams_lost']} of "
             f"{path['datagrams_sent']} ({path['loss_ppm']} ppm)")
     log(f"loss events at distributors: {len(events)}")
     for event in events[:40]:

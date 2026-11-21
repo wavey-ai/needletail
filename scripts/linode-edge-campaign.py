@@ -48,6 +48,10 @@ import edge_campaign_core as core  # noqa: E402
 _spec = importlib.util.spec_from_file_location("edge_campaign", HERE / "edge-campaign.py")
 campaign = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(campaign)
+_deploy_spec = importlib.util.spec_from_file_location(
+    "small_mesh_deploy", HERE / "linode-small-mesh-deploy.py")
+deploy = importlib.util.module_from_spec(_deploy_spec)
+_deploy_spec.loader.exec_module(deploy)
 
 REMOTE_CA = "/usr/local/share/ca-certificates/needletail-qualification.crt"
 REMOTE_MEDIA = "/var/lib/needletail-test-media"
@@ -215,18 +219,39 @@ def device(name: str, network: str) -> str:
     return "eth1"
 
 
+def deployed_settings() -> dict:
+    """The settings that the deploy tool last rendered (its settings file),
+    for the host qdisc that the nodes carry."""
+    try:
+        saved = json.loads(deploy.SETTINGS_FILE.read_text())
+    except (OSError, ValueError):
+        saved = {}
+    return {**deploy.DEFAULT_SETTINGS, **saved}
+
+
+def host_qdisc() -> str:
+    return deploy.class_plan(deployed_settings())["host_qdisc"]
+
+
+def heal_node(node: dict, settings: dict | None = None) -> None:
+    """Take the faults off a node's VLAN interface and put the deploy's host
+    qdisc back on it: deleting the root alone would leave the cache mesh
+    without the class qdisc for the rest of the run."""
+    common.ssh(node, "tc qdisc del dev ifb0 root 2>/dev/null; true", check=False)
+    deploy.apply_host_qdisc(node, settings or deployed_settings(), clear=("eth1",))
+
+
 def set_net(name: str, network: str, direction: str, spec: str | None) -> None:
     dev = device(name, network)
     if spec in (None, "clear"):
-        remote(name, f"tc qdisc del dev {dev} root 2>/dev/null; "
-                     f"tc qdisc del dev ifb0 root 2>/dev/null; true")
+        heal_node(by_name(name))
         return
     words = " ".join(word for word in spec.split() if word != "ordered")
     # Delete first: `replace` keeps the netem options that it is not given.
+    # What the node sends passes the fault and then the host qdisc.
     script = ""
     if direction in ("out", "both"):
-        script += (f"tc qdisc del dev {dev} root 2>/dev/null; "
-                   f"tc qdisc add dev {dev} root netem {words}; ")
+        script += deploy.netem_under_host_qdisc(dev, words, host_qdisc())
     if direction in ("in", "both"):
         script += (NETEM_IN.format(device=dev) + "tc qdisc del dev ifb0 root 2>/dev/null; "
                    f"tc qdisc add dev ifb0 root netem {words}; ")
@@ -244,9 +269,8 @@ def set_link(name: str, network: str, up: bool) -> None:
 
 def heal_all() -> None:
     nodes = [by_name(name) for name in lab.names()]
-    common.parallel(nodes, lambda item: common.ssh(
-        item, "tc qdisc del dev eth1 root 2>/dev/null; tc qdisc del dev ifb0 root "
-              "2>/dev/null; true", check=False))
+    settings = deployed_settings()
+    common.parallel(nodes, lambda item: heal_node(item, settings))
 
 
 def join_load(host: str, entry: str, stream: int, rate: int, seconds: int,

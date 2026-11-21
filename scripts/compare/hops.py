@@ -16,6 +16,12 @@ Each part is followed along the path that it took to a listener:
   source            last sample of the part spoken (PCM: from the AEP1 epoch)
   contrib.src_last  last source datagram of the part at the contributor
   contrib.packaged  part cut
+  contrib.sent_first the part's first datagram handed to the kernel, on
+                    whichever lane sent first (av-contrib's audio hot path;
+                    packaged -> sent_first is the hot thread's scheduling,
+                    sent_first -> sent the time spent sending the part). A
+                    journal without it (before low-latency item 3) gives
+                    packaged -> sent as one hop.
   contrib.sent      last source symbol handed to the kernel, primary lane
   primary.relay_first / primary.relay_forward   the backbone relay-primary
   parent.relay_first / parent.committed / parent.watermark / parent.mesh_sent
@@ -101,6 +107,7 @@ CHAIN = [
     ("source", "source", None),
     ("contrib.src_last", "contrib", "src_last"),
     ("contrib.packaged", "contrib", "packaged"),
+    ("contrib.sent_first", "contrib", "sent_first"),
     ("contrib.sent", "contrib", "sent"),
     ("primary.relay_first", "primary", "relay_first"),
     ("primary.relay_forward", "primary", "relay_forward"),
@@ -114,6 +121,31 @@ CHAIN = [
     ("listener.complete", "listener", None),
 ]
 EPOCH_STAGES = ("src_first", "src_last", "recovered", "packaged")
+# Stages that a journal may lack, because the node's build does not record
+# them: a hop goes around a missing one to the stage before it.
+OPTIONAL = {"contrib.sent_first"}
+LABELS = [label for label, _, _ in CHAIN]
+
+
+def hop_pairs(times: dict) -> list[tuple[str, str]]:
+    """The hops of one part: consecutive stages of the CHAIN that it has,
+    going around a missing OPTIONAL stage only."""
+    pairs = []
+    for index, after in enumerate(LABELS[1:], 1):
+        if after not in times:
+            continue
+        before = index - 1
+        while before > 0 and LABELS[before] in OPTIONAL and LABELS[before] not in times:
+            before -= 1
+        if LABELS[before] in times:
+            pairs.append((LABELS[before], after))
+    return pairs
+
+
+def hop_order(name: str) -> tuple[int, int]:
+    """Where a hop "A -> B" goes in a report: by B, then by A."""
+    before, _, after = name.partition(" -> ")
+    return LABELS.index(after), LABELS.index(before)
 
 
 # ------------------------------------------------------------------ epochs
@@ -472,26 +504,23 @@ class Pool:
 
     def add(self, times: dict[str, int]) -> None:
         self.parts += 1
-        labels = [label for label, _, _ in CHAIN]
-        for before, after in zip(labels, labels[1:]):
-            if before in times and after in times:
-                self.hops.setdefault(f"{before} -> {after}", []).append(
-                    (times[after] - times[before]) / 1000)
+        for before, after in hop_pairs(times):
+            self.hops.setdefault(f"{before} -> {after}", []).append(
+                (times[after] - times[before]) / 1000)
         if "source" in times:
-            for label in labels[1:]:
+            for label in LABELS[1:]:
                 if label in times:
                     self.from_source.setdefault(label, []).append(
                         (times[label] - times["source"]) / 1000)
 
     def report(self) -> dict:
-        labels = [label for label, _, _ in CHAIN]
-        order = {f"{a} -> {b}": i for i, (a, b) in enumerate(zip(labels, labels[1:]))}
         return {
             "parts": self.parts,
             "hops": [{"hop": name, **distribution(values)}
-                     for name, values in sorted(self.hops.items(), key=lambda item: order[item[0]])],
+                     for name, values in sorted(self.hops.items(),
+                                                key=lambda item: hop_order(item[0]))],
             "from_source": [{"stage": label, **distribution(self.from_source[label])}
-                            for label in labels if label in self.from_source],
+                            for label in LABELS if label in self.from_source],
         }
 
 

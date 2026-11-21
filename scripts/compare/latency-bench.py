@@ -424,6 +424,7 @@ def run(args, steps: dict) -> int:
              "reader windows (parts in flight): " + ", ".join(
                  f"{lane} {window}" for lane, window in (steps.get("reader_windows") or {}).items()),
              *([f"WARNING: {epoch_note}"] if epoch_note else []),
+             qdisc_note(),
              f"hop journal: {capacity if capacity is not None else 'as running'} events per node"
              + (f"; WARNING: full on {', '.join(full)}: the start of the window was overwritten"
                 if full else ""), ""]
@@ -437,6 +438,20 @@ def run(args, steps: dict) -> int:
     (out / "summary.txt").write_text(text)
     print(text, end="")
     return 0
+
+
+def qdisc_note() -> str:
+    """What the host qdisc did in this bench: in the namespace lab the prio
+    is a child of each link's netem, which has no rate and so never holds a
+    queue. The prio classifies but never reorders, and a --video gate run
+    here measures the sockets, threads and ports of the class split, not the
+    qdisc (scripts/test_class_isolation.py shows audio overtaking a queued
+    burst; only the Linode lab measures it under load)."""
+    qdisc = (lab.load("settings.json") or {}).get("host_qdisc") or "none"
+    if qdisc == "none":
+        return "host qdisc: none"
+    return (f"host qdisc: {qdisc} under each link's netem, which holds no queue: this bench "
+            "does not exercise it (audio first in a NIC queue is measured on Linode only)")
 
 
 def run_epoch(steps: dict, summary: dict | None) -> dict:
