@@ -404,6 +404,15 @@ def mesh_partition_distributor(ctx):
 
 # The wide-area path that carries a stream to a region.
 
+def lost_upstream(ctx, jobs) -> None:
+    """Name the gap when parts were lost before they reached the region."""
+    missing = sum(job.summary.get("parts_missing", 0) for job in jobs)
+    if missing:
+        ctx.gap = (f"{missing} parts were lost before the region. A reader is not told "
+                   "(no GAP=YES), so it waits for each of them, and the wide-area "
+                   "protection is sized for a configured loss, not for the measured one")
+
+
 def region_wan(name, question, criterion, spec, expect_clean=True):
     @scenario(name, "network-wide-area", question, criterion)
     def run(ctx):
@@ -416,6 +425,7 @@ def region_wan(name, question, criterion, spec, expect_clean=True):
         ctx.wait_readers()
         report_experience(ctx, jobs)
         clean(ctx, jobs)
+        lost_upstream(ctx, jobs)
     return run
 
 
@@ -587,6 +597,8 @@ def one_node_fault(name, target, kind, question, criterion, host=LON_READERS,
             clean(ctx, jobs + [late])
         else:
             expect(ctx, jobs + [late])
+        if target.startswith("relay"):
+            lost_upstream(ctx, jobs + [late])
     return run
 
 
