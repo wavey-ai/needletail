@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Short-lived small-instance Linode lab for Needletail mesh qualification.
+"""Short-lived Linode lab for Needletail mesh qualification.
 
 The lab is described by a topology JSON file (see
-deploy/linode-small-mesh/topology.json). Every node is created with the
-smallest plan that the topology names, a lab-only Cloud Firewall, and an
+deploy/linode-small-mesh/topology-*.json). Every node is created with the
+dedicated plan that the topology names (shared plans are refused), a lab-only Cloud Firewall, and an
 optional regional private VLAN interface for distributor-to-edge replication.
 
 Cost controls are part of the tool, not an operator convention:
@@ -39,7 +39,10 @@ DEFAULT_TOPOLOGY = ROOT / "deploy" / "linode-small-mesh" / "topology.json"
 DEFAULT_TOKEN_FILE = ROOT.parent / "LINODE_PAT"
 MAX_NODES = int(os.environ.get("NEEDLETAIL_LINODE_MAX_NODES", "40"))
 MAX_HOURLY_USD = float(os.environ.get("NEEDLETAIL_LINODE_MAX_HOURLY_USD", "1.00"))
-ALLOWED_CLASSES = {"nanode", "standard"}
+# Every node has dedicated cores. Shared plans (Nanodes, g6-standard) are not
+# allowed: their steal and host stalls appeared as late media in earlier
+# rounds, and the owner forbids them (21 November 2026).
+ALLOWED_CLASSES = {"dedicated"}
 
 
 def load_token() -> str:
@@ -146,12 +149,9 @@ def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
     addresses: set[tuple[str, str]] = set()
     for node in nodes:
         plan = types.get(node["type"])
-        # A listener host is a measurement instrument, not a mesh node. It may
-        # use dedicated cores, so that its own stalls do not appear as late
-        # media. The hourly price ceiling still applies to the whole lab.
-        allowed = ALLOWED_CLASSES | ({"dedicated"} if node.get("role") == "load" else set())
-        if plan is None or plan["class"] not in allowed:
-            sys.exit(f"{node['name']}: {node['type']} is not a small shared plan")
+        if plan is None or plan["class"] not in ALLOWED_CLASSES:
+            sys.exit(f"{node['name']}: {node['type']} is not a dedicated plan; "
+                     "shared instances are not allowed")
         region = regions.get(node["region"])
         if region is None or region["status"] != "ok":
             sys.exit(f"{node['name']}: region {node['region']} is unavailable")
