@@ -15,6 +15,7 @@ Evidence index:
 
 - `20261119T021701Z-linode-small-mesh.json`: 27-Nanode Linode series with regional distributors and private-VLAN LL-HLS edges: tuning sweeps, loss, relay failover, 200 concurrent readers, a 10-minute soak with a strict failure in Tokyo and Sydney, and ECMP source-port selection.
 - `20261119T200101Z-regional-cache.json`: 15-instance Linode run of the regional LL-HLS cache features on Nanodes: demand replication, load balance with admission, failover, stall and drain without a missing part, reader assignment and pinning, for 4K video and lossless audio, with a cache-mesh symbol size comparison.
+- `20261121T044850Z-edge-campaign.json`: 15-instance Linode run of the edge fault campaign: 40 scenarios of node failure, cache-network loss, clock skew, full disk, capacity of each role on a Nanode, admission, flash crowd, churn and hls.js playback, each with its question, criterion, checks and result. The result is `failed`: 24 pass, 3 are named gaps and 13 fail, and the record says why for each.
 - `20260728T113000Z-linode16-8track-recovery20-combined.json`: current ten-node GCP and Azure multitrack FLAC run with UDP and LL-HLS latency, source capacity, one Tokyo recovery-unit loss, and strict boundary failures.
 - `20260715T223437Z.json`: recovery failed before the controlled-loss phase;
 - `20260715T225642Z.json`: complete passing restart, failover, recovery, and 2% loss run;
@@ -36,6 +37,7 @@ Evidence index:
 - `20260717-lossless-latency-series-summary.json`: 50 ms, 20 ms, and 5 ms cadence results plus the diagnostic-attempt ledger;
 - `20260717T145432Z-linode-dag.json`: complete six-node Linode clean/impaired three-lane DAG replication, exact cache identity, cache independence, failover, latency split, CPU, and idle-stream-retirement qualification;
 - `local-20260717T162832Z-multichannel-llhls-sizing.json`: partial local 16/32/64/128-channel LL-HLS sizing and PCM-vs-FLAC-source bottleneck isolation.
+- `local-20261121T0650Z-edge-campaign.json`: the edge fault campaign in the local namespace lab under Nanode limits: reader, cache-network and wide-area impairments, failures and stalls of every role, capacity, audience, LL-HLS rule checks, hls.js and ffmpeg playback, the ladder, and churn. The result is `failed`: the record lists each scenario that passed, each named gap and each failure.
 - `20260717T222106Z-pcm-h3-capacity.json`: raw 16-channel S24 PCM through the six-node GCP DAG, strict two-vCPU H3 edge capacity ladder, and post-deploy PCM readiness canary.
 - `20260718T163240Z-opus-h3-capacity.json`: real eight-stem DAW Nexus pure-Rust Opus through the same-zone two-parent GCP DAG, strict p99 capacity, hard request-throughput boundary, and clock/churn diagnostics.
 - `20260718T221533Z-opus-h3-200ms-aggregation.json`: service-configured 200 ms H3 responses over exact 5 ms Opus units, one multiplexed connection/customer, complete-delivery and latency knees, source stability, near-one-core edge serialization, and cancellation diagnostics.
