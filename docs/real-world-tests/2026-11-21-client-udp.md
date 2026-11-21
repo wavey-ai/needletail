@@ -375,7 +375,26 @@ runs the end-to-end test with these sources and one video frame per part
 | as above, PCM 1 ms (48 samples) | 0 %, 5 % | FAIL upstream of the edge: LL-HLS readers miss the same parts |
 | Opus 2.5 ms, PCM and FLAC 1 ms | 0 % | FAIL upstream of the edge |
 
-Evidence: `evidence/local-20261121-client-udp-opus-2.5ms.json`,
+**The lossless curve** (Opus 2.5 ms and 4K one frame per part beside it; 15 s
+per step for 2.5 ms and 2 ms):
+
+| PCM and FLAC block | Parts a second per stream | 0 % loss | 5 % loss | Where parts were lost |
+| --- | ---: | --- | --- | --- |
+| 5 ms (240 samples) | 200 | no part missing | no part missing | none |
+| 2.5 ms (120) | 400 | no part missing | 2 parts of about 5,500 missing on each audio stream, the same part numbers on every stream | upstream: the edge sent them as gaps, the client saw no datagram of them, LL-HLS readers missed 158 |
+| 2 ms (96) | 500 | 121 to 125 missing | 404 missing | upstream: LL-HLS missed about 1,180 |
+| 1 ms (48) | 1,000 | thousands missing | thousands missing | upstream: relay datagrams expired at the distributors |
+
+The UDP lane added no loss at any size. On today's contributor and
+distribution tier the smallest lossless block that is carried at full rate
+without loss is 5 ms; 2.5 ms is carried without loss on a clean path and
+loses a few parts upstream under load. That is the default to use until the
+distribution tier is rebuilt, and the curve to repeat after it. Opus is at its
+smallest frame, 2.5 ms, and carried without loss.
+
+Evidence: `evidence/local-20261121-client-udp-lossless-120-samples.json`,
+`evidence/local-20261121-client-udp-lossless-96-samples.json`,
+`evidence/local-20261121-client-udp-opus-2.5ms.json`,
 `evidence/local-20261121-client-udp-pcm-1ms.json`,
 `evidence/local-20261121-client-udp-lossless-1ms.json`.
 
