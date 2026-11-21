@@ -904,8 +904,13 @@ def binaries_for(role: str) -> list[pathlib.Path]:
 
 
 def node_sysctls(settings: dict) -> dict:
-    """Kernel settings of every mesh node, from the `node_sysctls` setting."""
-    return {str(key): str(value) for key, value in (settings.get("node_sysctls") or {}).items()}
+    """Kernel settings of every mesh node, from the `node_sysctls` setting.
+
+    A settings file that was saved before a default was added does not name
+    it: the defaults apply to every key that the setting leaves out. An empty
+    value removes a key."""
+    merged = {**DEFAULT_SETTINGS["node_sysctls"], **(settings.get("node_sysctls") or {})}
+    return {str(key): str(value) for key, value in merged.items() if str(value) != ""}
 
 
 def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
