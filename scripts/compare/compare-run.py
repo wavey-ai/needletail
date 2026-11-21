@@ -514,9 +514,16 @@ def carried(session: Session, step_name: str, seconds: int) -> dict:
     latency tail within half a second of its median."""
     out = {}
     for site in SITES:
+        out[site] = any(carried_by(session, step_name, seconds, site, label) for label in ("probe", "probe.uc"))
+    return out
+
+
+def carried_by(session: Session, step_name: str, seconds: int, site: str, label: str) -> bool:
+    """One client mode (probe label) carried the step in a region: every listener whole."""
+    if True:
         verdicts = []
         for host in (f"{site}-view", f"{site}-nano"):
-            path = session.dir / step_name / host / "probe.json"
+            path = session.dir / step_name / host / f"{label}.json"
             if not path.is_file():
                 continue
             try:
@@ -527,13 +534,23 @@ def carried(session: Session, step_name: str, seconds: int) -> dict:
             first = max(0.0, (record.get("first_key_frame_ms") or 0.0) / 1000.0)
             expected = 24 * max(1.0, seconds - first - 1.5)
             latency = record.get("video_latency_ms") or {}
+            # The tail is judged after the first five seconds, as the analysis
+            # does: a reader that joins at the last key frame (up to two
+            # seconds back) receives its first frames late, once.
+            csv_path = path.parent / f"{label}.csv"
+            if csv_path.is_file():
+                rows = [line.split(",") for line in csv_path.read_text().splitlines()[1:] if line.startswith("v,")]
+                if rows:
+                    start = min(int(r[3]) for r in rows) + 5_000_000
+                    kept = sorted(int(r[2]) / 1000.0 for r in rows if int(r[3]) >= start)
+                    if kept:
+                        latency = {"p50": kept[len(kept) // 2], "p99": kept[min(len(kept) - 1, int(0.99 * len(kept)))]}
             verdicts.append(bool(
                 not record.get("error") and (record.get("first_key_frame_ms") or -1) >= 0
                 and record.get("video_frames", 0) >= 0.97 * expected
                 and record.get("video_frames_incomplete", 0) <= 2
                 and latency.get("p99", 1e9) - latency.get("p50", 0) < 500))
-        out[site] = bool(verdicts) and all(verdicts)
-    return out
+        return bool(verdicts) and all(verdicts)
 
 
 def throughput(session: Session, lane: Lane, seconds: int, rungs: list[str] | None = None) -> None:
