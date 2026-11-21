@@ -174,6 +174,18 @@ class Settings(unittest.TestCase):
             with self.assertRaises(SystemExit, msg=bad):
                 self.load(bad)
 
+    def test_contributor_direct_region_is_refused(self):
+        # av-mesh has no --relay-direct-peer / --relay-direct-id: a
+        # distributor rendered with them would not start.
+        with self.assertRaises(SystemExit) as caught:
+            self.load(["contributor_direct_region=true"])
+        self.assertIn("relay-direct-peer", str(caught.exception))
+        settings, _ = self.load()
+        self.assertFalse(settings["contributor_direct_region"])
+        with self.assertRaises(ValueError):
+            deploy.render({"nodes": {}}, {**settings, "contributor_direct_region": True},
+                          {"services": []})
+
     def test_epoch_samples_by_payload(self):
         settings, _ = self.load()
         self.assertEqual(deploy.epoch_samples(settings, "pcm"), 48)

@@ -140,9 +140,11 @@ DEFAULT_SETTINGS = {
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
-    # --relay-direct-target; each such distributor gets --relay-direct-peer).
-    # Off: av-mesh does not yet accept a third, direct parent, and rejects and
-    # logs every datagram from an address that is not a backbone parent.
+    # --relay-direct-target; each such distributor would get
+    # --relay-direct-peer). Off, and refused when set: av-mesh has no
+    # --relay-direct-peer or --relay-direct-id yet (a distributor started with
+    # them would not start), and it rejects and logs every datagram from an
+    # address that is not a backbone parent. See AV_MESH_DIRECT_PARENT.
     "contributor_direct_region": False,
     "failover_primary_silence_ms": 100,
     "failover_primary_recovery_ms": 500,
@@ -219,6 +221,22 @@ DAW_MEDIA_PORT = 27100
 # Source port of the contributor's direct lanes to the distributors of its
 # site (contributor_direct_region).
 CONTRIB_DIRECT_PORT = 22303
+# Whether av-mesh takes the contributor's direct lane as a parent
+# (--relay-direct-peer, --relay-direct-id). It does not yet: av-contrib has
+# the sending side only. Until it does, contributor_direct_region is refused
+# rather than rendered into arguments that stop every distributor of the
+# contributor's site from starting.
+AV_MESH_DIRECT_PARENT = False
+
+
+def check_settings(settings: dict) -> None:
+    """Raise ValueError for settings the services cannot run with: the part
+    settings (part_plan) and contributor_direct_region."""
+    part_plan(settings)
+    if settings.get("contributor_direct_region") and not AV_MESH_DIRECT_PARENT:
+        raise ValueError("contributor_direct_region needs av-mesh --relay-direct-peer and "
+                         "--relay-direct-id, which av-mesh does not have yet; a distributor "
+                         "would not start. Leave it false")
 
 
 def parse_overrides(overrides: list[str]) -> dict:
@@ -276,7 +294,7 @@ def load_settings(overrides: list[str]) -> dict:
               + ", ".join(f"{key}={value}" for key, value in sorted(dropped.items()))
               + "; give them with --set in this run to use them", file=sys.stderr)
     try:
-        part_plan(settings)
+        check_settings(settings)
     except ValueError as error:
         sys.exit(f"settings: {error}")
     common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -983,6 +1001,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     services = {
         (item["service"], item["node_id"]): item for item in plan["services"]
     }
+    check_settings(settings)
     direct_contrib, direct_mesh = (direct_region_args(state, services)
                                    if settings.get("contributor_direct_region") else ([], {}))
     rendered: dict[str, dict] = {}
