@@ -377,7 +377,7 @@ def start(args: argparse.Namespace) -> dict:
         "node_count": len(state["nodes"]), "remote": remote,
         "session_id": clock_ns + args.start_delay * 1_000_000_000,
         "duration": args.duration, "window": args.window, "windows": windows,
-        "part_ms": settings["part_ms"], "tail": args.tail, "readers": args.readers,
+        "part_ms": settings.get("part_ms") or (settings.get("part_us") or 2500) / 1000, "tail": args.tail, "readers": args.readers,
         "load_edges": args.load_edges, "load_deadline_ms": args.load_deadline_ms,
         "media_deadline_ms": MEDIA_DEADLINE_MS, "streams": streams,
         "track_directory": args.track_directory, "settings": settings,

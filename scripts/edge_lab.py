@@ -167,16 +167,22 @@ def service_limits(name: str) -> dict:
     """default_limits with the lab's limit.<node>.* overrides of `up`."""
     return {**default_limits(name), **load("limits.json").get(name, {})}
 
-# One node configuration carries 5 ms audio parts and 4K video parts. The node
-# is sized for the audio parts. Each playlist derives its own window.
+# One node configuration carries the smallest parts of every stream: one AEP1
+# epoch per audio part (48 samples, 1 ms, for PCM and FLAC; 120 samples,
+# 2.5 ms, for Opus) and one frame per video part. The caches' nominal part is
+# 2.5 ms; segment and window are lengths of time, so every playlist keeps a
+# 1 s segment and a 12 s window whatever its part. Campaign verdicts taken
+# before 22 November 2026 were at 5 ms audio parts and five-frame video parts
+# (`part_ms=5 fmp4_part_ms=5 fmp4_video_part_ms=200` restores them).
 DEFAULT_OVERRIDES = {
-    "part_ms": 5,
-    "parts_per_segment": 200,
-    "window_parts": 2400,
-    "fmp4_part_ms": 5,
-    # Video parts of five frames at 24 frames a second, and segments of one
-    # group of pictures. The audio streams keep 5 ms parts.
-    "fmp4_video_part_ms": 200,
+    "part_us": 2500,
+    "segment_ms": 1000,
+    "window_ms": 12000,
+    "audio_part": "epoch",
+    "video_part": "frame",
+    "pcm_epoch_samples": 48,
+    "opus_epoch_samples": 120,
+    # Video segments of one group of pictures.
     "fmp4_video_segment_ms": 2000,
     "mesh_sync_interval_ms": 2,
     "mesh_symbol_size": 900,
@@ -853,6 +859,17 @@ def down(quiet: bool = False) -> None:
 
 # ------------------------------------------------------------------ sources
 
+def probe_epoch_samples(payload: str) -> int:
+    """Samples of one AEP1 epoch of the lab's sender for a payload, from the
+    settings of the running lab (`pcm_epoch_samples`, `opus_epoch_samples`).
+    FLAC frames are at least 32 samples."""
+    settings = load("settings.json")
+    if payload == "opus":
+        return int(settings.get("opus_epoch_samples") or 120)
+    samples = int(settings.get("pcm_epoch_samples") or 48)
+    return max(32, samples) if payload == "flac" else samples
+
+
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
     """Start the sources next to the contributor, as an encoder on its LAN.
@@ -903,6 +920,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
                 "--session-id", str(time.time_ns() + 2_000_000_000), "--group-id", "0",
                 "--duration-seconds", str(seconds), "--payload", "flac",
+                "--epoch-samples", str(probe_epoch_samples("flac")),
                 "--channels", "2", "--group-channels", "8",
                 "--pcm-s24le-file", str(AUDIO_PCM),
                 "--repair-percent", "12", "--min-repair-symbols", "1"],

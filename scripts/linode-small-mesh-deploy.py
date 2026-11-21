@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -33,10 +34,34 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import small_mesh_common as common  # noqa: E402
 
 SETTINGS_FILE = common.ARTIFACT_DIR / "settings.json"
+# Version 2: parts are the smallest frame by default and given in µs, samples
+# or frames; segment and window are lengths of time. A settings file of
+# version 1 named 5 ms parts and counted segments and windows in parts.
+SETTINGS_VERSION = 2
+# The part settings of version 1. They are still accepted and mapped onto the
+# new ones (see part_plan), but only when given with --set in the same run: a
+# saved value is dropped on load, so that an old settings.json never silently
+# overrides the smallest-part defaults.
+LEGACY_PART_KEYS = ("part_ms", "parts_per_segment", "window_parts", "fmp4_part_ms",
+                    "fmp4_video_part_ms")
 DEFAULT_SETTINGS = {
-    "part_ms": 5,
-    "parts_per_segment": 200,
-    "window_parts": 2400,
+    "settings_version": SETTINGS_VERSION,
+    # The nominal part of the caches (av-mesh --part-us): 2.5 ms, one Opus
+    # frame of 120 samples. Lossless parts are smaller still (one AEP1 epoch
+    # of `pcm_epoch_samples`); the caches take each part's own duration.
+    "part_us": 2500,
+    # Segment and playlist window as lengths of time (av-mesh --segment-ms,
+    # --window-ms), whatever the part.
+    "segment_ms": 1000,
+    "window_ms": 12000,
+    # PART-HOLD-BACK floor in ms; 0 is 3 x PART-TARGET.
+    "part_hold_back_ms": 0,
+    # Version 1 part settings (None: not used). `part_ms` maps to `part_us`,
+    # `parts_per_segment` and `window_parts` win over `segment_ms` and
+    # `window_ms`. Give them with --set in every run that needs them.
+    "part_ms": None,
+    "parts_per_segment": None,
+    "window_parts": None,
     "slot_kb": 2048,
     # Playlists that a node holds at one time: the streams of a region for a
     # relay and a distributor. An edge holds one less for its readers.
@@ -117,12 +142,23 @@ DEFAULT_SETTINGS = {
     "failover_heartbeat_ms": 25,
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
-    "fmp4_part_ms": 200,
-    # Part and segment duration of a stream with video. None uses
-    # `fmp4_part_ms` and the default segment of the contributor. With them one
-    # contributor carries 5 ms audio parts beside video parts of several
-    # frames. Set the segment to the key-frame interval of the encoder.
+    # Part of the contributor's audio (av-contrib --audio-part): "epoch", one
+    # AEP1 epoch per part whatever its sample count, or "<N>samples" or
+    # "<N>us". Video (--video-part): "frame", one access unit per part, or
+    # "<N>ms". Larger parts are a setting, never the default.
+    "audio_part": "epoch",
+    "video_part": "frame",
+    # Epoch of the lab's AEP1 sender (aep1-48k-probe send --epoch-samples) and
+    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, 120
+    # (2.5 ms) for Opus. Only the lab tools read these.
+    "pcm_epoch_samples": 48,
+    "opus_epoch_samples": 120,
+    # Version 1: `fmp4_part_ms` maps to `audio_part` "<N*1000>us" (and to
+    # `video_part` "<N>ms" when `fmp4_video_part_ms` is not given),
+    # `fmp4_video_part_ms` to `video_part` "<N>ms". None: not used.
+    "fmp4_part_ms": None,
     "fmp4_video_part_ms": None,
+    # Segment of a stream with video: the key-frame interval of the encoder.
     "fmp4_video_segment_ms": None,
     "daw_hls_packaging": "opaque",
     "daw_hls_formats": "flac,opus",
@@ -174,10 +210,9 @@ MEDIA_FEC_PORT = 22101
 DAW_MEDIA_PORT = 27100
 
 
-def load_settings(overrides: list[str]) -> dict:
-    settings = dict(DEFAULT_SETTINGS)
-    if SETTINGS_FILE.is_file():
-        settings.update(json.loads(SETTINGS_FILE.read_text()))
+def parse_overrides(overrides: list[str]) -> dict:
+    """`key=value` settings of this run; a value is JSON or a bare string."""
+    out = {}
     for override in overrides:
         key, _, raw = override.partition("=")
         if key not in DEFAULT_SETTINGS:
@@ -186,10 +221,124 @@ def load_settings(overrides: list[str]) -> dict:
             value = json.loads(raw)
         except json.JSONDecodeError:
             value = raw
-        settings[key] = value
+        out[key] = value
+    return out
+
+
+def merge_settings(saved: dict, given: dict) -> tuple[dict, dict]:
+    """The settings of a run: the defaults, then the saved file, then the
+    `--set` values of this run. The version 1 part keys of the saved file are
+    dropped (they named 5 ms parts and would override the new defaults);
+    they count only when given in this run. Returns the settings and what was
+    dropped."""
+    settings = dict(DEFAULT_SETTINGS)
+    saved = dict(saved)
+    dropped = {key: saved[key] for key in LEGACY_PART_KEYS
+               if saved.get(key) is not None and key not in given}
+    for key in LEGACY_PART_KEYS:
+        saved.pop(key, None)
+    saved.pop("settings_version", None)
+    settings.update(saved)
+    settings.update(given)
+    settings["settings_version"] = SETTINGS_VERSION
+    return settings, dropped
+
+
+def load_settings(overrides: list[str]) -> dict:
+    saved = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
+    settings, dropped = merge_settings(saved, parse_overrides(overrides))
+    if dropped:
+        print("settings: dropped the saved version 1 part settings "
+              + ", ".join(f"{key}={value}" for key, value in sorted(dropped.items()))
+              + "; give them with --set in this run to use them", file=sys.stderr)
+    try:
+        part_plan(settings)
+    except ValueError as error:
+        sys.exit(f"settings: {error}")
     common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
     return settings
+
+
+AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
+VIDEO_PART = re.compile(r"^(frame|[1-9][0-9]*ms)$")
+OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+
+
+def whole(value, name: str, scale: int = 1) -> int:
+    """value x scale as a positive integer, or ValueError."""
+    try:
+        scaled = float(value) * scale
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, not {value!r}") from None
+    if scaled <= 0 or abs(scaled - round(scaled)) > 1e-6:
+        raise ValueError(f"{name}={value} is not a positive whole number"
+                         + (f" of 1/{scale}" if scale != 1 else ""))
+    return int(round(scaled))
+
+
+def part_plan(settings: dict) -> dict:
+    """The part geometry that the services are started with: the nominal part
+    of the caches in µs and their av-mesh arguments, and the contributor's
+    --audio-part and --video-part. The version 1 keys, when given, are mapped
+    onto the new ones. Raises ValueError for a setting that cannot be
+    expressed."""
+    part_us = whole(settings["part_us"], "part_us")
+    if settings.get("part_ms") is not None:
+        part_us = whole(settings["part_ms"], "part_ms", 1000)
+    mesh = ["--part-us", str(part_us)]
+    if settings.get("parts_per_segment") is not None:
+        mesh += ["--parts-per-segment", str(whole(settings["parts_per_segment"], "parts_per_segment"))]
+    else:
+        mesh += ["--segment-ms", str(whole(settings["segment_ms"], "segment_ms"))]
+    if settings.get("window_parts") is not None:
+        mesh += ["--window-parts", str(whole(settings["window_parts"], "window_parts"))]
+    else:
+        mesh += ["--window-ms", str(whole(settings["window_ms"], "window_ms"))]
+    if settings.get("part_hold_back_ms"):
+        mesh += ["--part-hold-back-ms", str(whole(settings["part_hold_back_ms"], "part_hold_back_ms"))]
+
+    audio = str(settings["audio_part"])
+    video = str(settings["video_part"])
+    legacy_audio = settings.get("fmp4_part_ms")
+    if legacy_audio is not None:
+        audio = f"{whole(legacy_audio, 'fmp4_part_ms', 1000)}us"
+    if settings.get("fmp4_video_part_ms") is not None:
+        video = f"{whole(settings['fmp4_video_part_ms'], 'fmp4_video_part_ms')}ms"
+    elif legacy_audio is not None and float(legacy_audio) == int(float(legacy_audio)):
+        # Version 1: --fmp4-part-ms was the part of video too.
+        video = f"{int(float(legacy_audio))}ms"
+    if not AUDIO_PART.match(audio):
+        raise ValueError(f"audio_part {audio!r} is not epoch, <N>samples or <N>us")
+    if not VIDEO_PART.match(video):
+        raise ValueError(f"video_part {video!r} is not frame or <N>ms")
+
+    pcm = whole(settings["pcm_epoch_samples"], "pcm_epoch_samples")
+    if pcm < 12:
+        raise ValueError(f"pcm_epoch_samples={pcm}: the smallest epoch is 12 samples")
+    opus = whole(settings["opus_epoch_samples"], "opus_epoch_samples")
+    if opus not in OPUS_EPOCH_SAMPLES:
+        raise ValueError(f"opus_epoch_samples={opus}: Opus frames are {OPUS_EPOCH_SAMPLES} samples")
+    return {"part_us": part_us, "mesh_args": mesh, "audio_part": audio, "video_part": video,
+            "pcm_epoch_samples": pcm, "opus_epoch_samples": opus}
+
+
+def epoch_samples(settings: dict, payload: str) -> int:
+    """Samples of one AEP1 epoch of the lab's sender for a payload (pcm, flac
+    or opus). FLAC frames are at least 32 samples."""
+    plan = part_plan(settings)
+    if payload == "opus":
+        return plan["opus_epoch_samples"]
+    samples = plan["pcm_epoch_samples"]
+    return max(32, samples) if payload == "flac" else samples
+
+
+def deployed_part_ms(settings: dict) -> float:
+    """The nominal part of a deployed settings file in ms, for the tools that
+    still speak ms (version 1 files have `part_ms`, version 2 `part_us`)."""
+    if settings.get("part_ms") is not None:
+        return float(settings["part_ms"])
+    return int(settings.get("part_us") or 2500) / 1000
 
 
 def relay_node_id(node: dict) -> str:
@@ -560,9 +709,7 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--telemetry-private-ipv4", private_ip,
         "--telemetry-interval-ms", str(settings["telemetry_interval_ms"]),
         "--stream-id", "1",
-        "--part-ms", str(settings["part_ms"]),
-        "--parts-per-segment", str(settings["parts_per_segment"]),
-        "--window-parts", str(settings["window_parts"]),
+        *part_plan(settings)["mesh_args"],
         "--slot-kb", str(settings["slot_kb"]),
         "--playlist-slots", str(settings["playlist_slots"]),
     ]
@@ -696,9 +843,8 @@ def contributor_args(service: dict, settings: dict) -> list[str]:
         "--daw-hls-formats", settings["daw_hls_formats"],
         "--daw-hls-base-stream-id", str(settings["daw_hls_base_stream_id"]),
         "--stream-id", "1", "--rist-stream-id", "1", "--rtmp-stream-id", "1",
-        "--fmp4-part-ms", str(settings["fmp4_part_ms"]),
-        *(["--fmp4-video-part-ms", str(settings["fmp4_video_part_ms"])]
-          if settings.get("fmp4_video_part_ms") else []),
+        "--audio-part", part_plan(settings)["audio_part"],
+        "--video-part", part_plan(settings)["video_part"],
         *(["--fmp4-video-segment-ms", str(settings["fmp4_video_segment_ms"])]
           if settings.get("fmp4_video_segment_ms") else []),
         "--wall-clock-estimated-error-ms", "5",

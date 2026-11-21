@@ -248,7 +248,13 @@ def node_usage(before: dict, after: dict) -> dict:
 def run(args: argparse.Namespace) -> None:
     state = common.load_state()
     settings = json.loads((common.ARTIFACT_DIR / "settings.json").read_text())
-    args.part_ms = settings["part_ms"]
+    # The probe's receive-hls and soundkit-part-check take a whole number of
+    # ms: a settings file of version 2 names its part in µs (part_us).
+    part_ms = settings.get("part_ms") or (settings.get("part_us") or 2500) / 1000
+    if part_ms != int(part_ms):
+        raise SystemExit(f"this run's checkers take whole ms parts; the mesh has {part_ms} ms "
+                         "parts (deploy with --set part_ms=5 to run it)")
+    args.part_ms = int(part_ms)
     contributor = common.nodes_by_role(state, "contributor")[0]
     distributors = common.nodes_by_role(state, "distributor")
     edges = common.nodes_by_role(state, "edge")

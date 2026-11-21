@@ -4,7 +4,9 @@ draft-pantos-hls-rfc8216bis-22 and Apple's HLS authoring specification.
 
 The checks follow the numbered list in docs/media-edge-gaps.md, "LL-HLS
 conformance". Each check is a MUST (`fail`) or a SHOULD (`warn`), and names
-the section of the draft, or the rule of the authoring specification.
+the section of the draft, or the rule of the authoring specification. A rule
+of the authoring specification that this design departs from on purpose is
+reported as `info` (rule 26: parts shorter than a round trip).
 
 As a module:
     playlist = parse_media(text)
@@ -193,6 +195,9 @@ def check_media(playlist: dict, video: bool = True, fmp4: bool = True,
     def warn(rule, text, reference):
         out.append(Finding(rule, "warn", text, reference))
 
+    def info(rule, text, reference):
+        out.append(Finding(rule, "info", text, reference))
+
     for error in playlist["errors"]:
         fail(0, error, "syntax")
     if playlist["first_line"] != "#EXTM3U":
@@ -341,8 +346,21 @@ def check_media(playlist: dict, video: bool = True, fmp4: bool = True,
             fail(24, "CAN-BLOCK-RELOAD=YES is missing from a low-latency playlist",
                  "6.2.5.2")
         if part_target < 0.2:
-            warn(26, f"PART-TARGET {part_target} s is below any round trip that a reader "
-                     "on the Internet has", "Apple 14.2")
+            # Informational, not a warning, for this design. Apple's authoring
+            # rule assumes a player that asks for one part at a time and
+            # waits for it, so a part shorter than the round trip falls
+            # behind. Needletail's parts are the smallest frame by default
+            # (2.5 ms Opus, 1 ms or less lossless, one video frame) on
+            # purpose: its readers keep a time-based window of parts in
+            # flight (needletail-reader, ntcmp --window) and so follow parts
+            # far shorter than their round trip. The draft itself sets no
+            # lower bound on PART-TARGET; rules 12, 13, 14 and 20 still hold
+            # every part to it exactly. A standard player that needs larger
+            # parts gets them from a grouped-part setting, not from the
+            # default.
+            info(26, f"PART-TARGET {part_target} s is below any round trip that a reader "
+                     "on the Internet has: a player must keep several parts in flight",
+                 "Apple 14.2")
     if control is not None and target is not None:
         if "HOLD-BACK" in control and float(control["HOLD-BACK"]) < 3 * target - 1e-6:
             fail(21, f"HOLD-BACK {control['HOLD-BACK']} is less than three target durations",
@@ -690,10 +708,9 @@ def summarise(findings: list[Finding]) -> dict:
                                         "reference": finding["reference"],
                                         "text": finding["text"], "count": 0})
         item["count"] += 1
-    return {"fail": sorted((item for item in grouped.values() if item["level"] == "fail"),
-                           key=lambda item: item["rule"]),
-            "warn": sorted((item for item in grouped.values() if item["level"] == "warn"),
-                           key=lambda item: item["rule"])}
+    return {level: sorted((item for item in grouped.values() if item["level"] == level),
+                          key=lambda item: item["rule"])
+            for level in ("fail", "warn", "info")}
 
 
 def lab_fetch(node: str):
