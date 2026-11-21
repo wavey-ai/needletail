@@ -355,13 +355,49 @@ source symbol waits for the whole block; init segments are not sent to
 cut-through clients (a client fetches `init.mp4` over HTTP, as it reads the
 playlist); 2.5 ms Opus and 1 ms PCM end to end wait for the producers.
 
+## Smallest frames on the UDP lane (third round, same day)
+
+The owner: smallest frames by default, and "keep testing in the meantime
+with the existing 2.5 ms" Opus. The producer side of the defaults (the AEP1
+epoch, part durations in microseconds, the DAW source, deploy and docs
+defaults, the lossless halving curve) is the latency round's, by agreement
+between the two sessions; until it lands, `aep1-48k-probe send` here has a
+stop-gap `--epoch-samples` and `--payload opus` (av-contrib `client-udp`
+`4b8a12d`, which also merges the latency round's av-contrib). With the
+contributor's opaque packager at `fmp4_part_ms=1` each epoch is one part.
+`scripts/client-udp-lab.py run --smallest [--epoch-samples opus=120,pcm=48,flac=48]`
+runs the end-to-end test with these sources and one video frame per part
+(`fmp4_video_part_ms=42`).
+
+| Frames | Steps | Result |
+| --- | --- | --- |
+| Opus 2.5 ms (120 samples), PCM and FLAC 5 ms, 4K one frame per part | 0 %, 1 %, 5 %, drain | PASS: no part missing, every part identical to LL-HLS (Opus about 32,000 parts at 400 per second) |
+| as above, PCM 1 ms (48 samples) | 0 %, 5 % | FAIL upstream of the edge: LL-HLS readers miss the same parts |
+| Opus 2.5 ms, PCM and FLAC 1 ms | 0 % | FAIL upstream of the edge |
+
+Evidence: `evidence/local-20261121-client-udp-opus-2.5ms.json`,
+`evidence/local-20261121-client-udp-pcm-1ms.json`,
+`evidence/local-20261121-client-udp-lossless-1ms.json`.
+
+With 1 ms lossless parts (1,000 parts a second per stream) the distributors
+drop thousands of relay datagrams as expired (their deadline is publication
+plus 1 s), and with the contributor of this branch before the merge its
+publication queue was full. The edge and the UDP client deliver everything
+that reaches the edge; the parts are lost in the distribution tier, which the
+latency round's wave 2 is rebuilding for these rates (its target: publish to
+edge p99 under 2 ms at 4,000 parts a second). The in-process test above
+already carries 1 ms and 0.25 ms parts through the edge to a client. So:
+2.5 ms Opus works on the UDP lane end to end today; 1 ms lossless works from
+the edge to the client and waits for the distribution tier. No further
+Linode run was made for this round.
+
 ## Revisions
 
 | Repository | Branch | Commit | On |
 | --- | --- | --- | --- |
 | `av-mesh` | `client-udp` | `7497fc2` | `regional-llhls-cache` `07e7d4a`, with `low-latency` `113386f` merged |
 | `playlists` | `client-udp` | `a225609` | `low-latency` `3317b29` |
-| `av-contrib` | `client-udp` | `f05298a` | `edge-hardening` `12abbef` |
+| `av-contrib` | `client-udp` | `4b8a12d` | `edge-hardening` `12abbef`, with `low-latency` merged |
 | `needletail` | `client-udp` | this commit | `regional-llhls-cache` `9a633d1` |
 
 Built as in the edge hardening record (local `playlists`, `raptor-fec` and
