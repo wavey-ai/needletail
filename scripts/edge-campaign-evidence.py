@@ -128,13 +128,34 @@ def headline(item: dict) -> str:
     return "; ".join(parts)
 
 
-def markdown(scenarios: list[dict]) -> str:
-    lines = ["| Scenario | Result | What the run showed |", "| --- | --- | --- |"]
+def notes_for(name: str, notes: dict) -> tuple[str, str]:
+    """What was fixed and what is left for a scenario: its own entry, or the
+    longest entry that ends with * and begins like the name."""
+    if name in notes:
+        return tuple(notes[name])
+    prefixes = [key[:-1] for key in notes if key.endswith("*") and name.startswith(key[:-1])]
+    if prefixes:
+        return tuple(notes[max(prefixes, key=len) + "*"])
+    return "", ""
+
+
+def markdown(scenarios: list[dict], notes: dict | None = None) -> str:
+    """The summary table. With notes: scenario, result, what the run showed,
+    what was fixed, what is left."""
+    if notes is None:
+        lines = ["| Scenario | Result | What the run showed |", "| --- | --- | --- |"]
+    else:
+        lines = ["| Scenario | Result | What the run showed | What was fixed | What is left |",
+                 "| --- | --- | --- | --- | --- |"]
     for item in scenarios:
-        text = headline(item).replace("|", "/").replace("\n", " ")[:260]
-        result = item["result"] + (f" ({len(item['earlier'])} earlier)" if item.get("earlier")
-                                   else "")
-        lines.append(f"| `{item['scenario']}` | {result} | {text} |")
+        text = headline(item).replace("|", "/").replace("\n", " ")[:240]
+        row = f"| `{item['scenario']}` | {item['result']} | {text} |"
+        if notes is not None:
+            fixed, left = notes_for(item["scenario"], notes)
+            if item["result"] == "GAP" and item.get("gap") and not left:
+                left = item["gap"]
+            row += f" {fixed or '-'} | {left or '-'} |"
+        lines.append(row)
     return "\n".join(lines)
 
 
@@ -147,10 +168,21 @@ def main() -> None:
     parser.add_argument("--cleanup", action="append", default=[])
     parser.add_argument("--note", action="append", default=[])
     parser.add_argument("--markdown", action="store_true")
+    parser.add_argument("--notes", type=pathlib.Path,
+                        help="JSON: scenario -> [what was fixed, what is left]")
+    parser.add_argument("--group-order", action="store_true",
+                        help="order the table by group and name, not by time")
     args = parser.parse_args()
     scenarios, lab = load(args.directories)
     if args.markdown:
-        print(markdown(scenarios))
+        notes = json.loads(args.notes.read_text()) if args.notes else None
+        if args.group_order:
+            groups = []
+            for item in scenarios:
+                if item["group"] not in groups:
+                    groups.append(item["group"])
+            scenarios = sorted(scenarios, key=lambda item: groups.index(item["group"]))
+        print(markdown(scenarios, notes))
         return
     counts: dict[str, int] = {}
     for item in scenarios:
