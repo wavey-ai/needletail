@@ -357,14 +357,14 @@ def run(args, steps: dict) -> int:
     finally:
         if not args.keep_up and steps["lab_up"] is not None:
             lab.down(quiet=True)
-    hops.save_raw(out / "hops.raw.ndjson", nodes, events)
+    # The epoch of the run: what the sender reports it sent, else the plan's.
+    summary = hops.read_sender_summary(out / "sender.log")
+    epoch = run_epoch(steps, summary)
+    hops.save_raw(out / "hops.raw.ndjson", nodes, events, epoch)
     probes = []
     for item in steps["readers"]:
         for path in sorted(out.glob(f"{item['host']}.{item['lane']}.probe*.csv")):
             probes.append(hops.read_probe(f"{item['site']}={path}"))
-    # The epoch of the run: what the sender reports it sent, else the plan's.
-    summary = hops.read_sender_summary(out / "sender.log")
-    epoch = run_epoch(steps, summary)
     epoch_note = sender_mismatch(steps, summary)
     result = hops.analyse(nodes, events, probes, steps["hops"]["stream"],
                           steps["hops"]["source_start_ns"] // 1000, epoch["epoch_us"],

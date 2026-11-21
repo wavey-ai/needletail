@@ -44,6 +44,10 @@ START + (k+1) * E, where E is one epoch: --epoch-samples N at --sample-rate
 is the run's: --epoch-samples, --epoch-us, the sender's JSON summary
 (--sender-summary, its `epoch_samples`), or else the default epoch of the
 payload (--payload: pcm and flac 48 samples, opus 120), never a constant.
+A collection saved with --raw-out records the epoch, and --journal reads it
+back. A collection without one (saved before 22 November 2026: wave-1 runs
+were 240-sample, 5 ms epochs) falls back to the payload's default, and when a
+source clock is given hops.py says so on stderr: give --epoch-samples.
 compare-audio.py and latency-bench.py pass --session-id START + E, so epoch k
 leaves at session_id + k * E. Give --source-start-ns START (or --session-id,
 from which START = session_id - E). Without either, the spoken time is taken
@@ -708,14 +712,22 @@ def collect_linode(since_us: int | None, stream: int | None) -> tuple[dict, list
     return nodes, events
 
 
-def save_raw(path: pathlib.Path, nodes: dict, events: list[dict]) -> None:
+def save_raw(path: pathlib.Path, nodes: dict, events: list[dict],
+             epoch: dict | None = None) -> None:
+    """Save a collection; `epoch` (resolve_epoch's) is recorded with it, so
+    that --journal analyses it with the run's epoch."""
+    meta = {"nodes": nodes, "saved_unix": time.time()}
+    if epoch is not None:
+        meta["epoch"] = {key: epoch.get(key) for key in ("epoch_us", "epoch_samples", "from")}
     with path.open("w") as handle:
-        handle.write(json.dumps({"_meta": {"nodes": nodes, "saved_unix": time.time()}}) + "\n")
+        handle.write(json.dumps({"_meta": meta}) + "\n")
         for event in events:
             handle.write(json.dumps(event) + "\n")
 
 
-def load_raw(path: pathlib.Path) -> tuple[dict, list[dict]]:
+def load_raw(path: pathlib.Path, meta: dict | None = None) -> tuple[dict, list[dict]]:
+    """A saved collection's nodes and events; its whole `_meta` is copied
+    into `meta` when one is given."""
     nodes, events = {}, []
     for line in path.read_text().splitlines():
         if not line.strip():
@@ -723,9 +735,20 @@ def load_raw(path: pathlib.Path) -> tuple[dict, list[dict]]:
         item = json.loads(line)
         if "_meta" in item:
             nodes = item["_meta"]["nodes"]
+            if meta is not None:
+                meta.update(item["_meta"])
         else:
             events.append(item)
     return nodes, events
+
+
+def journal_epoch(meta: dict) -> dict | None:
+    """The epoch that a saved collection records, as resolve_epoch gives it."""
+    saved = meta.get("epoch") or {}
+    if not isinstance(saved.get("epoch_us"), (int, float)) or saved["epoch_us"] <= 0:
+        return None
+    return {"epoch_us": float(saved["epoch_us"]), "epoch_samples": saved.get("epoch_samples"),
+            "from": f"journal ({saved.get('from') or 'recorded'})"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -766,14 +789,26 @@ def main(argv: list[str] | None = None) -> int:
     epoch = resolve_epoch(args.epoch_samples, args.epoch_us, args.payload, summary,
                           args.sample_rate)
 
+    meta: dict = {}
     if args.journal:
-        nodes, events = load_raw(args.journal)
+        nodes, events = load_raw(args.journal, meta)
     elif args.lab == "edge":
         nodes, events = collect_edge_lab(args.since_us, args.stream)
     else:
         nodes, events = collect_linode(args.since_us, args.stream)
+    defaulted = epoch["from"].startswith("default")
+    if defaulted and journal_epoch(meta):
+        epoch = journal_epoch(meta)
+        defaulted = False
+    if defaulted and (args.session_id is not None or args.source_start_ns is not None):
+        # The spoken time of every part is START + (epoch + 1) x the epoch:
+        # a wrong epoch is wrong by a whole epoch per epoch.
+        print(f"hops.py: warning: no epoch given; using the {args.payload} default of "
+              f"{epoch['epoch_samples']} samples ({epoch['epoch_us']:g} µs) for the source "
+              "times. Runs before 22 November 2026 sent 240-sample (5 ms) epochs: give "
+              "--epoch-samples, --epoch-us or --sender-summary.", file=sys.stderr)
     if args.raw_out:
-        save_raw(args.raw_out, nodes, events)
+        save_raw(args.raw_out, nodes, events, epoch)
     start_us = None
     if args.source_start_ns is not None:
         start_us = args.source_start_ns // 1000

@@ -430,12 +430,61 @@ class Epochs(unittest.TestCase):
         london = result["regions"]["london"]["edge_parts"]
         self.assertEqual(hop(london, "source -> contrib.src_last")["p50"], 0.15)
 
+    def run_main(self, argv: list[str]) -> tuple[dict, str]:
+        out = self.directory / "hops-main.json"
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(hops.main(argv + ["--out", str(out)]), 0)
+        return json.loads(out.read_text()), err.getvalue()
+
+    def test_a_saved_collection_keeps_its_epoch(self):
+        # A run of 5 ms epochs saved with --raw-out, analysed again with
+        # --journal and no epoch: the journal's epoch, not the 1 ms default.
+        raw = self.directory / "raw.ndjson"
+        hops.save_raw(raw, NODES, self.journal_at(5000.0), hops.resolve_epoch(epoch_samples=240))
+        result, err = self.run_main(["--journal", str(raw), "--source-start-ns",
+                                     str(START_US * 1000)])
+        self.assertEqual(result["source"]["epoch_us"], 5000.0)
+        self.assertEqual(result["source"]["epoch_samples"], 240)
+        self.assertTrue(result["source"]["epoch_from"].startswith("journal"))
+        self.assertEqual(hop(result["regions"]["london"]["edge_parts"],
+                             "source -> contrib.src_last")["p50"], 0.15)
+        self.assertEqual(err, "")
+        # An epoch given on the command line still wins.
+        result, _ = self.run_main(["--journal", str(raw), "--epoch-samples", "48",
+                                   "--source-start-ns", str(START_US * 1000)])
+        self.assertEqual(result["source"]["epoch_from"], "epoch_samples")
+
+    def test_raw_out_records_the_epoch(self):
+        raw = self.directory / "raw.ndjson"
+        hops.save_raw(raw, NODES, self.journal_at(500.0))
+        again = self.directory / "again.ndjson"
+        self.run_main(["--journal", str(raw), "--epoch-samples", "24", "--raw-out", str(again)])
+        meta: dict = {}
+        hops.load_raw(again, meta)
+        self.assertEqual(meta["epoch"]["epoch_samples"], 24)
+        self.assertEqual(meta["epoch"]["epoch_us"], 500.0)
+
+    def test_an_old_collection_without_an_epoch_is_flagged(self):
+        # Wave-1 collections have no epoch: the pcm default (1 ms) is used,
+        # and with a source clock hops.py says so.
+        raw = self.directory / "raw.ndjson"
+        hops.save_raw(raw, NODES, self.journal_at(5000.0))
+        result, err = self.run_main(["--journal", str(raw), "--session-id",
+                                     str((START_US + 5000) * 1000)])
+        self.assertEqual(result["source"]["epoch_from"], "default for pcm")
+        self.assertIn("warning: no epoch given", err)
+        self.assertIn("--epoch-samples", err)
+        # No clock, no source times: nothing to warn about.
+        _, err = self.run_main(["--journal", str(raw)])
+        self.assertEqual(err, "")
+
     def test_command_line_payload_names_the_stream(self):
         events = [dict(item, stream=3001) for item in self.journal_at(2500.0)]
         raw = self.directory / "raw.ndjson"
         hops.save_raw(raw, NODES, events)
         out = self.directory / "hops.json"
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             hops.main(["--journal", str(raw), "--payload", "opus", "--source-start-ns",
                        str(START_US * 1000), "--out", str(out)])
         result = json.loads(out.read_text())
