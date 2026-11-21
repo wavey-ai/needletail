@@ -257,11 +257,110 @@ stopped on a transient error. Still open below.
 - **Loss shape.** Only random loss was tried. Burst loss longer than a part's
   repair loses that part.
 
+## Cut-through at the edge (second round, same day)
+
+The owner then asked for the UDP client mode to forward datagrams as they
+arrive (source symbols first, no wait for a block), to carry 2.5 ms Opus and
+parts of 1 ms or less, and to have no timer or batching on its hot path.
+
+**What changed** (`av-mesh` `bcc885f` to `7497fc2`, `playlists` `client-udp`
+`a225609`):
+
+- `playlists` gives the cache mesh a receive observer: told of every
+  datagram before it is decoded, and of every block once it decodes.
+- The cache mesh carries a part as one systematic RaptorQ block of a chunk
+  frame, so each source symbol is a slice of the frame. When one arrives at
+  the edge, the edge sends it on at once to the clients of the stream, cut
+  into client symbols (a divisor of the mesh symbol that fits a client
+  datagram: 16 kB 4K symbols go out as 1,000-byte symbols, so nothing is IP
+  fragmented on the client's path; a part in one symbol goes out at its own
+  size). This runs inline on the mesh receive task with non-blocking sends:
+  no timer, no queue, no batching.
+- When the edge has decoded the block it sends each client the symbols that
+  it never received and the repair of the client's current policy, from
+  the same frame in the same symbols, on a blocking thread. If the other
+  distributor's block of the part decodes first, that block is sent whole.
+  The cache sender skips the parts that cut-through carries.
+- The client decodes a cut-through object (a chunk frame) to the LL-HLS
+  part bytes with the edge's own slot rules, and reads the publication time
+  from the part's media object. It keeps one decoder per block id space.
+- `--client-udp-cut-through false` (deploy `client_udp_cut_through`) turns
+  it off.
+
+**Small parts** (`small_parts_reach_a_udp_client_cut_through_at_their_rate`:
+a distributor and an edge in one process, a real cache mesh over loopback,
+parts published at their rate, a UDP client). Every part arrived identical
+to the LL-HLS part, all by cut-through:
+
+| Parts | Rate | Publish to client p50 | p99 | Edge's share (first datagram at the edge to client) |
+| --- | ---: | ---: | ---: | ---: |
+| 2.5 ms Opus | 400/s | 0.51 to 0.69 ms | 0.70 to 0.94 ms | about 0.1 ms |
+| 1 ms PCM | 1,000/s | 0.49 to 0.65 ms | 1.1 to 1.5 ms | about 0.1 ms |
+| 0.25 ms PCM | 4,000/s | 12 to 177 ms | 39 to 357 ms | 0.03 ms |
+| 4K, one frame | 24/s | 2.8 to 4.1 ms | 3.2 to 7.6 ms | 1.6 ms (the rest of the part arriving) |
+
+At 4,000 parts/s the parts queue at the distributor, before they reach the
+edge. That is the distributor's publication path, owned by the latency
+round (its wave 2 targets it). The producers still make 5 ms parts; 2.5 ms
+Opus end to end waits for that round's `--epoch-samples`.
+
+**Local lab**: the end-to-end test passed twice more with cut-through
+(4 streams, 0 %, 1 %, 5 % loss and a drain: about 63,000 parts, none missing,
+every one identical to LL-HLS). Evidence:
+`evidence/local-20261121-client-udp-cut-through.json`. The local lab is too
+loaded to show the fraction of a millisecond that cut-through saves on
+audio.
+
+**Linode**, a second short run, run id `cudp2`, the same topology, every
+node dedicated, 19:30 to 19:55 UTC (0.40 h, about $0.54):
+
+- The first two runs failed: 1 and 2 4K parts missing at 5 % and 1 % loss.
+  A second adversarial review found the cause: the client kept one RaptorQ
+  decoder for every block id, and a decoder forgets blocks far below the
+  last one it decodes, so an init segment or a part sent whole threw away
+  the 4K parts being cut through. Fixed in `7497fc2`, with a test that fails
+  without the fix; the same review's other findings were fixed with it.
+- Then two runs passed every step: 4K, Opus, FLAC and PCM, 0 %, 1 % and 5 %
+  loss and a drain, no part missing, every part identical to LL-HLS
+  (`evidence/20261121T194453Z-client-udp.json`,
+  `evidence/20261121T194816Z-client-udp.json`). The edge sent 117,632 parts
+  by cut-through in one run, 3,103 of them completed from the other
+  distributor's block; no send found its socket full.
+- Then the same instances with cut-through off
+  (`evidence/20261121T195150Z-client-udp.json`). Publish to arrival, p50
+  and p99 in ms:
+
+| Step | Stream | Cut-through (two runs) | Cache path |
+| --- | --- | --- | --- |
+| 0 % | Opus | 2.72 to 2.75 / 59 to 73 | 3.00 / 49 |
+| 0 % | FLAC | 2.90 to 2.93 / 48 to 62 | 3.55 / 53 |
+| 0 % | PCM | 2.22 to 2.23 / 52 to 62 | 2.94 / 64 |
+| 0 % | 4K | 42.6 to 42.9 / 105 to 113 | 50.9 / 167 |
+| 5 % | Opus | 2.86 / 62 to 67 | 3.22 / 44 |
+| 5 % | FLAC | 3.00 / 44 to 45 | 3.60 / 45 |
+| 5 % | PCM | 2.31 to 2.38 / 48 to 49 | 2.88 / 47 |
+| 5 % | 4K | 60.7 to 61.2 / 135 to 145 | 54.4 / 201 |
+
+Cut-through takes 0.3 to 0.7 ms off the audio median and 8 ms off the 4K
+median on a clean path. With 5 % loss a lost 4K source symbol waits for the
+edge to decode the whole part before its repair goes out, and the 4K median
+is 6 ms worse than the cache path's. The p99 of 44 to 73 ms on audio is the
+same with or without it and is made upstream of the edge. Against the first
+Linode run (same day, before the latency round's mesh changes were merged)
+the audio median fell from 3.6 to 4.6 ms to 2.2 to 3.0 ms.
+
+Still open from this round: the edge sends to each client inline on the
+mesh receive task (one system call per client symbol per client); a lost 4K
+source symbol waits for the whole block; init segments are not sent to
+cut-through clients (a client fetches `init.mp4` over HTTP, as it reads the
+playlist); 2.5 ms Opus and 1 ms PCM end to end wait for the producers.
+
 ## Revisions
 
 | Repository | Branch | Commit | On |
 | --- | --- | --- | --- |
-| `av-mesh` | `client-udp` | `8eed26c` | `regional-llhls-cache` `07e7d4a` |
+| `av-mesh` | `client-udp` | `7497fc2` | `regional-llhls-cache` `07e7d4a`, with `low-latency` `113386f` merged |
+| `playlists` | `client-udp` | `a225609` | `low-latency` `3317b29` |
 | `av-contrib` | `client-udp` | `f05298a` | `edge-hardening` `12abbef` |
 | `needletail` | `client-udp` | this commit | `regional-llhls-cache` `9a633d1` |
 
