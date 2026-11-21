@@ -1,0 +1,1805 @@
+{
+ "harness": {
+  "name": "ffmpeg-play",
+  "version": "0.1.0",
+  "label": "ffmpeg-master-1",
+  "url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-master-1",
+  "seconds_requested": 40.0,
+  "started_utc": "2026-11-21T02:58:00.257+00:00",
+  "realtime_read": true,
+  "ffmpeg_version": "ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+  "ffprobe_version": "ffprobe version n9.0.2 Copyright (c) 2007-2026 the FFmpeg developers",
+  "timestamps": "milliseconds since the ffmpeg process was started, unless a field name says otherwise",
+  "note": "the ffmpeg HLS demuxer ignores EXT-X-PART / preload hints and content steering; it plays whole segments of one variant",
+  "transport": {
+   "tls_proxy": true,
+   "tls_verify_flag": null,
+   "note": "ffmpeg talks plain HTTP/1.1 to a loopback forwarder in this process, which talks HTTP/1.1 over TLS (no certificate verification) to the servers and rewrites absolute playlist URIs; URLs in this report are the real ones"
+  },
+  "command": "/usr/bin/ffmpeg -hide_banner -nostdin -loglevel level+info -nostats -stats_period 0.1 -progress pipe:1 -re -i 'https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-master-1' -f null -"
+ },
+ "verdict": {
+  "result": "played",
+  "reason": "38.98 s of media in 38.84 s after the first frame (speed 1.003), no stall over 500 ms",
+  "notes": [
+   "needed 3 start attempts; attempt 1 exited with code 234 after 502 ms: [in#0 @ 0x55ba93ce0340] [warning] Empty segment [https://10.90.0.23:19444/live/1/stream.m3u8]",
+   "14 warning line(s)"
+  ]
+ },
+ "ffprobe": {
+  "command": "/usr/bin/ffprobe -hide_banner -loglevel level+warning -print_format json -show_format -show_streams -show_programs 'https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-master-1'",
+  "timed_out": false,
+  "exit_code": 0,
+  "wall_s": 0.918,
+  "stderr_lines": 2,
+  "stderr_first": [
+   "[hls @ 0x55acedf1be40] [warning] Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]",
+   "[hls @ 0x55acedf1be40] [warning] Empty segment [https://10.90.0.24:19444/live/1/stream.m3u8]"
+  ],
+  "streams": [
+   {
+    "index": 0,
+    "codec_name": "h264",
+    "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+    "profile": "High",
+    "codec_type": "video",
+    "codec_tag_string": "avc1",
+    "width": 3840,
+    "height": 2160,
+    "pix_fmt": "yuv420p",
+    "level": 51,
+    "has_b_frames": 0,
+    "r_frame_rate": "24/1",
+    "avg_frame_rate": "24/1",
+    "time_base": "1/90000",
+    "start_time": "1558.098000",
+    "bits_per_raw_sample": "8",
+    "bit_rate": "22811098",
+    "variant_bitrate": "17000000"
+   },
+   {
+    "index": 1,
+    "codec_name": "aac",
+    "codec_long_name": "AAC (Advanced Audio Coding)",
+    "profile": "LC",
+    "codec_type": "audio",
+    "codec_tag_string": "mp4a",
+    "r_frame_rate": "0/0",
+    "avg_frame_rate": "0/0",
+    "time_base": "1/48000",
+    "start_time": "1558.101333",
+    "sample_fmt": "fltp",
+    "sample_rate": "48000",
+    "channels": 2,
+    "channel_layout": "stereo",
+    "bit_rate": "160913",
+    "variant_bitrate": "17000000"
+   }
+  ],
+  "format": {
+   "format_name": "hls",
+   "format_long_name": "Apple HTTP Live Streaming",
+   "nb_streams": 2,
+   "nb_programs": 3,
+   "start_time": "1558.098000",
+   "bit_rate": "22972011",
+   "probe_score": 100
+  },
+  "programs": [
+   {
+    "program_id": 0,
+    "nb_streams": 2,
+    "variant_bitrate": "17000000",
+    "streams": [
+     0,
+     1
+    ]
+   },
+   {
+    "program_id": 1,
+    "nb_streams": 0,
+    "variant_bitrate": "17000000",
+    "streams": []
+   },
+   {
+    "program_id": 2,
+    "nb_streams": 0,
+    "variant_bitrate": "17000000",
+    "streams": []
+   }
+  ],
+  "opened": true,
+  "attempts": [
+   {
+    "attempt": 1,
+    "opened": true,
+    "exit_code": 0,
+    "wall_s": 0.918,
+    "stderr_first": [
+     "[hls @ 0x55acedf1be40] [warning] Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]",
+     "[hls @ 0x55acedf1be40] [warning] Empty segment [https://10.90.0.24:19444/live/1/stream.m3u8]"
+    ]
+   }
+  ],
+  "note": "run after the play step; with --start-attempts > 1 it is repeated until it opens the playlist"
+ },
+ "startup": {
+  "attempts": [
+   {
+    "attempt": 1,
+    "started_ms_after_first_attempt": 0.4,
+    "ran_ms": 501.5,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x55ba93ce0340] [warning] Empty segment [https://10.90.0.23:19444/live/1/stream.m3u8]",
+     "[in#0 @ 0x55ba93ce0340] [warning] Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]",
+     "[in#0 @ 0x55ba93ce0340] [warning] Empty segment [https://10.90.0.24:19444/live/1/stream.m3u8]",
+     "[out#0/null @ 0x55ba93cfebc0] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 2,
+    "started_ms_after_first_attempt": 1502.9,
+    "ran_ms": 251.1,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x564fab2ca340] [warning] Empty segment [https://10.90.0.23:19444/live/1/stream.m3u8]",
+     "[in#0 @ 0x564fab2ca340] [warning] Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]",
+     "[in#0 @ 0x564fab2ca340] [warning] Empty segment [https://10.90.0.24:19444/live/1/stream.m3u8]",
+     "[out#0/null @ 0x564fab2e8bc0] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 3,
+    "started_ms_after_first_attempt": 2754.9,
+    "ran_ms": 40163.7,
+    "exit_code": 255,
+    "how_stopped": "stopped by the harness after 40 s",
+    "produced_output": true,
+    "first_problem_lines": [
+     "[in#0 @ 0x55a730ff8340] [warning] Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]",
+     "[in#0/hls @ 0x55a730ff8340] [warning] Media sequence changed unexpectedly: 35 -> 34",
+     "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55a731016240] [warning] Found duplicated MOOV Atom. Skipped it",
+     "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55a731016240] [warning] Found duplicated MOOV Atom. Skipped it",
+     "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55a731016240] [warning] Found duplicated MOOV Atom. Skipped it",
+     "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55a731016240] [warning] Found duplicated MOOV Atom. Skipped it"
+    ]
+   }
+  ],
+  "attempts_made": 3,
+  "time_to_first_decoded_frame_including_failed_attempts_ms": 4075.5,
+  "time_to_first_decoded_frame_ms": 1320.6,
+  "time_to_first_video_frame_ms": 1320.6,
+  "resolution_ms": 100.0,
+  "note": "time from ffmpeg process start to the first -progress block that reports decoded output (video frame count > 0 or output time > 0); blocks are emitted every 100 ms. With --start-attempts > 1 all other figures in this report are those of the last attempt."
+ },
+ "progress": {
+  "wall_s": 40.164,
+  "media_s": 39.392,
+  "wall_after_first_frame_s": 38.843,
+  "media_after_first_frame_s": 38.976,
+  "speed_factor": 1.003,
+  "ffmpeg_reported_speed": "1.01x",
+  "frames": 945,
+  "dup_frames": "0",
+  "drop_frames": "0",
+  "progress_blocks": 388,
+  "samples": [
+   {
+    "t_ms": 1320.6,
+    "media_s": 0.416,
+    "frame": 1,
+    "fps": "0.00",
+    "speed": "4.16x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 2021.6,
+    "media_s": 1.312,
+    "frame": 20,
+    "fps": "0.00",
+    "speed": "1.64x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 3022.9,
+    "media_s": 2.315,
+    "frame": 45,
+    "fps": "24.97",
+    "speed": "1.28x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 4024.0,
+    "media_s": 3.339,
+    "frame": 65,
+    "fps": "23.18",
+    "speed": "1.19x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 5025.2,
+    "media_s": 4.32,
+    "frame": 90,
+    "fps": "23.65",
+    "speed": "1.14x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 6026.2,
+    "media_s": 5.323,
+    "frame": 115,
+    "fps": "23.93",
+    "speed": "1.11x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 7027.3,
+    "media_s": 6.325,
+    "frame": 140,
+    "fps": "24.11",
+    "speed": "1.09x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 8028.4,
+    "media_s": 7.328,
+    "frame": 165,
+    "fps": "24.24",
+    "speed": "1.08x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 9029.6,
+    "media_s": 8.352,
+    "frame": 185,
+    "fps": "23.69",
+    "speed": "1.07x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 10031.2,
+    "media_s": 9.333,
+    "frame": 210,
+    "fps": "23.83",
+    "speed": "1.06x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 11032.4,
+    "media_s": 10.336,
+    "frame": 235,
+    "fps": "23.95",
+    "speed": "1.05x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 12033.5,
+    "media_s": 11.339,
+    "frame": 260,
+    "fps": "24.05",
+    "speed": "1.05x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 13034.8,
+    "media_s": 12.341,
+    "frame": 285,
+    "fps": "24.12",
+    "speed": "1.04x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 14036.2,
+    "media_s": 13.344,
+    "frame": 310,
+    "fps": "24.19",
+    "speed": "1.04x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 15037.3,
+    "media_s": 14.347,
+    "frame": 330,
+    "fps": "23.88",
+    "speed": "1.04x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 16038.4,
+    "media_s": 15.328,
+    "frame": 355,
+    "fps": "23.96",
+    "speed": "1.03x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 17039.6,
+    "media_s": 16.331,
+    "frame": 380,
+    "fps": "24.02",
+    "speed": "1.03x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 18040.7,
+    "media_s": 17.333,
+    "frame": 405,
+    "fps": "24.08",
+    "speed": "1.03x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 19042.1,
+    "media_s": 18.336,
+    "frame": 430,
+    "fps": "24.13",
+    "speed": "1.03x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 20043.6,
+    "media_s": 19.339,
+    "frame": 450,
+    "fps": "23.91",
+    "speed": "1.03x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 21044.7,
+    "media_s": 20.341,
+    "frame": 475,
+    "fps": "23.96",
+    "speed": "1.03x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 22045.9,
+    "media_s": 21.344,
+    "frame": 500,
+    "fps": "24.01",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 23046.9,
+    "media_s": 22.347,
+    "frame": 525,
+    "fps": "24.05",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 24048.2,
+    "media_s": 23.349,
+    "frame": 550,
+    "fps": "24.09",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 25049.5,
+    "media_s": 24.352,
+    "frame": 570,
+    "fps": "23.92",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 26050.6,
+    "media_s": 25.355,
+    "frame": 595,
+    "fps": "23.96",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 27051.9,
+    "media_s": 26.357,
+    "frame": 620,
+    "fps": "24.00",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 28053.0,
+    "media_s": 27.36,
+    "frame": 645,
+    "fps": "24.04",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 29054.1,
+    "media_s": 28.363,
+    "frame": 670,
+    "fps": "24.07",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 30055.3,
+    "media_s": 29.387,
+    "frame": 690,
+    "fps": "23.93",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 31056.8,
+    "media_s": 30.368,
+    "frame": 715,
+    "fps": "23.96",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 32058.0,
+    "media_s": 31.349,
+    "frame": 740,
+    "fps": "24.00",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 33059.1,
+    "media_s": 32.352,
+    "frame": 765,
+    "fps": "24.03",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 34060.1,
+    "media_s": 33.355,
+    "frame": 790,
+    "fps": "24.06",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 35061.3,
+    "media_s": 34.379,
+    "frame": 810,
+    "fps": "23.94",
+    "speed": "1.02x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 36062.4,
+    "media_s": 35.36,
+    "frame": 835,
+    "fps": "23.97",
+    "speed": "1.01x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 37063.6,
+    "media_s": 36.363,
+    "frame": 860,
+    "fps": "23.99",
+    "speed": "1.01x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 38064.9,
+    "media_s": 37.365,
+    "frame": 885,
+    "fps": "24.02",
+    "speed": "1.01x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 39065.9,
+    "media_s": 38.368,
+    "frame": 910,
+    "fps": "24.05",
+    "speed": "1.01x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   },
+   {
+    "t_ms": 40122.2,
+    "media_s": 39.392,
+    "frame": 945,
+    "fps": "24.29",
+    "speed": "1.01x",
+    "bitrate": "N/A",
+    "dup_frames": "0",
+    "drop_frames": "0"
+   }
+  ],
+  "note": "speed_factor = media seconds output / wall seconds, both counted from the first decoded frame; 1.0 is real time"
+ },
+ "stalls": {
+  "threshold_ms": 500.0,
+  "count": 0,
+  "total_stalled_ms": 0,
+  "list": [],
+  "note": "a stall is a period after the first decoded frame in which the output media time did not advance; resolution 100 ms"
+ },
+ "log": {
+  "counts": {
+   "panic": 0,
+   "fatal": 0,
+   "error": 0,
+   "warning": 14
+  },
+  "by_category": {
+   "demux": {
+    "warning": 14
+   }
+  },
+  "http_error_codes": {},
+  "by_message": {
+   "[mov,mpN,mNa,Ngp,NgN,mjN] Found duplicated MOOV Atom. Skipped it": 12,
+   "[in#N] Empty segment [https://N.N.N.N:N/live/N/stream.mNuN]": 1,
+   "[in#N/hls] Media sequence changed unexpectedly: N -> N": 1
+  },
+  "first": [
+   {
+    "t_ms": 231.0,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 2562.0,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0/hls",
+    "text": "Media sequence changed unexpectedly: 35 -> 34"
+   },
+   {
+    "t_ms": 2585.5,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 4665.2,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 8630.4,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 10714.0,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 14672.0,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 18638.6,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 20707.6,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 24672.1,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 28627.4,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 30707.3,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 34679.2,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   },
+   {
+    "t_ms": 38638.7,
+    "level": "warning",
+    "category": "demux",
+    "component": "mov,mp4,m4a,3gp,3g2,mj2",
+    "text": "Found duplicated MOOV Atom. Skipped it"
+   }
+  ],
+  "total_lines": 122,
+  "input_description": [
+   "Input #0, hls, from 'https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-master-1':",
+   "  Duration: N/A, start: 1520.181333, bitrate: 96466 kb/s",
+   "  Program 0",
+   "  Stream #0:0[0x0](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p, 3840x2160 [SAR 1:1 DAR 16:9], 48073 kb/s, 24 fps, 24 tbr, 90k tbn, start 1520.181333 (default)",
+   "  Stream #0:1[0x0](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 159 kb/s, start 1520.192000 (default)",
+   "  Program 1",
+   "  Program 2",
+   "  Stream #0:2[0x2](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p, 3840x2160 [SAR 1:1 DAR 16:9], 48073 kb/s, 24 fps, 24 tbr, 90k tbn, start 1520.181333 (default)",
+   "  Stream #0:3[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 159 kb/s, start 1520.192000 (default)",
+   "  Stream #0:0 -> #0:0 (h264 (native) -> wrapped_avframe (native))",
+   "  Stream #0:1 -> #0:1 (aac (native) -> pcm_s16le (native))",
+   "  Stream #0:0(und): Video: wrapped_avframe, yuv420p(progressive), 3840x2160 [SAR 1:1 DAR 16:9], q=2-31, 200 kb/s, 24 fps, 24 tbn (default)",
+   "  Stream #0:1(und): Audio: pcm_s16le, 48000 Hz, stereo, s16, 1536 kb/s (default)"
+  ],
+  "last_lines": [
+   "[http @ 0x55a73100b880] [info] Opening 'https://10.90.0.23:19444/live/1/stream.m3u8' for reading",
+   "[http @ 0x7f28e406e140] [info] Opening 'https://10.90.0.23:19444/live/1/init.mp4' for reading",
+   "[in#0/hls @ 0x55a730ff8340] [info] Opening 'https://10.90.0.23:19444/live/1/seg54.mp4' for reading",
+   "[http @ 0x7f28e40408c0] [info] Opening 'https://10.90.0.23:19444/live/1/seg55.mp4' for reading",
+   "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55a731016240] [warning] Found duplicated MOOV Atom. Skipped it",
+   "[out#0/null @ 0x55a7311a2200] [info] video:391KiB audio:7384KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown",
+   "[info] frame=  945 fps= 24 q=-0.0 Lsize=N/A time=00:00:39.39 bitrate=N/A speed=1.01x elapsed=0:00:38.90    ",
+   "[info] Exiting normally, received signal 2."
+  ]
+ },
+ "opens": {
+  "count": 52,
+  "by_host": {
+   "10.90.0.23:19444": 47,
+   "10.90.0.21:19444": 1,
+   "10.90.0.24:19444": 4
+  },
+  "by_kind": {
+   "media_playlist": 15,
+   "init_segment": 14,
+   "segment": 23
+  },
+  "list": [
+   {
+    "t_ms": 82.2,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 103.0,
+    "kind": "media_playlist",
+    "host": "10.90.0.21:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 171.0,
+    "kind": "media_playlist",
+    "host": "10.90.0.24:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 231.1,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 247.8,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg35.mp4"
+   },
+   {
+    "t_ms": 272.8,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg36.mp4"
+   },
+   {
+    "t_ms": 370.4,
+    "kind": "init_segment",
+    "host": "10.90.0.24:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 390.0,
+    "kind": "segment",
+    "host": "10.90.0.24:19444",
+    "file": "seg35.mp4"
+   },
+   {
+    "t_ms": 411.5,
+    "kind": "segment",
+    "host": "10.90.0.24:19444",
+    "file": "seg36.mp4"
+   },
+   {
+    "t_ms": 2554.0,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 2562.0,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 2565.1,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg37.mp4"
+   },
+   {
+    "t_ms": 4637.3,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 4641.5,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 4645.7,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg38.mp4"
+   },
+   {
+    "t_ms": 8595.6,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 8599.7,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 8602.4,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg39.mp4"
+   },
+   {
+    "t_ms": 8626.6,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg40.mp4"
+   },
+   {
+    "t_ms": 10679.2,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 10683.1,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 10686.4,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg41.mp4"
+   },
+   {
+    "t_ms": 14637.3,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 14641.4,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 14646.3,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg42.mp4"
+   },
+   {
+    "t_ms": 14666.0,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg43.mp4"
+   },
+   {
+    "t_ms": 18595.7,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 18599.1,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 18602.5,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg44.mp4"
+   },
+   {
+    "t_ms": 18624.6,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg45.mp4"
+   },
+   {
+    "t_ms": 20678.9,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 20682.4,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 20685.3,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg46.mp4"
+   },
+   {
+    "t_ms": 24637.5,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 24641.7,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 24645.8,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg47.mp4"
+   },
+   {
+    "t_ms": 24666.8,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg48.mp4"
+   },
+   {
+    "t_ms": 28595.7,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 28599.1,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 28603.9,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg49.mp4"
+   },
+   {
+    "t_ms": 28622.0,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg50.mp4"
+   },
+   {
+    "t_ms": 30679.0,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 30682.2,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 30686.1,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg51.mp4"
+   },
+   {
+    "t_ms": 34637.3,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 34641.7,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 34645.0,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg52.mp4"
+   },
+   {
+    "t_ms": 34667.3,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg53.mp4"
+   },
+   {
+    "t_ms": 38595.7,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 38599.4,
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "file": "init.mp4"
+   },
+   {
+    "t_ms": 38603.3,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg54.mp4"
+   },
+   {
+    "t_ms": 38628.7,
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "file": "seg55.mp4"
+   }
+  ],
+  "note": "from ffmpeg 'Opening ... for reading' lines; reused keep-alive connections are included"
+ },
+ "http": {
+  "requests": 53,
+  "by_status": {
+   "200": 16,
+   "206": 37
+  },
+  "by_kind": {
+   "multivariant_playlist": {
+    "200": 1
+   },
+   "media_playlist": {
+    "200": 15
+   },
+   "init_segment": {
+    "206": 14
+   },
+   "segment": {
+    "206": 23
+   }
+  },
+  "by_host": {
+   "10.90.0.11:19444": 1,
+   "10.90.0.23:19444": 47,
+   "10.90.0.21:19444": 1,
+   "10.90.0.24:19444": 4
+  },
+  "bytes": 94257462,
+  "non_2xx_or_failed": [],
+  "list": [
+   {
+    "t_ms": 65.3,
+    "url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-master-1",
+    "kind": "multivariant_playlist",
+    "host": "10.90.0.11:19444",
+    "status": 200,
+    "bytes": 529,
+    "ttfb_ms": 16.4,
+    "total_ms": 16.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 83.7,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1544,
+    "ttfb_ms": 19.7,
+    "total_ms": 20.0,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 104.0,
+    "url": "https://10.90.0.21:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.21:19444",
+    "status": 200,
+    "bytes": 634,
+    "ttfb_ms": 26.7,
+    "total_ms": 26.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 172.0,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.24:19444",
+    "status": 200,
+    "bytes": 1590,
+    "ttfb_ms": 17.7,
+    "total_ms": 17.8,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 232.4,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 15.7,
+    "total_ms": 15.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 371.8,
+    "url": "https://10.90.0.24:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.24:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 18.5,
+    "total_ms": 18.8,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 250.4,
+    "url": "https://10.90.0.23:19444/live/1/seg35.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 5813495,
+    "ttfb_ms": 22.8,
+    "total_ms": 961.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 392.3,
+    "url": "https://10.90.0.24:19444/live/1/seg35.mp4",
+    "kind": "segment",
+    "host": "10.90.0.24:19444",
+    "status": 206,
+    "bytes": 5813495,
+    "ttfb_ms": 19.5,
+    "total_ms": 820.1,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 2555.0,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 7.2,
+    "total_ms": 7.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 2563.0,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.5,
+    "total_ms": 2.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 274.3,
+    "url": "https://10.90.0.23:19444/live/1/seg36.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3633614,
+    "ttfb_ms": 96.1,
+    "total_ms": 2531.3,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 4638.5,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1757,
+    "ttfb_ms": 3.4,
+    "total_ms": 3.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 4642.6,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.5,
+    "total_ms": 2.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 2567.5,
+    "url": "https://10.90.0.23:19444/live/1/seg37.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3426876,
+    "ttfb_ms": 18.4,
+    "total_ms": 2309.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 4647.0,
+    "url": "https://10.90.0.23:19444/live/1/seg38.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 5039451,
+    "ttfb_ms": 18.6,
+    "total_ms": 2083.1,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 8596.9,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1757,
+    "ttfb_ms": 2.9,
+    "total_ms": 3.1,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 8600.3,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.5,
+    "total_ms": 2.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 8605.0,
+    "url": "https://10.90.0.23:19444/live/1/seg39.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4241058,
+    "ttfb_ms": 21.9,
+    "total_ms": 213.8,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 8627.5,
+    "url": "https://10.90.0.23:19444/live/1/seg40.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3722548,
+    "ttfb_ms": 3.3,
+    "total_ms": 260.4,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 10680.2,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1757,
+    "ttfb_ms": 3.2,
+    "total_ms": 3.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 10684.1,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.8,
+    "total_ms": 2.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 10689.3,
+    "url": "https://10.90.0.23:19444/live/1/seg41.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3713251,
+    "ttfb_ms": 24.9,
+    "total_ms": 1912.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 14638.3,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1757,
+    "ttfb_ms": 3.2,
+    "total_ms": 3.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 14642.4,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.6,
+    "total_ms": 2.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 14667.0,
+    "url": "https://10.90.0.23:19444/live/1/seg43.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3626253,
+    "ttfb_ms": 5.4,
+    "total_ms": 152.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 14647.3,
+    "url": "https://10.90.0.23:19444/live/1/seg42.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3148403,
+    "ttfb_ms": 19.0,
+    "total_ms": 219.3,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 18596.7,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 2.7,
+    "total_ms": 2.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 18600.0,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.7,
+    "total_ms": 3.1,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 18625.7,
+    "url": "https://10.90.0.23:19444/live/1/seg45.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3306492,
+    "ttfb_ms": 13.4,
+    "total_ms": 182.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 18605.3,
+    "url": "https://10.90.0.23:19444/live/1/seg44.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3785936,
+    "ttfb_ms": 19.6,
+    "total_ms": 634.0,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 20680.0,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 2.8,
+    "total_ms": 3.0,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 20683.2,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.5,
+    "total_ms": 2.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 20687.4,
+    "url": "https://10.90.0.23:19444/live/1/seg46.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4536593,
+    "ttfb_ms": 20.5,
+    "total_ms": 1923.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 24638.5,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 3.7,
+    "total_ms": 3.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 24642.8,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 3.1,
+    "total_ms": 3.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 24648.6,
+    "url": "https://10.90.0.23:19444/live/1/seg47.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3447467,
+    "ttfb_ms": 18.5,
+    "total_ms": 132.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 24667.7,
+    "url": "https://10.90.0.23:19444/live/1/seg48.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4034508,
+    "ttfb_ms": 4.8,
+    "total_ms": 143.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 28596.8,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 2.8,
+    "total_ms": 2.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 28600.0,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.5,
+    "total_ms": 2.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 28623.0,
+    "url": "https://10.90.0.23:19444/live/1/seg50.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4008570,
+    "ttfb_ms": 4.8,
+    "total_ms": 265.6,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 28604.9,
+    "url": "https://10.90.0.23:19444/live/1/seg49.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4073818,
+    "ttfb_ms": 17.5,
+    "total_ms": 649.8,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 30679.9,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 2.7,
+    "total_ms": 2.8,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 30683.2,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.5,
+    "total_ms": 2.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 30687.2,
+    "url": "https://10.90.0.23:19444/live/1/seg51.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 6089446,
+    "ttfb_ms": 20.4,
+    "total_ms": 3143.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 34638.6,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 3.3,
+    "total_ms": 3.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 34642.7,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 2.7,
+    "total_ms": 2.8,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 34668.3,
+    "url": "https://10.90.0.23:19444/live/1/seg53.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4084893,
+    "ttfb_ms": 11.4,
+    "total_ms": 164.9,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 34648.0,
+    "url": "https://10.90.0.23:19444/live/1/seg52.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4031745,
+    "ttfb_ms": 19.7,
+    "total_ms": 421.4,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 38596.7,
+    "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "status": 200,
+    "bytes": 1732,
+    "ttfb_ms": 3.0,
+    "total_ms": 3.2,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 38600.4,
+    "url": "https://10.90.0.23:19444/live/1/init.mp4",
+    "kind": "init_segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 1126,
+    "ttfb_ms": 3.3,
+    "total_ms": 3.5,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 38629.8,
+    "url": "https://10.90.0.23:19444/live/1/seg55.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 3794426,
+    "ttfb_ms": 9.4,
+    "total_ms": 178.4,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 38606.2,
+    "url": "https://10.90.0.23:19444/live/1/seg54.mp4",
+    "kind": "segment",
+    "host": "10.90.0.23:19444",
+    "status": 206,
+    "bytes": 4157203,
+    "ttfb_ms": 22.7,
+    "total_ms": 436.1,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   },
+   {
+    "t_ms": 413.1,
+    "url": "https://10.90.0.24:19444/live/1/seg36.mp4",
+    "kind": "segment",
+    "host": "10.90.0.24:19444",
+    "status": 206,
+    "bytes": 2686976,
+    "ttfb_ms": 58.6,
+    "total_ms": 39715.4,
+    "error": "ConnectionResetError: [Errno 104] Connection reset by peer",
+    "range": "bytes=0-",
+    "content_type": "video/mp4"
+   }
+  ],
+  "note": "upstream requests made for ffmpeg by the loopback forwarder during the last play attempt (the ffprobe step is excluded); t_ms is since ffmpeg start"
+ },
+ "exit": {
+  "code": 255,
+  "how_stopped": "stopped by the harness after 40 s",
+  "end_ms": 40163.7
+ }
+}

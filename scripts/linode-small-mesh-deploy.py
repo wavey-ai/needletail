@@ -65,6 +65,15 @@ DEFAULT_SETTINGS = {
     "assignment_alternates": 2,
     "steering_ttl_seconds": 5,
     "telemetry_interval_ms": 1000,
+    # Kernel settings of a node that serves readers. A reader far from its
+    # cache gets a 4K playlist only when the cache finds the rate of the path
+    # quickly: CUBIC leaves slow start early on a path with jitter and then
+    # needs ten seconds to reach 16 Mbit/s. A live stream also pauses between
+    # parts, and the window must not close in each pause.
+    "node_sysctls": {
+        "net.ipv4.tcp_congestion_control": "bbr",
+        "net.ipv4.tcp_slow_start_after_idle": "0",
+    },
     "path_loss_ppm": 20000,
     "relay_min_repair_symbols": 0,
     "failover_primary_silence_ms": 100,
@@ -74,6 +83,12 @@ DEFAULT_SETTINGS = {
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
     "fmp4_part_ms": 200,
+    # Part and segment duration of a stream with video. None uses
+    # `fmp4_part_ms` and the default segment of the contributor. With them one
+    # contributor carries 5 ms audio parts beside video parts of several
+    # frames. Set the segment to the key-frame interval of the encoder.
+    "fmp4_video_part_ms": None,
+    "fmp4_video_segment_ms": None,
     "daw_hls_packaging": "opaque",
     "daw_hls_formats": "flac,opus",
     "daw_hls_base_stream_id": 2001,
@@ -618,6 +633,10 @@ def contributor_args(service: dict, settings: dict) -> list[str]:
         "--daw-hls-base-stream-id", str(settings["daw_hls_base_stream_id"]),
         "--stream-id", "1", "--rist-stream-id", "1", "--rtmp-stream-id", "1",
         "--fmp4-part-ms", str(settings["fmp4_part_ms"]),
+        *(["--fmp4-video-part-ms", str(settings["fmp4_video_part_ms"])]
+          if settings.get("fmp4_video_part_ms") else []),
+        *(["--fmp4-video-segment-ms", str(settings["fmp4_video_segment_ms"])]
+          if settings.get("fmp4_video_segment_ms") else []),
         "--wall-clock-estimated-error-ms", "5",
         "--rist-bind", "0.0.0.0:27000", "--rtmp-bind", "0.0.0.0:19350",
         "--relay-local-id", "contrib",
@@ -821,6 +840,11 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     return [mesh / "av-mesh", probe, checker]
 
 
+def node_sysctls(settings: dict) -> dict:
+    """Kernel settings of every mesh node, from the `node_sysctls` setting."""
+    return {str(key): str(value) for key, value in (settings.get("node_sysctls") or {}).items()}
+
+
 def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
     if binaries:
         sources = [str(path) for path in binaries_for(node["role"])]
@@ -839,6 +863,14 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
         "/usr/local/share/ca-certificates/needletail-qualification.crt",
         "chmod 600 /etc/needletail/tls/privkey.pem",
     ]
+    sysctls = node_sysctls(settings)
+    if sysctls:
+        lines = "\n".join(f"{key} = {value}" for key, value in sysctls.items())
+        commands += [
+            "modprobe tcp_bbr 2>/dev/null || true",
+            f"cat >/etc/sysctl.d/90-needletail.conf <<'SYSCTL'\n{lines}\nSYSCTL",
+            "sysctl -q -p /etc/sysctl.d/90-needletail.conf",
+        ]
     item = rendered.get(node["name"])
     if item:
         service = item["service"]

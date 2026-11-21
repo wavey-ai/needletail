@@ -1,0 +1,312 @@
+{
+ "harness": {
+  "name": "ffmpeg-play",
+  "version": "0.1.0",
+  "label": "ffmpeg-master-1-direct-tls",
+  "url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-direct",
+  "seconds_requested": 10.0,
+  "started_utc": "2026-11-21T03:11:47.219+00:00",
+  "realtime_read": true,
+  "ffmpeg_version": "ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+  "ffprobe_version": "ffprobe version n9.0.2 Copyright (c) 2007-2026 the FFmpeg developers",
+  "timestamps": "milliseconds since the ffmpeg process was started, unless a field name says otherwise",
+  "note": "the ffmpeg HLS demuxer ignores EXT-X-PART / preload hints and content steering; it plays whole segments of one variant",
+  "transport": {
+   "tls_proxy": false,
+   "tls_verify_flag": "0",
+   "note": "ffmpeg connects to the servers directly"
+  },
+  "command": "/usr/bin/ffmpeg -hide_banner -nostdin -loglevel level+info -nostats -stats_period 0.1 -progress pipe:1 -re -tls_verify 0 -i 'https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-direct' -f null -"
+ },
+ "verdict": {
+  "result": "failed",
+  "reason": "ffmpeg produced no decoded output in 0.2 s (exit code 234, exited on its own); first error: [tls] Peer certificate failed verification",
+  "notes": [
+   "6 error line(s), 6 warning line(s)",
+   "ffprobe could not open the playlist: [tls @ 0x564814ee5d00] [error] Peer certificate failed verification; [hls @ 0x56481479ee40] [warning] parse_playlist error Input/output error [https://10.90.0.21:19444/live/1/stream.m3u8]"
+  ]
+ },
+ "ffprobe": {
+  "command": "/usr/bin/ffprobe -hide_banner -loglevel level+warning -tls_verify 0 -print_format json -show_format -show_streams -show_programs 'https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-direct'",
+  "timed_out": false,
+  "exit_code": 0,
+  "wall_s": 0.2,
+  "stderr_lines": 9,
+  "stderr_first": [
+   "[tls @ 0x564814ee5d00] [error] Peer certificate failed verification",
+   "[hls @ 0x56481479ee40] [warning] parse_playlist error Input/output error [https://10.90.0.21:19444/live/1/stream.m3u8]",
+   "[tls @ 0x56481481dc00] [error] Peer certificate failed verification",
+   "[hls @ 0x56481479ee40] [warning] parse_playlist error Input/output error [https://10.90.0.23:19444/live/1/stream.m3u8]",
+   "[tls @ 0x564814ead340] [error] Peer certificate failed verification",
+   "[hls @ 0x56481479ee40] [warning] parse_playlist error Input/output error [https://10.90.0.24:19444/live/1/stream.m3u8]",
+   "[hls @ 0x56481479ee40] [warning] Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]",
+   "[hls @ 0x56481479ee40] [warning] Empty segment [https://10.90.0.23:19444/live/1/stream.m3u8]",
+   "[hls @ 0x56481479ee40] [warning] Empty segment [https://10.90.0.24:19444/live/1/stream.m3u8]"
+  ],
+  "streams": [],
+  "format": {
+   "format_name": "hls",
+   "format_long_name": "Apple HTTP Live Streaming",
+   "nb_streams": 0,
+   "nb_programs": 3,
+   "probe_score": 100
+  },
+  "programs": [
+   {
+    "program_id": 0,
+    "nb_streams": 0,
+    "variant_bitrate": "17000000",
+    "streams": []
+   },
+   {
+    "program_id": 1,
+    "nb_streams": 0,
+    "variant_bitrate": "17000000",
+    "streams": []
+   },
+   {
+    "program_id": 2,
+    "nb_streams": 0,
+    "variant_bitrate": "17000000",
+    "streams": []
+   }
+  ],
+  "opened": false,
+  "attempts": [
+   {
+    "attempt": 1,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.2,
+    "stderr_first": [
+     "[tls @ 0x564814ee5d00] [error] Peer certificate failed verification",
+     "[hls @ 0x56481479ee40] [warning] parse_playlist error Input/output error [https://10.90.0.21:19444/live/1/stream.m3u8]",
+     "[tls @ 0x56481481dc00] [error] Peer certificate failed verification",
+     "[hls @ 0x56481479ee40] [warning] parse_playlist error Input/output error [https://10.90.0.23:19444/live/1/stream.m3u8]"
+    ]
+   }
+  ],
+  "note": "run after the play step; with --start-attempts > 1 it is repeated until it opens the playlist"
+ },
+ "startup": {
+  "attempts": [
+   {
+    "attempt": 1,
+    "started_ms_after_first_attempt": 0.5,
+    "ran_ms": 201.2,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[tls @ 0x55dd317ef6c0] [error] Peer certificate failed verification",
+     "[in#0 @ 0x55dd310ab380] [warning] parse_playlist error Input/output error [https://10.90.0.21:19444/live/1/stream.m3u8]",
+     "[tls @ 0x55dd317ed040] [error] Peer certificate failed verification",
+     "[in#0 @ 0x55dd310ab380] [warning] parse_playlist error Input/output error [https://10.90.0.23:19444/live/1/stream.m3u8]",
+     "[tls @ 0x55dd317ecfc0] [error] Peer certificate failed verification",
+     "[in#0 @ 0x55dd310ab380] [warning] parse_playlist error Input/output error [https://10.90.0.24:19444/live/1/stream.m3u8]"
+    ]
+   }
+  ],
+  "attempts_made": 1,
+  "time_to_first_decoded_frame_including_failed_attempts_ms": null,
+  "time_to_first_decoded_frame_ms": null,
+  "time_to_first_video_frame_ms": null,
+  "resolution_ms": 100.0,
+  "note": "time from ffmpeg process start to the first -progress block that reports decoded output (video frame count > 0 or output time > 0); blocks are emitted every 100 ms. With --start-attempts > 1 all other figures in this report are those of the last attempt."
+ },
+ "progress": {
+  "wall_s": 0.201,
+  "media_s": 0.0,
+  "wall_after_first_frame_s": null,
+  "media_after_first_frame_s": 0.0,
+  "speed_factor": null,
+  "ffmpeg_reported_speed": null,
+  "frames": null,
+  "dup_frames": null,
+  "drop_frames": null,
+  "progress_blocks": 0,
+  "samples": [],
+  "note": "speed_factor = media seconds output / wall seconds, both counted from the first decoded frame; 1.0 is real time"
+ },
+ "stalls": {
+  "threshold_ms": 500.0,
+  "count": 0,
+  "total_stalled_ms": 0,
+  "list": [],
+  "note": "a stall is a period after the first decoded frame in which the output media time did not advance; resolution 100 ms"
+ },
+ "log": {
+  "counts": {
+   "panic": 0,
+   "fatal": 1,
+   "error": 5,
+   "warning": 6
+  },
+  "by_category": {
+   "http": {
+    "error": 3
+   },
+   "demux": {
+    "warning": 6
+   },
+   "output": {
+    "error": 1
+   },
+   "other": {
+    "error": 1,
+    "fatal": 1
+   }
+  },
+  "http_error_codes": {},
+  "by_message": {
+   "[tls] Peer certificate failed verification": 3,
+   "[in#N] parse_playlist error Input/output error [https://N.N.N.N:N/live/N/stream.mNuN]": 3,
+   "[in#N] Empty segment [https://N.N.N.N:N/live/N/stream.mNuN]": 3,
+   "[out#N/null] Output file does not contain any stream": 1,
+   "[-] Error opening output file -.": 1,
+   "[-] Error opening output files: Invalid argument": 1
+  },
+  "first": [
+   {
+    "t_ms": 164.3,
+    "level": "error",
+    "category": "http",
+    "component": "tls",
+    "text": "Peer certificate failed verification"
+   },
+   {
+    "t_ms": 164.4,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "parse_playlist error Input/output error [https://10.90.0.21:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 175.0,
+    "level": "error",
+    "category": "http",
+    "component": "tls",
+    "text": "Peer certificate failed verification"
+   },
+   {
+    "t_ms": 175.0,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "parse_playlist error Input/output error [https://10.90.0.23:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 188.3,
+    "level": "error",
+    "category": "http",
+    "component": "tls",
+    "text": "Peer certificate failed verification"
+   },
+   {
+    "t_ms": 188.3,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "parse_playlist error Input/output error [https://10.90.0.24:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 188.3,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "Empty segment [https://10.90.0.21:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 188.3,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "Empty segment [https://10.90.0.23:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 188.3,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "Empty segment [https://10.90.0.24:19444/live/1/stream.m3u8]"
+   },
+   {
+    "t_ms": 188.5,
+    "level": "error",
+    "category": "output",
+    "component": "out#0/null",
+    "text": "Output file does not contain any stream"
+   },
+   {
+    "t_ms": 188.5,
+    "level": "error",
+    "category": "other",
+    "component": null,
+    "text": "Error opening output file -."
+   },
+   {
+    "t_ms": 188.5,
+    "level": "fatal",
+    "category": "other",
+    "component": null,
+    "text": "Error opening output files: Invalid argument"
+   }
+  ],
+  "total_lines": 28,
+  "input_description": [
+   "Input #0, hls, from 'https://10.90.0.11:19444/live/1/master.m3u8?sid=ffmpeg-direct':",
+   "  Duration: N/A, bitrate: N/A",
+   "  Program 0",
+   "  Program 1",
+   "  Program 2"
+  ],
+  "last_lines": [
+   "[info]       variant_bitrate : 17000000",
+   "[info]   Program 2 ",
+   "[info]     Metadata:",
+   "[info]       variant_bitrate : 17000000",
+   "[info] Output #0, null, to 'pipe:':",
+   "[out#0/null @ 0x55dd317e2b80] [error] Output file does not contain any stream",
+   "[error] Error opening output file -.",
+   "[fatal] Error opening output files: Invalid argument"
+  ]
+ },
+ "opens": {
+  "count": 3,
+  "by_host": {
+   "10.90.0.21:19444": 1,
+   "10.90.0.23:19444": 1,
+   "10.90.0.24:19444": 1
+  },
+  "by_kind": {
+   "media_playlist": 3
+  },
+  "list": [
+   {
+    "t_ms": 152.6,
+    "kind": "media_playlist",
+    "host": "10.90.0.21:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 164.4,
+    "kind": "media_playlist",
+    "host": "10.90.0.23:19444",
+    "file": "stream.m3u8"
+   },
+   {
+    "t_ms": 175.0,
+    "kind": "media_playlist",
+    "host": "10.90.0.24:19444",
+    "file": "stream.m3u8"
+   }
+  ],
+  "note": "from ffmpeg 'Opening ... for reading' lines; reused keep-alive connections are included"
+ },
+ "http": null,
+ "exit": {
+  "code": 234,
+  "how_stopped": "exited on its own",
+  "end_ms": 201.2
+ }
+}
