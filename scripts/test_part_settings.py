@@ -107,10 +107,42 @@ class Settings(unittest.TestCase):
                                              "--window-parts", "2400"])
         self.assertEqual(plan["audio_part"], "5000us")
         self.assertEqual(plan["video_part"], "200ms")
-        # Saved now, but dropped again by the next run that does not give them.
+        # Saved in a version 2 file: a later run without --set keeps them.
         settings, err = self.load()
-        self.assertIn("part_ms=5", err)
+        self.assertNotIn("dropped", err)
+        self.assertEqual(deploy.part_plan(settings), plan)
+        # KEY=null clears one.
+        settings, _ = self.load(["part_ms=null", "parts_per_segment=null", "window_parts=null"])
         self.assertEqual(deploy.part_plan(settings)["part_us"], 2500)
+        self.assertEqual(deploy.part_plan(settings)["audio_part"], "5000us")
+
+    def test_a_role_limited_restart_keeps_the_pushed_parts(self):
+        # The README's restore recipe, pushed; then compare-audio.py's
+        # `restart --roles contributor --set daw_hls_formats=...`.
+        pushed, _ = self.load(["part_ms=5", "fmp4_part_ms=5"])
+        restarted, err = self.load(["daw_hls_formats=pcm"])
+        self.assertNotIn("dropped", err)
+        self.assertEqual(deploy.part_plan(restarted), deploy.part_plan(pushed))
+        self.assertEqual(restarted["daw_hls_formats"], "pcm")
+        # A plain `plan` rewrites the file with the same parts.
+        again, _ = self.load()
+        self.assertEqual(deploy.part_plan(again)["mesh_args"][:2], ["--part-us", "5000"])
+        saved = json.loads((self.dir / "settings.json").read_text())
+        self.assertEqual((saved["part_ms"], saved["settings_version"]), (5, 2))
+
+    def test_only_a_version_1_file_loses_its_part_keys(self):
+        for version in (None, 1, "1"):
+            saved = {"part_ms": 5, "fmp4_part_ms": 5}
+            if version is not None:
+                saved["settings_version"] = version
+            settings, dropped = deploy.merge_settings(saved, {})
+            self.assertEqual(dropped, {"part_ms": 5, "fmp4_part_ms": 5}, version)
+            self.assertIsNone(settings["part_ms"])
+        settings, dropped = deploy.merge_settings({"settings_version": 2, "part_ms": 5}, {})
+        self.assertEqual((dropped, settings["part_ms"]), ({}, 5))
+        # Given in this run, a version 1 key counts.
+        settings, dropped = deploy.merge_settings({"part_ms": 5}, {"part_ms": 10})
+        self.assertEqual((dropped, settings["part_ms"]), ({}, 10))
 
     def test_fmp4_part_ms_alone_was_the_video_part_too(self):
         settings, _ = self.load(["fmp4_part_ms=200"])

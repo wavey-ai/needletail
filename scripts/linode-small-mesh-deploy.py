@@ -39,9 +39,10 @@ SETTINGS_FILE = common.ARTIFACT_DIR / "settings.json"
 # version 1 named 5 ms parts and counted segments and windows in parts.
 SETTINGS_VERSION = 2
 # The part settings of version 1. They are still accepted and mapped onto the
-# new ones (see part_plan), but only when given with --set in the same run: a
-# saved value is dropped on load, so that an old settings.json never silently
-# overrides the smallest-part defaults.
+# new ones (see part_plan). A value saved in a file of version 1 is dropped on
+# load (it was the 5 ms default then), so that an old settings.json never
+# silently overrides the smallest-part defaults; one saved by a version 2 run
+# was given with --set and is kept until changed with --set (KEY=null clears).
 LEGACY_PART_KEYS = ("part_ms", "parts_per_segment", "window_parts", "fmp4_part_ms",
                     "fmp4_video_part_ms")
 DEFAULT_SETTINGS = {
@@ -58,7 +59,8 @@ DEFAULT_SETTINGS = {
     "part_hold_back_ms": 0,
     # Version 1 part settings (None: not used). `part_ms` maps to `part_us`,
     # `parts_per_segment` and `window_parts` win over `segment_ms` and
-    # `window_ms`. Give them with --set in every run that needs them.
+    # `window_ms`. A value given with --set is kept by later runs; give
+    # KEY=null to clear it.
     "part_ms": None,
     "parts_per_segment": None,
     "window_parts": None,
@@ -234,18 +236,31 @@ def parse_overrides(overrides: list[str]) -> dict:
     return out
 
 
+def saved_version(saved: dict) -> int:
+    """The settings_version of a saved file; a file without one is version 1."""
+    try:
+        return int(saved.get("settings_version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def merge_settings(saved: dict, given: dict) -> tuple[dict, dict]:
     """The settings of a run: the defaults, then the saved file, then the
-    `--set` values of this run. The version 1 part keys of the saved file are
-    dropped (they named 5 ms parts and would override the new defaults);
-    they count only when given in this run. Returns the settings and what was
-    dropped."""
+    `--set` values of this run. In a saved file of version 1 the part keys
+    are dropped (they named 5 ms parts, which were the defaults then, and
+    would override the new defaults); they count only when given in this
+    run. In a file of version 2 those keys default to None, so a value there
+    was given with --set by an earlier run and is kept: a later `plan` or
+    `restart --roles ...` renders the same parts as the last push. Returns
+    the settings and what was dropped."""
     settings = dict(DEFAULT_SETTINGS)
     saved = dict(saved)
-    dropped = {key: saved[key] for key in LEGACY_PART_KEYS
-               if saved.get(key) is not None and key not in given}
-    for key in LEGACY_PART_KEYS:
-        saved.pop(key, None)
+    dropped = {}
+    if saved_version(saved) < SETTINGS_VERSION:
+        dropped = {key: saved[key] for key in LEGACY_PART_KEYS
+                   if saved.get(key) is not None and key not in given}
+        for key in LEGACY_PART_KEYS:
+            saved.pop(key, None)
     saved.pop("settings_version", None)
     settings.update(saved)
     settings.update(given)

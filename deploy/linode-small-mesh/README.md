@@ -116,9 +116,12 @@ The version 1 settings `part_ms`, `parts_per_segment`, `window_parts`,
 `fmp4_part_ms` and `fmp4_video_part_ms` still work and are mapped onto these:
 `part_ms` to `part_us`, the part counts win over the lengths of time,
 `fmp4_part_ms` to `audio_part` `<N*1000>us` (and to `video_part` when
-`fmp4_video_part_ms` is not given). They count only when given with `--set`
-in the same run: a saved value is dropped, and the tool says so, so that an
-old settings file never pins 5 ms parts again. `--set part_ms=5 --set
+`fmp4_video_part_ms` is not given). A settings file of version 1 held them
+as its defaults, so the tool drops them from such a file, and says so, so that
+an old settings file never pins 5 ms parts again. In a file of version 2 they
+were given with `--set`, and they are kept: a later `plan`, or a `restart
+--roles contributor --set ...`, renders the same parts on every node as the
+last push. `--set KEY=null` clears one. `--set part_ms=5 --set
 fmp4_part_ms=5 --set fmp4_video_part_ms=200` restores the parts of the runs
 before 22 November 2026.
 
