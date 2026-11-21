@@ -86,9 +86,19 @@ DEFAULT_SETTINGS = {
     # quickly: CUBIC leaves slow start early on a path with jitter and then
     # needs ten seconds to reach 16 Mbit/s. A live stream also pauses between
     # parts, and the window must not close in each pause.
+    #
+    # The cache network sends a 4K part in symbols of up to 16 kB, which the
+    # kernel fragments. A datagram that has lost a fragment waits 30 s for it
+    # by default, and when 4 MB of fragments wait, the kernel drops every new
+    # fragment. With 2% packet loss a node had 1 MB of such fragments a
+    # second: 40% of its fragmented datagrams failed to reassemble, and 4K
+    # stopped on every edge while audio, which is not fragmented, played. One
+    # second and 64 MB keep the queue empty.
     "node_sysctls": {
         "net.ipv4.tcp_congestion_control": "bbr",
         "net.ipv4.tcp_slow_start_after_idle": "0",
+        "net.ipv4.ipfrag_time": "1",
+        "net.ipv4.ipfrag_high_thresh": "67108864",
     },
     "path_loss_ppm": 20000,
     "relay_min_repair_symbols": 0,
