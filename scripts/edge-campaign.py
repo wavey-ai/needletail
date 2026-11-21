@@ -1100,6 +1100,46 @@ def player_hlsjs_edge_kill(ctx):
               f"{failover.get('media_gap_after_kill_ms')} ms after the kill")
 
 
+@scenario("player-hlsjs-link-cut", "players",
+          "hls.js plays the 4K stream, and the network of the viewer is cut for 8 s. Does "
+          "the player play again when the network returns?",
+          "The player plays again within 5 s of the return of its network, without a "
+          "fatal error and without a reload of the page.")
+def player_hlsjs_link_cut(ctx):
+    import subprocess
+    process, report = hlsjs(ctx, "video", entry_url(VIDEO, "hlsjs-link-cut"), 70, wait=False)
+    ctx.at(25)
+    lab.set_link(LON_READERS, "pub", False)
+    ctx.event("the link of the player is cut")
+    ctx.at(33)
+    lab.set_link(LON_READERS, "pub", True)
+    ctx.event("the link of the player is back")
+    try:
+        process.wait(timeout=130)
+    except subprocess.TimeoutExpired:
+        process.kill()
+    summary = player_summary(report)
+    ctx.measure("hlsjs", summary)
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, ValueError):
+        data = {}
+    stalls = (data.get("stalls") or {})
+    events = (stalls.get("playhead") or []) + (stalls.get("element_waiting") or [])
+    ends = [event.get("end_ms") or (event.get("t", 0) + event.get("ms", 0))
+            for event in events if isinstance(event, dict)]
+    played = (data.get("playback") or {}).get("final") or {}
+    ctx.measure("stall_events", events[:8])
+    ctx.check("hls.js plays at the end, without a fatal error",
+              played.get("paused") is False and (played.get("ready_state") or 0) >= 3
+              and not any("(fatal)" in error for error in summary.get("errors") or []),
+              f"{summary.get('verdict')}: {summary.get('reason')}; errors "
+              f"{summary.get('errors')}")
+    ctx.check("the stall is no longer than the outage and 5 s",
+              (summary.get("stalled_ms") or 0) <= 13_000,
+              f"{summary.get('stalled_ms')} ms stalled in all; stalls end at {ends[:6]}")
+
+
 @scenario("player-hlsjs-cache-kill", "players",
           "hls.js plays the 4K stream, and the cache that serves it is killed. The same "
           "question as player-hlsjs-edge-kill, with the faults of the lab in hand, so "
