@@ -242,7 +242,12 @@ def check_media(playlist: dict, video: bool = True, fmp4: bool = True,
     if target is not None and not playlist["endlist"] and not playlist["skip"]:
         total = sum(segment["duration"] or 0 for segment in segments)
         if total < 3 * target:
-            fail(9, f"the playlist holds {total:.1f} s of segments, less than three target "
+            # The rule of the draft is about removal: a server MUST NOT
+            # remove a segment when that leaves less than three target
+            # durations. `check_reload` sees a removal. A playlist that is
+            # short because it is new, a stream or a copy that has just
+            # begun, breaks no rule, and a player waits for more of it.
+            warn(9, f"the playlist holds {total:.1f} s of segments, less than three target "
                     f"durations ({3 * target} s)", "6.2.2")
         if len(segments) < 6:
             warn(9, f"the playlist holds {len(segments)} segments, fewer than six",
@@ -405,6 +410,18 @@ def check_reload(before: dict, after: dict, seconds_between: float | None = None
             and after["media_sequence"] < before["media_sequence"]):
         out.append(Finding(52, "fail", f"EXT-X-MEDIA-SEQUENCE went back from "
                            f"{before['media_sequence']} to {after['media_sequence']}", "6.2.2"))
+    if (before["media_sequence"] is not None and after["media_sequence"] is not None
+            and after["media_sequence"] > before["media_sequence"]
+            and not after["endlist"] and not after["skip"]):
+        try:
+            target = float(after["target_duration"])
+        except (TypeError, ValueError):
+            target = None
+        total = sum(segment["duration"] or 0 for segment in after["segments"])
+        if target is not None and total < 3 * target:
+            out.append(Finding(9, "fail", f"a segment was removed and the playlist now holds "
+                               f"{total:.1f} s, less than three target durations "
+                               f"({3 * target} s)", "6.2.2"))
     old = {segment["msn"]: segment for segment in before["segments"]}
     for segment in after["segments"]:
         earlier = old.get(segment["msn"])
