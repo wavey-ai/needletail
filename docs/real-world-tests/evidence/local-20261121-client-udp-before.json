@@ -1,0 +1,479 @@
+{
+ "started_unix": 1795285120.3729386,
+ "binaries": {
+  "av-mesh": "av-mesh",
+  "needletail-reader": "needletail-reader",
+  "av-contrib": "av-contrib",
+  "aep1-48k-probe": "aep1-48k-probe"
+ },
+ "client": "needletail-udp-client",
+ "steps": [
+  {
+   "step": "loss-0",
+   "loss_percent": 0.0,
+   "drained": [],
+   "udp": {
+    "udp-flac": {
+     "pass": false,
+     "problems": [
+      "no part received"
+     ],
+     "received": 0,
+     "missing": 0,
+     "gaps": 0,
+     "recovered": 0,
+     "identical": 0,
+     "moves": [
+      {
+       "at_ms": 1343,
+       "from": "lon-edge-2",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 2567,
+       "from": "lon-edge-1",
+       "to": "lon-edge-3",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 4585,
+       "from": "lon-edge-3",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 5594,
+       "from": "lon-edge-1",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 7613,
+       "from": "lon-edge-2",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 8621,
+       "from": "lon-edge-1",
+       "to": "lon-edge-3",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 10641,
+       "from": "lon-edge-3",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 11650,
+       "from": "lon-edge-1",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 13669,
+       "from": "lon-edge-2",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 14678,
+       "from": "lon-edge-1",
+       "to": "lon-edge-3",
+       "reason": "silence-1000ms",
+       "next_part": null
+      }
+     ],
+     "caches": [
+      "lon-edge-2",
+      "lon-edge-1",
+      "lon-edge-3",
+      "lon-edge-3",
+      "lon-edge-1",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-1",
+      "lon-edge-3",
+      "lon-edge-3",
+      "lon-edge-1",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-1",
+      "lon-edge-3"
+     ],
+     "publish_to_arrival_ms": {
+      "count": 0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "datagrams": 0,
+     "repair_datagrams": 0
+    },
+    "udp-opus": {
+     "pass": false,
+     "problems": [
+      "no part received"
+     ],
+     "received": 0,
+     "missing": 0,
+     "gaps": 0,
+     "recovered": 0,
+     "identical": 0,
+     "moves": [
+      {
+       "at_ms": 1110,
+       "from": "lon-edge-3",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 2236,
+       "from": "lon-edge-2",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 4254,
+       "from": "lon-edge-4",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 5263,
+       "from": "lon-edge-2",
+       "to": "lon-edge-3",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 7282,
+       "from": "lon-edge-3",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 8291,
+       "from": "lon-edge-4",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 10310,
+       "from": "lon-edge-2",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 11321,
+       "from": "lon-edge-4",
+       "to": "lon-edge-3",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 13341,
+       "from": "lon-edge-3",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 14351,
+       "from": "lon-edge-4",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      }
+     ],
+     "caches": [
+      "lon-edge-3",
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-4",
+      "lon-edge-2",
+      "lon-edge-3",
+      "lon-edge-3",
+      "lon-edge-4",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-3",
+      "lon-edge-4",
+      "lon-edge-2"
+     ],
+     "publish_to_arrival_ms": {
+      "count": 0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "datagrams": 0,
+     "repair_datagrams": 0
+    },
+    "udp-pcm": {
+     "pass": false,
+     "problems": [
+      "no part received"
+     ],
+     "received": 0,
+     "missing": 0,
+     "gaps": 0,
+     "recovered": 0,
+     "identical": 0,
+     "moves": [
+      {
+       "at_ms": 1405,
+       "from": "lon-edge-4",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 2548,
+       "from": "lon-edge-1",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 4566,
+       "from": "lon-edge-2",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 5575,
+       "from": "lon-edge-1",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 7595,
+       "from": "lon-edge-4",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 8604,
+       "from": "lon-edge-1",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 10631,
+       "from": "lon-edge-2",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 11641,
+       "from": "lon-edge-1",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 13661,
+       "from": "lon-edge-4",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 14671,
+       "from": "lon-edge-1",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      }
+     ],
+     "caches": [
+      "lon-edge-4",
+      "lon-edge-1",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-1",
+      "lon-edge-4",
+      "lon-edge-4",
+      "lon-edge-1",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-1",
+      "lon-edge-4",
+      "lon-edge-4",
+      "lon-edge-1",
+      "lon-edge-2"
+     ],
+     "publish_to_arrival_ms": {
+      "count": 0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "datagrams": 0,
+     "repair_datagrams": 0
+    },
+    "udp-video-4k": {
+     "pass": false,
+     "problems": [
+      "no part received"
+     ],
+     "received": 0,
+     "missing": 0,
+     "gaps": 0,
+     "recovered": 0,
+     "identical": 0,
+     "moves": [
+      {
+       "at_ms": 2144,
+       "from": "lon-edge-2",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 3599,
+       "from": "lon-edge-4",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 5614,
+       "from": "lon-edge-1",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 6621,
+       "from": "lon-edge-4",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 8635,
+       "from": "lon-edge-2",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 9642,
+       "from": "lon-edge-4",
+       "to": "lon-edge-1",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 11656,
+       "from": "lon-edge-1",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 12663,
+       "from": "lon-edge-4",
+       "to": "lon-edge-2",
+       "reason": "silence-1000ms",
+       "next_part": null
+      },
+      {
+       "at_ms": 14677,
+       "from": "lon-edge-2",
+       "to": "lon-edge-4",
+       "reason": "silence-1000ms",
+       "next_part": null
+      }
+     ],
+     "caches": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-1",
+      "lon-edge-1",
+      "lon-edge-4",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-1",
+      "lon-edge-1",
+      "lon-edge-4",
+      "lon-edge-2",
+      "lon-edge-2",
+      "lon-edge-4"
+     ],
+     "publish_to_arrival_ms": {
+      "count": 0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+     },
+     "datagrams": 0,
+     "repair_datagrams": 0
+    }
+   },
+   "hls": {
+    "hls-video-4k": {
+     "parts_received": 71,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-opus": {
+     "parts_received": 2782,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-pcm": {
+     "parts_received": 2931,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-flac": {
+     "parts_received": 2970,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    }
+   },
+   "pass": false
+  }
+ ],
+ "pass": false
+}
