@@ -114,6 +114,21 @@ DEFAULT_SETTINGS = {
     "extra_edge_args": [],
     "extra_backbone_args": [],
     "extra_contributor_args": [],
+    # Environment of every service. The allocator settings are for a node
+    # that holds 4K parts of 0.2 to 1 MB next to millions of small objects.
+    # glibc raises its mmap threshold to the largest block that was freed, so
+    # after the first large part every part comes from the heap, and a heap
+    # with long-lived small objects in it does not shrink: an edge under
+    # reader churn grew from 110 MB to 310 MB in 80 minutes, 200 MB of it
+    # free memory that `malloc_trim` gave back. A fixed threshold keeps every
+    # block of 64 kB or more in its own mapping, which goes back to the
+    # kernel when the part is dropped. Two arenas bound what the threads of
+    # the HTTP runtime can strand.
+    "node_env": {
+        "MALLOC_MMAP_THRESHOLD_": "65536",
+        "MALLOC_TRIM_THRESHOLD_": "1048576",
+        "MALLOC_ARENA_MAX": "2",
+    },
     "rust_log_mesh": "av_mesh=info,av_web_service=warn",
     "rust_log_contrib": "av_contrib=info,av_web_service=warn",
 }
@@ -824,6 +839,8 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
                    else "Needletail AV Mesh node")
     threads = settings["tokio_worker_threads"]
     thread_line = f"Environment=TOKIO_WORKER_THREADS={threads}\n" if threads else ""
+    for key, value in sorted((settings.get("node_env") or {}).items()):
+        thread_line += f"Environment={key}={value}\n"
     return f"""[Unit]
 Description={description} (small-mesh lab)
 After=network-online.target

@@ -617,7 +617,10 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
         1, limits["cpu_percent"] // 100)
     process = subprocess.Popen(
         command, env={**os.environ, "RUST_LOG": item["rust_log"],
-                      "TOKIO_WORKER_THREADS": str(threads), **(env or {})},
+                      "TOKIO_WORKER_THREADS": str(threads),
+                      **{key: str(value) for key, value in
+                         (load("settings.json").get("node_env") or {}).items()},
+                      **(env or {})},
         stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
     services = load("services.json")
     services[name] = {"pid": process.pid, "started_unix": time.time(),
