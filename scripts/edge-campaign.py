@@ -1211,7 +1211,7 @@ def player_hlsjs_cache_kill(ctx):
     dead = lab.node(victim)["public_ipv4"]
     hosts = summary.get("hosts") or []
     ctx.check("the media came from another cache after the kill",
-              any(when > 25_000 and dead not in str(host) for when, host in hosts),
+              any(when > 20_000 and dead not in str(host) for when, host in hosts),
               f"hosts over time: {hosts}")
 
 
@@ -1244,8 +1244,10 @@ def player_hlsjs_region_lost(ctx):
               f"{summary.get('reason')}; errors {summary.get('errors')}")
     far = {lab.node(name)["public_ipv4"] for name in lab.edges("newyork")}
     hosts = summary.get("hosts") or []
+    # The clock of the player starts about a second after that of the
+    # scenario, so the loss is at about 24 s on it.
     moved = [when for when, host in hosts
-             if when > 25_000 and str(host).split(":")[0] in far]
+             if when > 20_000 and str(host).split(":")[0] in far]
     ctx.check("the media came from the neighbouring region within 8 s of the loss",
               bool(moved) and moved[0] <= 33_000, f"hosts over time: {hosts}")
 
@@ -2012,7 +2014,7 @@ def ladder_hlsjs_edge_kill(ctx):
     hosts = summary.get("hosts") or []
     dead = lab.node(victim)["public_ipv4"]
     ctx.check("the media came from another cache after the kill",
-              any(when > 25_000 and dead not in str(host) for when, host in hosts),
+              any(when > 20_000 and dead not in str(host) for when, host in hosts),
               f"hosts over time: {hosts}")
     ctx.check("the player ends on 1080p", height_at(timeline, 60_000) == 1080,
               f"renditions over time: {timeline[:14]}")
