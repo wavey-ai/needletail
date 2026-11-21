@@ -365,7 +365,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 8
+ANALYSIS_VERSION = 9
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
