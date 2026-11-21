@@ -16,9 +16,13 @@ are the lossless halving sweep and the Opus default:
 
 Each size is its own latency-bench run (the lab is started and stopped for
 each), named SWEEP-PAYLOAD-SAMPLES, with the same seconds, readers and
-service flags. The HTTP/3 readers keep the same length of time in flight at
-every size (--h3-window-ms, default 100 ms, at most 400 parts); the HTTP/2
-readers keep one part in flight, as before.
+service flags. Both kinds of reader keep the same length of time in flight at
+every size, at most 400 parts: HTTP/3 --h3-window-ms (default 100 ms), HTTP/2
+--h2-window-ms (default 5 ms: one part at 5 ms, 5 at 1 ms, 20 at 0.25 ms). A
+reader with one part in flight reads one part per round trip (about 2 ms in
+the lab), fewer than 1 ms parts arrive, and would measure its own backlog;
+window 1 is kept only as the 5 ms window of a 5 ms part. The windows of each
+size are in sweep.json and sweep.txt.
 
 Results: target/latency-bench/SWEEP/{sweep.json,sweep.txt}: for each size,
 each reader's p50/p99 latency (ntcmp, last sample spoken to part complete)
@@ -74,7 +78,7 @@ def epoch_ms(samples: int) -> float:
     return samples * 1000 / SAMPLE_RATE
 
 
-def h3_window(samples: int, window_ms: float) -> int:
+def window_parts(samples: int, window_ms: float) -> int:
     """Parts in flight that cover window_ms at this part size, 1 to 400."""
     return max(1, min(MAX_WINDOW, math.ceil(window_ms / epoch_ms(samples) - 1e-9)))
 
@@ -87,7 +91,8 @@ def bench_command(args, payload: str, samples: int) -> list[str]:
     command = [sys.executable, str(BENCH), "--name", run_name(args.name, payload, samples),
                "--payload", payload, "--epoch-samples", str(samples),
                "--seconds", str(args.seconds), "--readers", str(args.readers),
-               "--h3-window", str(h3_window(samples, args.h3_window_ms))]
+               "--h3-window", str(window_parts(samples, args.h3_window_ms)),
+               "--h2-window", str(window_parts(samples, args.h2_window_ms))]
     return command + (shlex.split(args.bench_args) if args.bench_args else [])
 
 
@@ -99,16 +104,21 @@ def reader_key(report: str) -> str:
     return report.split(".probe")[0] + report.split(".probe")[1].rsplit(".json", 1)[0]
 
 
-def run_row(payload: str, samples: int, hops_json: pathlib.Path) -> dict:
+def run_row(payload: str, samples: int, hops_json: pathlib.Path,
+            windows: dict | None = None) -> dict:
     """One size: its readers' and regions' latency from its hops.json."""
     row = {"payload": payload, "epoch_samples": samples, "part_ms": round(epoch_ms(samples), 4),
            "parts_per_second": round(SAMPLE_RATE / samples, 1), "run": hops_json.parent.name}
+    if windows is not None:
+        row["windows"] = windows
     try:
         result = json.loads(hops_json.read_text())
     except (OSError, ValueError):
         row["error"] = f"no {hops_json.name}"
         return row
     bench = result.get("bench") or {}
+    if bench.get("reader_windows"):
+        row["windows"] = bench["reader_windows"]
     readers = {}
     for item in bench.get("readers") or []:
         latency = item.get("latency_ms") or {}
@@ -160,12 +170,14 @@ def best(rows: list[dict]) -> dict[tuple[str, str, str], float]:
 def table(rows: list[dict]) -> str:
     cols = columns(rows)
     marks = best(rows)
-    head = ["size", "part ms", "parts/s"] + [
+    head = ["size", "part ms", "parts/s", "in flight h2/h3"] + [
         ("" if kind == "reader" else "source->listener ") + name for kind, name in cols]
     lines = [head]
     for row in rows:
+        windows = row.get("windows") or {}
         line = [f"{row['payload']} {row['epoch_samples']}", f"{row['part_ms']:g}",
-                f"{row['parts_per_second']:g}"]
+                f"{row['parts_per_second']:g}",
+                f"{windows.get('h2', '-')}/{windows.get('h3', '-')}"]
         for kind, name in cols:
             item = (row.get(f"{kind}s") or {}).get(name) or {}
             cell = []
@@ -184,12 +196,15 @@ def table(rows: list[dict]) -> str:
     notes = [f"{row['payload']} {row['epoch_samples']}: "
              + "; ".join(str(row[key]) for key in ("error", "warning", "journal_full") if row.get(key))
              for row in rows if any(row.get(key) for key in ("error", "warning", "journal_full"))]
-    return ("latency ms, p50 / p99; * the lowest of the lossless sizes\n"
+    return ("latency ms, p50 / p99; * the lowest of the lossless sizes; in flight: parts in "
+            "flight of each reader lane (source->listener pools both lanes of a region)\n"
             + "\n".join(text) + ("\n\n" + "\n".join(notes) if notes else "") + "\n")
 
 
 def report(args, sizes: list[tuple[str, int]], runs: dict | None = None) -> dict:
-    rows = [run_row(payload, samples, OUT_ROOT / run_name(args.name, payload, samples) / "hops.json")
+    rows = [run_row(payload, samples, OUT_ROOT / run_name(args.name, payload, samples) / "hops.json",
+                    {"h2": window_parts(samples, args.h2_window_ms),
+                     "h3": window_parts(samples, args.h3_window_ms)})
             for payload, samples in sizes]
     for row in rows:
         status = (runs or {}).get(row["run"])
@@ -198,7 +213,8 @@ def report(args, sizes: list[tuple[str, int]], runs: dict | None = None) -> dict
     out = OUT_ROOT / args.name
     out.mkdir(parents=True, exist_ok=True)
     result = {"sweep": args.name, "seconds": args.seconds, "readers": args.readers,
-              "h3_window_ms": args.h3_window_ms, "bench_args": args.bench_args,
+              "h3_window_ms": args.h3_window_ms, "h2_window_ms": args.h2_window_ms,
+              "bench_args": args.bench_args,
               "sizes": [f"{payload}:{samples}" for payload, samples in sizes], "rows": rows}
     (out / "sweep.json").write_text(json.dumps(result, indent=1) + "\n")
     text = f"part sweep {args.name}: {args.seconds} s per size, {args.readers} reader(s) of each kind\n\n"
@@ -218,6 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--readers", type=int, default=1)
     parser.add_argument("--h3-window-ms", type=float, default=100.0,
                         help="time in flight of the HTTP/3 readers at every size")
+    parser.add_argument("--h2-window-ms", type=float, default=5.0,
+                        help="time in flight of the HTTP/2 readers at every size")
     parser.add_argument("--bench-args", default="", help="more latency-bench.py arguments (one string)")
     parser.add_argument("--report-only", action="store_true", help="tabulate the runs already made")
     parser.add_argument("--dry-run", action="store_true", help="print the commands; run nothing")

@@ -59,14 +59,17 @@ class Commands(unittest.TestCase):
             with self.assertRaises(SystemExit, msg=bad):
                 sweep.parse_sizes(bad)
 
-    def test_the_h3_window_is_the_same_time_at_every_size(self):
-        self.assertEqual(sweep.h3_window(120, 100), 40)    # 2.5 ms
-        self.assertEqual(sweep.h3_window(48, 100), 100)    # 1 ms
-        self.assertEqual(sweep.h3_window(24, 100), 200)
-        self.assertEqual(sweep.h3_window(12, 100), 400)
-        self.assertEqual(sweep.h3_window(12, 1000), 400)   # at most 400 parts
-        self.assertEqual(sweep.h3_window(32, 100), 150)    # 0.667 ms
-        self.assertEqual(sweep.h3_window(960, 1), 1)
+    def test_the_windows_are_the_same_time_at_every_size(self):
+        self.assertEqual(sweep.window_parts(120, 100), 40)    # 2.5 ms
+        self.assertEqual(sweep.window_parts(48, 100), 100)    # 1 ms
+        self.assertEqual(sweep.window_parts(24, 100), 200)
+        self.assertEqual(sweep.window_parts(12, 100), 400)
+        self.assertEqual(sweep.window_parts(12, 1000), 400)   # at most 400 parts
+        self.assertEqual(sweep.window_parts(32, 100), 150)    # 0.667 ms
+        self.assertEqual(sweep.window_parts(960, 1), 1)
+        # HTTP/2: 5 ms in flight, one part of 5 ms as before.
+        self.assertEqual([sweep.window_parts(n, 5.0) for n in (240, 120, 48, 32, 24, 12)],
+                         [1, 2, 5, 8, 10, 20])
 
     def test_dry_run_commands_are_latency_bench_runs(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
@@ -88,6 +91,9 @@ class Commands(unittest.TestCase):
                 self.assertEqual(bench.main([*argv, "--dry-run"]), 0)
             planned = json.loads(plan.getvalue())
             self.assertEqual((planned["payload"], planned["epoch_samples"]), (payload, int(samples)))
+            # Neither reader is left at one part in flight below 5 ms parts.
+            self.assertEqual(planned["reader_windows"]["h2"], sweep.window_parts(int(samples), 5.0))
+            self.assertEqual(planned["reader_windows"]["h3"], sweep.window_parts(int(samples), 100))
 
 
 class Table(unittest.TestCase):
@@ -122,6 +128,11 @@ class Table(unittest.TestCase):
         self.assertIn("5.00*", line["pcm 12"])                # source -> listener london p99
         self.assertNotIn("*", line["opus 120"])               # Opus is not a lossless size
         self.assertIn("flac 32: no hops.json", text)
+        # Each size says what each lane had in flight.
+        self.assertEqual(rows["pcm:12"]["windows"], {"h2": 20, "h3": 400})
+        self.assertEqual(result["h2_window_ms"], 5.0)
+        self.assertIn("in flight h2/h3", text)
+        self.assertIn("20/400", line["pcm 12"])
 
 
 if __name__ == "__main__":

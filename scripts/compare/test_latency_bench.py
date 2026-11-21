@@ -120,7 +120,10 @@ class Arguments(unittest.TestCase):
                                         ("new-readers", "h2"), ("new-readers", "h3")})
         h2 = by_kind[("lon-readers", "h2")]["command"]
         h3 = by_kind[("new-readers", "h3")]["command"]
-        self.assertEqual(h2[h2.index("--window") + 1], "1")
+        # 5 ms of 1 ms parts in flight over HTTP/2.
+        self.assertEqual(h2[h2.index("--window") + 1], "5")
+        self.assertEqual(plan["reader_windows"], {"h2": 5, "h3": 40})
+        self.assertEqual(by_kind[("lon-readers", "h2")]["window"], 5)
         self.assertNotIn("--http3", h2)
         self.assertEqual(h3[h3.index("--window") + 1], "40")
         self.assertIn("--http3", h3)
@@ -200,6 +203,29 @@ class Arguments(unittest.TestCase):
     def test_window_is_bounded(self):
         with self.assertRaises(SystemExit):
             bench.main(["--name", "t", "--dry-run", "--h3-window", "401"])
+        with self.assertRaises(SystemExit):
+            bench.main(["--name", "t", "--dry-run", "--h2-window", "0"])
+        with self.assertRaises(SystemExit):
+            bench.main(["--name", "t", "--dry-run", "--h2-window-ms", "0"])
+
+    def test_the_http2_window_keeps_up_with_the_part_rate(self):
+        # A reader with W parts in flight reads at most W parts per round
+        # trip. On the lab's reader links a round trip is about 2 ms (0.5 ms
+        # netem each way, and the edge): window 1 reads 500 parts a second,
+        # fewer than the 1,000 to 4,000 of the run. The default window keeps
+        # 5 ms in flight at every size: 2.5 times the rate, room to catch up.
+        round_trip_ms = 2.0
+        for samples in (240, 120, 48, 32, 24, 12):
+            window = bench.reader_windows(parse("--epoch-samples", str(samples),
+                                                "--payload", "opus" if samples in (120, 240)
+                                                else "pcm"))["h2"]
+            read_per_second = window * 1000 / round_trip_ms
+            self.assertGreaterEqual(read_per_second, 2.4 * bench.parts_per_second(samples), samples)
+        self.assertEqual(bench.reader_windows(parse("--epoch-samples", "12"))["h2"], 20)
+        self.assertEqual(bench.reader_windows(parse("--payload", "opus"))["h2"], 2)
+        # An explicit count wins; window 1 is still there to measure.
+        self.assertEqual(bench.reader_windows(parse("--h2-window", "1"))["h2"], 1)
+        self.assertEqual(bench.reader_windows(parse("--h2-window-ms", "20"))["h2"], 20)
 
 
 if __name__ == "__main__":

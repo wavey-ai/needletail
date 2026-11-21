@@ -8,9 +8,10 @@ flags, so that each low-latency change can be switched off and on; send the
 compare-audio.py does on lon-src) from the contributor's own host to its
 ingest, as PCM, FLAC or Opus (--payload) in epochs of --epoch-samples (one
 epoch is one part: 48 samples = 1 ms by default for PCM and FLAC, 120 =
-2.5 ms for Opus); run N ntcmp HLS readers of each kind, window 1 over HTTP/2
-and window 40 over HTTP/3, on each reader host (lon-readers and new-readers)
-for D seconds; then join the hop journals of every node with the readers'
+2.5 ms for Opus); run N ntcmp HLS readers of each kind, over HTTP/2 with
+5 ms of parts in flight (--h2-window-ms; one part at 5 ms, 5 at 1 ms, 20 at
+0.25 ms) and over HTTP/3 with 40 parts in flight, on each reader host
+(lon-readers and new-readers) for D seconds; then join the hop journals of every node with the readers'
 records (hops.py), with the epoch that the sender reports. Linode is not
 used. scripts/compare/part-sweep.py runs this for each part size.
 
@@ -73,6 +74,13 @@ DEFAULT_EPOCH_SAMPLES = hops.DEFAULT_EPOCH_SAMPLES
 OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
 MIN_EPOCH_SAMPLES = {"pcm": 12, "flac": 32}
 READER_HOSTS = ["lon-readers", "new-readers"]
+# Time in flight of the HTTP/2 readers. ntcmp's window 1 asks for part n + 1
+# when part n has arrived: one part per round trip (about 2 ms on the lab's
+# reader links), 500 parts a second, so it falls behind 1 ms parts and further
+# behind smaller ones, and its backlog, not the part, is measured. 5 ms is the
+# window 1 of the 5 ms parts of the first runs, at every part size.
+H2_WINDOW_MS = 5.0
+MAX_WINDOW = 400
 SKIP_SECONDS = 5
 # The hop journal is a ring that is read only after the readers have
 # finished, so it must hold the whole window. The busiest node journals about
@@ -106,7 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epoch-samples", type=int, default=None,
                         help="samples of one AEP1 epoch, one part (default pcm and flac 48 = 1 ms, "
                              "opus 120 = 2.5 ms; pcm >= 12, flac >= 32, opus 120/240/480/960)")
-    parser.add_argument("--h2-window", type=int, default=1)
+    parser.add_argument("--h2-window", type=int, default=None,
+                        help="parts in flight of the HTTP/2 readers (default: --h2-window-ms)")
+    parser.add_argument("--h2-window-ms", type=float, default=H2_WINDOW_MS,
+                        help="time in flight of the HTTP/2 readers, in parts of the run "
+                             "(default %(default)g: the window 1 of the 5 ms parts before; a "
+                             "reader that asks for one part per round trip cannot keep up "
+                             "with parts shorter than the round trip)")
     parser.add_argument("--h3-window", type=int, default=40)
     for role in ("mesh", "backbone", "distributor", "edge", "contrib", "sender"):
         parser.add_argument(f"--{role}-args", default="", metavar="ARGS",
@@ -162,6 +176,19 @@ def epoch_ms_text(samples: int) -> str:
 
 def parts_per_second(samples: int) -> float:
     return SAMPLE_RATE / samples
+
+
+def window_for_ms(window_ms: float, samples: int) -> int:
+    """Parts in flight that cover window_ms at this part size, 1 to 400."""
+    parts = -(-round(window_ms * SAMPLE_RATE) // (samples * 1000))
+    return max(1, min(MAX_WINDOW, parts))
+
+
+def reader_windows(args) -> dict[str, int]:
+    """Parts in flight of each reader lane of this run."""
+    h2 = args.h2_window if args.h2_window is not None else window_for_ms(
+        args.h2_window_ms, epoch_samples(args))
+    return {"h2": h2, "h3": args.h3_window}
 
 
 def journal_capacity(args) -> int:
@@ -229,14 +256,16 @@ def sender_command(args, start: int, loop_file: str) -> list[str]:
 
 
 def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
-    """ntcmp hls readers: window 1 over HTTP/2 and window 40 over HTTP/3 on
-    each reader host, through the first distributor of the host's site."""
+    """ntcmp hls readers: --h2-window-ms of parts in flight over HTTP/2 and
+    --h3-window parts over HTTP/3 on each reader host, through the first
+    distributor of the host's site."""
     readers = []
     stream = PAYLOAD_STREAM[args.payload]
     for host in [item for item in args.hosts.split(",") if item]:
         site = lab.node(host)["site"]
         entry = lab.distributors(site)[0]
-        for lane, window, http3 in (("h2", args.h2_window, False), ("h3", args.h3_window, True)):
+        windows = reader_windows(args)
+        for lane, window, http3 in (("h2", windows["h2"], False), ("h3", windows["h3"], True)):
             stem = out / f"{host}.{lane}"
             command = [args.ntcmp, "hls", "--lane", f"nt-{args.payload}-{lane}", "--mode", "chase",
                        "--window", str(window), *(["--http3"] if http3 else []),
@@ -248,7 +277,8 @@ def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
                        "--count", str(args.readers),
                        *(["--spread-ms", str(min(10_000, 400 * args.readers))] if args.readers > 1 else []),
                        "--report", f"{stem}.probe.json", "--frames", f"{stem}.probe.csv"]
-            readers.append({"host": host, "site": site, "lane": lane, "entry": entry, "command": command})
+            readers.append({"host": host, "site": site, "lane": lane, "window": window,
+                            "entry": entry, "command": command})
     return readers
 
 
@@ -285,6 +315,7 @@ def plan(args) -> dict:
         "name": args.name, "out": str(out), "seconds": args.seconds, "readers_per_kind": args.readers,
         "payload": args.payload, "epoch_samples": samples,
         "epoch_us": hops.epoch_us_of(samples), "parts_per_second": parts_per_second(samples),
+        "reader_windows": reader_windows(args),
         "lab_up": None if args.no_up else lab_overrides(args),
         "media": {"loop": loop_file, "index": index, "from": args.pcm,
                   "index_command": index_command},
@@ -387,6 +418,8 @@ def run(args, steps: dict) -> int:
              f"({epoch['epoch_us'] / 1000:g} ms parts, from {epoch['from']}); "
              f"{' '.join(split(args.sender_args)) or '(defaults)'}; "
              f"reader links: {steps['reader_netem'] or 'clean'}",
+             "reader windows (parts in flight): " + ", ".join(
+                 f"{lane} {window}" for lane, window in (steps.get("reader_windows") or {}).items()),
              *([f"WARNING: {epoch_note}"] if epoch_note else []),
              f"hop journal: {capacity if capacity is not None else 'as running'} events per node"
              + (f"; WARNING: full on {', '.join(full)}: the start of the window was overwritten"
@@ -512,10 +545,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_up and any(getattr(args, f"{role}_args") for role in
                           ("mesh", "backbone", "distributor", "edge", "contrib")) or (args.no_up and args.set):
         raise SystemExit("--no-up keeps the running lab's flags: drop the service arguments or --no-up")
-    for window in (args.h2_window, args.h3_window):
-        if not 1 <= window <= 400:
-            raise SystemExit("a reader window is 1 to 400 parts")
     epoch_samples(args)
+    if args.h2_window_ms <= 0:
+        raise SystemExit("--h2-window-ms is more than 0")
+    for window in reader_windows(args).values():
+        if not 1 <= window <= MAX_WINDOW:
+            raise SystemExit("a reader window is 1 to 400 parts")
     steps = plan(args)
     if args.dry_run:
         print(json.dumps(steps, indent=1))

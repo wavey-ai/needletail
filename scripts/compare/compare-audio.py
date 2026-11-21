@@ -86,10 +86,24 @@ NT_RENDITION = {"opus-2.5": ("nt-popus", "nt-opus"), "opus-5": ("nt-opus",), "op
                 "opus-20": ("nt-flac",), "opus-max510": ("nt-flac",), "pcm": ("nt-pcm",)}
 NT_FORMAT = {"nt-popus": "opus", "nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
 # Three readers of each Needletail rendition:
-#   (none)  one request for each part, HTTP/2
+#   (none)  5 ms of parts in flight, HTTP/2: the one request for each part of
+#           the 5 ms parts before (2 parts at 2.5 ms, 5 at 1 ms, 20 at
+#           0.25 ms). One request for each part reads one part per round
+#           trip, so it falls behind parts shorter than the round trip and
+#           measures its own backlog.
 #   -w      40 requests in flight (100 ms of 2.5 ms parts, 40 ms of 1 ms), HTTP/2
 #   -h3     40 requests in flight, HTTP/3
-NT_READERS = {"": "--window 1", "-w": "--window 40", "-h3": "--window 40 --http3"}
+NT_SINGLE_WINDOW_MS = 5.0
+NT_READERS = {"": None, "-w": "--window 40", "-h3": "--window 40 --http3"}
+
+
+def reader_flags(suffix: str, frame_ms: float) -> str:
+    """ntcmp hls window flags of a Needletail reader lane (`""`, `-w`,
+    `-h3`) whose parts are frame_ms long."""
+    if NT_READERS[suffix] is not None:
+        return NT_READERS[suffix]
+    parts = -(-round(NT_SINGLE_WINDOW_MS * 1000) // max(1, round(frame_ms * 1000)))
+    return f"--window {max(1, min(400, parts))}"
 SAMPLED = ("contrib-lon", "relay-primary", "relay-secondary")
 SAMPLER = (
     "[ -f /var/tmp/compare-sampler.pid ] && kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
@@ -266,7 +280,8 @@ class Audio:
             stream = NEEDLETAIL[base][0]
             index = nt_index(base, self.pcm_samples)
             entry = f"https://{s.ip(site + '-dist-a')}:19444"
-            return (f"ntcmp hls --lane {lane} --mode chase {NT_READERS[lane[len(base):]]} "
+            flags = reader_flags(lane[len(base):], self.nt_frame_ms().get(base, NT_SINGLE_WINDOW_MS))
+            return (f"ntcmp hls --lane {lane} --mode chase {flags} "
                     f"--url '{entry}/live/{stream}/master.m3u8"
                     f"?sid={tag}-{lane}-{{i}}' --ca {run.CA} --server-name {run.SERVER_NAME} "
                     f"--audio-index {INDEX}/{index}.index.json " + tail)
@@ -337,7 +352,12 @@ class Audio:
         run.log(f"{name}: {len(scripts)} hosts, {total} s, lanes {' '.join(lanes)}")
         result = run.run_hosts(s, name, scripts, total)
         meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
-                "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(), "listeners": sum((fan or {}).values()) if fan else None,
+                "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(),
+                "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
+                                    for base, frame in self.nt_frame_ms().items()
+                                    for lane in lanes if lane.startswith(base)
+                                    and lane[len(base):] in NT_READERS},
+                "listeners": sum((fan or {}).values()) if fan else None,
                 "session": s.name, "source": self.status(), **result}
         (s.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
         s.steps.append({"step": name, "seconds": result["seconds"]})

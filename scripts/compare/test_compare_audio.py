@@ -83,6 +83,20 @@ class Lanes(unittest.TestCase):
         self.assertIn("/index/nt-pcm-24s.index.json", pcm)
         self.assertIn("/live/4001/", pcm)
 
+    def test_the_http2_reader_keeps_5_ms_in_flight(self):
+        # One request for each part reads one part per round trip: it falls
+        # behind parts shorter than the round trip. The plain lane keeps 5 ms
+        # of parts in flight, which was one request at 5 ms parts.
+        lanes = list(audio.NEEDLETAIL)
+        for config, samples, window in (("pcm", 48, 5), ("pcm", 24, 10), ("pcm", 12, 20),
+                                        ("opus-2.5", 48, 2)):
+            a = audio.Audio(FakeSession(), config, lanes, samples)
+            base = a.nt_base[0]
+            self.assertIn(f"--window {window} ", a.probe(base, "lon", 60, 1, "tag"), config)
+            self.assertIn("--window 40 --http3", a.probe(base + "-h3", "lon", 60, 1, "tag"))
+        self.assertEqual(audio.reader_flags("", 5.0), "--window 1")
+        self.assertEqual(audio.reader_flags("-w", 1.0), "--window 40")
+
 
 class Analysis(unittest.TestCase):
     def setUp(self):
