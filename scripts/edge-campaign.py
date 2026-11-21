@@ -167,7 +167,10 @@ reader_link(
     "reader-reorder-duplicate",
     "What do reordering (25% of packets) and duplication (1%) between reader and cache "
     "cost a reader?", LOSSY,
-    {"delay_ms": 20, "reorder": 25, "duplicate": 1}, expect=lossy_reader)
+    {"delay_ms": 20, "reorder": 25, "duplicate": 1}, expect=lossy_reader,
+    gap="4K over one TCP connection does not hold 16.5 Mbit/s when a quarter of the "
+        "packets arrive 20 ms early. The viewer needs a lower rendition: see "
+        "ladder-hlsjs-reorder. The reader model does not choose a rendition")
 
 
 @scenario("reader-rate-cap", "network-reader",
@@ -1689,6 +1692,24 @@ def ladder_hlsjs_rate_cap(ctx):
         ctx.check(f"{key}: the player is on {wanted}p from 20 s to the end",
                   height_at(timeline, 20_000) == wanted and height_at(timeline, 60_000) == wanted,
                   f"renditions over time: {timeline[:12]}")
+
+
+@scenario("ladder-hlsjs-reorder", "ladder",
+          "hls.js plays the ladder on a link that reorders a quarter of the packets by "
+          "20 ms and duplicates 1%, where a 4K reader falls 20 s behind. What does the "
+          "viewer see?",
+          "The player settles on a rendition that the link carries and stalls for less "
+          "than 1 s in all.",
+          needs=LADDER)
+def ladder_hlsjs_reorder(ctx):
+    netem = lab.netem_spec(delay_ms=20, reorder=25, duplicate=1)
+    ctx.conditions["link of lon-readers, both directions"] = netem
+    lab.set_tcp_per_packet(True, "london")
+    lab.set_net(LON_READERS, "pub", "both", netem)
+    _process, report = hlsjs(ctx, "player", entry_url(VIDEO, "ladder-reorder"), 60)
+    ladder_player_checks(ctx, "player", report, 1000)
+    timeline = level_timeline(report)
+    ctx.measure("rendition_at_the_end", height_at(timeline, 60_000))
 
 
 @scenario("ladder-hlsjs-rate-steps", "ladder",

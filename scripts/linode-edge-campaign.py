@@ -379,6 +379,17 @@ class RemoteReaderJob(core.ReaderJob):
             try:
                 self._report = json.loads(text)
                 self.report_path.write_text(text)
+                rows = [line.split() for line in common.ssh_text(
+                    self.host_node, f"cat {self.remote_report[:-5]}.cpu", check=False).splitlines()]
+                if len(rows) == 2:
+                    busy = float(rows[1][0]) - float(rows[0][0])
+                    idle = float(rows[1][1]) - float(rows[0][1])
+                    percent = round(100 * busy / max(busy + idle, 1), 1)
+                    self._report.setdefault("summary", {})["load_host_busy_percent"] = percent
+                    if percent > 80:
+                        print(f"      (the load host {self.host_node['name']} was {percent}% "
+                              f"busy during {self.key}: its readers may stall for want of "
+                              "CPU on the load host)", flush=True)
             except ValueError:
                 self._report = {"summary": {"readers": self.count, "readers_ok": 0,
                                             "no_report": True}, "readers": []}
@@ -405,9 +416,13 @@ def remote_readers(self, key: str, stream: int, count: int, seconds: int,
             command.append(flag)
         elif value is not None and value is not False:
             command += [flag, str(value)]
+    # The load host must not be the limit of a test: record how busy its
+    # CPUs were while these readers ran.
+    stat = "awk '/^cpu /{print $2+$3+$4+$6+$7+$8+$9, $5+$6}' /proc/stat"
     script = (f"mkdir -p {REMOTE_RUNS}; rm -f {remote_report}; ulimit -n 65536; "
+              f"{stat} >{REMOTE_RUNS}/{label}.cpu; "
               + " ".join(shlex.quote(item) for item in command)
-              + f" >{REMOTE_RUNS}/{label}.log 2>&1; true")
+              + f" >{REMOTE_RUNS}/{label}.log 2>&1; {stat} >>{REMOTE_RUNS}/{label}.cpu; true")
     process = subprocess.Popen(
         ["ssh", *common.ssh_base(), f"root@{host_node['public_ipv4']}", script],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
