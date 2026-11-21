@@ -28,6 +28,9 @@ import urllib.parse
 def worker(index: int, args, start_at: float, queue) -> None:
     url = urllib.parse.urlsplit(args.url)
     context = ssl.create_default_context(cafile=args.ca) if args.ca else ssl.create_default_context()
+    # A lab certificate authority does not carry every extension that the
+    # strict mode of newer Python versions asks for.
+    context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     if not args.ca:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
@@ -124,7 +127,7 @@ def main() -> None:
     print(json.dumps({
         "url": args.url, "offered_per_second": args.rate, "seconds": args.seconds,
         "joins": len(results), "answered": len(took), "answered_200": admitted,
-        "answered_per_second": round(len(took) / max(elapsed, 0.001), 1),
+        "answered_per_second": round(len(took) / max(elapsed, args.seconds, 0.001), 1),
         "by_answer": statuses,
         "join_ms_p50": percentile(took, 0.5), "join_ms_p99": percentile(took, 0.99),
         "join_ms_max": max(took) if took else None,
