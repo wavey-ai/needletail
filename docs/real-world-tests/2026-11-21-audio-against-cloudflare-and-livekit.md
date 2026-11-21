@@ -26,24 +26,41 @@ everywhere. Needletail is the only system that carries lossless audio as
 audio, and its UDP mode the only lane that lost nothing to random loss of 1%
 or 5%, at no cost in latency.**
 
+**Mesh against mesh.** LiveKit Cloud is LiveKit's own SFU mesh: the source
+uploads once, to its nearest edge, and LiveKit relays the media to the edge of
+each listener, as Needletail's mesh does. Against it, Needletail's UDP mode is
+ahead in every region: by 6 to 18 ms for Opus and 10 to 22 ms for PCM.
+Self-hosted LiveKit with an SFU in each region is not a mesh: the source
+uploads to all four SFUs and every listener is one SFU hop from the source.
+It is the floor of what a WebRTC path can do here, and it is the setup that
+beats Needletail.
+
+| Setup | Uploads by the source | Hops from source to listener | Where the media of the room lives |
+| --- | ---: | --- | --- |
+| Needletail | 1 (to the contributor, London) | contributor, backbone relay, distributor, edge: 4 | cached at the edges of each region |
+| LiveKit, SFU in each region | 4 (one to each region) | 1 SFU | the SFU of each region |
+| LiveKit, multi-region set | 1 (London node) | 1 SFU, in London | the London node; listeners elsewhere get it from London |
+| LiveKit Cloud | 1 (its edge in Germany) | 2 SFUs: the source's edge and the listener's (Germany, US East, Japan, Australia) | LiveKit's mesh |
+| Cloudflare Realtime and Stream WHIP/WHEP | 1 (the nearest Cloudflare location) | Cloudflare's network; not visible | Cloudflare's network |
+
 Mouth to ear is the age of a sample when a listener that plays audio on
 arrival would play it. Median of three sessions, in milliseconds:
 
 | Lane | System | Frame | London | New York | Tokyo | Sydney |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Opus | LiveKit, self-hosted, SFU in each region | 2.5 ms | **2.3** | 38.4 | **110.0** | **128.3** |
-| Opus | LiveKit, self-hosted, multi-region set | 2.5 ms | 2.4 | **33.3** | 111.6 | 128.4 |
+| Opus | LiveKit, self-hosted, SFU in each region (4 uploads, 1 hop) | 2.5 ms | **2.3** | 38.4 | **110.0** | **128.3** |
+| Opus | LiveKit, self-hosted, multi-region set (1 upload, media from London) | 2.5 ms | 2.4 | **33.3** | 111.6 | 128.4 |
 | Opus | Cloudflare Realtime | 2.5 ms | 5.6 | 40.7 | 116.8 | 131.0 |
 | Opus | Cloudflare Stream WHIP/WHEP | 2.5 ms | 6.5 | 40.8 | 115.6 | 129.4 |
-| Opus | **Needletail, RaptorQ FEC over UDP** | 5 ms | 8.6 | 39.6 | 116.4 | 134.7 |
-| Opus | Needletail, LL-HLS over HTTP | 5 ms | 9.2 | 40.1 | 117.1 | 135.5 |
-| Opus | LiveKit Cloud | 2.5 ms | 15.7 | 57.6 | 133.2 | 141.1 |
-| PCM | LiveKit, self-hosted, data channel | 2.5 ms | **2.8** | **33.4** | 110.4 | **128.5** |
+| Opus | **Needletail mesh, RaptorQ FEC over UDP** | 5 ms | 8.6 | 39.6 | 116.4 | 134.7 |
+| Opus | Needletail mesh, LL-HLS over HTTP | 5 ms | 9.2 | 40.1 | 117.1 | 135.5 |
+| Opus | **LiveKit Cloud mesh** | 2.5 ms | 15.7 | 57.6 | 133.2 | 141.1 |
+| PCM | LiveKit, self-hosted, SFU in each region, data channel | 2.5 ms | **2.8** | **33.4** | 110.4 | **128.5** |
 | PCM | LiveKit, multi-region set, data channel | 2.5 ms | 2.9 | 33.4 | **107.7** | 128.7 |
-| PCM | **Needletail, RaptorQ FEC over UDP** | 5 ms | 5.4 | 36.1 | 112.8 | 131.3 |
-| PCM | Needletail, LL-HLS over HTTP | 5 ms | 6.1 | 36.8 | 113.5 | 132.0 |
+| PCM | **Needletail mesh, RaptorQ FEC over UDP** | 5 ms | 5.4 | 36.1 | 112.8 | 131.3 |
+| PCM | Needletail mesh, LL-HLS over HTTP | 5 ms | 6.1 | 36.8 | 113.5 | 132.0 |
 | PCM | Cloudflare Realtime, data channel | 2.5 ms | 6.6 | 40.5 | 115.4 | 148.1 |
-| PCM | LiveKit Cloud, data channel | 2.5 ms | 16.0 | 58.1 | 131.6 | 141.7 |
+| PCM | **LiveKit Cloud mesh**, data channel | 2.5 ms | 16.0 | 58.1 | 131.6 | 141.7 |
 
 At the 99th percentile the gap to self-hosted LiveKit is wider: Needletail
 UDP was 13.2, 44.1, 122.6 and 139.3 ms for Opus against LiveKit's 4.2, 40.3,
@@ -388,8 +405,10 @@ multi-region set's media, relayed from London, was 5 ms earlier than the New
 York SFU's own copy from the source.
 
 Cloudflare Realtime and Stream WHIP/WHEP are within 0.1 to 1.6 ms of each
-other. LiveKit Cloud is the slowest in every region; it served
-the London listener from Germany.
+other. LiveKit Cloud, the other mesh, is the slowest in every region. Its source
+in London uploaded to its edge in Germany (EU West B in a few steps), and its
+listeners were served from Germany, US East (Canada in a few steps), Japan
+and Australia.
 
 Needletail's two client modes have nearly the same median: the UDP mode is
 0.5 to 0.8 ms earlier than LL-HLS. Its jitter is lower too, and it does not
