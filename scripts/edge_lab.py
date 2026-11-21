@@ -143,7 +143,16 @@ SITE_PUBLIC = {"london": "10.90.0", "amsterdam": "10.90.1", "newyork": "10.90.2"
 SITE_DELAY_MS = {"london": 2.0, "amsterdam": 4.0, "newyork": 34.0}
 ACCESS_DELAY_MS = 0.5
 VLAN_DELAY_MS = 0.15
-NANODE = {"cpu_percent": 100, "memory_mb": 1024}
+# The limits of a node. The tiny node of the design is the smallest
+# dedicated-CPU instance, g6-dedicated-2: 2 vCPU and 4 GB. The contributor runs
+# alone on a g6-dedicated-4. NEEDLETAIL_EDGE_LAB_NANODE=1 restores the limits of
+# a shared Nanode (1 vCPU, 1 GB) used before 21 November 2026.
+if os.environ.get("NEEDLETAIL_EDGE_LAB_NANODE") == "1":
+    NANODE = {"cpu_percent": 100, "memory_mb": 1024}
+    CONTRIBUTOR_LIMITS = dict(NANODE)
+else:
+    NANODE = {"cpu_percent": 200, "memory_mb": 4096}
+    CONTRIBUTOR_LIMITS = {"cpu_percent": 400, "memory_mb": 8192}
 
 # One node configuration carries 5 ms audio parts and 4K video parts. The node
 # is sized for the audio parts. Each playlist derives its own window.
@@ -660,7 +669,8 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
                   extra_args: list[str] | None = None) -> int:
     """Start the service of a node in its namespace and in its own cgroup."""
     item = load("rendered.json")[name]
-    limits = {**NANODE, **(limits or load("limits.json").get(name, {}))}
+    base = CONTRIBUTOR_LIMITS if node(name)["role"] == "contributor" else NANODE
+    limits = {**base, **(limits or load("limits.json").get(name, {}))}
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
