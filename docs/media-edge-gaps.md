@@ -23,11 +23,13 @@ the playlist is the unit that every node holds, copies and serves.
 | ---: | --- | --- |
 | 1 | Playlists that a standard player accepts: segment stamp, a part duration for each track, reload rules, cold caches | Built and proven |
 | 2 | Content Steering that survives a cache failure: pathway clones, a standby copy | Built and proven |
-| 3 | A rendition for the link of the viewer: ladder, rendition reports, aligned renditions | Built for video with its audio; proven with hls.js. Audio as its own rendition is open (rank 9) |
+| 3 | A rendition for the link of the viewer: ladder, rendition reports, aligned renditions | Built for video with its audio. hls.js chooses the rendition that fits its link; it still stalls on a link with little headroom. Audio as its own rendition is open (rank 9) |
 | 4 | Region failure: a pathway in the neighbouring region | Built and proven |
 | 5 | Admission that knows what a reader costs; a crowd must not degrade the readers who are there | Built and proven |
-| 6 | A cache network that keeps its promise under packet loss | Built and proven to 2% loss |
+| 6 | A cache network that keeps its promise under packet loss, jitter and reordering | Built and proven to 5% random loss in the lab and 2% on Linode. A copy that warms on a lossy link is open |
 | 7 | More streams than a node has slots must be refused, not shared out | Built: clean refusal, and `--playlist-slots` |
+| 7a | A node with a wrong clock must not break assignment | Built and proven on Linode |
+| 7b | An edge that has lost its source must say so | Built and proven |
 | 8 | Signalling of a part that is lost for good (`EXT-X-GAP`, `GAP=YES`) | Open |
 | 9 | Audio that standard players and narrow uplinks can use: grouped parts, audio rendition groups, AAC | Open |
 | 10 | Viewer authorisation and protection of the control paths on the playback port | Open |
@@ -40,6 +42,9 @@ the playlist is the unit that every node holds, copies and serves.
 | 17 | Metadata: `EXT-X-DATERANGE`, SCTE-35, captions, I-frame playlists | Open |
 | 18 | Encryption and DRM pass-through | Open |
 | 19 | An external CDN in front of the mesh | Open |
+
+Smaller faults that the campaign found and did not fix are listed at the end,
+under [Open items from the campaign](#open-items-from-the-campaign).
 
 ## Built in this round
 
@@ -128,7 +133,25 @@ What it costs. An edge with one reader of a 720p rendition also receives the
 4K rendition: 25 Mbit/s for the ladder of the test against 2.5. Admission
 still charges a session for the playlist that it reads.
 
-What is left. Audio is inside each video rendition. Audio as its own
+A rendition of a ladder carries the date of its Media Sequence Number times
+the segment duration as `EXT-X-PROGRAM-DATE-TIME`, so the same segment has the
+same date in every rendition and on every cache. Without that the dates were
+0.14 to 0.26 s apart, and hls.js looked for its place in the new rendition by
+a date that was off by a part.
+
+Proof. `ladder-playlists`: 16 variants on 4 pathways, the edge holds four
+renditions 5 s after its first reader and none 22 s after its last, the same
+segment starts at the same instant in every rendition, and each rendition
+reports the three others. `ladder-hlsjs-rate-cap`: on an 8 Mbit/s link hls.js
+settles on 1080p after 2.7 s and stays there, and the player beside it with a
+good link settles on 2160p.
+
+What is left. hls.js at a one-second latency stalls on a link that has
+little room above the rendition: 3.9 s in 60 s on the 8 Mbit/s link, where
+1080p needs 5.4 Mbit/s on average and more at each key frame, and it is slow
+to step down when the rate collapses. Start-up is on the first variant, the
+highest. A cheaper first variant, `EXT-X-START`, and CMSD hints are the
+server's levers. Audio is inside each video rendition: audio as its own
 rendition group is rank 9. Admission by the entry point assumes the bit rate
 of the top rendition.
 
@@ -171,9 +194,25 @@ from the hole to the head.
 What was built, in the playlists crate. Each node measures the loss of each
 peer and reports it (`LinkReport`). The sender protects an object by the
 measured loss of the path. A hole is filled by one parent, with the hole
-(`request_parts`). An object is encoded once for all children.
+(`request_parts`). An object is encoded once for all children. A source
+symbol that arrives late, on a path that reorders packets, is not counted as
+lost.
 
-Proof. Scenarios `mesh-loss-0.5pct`, `mesh-loss-2pct`, `mesh-burst-loss`.
+Two kernel limits had to move as well. A 4K part travels in symbols of up to
+16 kB, which IP fragments. The kernel keeps a datagram that has lost a
+fragment for 30 s and drops every new fragment when 4 MB of them wait; with
+2% loss that stopped 4K on every edge. It also drops a datagram when more
+than 64 other fragments of the same sender arrive between two of its
+fragments, which any reordering does at these rates. The deploy tool sets
+`net.ipv4.ipfrag_time=1`, `net.ipv4.ipfrag_high_thresh=67108864` and
+`net.ipv4.ipfrag_max_dist=0` on every node.
+
+Proof. Scenarios `mesh-loss-0.5pct`, `mesh-loss-2pct`, `mesh-loss-5pct`,
+`mesh-burst-loss`, `mesh-delay-jitter`, `mesh-reorder-duplicate`.
+
+What is left. The cache network depends on IP fragmentation and on those
+settings. Symbols that fit one packet would remove the dependence; the first
+attempt cost too much CPU on one vCPU and needs batched sends.
 
 ### 7. More streams than slots
 
@@ -188,6 +227,34 @@ name. A stream that has had no part for 10 s gives up its slot.
 costs under 1 MB until it holds media.
 
 Proof. Scenarios `long-tail-one-stream-too-many` and `long-tail-more-slots`.
+
+What is left. Slots are not the only limit. With audio in 5 ms parts a
+Nanode contributor is at 98% of its vCPU with 17 streams, and a relay or a
+distributor holds about 830 MB of its 1 GB for them. See rank 9.
+
+### 7a. A node with a wrong clock
+
+What it was. An entry point compared the time in the advertisement of a
+cache, from the clock of the cache, with its own clock. An entry point whose
+clock was 4 s ahead took every edge for stale and refused every reader. An
+edge whose clock was 4 s behind was never given a reader.
+
+What was built. The age of an advertisement is the time since this node
+received a new one from that node.
+
+Proof. Scenarios `clock-skew-edge` and `clock-skew-distributor` on Linode.
+
+### 7b. An edge that has lost its source
+
+What it was. An edge whose private network was cut, or whose distributors
+had both died, held every request until the reader gave up.
+
+What was built. The nodes of the cache network say hello every 100 ms. An
+edge that has heard no parent for 400 ms answers 503 with the other caches.
+
+Proof. `mesh-partition-edge-heals`: no reader stalls. `distributors-both-kill`:
+readers play from the neighbouring region 1.4 s (audio) to 3.4 s (4K) after
+the region loses both distributors, where a 4K reader took 11 s before.
 
 ## Open, in rank order
 
@@ -322,3 +389,41 @@ caches carry media without reading it.
 An external CDN in front: possible once playlists are stable across caches,
 which rank 1 delivered. Needs cache keys that ignore `sid` and honour
 `_HLS_msn` and `_HLS_part`, and short TTLs.
+
+## Open items from the campaign
+
+Faults that the campaign found, with their scenario, that are not fixed.
+
+- **A copy that warms on a lossy link can list a playlist that ends seconds
+  behind live.** Linode, `mesh-loss-2pct`: two 4K readers that started on such
+  a copy began 5 s behind and then jumped 27 parts. A reader on a warm edge
+  missed nothing.
+- **An edge takes more readers than it admits when they arrive through the
+  alternates of full edges.** `flash-crowd`: one edge of four was sent 51
+  audio readers where it admits about 31, and 33 of them stalled.
+- **Shared CPU.** A Nanode loses 20 to 57% of its CPU to the hypervisor for
+  seconds at a time. Its readers stall for 15 to 500 ms. An edge does not
+  report steal, and assignment does not avoid it.
+- **The wide-area protection is sized for a configured loss of 2%.** At 3%
+  one 4K part in eleven is lost before the region (`wan-loss-3pct`,
+  `contributor-uplink-loss`). The cache network adapts to measured loss; the
+  relay lanes do not.
+- **A relay that dies loses the 4K parts in flight** (`relay-primary-kill`):
+  two or three parts, one stall of about a second for each reader.
+- **A contributor that wakes from a 5 s freeze needs 4 s more** to shed its
+  backlog (`contributor-freeze`).
+- **A step of the contributor clock loses one 4K part**
+  (`clock-skew-contributor`).
+- **With the clock of a distributor 4 s ahead, audio readers of the region
+  miss about a quarter of their parts** while video is untouched
+  (`clock-skew-distributor`, after the fix of 7a). The audio lane still
+  compares times of two clocks somewhere.
+- **A flapping private link** costs a 4K reader one stall of about 0.6 s
+  (`mesh-flap-edge`).
+- **A 4K reader that is drained to an edge that has just restarted** stalls
+  for under half a second while the copy warms (`edge-rolling-restart`).
+- **A starved edge serves late until the entry point sees it fall behind**
+  (`edge-cpu-starved`).
+- **RTMP audio needs `wavey-boxer` 0.1.1**, which is not published. A plain
+  build of the contributor drops the first two bytes of every AAC frame.
+
