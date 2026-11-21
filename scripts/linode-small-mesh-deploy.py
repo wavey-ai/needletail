@@ -38,6 +38,12 @@ DEFAULT_SETTINGS = {
     "parts_per_segment": 200,
     "window_parts": 2400,
     "slot_kb": 2048,
+    # Playlists that a node holds at one time: the streams of a region for a
+    # relay and a distributor. An edge holds one less for its readers.
+    "playlist_slots": 16,
+    # Tracks of the audio album that the lab source plays (1, 2 or 8). Each
+    # track is a lossless and an HQ stream. Only the lab tools read this.
+    "daw_album_tracks": 1,
     "response_ms": None,
     "mesh_sync_interval_ms": 20,
     "mesh_repair_ratio": 0.03,
@@ -64,6 +70,16 @@ DEFAULT_SETTINGS = {
     "assignment_spread_percent": 60,
     "assignment_alternates": 2,
     "steering_ttl_seconds": 5,
+    # Edges of a region that hold each playlist that has readers. With two, a
+    # reader whose cache fails moves to a cache that holds the playlist.
+    "playlist_copies": 2,
+    # Name the first distributor of every other region as the last pathway of
+    # each reader, so that a reader moves there when its whole region is lost.
+    "region_failover": True,
+    # The renditions of each ladder, as the caches name them in a Multivariant
+    # Playlist: "master:stream:peak bit/s:average bit/s:WIDTHxHEIGHT:frame
+    # rate in mHz". The contributor receives each rendition as its own stream.
+    "hls_renditions": [],
     "telemetry_interval_ms": 1000,
     # Kernel settings of a node that serves readers. A reader far from its
     # cache gets a 4K playlist only when the cache finds the rate of the path
@@ -514,6 +530,7 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--parts-per-segment", str(settings["parts_per_segment"]),
         "--window-parts", str(settings["window_parts"]),
         "--slot-kb", str(settings["slot_kb"]),
+        "--playlist-slots", str(settings["playlist_slots"]),
     ]
     capacity = settings["egress_capacity_bps"]
     if node["role"] == "edge":
@@ -526,7 +543,18 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
             "--assignment-spread-percent", str(settings["assignment_spread_percent"]),
             "--assignment-alternates", str(settings["assignment_alternates"]),
             "--steering-ttl-seconds", str(settings["steering_ttl_seconds"]),
+            "--playlist-copies", str(settings["playlist_copies"]),
         ]
+        for rendition in settings.get("hls_renditions") or []:
+            args += ["--hls-rendition", rendition]
+        if settings.get("region_failover"):
+            neighbours = {}
+            for other in sorted(state["nodes"].values(), key=lambda item: item["name"]):
+                if other["role"] == "distributor" and other["site"] != node["site"]:
+                    neighbours.setdefault(other["region"], other)
+            for region, other in sorted(neighbours.items()):
+                args += ["--failover-entry",
+                         f"{region}=https://{other['public_ipv4']}:{HTTP_PORT}"]
     if settings["response_ms"]:
         args += ["--response-ms", str(settings["response_ms"])]
     if node["role"] in ("distributor", "edge"):
@@ -825,7 +853,9 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     # that carries a candidate patch.
     mesh = pathlib.Path(os.environ.get(
         "NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh"))) / target
-    contrib = common.WORKSPACE / "av-contrib" / target
+    # NEEDLETAIL_AV_CONTRIB_ROOT selects another av-contrib checkout.
+    contrib = pathlib.Path(os.environ.get(
+        "NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib"))) / target
     daw = common.WORKSPACE / "daw-nexus" / target
     probe = contrib / "aep1-48k-probe"
     if role == "contributor":

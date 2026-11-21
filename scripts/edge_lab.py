@@ -59,6 +59,27 @@ PROBE = pathlib.Path(os.environ.get(
 VIDEO_CLIP = pathlib.Path(os.environ.get(
     "NEEDLETAIL_VIDEO_CLIP",
     str(pathlib.Path.home() / "media" / "4k-encodes" / "tos24-16m.ts")))
+# A ladder of the clip: the 4K original and three smaller encodes of it with
+# the same closed two-second group of pictures (see ENCODES.md). Each entry is
+# stream, file, peak bit/s, average bit/s, frame, frame rate in mHz.
+LADDER_DIR = pathlib.Path(os.environ.get(
+    "NEEDLETAIL_VIDEO_LADDER", str(VIDEO_CLIP.parent / "ladder")))
+LADDER = [
+    (1, VIDEO_CLIP, 18_000_000, 16_600_000, "3840x2160", 24_000),
+    (11, LADDER_DIR / "tos24-1080p-5m.ts", 6_000_000, 5_350_000, "1920x1080", 24_000),
+    (12, LADDER_DIR / "tos24-720p-2m.ts", 2_800_000, 2_480_000, "1280x720", 24_000),
+    (13, LADDER_DIR / "tos24-360p-700k.ts", 1_100_000, 950_000, "640x360", 24_000),
+]
+RTMP_PORT = 19350
+
+
+def ladder_renditions() -> list[str]:
+    """The `hls_renditions` setting of the ladder."""
+    master = LADDER[0][0]
+    return [f"{master}:{stream}:{peak}:{average}:{frame}:{rate}"
+            for stream, _path, peak, average, frame, rate in LADDER]
+
+
 AUDIO_PCM = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AUDIO_PCM",
     str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
@@ -72,6 +93,18 @@ DAW_TRACKS = pathlib.Path(os.environ.get(
     str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
         / "daw-nexus-album-1-track-pcm-600s")))
 SERVER_NAME = "mesh.needletail.test"
+
+
+def daw_tracks() -> pathlib.Path:
+    """The audio album of the lab: the default, or the album with the number
+    of tracks that the settings of the lab name."""
+    tracks = load("settings.json").get("daw_album_tracks") or 1
+    if tracks == 1:
+        return DAW_TRACKS
+    found = sorted(DAW_TRACKS.parent.glob(f"daw-nexus-album-{tracks}-track-pcm-*"))
+    if not found:
+        raise LabError(f"no audio album with {tracks} tracks in {DAW_TRACKS.parent}")
+    return found[-1]
 HTTP_PORT = 19444
 CONTRIB_HTTP_PORT = 19443
 VIDEO_STREAM = 1
@@ -273,11 +306,23 @@ def apply_netem(namespace: str | None, device: str, spec: str) -> None:
     words = spec.split()
     ordered = "ordered" in words
     words = [word for word in words if word != "ordered"]
-    run_in(namespace, ["tc", "qdisc", "replace", "dev", device, "root", "handle", "1:",
-                       "netem", *words])
+    # `tc qdisc replace` of a netem qdisc changes the options that it is given
+    # and keeps the others: a rate cap or a reorder setting of an earlier
+    # scenario stayed on the link after it was "cleared". Delete and add in
+    # one batch, so that the link carries exactly this specification.
+    batch = [f"qdisc del dev {device} root",
+             f"qdisc add dev {device} root handle 1: netem {' '.join(words)}"]
     if ordered:
-        run_in(namespace, ["tc", "qdisc", "replace", "dev", device, "parent", "1:1",
-                           "pfifo", "limit", "50000"])
+        batch.append(f"qdisc add dev {device} parent 1:1 pfifo limit 50000")
+    run_in(namespace, ["tc", "-force", "-batch", "-"], check=False,
+           text_input="\n".join(batch) + "\n")
+    shown = run_in(namespace, ["tc", "qdisc", "show", "dev", device])
+    if "netem" not in shown:
+        raise LabError(f"{namespace or 'lab'}: netem was not applied to {device}: {shown[:200]}")
+    for word in ("rate", "reorder", "loss", "duplicate", "corrupt"):
+        if (word in shown.split()) != (word in words):
+            raise LabError(f"{namespace or 'lab'}: {device} carries '{shown.strip()[:200]}', "
+                           f"asked for '{' '.join(words)}'")
 
 
 def set_net(name: str, network: str, direction: str, spec: str | None) -> None:
@@ -354,6 +399,18 @@ def set_link(name: str, network: str, up: bool) -> None:
     it does when a switch port or a VLAN fails."""
     _inside, outside = link_names(name)[network]
     run_in(None, ["ip", "link", "set", outside, "up" if up else "down"])
+
+
+def set_clock(name: str, offset_seconds: int | None) -> None:
+    """Move the wall clock of one node. Namespaces share the clock of the
+    host, so this needs real instances."""
+    raise LabError("the clock of one node cannot be moved in the namespace lab")
+
+
+def fill_disk(name: str, full: bool) -> int:
+    """Fill the disk of one node. The nodes of the namespace lab share a
+    disk, so this needs real instances."""
+    raise LabError("the disk of one node cannot be filled in the namespace lab")
 
 
 def heal_all() -> None:
@@ -705,6 +762,20 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
     None."""
     sources = load("sources.json")
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
+    if video and "video" not in sources and load("settings.json").get("hls_renditions"):
+        # An encoder that sends a ladder: one process reads every rendition
+        # at its own rate and publishes each under the key of its stream.
+        log = open(WORK / "logs" / "source-video.log", "ab")
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        for _stream, path, *_ in LADDER:
+            command += ["-re", "-stream_loop", "-1", "-i", str(path)]
+        for index, (stream, *_rest) in enumerate(LADDER):
+            command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
+                        "-t", str(seconds), "-f", "flv",
+                        f"rtmp://127.0.0.1:{RTMP_PORT}/live/{stream}"]
+        process = subprocess.Popen(enter("contrib-lon") + command, stdout=log, stderr=log,
+                                   stdin=subprocess.DEVNULL, start_new_session=True)
+        sources["video"] = process.pid
     if video and "video" not in sources:
         log = open(WORK / "logs" / "source-video.log", "ab")
         process = subprocess.Popen(
@@ -721,7 +792,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         process = subprocess.Popen(
             enter("contrib-lon") + [
                 str(DAW_SOURCE), "--direct-contributor", "--loop-prepared-pcm",
-                "127.0.0.1:27100", str(seconds), str(DAW_TRACKS)],
+                "127.0.0.1:27100", str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),
                  "DAW_TEST_SOURCE_CAPACITY_OUTPUT": str(WORK / "logs" / "daw-capacity.ndjson")},

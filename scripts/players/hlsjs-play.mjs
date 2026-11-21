@@ -53,6 +53,9 @@ const USAGE = `usage: node hlsjs-play.mjs --url <playlist url> [options]
   --serve-dir <dir>         also serve this directory at /files/ on the loopback page server (with CORS headers);
                             --url may then be a path such as /files/vod.m3u8. For offline checks of saved media.
   --headless new|shell      headless mode (default: shell for chrome-headless-shell, else new)
+  --throttle <schedule>     limit the download rate of the browser (DevTools network emulation), for a
+                            player on a network that cannot be shaped. "<seconds>:<kbit/s>,..." from the
+                            start of the page; 0 kbit/s lifts the limit. Example: 0:0,20:3000,40:0
 
 Browser auto-detection order: $CHROME_PATH, .browsers/chrome (Chrome for Testing),
 .browsers/chrome-headless-shell, then chromium / google-chrome-stable / google-chrome on PATH.
@@ -565,6 +568,19 @@ async function main() {
     const cdp = await page.createCDPSession();
     await cdp.send('Network.enable', { maxTotalBufferSize: 64 * 1024 * 1024, maxResourceBufferSize: 8 * 1024 * 1024 });
     await cdp.send('Network.setCacheDisabled', { cacheDisabled: false });
+    const throttleLog = [];
+    const throttleStart = Date.now();
+    for (const step of String(opts.throttle || '').split(',').filter(Boolean)) {
+      const [at, kbps] = step.split(':').map(Number);
+      if (!(at >= 0) || !(kbps >= 0)) throw new Error(`--throttle step is not <seconds>:<kbit/s>: ${step}`);
+      setTimeout(() => {
+        cdp.send('Network.emulateNetworkConditions', {
+          offline: false, latency: 0, uploadThroughput: -1,
+          downloadThroughput: kbps > 0 ? Math.round(kbps * 1000 / 8) : -1,
+        }).then(() => throttleLog.push({ t: Date.now() - throttleStart, kbps }), () => {});
+      }, at * 1000);
+    }
+    net.throttle = throttleLog;
     cdp.on('Network.requestWillBeSent', (e) => {
       if (e.request.url.startsWith(pageOrigin) && !e.request.url.startsWith(`${pageOrigin}/files/`)) return;
       if (e.request.method === 'OPTIONS') net.preflights++;
