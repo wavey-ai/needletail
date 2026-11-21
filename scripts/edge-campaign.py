@@ -1820,9 +1820,11 @@ def ladder_playlists(ctx):
               len(set(targets.values())) == 1, targets)
     reports_ok, detail = True, []
     for stream in LADDER_STREAMS:
+        asked = time.time()
         _status, _headers, body, _seconds = fetch(f"/live/{stream}/stream.m3u8")
         mine = hls_spec.parse_media(body)
         reported = {item.get("URI"): item for item in mine["rendition_reports"]}
+        part_s = mine["part_target"] or 0.2
         for other in LADDER_STREAMS:
             if other == stream:
                 continue
@@ -1834,7 +1836,10 @@ def ladder_playlists(ctx):
                 detail.append(f"{stream} has no report of {other}")
                 continue
             behind = (real[0] - int(item["LAST-MSN"])) * 10 + real[1] - int(item["LAST-PART"])
-            if not 0 <= behind <= 2:
+            # The other playlist is read after the report, and it moves on
+            # by one part for each part duration that passes in between.
+            allowed = 2 + int((time.time() - asked) / part_s) + 1
+            if not 0 <= behind <= allowed:
                 reports_ok = False
                 detail.append(f"{stream} reports {other} at {item['LAST-MSN']}.{item['LAST-PART']}, "
                               f"it is at {real[0]}.{real[1]}")
