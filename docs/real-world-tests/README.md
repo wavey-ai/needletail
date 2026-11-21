@@ -63,6 +63,11 @@ Current edge hardening record:
 A fault campaign of about 80 scenarios against the regional cache in a local namespace lab and on Linode Nanodes, with what broke, what was fixed and what is open.
 Its strict result is `FAIL`: the scenarios that did not hold are listed in the record under "Still open".
 
+Current comparison with other networks, audio:
+[2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
+Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail, Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud.
+Needletail is not the fastest for Opus. It is the only one that carries lossless audio as audio and loses nothing under loss.
+
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
 Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).
 Current 4K record: [2026-07-21 4K capacity and loaded player](2026-07-21-h264-4k-capacity-and-player.md).

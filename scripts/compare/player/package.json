@@ -1,0 +1,11 @@
+{
+  "name": "needletail-compare-player",
+  "private": true,
+  "type": "module",
+  "description": "Headless Chrome viewer of the network comparison",
+  "dependencies": {
+    "hls.js": "1.7.4",
+    "livekit-client": "2.25.0",
+    "puppeteer-core": "25.18.1"
+  }
+}

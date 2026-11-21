@@ -1,0 +1,256 @@
+{
+  "description": "The network comparison. Needletail: a contributor in London, two backbone relays, and in each of London, New York, Tokyo and Sydney two distributors and two edges on a private VLAN, all Nanodes. LiveKit: one Nanode in each of the four regions (a single SFU, and a member of the multi-region set that shares the Redis of lk-redis). Viewers, the same for every system: in each region one Nanode for the probes and one host with four dedicated vCPUs for headless Chrome, which a Nanode cannot run at 4K. lon-src sends the same clip into every system. Sydney has no dedicated plan of four vCPUs, so syd-view is a shared plan of four vCPUs; its steal time is recorded.",
+  "image": "linode/debian13",
+  "nodes": [
+    {
+      "name": "contrib-lon",
+      "role": "contributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.1.5/24"
+    },
+    {
+      "name": "relay-primary",
+      "role": "backbone",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.1.6/24"
+    },
+    {
+      "name": "relay-secondary",
+      "role": "backbone",
+      "site": "amsterdam",
+      "region": "nl-ams",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "lon-src",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4",
+      "vlan_ipv4": "10.78.1.30/24"
+    },
+    {
+      "name": "lk-redis",
+      "role": "livekit",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "lon-dist-a",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.1.11/24"
+    },
+    {
+      "name": "lon-dist-b",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.1.12/24"
+    },
+    {
+      "name": "lon-edge-1",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.1.21/24"
+    },
+    {
+      "name": "lon-edge-2",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.1.22/24"
+    },
+    {
+      "name": "lon-view",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4"
+    },
+    {
+      "name": "lon-nano",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "lon-lk",
+      "role": "livekit",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "new-dist-a",
+      "role": "distributor",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.2.11/24"
+    },
+    {
+      "name": "new-dist-b",
+      "role": "distributor",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.2.12/24"
+    },
+    {
+      "name": "new-edge-1",
+      "role": "edge",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.2.21/24"
+    },
+    {
+      "name": "new-edge-2",
+      "role": "edge",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.2.22/24"
+    },
+    {
+      "name": "new-view",
+      "role": "load",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-dedicated-4"
+    },
+    {
+      "name": "new-nano",
+      "role": "load",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "new-lk",
+      "role": "livekit",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "tok-dist-a",
+      "role": "distributor",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.3.11/24"
+    },
+    {
+      "name": "tok-dist-b",
+      "role": "distributor",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.3.12/24"
+    },
+    {
+      "name": "tok-edge-1",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.3.21/24"
+    },
+    {
+      "name": "tok-edge-2",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.3.22/24"
+    },
+    {
+      "name": "tok-view",
+      "role": "load",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-4"
+    },
+    {
+      "name": "tok-nano",
+      "role": "load",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "tok-lk",
+      "role": "livekit",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "syd-dist-a",
+      "role": "distributor",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.4.11/24"
+    },
+    {
+      "name": "syd-dist-b",
+      "role": "distributor",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.4.12/24"
+    },
+    {
+      "name": "syd-edge-1",
+      "role": "edge",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.4.21/24"
+    },
+    {
+      "name": "syd-edge-2",
+      "role": "edge",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1",
+      "vlan_ipv4": "10.78.4.22/24"
+    },
+    {
+      "name": "syd-view",
+      "role": "load",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-standard-4"
+    },
+    {
+      "name": "syd-nano",
+      "role": "load",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1"
+    },
+    {
+      "name": "syd-lk",
+      "role": "livekit",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-nanode-1"
+    }
+  ]
+}
