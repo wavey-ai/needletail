@@ -499,6 +499,7 @@ def contributor_uplink_loss(ctx):
            ctx.readers("audio-ny", AUDIO, 4, 45, host=NEW_READERS)]
     ctx.wait_readers()
     clean(ctx, jobs + far)
+    lost_upstream(ctx, jobs + far)
 
 
 # =================================================================== nodes
