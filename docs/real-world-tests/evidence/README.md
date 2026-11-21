@@ -50,3 +50,4 @@ Evidence index:
 - `20260721T061329Z-h264-4k-viewer-capacity.json`: two 60-second 100-viewer 4K LL-HLS runs on one two-vCPU edge.
 - `20260721T124900Z-h264-4k-loaded-player.json`: loaded HLS.js playback, timeline rewind, Operations captures, and 100-viewer load evidence.
 - `20260722T001300Z-edge-capacity-failover.json`: authoritative GCP edge-cache admission, HLS failover, replication, and HTTP/3 evidence.
+- `20261121-compare-audio.json`: three sessions of the audio comparison with Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud on a 33-instance Linode lab: Opus at 2.5 to 20 ms frames and lossless PCM, mouth-to-ear latency, jitter, gaps and bit-exactness for each region, under netem loss and delay and with 1, 10 and 100 listeners, with the processor of each Nanode. It has several sessions in one file, one line for each step.

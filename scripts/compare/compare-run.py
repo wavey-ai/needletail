@@ -21,6 +21,8 @@ Phases, for each lane
   impair    the same netem on both viewer hosts of each region, 45 s each
   fanout    1, 10 and 100 probes on one stream
   ramp      1080p at 6 Mbit/s and 4K at 16, 25, 40 and 80 Mbit/s, 40 s each
+  throughput  4K at 10, 16, 25, 40, 80, 122, 164, 248 and 333 Mbit/s, 40 s
+            each, until two rungs in a row reach no region whole
 
 Results are kept under target/compare/runs/SESSION/STEP/HOST/. A step is
 `LANE.PHASE.DETAIL`. scripts/compare/compare-analyse.py reads them.
@@ -55,6 +57,10 @@ SERVER_NAME = common.TLS_SERVER_NAME
 SITES = ["lon", "new", "tok", "syd"]
 BASE_RUNG = "2160p8"
 RAMP = ["1080p6", "2160p16", "2160p25", "2160p40", "2160p80"]
+# Raw throughput: 4K at a rising bit rate until the system no longer carries it.
+THROUGHPUT = ["2160p8", "2160p16", "2160p25", "2160p40", "2160p80", "2160p120", "2160p160",
+              "2160p240", "2160p320"]
+CHROME_UP_TO = ("2160p8", "2160p16", "2160p25")      # a browser decodes these in real time
 SIZES = {"1080p6": (1920, 1080)}
 IMPAIRMENTS = {
     "loss1": "loss 1%",
@@ -64,7 +70,42 @@ IMPAIRMENTS = {
 }
 FANOUT = {1: {"lon": 1}, 10: {"lon": 3, "new": 3, "tok": 2, "syd": 2},
           100: {"lon": 25, "new": 25, "tok": 25, "syd": 25}}
-LANES = ["nt", "cf", "whep", "cfhls", "lkregion", "lkmulti", "lkcloud"]
+# cfhls is not in the default: Cloudflare refuses ingest on a recording live
+# input for an account without a Stream subscription (see the write-up).
+LANES = ["nt", "cf", "whep", "lkregion", "lkmulti", "lkcloud"]
+SAMPLER = (
+    "[ -f /var/tmp/compare-sampler.pid ] && kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
+    "cat >/var/tmp/compare-sampler.sh <<'EOS'\n"
+    "echo $$ >/var/tmp/compare-sampler.pid\n"
+    "while true; do\n"
+    "  line=\"$(date +%s) $(head -1 /proc/stat)\"\n"
+    "  for name in av-mesh av-contrib livekit-server; do for pid in $(pgrep -x $name); do\n"
+    "    line=\"$line | $name $pid $(awk '{print $14+$15}' /proc/$pid/stat) $(awk '/VmRSS/{print $2}' /proc/$pid/status)\"\n"
+    "  done; done\n"
+    "  echo \"$line\"; sleep 5\n"
+    "done\n"
+    "EOS\n"
+    "(setsid nohup sh /var/tmp/compare-sampler.sh >/var/tmp/compare-sampler.log 2>&1 </dev/null &)")
+
+
+def start_samplers(session: "Session") -> list[dict]:
+    """Record the processor time of the services on every Needletail and
+    LiveKit node, every five seconds, for the length of a session."""
+    sampled = [item for item in session.nodes.values()
+               if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit")]
+    common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
+    return sampled
+
+
+def collect_samplers(session: "Session", sampled: list[dict]) -> None:
+    (session.dir / "samplers").mkdir(exist_ok=True)
+
+    def collect(item: dict) -> None:
+        text = common.ssh_text(item, "kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
+                                     "cat /var/tmp/compare-sampler.log", check=False)
+        (session.dir / "samplers" / f"{item['name']}.log").write_text(text + "\n")
+
+    common.parallel(sampled, collect)
 
 
 def log(text: str) -> None:
@@ -262,14 +303,17 @@ class Lane:
 
     def probe(self, site: str, rung: str, seconds: int, out: str, count: int, frames: bool,
               tag: str, variant: str = "") -> str:
+        # variant "h3" is Needletail read with eight part requests in flight over HTTP/3.
         s = self.session
         index = f"{REMOTE}/index/{rung}.index.json"
         common_args = (f"--duration {seconds} --report {out}.json --label {tag} --count {count} "
                        + (f"--spread-ms {min(5000, 200 * count)} " if count > 1 else "")
                        + (f"--frames {out}.csv " if frames else ""))
         if self.name == "nt":
-            return (f"ntcmp hls --lane nt --mode chase --url '{self.entry(site)}/live/1/master.m3u8"
-                    f"?sid={tag}-{{i}}' --ca {CA} --server-name {SERVER_NAME} --index {index} "
+            reader = "--window 8 --http3 " if variant == "h3" else ""
+            return (f"ntcmp hls --lane nt{'-h3' if variant == 'h3' else ''} --mode chase {reader}"
+                    f"--url '{self.entry(site)}/live/1/master.m3u8"
+                    f"?sid={tag}{variant}-{{i}}' --ca {CA} --server-name {SERVER_NAME} --index {index} "
                     + common_args)
         if self.name == "cf":
             return (f"ntcmp sub --lane cf --session {self.cf_session} --index {index} " + common_args)
@@ -442,6 +486,74 @@ def fanout(session: Session, lane: Lane, rung: str, seconds: int) -> None:
         step(session, lane, "fanout", str(total), rung, scripts, seconds, {"viewers": total})
 
 
+def carried(session: Session, step_name: str, seconds: int) -> dict:
+    """Which regions received the clip whole in a throughput step: at least
+    97% of the frames that the time allows, at most two incomplete, and a
+    latency tail within half a second of its median."""
+    out = {}
+    for site in SITES:
+        verdicts = []
+        for host in (f"{site}-view", f"{site}-nano"):
+            path = session.dir / step_name / host / "probe.json"
+            if not path.is_file():
+                continue
+            try:
+                record = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                verdicts.append(False)
+                continue
+            first = max(0.0, (record.get("first_key_frame_ms") or 0.0) / 1000.0)
+            expected = 24 * max(1.0, seconds - first - 1.5)
+            latency = record.get("video_latency_ms") or {}
+            verdicts.append(bool(
+                not record.get("error") and (record.get("first_key_frame_ms") or -1) >= 0
+                and record.get("video_frames", 0) >= 0.97 * expected
+                and record.get("video_frames_incomplete", 0) <= 2
+                and latency.get("p99", 1e9) - latency.get("p50", 0) < 500))
+        out[site] = bool(verdicts) and all(verdicts)
+    return out
+
+
+def throughput(session: Session, lane: Lane, seconds: int) -> None:
+    failed = 0
+    for rung in THROUGHPUT:
+        try:
+            lane.start(rung)
+        except RuntimeError as error:
+            log(f"{lane.name}.throughput.{rung}: source failed: {str(error)[:300]}")
+            (session.dir / f"{lane.name}.throughput.{rung}").mkdir(exist_ok=True)
+            (session.dir / f"{lane.name}.throughput.{rung}" / "meta.json").write_text(json.dumps(
+                {"step": f"{lane.name}.throughput.{rung}", "lane": lane.name, "phase": "throughput",
+                 "detail": rung, "rung": rung, "source_failed": str(error)[:2000]}) + "\n")
+            failed += 1
+            if failed >= 2:
+                break
+            continue
+        scripts = {}
+        for site in SITES:
+            tag = f"{session.name}-{lane.name}-{site}"
+            nano = [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")]
+            view = [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")]
+            if lane.name == "nt":
+                view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
+            if rung in CHROME_UP_TO:
+                view.append(lane.player(site, seconds, "player", tag))
+            if lane.name == "nt":
+                view.append(lane.reader(site, seconds, "reader", tag))
+            sample = ("S0=$(grep '^cpu ' /proc/stat)\n{body}\necho \"$S0\" >cpu.txt; "
+                      "grep '^cpu ' /proc/stat >>cpu.txt")
+            if lane.name != "lkcloud":       # LiveKit Cloud's free allowance: one viewer for each region
+                scripts[f"{site}-nano"] = sample.format(body=together(*nano))
+            scripts[f"{site}-view"] = sample.format(body=together(*view))
+        step(session, lane, "throughput", rung, rung, scripts, seconds)
+        verdict = carried(session, f"{lane.name}.throughput.{rung}", seconds)
+        log(f"  carried whole: {' '.join(site for site, ok in verdict.items() if ok) or 'nowhere'}")
+        failed = 0 if any(verdict.values()) else failed + 1
+        if failed >= 2:
+            log(f"{lane.name}: two rungs in a row reached no region whole; the sweep ends")
+            break
+
+
 def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> None:
     lane = Lane(session, name)
     if name == "lkcloud":
@@ -462,6 +574,8 @@ def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> No
                     baseline(session, lane, BASE_RUNG, 45, phase="impair", detail=label, netem=spec)
             if "fanout" in phases:
                 fanout(session, lane, BASE_RUNG, 40)
+        if "throughput" in phases:
+            throughput(session, lane, 30 if name == "lkcloud" else 40)
         if "ramp" in phases:
             rungs = RAMP if name != "cfhls" else ["1080p6", "2160p16"]
             for rung in rungs:
@@ -491,12 +605,14 @@ def main() -> None:
     args = parser.parse_args()
     session = Session(args.session)
     started = time.time()
+    sampled = start_samplers(session)
     for name in args.lanes.split(","):
         log(f"lane {name}")
         try:
             run_lane(session, name, args.phases.split(","), args.seconds)
         except Exception as error:  # noqa: BLE001 - one lane must not end the session
             log(f"lane {name} failed: {type(error).__name__}: {str(error)[:600]}")
+    collect_samplers(session, sampled)
     record = {"session": args.session, "lanes": args.lanes, "phases": args.phases,
               "started_unix": started, "ended_unix": time.time(), "lab_run": session.state["run_id"],
               "steps": session.steps}

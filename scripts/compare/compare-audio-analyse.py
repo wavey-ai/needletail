@@ -35,6 +35,7 @@ import argparse
 import csv
 import json
 import pathlib
+import re
 import statistics
 import sys
 
@@ -210,7 +211,24 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
+ANALYSIS_VERSION = 3
+
+
 def analyse_step(path: pathlib.Path) -> dict | None:
+    """The analysis of a step is kept beside its records and reused."""
+    cache = path / "analysis.json"
+    if cache.is_file():
+        kept = load(cache)
+        if kept and kept.get("analysis_version") == ANALYSIS_VERSION:
+            return kept
+    step = analyse_step_now(path)
+    if step is not None:
+        step["analysis_version"] = ANALYSIS_VERSION
+        cache.write_text(json.dumps(step) + "\n")
+    return step
+
+
+def analyse_step_now(path: pathlib.Path) -> dict | None:
     meta = load(path / "meta.json")
     if meta is None or "config" not in meta:
         return None
@@ -326,9 +344,83 @@ def node_usage(samplers: dict, start: float, end: float) -> dict:
     return usage
 
 
+PROBE_KEEP = ("error", "frame_ms", "first_audio_ms", "units", "units_in_window", "units_missing", "missing_percent",
+              "gaps", "longest_gap_ms", "bit_exact_percent", "kbit_per_second", "jitter_p99_minus_p50_ms",
+              "rfc3550_jitter_ms", "longest_silence_between_arrivals_ms", "livekit_server")
+CHROME_KEEP = ("error", "codec", "jitter_buffer_ms", "rfc3550_jitter_ms", "packets_lost", "concealed_percent",
+               "concealment_events", "inserted_samples", "removed_samples", "seconds_received", "markers")
+
+
+def short(distribution: dict | None, keys=("p50", "p95", "p99", "max")) -> dict | None:
+    if not distribution:
+        return None
+    return {key: distribution.get(key) for key in keys if distribution.get(key) is not None}
+
+
+def slim(step: dict) -> dict:
+    """The versioned form of a step: the figures that the tables and the
+    text use. Single probes are kept for the Nanode listener of each region;
+    the viewer host keeps Chrome and the crowds."""
+    out = {key: value for key, value in step.items() if key not in ("hosts", "source", "analysis_version")}
+    hosts = {}
+    for name, host in step["hosts"].items():
+        lanes = {}
+        for lane, entry in host["lanes"].items():
+            kept = {}
+            probe = entry.get("probe")
+            if probe and (name.endswith("-nano") or step["phase"].startswith("fanout")):
+                item = {key: probe[key] for key in PROBE_KEEP if probe.get(key) is not None}
+                item["unit_latency_ms"] = short(probe.get("unit_latency_ms"))
+                item["mouth_to_ear_ms"] = short(probe.get("mouth_to_ear_ms"), ("p50", "p95", "p99"))
+                if probe.get("raw"):
+                    item["raw"] = {"unit_latency_ms": short(probe["raw"].get("unit_latency_ms")),
+                                   "mouth_to_ear_ms": short(probe["raw"].get("mouth_to_ear_ms"),
+                                                            ("p50", "p95", "p99"))}
+                    item["daw_buffer_wait_ms"] = short(probe.get("daw_buffer_wait_ms"), ("p50", "max"))
+                kept["probe"] = item
+            if entry.get("listeners"):
+                kept["listeners"] = entry["listeners"]
+            chrome = entry.get("chrome")
+            if chrome:
+                item = {key: chrome[key] for key in CHROME_KEEP if chrome.get(key) is not None}
+                item["marker_mouth_to_ear_ms"] = short(chrome.get("marker_mouth_to_ear_ms"),
+                                                       ("min", "p50", "max"))
+                kept["chrome"] = item
+            if kept:
+                lanes[lane] = kept
+        if lanes:
+            hosts[name] = {"lanes": lanes}
+    out["hosts"] = hosts
+    return out
+
+
+SCRUB = (
+    (re.compile(r"[a-z0-9-]+\.livekit\.cloud"), "<project>.livekit.cloud"),
+    (re.compile(r"customer-[a-z0-9]+\.cloudflarestream\.com"), "customer-<code>.cloudflarestream.com"),
+    (re.compile(r"\b[0-9a-f]{32,64}\b"), "<id>"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "<token>"),
+)
+
+
+def scrub(value):
+    """An error message can quote a URL. Identifiers of the accounts (the
+    Cloudflare app, a live input, the LiveKit Cloud project) and tokens are
+    taken out of every string before it is written."""
+    if isinstance(value, dict):
+        return {key: scrub(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub(item) for item in value]
+    if isinstance(value, str):
+        for pattern, replacement in SCRUB:
+            value = pattern.sub(replacement, value)
+    return value
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("sessions", nargs="+")
+    parser.add_argument("--slim", action="store_true",
+                        help="the versioned form: only the figures that the tables use")
     parser.add_argument("--out", required=True)
     parser.add_argument("--runs", default=str(RUNS))
     args = parser.parse_args()
@@ -343,18 +435,34 @@ def main() -> None:
         for path in sorted(p for p in directory.iterdir() if p.is_dir() and p.name.startswith("audio.")):
             step = analyse_step(path)
             if step:
+                step = dict(step)
                 if samplers and step.get("started_unix"):
                     # The listeners of a step start a few seconds after it does.
                     step["nodes"] = node_usage(samplers, step["started_unix"] + 12,
                                                step["started_unix"] + max(20, (step.get("seconds") or 30) - 6))
-                steps[step["step"]] = step
+                steps[step["step"]] = slim(step) if args.slim else step
         evidence["sessions"][name] = {
             "record": load(directory / "session.json"),
             "codec_attempts": load(directory / "codec-attempts.json"),
             "steps": steps,
         }
         print(f"{name}: {len(steps)} steps")
-    pathlib.Path(args.out).write_text(json.dumps(evidence, indent=1) + "\n")
+    evidence = scrub(evidence)
+    if args.slim:
+        # One line for each step: small, and still readable in a diff.
+        lines = []
+        for name, session in evidence["sessions"].items():
+            steps = session.pop("steps")
+            head = json.dumps(session, separators=(",", ":"))[:-1]
+            body = ",\n".join(f"  {json.dumps(key)}:{json.dumps(value, separators=(',', ':'))}"
+                              for key, value in steps.items())
+            lines.append(f" {json.dumps(name)}:{head},\"steps\":{{\n{body}\n }}}}")
+        top = {key: value for key, value in evidence.items() if key != "sessions"}
+        text = json.dumps(top, separators=(",", ":"))[:-1] + ",\"sessions\":{\n" + ",\n".join(lines) + "\n}}\n"
+        json.loads(text)
+        pathlib.Path(args.out).write_text(text)
+    else:
+        pathlib.Path(args.out).write_text(json.dumps(evidence, indent=1) + "\n")
 
 
 if __name__ == "__main__":

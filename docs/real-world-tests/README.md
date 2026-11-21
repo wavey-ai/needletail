@@ -58,6 +58,11 @@ Current regional cache feature record:
 [2026-11-19 regional LL-HLS cache features on Linode](2026-11-19-regional-llhls-cache-features.md).
 The run passed demand replication, load balance, failover, drain, assignment and pinning for 4K video and lossless audio on Nanodes.
 
+Current comparison with other networks, audio:
+[2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
+Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail, Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud.
+Needletail is not the fastest for Opus. It is the only one that carries lossless audio as audio and loses nothing under loss.
+
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
 Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).
 Current 4K record: [2026-07-21 4K capacity and loaded player](2026-07-21-h264-4k-capacity-and-player.md).

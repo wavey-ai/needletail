@@ -2,9 +2,9 @@
 """Print the tables of the audio comparison as Markdown, from the evidence
 file of compare-audio-analyse.py.
 
-A cell holds the value of each session, in order, separated by ` / `. Probe
-figures are from the Nanode listener of each region, Chrome figures from the
-viewer host of the region.
+A cell holds the median of the sessions and, in brackets, the lowest and the
+highest session. Probe figures are from the Nanode listener of each region,
+Chrome figures from the viewer host of the region.
 """
 
 from __future__ import annotations
@@ -26,6 +26,16 @@ SYSTEMS = [
 ]
 NT_LANE = {"opus-2.5": "nt-opus", "opus-5": "nt-opus", "opus-10": "nt-opus", "opus-20": "nt-flac",
            "opus-max510": "nt-flac", "pcm": "nt-pcm"}
+
+
+def spread(values: list, digits=1) -> str:
+    values = [float(v) for v in values if v is not None]
+    if not values:
+        return "–"
+    middle = statistics.median(values)
+    if len(values) == 1 or max(values) - min(values) < 10 ** -digits:
+        return f"{middle:.{digits}f}"
+    return f"{middle:.{digits}f} ({min(values):.{digits}f}–{max(values):.{digits}f})"
 
 
 def fmt(value, digits=1):
@@ -50,14 +60,18 @@ class Evidence:
         except KeyError:
             return None
 
-    def cell(self, step: str, host: str, lane: str, kind: str, path: list[str], digits=1) -> str:
+    def values(self, step: str, host: str, lane: str, kind: str, path: list[str]) -> list:
         out = []
         for session in self.sessions:
             value = self.get(session, step, host, lane, kind)
             for key in path:
                 value = value.get(key) if isinstance(value, dict) else None
-            out.append(fmt(value, digits))
-        return " / ".join(out)
+            if isinstance(value, (int, float)):
+                out.append(value)
+        return out
+
+    def cell(self, step: str, host: str, lane: str, kind: str, path: list[str], digits=1) -> str:
+        return spread(self.values(step, host, lane, kind, path), digits)
 
 
 def table(header: list[str], rows: list[list[str]]) -> None:
@@ -77,16 +91,19 @@ def baseline(e: Evidence, config: str, title: str) -> None:
                         ("Mouth to ear, played on arrival, p99 (ms)", ["mouth_to_ear_ms", "p99"]),
                         ("Jitter: p99 minus median of the unit latency (ms)", ["jitter_p99_minus_p50_ms"]),
                         ("Units missing (%)", ["missing_percent"]),
-                        ("Units bit-exact (%)", ["bit_exact_percent"])):
+                        ("Units bit-exact (%)", ["bit_exact_percent"]),
+                        ("Time from the listener's start to its first audio (ms)", ["first_audio_ms"]),
+                        ("Bit rate at the listener (kbit/s)", ["kbit_per_second"])):
         print(f"{label}:\n")
         rows = []
         for system, name in SYSTEMS:
             lane = e.lane(system, config)
             cells = [e.cell(step, f"{site}-nano", lane, "probe", path, 3 if "percent" in path[0] else 1)
                      for site, _ in SITES]
-            if all(set(cell.replace(" / ", "")) <= {"–"} for cell in cells):
+            if all(cell == "–" for cell in cells):
                 continue
-            frame = e.cell(step, "lon-nano", lane, "probe", ["frame_ms"]).split(" / ")[0]
+            frames = e.values(step, "lon-nano", lane, "probe", ["frame_ms"])
+            frame = f"{frames[0]:g}" if frames else "–"
             rows.append([name + (f" ({lane.split('-')[1]})" if system.startswith("nt") else ""), frame + " ms"] + cells)
         table(header, rows)
 
@@ -159,7 +176,7 @@ def impair(e: Evidence, config: str) -> None:
                             value = value.get(key) if isinstance(value, dict) else None
                         if value is not None:
                             per.append(value)
-                    cells.append(fmt(float(statistics.median(per)), digits) if per else "–")
+                    cells.append(spread(per, digits))
                     empty = empty and not per
                 row.append(" / ".join(cells))
             if not empty:
@@ -203,18 +220,20 @@ def fanout(e: Evidence, config: str) -> None:
             row = [name + (f" ({lane.split('-')[1]})" if system.startswith("nt") else "")]
             empty = True
             for total, site, _ in columns:
-                cells = []
+                cells, numbers = [], []
                 for session in e.sessions:
                     entry = fan_entry(e, session, config, total, site, lane)
                     if entry is None:
-                        cells.append("–")
                         continue
                     empty = False
                     if key is None:
                         cells.append(f"{entry['listeners_with_audio']}/{entry['listeners']}")
                     else:
-                        cells.append(fmt(float(entry[key]), digits) if entry.get(key) is not None else "–")
-                row.append(" / ".join(cells))
+                        value = entry.get(key)
+                        if value is not None and key == "missing_percent":
+                            value = max(0.0, value)     # late arrivals can make the count negative
+                        numbers.append(value)
+                row.append((", ".join(cells) or "–") if key is None else spread(numbers, digits))
             if not empty:
                 rows.append(row)
         table(["System"] + [name for _, _, name in columns], rows)
@@ -237,12 +256,11 @@ def nodes(e: Evidence, config: str) -> None:
     for node, process, name in wanted:
         row = [name]
         for step, _ in steps:
-            cells = []
+            numbers = []
             for session in e.sessions:
                 usage = e.data["sessions"][session]["steps"].get(f"audio.{config}.{step}", {}).get("nodes", {})
-                value = (usage.get(node) or {}).get(process + "_cpu_percent")
-                cells.append(fmt(value) if value is not None else "–")
-            row.append(" / ".join(cells))
+                numbers.append((usage.get(node) or {}).get(process + "_cpu_percent"))
+            row.append(spread(numbers, 0))
         rows.append(row)
     table(["Node"] + [name for _, name in steps], rows)
 
@@ -250,8 +268,11 @@ def nodes(e: Evidence, config: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("evidence")
+    parser.add_argument("--sessions", default="", help="only these sessions, comma separated")
     args = parser.parse_args()
     e = Evidence(args.evidence)
+    if args.sessions:
+        e.sessions = [name for name in args.sessions.split(",") if name in e.sessions]
     print(f"Sessions: {', '.join(e.sessions)}\n")
     baseline(e, "opus-2.5", "Opus, shortest frame (2.5 ms; Needletail 5 ms)")
     chrome(e, "opus-2.5")

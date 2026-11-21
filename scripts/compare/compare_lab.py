@@ -35,10 +35,12 @@ import small_mesh_common as common  # noqa: E402
 ROOT = common.ROOT
 COMPARE = ROOT / "target" / "compare"
 MEDIA = pathlib.Path(__import__("os").environ.get("COMPARE_MEDIA", str(ROOT / "target" / "compare-media")))
+CLIPS = MEDIA / "clips2"       # the encodes whose video is close to the nominal rate
 LIVEKIT_VERSION = "1.13.11"
 LK_CLI_VERSION = "2.20.1"
 REMOTE = "/var/lib/compare"
-RUNGS = ["1080p6", "2160p8", "2160p16", "2160p25", "2160p40", "2160p80"]
+RUNGS = ["1080p6", "2160p8", "2160p16", "2160p25", "2160p40", "2160p80", "2160p120", "2160p160",
+         "2160p240", "2160p320"]
 SHORT = {"london": "lon", "newyork": "new", "tokyo": "tok", "sydney": "syd"}
 PLACES = {"london": (51.5074, -0.1278), "newyork": (40.7128, -74.0060),
           "tokyo": (35.6762, 139.6503), "sydney": (-33.8688, 151.2093)}
@@ -108,7 +110,7 @@ google-chrome --version; node --version
 def prepare(_: argparse.Namespace) -> None:
     hosts = viewers() + [node("lon-src")]
     binaries = [str(ROOT / "target" / "ntcmp"), str(ROOT / "target" / "ntcmp-lk")]
-    indexes = [str(MEDIA / "clips" / f"{rung}.index.json") for rung in RUNGS]
+    indexes = [str(CLIPS / f"{rung}.index.json") for rung in RUNGS]
     for path in binaries + indexes:
         if not pathlib.Path(path).is_file():
             sys.exit(f"missing: {path}")
@@ -144,6 +146,7 @@ def clips(args: argparse.Namespace) -> None:
     source = node("lon-src")
     base = ["ssh", *common.ssh_base()]
     wanted = " ".join(RUNGS) + " audio.opus audio.aac audio.s24le media.json"
+    common.ssh(source, f"rm -rf {REMOTE}/clips")
     send = subprocess.Popen(
         base + [f"root@{args.from_host}", f"cd {args.from_dir} && tar cf - {wanted}"],
         stdout=subprocess.PIPE)
@@ -363,7 +366,7 @@ def main() -> None:
     sub.add_parser("prepare").set_defaults(handler=prepare)
     copy = sub.add_parser("clips")
     copy.add_argument("--from-host", required=True)
-    copy.add_argument("--from-dir", default="/root/media/clips")
+    copy.add_argument("--from-dir", default="/root/media/clips2")
     copy.set_defaults(handler=clips)
     sub.add_parser("livekit").set_defaults(handler=livekit)
     sub.add_parser("audio").set_defaults(handler=audio)
