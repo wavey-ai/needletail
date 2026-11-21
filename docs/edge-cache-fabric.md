@@ -267,11 +267,58 @@ Use `--mesh-symbol-size 900` with `--mesh-max-symbol-size 16000` when a node car
 | Load balance | Built: egress admission at 85 and 75 percent, `429` with alternates, duplicate variants in the master playlist. Working on GCP for one overloaded edge. A drained or failed cache did not move its readers. | Admission against playlist bit rate and a reader limit. Readers spread by free capacity. A drained cache redirects its readers, and a failed or stalled cache loses them to the next cache without a missing part. Shown locally and on Linode. |
 | Assign readers to caches | The Operations entry point existed. No entry point assigned a reader to a cache, and no reader could be pinned. | Every node of a region is an entry point. Assignment is stateless, sticky for a session, changes on failure and drain, and supports a pin. Shown locally and on Linode. |
 
+## What the hardening round of 21 November added
+
+The record is [edge hardening](real-world-tests/2026-11-21-edge-hardening.md). The ranked list of what is still missing is [Media edge gaps](media-edge-gaps.md).
+
+### The playlist is stamped by the contributor
+
+The contributor writes the place of each part in the playlist on the part: Media Sequence Number, part index, declared part target and declared target duration. Every cache renders the playlist from the stamps, so every cache of every region serves the same playlist for the same parts. A reader that moves carries `_HLS_msn` and `_HLS_part` from one cache to the next.
+
+Video and audio have their own part durations: `--fmp4-video-part-ms` and `--fmp4-video-segment-ms` on the contributor. A key frame starts a part. A video segment is a whole number of groups of pictures. The declared part target and target duration follow a duration that recurs, so one outlier does not change them for the life of the stream.
+
+A cache holds a playlist request until its copy is playable. It keeps at least seven target durations of segments, and a part or a segment for three target durations after it leaves the playlist. The Media Sequence Number of a playlist never goes down. A blocking reload is answered as the draft says: 400 for a request too far ahead, 503 after three target durations. A stream or a part that does not exist is answered 404 at once.
+
+### A standby copy and pathway clones
+
+A playlist that has readers is held by `--playlist-copies` edges of the region (default 2). The second edge is chosen by a rank of the stream and the edge names, which every node computes alike. The alternates of a reader are in that order, behind any cache that already holds the playlist, so the first alternate is the edge with the copy.
+
+The steering request names the pathways of the Multivariant Playlist. The steering manifest defines every other cache as a `PATHWAY-CLONES` entry.
+
+### A pathway in the neighbouring region
+
+`--failover-entry NAME=URL` names the entry point of a neighbouring region. It is the last pathway of every Multivariant Playlist. Its URI carries `assign=1`, and the entry point of the neighbour redirects the reader to the cache that it assigns. Readers that a full region refuses, and readers of a region that is lost, go there.
+
+### A ladder of renditions
+
+The nodes do not transcode. An encoder sends each rendition as its own stream: over RTMP, a stream key that is a number names the output stream. Renditions that start within a second of each other number their segments from one instant.
+
+`--hls-rendition master:stream:peak:average:WIDTHxHEIGHT:rate` on the caches describes the ladder. The Multivariant Playlist lists every rendition for every pathway. An edge holds the whole ladder while it has a reader of one rendition, and each rendition playlist carries `EXT-X-RENDITION-REPORT` for the others.
+
+### Admission by what a reader costs
+
+A session is charged the larger of its bit rate and its share of the request capacity of the node (`--egress-request-capacity`, default 8,000 requests a second for each worker thread). A reader of 5 ms audio parts sends 200 requests a second, and an edge on one vCPU serves about 60 of them.
+
+The HTTP server runs on its own runtime at lower priority (`--http-worker-threads`), so a crowd at the door does not hold back the cache network of the node.
+
+### Loss on the cache network
+
+Each node measures the loss of each peer and reports it. A sender protects an object by the measured loss of the path. A hole is filled by one parent, with the hole and nothing after it.
+
+### Playlist slots
+
+A node holds `--playlist-slots` streams (default 16). A relay and a distributor hold every stream of a region, so this is the number of streams of the region. A full node refuses a new stream by name and keeps the streams that it holds. An edge holds one playlist less for its readers.
+
+### The allocator
+
+Every service runs with `MALLOC_MMAP_THRESHOLD_=65536`, `MALLOC_TRIM_THRESHOLD_=1048576` and `MALLOC_ARENA_MAX=2` (deploy setting `node_env`). Without them an edge that takes and releases 4K playlists keeps the memory of every part that it has freed.
+
 Open items:
 
-- stamp the segment number at the contributor, so that caches number video segments alike in every case;
-- give the contributor a part duration for each track, so that audio parts of 5 ms and video parts of 200 ms can share a mesh;
-- name pathways that start after a session began, with steering pathway clones;
+- signal a part that is lost for good, with `GAP=YES` and `EXT-X-GAP`;
+- serve audio parts in groups for standard players and narrow uplinks, and audio as its own rendition next to a video ladder;
+- authorise viewers, and move the control paths off the playback port;
+- two contributors for one stream;
 - derive the warm-up window of a new copy from time, not from a part count;
 - the controller lifecycle above is designed and partly built. It has not been run with the demand replication of this document.
 
@@ -281,6 +328,8 @@ The record of 19 November 2026 is
 [regional LL-HLS cache features on Linode](real-world-tests/2026-11-19-regional-llhls-cache-features.md).
 
 `scripts/local-region-lab.py` runs two regions on one host and demonstrates each feature. `scripts/linode-regional-cache.py` runs the same demonstrations on the small-instance Linode lab.
+
+`scripts/edge-campaign.py` runs the fault campaign of 21 November on one host: each node in its own network namespace under the limits of a Nanode, with `tc netem` on every link. `scripts/linode-edge-campaign.py` runs the same scenarios on the small-instance Linode lab. `scripts/hls_spec.py` checks a playlist against the LL-HLS rules, and `scripts/players/` plays a stream with hls.js and ffmpeg.
 
 Qualification runs at least four small edges per region. Each edge uses two vCPUs or fewer.
 

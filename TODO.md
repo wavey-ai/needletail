@@ -233,25 +233,47 @@ The work is on branch `regional-llhls-cache` of `needletail`, `av-mesh` and
 - [x] Pin a reader to a named cache.
 - [x] Demonstrate each feature for 4K video and lossless audio on one host and
   on Linode Nanodes.
-- [ ] Stamp the segment number on each key-frame part at the contributor.
-  Caches number video segments alike only when the key-frame interval is the
-  nominal segment length.
-- [ ] Give the contributor a part duration for each track.
-- [ ] Run the pushed branches on Linode. Seven changes were made after the
-  run of 19 November and have had the local lab only. Check the memory of an
-  edge over many subscribe and release cycles: it still rose by about 3 MB a
-  cycle in the local lab.
-- [ ] Run HQ SoundKit Opus through the demonstrations on Linode. It has run in
-  the local lab only.
-- [ ] Run the local lab with `tc netem`. The operator host needs a restart
-  into its installed kernel before `sch_netem` can load.
+- [x] Stamp the segment number on each part at the contributor, so that every
+  cache serves the same playlist.
+- [x] Give the contributor a part duration for each track.
+- [x] Run the local lab with `tc netem`: `scripts/edge_lab.py` and
+  `scripts/edge-campaign.py`.
+- [x] Name caches that start after a session began, with Content Steering
+  pathway clones. Keep a standby copy of a playlist that has readers.
+- [x] Run the pushed branches and HQ SoundKit Opus on Linode: the edge
+  campaign of 21 November.
 - [ ] Limit the warm-up of an audio copy to the seconds that a reader needs.
-- [ ] Name caches that start after a session began, with Content Steering
-  pathway clones.
 - [ ] Run the edge lifecycle controller with demand replication: provision an
   edge when a region refuses readers.
 - [ ] Rebase `av-mesh` `regional-llhls-cache` when `edge-hole-repair` and
   `fix-media-fec-ingest-test` are merged. It contains both.
+
+## P0 — edge hardening
+
+The record is
+[`docs/real-world-tests/2026-11-21-edge-hardening.md`](docs/real-world-tests/2026-11-21-edge-hardening.md).
+The ranked gap list is [`docs/media-edge-gaps.md`](docs/media-edge-gaps.md).
+The work is on `regional-llhls-cache` of `needletail`, `av-mesh` and
+`playlists`, and on `edge-hardening` of `av-contrib`.
+
+- [x] A repeatable fault campaign on one host and on Linode, with evidence for
+  each scenario.
+- [x] Check playlists against the LL-HLS rules, and play with hls.js and
+  ffmpeg.
+- [x] Content Steering that survives a cache failure; a pathway in the
+  neighbouring region; a ladder of renditions; admission by request cost.
+- [ ] Publish `wavey-boxer` 0.1.1 (`fix-rtmp-aac-frame-start`). Until then a
+  plain build of `av-contrib` drops the first two bytes of every RTMP AAC
+  frame.
+- [ ] Signal a part that is lost for good: `GAP=YES` and `EXT-X-GAP`.
+- [ ] Serve audio parts in groups, as a second view of the same playlist, for
+  standard players and narrow uplinks. Audio as its own rendition group.
+- [ ] Authorise viewers with a signed token. Move the control paths off the
+  playback port.
+- [ ] Two contributors for one stream, and `EXT-X-DISCONTINUITY` on a restart.
+- [ ] DNS names and certificates for caches. Playlists name caches by address.
+- [ ] Delta updates, `Priority` headers and `Alt-Svc`.
+- [ ] Parse CMCD and export viewer-side quality for each cache and stream.
 
 ## P1 — player and media delivery
 
