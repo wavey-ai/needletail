@@ -112,12 +112,16 @@ class Tiers:
         if daw:
             run.src(s, run.background("tiers-daw", (
                 f"env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS={start}000000000 daw-test-source "
+                f"--buffer-frames {run.lab.NT_DAW['buffer_frames']} "
+                f"--opus-frame-samples {run.lab.NT_DAW['opus_frame_samples']} "
+                f"--lossless-epoch-samples {run.lab.NT_DAW['lossless_epoch_samples']} "
                 f"--direct-contributor --prepared-pcm {contributor['vlan_ipv4']}:27100 1900 {REMOTE}/daw-fixture")))
             streams = 0
         for group in range(streams):
             run.src(s, run.background(f"tiers-pcm-{group}", (
                 f"/usr/local/bin/aep1-48k-probe send --target {contributor['vlan_ipv4']}:27100 "
-                f"--session-id {start * 1_000_000_000 + 5_000_000 + group * 1000} --group-id {group} "
+                f"--session-id {start * 1_000_000_000 + 1_000_000 + group * 1000} --group-id {group} "
+                "--epoch-samples 48 "
                 "--duration-seconds 3600 "
                 f"--payload pcm --channels 2 --group-channels 8 --pcm-s24le-file {AUDIO}/audio.s24le "
                 "--repair-percent 12 --min-repair-symbols 1")))
@@ -126,7 +130,7 @@ class Tiers:
 
     # ---- listeners ----
     def hls(self, count: int, stream: int, mode: str, tag: str, seconds: int, cache: str = "") -> str:
-        index = f"{INDEX}/pcm-5ms.index.json"
+        index = f"{INDEX}/nt-pcm-48s.index.json"
         query = f"sid={tag}-{{i}}" + (f"&cache={cache}" if cache else "")
         return (f"ntcmp hls --lane nt-{mode} --mode {mode} --url '{self.entry}/live/{stream}/master.m3u8?"
                 f"{query}' --ca {run.CA} --server-name {run.SERVER_NAME} "

@@ -16,9 +16,12 @@ over the public Internet. Here the same `tc netem` is put on those links only
 Cloudflare's and LiveKit Cloud's long haul is inside their networks and cannot
 be impaired; they are measured clean only.
 
-During each step, scripts/compare/mesh-hops.py fetches the parts of the stream
-from every mesh node and gives the one-way time of each hop, and the RaptorQ
-counters of every node before and after.
+After each step, scripts/compare/hops.py collects the hop journal of every node
+(GET /api/hops, from the low-latency build on) and gives the one-way time of
+each hop for every part, joined on (stream, part), from the moment its last
+sample was spoken to the listener (the probe records of the step's PCM and
+Opus readers). On a build without the journal, --stamps samples the parts'
+commit stamps on every node instead (mesh-hops.py).
 
   compare-mesh.py --session mesh-1 [--configs pcm,opus-2.5]
 """
@@ -42,7 +45,8 @@ run = audio.run
 common = run.common
 
 PROFILES = {"clean": None, **run.IMPAIRMENTS}
-LANES = {"pcm": ["lkregion", "nt-pcm"], "opus-2.5": ["lkregion", "nt-opus"]}
+LANES = {"pcm": ["lkregion", "nt-pcm", "nt-uc"], "opus-2.5": ["lkregion", "nt-popus", "nt-uc"]}
+PAYLOAD = {"pcm": "pcm", "opus-2.5": "opus"}
 STREAM = {"pcm": 4001, "opus-2.5": 3001}
 SECONDS = 50
 
@@ -83,12 +87,40 @@ def show(session: run.Session, names: list[str]) -> dict[str, str]:
                                                               "head -4", check=False, timeout=60))
 
 
+def journal(session: run.Session, media, config: str, meta: dict, out: pathlib.Path, box: dict) -> None:
+    """hops.py over the step: every node's journal, joined with the step's probes."""
+    started = int(meta["started_unix"] * 1e6)
+    until = int((meta["started_unix"] + meta["seconds"]) * 1e6)
+    base = media.nt_base[0]
+    samples = media.epoch_samples(base) if base in audio.NT_EPOCH_SAMPLES else 240
+    start = int(run.src(session, "cat nt.start").strip())
+    command = [sys.executable, str(HERE / "hops.py"), "--lab", "linode", "--since-us", str(started),
+               "--until-us", str(until), "--payload", PAYLOAD[config],
+               "--session-id", str(start * 1_000_000_000 + audio.epoch_ns(samples)),
+               "--epoch-samples", str(samples), "--out", str(out),
+               "--summary", str(out.with_suffix(".txt"))]
+    step_dir = session.dir / meta["step"]
+    for site in ("lon", "new", "tok", "syd"):
+        probe = step_dir / f"{site}-nano" / f"{base}-h3.probe.csv"
+        if probe.is_file():
+            command += ["--probe", f"{site}={probe}"]
+    try:
+        done = subprocess.run(command, capture_output=True, timeout=600)
+        box["returncode"] = done.returncode
+        box["stderr"] = done.stderr.decode(errors="replace")[-600:]
+    except Exception as error:  # noqa: BLE001 - recorded in meta
+        box["error"] = repr(error)[:600]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--session", required=True)
     parser.add_argument("--configs", default="pcm,opus-2.5")
     parser.add_argument("--profiles", default=",".join(PROFILES))
+    parser.add_argument("--stamps", action="store_true",
+                        help="sample commit stamps (mesh-hops.py) instead of the hop journal")
     args = parser.parse_args()
+    stamps = args.stamps
     session = run.Session(args.session)
     install_netem(session)
     sampled = run.start_samplers(session)
@@ -97,8 +129,8 @@ def main() -> None:
             lanes = LANES[config]
             media = audio.Audio(session, config, lanes)
             media.lanes = [lane for lane in lanes if lane in audio.WEBRTC]
-            media.nt_base = [lane for lane in lanes if lane in audio.NEEDLETAIL]
-            media.nt = [lane + "-h3" for lane in media.nt_base]
+            media.nt_base = [lane for lane in lanes if lane in audio.NEEDLETAIL][:1]
+            media.nt = [lane + "-h3" for lane in media.nt_base] + ["nt-uc"]
             media.start()
             for profile in args.profiles.split(","):
                 spec = PROFILES[profile]
@@ -106,6 +138,20 @@ def main() -> None:
                 applied = apply(session, commands) if spec else {}
                 hops_out = session.dir / f"mesh.{config}.{profile}.hops.json"
                 outcome: dict = {}
+                if not stamps:
+                    try:
+                        media.step("mesh", profile, SECONDS, 0, None)
+                    finally:
+                        state = show(session, list(commands)) if spec else {}
+                        apply(session, long_haul(session, None))
+                    meta_path = session.dir / f"audio.{config}.mesh.{profile}" / "meta.json"
+                    meta = json.loads(meta_path.read_text())
+                    journal(session, media, config, meta, hops_out, outcome)
+                    meta.update({"long_haul_netem": spec, "netem_applied": applied, "netem_state": state,
+                                 "hops_file": hops_out.name if hops_out.is_file() else None,
+                                 "hops_run": outcome})
+                    meta_path.write_text(json.dumps(meta, indent=1) + "\n")
+                    continue
 
                 def sample_hops(out=hops_out, label=f"{config} {profile}", stream=STREAM[config], box=outcome):
                     try:
