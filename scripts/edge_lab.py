@@ -269,10 +269,21 @@ def netem_spec(delay_ms: float = 0.0, jitter_ms: float = 0.0, loss: float = 0.0,
     """A `tc netem` argument string. `burst` is a Gilbert-Elliott model:
     (p, r, loss in the bad state, loss in the good state), all in percent.
 
-    Jitter keeps the order of packets, as the queue of a real link does: the
-    spec starts with the word `ordered`, and `set_net` gives the netem a FIFO
-    child. Reordering is asked for by `reorder`."""
-    parts = ["limit", "50000"]
+    The spec of a link with jitter starts with the word `ordered`, and
+    `set_net` gives the netem a FIFO child. On older kernels that kept the
+    order of packets. On the kernel of this lab it does not: netem sorts by
+    the time at which each packet is due, so jitter reorders packets that
+    are closer together than the jitter. A link with jitter is therefore
+    also a link that reorders.
+
+    A link with a rate has a queue of a quarter of a second, as an access
+    link has. With the 50,000 packets of the other links it held more than a
+    minute of traffic, and a player on it saw delay grow without loss: the
+    stalls of the first ladder runs on capped links were those of the queue."""
+    limit = 50_000
+    if rate_kbit:
+        limit = max(20, int(rate_kbit * 1000 / 8 * 0.25 / 1500))
+    parts = ["limit", str(limit)]
     if jitter_ms and not reorder:
         parts.insert(0, "ordered")
     if delay_ms or jitter_ms or reorder:
