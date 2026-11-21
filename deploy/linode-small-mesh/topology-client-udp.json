@@ -1,0 +1,69 @@
+{
+  "description": "RaptorQ FEC UDP to clients at an edge: one London region, every node with dedicated cores. The contributor alone on a 4-vCPU instance; relays, distributors and edges on 2-vCPU instances; one 4-vCPU host for the sources and the UDP and LL-HLS clients. The secondary relay is in Amsterdam: the relay plan needs the two backbone relays in distinct failure domains.",
+  "image": "linode/debian13",
+  "nodes": [
+    {
+      "name": "contrib-lon",
+      "role": "contributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4",
+      "vlan_ipv4": "10.77.1.5/24"
+    },
+    {
+      "name": "relay-primary",
+      "role": "backbone",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.77.1.6/24"
+    },
+    {
+      "name": "relay-secondary",
+      "role": "backbone",
+      "site": "amsterdam",
+      "region": "nl-ams",
+      "type": "g6-dedicated-2"
+    },
+    {
+      "name": "lon-dist-a",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.77.1.11/24"
+    },
+    {
+      "name": "lon-dist-b",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.77.1.12/24"
+    },
+    {
+      "name": "lon-edge-1",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.77.1.21/24"
+    },
+    {
+      "name": "lon-edge-2",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.77.1.22/24"
+    },
+    {
+      "name": "lon-load",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4",
+      "vlan_ipv4": "10.77.1.31/24"
+    }
+  ]
+}

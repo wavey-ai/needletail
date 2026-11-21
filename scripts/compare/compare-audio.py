@@ -15,15 +15,30 @@ Lanes
   lkregion  LiveKit self-hosted, one SFU in each region: Opus track; PCM data packets
   lkmulti   LiveKit self-hosted, multi-region set on one Redis: the same
   lkcloud   LiveKit Cloud: the same
-  nt-opus   Needletail, SoundKit Opus in 5 ms parts from its DAW source (stream 3001)
-  nt-flac   Needletail, FLAC in 5 ms parts from its DAW source (stream 2001)
-  nt-pcm    Needletail, 24-bit PCM in 5 ms parts from its AEP1 sender (stream 4001)
+  nt-popus  Needletail, Opus in 2.5 ms parts (120 samples, CELT) that its AEP1
+            sender encodes from the same loop (stream 3001)
+  nt-opus   Needletail, SoundKit Opus from its DAW source (stream 3001), one
+            120-sample (2.5 ms) frame per part
+  nt-flac   Needletail, FLAC from its DAW source (stream 2001), one 48-sample
+            (1 ms) epoch per part; the DAW source runs with 64-frame host
+            buffers (NT_DAW, recorded in each step's meta)
+  nt-pcm    Needletail, 24-bit PCM from its AEP1 sender, one 48-sample (1 ms)
+            epoch per part (--nt-pcm-samples; stream 4001)
+  nt-uc     Needletail's RaptorQ FEC UDP client mode (needletail-udp-client):
+            assigned an edge by the site's distributor, it writes the arrival
+            and the bytes of every part (--arrivals, --write-parts), and
+            `ntcmp udp-ingest` measures them with the index of the lane, exactly
+            as every other lane is measured
+  nt-udp    the same client's own JSON report only (publish -> arrival)
+  nt-reader the product's needletail-reader, 25 in each region (--product-reader)
 
 Configurations: opus-2.5, opus-5, opus-10, opus-20 (the frame length of the
 WebRTC senders), opus-max510 (510 kbit/s, the nearest that Opus comes to
-lossless) and pcm. Needletail's frame length is fixed at 5 ms by its
-producers, and it publishes one rendition in each configuration: Opus with
-opus-2.5, opus-5 and opus-10, FLAC with opus-20 and opus-max510, PCM with pcm.
+lossless) and pcm. Needletail parts are one producer frame each, the smallest
+by default: it publishes one rendition in each configuration, Opus 2.5 ms
+from the AEP1 sender with opus-2.5 (or from its DAW source when nt-popus is
+not among --lanes), DAW Opus with opus-5 and opus-10, FLAC with opus-20 and
+opus-max510, PCM with pcm.
 
 Phases
   baseline  60 s of probes on both listener hosts of each region, and
@@ -57,65 +72,110 @@ INDEX = f"{REMOTE}/index"
 SITES = run.SITES
 CONFIGS = ["opus-2.5", "opus-5", "opus-10", "opus-20", "opus-max510", "pcm"]
 WEBRTC = ["cf", "whep", "lkregion", "lkmulti", "lkcloud"]
-NEEDLETAIL = {"nt-opus": (3001, "nt-opus"), "nt-flac": (2001, "nt-flac"), "nt-pcm": (4001, "pcm-5ms")}
-# Which Needletail rendition each configuration measures. The contributor (alone
-# on a g6-dedicated-4) publishes all three at once, from both producers, in
-# every configuration: NT_FORMATS. Set NT_FORMATS to one format to publish one
-# rendition at a time, as the Nanode sessions did.
-NT_FORMATS = "flac,opus,pcm"
-NT_RENDITION = {"opus-2.5": "nt-opus", "opus-5": "nt-opus", "opus-10": "nt-opus",
-                "opus-20": "nt-flac", "opus-max510": "nt-flac", "pcm": "nt-pcm"}
-NT_FORMAT = {"nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
-# Three readers of each Needletail rendition:
-#   (none)  one request for each 5 ms part, HTTP/2: what needletail-reader does
-#   -w      40 requests in flight (200 ms of parts), HTTP/2
-#   -h3     40 requests in flight, HTTP/3
-NT_READERS = {"": "--window 1", "-w": "--window 40", "-h3": "--window 40 --http3"}
-NT_STREAM = {"nt-opus": 3001, "nt-flac": 2001, "nt-pcm": 4001}
-# Needletail's second client mode: RaptorQ FEC over UDP. Until the edge serves
-# it (branch client-udp), a client subscribes at the AEP1 relay port of its
-# region's first distributor: `aep1-48k-probe receive-udp`. The probe reports
-# one bucket a second; the analysis keeps the seconds inside each step.
-NT_UDP = {"nt-opus": ("opus", 0), "nt-flac": ("flac", 0), "nt-pcm": ("pcm", 5_000_000)}
-# The client mode itself (branch client-udp, merged in low-latency): a client
-# is assigned an edge as an LL-HLS reader is and receives each part as one
-# RaptorQ object over UDP. `needletail-udp-client --arrivals` records each
-# part; `ntcmp udp-ingest` measures it with the same index as the other lanes.
+NEEDLETAIL = {"nt-popus": (3001, "nt-popus-120s"), "nt-opus": (3001, run.lab.daw_index("nt-opus")[0]),
+              "nt-flac": (2001, run.lab.daw_index("nt-flac")[0]), "nt-pcm": (4001, "nt-pcm-48s")}
+SAMPLE_RATE = 48_000
+# Samples of one AEP1 epoch (one part) of the Needletail lanes that the AEP1
+# sender feeds; --nt-pcm-samples changes PCM's (24, 12: the halvings).
+NT_EPOCH_SAMPLES = {"nt-popus": 120, "nt-pcm": 48}
+NT_PCM_SAMPLES = (48, 24, 12)
+# The DAW source's epochs and host buffer, which compare-audio gives it on its
+# command line and records in each step's meta (nt_daw); its lanes' parts
+# are one Opus frame (nt-opus) or one lossless epoch (nt-flac).
+NT_DAW = run.lab.NT_DAW
+NT_DAW_SAMPLES = {"nt-opus": "opus_frame_samples", "nt-flac": "lossless_epoch_samples"}
+
+
+def daw_command(target: str) -> str:
+    """The DAW source of the Needletail DAW lanes, with its epochs and host
+    buffer given (not left to the defaults of the build that is installed)."""
+    return ("env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS=${START}000000000 daw-test-source "
+            f"--direct-contributor --buffer-frames {NT_DAW['buffer_frames']} "
+            f"--opus-frame-samples {NT_DAW['opus_frame_samples']} "
+            f"--lossless-epoch-samples {NT_DAW['lossless_epoch_samples']} "
+            f"--prepared-pcm {target} 1900 {REMOTE}/daw-fixture")
+UDP_LANE = "nt-udp"
+UC_LANE = "nt-uc"
 UDP_CLIENT = "/usr/local/bin/needletail-udp-client"
-DIST_UDP = False      # the interim lane: aep1-48k-probe at a distributor's relay port
-SAMPLED = ("contrib-lon", "relay-primary", "relay-secondary")
-SAMPLER = (
-    "[ -f /var/tmp/compare-sampler.pid ] && kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
-    "cat >/var/tmp/compare-sampler.sh <<'EOS'\n"
-    "echo $$ >/var/tmp/compare-sampler.pid\n"
-    "while true; do\n"
-    "  line=\"$(date +%s.%N) $(head -1 /proc/stat) | net $(awk 'NR>2{gsub(\":\",\" \"); printf \"%s:%s:%s \", $1, $10, $11}' /proc/net/dev)\"\n"
-    "  for name in av-mesh av-contrib livekit-server; do for pid in $(pgrep -x $name); do\n"
-    "    line=\"$line | $name $pid $(awk '{print $14+$15}' /proc/$pid/stat) $(awk '/VmRSS/{print $2}' /proc/$pid/status)\"\n"
-    "  done; done\n"
-    "  echo \"$line\"; sleep 5\n"
-    "done\n"
-    "EOS\n"
-    "(setsid nohup sh /var/tmp/compare-sampler.sh >/var/tmp/compare-sampler.log 2>&1 </dev/null &)")
+# The renditions the contributor publishes. On its own g6-dedicated-4 it
+# publishes all three at once (--nt-formats); give one format to publish one
+# rendition at a time, as the first pass on a 1 vCPU Nanode had to.
+NT_FORMATS = "flac,opus,pcm"
+# The candidates of each configuration, in order: the first among --lanes.
+NT_RENDITION = {"opus-2.5": ("nt-popus", "nt-opus"), "opus-5": ("nt-opus",), "opus-10": ("nt-opus",),
+                "opus-20": ("nt-flac",), "opus-max510": ("nt-flac",), "pcm": ("nt-pcm",)}
+NT_FORMAT = {"nt-popus": "opus", "nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
+# Three readers of each Needletail rendition:
+#   (none)  5 ms of parts in flight, HTTP/2: the one request for each part of
+#           the 5 ms parts before (2 parts at 2.5 ms, 5 at 1 ms, 20 at
+#           0.25 ms). One request for each part reads one part per round
+#           trip, so it falls behind parts shorter than the round trip and
+#           measures its own backlog.
+#   -w      40 requests in flight (100 ms of 2.5 ms parts, 40 ms of 1 ms), HTTP/2
+#   -h3     40 requests in flight, HTTP/3
+NT_SINGLE_WINDOW_MS = 5.0
+NT_READERS = {"": None, "-w": "--window 40", "-h3": "--window 40 --http3"}
+
+
+def reader_flags(suffix: str, frame_ms: float) -> str:
+    """ntcmp hls window flags of a Needletail reader lane (`""`, `-w`,
+    `-h3`) whose parts are frame_ms long."""
+    if NT_READERS[suffix] is not None:
+        return NT_READERS[suffix]
+    parts = -(-round(NT_SINGLE_WINDOW_MS * 1000) // max(1, round(frame_ms * 1000)))
+    return f"--window {max(1, min(400, parts))}"
 FANOUT = {1: {"lon": 1}, 10: {"lon": 3, "new": 3, "tok": 2, "syd": 2},
           100: {"lon": 25, "new": 25, "tok": 25, "syd": 25}}
 CLOUD_PER_HOST = 24     # LiveKit Cloud's free plan allows 100 connections in all
 
 
+def epoch_ns(samples: int) -> int:
+    return round(samples * 1_000_000_000 / SAMPLE_RATE)
+
+
+def nt_index(base: str, pcm_samples: int) -> str:
+    """The ntcmp index of a Needletail lane (compare_lab.py audio makes them)."""
+    if base == "nt-pcm":
+        return f"nt-pcm-{pcm_samples}s"
+    return NEEDLETAIL[base][1]
+
+
+def aep1_command(target: str, base: str, samples: int, audio: str) -> str:
+    """The AEP1 sender of a Needletail lane. It sends epoch k when its last
+    sample has been spoken: the session id is the loop START plus one epoch."""
+    payload = NT_FORMAT[base]
+    return (f"/usr/local/bin/aep1-48k-probe send --target {target} "
+            f"--session-id ${{START}}{epoch_ns(samples):09d} --group-id 0 --duration-seconds 1900 "
+            f"--payload {payload} --epoch-samples {samples} "
+            f"--channels 2 --group-channels 8 --pcm-s24le-file {audio} "
+            "--repair-percent 12 --min-repair-symbols 1")
+
+
+def udp_command(entry: str, stream: int, seconds: int, tag: str) -> str:
+    """needletail-udp-client of a Needletail stream: its JSON report."""
+    return (f"needletail-udp-client --entry {entry} --stream {stream} --tls-ca {run.CA} "
+            f"--server-name {run.SERVER_NAME} --duration-seconds {seconds} "
+            f"--session {tag}-{UDP_LANE} >{UDP_LANE}.udp.json 2>{UDP_LANE}.udp.err")
+
+
 class Audio:
-    def __init__(self, session: run.Session, config: str, lanes: list[str]):
+    def __init__(self, session: run.Session, config: str, lanes: list[str], pcm_samples: int = 48):
         self.session = session
         self.config = config
+        self.pcm_samples = pcm_samples
         self.pcm = config == "pcm"
         self.lanes = [lane for lane in lanes if lane in WEBRTC and not (self.pcm and lane == "whep")]
         if session.cloud is None and "lkcloud" in self.lanes:
             self.lanes.remove("lkcloud")
             run.log("lkcloud: ~/wavey.ai/LIVEKIT_CLOUD.env is not filled in; the lane is skipped")
-        self.nt_base = [lane for lane in lanes if lane == NT_RENDITION[config]]
+        self.nt_base = [lane for lane in NT_RENDITION[config] if lane in lanes][:1]
         self.nt = [lane + suffix for lane in self.nt_base for suffix in NT_READERS]
+        if self.nt_base and UDP_LANE in lanes:
+            self.nt.append(UDP_LANE)
+        if self.nt_base and UC_LANE in lanes:
+            self.nt.append(UC_LANE)
         self.room = f"needletail-compare-{session.name}-{config.replace('.', '')}"
         self.cf_session = ""
-        self.nt_start = 0
         self.index = f"{INDEX}/pcm-2.5ms.index.json" if self.pcm else f"{INDEX}/{config}.index.json"
 
     # ---- sources ----
@@ -137,22 +197,19 @@ class Audio:
                                         "systemctl is-active needletail-contrib.service")
             target = f"{contributor['vlan_ipv4']}:27100"
             # Both producers start on a boundary of the 64-second loop. The DAW
-            # source delivers 512-sample buffers when they are complete; the AEP1
-            # sender is started 5 ms later so that it sends a block when its last
-            # sample has been spoken.
-            daw = run.background("nt-daw", (
-                "env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS=${START}000000000 daw-test-source "
-                f"--direct-contributor --prepared-pcm {target} 1900 {REMOTE}/daw-fixture"))
-            aep1 = run.background("nt-pcm", (
-                f"/usr/local/bin/aep1-48k-probe send --target {target} "
-                "--session-id ${START}005000000 --group-id 0 --duration-seconds 1900 --payload pcm "
-                f"--channels 2 --group-channels 8 --pcm-s24le-file {AUDIO}/audio.s24le "
-                "--repair-percent 12 --min-repair-symbols 1"))
+            # source delivers its buffers when they are complete; the AEP1
+            # sender is started one epoch later so that it sends an epoch when
+            # its last sample has been spoken.
+            base = self.nt_base[0]
+            daw = run.background("nt-daw", daw_command(target))
+            producer = daw
+            if base in NT_EPOCH_SAMPLES:
+                producer = run.background(base, aep1_command(
+                    target, base, self.epoch_samples(base), f"{AUDIO}/audio.s24le"))
             run.src(s, (
                 "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
                 "[ $(( START - NOW )) -lt 8 ] && START=$(( START + 64 )); export START; "
-                "echo $START >nt.start; " + (daw + "; " + aep1 if "," in NT_FORMATS else
-                                              aep1 if self.nt_base[0] == "nt-pcm" else daw)))
+                "echo $START >nt.start; " + producer))
         if "cf" in self.lanes:
             run.src(s, "rm -f cf.session; " + run.background(
                 "cf", f"ntcmp pub --lane cf {media} --session-out cf.session --status cf.status"))
@@ -184,14 +241,27 @@ class Audio:
                 run.log("cf: no publisher session: " + run.src(s, "tail -c 300 cf.log", check=False))
                 self.lanes.remove("cf")
         if self.nt:
-            self.nt_start = int(run.src(s, "cat nt.start").strip())
-            wait = self.nt_start - int(time.time())
+            wait = int(run.src(s, "echo $(( $(cat nt.start) - $(date +%s) ))").strip() or 0)
             time.sleep(max(0, wait) + 12)
         else:
             time.sleep(8)
         alive = run.src(s, "pgrep -c -x ntcmp; pgrep -c -x ntcmp-lk; pgrep -c -x daw-test-source; "
                            "pgrep -c -x aep1-48k-probe", check=False).split()
         run.log(f"{self.config}: sources running (ntcmp, ntcmp-lk, daw, aep1): {' '.join(alive)}")
+
+    def epoch_samples(self, base: str) -> int:
+        return self.pcm_samples if base == "nt-pcm" else NT_EPOCH_SAMPLES[base]
+
+    def nt_frame_ms(self) -> dict:
+        """The frame of each Needletail lane of this configuration, for the
+        analysis (one part is one frame)."""
+        out = {}
+        for base in self.nt_base:
+            if base in NT_EPOCH_SAMPLES:
+                out[base] = self.epoch_samples(base) * 1000 / SAMPLE_RATE
+            else:
+                out[base] = NT_DAW[NT_DAW_SAMPLES[base]] * 1000 / SAMPLE_RATE
+        return out
 
     def status(self) -> dict:
         return run.Lane(self.session, "audio").source_status()
@@ -207,11 +277,19 @@ class Audio:
                 f"--count {count} " + (f"--spread-ms {min(10000, 400 * count)} " if count > 1 else "")
                 + (f"--frames {lane}.probe.csv " if count == 1 else ""))
         data = "--data " if self.pcm else ""
+        if lane == UC_LANE:
+            return self.udp_client(site, seconds, count, tag)
+        if lane == UDP_LANE:
+            # One client: it has no --count, and it is not in the fan-out.
+            stream = NEEDLETAIL[self.nt_base[0]][0]
+            return udp_command(f"https://{s.ip(site + '-dist-a')}:19444", stream, seconds, tag)
         if lane.startswith("nt-"):
             base = "-".join(lane.split("-")[:2])
-            stream, index = NEEDLETAIL[base]
+            stream = NEEDLETAIL[base][0]
+            index = nt_index(base, self.pcm_samples)
             entry = f"https://{s.ip(site + '-dist-a')}:19444"
-            return (f"ntcmp hls --lane {lane} --mode chase {NT_READERS[lane[len(base):]]} "
+            flags = reader_flags(lane[len(base):], self.nt_frame_ms().get(base, NT_SINGLE_WINDOW_MS))
+            return (f"ntcmp hls --lane {lane} --mode chase {flags} "
                     f"--url '{entry}/live/{stream}/master.m3u8"
                     f"?sid={tag}-{lane}-{{i}}' --ca {run.CA} --server-name {run.SERVER_NAME} "
                     f"--audio-index {INDEX}/{index}.index.json " + tail)
@@ -232,54 +310,34 @@ class Audio:
                     f"--audio-index {self.index} " + tail)
         raise ValueError(lane)
 
-    def udp_probe(self, site: str, seconds: int, count: int) -> list[str]:
-        """One receive-udp process for each listener, armed on the running session."""
-        if not self.nt_base or not self.nt_start:
-            return []
-        fmt, offset = NT_UDP[self.nt_base[0]]
-        session = self.nt_start * 1_000_000_000 + offset
-        args = (common.ARTIFACT_DIR / "nodes" / f"{site}-dist-a.args").read_text().split("\n")
-        port = int(args[args.index("--fec-bind") + 1].rsplit(":", 1)[1])
-        target = f"{self.session.ip(site + '-dist-a')}:{port}"
-        # The probe listens until session + duration: reach the end of this step.
-        duration = f"$(( $(date +%s) - {self.nt_start} + {seconds} + 2 ))"
-        out = []
-        for i in range(count):
-            name = "nt-udp" if count == 1 else f"nt-udp.probe-{i:03d}"
-            out.append(f"date +%s.%N >{name}.launch; aep1-48k-probe receive-udp --relay {target} "
-                       # No --bind: an ephemeral port, so that a subscription left over
-                       # from the last step (15 s) forwards to a closed port, not here.
-                       f"--session-id {session} --group-id 0 --group-count 1 "
-                       f"--formats {fmt} --duration-seconds {duration} --deadline-ms 1000 "
-                       f"--tail-seconds 1 >{name}.udp.json 2>{name}.udp.err")
-        return out
-
-    def udp_client(self, site: str, seconds: int, count: int, tag: str) -> list[str]:
-        """needletail-udp-client: RaptorQ FEC over UDP from the assigned edge."""
-        if not self.nt_base:
-            return []
-        stream, index = NEEDLETAIL[self.nt_base[0]]
+    def udp_client(self, site: str, seconds: int, count: int, tag: str) -> str:
+        """needletail-udp-client: RaptorQ FEC over UDP from the assigned edge,
+        measured by `ntcmp udp-ingest` with the index of the lane."""
+        base = self.nt_base[0]
+        stream = NEEDLETAIL[base][0]
+        index = nt_index(base, self.pcm_samples)
         entry = f"https://{self.session.ip(site + '-dist-a')}:19444"
         out = []
         for i in range(count):
-            name = "nt-uc" if count == 1 else f"nt-uc-{i:03d}"
-            report = "nt-uc.probe" if count == 1 else f"nt-uc.probe-{i:03d}"
+            name = UC_LANE if count == 1 else f"{UC_LANE}-{i:03d}"
+            report = f"{UC_LANE}.probe" if count == 1 else f"{UC_LANE}.probe-{i:03d}"
             out.append(
-                f"date +%s.%N >{name}.launch; {UDP_CLIENT} --entry {entry} --stream {stream} "
+                f"( date +%s.%N >{name}.launch; {UDP_CLIENT} --entry {entry} --stream {stream} "
                 f"--tls-ca {run.CA} --server-name {run.SERVER_NAME} --duration-seconds {seconds} "
                 f"--session {tag}-uc-{i} --arrivals {name}.arrivals.csv --write-parts {name}.parts.bin "
                 f">{name}.uc.json 2>{name}.uc.err; "
                 f"ntcmp udp-ingest --arrivals {name}.arrivals.csv --parts {name}.parts.bin "
                 f"--started $(cat {name}.launch) --audio-index {INDEX}/{index}.index.json "
-                f"--skip-seconds {5 if count == 1 else 12} --lane nt-uc --label {tag} --client {name}.uc.json "
-                f"--report {report}.json " + (f"--frames {report}.csv " if count == 1 else "")
-                + f">>{name}.ingest.log 2>&1; rm -f {name}.parts.bin {name}.launch")
-        return out
+                f"--skip-seconds {5 if count == 1 else 12} --lane {UC_LANE} --label {tag} "
+                f"--client {name}.uc.json --report {report}.json "
+                + (f"--frames {report}.csv " if count == 1 else "")
+                + f">>{name}.ingest.log 2>&1; rm -f {name}.parts.bin {name}.launch )")
+        return " &\n".join(out) + (" &\nwait" if count > 1 else "")
 
     def product_reader(self, site: str, seconds: int, count: int, tag: str) -> str:
         """needletail-reader itself on the audio stream: the reader of the product."""
         s = self.session
-        return (f"/usr/local/bin/needletail-reader --stream {NT_STREAM[self.nt_base[0]]} "
+        return (f"/usr/local/bin/needletail-reader --stream {NEEDLETAIL[self.nt_base[0]][0]} "
                 f"--entry https://{s.ip(site + '-dist-a')}:19444 --session {tag}-product "
                 f"--readers {count} --arrival-spread-ms {min(10000, 400 * count)} "
                 f"--duration-seconds {seconds} --buffer-ms 1000 --tls-ca {run.CA} "
@@ -311,8 +369,7 @@ class Audio:
              fan: dict | None = None, token_line: int = 1, only: list[str] | None = None) -> None:
         s = self.session
         scripts = {}
-        extra = (["nt-uc"] + (["nt-udp"] if DIST_UDP else [])) if self.nt_base else []
-        lanes = [lane for lane in self.lanes + self.nt + extra if only is None or lane in only]
+        lanes = [lane for lane in self.lanes + self.nt if only is None or lane in only]
         if only and "nt-reader" in only and self.nt_base:
             lanes.append("nt-reader")
         if not lanes:
@@ -323,13 +380,9 @@ class Audio:
             hosts = [f"{site}-view"] if fan else [f"{site}-nano", f"{site}-view"]
             for host in hosts:
                 probes = [self.probe(lane, site, seconds, count, f"{tag}-{host[4:]}") for lane in lanes
-                          if lane not in ("nt-reader", "nt-udp", "nt-uc")]
-                if "nt-uc" in lanes:
-                    probes += self.udp_client(site, seconds, count, f"{tag}-{host[4:]}")
+                          if lane != "nt-reader"]
                 if "nt-reader" in lanes:
                     probes.append(self.product_reader(site, seconds, count, f"{tag}-{host[4:]}"))
-                udp = self.udp_probe(site, seconds, count) if "nt-udp" in lanes else []
-                udp_script = "".join(f"( {probe} ) &\n" for probe in udp) + ("sleep 3\n" if udp else "")
                 script = run.together(*probes) if not (chrome and host.endswith("-view")) else (
                     "\n".join(f"( {probe} ) >/dev/null 2>>errors.log &" for probe in probes))
                 if chrome and host.endswith("-view"):
@@ -339,13 +392,21 @@ class Audio:
                 if netem:
                     script = (f"compare-netem apply '{netem}' >netem.log 2>&1\n" + script
                               + "\ncompare-netem show >>netem.log 2>&1; compare-netem clear >>netem.log 2>&1")
-                scripts[host] = udp_script + script + ("\nwait" if udp else "")
+                scripts[host] = script
         name = f"audio.{self.config}.{phase}.{detail}"
         total = max(seconds, chrome * len(self.lanes) + 10 if chrome else 0)
         run.log(f"{name}: {len(scripts)} hosts, {total} s, lanes {' '.join(lanes)}")
         result = run.run_hosts(s, name, scripts, total)
         meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
-                "lanes": lanes, "listeners": sum((fan or {}).values()) if fan else None,
+                "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(),
+                "nt_uc_base": self.nt_base[0] if self.nt_base else None,
+                "nt_pcm_epoch_samples": self.pcm_samples, "nt_formats": NT_FORMATS,
+                "nt_daw": {**NT_DAW, "opus_lookahead_samples": run.lab.OPUS_LOOKAHEAD_SAMPLES},
+                "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
+                                    for base, frame in self.nt_frame_ms().items()
+                                    for lane in lanes if lane.startswith(base)
+                                    and lane[len(base):] in NT_READERS},
+                "listeners": sum((fan or {}).values()) if fan else None,
                 "session": s.name, "source": self.status(), **result}
         (s.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
         s.steps.append({"step": name, "seconds": result["seconds"]})
@@ -392,12 +453,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--session", required=True)
     parser.add_argument("--configs", default=",".join(CONFIGS))
-    parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL)))
+    parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL) + [UC_LANE]))
+    parser.add_argument("--nt-pcm-samples", type=int, default=NT_EPOCH_SAMPLES["nt-pcm"],
+                        choices=NT_PCM_SAMPLES, help="samples of one Needletail PCM part (one epoch)")
     parser.add_argument("--phases", default="baseline,impair,fanout,attempts")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--chrome-seconds", type=int, default=25)
-    parser.add_argument("--dist-udp", action="store_true",
-                        help="also the interim UDP lane: aep1-48k-probe at a distributor's relay port")
     parser.add_argument("--nt-formats", default=NT_FORMATS,
                         help="renditions the contributor publishes; one format publishes one at a time")
     parser.add_argument("--window", type=int, default=40,
@@ -406,21 +467,17 @@ def main() -> None:
                         help="also run needletail-reader itself with 25 readers in each region")
     args = parser.parse_args()
     globals()["NT_FORMATS"] = args.nt_formats
-    globals()["DIST_UDP"] = args.dist_udp
     NT_READERS["-w"] = f"--window {args.window}"
     NT_READERS["-h3"] = f"--window {args.window} --http3"
     session = run.Session(args.session)
     phases = args.phases.split(",")
     started = time.time()
-    sampled = [item for item in session.nodes.values()
-               if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit")]
-    common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
-    time.sleep(5)
+    sampled = run.start_samplers(session)
     try:
         if "attempts" in phases:
             attempts(session)
         for config in args.configs.split(","):
-            audio = Audio(session, config, args.lanes.split(","))
+            audio = Audio(session, config, args.lanes.split(","), args.nt_pcm_samples)
             full = config in ("opus-2.5", "pcm")       # the two lanes of the comparison
             try:
                 audio.start()
@@ -435,7 +492,7 @@ def main() -> None:
                     # loaded together: the two self-hosted LiveKit lanes share
                     # the London Nanode, and the Needletail readers share the edges.
                     first = [lane for lane in audio.lanes if lane != "lkmulti"] + audio.nt_base
-                    second = ["lkmulti", "nt-uc", "nt-udp"] + [lane + "-h3" for lane in audio.nt_base]
+                    second = ["lkmulti", UC_LANE] + [lane + "-h3" for lane in audio.nt_base]
                     for total, spread in FANOUT.items():
                         audio.step("fanout", str(total), 40, 0, None, fan=spread, only=first)
                         audio.step("fanoutb", str(total), 40, 0, None, fan=spread, only=second)
@@ -449,17 +506,10 @@ def main() -> None:
         for item in run.lab.viewers():
             common.ssh(item, "compare-netem clear >/dev/null 2>&1; pkill -f run.mjs; pkill -x chrome; "
                              "pkill -x ntcmp; pkill -x ntcmp-lk; true", check=False)
-    (session.dir / "samplers").mkdir(exist_ok=True)
-
-    def collect(item: dict) -> None:
-        text = common.ssh_text(item, "kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
-                                     "cat /var/tmp/compare-sampler.log",
-                               check=False)
-        (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
-
-    common.parallel(sampled, collect)
+    run.collect_samplers(session, sampled)
     record = {"session": args.session, "kind": "audio", "configs": args.configs, "lanes": args.lanes,
               "pipelined_window_parts": args.window, "nt_formats": args.nt_formats,
+              "nt_pcm_epoch_samples": args.nt_pcm_samples,
               "phases": args.phases, "started_unix": started, "ended_unix": time.time(),
               "lab_run": session.state["run_id"], "steps": session.steps}
     path = session.dir / "session.json"

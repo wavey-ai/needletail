@@ -101,15 +101,16 @@ VIDEO_STREAM = 1
 AUDIO_STREAM = 2001
 HQ_STREAM = 3001
 
-# One node configuration carries 5 ms audio parts and 250 ms 4K video parts.
-# The node is sized for the audio parts. Each playlist derives its own window.
+# One node configuration carries the smallest parts: one AEP1 epoch per audio
+# part and one frame per video part, on caches with a 2.5 ms nominal part, a
+# 1 s segment and a window of 12 s of the shortest part
+# (linode-small-mesh-deploy.py's defaults; see its window_parts_for).
 DEFAULT_OVERRIDES = {
-    "part_ms": 5,
-    "parts_per_segment": 200,
-    "window_parts": 2400,
-    # The contributor closes a part after 5 ms: an audio part is 5 ms and a
-    # video part is one frame.
-    "fmp4_part_ms": 5,
+    "part_us": 2500,
+    "segment_ms": 1000,
+    "window_ms": 12000,
+    "audio_part": "epoch",
+    "video_part": "frame",
     "mesh_sync_interval_ms": 2,
     "mesh_symbol_size": 900,
     "mesh_max_symbol_size": 16000,

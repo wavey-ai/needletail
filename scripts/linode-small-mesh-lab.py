@@ -39,9 +39,8 @@ DEFAULT_TOPOLOGY = ROOT / "deploy" / "linode-small-mesh" / "topology.json"
 DEFAULT_TOKEN_FILE = ROOT.parent / "LINODE_PAT"
 MAX_NODES = int(os.environ.get("NEEDLETAIL_LINODE_MAX_NODES", "40"))
 MAX_HOURLY_USD = float(os.environ.get("NEEDLETAIL_LINODE_MAX_HOURLY_USD", "1.00"))
-# Dedicated CPU only (owner, 21 November 2026: "do not use shared instances").
-# A shared-CPU instance (Nanode, g6-standard) loses its processor to other
-# tenants without warning, and that is measured as late media.
+# The owner, 21 November 2026: "do not use shared instances". Every node of a
+# lab is a dedicated-CPU plan. A shared plan (nanode, standard) is refused.
 ALLOWED_CLASSES = {"dedicated"}
 
 
@@ -151,7 +150,7 @@ def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
         plan = types.get(node["type"])
         if plan is None or plan["class"] not in ALLOWED_CLASSES:
             sys.exit(f"{node['name']}: {node['type']} is not a dedicated-CPU plan; "
-                     "shared instances are not allowed")
+                     "shared instances are not used")
         region = regions.get(node["region"])
         if region is None or region["status"] != "ok":
             sys.exit(f"{node['name']}: region {node['region']} is unavailable")

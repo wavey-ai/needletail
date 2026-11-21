@@ -187,10 +187,14 @@ def start(args: argparse.Namespace) -> dict:
             "role", "site", "region", "type", "public_ipv4", "vlan_ipv4")}
             for node in state["nodes"].values()},
     }
-    if settings["part_ms"] != args.part_ms or settings["fmp4_part_ms"] != args.part_ms:
+    deployed = settings.get("part_ms") or (settings.get("part_us") or 2500) / 1000
+    video_part = (f"{settings['fmp4_video_part_ms']}ms" if settings.get("fmp4_video_part_ms")
+                  else f"{settings['fmp4_part_ms']}ms" if settings.get("fmp4_part_ms")
+                  else settings.get("video_part", "frame"))
+    if deployed != args.part_ms or video_part != f"{args.part_ms}ms":
         raise SystemExit(
-            f"the mesh is deployed with part_ms={settings['part_ms']} and "
-            f"fmp4_part_ms={settings['fmp4_part_ms']}; restart it with {args.part_ms}")
+            f"the mesh is deployed with {deployed} ms parts and video part {video_part}; "
+            f"restart it with --set part_ms={args.part_ms} --set fmp4_part_ms={args.part_ms}")
     # A run takes about 90 s more than its windows: arming, calibration, the
     # lead before the first window, and the reader tail.
     sampler_seconds = duration + 100

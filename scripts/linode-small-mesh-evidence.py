@@ -27,7 +27,8 @@ LANES = (
     ("load", "load-", "ll_hls_many_readers"),
 )
 SETTING_KEYS = (
-    "part_ms", "fmp4_part_ms", "mesh_sync_interval_ms", "mesh_symbol_size",
+    "part_ms", "fmp4_part_ms", "part_us", "segment_ms", "window_ms", "audio_part",
+    "video_part", "mesh_sync_interval_ms", "mesh_symbol_size",
     "mesh_repair_ratio", "mesh_repair_symbols", "path_loss_ppm",
     "relay_min_repair_symbols", "window_parts", "response_ms",
     "extra_distributor_args", "daw_hls_packaging", "daw_hls_formats",

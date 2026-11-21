@@ -52,14 +52,16 @@ READER = "/usr/local/bin/needletail-reader"
 PROBE = "/usr/local/bin/aep1-48k-probe"
 RTMP_PORT = 19350
 
-# The settings of the run. One node configuration carries 5 ms audio parts and
-# 4K video parts of one frame, as in the local lab. An edge is limited to
-# 100 Mbit/s of egress, so that it admits five 4K readers.
+# The settings of the run. One node configuration carries the smallest parts:
+# one AEP1 epoch per audio part and 4K video parts of one frame, as in the
+# local lab. An edge is limited to 100 Mbit/s of egress, so that it admits
+# five 4K readers.
 SETTINGS = {
-    "part_ms": 5,
-    "parts_per_segment": 200,
-    "window_parts": 2400,
-    "fmp4_part_ms": 5,
+    "part_us": 2500,
+    "segment_ms": 1000,
+    "window_ms": 12000,
+    "audio_part": "epoch",
+    "video_part": "frame",
     "mesh_sync_interval_ms": 2,
     "mesh_symbol_size": 900,
     "mesh_max_symbol_size": 16000,

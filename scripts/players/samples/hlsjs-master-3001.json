@@ -1,0 +1,4339 @@
+{
+ "harness": {
+  "name": "hlsjs-play",
+  "version": "0.1.0",
+  "label": "hlsjs-master-3001",
+  "url": "https://10.90.0.11:19444/live/3001/master.m3u8?sid=hlsjs-master-3001",
+  "seconds_requested": 40,
+  "started_utc": "2026-11-21T03:18:01.244Z",
+  "started_epoch_ms": 1795231081662,
+  "low_latency": true,
+  "recover_on_fatal": true,
+  "node": "v26.13.1",
+  "hostname": "localhost",
+  "uid": 0,
+  "timestamps": "milliseconds since hls.loadSource() (wall clock: started_epoch_ms), unless a field name says otherwise"
+ },
+ "verdict": {
+  "result": "failed",
+  "reason": "media element never reached \"playing\" in 40 s; first error networkError/levelEmptyError (fatal) HTTP 200: No Segments found in Playlist at 3478.7 ms; no media was loaded",
+  "notes": [
+   "10 fatal hls.js error(s): levelEmptyError",
+   "hls.js errors: levelEmptyError x32"
+  ]
+ },
+ "browser": {
+  "executable": "/home/jamieb/wavey.ai/needletail-features/scripts/players/.browsers/chrome/linux-158.0.8127.36/chrome-linux64/chrome",
+  "headless": "new",
+  "version": "Chrome/158.0.8127.36",
+  "ld_library_path": "/home/jamieb/wavey.ai/needletail-features/scripts/players/.browsers/syslibs/lib",
+  "args": [
+   "--autoplay-policy=no-user-gesture-required",
+   "--disable-background-timer-throttling",
+   "--disable-backgrounding-occluded-windows",
+   "--disable-renderer-backgrounding",
+   "--disable-background-media-suspend",
+   "--disable-features=CalculateNativeWinOcclusion,MediaEngagementBypassAutoplayPolicies",
+   "--mute-audio",
+   "--no-proxy-server",
+   "--no-first-run",
+   "--no-default-browser-check",
+   "--disable-component-update",
+   "--disable-domain-reliability",
+   "--disable-sync",
+   "--disable-dev-shm-usage",
+   "--window-size=640,360",
+   "--ignore-certificate-errors",
+   "--no-sandbox"
+  ],
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+  "hardware_concurrency": 32
+ },
+ "hlsjs": {
+  "version": "1.7.4",
+  "config_passed": {
+   "lowLatencyMode": true,
+   "backBufferLength": 30,
+   "liveSyncOnStallIncrease": 0,
+   "enableWorker": true,
+   "cmcd": {
+    "sessionId": "401e0232-0957-44d6-af21-d82eb1b2036a",
+    "contentId": "hlsjs-master-3001",
+    "useHeaders": false
+   }
+  },
+  "effective_config": {
+   "lowLatencyMode": true,
+   "backBufferLength": 30,
+   "liveSyncOnStallIncrease": 0,
+   "liveSyncDurationCount": 3,
+   "liveMaxLatencyDurationCount": null,
+   "liveSyncDuration": null,
+   "liveMaxLatencyDuration": null,
+   "liveSyncMode": "edge",
+   "maxLiveSyncPlaybackRate": 1,
+   "maxBufferLength": 30,
+   "maxMaxBufferLength": 600,
+   "maxBufferSize": 60000000,
+   "maxBufferHole": 0.1,
+   "highBufferWatchdogPeriod": 2,
+   "nudgeOffset": 0.1,
+   "nudgeMaxRetry": 3,
+   "nudgeOnVideoHole": true,
+   "detectStallWithCurrentTimeMs": 1250,
+   "enableWorker": true,
+   "startPosition": -1,
+   "manifestLoadingTimeOut": 10000,
+   "levelLoadingTimeOut": 10000,
+   "fragLoadingTimeOut": 20000,
+   "startFragPrefetch": false,
+   "testBandwidth": true,
+   "progressive": false,
+   "preferManagedMediaSource": false,
+   "capLevelToPlayerSize": false,
+   "abrEwmaDefaultEstimate": 500000,
+   "startLevel": null,
+   "cmcd": {
+    "sessionId": "401e0232-0957-44d6-af21-d82eb1b2036a",
+    "contentId": "hlsjs-master-3001",
+    "useHeaders": false
+   },
+   "load_policies": {
+    "manifest": {
+     "default": {
+      "maxTimeToFirstByteMs": null,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 1,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "playlist": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "fragment": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 120000,
+      "timeoutRetry": {
+       "maxNumRetry": 4,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 6,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "steering": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 1,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    }
+   }
+  }
+ },
+ "codec_support": {
+  "media_source": {
+   "avc1_high_5.1_4k": {
+    "type": "video/mp4; codecs=\"avc1.640033\"",
+    "supported": true
+   },
+   "avc1_high_5.1_plus_aac": {
+    "type": "video/mp4; codecs=\"avc1.640033,mp4a.40.2\"",
+    "supported": true
+   },
+   "aac_lc": {
+    "type": "audio/mp4; codecs=\"mp4a.40.2\"",
+    "supported": true
+   },
+   "flac_lowercase": {
+    "type": "audio/mp4; codecs=\"flac\"",
+    "supported": true
+   },
+   "flac_fLaC": {
+    "type": "audio/mp4; codecs=\"fLaC\"",
+    "supported": true
+   },
+   "opus_lowercase": {
+    "type": "audio/mp4; codecs=\"opus\"",
+    "supported": true
+   },
+   "opus_Opus": {
+    "type": "audio/mp4; codecs=\"Opus\"",
+    "supported": true
+   }
+  },
+  "can_play_type": {
+   "avc1_high_5.1_4k": "probably",
+   "avc1_high_5.1_plus_aac": "probably",
+   "aac_lc": "probably",
+   "flac_lowercase": "probably",
+   "flac_fLaC": "probably",
+   "opus_lowercase": "probably",
+   "opus_Opus": "probably"
+  },
+  "media_capabilities": {
+   "avc1_4k24": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": false
+   },
+   "flac_48k_stereo": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": true
+   },
+   "opus_48k_stereo": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": true
+   }
+  },
+  "has_media_source": true,
+  "has_managed_media_source": false,
+  "hls_is_supported": true
+ },
+ "startup": {
+  "manifest_loading_ms": 17.7,
+  "media_attached_ms": 22,
+  "manifest_parsed_ms": 40.5,
+  "manifest_loaded_ms": 53.2,
+  "time_to_first_frame_ms": null,
+  "time_to_playing_ms": null,
+  "note": "first_frame_presented_ms is the first requestVideoFrameCallback (video only); loadeddata_ms is the element having the first frame/sample; playing_ms is the first \"playing\" event"
+ },
+ "playback": {
+  "wall_s": 40.027,
+  "wall_after_first_playing_s": null,
+  "ended_ms": null,
+  "media_played_s": 0,
+  "media_played_ratio": null,
+  "media_jumped_s": 0,
+  "played_ranges_s": 0,
+  "played_ranges": [],
+  "seeks": [],
+  "final": {
+   "ct": 0,
+   "ready_state": 0,
+   "paused": false,
+   "ended": false,
+   "buffer": {
+    "ranges": [],
+    "ahead": 0,
+    "end": null
+   },
+   "quality": {
+    "total": 0,
+    "dropped": 0,
+    "corrupted": 0
+   },
+   "presented_frames": null,
+   "video_width": 0,
+   "video_height": 0,
+   "fatal_unrecovered": {
+    "t": 39647.1,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   "media_error": null,
+   "pathways": [
+    "lon-edge-4",
+    "lon-edge-3",
+    "lon-edge-2"
+   ],
+   "pathway_priority": [
+    "lon-edge-2",
+    "lon-edge-4",
+    "lon-edge-3"
+   ],
+   "pathway": "lon-edge-2",
+   "level": -1,
+   "level_url": [
+    "https://10.90.0.22:19444/live/3001/stream.m3u8"
+   ],
+   "latency_s": 0,
+   "target_latency_s": null
+  },
+  "note": "media_played_s integrates currentTime advances that are compatible with playback (50 ms steps); jumps (seeks, gap skips) are in media_jumped_s"
+ },
+ "frames": {
+  "total": 0,
+  "dropped": 0,
+  "corrupted": 0,
+  "dropped_ratio": null,
+  "presented": null,
+  "decoded_fps_over_played_time": null,
+  "presented_fps_over_played_time": null,
+  "video_width": 0,
+  "video_height": 0,
+  "note": "total/dropped/corrupted from getVideoPlaybackQuality(); presented from requestVideoFrameCallback metadata.presentedFrames"
+ },
+ "stalls": {
+  "threshold_ms": 200,
+  "total_stalled_ms": 0,
+  "total_note": "union of playhead stalls and element waiting->playing stalls after the first \"playing\"",
+  "playhead": [],
+  "playhead_total_ms": 0,
+  "element_waiting": [],
+  "element_waiting_total_ms": 0,
+  "hls_buffer_stalled": [],
+  "hls_buffer_stalled_total_ms": 0,
+  "hls_buffer_stalled_error_count": 0
+ },
+ "latency": {
+  "hls_latency_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "hls_target_latency_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "program_date_time_latency_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "note": "hls_latency_s is hls.latency (distance from the playlist live edge, per hls.js); program_date_time_latency_ms is Date.now() minus hls.playingDate and needs the reader clock to match the packager clock"
+ },
+ "buffer": {
+  "forward_buffer_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  }
+ },
+ "errors": {
+  "count": 32,
+  "fatal": 10,
+  "by_details": {
+   "levelEmptyError": 32
+  },
+  "list": [
+   {
+    "t": 92.5,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.24:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 1097.7,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.24:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3107.6,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.24:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-3"
+   },
+   {
+    "t": 3292.5,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.23:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.23:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 3478.7,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 4484.9,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 5490.4,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 7496.1,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 8503.8,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 9509,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 11516,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 12522.5,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 13528.5,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 15535.1,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 16541,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 17547.3,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 19553.5,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 20559.8,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 21566.9,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 23573.1,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 24579.3,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 25585.5,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 27592.3,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 28599.1,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 29604.6,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 31610.2,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 32616.6,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 33623.9,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 35630,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 36635.9,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 37641.6,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 39647.1,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": true,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "host": "10.90.0.22:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 2,
+     "flags": 1,
+     "retry": true,
+     "resolved": false
+    },
+    "ct": 0,
+    "pathway": "lon-edge-2"
+   }
+  ],
+  "recoveries": [
+   {
+    "t": 3478.9,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 1
+   },
+   {
+    "t": 7496.1,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 2
+   },
+   {
+    "t": 11516.1,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 3
+   },
+   {
+    "t": 15535.1,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 4
+   },
+   {
+    "t": 19553.5,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 5
+   },
+   {
+    "t": 23573.2,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 6
+   },
+   {
+    "t": 27592.3,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 7
+   },
+   {
+    "t": 31610.3,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 8
+   },
+   {
+    "t": 35630,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 9
+   },
+   {
+    "t": 39647.1,
+    "action": "startLoad",
+    "after": "levelEmptyError",
+    "attempt": 10
+   }
+  ]
+ },
+ "steering": {
+  "manifest": {
+   "url": "https://10.90.0.11:19444/live/3001/master.m3u8?sid=hlsjs-master-3001&CMCD=cid%3D%22hlsjs-master-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+   "levels": [
+    {
+     "url": "https://10.90.0.24:19444/live/3001/stream.m3u8",
+     "bitrate": 4000000,
+     "codecs": "opus",
+     "pathway_id": "lon-edge-4"
+    },
+    {
+     "url": "https://10.90.0.23:19444/live/3001/stream.m3u8",
+     "bitrate": 4000000,
+     "codecs": "opus",
+     "pathway_id": "lon-edge-3"
+    },
+    {
+     "url": "https://10.90.0.22:19444/live/3001/stream.m3u8",
+     "bitrate": 4000000,
+     "codecs": "opus",
+     "pathway_id": "lon-edge-2"
+    }
+   ],
+   "audio_tracks": 0,
+   "content_steering": {
+    "uri": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+    "pathwayId": "lon-edge-4"
+   },
+   "session_data": false,
+   "variable_list": null,
+   "is_media_playlist": false
+  },
+  "manifest_parsed": {
+   "first_level": 0,
+   "audio": true,
+   "video": false,
+   "alt_audio": false,
+   "levels_after_filter": 1
+  },
+  "levels": [
+   {
+    "index": 0,
+    "url": [
+     "https://10.90.0.24:19444/live/3001/stream.m3u8"
+    ],
+    "uri": "https://10.90.0.24:19444/live/3001/stream.m3u8",
+    "bitrate": 4000000,
+    "codecs": "opus",
+    "audio_codec": "opus",
+    "width": 0,
+    "height": 0,
+    "pathway_id": "lon-edge-4"
+   }
+  ],
+  "level_events": [
+   {
+    "t": 48.3,
+    "event": "switching",
+    "level": 0,
+    "url": [
+     "https://10.90.0.24:19444/live/3001/stream.m3u8"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3105.9,
+    "event": "switching",
+    "level": 0,
+    "url": [
+     "https://10.90.0.23:19444/live/3001/stream.m3u8"
+    ],
+    "pathway": "lon-edge-3"
+   },
+   {
+    "t": 3291.3,
+    "event": "switching",
+    "level": 0,
+    "url": [
+     "https://10.90.0.22:19444/live/3001/stream.m3u8"
+    ],
+    "pathway": "lon-edge-2"
+   }
+  ],
+  "pathway_events": [
+   {
+    "t": 40.7,
+    "event": "manifest_parsed",
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": null,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3105.7,
+    "event": "levels_updated",
+    "pathway": "lon-edge-3",
+    "levels": [
+     {
+      "url": [
+       "https://10.90.0.23:19444/live/3001/stream.m3u8"
+      ],
+      "pathway_id": "lon-edge-3"
+     }
+    ]
+   },
+   {
+    "t": 3291.3,
+    "event": "levels_updated",
+    "pathway": "lon-edge-2",
+    "levels": [
+     {
+      "url": [
+       "https://10.90.0.22:19444/live/3001/stream.m3u8"
+      ],
+      "pathway_id": "lon-edge-2"
+     }
+    ]
+   }
+  ],
+  "steering_manifest_loads": [
+   {
+    "t": 56.1,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-4&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-2"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": null,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 1062,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-4&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-2"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 2069.2,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-4&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-2"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3076.1,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-4&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-2"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 4485.5,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 5491,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 6497.2,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 8502.5,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 9508.1,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 10513.7,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 12523.4,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 13529.2,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 14535.1,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 16541.7,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 17548.1,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 18553.3,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 20560.6,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 21567.7,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 22573.2,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 24579.9,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 25586.2,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 26591.4,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 28597.8,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 29606.5,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 30611.6,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 32617.6,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 33622.1,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 34626.9,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 36636.7,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 37642.3,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   },
+   {
+    "t": 38647.4,
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-2",
+      "lon-edge-4",
+      "lon-edge-3"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-2"
+    ],
+    "priority": [
+     "lon-edge-2",
+     "lon-edge-4",
+     "lon-edge-3"
+    ],
+    "pathway": "lon-edge-2"
+   }
+  ],
+  "steering_manifest_load_count": 31,
+  "final_pathway": "lon-edge-2",
+  "final_pathways": [
+   "lon-edge-4",
+   "lon-edge-3",
+   "lon-edge-2"
+  ],
+  "final_pathway_priority": [
+   "lon-edge-2",
+   "lon-edge-4",
+   "lon-edge-3"
+  ],
+  "host_timeline": [],
+  "host_changes": 0,
+  "by_host": {
+   "10.90.0.11:19444": {
+    "parts": 0,
+    "segments": 0,
+    "init": 0,
+    "playlists": 0,
+    "steering": 31,
+    "bytes": 0,
+    "first_ms": 56,
+    "last_ms": 38647.4
+   }
+  }
+ },
+ "loads": {
+  "parts": 0,
+  "whole_segments": 0,
+  "init_segments": 0,
+  "part_bytes": 0,
+  "segment_bytes": 0,
+  "part_load_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "part_ttfb_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "segment_load_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "part_duration_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "segment_duration_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "buffer_codecs": [],
+  "fragments": []
+ },
+ "playlists": {
+  "requests": 32,
+  "loaded": 0,
+  "blocking_reload_used": false,
+  "with_hls_msn_and_part": 0,
+  "with_hls_msn_only": 0,
+  "without_directives": 0,
+  "hls_skip_used": false,
+  "with_hls_skip": 0,
+  "request_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "blocking_request_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "attribute_changes": [],
+  "attribute_changes_note": "as seen by hls.js, i.e. only between playlists it accepted; raw_checks covers every response",
+  "raw_checks": {
+   "note": "from the text of every Media Playlist response with status 200 (DevTools), per playlist URL without query",
+   "responses": 32,
+   "without_complete_segment": 32,
+   "events": [],
+   "events_dropped": 0,
+   "per_url": {
+    "https://10.90.0.24:19444/live/3001/stream.m3u8": {
+     "responses": 3,
+     "without_complete_segment": 3,
+     "without_parts_or_segments": 0,
+     "target_duration_values": [
+      1
+     ],
+     "part_target_values": [
+      0.2
+     ],
+     "hold_back_values": [
+      3
+     ],
+     "part_hold_back_values": [
+      0.6
+     ],
+     "media_sequence_first": 68,
+     "media_sequence_last": 68,
+     "media_sequence_decreases": 0
+    },
+    "https://10.90.0.23:19444/live/3001/stream.m3u8": {
+     "responses": 1,
+     "without_complete_segment": 1,
+     "without_parts_or_segments": 0,
+     "target_duration_values": [
+      1
+     ],
+     "part_target_values": [
+      0.2
+     ],
+     "hold_back_values": [
+      3
+     ],
+     "part_hold_back_values": [
+      0.6
+     ],
+     "media_sequence_first": 68,
+     "media_sequence_last": 68,
+     "media_sequence_decreases": 0
+    },
+    "https://10.90.0.22:19444/live/3001/stream.m3u8": {
+     "responses": 28,
+     "without_complete_segment": 28,
+     "without_parts_or_segments": 0,
+     "target_duration_values": [
+      1
+     ],
+     "part_target_values": [
+      0.2
+     ],
+     "hold_back_values": [
+      3
+     ],
+     "part_hold_back_values": [
+      0.6
+     ],
+     "media_sequence_first": 68,
+     "media_sequence_last": 69,
+     "media_sequence_decreases": 0
+    }
+   }
+  },
+  "first_details": null,
+  "last_details": null,
+  "bodies": {
+   "multivariant_playlist": {
+    "url": "https://10.90.0.11:19444/live/3001/master.m3u8?sid=hlsjs-master-3001&CMCD=cid%3D%22hlsjs-master-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231081722,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a\",PATHWAY-ID=\"lon-edge-4\"\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,CODECS=\"opus\",PATHWAY-ID=\"lon-edge-4\"\nhttps://10.90.0.24:19444/live/3001/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,CODECS=\"opus\",PATHWAY-ID=\"lon-edge-3\"\nhttps://10.90.0.23:19444/live/3001/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,CODECS=\"opus\",PATHWAY-ID=\"lon-edge-2\"\nhttps://10.90.0.22:19444/live/3001/stream.m3u8\n"
+   },
+   "steering_manifest_first": {
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-4&_HLS_throughput=4000000",
+    "status": 200,
+    "epoch_ms": 1795231081722,
+    "text": "{\"VERSION\":1,\"TTL\":1,\"RELOAD-URI\":\"steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a\",\"PATHWAY-PRIORITY\":[\"lon-edge-4\",\"lon-edge-3\",\"lon-edge-2\"]}"
+   },
+   "media_playlist_first": {
+    "url": "https://10.90.0.24:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231081760,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:68\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.200\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.600,HOLD-BACK=3.000\n#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:17:59.735Z\n#EXT-X-PART:DURATION=0.200,URI=\"part13600.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13601.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13602.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13603.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13604.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13605.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13606.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13607.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13608.mp4\",INDEPENDENT=YES\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part13609.mp4\"\n"
+   },
+   "media_playlist_second": {
+    "url": "https://10.90.0.24:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231082762,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:68\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.200\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.600,HOLD-BACK=3.000\n#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:17:59.735Z\n#EXT-X-PART:DURATION=0.200,URI=\"part13600.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13601.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13602.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13603.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13604.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13605.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13606.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13607.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13608.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13609.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13610.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13611.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13612.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13613.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13614.mp4\",INDEPENDENT=YES\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part13615.mp4\"\n"
+   },
+   "media_playlist_last": {
+    "url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231121310,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:69\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.200\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.600,HOLD-BACK=3.000\n#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:18:39.737Z\n#EXT-X-PART:DURATION=0.200,URI=\"part13800.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13801.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13802.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13803.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13804.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13805.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.200,URI=\"part13806.mp4\",INDEPENDENT=YES\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part13807.mp4\"\n"
+   }
+  },
+  "reloads": []
+ },
+ "network": {
+  "source": "Chrome DevTools Network domain",
+  "requests": 64,
+  "by_protocol": {
+   "h2": 64
+  },
+  "by_status": {
+   "200": 64
+  },
+  "by_category": {
+   "multivariant_playlist": {
+    "responses": 1,
+    "status": {
+     "200": 1
+    }
+   },
+   "steering_manifest": {
+    "responses": 31,
+    "status": {
+     "200": 31
+    }
+   },
+   "media_playlist": {
+    "responses": 32,
+    "status": {
+     "200": 32
+    }
+   }
+  },
+  "remote_addresses": {
+   "10.90.0.11:19444": 32,
+   "10.90.0.24:19444": 3,
+   "10.90.0.23:19444": 1,
+   "10.90.0.22:19444": 28
+  },
+  "non_2xx": [],
+  "failed": [
+   {
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "category": "steering_manifest",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 11518
+   },
+   {
+    "url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-2&_HLS_throughput=4000000",
+    "category": "steering_manifest",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 35631
+   }
+  ],
+  "truncated": {},
+  "cors": {
+   "disable_web_security_used": false,
+   "page_origin": "http://127.0.0.1:41695",
+   "responses": [
+    {
+     "category": "multivariant_playlist",
+     "host": "10.90.0.11:19444",
+     "sample_url": "https://10.90.0.11:19444/live/3001/master.m3u8?sid=hlsjs-master-3001&CMCD=cid%3D%22hlsjs-master-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store, max-age=0",
+     "responses": 1,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "steering_manifest",
+     "host": "10.90.0.11:19444",
+     "sample_url": "https://10.90.0.11:19444/live/3001/steering.json?sid=401e0232-0957-44d6-af21-d82eb1b2036a&_HLS_pathway=lon-edge-4&_HLS_throughput=4000000",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/json",
+     "cache_control": "no-store, max-age=0",
+     "responses": 31,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "media_playlist",
+     "host": "10.90.0.24:19444",
+     "sample_url": "https://10.90.0.24:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store, max-age=0",
+     "responses": 3,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "media_playlist",
+     "host": "10.90.0.23:19444",
+     "sample_url": "https://10.90.0.23:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store, max-age=0",
+     "responses": 1,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "media_playlist",
+     "host": "10.90.0.22:19444",
+     "sample_url": "https://10.90.0.22:19444/live/3001/stream.m3u8?CMCD=br%3D4000%2Ccid%3D%22hlsjs-master-3001%22%2Cmtp%3D4000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22401e0232-0957-44d6-af21-d82eb1b2036a%22%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store, max-age=0",
+     "responses": 28,
+     "without_allow_origin": 0
+    }
+   ],
+   "responses_without_allow_origin": 0,
+   "blocked_by_cors": [],
+   "preflight_requests": 0,
+   "web_security_needed_to_be_disabled": "no: ran with web security on and no request was blocked by CORS"
+  }
+ },
+ "media_events": [
+  {
+   "t": 19.8,
+   "event": "play",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 20.1,
+   "event": "waiting",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 20.2,
+   "event": "loadstart",
+   "ct": 0,
+   "ready_state": 0
+  }
+ ],
+ "samples": [
+  {
+   "t": 518.2,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 1017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 1517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 2017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 2517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 3018.1,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 3517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 4017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 4517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 5017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 5518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 6017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 6517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 7018.1,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 7518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 8017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 8518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 9018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 9517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 10018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 10517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 11017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 11517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 12017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 12517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 13018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 13517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 14018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 14517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 15017.8,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 15517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 16018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 16518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 17018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 17518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 18018.1,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 18517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 19017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 19518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 20017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 20518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 21018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 21517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 22018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 22518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 23018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 23517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 24018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 24517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 25017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 25517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 26018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 26517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 27018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 27517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 28018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 28517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 29017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 29517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 30017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 30517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 31017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 31517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 32017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 32517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 33017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 33517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 34018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 34517.8,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 35017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 35517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 36017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 36518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 37018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 37518,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 38017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 38517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 39017.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 39517.9,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 40018,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  },
+  {
+   "t": 40026.6,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 4000000,
+   "host": null,
+   "pathway": "lon-edge-2"
+  }
+ ],
+ "hls_log": {
+  "lines": [
+   {
+    "t": 91.5,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 1097.7,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 3478.2,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-4\",\"lon-edge-3\",\"lon-edge-2\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 4484.9,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 5490.4,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 7496,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 8503.7,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 9509,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 11515.6,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 12522.4,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 13528.5,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 15535,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 16541,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 17547.3,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 19553.5,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 20559.8,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 21566.9,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 23573,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 24579.3,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 25585.5,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 27592.2,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 28599.1,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 29604.6,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 31610.2,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 32616.6,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 33623.9,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 35629.8,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   },
+   {
+    "t": 36635.9,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 37641.6,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 2/2 after \"levelEmptyError\" in 2000ms"
+   },
+   {
+    "t": 39647.1,
+    "level": "warn",
+    "message": "[content-steering]: Could not resolve levelEmptyError (\"No Segments found in Playlist\") with content-steering for Pathway: lon-edge-2 levels: 3 priorities: [\"lon-edge-2\",\"lon-edge-4\",\"lon-edge-3\"] penalized: {\"lon-edge-4\":3220.2999999998137,\"lon-edge-3\":3406.4000000003725,\"lon-edge-2\":3593.2999999998137}"
+   }
+  ],
+  "dropped": 0
+ },
+ "truncated_lists": {},
+ "play_rejected": null
+}

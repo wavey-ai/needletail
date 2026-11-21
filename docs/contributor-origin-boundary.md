@@ -96,7 +96,8 @@ The boundary is complete only when qualification proves:
   continuous for the same AEP1 session and timestamps;
 - contributor CPU, queue depth, queue age, and network egress are measured with
   one region and then with multiple regions and hundreds of readers;
-- 16-channel 48 kHz PCM and FLAC-source, 5 ms-part endurance runs complete with
+- 16-channel 48 kHz PCM and FLAC-source endurance runs at the default parts
+  (one epoch per part; 5 ms when this gate was first met) complete with
   no missing parts, queue drops, worker errors, or unbounded backlog.
 
 Run the functional boundary and multi-region fanout qualification on the GCP

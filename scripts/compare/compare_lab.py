@@ -318,16 +318,92 @@ print("DAW fixture of", frames // 48000, "s")
 """
 
 
+# The ntcmp indexes of the Needletail lanes: PCM from the AEP1 sender by
+# fingerprint in blocks of one epoch (48, 24, 12 samples); the Opus that the
+# sender encodes (120 samples), and the DAW source's Opus and FLAC, by part
+# number, part N being epoch N of the loop (offset as daw_index says). (name,
+# ntcmp audio-index arguments after the output path.)
+# The DAW source as compare-audio.py starts it (daw-test-source
+# --buffer-frames, --opus-frame-samples, --lossless-epoch-samples): the
+# low-latency defaults, given explicitly so that an older build is not
+# measured with the wrong index. It plays one host buffer of silence before
+# the loop, so its audio is `buffer_frames` behind the loop, and its Opus is
+# the encoder's look-ahead (120 samples, 2.5 ms) later still. Its lanes'
+# indexes number part N as epoch N of the loop, offset by that: the indexes
+# of the first runs were 240-sample epochs, offsets 512 (FLAC) and 632 (Opus)
+# behind 512-sample buffers.
+NT_DAW = {"buffer_frames": 64, "opus_frame_samples": 120, "lossless_epoch_samples": 48}
+OPUS_LOOKAHEAD_SAMPLES = 120
+
+
+def daw_index(base: str, daw: dict | None = None) -> tuple[str, list[str]]:
+    """(name, ntcmp audio-index arguments after the output path) of the
+    index of a DAW source lane, nt-opus or nt-flac."""
+    daw = daw or NT_DAW
+    buffer = int(daw["buffer_frames"])
+    if base == "nt-opus":
+        samples, offset = int(daw["opus_frame_samples"]), buffer + OPUS_LOOKAHEAD_SAMPLES
+    elif base == "nt-flac":
+        samples, offset = int(daw["lossless_epoch_samples"]), buffer
+    else:
+        raise ValueError(f"{base} is not a DAW source lane")
+    ms = repr(samples * 1000 / 48000)
+    if int(float(ms) * 48000 / 1000) != samples:
+        raise ValueError(f"{samples} samples cannot be named in ms for ntcmp")
+    name = f"{base}-{samples}s-b{buffer}"
+    return name, [f"numbered:{name}", ms, str(offset)]
+
+
+NT_INDEXES = [
+    ("nt-pcm-48s", ["audio.s24le", "1.0"]),
+    ("nt-pcm-24s", ["audio.s24le", "0.5"]),
+    ("nt-pcm-12s", ["audio.s24le", "0.25"]),
+    ("nt-popus-120s", ["numbered:nt-popus-120s", "2.5", "0"]),
+    daw_index("nt-opus"),
+    daw_index("nt-flac"),
+]
+
+
+def needletail_indexes(media: pathlib.Path, ntcmp: pathlib.Path) -> list[pathlib.Path]:
+    """Make the indexes of NT_INDEXES that are missing under media."""
+    out = []
+    for name, spec in NT_INDEXES:
+        path = media / f"{name}.index.json"
+        if not path.is_file():
+            source = spec[0] if spec[0].startswith("numbered:") else str(media / spec[0])
+            subprocess.run([str(ntcmp), "audio-index", source, str(path), *spec[1:]], check=True,
+                           capture_output=True)
+        out.append(path)
+    return out
+
+
+def udp_client() -> pathlib.Path | None:
+    """needletail-udp-client of the av-mesh checkout (Linux build), if built."""
+    mesh = pathlib.Path(__import__("os").environ.get(
+        "NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh")))
+    path = mesh / "target" / "x86_64-unknown-linux-gnu" / "release" / "needletail-udp-client"
+    return path if path.is_file() else None
+
+
 def audio(_: argparse.Namespace) -> None:
     """Audio files on lon-src, audio indexes on the listeners, Needletail's
     DAW source on lon-src with the loop as its prepared PCM, and PCM enabled in
-    the contributor's LL-HLS formats."""
+    the contributor's LL-HLS formats. The listeners also get
+    needletail-udp-client for the nt-udp lane when it is built."""
     media = MEDIA / "audio"
     files = sorted(media.glob("*.opus")) + [media / "audio.s24le"]
+    if (media / "audio.s24le").is_file():
+        needletail_indexes(media, ROOT / "target" / "ntcmp")
     indexes = sorted(media.glob("*.index.json"))
     if not files or not indexes:
         sys.exit(f"no audio under {media}")
     binaries = [str(ROOT / "target" / "ntcmp"), str(ROOT / "target" / "ntcmp-lk")]
+    client = udp_client()
+    if client:
+        binaries.append(str(client))
+    else:
+        print("needletail-udp-client is not built (av-mesh, x86_64-unknown-linux-gnu): "
+              "the nt-udp lane will report errors")
     source = node("lon-src")
 
     def push(item: dict) -> None:

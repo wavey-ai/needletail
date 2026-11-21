@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -33,11 +34,43 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import small_mesh_common as common  # noqa: E402
 
 SETTINGS_FILE = common.ARTIFACT_DIR / "settings.json"
+# Version 2: parts are the smallest frame by default and given in µs, samples
+# or frames; segment and window are lengths of time. A settings file of
+# version 1 named 5 ms parts and counted segments and windows in parts.
+SETTINGS_VERSION = 2
+# The part settings of version 1. They are still accepted and mapped onto the
+# new ones (see part_plan). A value saved in a file of version 1 is dropped on
+# load (it was the 5 ms default then), so that an old settings.json never
+# silently overrides the smallest-part defaults; one saved by a version 2 run
+# was given with --set and is kept until changed with --set (KEY=null clears).
+LEGACY_PART_KEYS = ("part_ms", "parts_per_segment", "window_parts", "fmp4_part_ms",
+                    "fmp4_video_part_ms")
 DEFAULT_SETTINGS = {
-    "part_ms": 5,
-    "parts_per_segment": 200,
-    "window_parts": 2400,
+    "settings_version": SETTINGS_VERSION,
+    # The nominal part of the caches (av-mesh --part-us): 2.5 ms, one Opus
+    # frame of 120 samples. Lossless parts are smaller still (one AEP1 epoch
+    # of `pcm_epoch_samples`); the caches take each part's own duration.
+    "part_us": 2500,
+    # Segment and playlist window as lengths of time (av-mesh --segment-ms,
+    # --window-ms), whatever the part.
+    "segment_ms": 1000,
+    "window_ms": 12000,
+    # PART-HOLD-BACK floor in ms; 0 is 3 x PART-TARGET.
+    "part_hold_back_ms": 0,
+    # Version 1 part settings (None: not used). `part_ms` maps to `part_us`,
+    # `parts_per_segment` and `window_parts` win over `segment_ms` and
+    # `window_ms`. A value given with --set is kept by later runs; give
+    # KEY=null to clear it.
+    "part_ms": None,
+    "parts_per_segment": None,
+    "window_parts": None,
     "slot_kb": 2048,
+    # Playlists that a node holds at one time: the streams of a region for a
+    # relay and a distributor. An edge holds one less for its readers.
+    "playlist_slots": 16,
+    # Tracks of the audio album that the lab source plays (1, 2 or 8). Each
+    # track is a lossless and an HQ stream. Only the lab tools read this.
+    "daw_album_tracks": 1,
     "response_ms": None,
     "mesh_sync_interval_ms": 20,
     "mesh_repair_ratio": 0.03,
@@ -59,7 +92,7 @@ DEFAULT_SETTINGS = {
     "edge_egress_capacity_bps": None,
     "edge_session_limit": 0,
     # RaptorQ FEC UDP to clients, on every distributor and edge (0: off).
-    # The assignment API of a node names this port. (As on branch client-udp.)
+    # The assignment API of a node names this port.
     "client_udp_port": 19446,
     # Address in the playback URL that a cache advertises: "public", or "vlan"
     # when readers reach the caches over the private network.
@@ -67,16 +100,76 @@ DEFAULT_SETTINGS = {
     "assignment_spread_percent": 60,
     "assignment_alternates": 2,
     "steering_ttl_seconds": 5,
+    # Edges of a region that hold each playlist that has readers. With two, a
+    # reader whose cache fails moves to a cache that holds the playlist.
+    "playlist_copies": 2,
+    # Name the first distributor of every other region as the last pathway of
+    # each reader, so that a reader moves there when its whole region is lost.
+    "region_failover": True,
+    # The renditions of each ladder, as the caches name them in a Multivariant
+    # Playlist: "master:stream:peak bit/s:average bit/s:WIDTHxHEIGHT:frame
+    # rate in mHz". The contributor receives each rendition as its own stream.
+    "hls_renditions": [],
     "telemetry_interval_ms": 1000,
+    # Kernel settings of a node that serves readers. A reader far from its
+    # cache gets a 4K playlist only when the cache finds the rate of the path
+    # quickly: CUBIC leaves slow start early on a path with jitter and then
+    # needs ten seconds to reach 16 Mbit/s. A live stream also pauses between
+    # parts, and the window must not close in each pause.
+    #
+    # The cache network sends a 4K part in symbols of up to 16 kB, which the
+    # kernel fragments. A datagram that has lost a fragment waits 30 s for it
+    # by default, and when 4 MB of fragments wait, the kernel drops every new
+    # fragment. With 2% packet loss a node had 1 MB of such fragments a
+    # second: 40% of its fragmented datagrams failed to reassemble, and 4K
+    # stopped on every edge while audio, which is not fragmented, played. One
+    # second and 64 MB keep the queue empty.
+    #
+    # The kernel also drops a datagram when more than 64 other fragments of
+    # the same sender arrive between two of its fragments. A distributor
+    # sends thousands of fragments a second, so a link that reorders packets
+    # by a few milliseconds lost most 4K symbols. Zero turns that check off.
+    "node_sysctls": {
+        "net.ipv4.tcp_congestion_control": "bbr",
+        "net.ipv4.tcp_slow_start_after_idle": "0",
+        "net.ipv4.ipfrag_time": "1",
+        "net.ipv4.ipfrag_high_thresh": "67108864",
+        "net.ipv4.ipfrag_max_dist": "0",
+    },
     "path_loss_ppm": 20000,
     "relay_min_repair_symbols": 0,
+    # Send each part from the contributor straight to the distributors of its
+    # own site too, one hop less than through a backbone relay (av-contrib
+    # --relay-direct-target; each such distributor would get
+    # --relay-direct-peer). Off, and refused when set: av-mesh has no
+    # --relay-direct-peer or --relay-direct-id yet (a distributor started with
+    # them would not start), and it rejects and logs every datagram from an
+    # address that is not a backbone parent. See AV_MESH_DIRECT_PARENT.
+    "contributor_direct_region": False,
     "failover_primary_silence_ms": 100,
     "failover_primary_recovery_ms": 500,
     "failover_secondary_warm_ms": 300,
     "failover_heartbeat_ms": 25,
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
-    "fmp4_part_ms": 200,
+    # Part of the contributor's audio (av-contrib --audio-part): "epoch", one
+    # AEP1 epoch per part whatever its sample count, or "<N>samples" or
+    # "<N>us". Video (--video-part): "frame", one access unit per part, or
+    # "<N>ms". Larger parts are a setting, never the default.
+    "audio_part": "epoch",
+    "video_part": "frame",
+    # Epoch of the lab's AEP1 sender (aep1-48k-probe send --epoch-samples) and
+    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, 120
+    # (2.5 ms) for Opus. Only the lab tools read these.
+    "pcm_epoch_samples": 48,
+    "opus_epoch_samples": 120,
+    # Version 1: `fmp4_part_ms` maps to `audio_part` "<N*1000>us" (and to
+    # `video_part` "<N>ms" when `fmp4_video_part_ms` is not given),
+    # `fmp4_video_part_ms` to `video_part` "<N>ms". None: not used.
+    "fmp4_part_ms": None,
+    "fmp4_video_part_ms": None,
+    # Segment of a stream with video: the key-frame interval of the encoder.
+    "fmp4_video_segment_ms": None,
     "daw_hls_packaging": "opaque",
     "daw_hls_formats": "flac,opus",
     "daw_hls_base_stream_id": 2001,
@@ -86,6 +179,21 @@ DEFAULT_SETTINGS = {
     "extra_edge_args": [],
     "extra_backbone_args": [],
     "extra_contributor_args": [],
+    # Environment of every service. The allocator settings are for a node
+    # that holds 4K parts of 0.2 to 1 MB next to millions of small objects.
+    # glibc raises its mmap threshold to the largest block that was freed, so
+    # after the first large part every part comes from the heap, and a heap
+    # with long-lived small objects in it does not shrink: an edge under
+    # reader churn grew from 110 MB to 310 MB in 80 minutes, 200 MB of it
+    # free memory that `malloc_trim` gave back. A fixed threshold keeps every
+    # block of 64 kB or more in its own mapping, which goes back to the
+    # kernel when the part is dropped. Two arenas bound what the threads of
+    # the HTTP runtime can strand.
+    "node_env": {
+        "MALLOC_MMAP_THRESHOLD_": "65536",
+        "MALLOC_TRIM_THRESHOLD_": "1048576",
+        "MALLOC_ARENA_MAX": "2",
+    },
     "rust_log_mesh": "av_mesh=info,av_web_service=warn",
     "rust_log_contrib": "av_contrib=info,av_web_service=warn",
 }
@@ -110,12 +218,30 @@ CONTRIB_HTTP_PORT = 19443
 TELEMETRY_PORT = 27300
 MEDIA_FEC_PORT = 22101
 DAW_MEDIA_PORT = 27100
+# Source port of the contributor's direct lanes to the distributors of its
+# site (contributor_direct_region).
+CONTRIB_DIRECT_PORT = 22303
+# Whether av-mesh takes the contributor's direct lane as a parent
+# (--relay-direct-peer, --relay-direct-id). It does not yet: av-contrib has
+# the sending side only. Until it does, contributor_direct_region is refused
+# rather than rendered into arguments that stop every distributor of the
+# contributor's site from starting.
+AV_MESH_DIRECT_PARENT = False
 
 
-def load_settings(overrides: list[str]) -> dict:
-    settings = dict(DEFAULT_SETTINGS)
-    if SETTINGS_FILE.is_file():
-        settings.update(json.loads(SETTINGS_FILE.read_text()))
+def check_settings(settings: dict) -> None:
+    """Raise ValueError for settings the services cannot run with: the part
+    settings (part_plan) and contributor_direct_region."""
+    part_plan(settings)
+    if settings.get("contributor_direct_region") and not AV_MESH_DIRECT_PARENT:
+        raise ValueError("contributor_direct_region needs av-mesh --relay-direct-peer and "
+                         "--relay-direct-id, which av-mesh does not have yet; a distributor "
+                         "would not start. Leave it false")
+
+
+def parse_overrides(overrides: list[str]) -> dict:
+    """`key=value` settings of this run; a value is JSON or a bare string."""
+    out = {}
     for override in overrides:
         key, _, raw = override.partition("=")
         if key not in DEFAULT_SETTINGS:
@@ -124,10 +250,208 @@ def load_settings(overrides: list[str]) -> dict:
             value = json.loads(raw)
         except json.JSONDecodeError:
             value = raw
-        settings[key] = value
+        out[key] = value
+    return out
+
+
+def saved_version(saved: dict) -> int:
+    """The settings_version of a saved file; a file without one is version 1."""
+    try:
+        return int(saved.get("settings_version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def merge_settings(saved: dict, given: dict) -> tuple[dict, dict]:
+    """The settings of a run: the defaults, then the saved file, then the
+    `--set` values of this run. In a saved file of version 1 the part keys
+    are dropped (they named 5 ms parts, which were the defaults then, and
+    would override the new defaults); they count only when given in this
+    run. In a file of version 2 those keys default to None, so a value there
+    was given with --set by an earlier run and is kept: a later `plan` or
+    `restart --roles ...` renders the same parts as the last push. Returns
+    the settings and what was dropped."""
+    settings = dict(DEFAULT_SETTINGS)
+    saved = dict(saved)
+    dropped = {}
+    if saved_version(saved) < SETTINGS_VERSION:
+        dropped = {key: saved[key] for key in LEGACY_PART_KEYS
+                   if saved.get(key) is not None and key not in given}
+        for key in LEGACY_PART_KEYS:
+            saved.pop(key, None)
+    saved.pop("settings_version", None)
+    settings.update(saved)
+    settings.update(given)
+    settings["settings_version"] = SETTINGS_VERSION
+    return settings, dropped
+
+
+def load_settings(overrides: list[str]) -> dict:
+    saved = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
+    settings, dropped = merge_settings(saved, parse_overrides(overrides))
+    if dropped:
+        print("settings: dropped the saved version 1 part settings "
+              + ", ".join(f"{key}={value}" for key, value in sorted(dropped.items()))
+              + "; give them with --set in this run to use them", file=sys.stderr)
+    try:
+        check_settings(settings)
+    except ValueError as error:
+        sys.exit(f"settings: {error}")
     common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
     return settings
+
+
+AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
+VIDEO_PART = re.compile(r"^(frame|[1-9][0-9]*ms)$")
+OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+SAMPLE_RATE = 48_000
+# The lossless epoch of the DAW source (daw-test-source: 1 ms, 48 samples,
+# unless it is given --lossless-epoch-samples). With audio_part "epoch" its
+# FLAC and PCM parts are this long, whatever pcm_epoch_samples says.
+DAW_LOSSLESS_EPOCH_SAMPLES = 48
+
+
+def smallest_audio_part_us(audio_part: str, pcm_samples: int, opus_samples: int) -> float:
+    """The shortest audio part that the deploy publishes, in µs: with
+    "epoch" the smallest epoch of its sources (the lab's AEP1 sender at
+    pcm_epoch_samples, the DAW source's lossless epoch, an Opus frame),
+    else the part that audio_part names."""
+    if audio_part == "epoch":
+        samples = min(pcm_samples, DAW_LOSSLESS_EPOCH_SAMPLES, opus_samples)
+        return samples * 1_000_000 / SAMPLE_RATE
+    if audio_part.endswith("samples"):
+        return int(audio_part[:-len("samples")]) * 1_000_000 / SAMPLE_RATE
+    return float(int(audio_part[:-len("us")]))
+
+
+def window_parts_for(window_ms: int, part_us: int, smallest_us: float) -> int | None:
+    """--window-parts that keep `window_ms` of the shortest part, or None
+    when --window-ms does (no part is shorter than the nominal one).
+
+    av-mesh turns --window-ms into a count of nominal parts
+    (window_ms / part_us: 4800 at 2.5 ms), and then holds no stream to more
+    parts than that count (stream_window_parts clamps to it). A stream of
+    1 ms parts would keep 4.8 s, of 0.25 ms parts 1.2 s: shorter than three
+    target durations (RFC 8216bis 6.2.2) and than HOLD-BACK. A count of
+    shortest parts keeps window_ms of them. A stream of longer parts keeps
+    up to count x part_us x 4/3 (av-mesh's margin), more than window_ms:
+    40 s of video at the defaults, 160 s with 0.25 ms parts."""
+    if smallest_us >= part_us:
+        return None
+    return -(-window_ms * 1000 * 1_000_000 // round(smallest_us * 1_000_000))
+
+
+def whole(value, name: str, scale: int = 1) -> int:
+    """value x scale as a positive integer, or ValueError."""
+    try:
+        scaled = float(value) * scale
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, not {value!r}") from None
+    if scaled <= 0 or abs(scaled - round(scaled)) > 1e-6:
+        raise ValueError(f"{name}={value} is not a positive whole number"
+                         + (f" of 1/{scale}" if scale != 1 else ""))
+    return int(round(scaled))
+
+
+def part_plan(settings: dict) -> dict:
+    """The part geometry that the services are started with: the nominal part
+    of the caches in µs and their av-mesh arguments, and the contributor's
+    --audio-part and --video-part. The version 1 keys, when given, are mapped
+    onto the new ones. Raises ValueError for a setting that cannot be
+    expressed."""
+    part_us = whole(settings["part_us"], "part_us")
+    if settings.get("part_ms") is not None:
+        part_us = whole(settings["part_ms"], "part_ms", 1000)
+    mesh = ["--part-us", str(part_us)]
+    if settings.get("parts_per_segment") is not None:
+        mesh += ["--parts-per-segment", str(whole(settings["parts_per_segment"], "parts_per_segment"))]
+    else:
+        mesh += ["--segment-ms", str(whole(settings["segment_ms"], "segment_ms"))]
+    if settings.get("part_hold_back_ms"):
+        hold_back = ["--part-hold-back-ms", str(whole(settings["part_hold_back_ms"], "part_hold_back_ms"))]
+    else:
+        hold_back = []
+
+    audio = str(settings["audio_part"])
+    video = str(settings["video_part"])
+    legacy_audio = settings.get("fmp4_part_ms")
+    if legacy_audio is not None:
+        audio = f"{whole(legacy_audio, 'fmp4_part_ms', 1000)}us"
+    if settings.get("fmp4_video_part_ms") is not None:
+        video = f"{whole(settings['fmp4_video_part_ms'], 'fmp4_video_part_ms')}ms"
+    elif legacy_audio is not None and float(legacy_audio) == int(float(legacy_audio)):
+        # Version 1: --fmp4-part-ms was the part of video too.
+        video = f"{int(float(legacy_audio))}ms"
+    if not AUDIO_PART.match(audio):
+        raise ValueError(f"audio_part {audio!r} is not epoch, <N>samples or <N>us")
+    if not VIDEO_PART.match(video):
+        raise ValueError(f"video_part {video!r} is not frame or <N>ms")
+
+    pcm = whole(settings["pcm_epoch_samples"], "pcm_epoch_samples")
+    if pcm < 12:
+        raise ValueError(f"pcm_epoch_samples={pcm}: the smallest epoch is 12 samples")
+    opus = whole(settings["opus_epoch_samples"], "opus_epoch_samples")
+    if opus not in OPUS_EPOCH_SAMPLES:
+        raise ValueError(f"opus_epoch_samples={opus}: Opus frames are {OPUS_EPOCH_SAMPLES} samples")
+
+    smallest_us = smallest_audio_part_us(audio, pcm, opus)
+    window_ms = whole(settings["window_ms"], "window_ms")
+    if settings.get("window_parts") is not None:
+        window_parts = whole(settings["window_parts"], "window_parts")
+        mesh += ["--window-parts", str(window_parts)]
+    else:
+        window_parts = window_parts_for(window_ms, part_us, smallest_us)
+        mesh += (["--window-ms", str(window_ms)] if window_parts is None
+                 else ["--window-parts", str(window_parts)])
+    return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
+            "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
+            "smallest_part_us": smallest_us,
+            "window_parts": window_parts if window_parts is not None else -(-window_ms * 1000 // part_us)}
+
+
+def epoch_samples(settings: dict, payload: str) -> int:
+    """Samples of one AEP1 epoch of the lab's sender for a payload (pcm, flac
+    or opus). FLAC frames are at least 32 samples."""
+    plan = part_plan(settings)
+    if payload == "opus":
+        return plan["opus_epoch_samples"]
+    samples = plan["pcm_epoch_samples"]
+    return max(32, samples) if payload == "flac" else samples
+
+
+def stream_part_us(settings: dict, epoch_samples: int) -> float:
+    """Duration in µs of one audio part of a stream whose source sends
+    epochs (or Opus frames) of `epoch_samples`, under the contributor's
+    audio_part: one epoch, or the samples or µs that it names."""
+    audio = part_plan(settings)["audio_part"]
+    if audio == "epoch":
+        return epoch_samples * 1_000_000 / SAMPLE_RATE
+    if audio.endswith("samples"):
+        return int(audio[:-len("samples")]) * 1_000_000 / SAMPLE_RATE
+    return float(int(audio[:-len("us")]))
+
+
+def whole_part_ms(settings: dict, epoch_samples: int, what: str) -> int:
+    """stream_part_us in whole ms, for the checkers that take only that
+    (aep1-48k-probe receive-hls and load-hls --part-ms, soundkit-part-check);
+    ValueError when the part is not a whole number of ms."""
+    ms = stream_part_us(settings, epoch_samples) / 1000
+    if ms <= 0 or abs(ms - round(ms)) > 1e-9:
+        raise ValueError(
+            f"{what} are {ms:g} ms (audio_part {part_plan(settings)['audio_part']}, "
+            f"{epoch_samples}-sample epochs); aep1-48k-probe receive-hls, load-hls and "
+            "soundkit-part-check take whole ms parts: send epochs of a multiple of 48 "
+            "samples, or deploy with --set audio_part=<N*1000>us")
+    return int(round(ms))
+
+
+def deployed_part_ms(settings: dict) -> float:
+    """The nominal part of a deployed settings file in ms, for the tools that
+    still speak ms (version 1 files have `part_ms`, version 2 `part_us`)."""
+    if settings.get("part_ms") is not None:
+        return float(settings["part_ms"])
+    return int(settings.get("part_us") or 2500) / 1000
 
 
 def relay_node_id(node: dict) -> str:
@@ -498,10 +822,9 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--telemetry-private-ipv4", private_ip,
         "--telemetry-interval-ms", str(settings["telemetry_interval_ms"]),
         "--stream-id", "1",
-        "--part-ms", str(settings["part_ms"]),
-        "--parts-per-segment", str(settings["parts_per_segment"]),
-        "--window-parts", str(settings["window_parts"]),
+        *part_plan(settings)["mesh_args"],
         "--slot-kb", str(settings["slot_kb"]),
+        "--playlist-slots", str(settings["playlist_slots"]),
     ]
     capacity = settings["egress_capacity_bps"]
     if node["role"] == "edge":
@@ -516,7 +839,18 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
             "--assignment-spread-percent", str(settings["assignment_spread_percent"]),
             "--assignment-alternates", str(settings["assignment_alternates"]),
             "--steering-ttl-seconds", str(settings["steering_ttl_seconds"]),
+            "--playlist-copies", str(settings["playlist_copies"]),
         ]
+        for rendition in settings.get("hls_renditions") or []:
+            args += ["--hls-rendition", rendition]
+        if settings.get("region_failover"):
+            neighbours = {}
+            for other in sorted(state["nodes"].values(), key=lambda item: item["name"]):
+                if other["role"] == "distributor" and other["site"] != node["site"]:
+                    neighbours.setdefault(other["region"], other)
+            for region, other in sorted(neighbours.items()):
+                args += ["--failover-entry",
+                         f"{region}=https://{other['public_ipv4']}:{HTTP_PORT}"]
     if settings["response_ms"]:
         args += ["--response-ms", str(settings["response_ms"])]
     if node["role"] in ("distributor", "edge"):
@@ -622,7 +956,10 @@ def contributor_args(service: dict, settings: dict) -> list[str]:
         "--daw-hls-formats", settings["daw_hls_formats"],
         "--daw-hls-base-stream-id", str(settings["daw_hls_base_stream_id"]),
         "--stream-id", "1", "--rist-stream-id", "1", "--rtmp-stream-id", "1",
-        "--fmp4-part-ms", str(settings["fmp4_part_ms"]),
+        "--audio-part", part_plan(settings)["audio_part"],
+        "--video-part", part_plan(settings)["video_part"],
+        *(["--fmp4-video-segment-ms", str(settings["fmp4_video_segment_ms"])]
+          if settings.get("fmp4_video_segment_ms") else []),
         "--wall-clock-estimated-error-ms", "5",
         "--rist-bind", "0.0.0.0:27000", "--rtmp-bind", "0.0.0.0:19350",
         "--relay-local-id", "contrib",
@@ -659,16 +996,46 @@ def contributor_args(service: dict, settings: dict) -> list[str]:
     return args + list(settings["extra_contributor_args"])
 
 
+def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str, list[str]]]:
+    """contributor_direct_region: the contributor's --relay-direct-* arguments
+    for the distributors of its site, and for each of those distributors the
+    arguments that register the contributor's direct source endpoint as a
+    parent. A direct target is the port on which the distributor takes its
+    primary backbone parent; the symbols are the same."""
+    contrib = common.nodes_by_role(state, "contributor")[0]
+    mates = [node for node in common.nodes_by_role(state, "distributor")
+             if node["site"] == contrib["site"]]
+    if not mates:
+        return [], {}
+    bind = f"{link_addresses(contrib, mates[0])[0]}:{CONTRIB_DIRECT_PORT}"
+    contrib_args = ["--relay-direct-bind", bind]
+    mesh_args = {}
+    for node in sorted(mates, key=lambda item: item["name"]):
+        source, target = link_addresses(contrib, node)
+        if f"{source}:{CONTRIB_DIRECT_PORT}" != bind:
+            continue
+        port = services[("av_mesh", relay_node_id(node))]["primary_parent"]["bind"].rsplit(":", 1)[1]
+        contrib_args += ["--relay-direct-target", f"{target}:{port}",
+                         "--relay-direct-id", relay_node_id(node)]
+        mesh_args[node["name"]] = ["--relay-direct-peer", bind,
+                                   "--relay-direct-id", relay_node_id(contrib)]
+    return contrib_args, mesh_args
+
+
 def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     """Return {node name: {service, args, env}} for every service node."""
     services = {
         (item["service"], item["node_id"]): item for item in plan["services"]
     }
+    check_settings(settings)
+    direct_contrib, direct_mesh = (direct_region_args(state, services)
+                                   if settings.get("contributor_direct_region") else ([], {}))
     rendered: dict[str, dict] = {}
     for node in state["nodes"].values():
         role = node["role"]
         if role == "contributor":
             args = contributor_args(services[("av_contrib", "contrib")], settings)
+            args += direct_contrib
             rendered[node["name"]] = {
                 "service": "needletail-contrib", "args": args,
                 "rust_log": settings["rust_log_contrib"]}
@@ -678,6 +1045,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         args = common_mesh_args(node, settings, state)
         if role in ("backbone", "distributor"):
             args += relay_args(services[("av_mesh", relay_node_id(node))])
+            args += direct_mesh.get(node["name"], [])
         if role == "backbone":
             args += ["--mesh-bind", f"0.0.0.0:{MESH_PORT}", "--edge-webtransport"]
             args += list(settings["extra_backbone_args"])
@@ -782,6 +1150,8 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
                    else "Needletail AV Mesh node")
     threads = settings["tokio_worker_threads"]
     thread_line = f"Environment=TOKIO_WORKER_THREADS={threads}\n" if threads else ""
+    for key, value in sorted((settings.get("node_env") or {}).items()):
+        thread_line += f"Environment={key}={value}\n"
     return f"""[Unit]
 Description={description} (small-mesh lab)
 After=network-online.target
@@ -811,7 +1181,7 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     # that carries a candidate patch.
     mesh = pathlib.Path(os.environ.get(
         "NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh"))) / target
-    # NEEDLETAIL_AV_CONTRIB_ROOT selects another av-contrib checkout or build.
+    # NEEDLETAIL_AV_CONTRIB_ROOT selects another av-contrib checkout.
     contrib = pathlib.Path(os.environ.get(
         "NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib"))) / target
     daw = common.WORKSPACE / "daw-nexus" / target
@@ -819,14 +1189,24 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
-        return [probe, mesh / "needletail-reader",
-                *([mesh / "needletail-udp-client"] if (mesh / "needletail-udp-client").is_file() else []),
+        return [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
+                common.WORKSPACE / "daw-nexus" / target / "daw-test-source",
                 common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
                 common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                 / target / "soundkit-part-check"]
     checker = (common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                / target / "soundkit-part-check")
     return [mesh / "av-mesh", probe, checker]
+
+
+def node_sysctls(settings: dict) -> dict:
+    """Kernel settings of every mesh node, from the `node_sysctls` setting.
+
+    A settings file that was saved before a default was added does not name
+    it: the defaults apply to every key that the setting leaves out. An empty
+    value removes a key."""
+    merged = {**DEFAULT_SETTINGS["node_sysctls"], **(settings.get("node_sysctls") or {})}
+    return {str(key): str(value) for key, value in merged.items() if str(value) != ""}
 
 
 def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
@@ -847,6 +1227,14 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
         "/usr/local/share/ca-certificates/needletail-qualification.crt",
         "chmod 600 /etc/needletail/tls/privkey.pem",
     ]
+    sysctls = node_sysctls(settings)
+    if sysctls:
+        lines = "\n".join(f"{key} = {value}" for key, value in sysctls.items())
+        commands += [
+            "modprobe tcp_bbr 2>/dev/null || true",
+            f"cat >/etc/sysctl.d/90-needletail.conf <<'SYSCTL'\n{lines}\nSYSCTL",
+            "sysctl -q -p /etc/sysctl.d/90-needletail.conf",
+        ]
     item = rendered.get(node["name"])
     if item:
         service = item["service"]

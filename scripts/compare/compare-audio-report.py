@@ -25,8 +25,11 @@ SYSTEMS = [
     ("lkmulti", "LiveKit, multi-region set"),
     ("lkcloud", "LiveKit Cloud"),
 ]
-NT_LANE = {"opus-2.5": "nt-opus", "opus-5": "nt-opus", "opus-10": "nt-opus", "opus-20": "nt-flac",
-           "opus-max510": "nt-flac", "pcm": "nt-pcm"}
+# The Needletail rendition of each configuration: the first candidate that
+# the evidence has (opus-2.5 is the AEP1 sender's 2.5 ms Opus, nt-popus, since
+# 22 November 2026; the DAW source's nt-opus before).
+NT_LANE = {"opus-2.5": ("nt-popus", "nt-opus"), "opus-5": ("nt-opus",), "opus-10": ("nt-opus",),
+           "opus-20": ("nt-flac",), "opus-max510": ("nt-flac",), "pcm": ("nt-pcm",)}
 
 
 def spread(values: list, digits=1) -> str:
@@ -51,11 +54,19 @@ class Evidence:
     def __init__(self, path: str):
         self.data = json.load(open(path))
         self.sessions = list(self.data["sessions"])
+        self.seen = {lane for session in self.data["sessions"].values()
+                     for step in (session.get("steps") or {}).values()
+                     for host in (step.get("hosts") or {}).values()
+                     for lane in (host.get("lanes") or {})}
 
     def lane(self, system: str, config: str) -> str:
         if system in ("nt-udp", "nt-uc"):
             return system
-        return NT_LANE[config] + system[2:] if system.startswith("nt") else system
+        if not system.startswith("nt"):
+            return system
+        candidates = NT_LANE[config]
+        base = next((item for item in candidates if item + system[2:] in self.seen), candidates[-1])
+        return base + system[2:]
 
     def get(self, session: str, step: str, host: str, lane: str, kind: str):
         try:
@@ -280,7 +291,7 @@ def main() -> None:
     if args.sessions:
         e.sessions = [name for name in args.sessions.split(",") if name in e.sessions]
     print(f"Sessions: {', '.join(e.sessions)}\n")
-    baseline(e, "opus-2.5", "Opus, shortest frame (2.5 ms; Needletail 5 ms)")
+    baseline(e, "opus-2.5", "Opus, shortest frame (2.5 ms)")
     chrome(e, "opus-2.5")
     sweep(e)
     baseline(e, "pcm", "Lossless (PCM; SFUs by data channel)")

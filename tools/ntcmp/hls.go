@@ -50,6 +50,64 @@ type hlsOptions struct {
 	AudioParts bool
 }
 
+// maxWindow is the largest chase window. A Needletail cache holds a request
+// for a part up to three seconds ahead of its newest part (av-mesh
+// PART_WAIT_MS) and refuses one further ahead: 400 parts of 5 ms is two
+// seconds, inside the hold with room for a round trip of a second.
+const maxWindow = 400
+
+// streamsPerConnection is how many part requests one connection carries. The
+// Needletail HTTP/2 and HTTP/3 servers allow 256 concurrent streams on a
+// connection; the rest of that is left for playlist reloads and retries. A
+// larger window opens more connections and spreads the parts over them, so a
+// request never waits for stream credit behind requests for later parts.
+// That matters over HTTP/3; over HTTP/2 Go's transport would also open
+// another connection by itself when the server's limit is reached.
+const streamsPerConnection = 200
+
+// serverTimes are the timing headers of a Needletail part response, in Unix
+// microseconds, 0 when the response did not carry the header. Part is the
+// number of the part in its URI, -1 when it has none.
+type serverTimes struct {
+	Published      int64
+	CacheAvailable int64
+	EdgeCommitted  int64
+	Reply          int64
+	Part           int64
+}
+
+var serverTimeHeaders = []string{
+	"x-needletail-published-unix-us",
+	"x-needletail-cache-available-unix-us",
+	"x-needletail-edge-committed-unix-us",
+	"x-needletail-reply-unix-us",
+}
+
+func headerMicros(header http.Header, name string) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(header.Get(name)), 10, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+// readServerTimes reads the timing headers of a response, or returns nil
+// when it carries none of them: not a Needletail part response, so its
+// record line gets no server columns and no part number either.
+func readServerTimes(header http.Header) *serverTimes {
+	times := &serverTimes{
+		Published:      headerMicros(header, serverTimeHeaders[0]),
+		CacheAvailable: headerMicros(header, serverTimeHeaders[1]),
+		EdgeCommitted:  headerMicros(header, serverTimeHeaders[2]),
+		Reply:          headerMicros(header, serverTimeHeaders[3]),
+		Part:           -1,
+	}
+	if times.Published == 0 && times.CacheAvailable == 0 && times.EdgeCommitted == 0 && times.Reply == 0 {
+		return nil
+	}
+	return times
+}
+
 type hlsPart struct {
 	URI         string
 	Independent bool
@@ -161,7 +219,9 @@ func parsePlaylist(body string) *hlsPlaylist {
 
 type hlsProbe struct {
 	options hlsOptions
-	client  *http.Client
+	client  *http.Client   // playlists, and the parts of a small window
+	clients []*http.Client // one for each connection that carries parts
+	highest int64          // newest part number received (chase window)
 	rec     *Recorder
 	mu      sync.Mutex
 	fetched map[string]bool
@@ -182,14 +242,22 @@ func newHLSProbe(options hlsOptions, rec *Recorder) (*hlsProbe, error) {
 		pool.AppendCertsFromPEM(pem)
 		config.RootCAs = pool
 	}
-	var transport http.RoundTripper = &http.Transport{TLSClientConfig: config, ForceAttemptHTTP2: true,
-		MaxIdleConnsPerHost: 8, IdleConnTimeout: 30 * time.Second, DisableCompression: false}
 	if options.HTTP3 {
 		config.NextProtos = []string{"h3"}
-		transport = &http3.Transport{TLSClientConfig: config}
+	}
+	newClient := func() *http.Client {
+		if options.HTTP3 {
+			return &http.Client{Transport: &http3.Transport{TLSClientConfig: config.Clone()}}
+		}
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: config.Clone(), ForceAttemptHTTP2: true,
+			MaxIdleConnsPerHost: 8, IdleConnTimeout: 30 * time.Second, DisableCompression: false}}
 	}
 	probe := &hlsProbe{options: options, rec: rec, fetched: map[string]bool{},
-		client: &http.Client{Transport: transport}, counts: map[string]int64{}}
+		client: newClient(), counts: map[string]int64{}, highest: -1}
+	probe.clients = []*http.Client{probe.client}
+	for len(probe.clients)*streamsPerConnection < options.Window {
+		probe.clients = append(probe.clients, newClient())
+	}
 	if options.Save != "" {
 		if err := os.MkdirAll(options.Save, 0o755); err != nil {
 			return nil, err
@@ -212,18 +280,29 @@ func (h *hlsProbe) count(name string) {
 
 // get returns the body, the time of the first byte and the time of the last.
 func (h *hlsProbe) get(ctx context.Context, target string, timeout time.Duration) ([]byte, int64, int64, int, error) {
+	body, first, done, status, _, err := h.getTimed(ctx, h.client, target, timeout)
+	return body, first, done, status, err
+}
+
+// getTimed is get on a given client, and also returns the server timing
+// headers of the response.
+func (h *hlsProbe) getTimed(ctx context.Context, client *http.Client, target string,
+	timeout time.Duration) ([]byte, int64, int64, int, *serverTimes, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return nil, 0, 0, 0, nil, err
 	}
-	response, err := h.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return nil, 0, 0, 0, nil, err
 	}
 	defer response.Body.Close()
+	times := readServerTimes(response.Header)
+	h.mu.Lock()
 	h.proto = response.Proto
+	h.mu.Unlock()
 	var body []byte
 	first := int64(0)
 	buffer := make([]byte, 256<<10)
@@ -239,14 +318,22 @@ func (h *hlsProbe) get(ctx context.Context, target string, timeout time.Duration
 			break
 		}
 		if err != nil {
-			return nil, 0, 0, response.StatusCode, err
+			return nil, 0, 0, response.StatusCode, times, err
 		}
 	}
 	done := time.Now().UnixNano()
 	if first == 0 {
 		first = done
 	}
-	return body, first, done, response.StatusCode, nil
+	return body, first, done, response.StatusCode, times, nil
+}
+
+// partClient is the client that carries part `number`.
+func (h *hlsProbe) partClient(number int64) *http.Client {
+	if number < 0 || len(h.clients) < 2 {
+		return h.client
+	}
+	return h.clients[number%int64(len(h.clients))]
 }
 
 func resolve(base, reference string) string {
@@ -271,9 +358,11 @@ func withQuery(target, query string) string {
 	return target + "?" + query
 }
 
-// unit records one media part or segment.
-func (h *hlsProbe) unit(target string, body []byte, first, done int64) {
+// unit records one media part or segment. times are the server timing
+// headers of its response, or nil.
+func (h *hlsProbe) unit(target string, body []byte, first, done int64, times *serverTimes) {
 	h.rec.Bytes(done, len(body))
+	h.rec.ServerTimes(times, done)
 	if h.saveLog != nil {
 		h.mu.Lock()
 		name := fmt.Sprintf("u%06d%s", h.counts["saved"], filepath.Ext(strings.SplitN(target, "?", 2)[0]))
@@ -289,6 +378,9 @@ func (h *hlsProbe) unit(target string, body []byte, first, done int64) {
 		if match := numbered.FindStringSubmatch(target); match != nil {
 			number, _ = strconv.ParseInt(match[2], 10, 64)
 		}
+		if times != nil {
+			times.Part = number
+		}
 		if size > 0 && len(body)%size == 0 {
 			// A segment carries many blocks: give each its own number, so that
 			// the blocks after the first are not counted as duplicates.
@@ -298,15 +390,20 @@ func (h *hlsProbe) unit(target string, body []byte, first, done int64) {
 				if number >= 0 && k > 1 {
 					n = number*k + i
 				}
-				h.rec.AudioUnit(body[at:at+size], done, n, false)
+				h.rec.AudioUnitTimed(body[at:at+size], done, n, false, times)
 			}
 		} else {
-			h.rec.AudioUnit(body, done, number, false)
+			h.rec.AudioUnitTimed(body, done, number, false, times)
 		}
 		return
 	}
+	if times != nil {
+		if match := numbered.FindStringSubmatch(target); match != nil {
+			times.Part, _ = strconv.ParseInt(match[2], 10, 64)
+		}
+	}
 	scanFMP4(body, func(fp uint64, key bool, size int) {
-		h.rec.VideoFrame(fp, key, size, 1, first, done)
+		h.rec.VideoFrameTimed(fp, key, size, 1, first, done, times)
 	})
 }
 
@@ -385,14 +482,14 @@ func (h *hlsProbe) fetchUnit(ctx context.Context, target string) {
 	h.wait.Add(1)
 	go func() {
 		defer h.wait.Done()
-		body, first, done, status, err := h.get(ctx, target, h.options.Timeout)
+		body, first, done, status, times, err := h.getTimed(ctx, h.client, target, h.options.Timeout)
 		if err != nil || status != 200 {
 			if ctx.Err() == nil {
 				h.count(fmt.Sprintf("unit_error_%d", status))
 			}
 			return
 		}
-		h.unit(target, body, first, done)
+		h.unit(target, body, first, done, times)
 	}()
 }
 
@@ -505,12 +602,13 @@ func (h *hlsProbe) chase(ctx context.Context, playlistURL string, playlist *hlsP
 	}()
 	if h.options.Window > 1 {
 		h.rec.Summary.Detail["window"] = h.options.Window
-		return h.chaseWindow(ctx, playlistURL, match, next)
+		h.rec.Summary.Detail["part_connections"] = len(h.clients)
+		return h.chaseWindow(ctx, playlistURL, match, next, playlist.PartTarget)
 	}
 	failures := 0
 	for ctx.Err() == nil {
 		target := resolve(playlistURL, fmt.Sprintf("%s%d%s%s", match[1], next, match[3], match[4]))
-		body, first, done, status, err := h.get(ctx, target, h.options.Timeout)
+		body, first, done, status, times, err := h.getTimed(ctx, h.client, target, h.options.Timeout)
 		if ctx.Err() != nil {
 			break
 		}
@@ -538,7 +636,7 @@ func (h *hlsProbe) chase(ctx context.Context, playlistURL string, playlist *hlsP
 			continue
 		}
 		failures = 0
-		h.unit(target, body, first, done)
+		h.unit(target, body, first, done, times)
 		next++
 	}
 	return nil
@@ -633,7 +731,22 @@ func (h *hlsProbe) segments(ctx context.Context, playlistURL string, playlist *h
 // chaseWindow keeps Window requests in flight for the next parts. Each
 // request is answered when its part is published, so the reader is never more
 // than its window behind, whatever the round trip.
-func (h *hlsProbe) chaseWindow(ctx context.Context, playlistURL string, match []string, next int64) error {
+//
+// A window can reach further ahead than the cache holds a request (three
+// seconds), or ahead of the newest part while the stream is late: the cache
+// then answers 404 at once. A part ahead of the newest part received is
+// therefore asked for again after a pause, until it is due, and only a part
+// behind the newest one received is given up after three failures.
+func (h *hlsProbe) chaseWindow(ctx context.Context, playlistURL string, match []string, next int64,
+	partTarget float64) error {
+	part := time.Duration(partTarget * float64(time.Second))
+	if part <= 0 {
+		part = 50 * time.Millisecond
+	}
+	// The part to start at is listed in the playlist: it is published.
+	h.mu.Lock()
+	h.highest = next - 1
+	h.mu.Unlock()
 	slots := make(chan struct{}, h.options.Window)
 	var group sync.WaitGroup
 	for ctx.Err() == nil {
@@ -650,22 +763,67 @@ func (h *hlsProbe) chaseWindow(ctx context.Context, playlistURL string, match []
 		go func() {
 			defer group.Done()
 			defer func() { <-slots }()
-			target := resolve(playlistURL, fmt.Sprintf("%s%d%s%s", match[1], number, match[3], match[4]))
-			for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
-				body, first, done, status, err := h.get(ctx, target, h.options.Timeout+time.Duration(h.options.Window)*50*time.Millisecond)
-				if err == nil && status == 200 && len(body) > 0 {
-					h.unit(target, body, first, done)
-					return
-				}
-				if ctx.Err() == nil {
-					h.count(fmt.Sprintf("part_error_%d", status))
-				}
-			}
-			if ctx.Err() == nil {
-				h.count("part_given_up")
-			}
+			h.fetchWindowPart(ctx, playlistURL, match, number, part)
 		}()
 	}
 	group.Wait()
 	return nil
+}
+
+// fetchWindowPart asks for one part of a chase window until it arrives, it
+// is given up, or the run ends.
+func (h *hlsProbe) fetchWindowPart(ctx context.Context, playlistURL string, match []string, number int64,
+	part time.Duration) {
+	target := resolve(playlistURL, fmt.Sprintf("%s%d%s%s", match[1], number, match[3], match[4]))
+	timeout := h.options.Timeout + time.Duration(h.options.Window)*50*time.Millisecond
+	// The part is due about `ahead` parts from now; past that, plus the
+	// time a request may take and the cache's hold, it is not coming.
+	giveUp := time.Now().Add(time.Duration(number-h.newest()+1)*part + timeout + 3*time.Second)
+	failures := 0
+	for ctx.Err() == nil {
+		body, first, done, status, times, err := h.getTimed(ctx, h.partClient(number), target, timeout)
+		if err == nil && status == 200 && len(body) > 0 {
+			h.noteReceived(number)
+			h.unit(target, body, first, done, times)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		ahead := number - h.newest()
+		if ahead > 0 && time.Now().Before(giveUp) {
+			// Not published yet, or further ahead than the cache waits:
+			// ask again when it is nearer.
+			h.count("part_early")
+			pause := time.Duration(ahead) * part / 2
+			if pause < 20*time.Millisecond {
+				pause = 20 * time.Millisecond
+			}
+			if pause > time.Second {
+				pause = time.Second
+			}
+			sleepUntil(ctx, time.Now().Add(pause))
+			continue
+		}
+		h.count(fmt.Sprintf("part_error_%d", status))
+		failures++
+		if failures >= 3 {
+			h.count("part_given_up")
+			return
+		}
+	}
+}
+
+func (h *hlsProbe) newest() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.highest
+}
+
+func (h *hlsProbe) noteReceived(number int64) {
+	h.mu.Lock()
+	if number > h.highest {
+		h.highest = number
+	}
+	h.mu.Unlock()
 }

@@ -22,6 +22,7 @@ import small_mesh_common as common  # noqa: E402
 
 SETTING_KEYS = (
     "part_ms", "fmp4_part_ms", "parts_per_segment", "window_parts",
+    "part_us", "segment_ms", "window_ms", "audio_part", "video_part",
     "mesh_sync_interval_ms", "mesh_symbol_size", "mesh_repair_ratio",
     "mesh_repair_symbols", "path_loss_ppm", "relay_min_repair_symbols",
     "media_deadline_ms", "extra_distributor_args", "daw_hls_packaging",

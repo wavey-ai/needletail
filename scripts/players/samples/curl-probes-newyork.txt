@@ -1,0 +1,122 @@
+== date 2026-11-21T03:22:16Z entry 10.90.2.11 caches 10.90.2.21 10.90.2.22 video stream 1 audio stream 2001
+
+== 1. Multivariant Playlist (entry point), three requests with the same sid
+#EXT-X-CONTENT-STEERING:SERVER-URI="steering.json?sid=probe",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=15000000,CODECS="avc1.640033,mp4a.40.2",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=15000000,CODECS="avc1.640033,mp4a.40.2",PATHWAY-ID="new-edge-2"
+#EXT-X-CONTENT-STEERING:SERVER-URI="steering.json?sid=probe",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=15000000,CODECS="avc1.640033,mp4a.40.2",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=15000000,CODECS="avc1.640033,mp4a.40.2",PATHWAY-ID="new-edge-2"
+#EXT-X-CONTENT-STEERING:SERVER-URI="steering.json?sid=probe",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=16000000,CODECS="avc1.640033,mp4a.40.2",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=16000000,CODECS="avc1.640033,mp4a.40.2",PATHWAY-ID="new-edge-2"
+-- headers:
+HTTP/2 200 |content-type: application/vnd.apple.mpegurl|access-control-allow-origin: *|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 383|
+-- audio stream:
+#EXT-X-STREAM-INF:BANDWIDTH=4000000,CODECS="fLaC",PATHWAY-ID="new-edge-1"
+-- steering manifest:
+{"VERSION":1,"TTL":1,"RELOAD-URI":"steering.json?sid=probe","PATHWAY-PRIORITY":["new-edge-1","new-edge-2"]}
+HTTP/2 200 |content-type: application/json|access-control-allow-origin: *|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 107|
+
+== 2. A cache with no reader for 12 s: its Media Playlist from the first request on (video stream)
++4 ms  MEDIA-SEQUENCE=71 TARGETDURATION=1 PART-TARGET=0.208 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=no segments=0(..) parts=1(part14368..part14368)
++555 ms  MEDIA-SEQUENCE=71 TARGETDURATION=1 PART-TARGET=0.208 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=yes segments=0(..) parts=1(part14371..part14371)
++1098 ms  MEDIA-SEQUENCE=71 TARGETDURATION=1 PART-TARGET=0.208 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=yes segments=0(..) parts=3(part14371..part14373)
++1627 ms  MEDIA-SEQUENCE=70 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=1(seg70.mp4..seg70.mp4) parts=16(part14361..part14376)
++2159 ms  MEDIA-SEQUENCE=70 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=1(seg70.mp4..seg70.mp4) parts=18(part14361..part14378)
++2685 ms  MEDIA-SEQUENCE=70 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=2(seg70.mp4..seg71.mp4) parts=21(part14361..part14381)
++3214 ms  MEDIA-SEQUENCE=69 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=3(seg69.mp4..seg71.mp4) parts=23(part14361..part14383)
++3745 ms  MEDIA-SEQUENCE=69 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=3(seg69.mp4..seg71.mp4) parts=26(part14361..part14386)
++4272 ms  MEDIA-SEQUENCE=69 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=3(seg69.mp4..seg71.mp4) parts=29(part14361..part14389)
++4800 ms  MEDIA-SEQUENCE=69 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=4(seg69.mp4..seg72.mp4) parts=21(part14371..part14391)
++5327 ms  MEDIA-SEQUENCE=68 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=5(seg68.mp4..seg72.mp4) parts=24(part14371..part14394)
++5860 ms  MEDIA-SEQUENCE=68 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=5(seg68.mp4..seg72.mp4) parts=26(part14371..part14396)
++6389 ms  MEDIA-SEQUENCE=68 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=5(seg68.mp4..seg72.mp4) parts=28(part14371..part14398)
++6917 ms  MEDIA-SEQUENCE=69 TARGETDURATION=2 PART-TARGET=0.240 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=5(seg69.mp4..seg73.mp4) parts=22(part14380..part14401)
+-- the full text of the first response of the other cache (also idle):
+#EXTM3U
+#EXT-X-VERSION:10
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:72
+#EXT-X-MAP:URI="init.mp4"
+#EXT-X-PART-INF:PART-TARGET=0.208
+#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.624,HOLD-BACK=3.000
+#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:22:39.196Z
+#EXT-X-PART:DURATION=0.208,URI="part14405.mp4"
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI="part14406.mp4"
+
+== 3. Two caches at the same moment (both read for 10 s first): same parts, which Media Sequence Number?
+cache a: MEDIA-SEQUENCE=75; last complete segment seg78.mp4 = part14438..part14447
+cache b: MEDIA-SEQUENCE=72; last complete segment seg75.mp4 = part14438..part14447
+cache a: MEDIA-SEQUENCE=76; last complete segment seg79.mp4 = part14448..part14456
+cache b: MEDIA-SEQUENCE=72; last complete segment seg76.mp4 = part14448..part14456
+cache a: MEDIA-SEQUENCE=76; last complete segment seg79.mp4 = part14448..part14456
+cache b: MEDIA-SEQUENCE=72; last complete segment seg76.mp4 = part14448..part14456
+
+== 4. The same cache after 12 s without a reader: Media Sequence Number before and after
+before: MEDIA-SEQUENCE=77 TARGETDURATION=2 PART-TARGET=0.240 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=4(seg77.mp4..seg80.mp4) parts=22(part14448..part14469)
+after : MEDIA-SEQUENCE=72 TARGETDURATION=1 PART-TARGET=0.208 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=no segments=0(..) parts=1(part14526..part14526)
++6 s  : MEDIA-SEQUENCE=70 TARGETDURATION=2 PART-TARGET=0.208 HOLD-BACK=6.000 INDEPENDENT-SEGMENTS=yes segments=5(seg70.mp4..seg74.mp4) parts=23(part14534..part14556)
+
+== 5. Segment and part availability after they leave the playlist (video stream)
+seg70.mp4: first absent from the playlist at +n/a ms; last 200 at +1168 ms; first 404 at +1318 ms
+part14544.mp4: first absent from the playlist at +1982 ms; last 200 at +44342 ms; final 404 at +47645 ms
+
+== 6. Blocking Playlist Reload (video stream)
+open segment 99 has 8 parts; _HLS_msn=99&_HLS_part=8 (the next part): code=200 after 0.010645 s
+open segment 99 has 9 parts; _HLS_msn=99&_HLS_part=9 (the next part): code=200 after 0.186965 s
+open segment 100 has 1 parts; _HLS_msn=100&_HLS_part=1 (the next part): code=200 after 0.075561 s
+open segment 100 has 2 parts; _HLS_msn=100&_HLS_part=2 (the next part): code=200 after 0.186463 s
+_HLS_msn=110&_HLS_part=0 (ten segments ahead): code=200 after 3.011873 s
+_HLS_skip=YES: 0 EXT-X-SKIP tag(s); CAN-SKIP-UNTIL offered: 0
+
+== 7. Audio stream 2001: complete segments in 20 playlists, one a second
+      1 MEDIA-SEQUENCE=77 TARGETDURATION=1 PART-TARGET=0.200 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=yes segments=0(..) parts=52
+      1 MEDIA-SEQUENCE=77 TARGETDURATION=1 PART-TARGET=0.200 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=yes segments=0(..) parts=58
+     18 MEDIA-SEQUENCE=77 TARGETDURATION=1 PART-TARGET=0.200 HOLD-BACK=3.000 INDEPENDENT-SEGMENTS=yes segments=0(..) parts=60
+GET seg76.mp4 -> 404
+GET seg77.mp4 -> 200
+GET seg78.mp4 -> 404
+-- first lines:
+#EXTM3U
+#EXT-X-VERSION:10
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:78
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MAP:URI="init.mp4"
+#EXT-X-PART-INF:PART-TARGET=0.200
+#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.600,HOLD-BACK=3.000
+#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:24:48.539Z
+#EXT-X-PART:DURATION=0.200,URI="part15656.mp4",INDEPENDENT=YES
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI="part15657.mp4"
+
+== 8. Headers
+media playlist: HTTP/2 200 |content-type: application/vnd.apple.mpegurl|access-control-allow-origin: *|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 1597|
+media playlist, Accept-Encoding gzip: HTTP/2 200 |content-type: application/vnd.apple.mpegurl|access-control-allow-origin: *|content-encoding: gzip|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 402|
+media playlist, Range bytes=0-: HTTP/2 206 |content-type: application/vnd.apple.mpegurl|access-control-allow-origin: *|cache-control: no-store, max-age=0|content-range: bytes 0-1596/1597|content-length: 1597|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|
+init: HTTP/2 200 |content-type: video/mp4|access-control-allow-origin: *|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 1126|
+part part15055.mp4: HTTP/2 200 |content-type: video/mp4|access-control-allow-origin: *|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 347747|
+segment seg77.mp4: HTTP/2 200 |content-type: video/mp4|access-control-allow-origin: *|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 3635138|
+preflight OPTIONS: HTTP/2 204 |access-control-allow-origin: *|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|
+HTTP/1.1: 200 1.1   HTTP/3 only: 200 3
+Alt-Svc headers on an HTTP/2 response: 0
+
+== 9. A stream that does not exist (99999)
+master: HTTP/2 200 |content-type: application/vnd.apple.mpegurl|access-control-allow-origin: *|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 327|
+2
+media playlist: HTTP/2 200 |content-type: application/vnd.apple.mpegurl|access-control-allow-origin: *|cache-control: no-store, max-age=0|access-control-expose-headers: x-sequence, stream-id, etag, content-length, accept-ranges, content-range|content-length: 188|
+#EXTM3U
+#EXT-X-VERSION:10
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-PART-INF:PART-TARGET=0.005
+#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.015,HOLD-BACK=3.000
+
+== 10. Multivariant Playlist asked from a cache instead of the entry point
+#EXTM3U
+#EXT-X-VERSION:10
+#EXT-X-CONTENT-STEERING:SERVER-URI="steering.json?sid=probe",PATHWAY-ID="new-edge-1"
+#EXT-X-STREAM-INF:BANDWIDTH=4000000,PATHWAY-ID="new-edge-1"
+https://10.90.2.21:19444/live/1/stream.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=4000000,PATHWAY-ID="new-edge-2"
+stream.m3u8

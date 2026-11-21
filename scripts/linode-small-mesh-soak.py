@@ -165,7 +165,7 @@ def hls(target: dict, stream: dict, plan: dict, offset_ms: int, window: int | No
     command = (f"{PROBE} receive-hls --edge {target['vlan_ipv4'].split('/')[0]}:{HTTP_PORT} "
                f"{TLS} --transport h3 --stream-id {stream['stream_id']} "
                f"--session-id {plan['session_id']} --duration-seconds {plan['duration']} "
-               f"--part-ms {plan['part_ms']} --deadline-ms {MEDIA_DEADLINE_MS} "
+               f"--part-ms {stream['part_ms']} --deadline-ms {MEDIA_DEADLINE_MS} "
                f"--render-buffer-ms 150 --tail-seconds {plan['tail']} "
                f"--abandon-after-ms {ABANDON_AFTER_MS} "
                f"--expected-audio-codec {stream['codec']}")
@@ -183,7 +183,7 @@ def load_command(edge: dict, stream: dict, plan: dict, offset_ms: int) -> str:
     return (f"{PROBE} load-hls --edge {edge['vlan_ipv4'].split('/')[0]}:{HTTP_PORT} {TLS} "
             f"--transport h3 --stream-id {stream['stream_id']} "
             f"--session-id {plan['session_id']} --duration-seconds {plan['duration']} "
-            f"--part-ms {plan['part_ms']} --deadline-ms {plan['load_deadline_ms']} "
+            f"--part-ms {stream['part_ms']} --deadline-ms {plan['load_deadline_ms']} "
             f"--tail-seconds {plan['tail']} --readers {plan['readers']} "
             f"--abandon-after-ms {ABANDON_AFTER_MS} --start-offset-ms {offset_ms} "
             f"--window-seconds {plan['window']} "
@@ -361,14 +361,20 @@ def start(args: argparse.Namespace) -> dict:
     loads = common.nodes_by_role(state, "load")
     services = [node for node in state["nodes"].values() if node["role"] != "load"]
 
+    base = settings["daw_hls_base_stream_id"]
+    # The checkers are told each stream's own part: one DAW source epoch
+    # (lossless) or Opus frame with audio_part "epoch". They take whole ms.
+    streams = [{"name": "flac0", "stream_id": base, "codec": "opaque-flac",
+                "epoch_samples": args.daw_lossless_epoch_samples},
+               {"name": "opus0", "stream_id": base + 1000, "codec": "soundkit-opus",
+                "epoch_samples": args.daw_opus_frame_samples}]
+    mesh_run.assign_part_ms(settings, streams)
+
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{args.name}"
     result_dir = common.RUNS_DIR / run_id
     result_dir.mkdir(parents=True)
     remote = f"{REMOTE_RUNS}/{run_id}"
     windows = -(-args.duration // args.window)
-    base = settings["daw_hls_base_stream_id"]
-    streams = [{"name": "flac0", "stream_id": base, "codec": "opaque-flac"},
-               {"name": "opus0", "stream_id": base + 1000, "codec": "soundkit-opus"}]
     clock_ns = int(common.ssh_text(contributor, "date +%s%N"))
     plan = {
         "schema": "needletail.linode-small-mesh-soak-plan.v1",
@@ -377,7 +383,8 @@ def start(args: argparse.Namespace) -> dict:
         "node_count": len(state["nodes"]), "remote": remote,
         "session_id": clock_ns + args.start_delay * 1_000_000_000,
         "duration": args.duration, "window": args.window, "windows": windows,
-        "part_ms": settings["part_ms"], "tail": args.tail, "readers": args.readers,
+        "part_ms": {stream["name"]: stream["part_ms"] for stream in streams},
+        "tail": args.tail, "readers": args.readers,
         "load_edges": args.load_edges, "load_deadline_ms": args.load_deadline_ms,
         "media_deadline_ms": MEDIA_DEADLINE_MS, "streams": streams,
         "track_directory": args.track_directory, "settings": settings,
@@ -429,7 +436,8 @@ def start(args: argparse.Namespace) -> dict:
         f"DAW_TEST_SOURCE_START_UNIX_NS={plan['session_id']} "
         f"DAW_TEST_SOURCE_CAPACITY_OUTPUT={remote}/daw-capacity.ndjson "
         f"/usr/local/bin/daw-test-source --direct-contributor --loop-prepared-pcm "
-        f"127.0.0.1:27100 {args.duration} {shlex.quote(args.track_directory)} "
+        + mesh_run.daw_epoch_args(args.daw_lossless_epoch_samples, args.daw_opus_frame_samples)
+        + f"127.0.0.1:27100 {args.duration} {shlex.quote(args.track_directory)} "
         ">source.log 2>source.err </dev/null &) ; sleep 1; pgrep -x daw-test-source | head -1")
     plan["source_pid"] = common.ssh_text(contributor, source)
     margin = (plan["session_id"] - int(common.ssh_text(contributor, "date +%s%N"))) / 1e9
@@ -970,6 +978,13 @@ def main() -> None:
     runner.add_argument("--load-edges", type=int, default=2)
     runner.add_argument("--load-deadline-ms", type=int, default=400)
     runner.add_argument("--tail", type=int, default=6)
+    runner.add_argument("--daw-lossless-epoch-samples", type=int,
+                        default=mesh_run.DAW_LOSSLESS_EPOCH_SAMPLES,
+                        help="the DAW source's lossless epoch (one flac0 part)")
+    runner.add_argument("--daw-opus-frame-samples", type=int,
+                        default=mesh_run.DAW_OPUS_FRAME_SAMPLES, choices=(120, 240, 480, 960),
+                        help="the DAW source's Opus frame (one opus0 part); the checkers need "
+                             "whole ms parts, so not 120 (2.5 ms)")
     runner.add_argument("--start-delay", type=int, default=50)
     runner.add_argument("--track-directory",
                         default="/var/lib/needletail-test-media/daw-nexus-album-1-track-pcm-600s")

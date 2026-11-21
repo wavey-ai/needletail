@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,13 +18,23 @@ import (
 // complete at the viewer. The same records come from the WebRTC probe and from
 // the HLS probe, so one analysis serves every system.
 //
-// Record line (CSV): kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets
+// Record line (CSV): kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets,
+//                   published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part
 //   kind     v (video frame) or a (audio unit)
 //   index    position in the clip, or -1 when the unit was not recognised:
 //            a recognised unit is bit for bit the unit that was sent
 //   latency  completion minus the time the unit was due at the source; for
 //            audio, arrival minus the time the last sample of the unit was spoken
 //   for audio, the fifth column is the sender's sequence number
+//   the last five columns are filled for Needletail HLS parts: the timing
+//   headers of the part response (x-needletail-published-unix-us,
+//   x-needletail-cache-available-unix-us, x-needletail-edge-committed-unix-us,
+//   x-needletail-reply-unix-us) and the part number of its URI. A column
+//   is empty when the response had no such header; all five, the part
+//   number too, are empty when it had none of the four (any server that is
+//   not Needletail), and for other lanes. They
+//   come after the first eight so that a reader of the older files still
+//   reads these.
 type Recorder struct {
 	mu        sync.Mutex
 	index     *Index
@@ -45,6 +56,55 @@ type Recorder struct {
 	videoLat []float64
 	audioLat []float64
 	seconds  map[int64]int64 // received payload bytes for each Unix second
+	// Server timing of Needletail parts: for each span, its durations in ms.
+	serverLat map[string][]float64
+}
+
+const recordHeader = "kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets," +
+	"published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part"
+
+// serverColumns are the five last columns of a record line.
+func serverColumns(times *serverTimes) string {
+	if times == nil {
+		return ",,,,"
+	}
+	field := func(value int64) string {
+		if value <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(value, 10)
+	}
+	part := ""
+	if times.Part >= 0 {
+		part = strconv.FormatInt(times.Part, 10)
+	}
+	return field(times.Published) + "," + field(times.CacheAvailable) + "," + field(times.EdgeCommitted) +
+		"," + field(times.Reply) + "," + part
+}
+
+// ServerTimes adds the spans of one part response to the summary. It is
+// called once for each part, however many units the part holds; completeNs
+// is when the part was complete at the viewer.
+func (r *Recorder) ServerTimes(times *serverTimes, completeNs int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if times == nil || completeNs-r.startedNs < r.SkipNs {
+		return
+	}
+	completeUs := completeNs / 1000
+	if r.serverLat == nil {
+		r.serverLat = map[string][]float64{}
+	}
+	span := func(name string, from, to int64) {
+		if from > 0 && to > 0 {
+			r.serverLat[name] = append(r.serverLat[name], float64(to-from)/1000)
+		}
+	}
+	span("published_to_edge_committed", times.Published, times.EdgeCommitted)
+	span("edge_committed_to_reply", times.EdgeCommitted, times.Reply)
+	span("cache_available_to_reply", times.CacheAvailable, times.Reply)
+	span("reply_to_complete", times.Reply, completeUs)
+	span("published_to_complete", times.Published, completeUs)
 }
 
 type Summary struct {
@@ -105,7 +165,7 @@ func NewRecorder(index *Index, framesPath string) (*Recorder, error) {
 		}
 		r.file = file
 		r.out = bufio.NewWriterSize(file, 1<<16)
-		fmt.Fprintln(r.out, "kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets")
+		fmt.Fprintln(r.out, recordHeader)
 	}
 	return r, nil
 }
@@ -132,6 +192,13 @@ func (r *Recorder) Bytes(atNs int64, size int) {
 
 // VideoFrame records a complete frame. `fp` identifies the first slice.
 func (r *Recorder) VideoFrame(fp uint64, key bool, size, packets int, firstNs, completeNs int64) {
+	r.VideoFrameTimed(fp, key, size, packets, firstNs, completeNs, nil)
+}
+
+// VideoFrameTimed is VideoFrame for a frame of a part that came with server
+// timing headers.
+func (r *Recorder) VideoFrameTimed(fp uint64, key bool, size, packets int, firstNs, completeNs int64,
+	times *serverTimes) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := &r.Summary
@@ -172,8 +239,8 @@ func (r *Recorder) VideoFrame(fp uint64, key bool, size, packets int, firstNs, c
 		if key {
 			keyFlag = 1
 		}
-		fmt.Fprintf(r.out, "v,%d,%d,%d,%d,%d,%d,%d\n", index, latency/1000, completeNs/1000,
-			firstNs/1000, size, keyFlag, packets)
+		fmt.Fprintf(r.out, "v,%d,%d,%d,%d,%d,%d,%d,%s\n", index, latency/1000, completeNs/1000,
+			firstNs/1000, size, keyFlag, packets, serverColumns(times))
 	}
 }
 
@@ -248,6 +315,13 @@ func (r *Recorder) AudioPacket(packet *rtp.Packet, atNs int64) {
 // AudioUnit records one audio unit, however it travelled. number is the
 // sender's sequence number (16-bit for RTP).
 func (r *Recorder) AudioUnit(payload []byte, atNs int64, number int64, rtpSequence bool) {
+	r.AudioUnitTimed(payload, atNs, number, rtpSequence, nil)
+}
+
+// AudioUnitTimed is AudioUnit for a unit of a part that came with server
+// timing headers.
+func (r *Recorder) AudioUnitTimed(payload []byte, atNs int64, number int64, rtpSequence bool,
+	times *serverTimes) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := &r.Summary
@@ -305,8 +379,8 @@ func (r *Recorder) AudioUnit(payload []byte, atNs int64, number int64, rtpSequen
 		s.AudioUnknown++
 	}
 	if r.out != nil {
-		fmt.Fprintf(r.out, "a,%d,%d,%d,%d,%d,0,1\n", index, latency/1000, atNs/1000, number,
-			len(payload))
+		fmt.Fprintf(r.out, "a,%d,%d,%d,%d,%d,0,1,%s\n", index, latency/1000, atNs/1000, number,
+			len(payload), serverColumns(times))
 	}
 }
 
@@ -338,6 +412,13 @@ func (r *Recorder) Finish(path string, failure error) error {
 	s.DurationSeconds = float64(time.Now().UnixNano()-r.startedNs) / 1e9
 	s.VideoLatencyMs = distribution(r.videoLat)
 	s.AudioLatencyMs = distribution(r.audioLat)
+	if len(r.serverLat) > 0 {
+		spans := map[string]map[string]float64{}
+		for name, values := range r.serverLat {
+			spans[name] = distribution(values)
+		}
+		s.Detail["server_timing_ms"] = spans
+	}
 	s.AudioJitterMs = float64(int64(r.jitter*1000/sampleRate*1000+0.5)) / 1000
 	s.AudioJitterMaxMs = float64(int64(r.jitterMax*1000/sampleRate*1000+0.5)) / 1000
 	if failure != nil {
