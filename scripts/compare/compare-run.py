@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""Run the network comparison on the lab and collect what every viewer saw.
+
+One invocation is one session: every chosen system (lane) in turn receives the
+same clip from lon-src and is measured by the same viewers in London, New York,
+Tokyo and Sydney.
+
+Lanes
+  nt        Needletail: RTMP to the contributor, LL-HLS from the edges
+  cf        Cloudflare Realtime (SFU), HTTPS API
+  whep      Cloudflare Stream Live, WHIP in and WHEP out
+  cfhls     Cloudflare Stream Live, RTMPS in, LL-HLS and HLS out
+  lkregion  LiveKit self-hosted: one SFU in each region, the source publishes to each
+  lkmulti   LiveKit self-hosted: the multi-region set that shares one Redis
+  lkcloud   LiveKit Cloud
+
+Phases, for each lane
+  baseline  the 8 Mbit/s 4K clip for 60 s: a probe on the Nanode and on the
+            viewer host of each region, and headless Chrome on the viewer host
+  ttff      repeated joins: eight by the probe, three by Chrome
+  impair    the same netem on both viewer hosts of each region, 45 s each
+  fanout    1, 10 and 100 probes on one stream
+  ramp      1080p at 6 Mbit/s and 4K at 16, 25, 40 and 80 Mbit/s, 40 s each
+
+Results are kept under target/compare/runs/SESSION/STEP/HOST/. A step is
+`LANE.PHASE.DETAIL`. scripts/compare/compare-analyse.py reads them.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import importlib.util
+import json
+import os
+import pathlib
+import shlex
+import subprocess
+import sys
+import time
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+import small_mesh_common as common  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("compare_lab", HERE / "compare_lab.py")
+lab = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lab)
+
+ROOT = common.ROOT
+RUNS = ROOT / "target" / "compare" / "runs"
+REMOTE = "/var/lib/compare"
+CA = "/usr/local/share/ca-certificates/needletail-qualification.crt"
+SERVER_NAME = common.TLS_SERVER_NAME
+SITES = ["lon", "new", "tok", "syd"]
+BASE_RUNG = "2160p8"
+RAMP = ["1080p6", "2160p16", "2160p25", "2160p40", "2160p80"]
+SIZES = {"1080p6": (1920, 1080)}
+IMPAIRMENTS = {
+    "loss1": "loss 1%",
+    "loss5": "loss 5%",
+    "burst": "loss gemodel 1% 20%",
+    "delay100": "delay 100ms",
+}
+FANOUT = {1: {"lon": 1}, 10: {"lon": 3, "new": 3, "tok": 2, "syd": 2},
+          100: {"lon": 25, "new": 25, "tok": 25, "syd": 25}}
+LANES = ["nt", "cf", "whep", "cfhls", "lkregion", "lkmulti", "lkcloud"]
+
+
+def log(text: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S', time.gmtime())}] {text}", flush=True)
+
+
+class Session:
+    def __init__(self, name: str):
+        self.name = name
+        self.dir = RUNS / name
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.state = common.load_state()
+        self.nodes = self.state["nodes"]
+        self.source = self.nodes["lon-src"]
+        self.cloud = self.load_cloud()
+        self.steps: list[dict] = []
+
+    def node(self, name: str) -> dict:
+        return self.nodes[name]
+
+    def ip(self, name: str) -> str:
+        return self.nodes[name]["public_ipv4"]
+
+    def load_cloud(self) -> dict | None:
+        path = ROOT.parent / "LIVEKIT_CLOUD.env"
+        if not path.is_file():
+            return None
+        values = {}
+        for line in path.read_text().splitlines():
+            key, _, value = line.strip().removeprefix("export ").partition("=")
+            values[key] = value.strip().strip("\"'")
+        if not all(values.get(key) for key in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")):
+            return None
+        return values
+
+    def cloud_tokens(self, room: str) -> None:
+        """Sign tokens for one room here and put them on the hosts. The API
+        secret of LiveKit Cloud stays on this host."""
+        env = dict(os.environ, LIVEKIT_API_KEY=self.cloud["LIVEKIT_API_KEY"],
+                   LIVEKIT_API_SECRET=self.cloud["LIVEKIT_API_SECRET"])
+        binary = str(ROOT / "target" / "ntcmp-lk")
+
+        def sign(identity: str, kind: str, count: int = 1) -> str:
+            command = [binary, "lk-token", room, identity, kind] + ([str(count)] if count > 1 else [])
+            return subprocess.run(command, env=env, capture_output=True, text=True, check=True).stdout
+
+        publisher = sign("needletail-compare-source", "pub").strip()
+        common.ssh(self.source, f"umask 077; cat >{REMOTE}/lkcloud.env", stdin=(
+            f"export LK_CLOUD_URL={shlex.quote(self.cloud['LIVEKIT_URL'])}\n"
+            f"export LK_CLOUD_PUB_TOKEN={shlex.quote(publisher)}\n").encode())
+
+        def give(item: dict) -> None:
+            tokens = sign(f"needletail-compare-{item['name']}", "sub", 40)
+            player = sign(f"needletail-compare-{item['name']}-chrome", "sub", 8)
+            common.ssh(item, f"umask 077; cat >{REMOTE}/lkcloud.tokens", stdin=tokens.encode())
+            common.ssh(item, f"umask 077; cat >{REMOTE}/lkcloud.player-tokens", stdin=player.encode())
+            common.ssh(item, f"umask 077; cat >{REMOTE}/lkcloud.env", stdin=(
+                f"export LK_CLOUD_URL={shlex.quote(self.cloud['LIVEKIT_URL'])}\n").encode())
+
+        common.parallel(lab.viewers(), give)
+
+
+# ---- sources ----
+
+def src(session: Session, command: str, check: bool = True, timeout: int = 120) -> str:
+    return common.ssh_text(session.source, f". {REMOTE}/env; [ -f {REMOTE}/lkcloud.env ] && . "
+                           f"{REMOTE}/lkcloud.env; mkdir -p {REMOTE}/src; cd {REMOTE}/src; " + command,
+                           check=check, timeout=timeout)
+
+
+def background(name: str, command: str) -> str:
+    return (f"rm -f {name}.log {name}.status; (setsid nohup sh -c {shlex.quote(command)} "
+            f">{name}.log 2>&1 </dev/null &)")
+
+
+def stop_sources(session: Session) -> None:
+    # By exact process name: a pattern would also match the shell that runs this.
+    src(session, "pkill -x ntcmp; pkill -x ntcmp-lk; pkill -x ffmpeg; pkill -x aep1-48k-probe; "
+        "pkill -x daw-test-source; sleep 1; true", check=False)
+
+
+class Lane:
+    """What differs between the systems: how the source reaches it and how a
+    viewer reads it."""
+
+    def __init__(self, session: Session, name: str):
+        self.session = session
+        self.name = name
+        self.room = f"needletail-compare-{session.name}-{name}"
+        self.cf_session = ""
+        self.warm = 8
+
+    # -- source --
+    def start(self, rung: str) -> None:
+        s = self.session
+        clip = f"{REMOTE}/clips/{rung}"
+        width, height = SIZES.get(rung, (3840, 2160))
+        stop_sources(s)
+        if self.name == "nt":
+            contributor = s.node("contrib-lon")
+            common.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
+                                    "systemctl is-active needletail-contrib.service")
+            target = f"rtmp://{contributor['vlan_ipv4']}:19350/live/needletail-lab"
+            src(s, background("nt", (
+                f"ntcmp flv --clip {clip} --no-audio | ffmpeg -hide_banner -loglevel warning "
+                f"-nostdin -f flv -i pipe:0 -c copy -f flv {target}")))
+            # Lossless audio: FLAC from the same 64-second PCM, started on a
+            # loop boundary so that sample 0 is sent at a multiple of 64 s.
+            src(s, background("nt-audio", (
+                "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
+                "[ $(( START - NOW )) -lt 5 ] && START=$(( START + 64 )); "
+                f"/usr/local/bin/aep1-48k-probe send --target {contributor['vlan_ipv4']}:27100 "
+                "--session-id ${START}000000000 --group-id 0 --duration-seconds 3600 "
+                f"--payload flac --channels 2 --group-channels 8 --pcm-s24le-file {REMOTE}/clips/audio.s24le "
+                "--repair-percent 12 --min-repair-symbols 1")))
+            self.warm = 12
+        elif self.name == "cf":
+            src(s, "rm -f cf.session; " + background("cf", (
+                f"ntcmp pub --lane cf --clip {clip} --session-out cf.session --status cf.status")))
+            for _ in range(20):
+                time.sleep(1)
+                self.cf_session = src(s, "cat cf.session 2>/dev/null", check=False).strip()
+                if self.cf_session:
+                    break
+            if not self.cf_session:
+                raise RuntimeError("Cloudflare Realtime publisher has no session: "
+                                   + src(s, "tail -c 400 cf.log", check=False))
+        elif self.name == "whep":
+            src(s, background("whep", (
+                f"ntcmp pub --lane whip --url \"$CF_WHIP_URL\" --clip {clip} --status whep.status")))
+        elif self.name == "cfhls":
+            src(s, background("cfhls", (
+                f"ntcmp flv --clip {clip} | ffmpeg -hide_banner -loglevel warning -nostdin "
+                "-f flv -i pipe:0 -c copy -f flv \"${CF_RTMPS_URL}${CF_RTMPS_KEY}\"")))
+            self.warm = 45
+        elif self.name == "lkregion":
+            for site in SITES:
+                src(s, background(f"lkregion-{site}", (
+                    "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET "
+                    f"ntcmp-lk pub --lane lk --url ws://{s.ip(site + '-lk')}:7880 --room {self.room} "
+                    f"--clip {clip} --width {width} --height {height} --status lkregion-{site}.status")))
+        elif self.name == "lkmulti":
+            src(s, background("lkmulti", (
+                "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET "
+                f"ntcmp-lk pub --lane lk --url ws://{s.ip('lon-lk')}:7890 --room {self.room} "
+                f"--clip {clip} --width {width} --height {height} --status lkmulti.status")))
+        elif self.name == "lkcloud":
+            src(s, background("lkcloud", (
+                "LIVEKIT_TOKEN=$LK_CLOUD_PUB_TOKEN "
+                f"ntcmp-lk pub --lane lk --url \"$LK_CLOUD_URL\" --room {self.room} "
+                f"--clip {clip} --width {width} --height {height} --status lkcloud.status")))
+        else:
+            raise ValueError(self.name)
+        time.sleep(self.warm)
+        if self.name == "cfhls":
+            self.wait_hls()
+        alive = src(s, "echo $(( $(pgrep -c -x ntcmp) + $(pgrep -c -x ntcmp-lk) ))", check=False).strip()
+        if alive in ("", "0"):
+            raise RuntimeError(f"{self.name}: the source is not running: "
+                               + src(s, "tail -c 600 *.log", check=False))
+
+    def wait_hls(self) -> None:
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            out = src(self.session, (
+                "curl -s -m 5 \"https://$(echo $CF_WHEP_URL | cut -d/ -f3)/$CF_HLS_UID/manifest/video.m3u8\""
+                " | grep -c STREAM-INF"), check=False).strip()
+            if out and out != "0":
+                time.sleep(10)
+                return
+            time.sleep(4)
+        raise RuntimeError("Cloudflare Stream manifest did not become live")
+
+    def source_status(self) -> dict:
+        out = src(self.session, "for f in *.status; do [ -f $f ] && echo \"$f $(tail -1 $f)\"; done; "
+                                "for f in *.log; do echo \"LOG $f $(tail -c 300 $f | tr '\\n' ' ')\"; done",
+                  check=False)
+        status = {"logs": {}}
+        for line in out.splitlines():
+            if line.startswith("LOG "):
+                _, name, *rest = line.split(" ", 2)
+                status["logs"][name] = rest[0] if rest else ""
+            elif " " in line:
+                name, raw = line.split(" ", 1)
+                try:
+                    status[name] = json.loads(raw)
+                except json.JSONDecodeError:
+                    pass
+        return status
+
+    # -- viewers --
+    def entry(self, site: str) -> str:
+        """Needletail entry point of a region: its first distributor."""
+        return f"https://{self.session.ip(site + '-dist-a')}:19444"
+
+    def probe(self, site: str, rung: str, seconds: int, out: str, count: int, frames: bool,
+              tag: str, variant: str = "") -> str:
+        s = self.session
+        index = f"{REMOTE}/index/{rung}.index.json"
+        common_args = (f"--duration {seconds} --report {out}.json --label {tag} --count {count} "
+                       + (f"--spread-ms {min(5000, 200 * count)} " if count > 1 else "")
+                       + (f"--frames {out}.csv " if frames else ""))
+        if self.name == "nt":
+            return (f"ntcmp hls --lane nt --mode chase --url '{self.entry(site)}/live/1/master.m3u8"
+                    f"?sid={tag}-{{i}}' --ca {CA} --server-name {SERVER_NAME} --index {index} "
+                    + common_args)
+        if self.name == "cf":
+            return (f"ntcmp sub --lane cf --session {self.cf_session} --index {index} " + common_args)
+        if self.name == "whep":
+            return f"ntcmp sub --lane whep --url \"$CF_WHEP_URL\" --index {index} " + common_args
+        if self.name == "cfhls":
+            query = "?protocol=llhls" if variant != "std" else ""
+            return ("ntcmp hls --lane cfhls" + ("-std" if variant == "std" else "-ll") + " --mode auto "
+                    "--url \"https://$(echo $CF_WHEP_URL | cut -d/ -f3)/$CF_HLS_UID/manifest/video.m3u8"
+                    f"{query}\" --timeout 10s --save {out}.units " + common_args)
+        if self.name in ("lkregion", "lkmulti"):
+            port = 7880 if self.name == "lkregion" else 7890
+            return ("LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET "
+                    f"ntcmp-lk sub --lane lk --url ws://{s.ip(site + '-lk')}:{port} --room {self.room} "
+                    f"--identity {tag} --index {index} " + common_args)
+        if self.name == "lkcloud":
+            return (f". {REMOTE}/lkcloud.env; LIVEKIT_TOKEN_FILE={REMOTE}/lkcloud.tokens "
+                    f"ntcmp-lk sub --lane lk --url \"$LK_CLOUD_URL\" --room {self.room} --index {index} "
+                    + common_args)
+        raise ValueError(self.name)
+
+    def player(self, site: str, seconds: int, out: str, tag: str, variant: str = "",
+               token_line: int = 1) -> str:
+        s = self.session
+        base = (f"node /opt/compare-player/run.mjs --duration {seconds} --out {out}.json "
+                f"--label {tag} --lane {self.name}{('-' + variant) if variant else ''} --audio ")
+        if self.name == "nt":
+            return base + f"--kind hls --url '{self.entry(site)}/live/1/master.m3u8?sid={tag}-chrome'"
+        if self.name == "cf":
+            return ("export CF_REALTIME_APP_ID CF_REALTIME_APP_SECRET; " + base
+                    + f"--kind cf --session {self.cf_session}")
+        if self.name == "whep":
+            return base + "--kind whep --url \"$CF_WHEP_URL\""
+        if self.name == "cfhls":
+            query = "?protocol=llhls" if variant != "std" else ""
+            return base + ("--kind hls --url \"https://$(echo $CF_WHEP_URL | cut -d/ -f3)/$CF_HLS_UID/"
+                           f"manifest/video.m3u8{query}\"")
+        if self.name in ("lkregion", "lkmulti"):
+            port = 7880 if self.name == "lkregion" else 7890
+            return ("TOKEN=$(LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET ntcmp-lk "
+                    f"lk-token {self.room} {tag}-chrome-$RANDOM sub); " + base
+                    + f"--kind livekit --url ws://{s.ip(site + '-lk')}:{port} --token \"$TOKEN\"")
+        if self.name == "lkcloud":
+            return (f". {REMOTE}/lkcloud.env; TOKEN=$(sed -n {token_line}p {REMOTE}/lkcloud.player-tokens); "
+                    + base + "--kind livekit --url \"$LK_CLOUD_URL\" --token \"$TOKEN\"")
+        raise ValueError(self.name)
+
+    def reader(self, site: str, seconds: int, out: str, tag: str, readers: int = 1) -> str:
+        """needletail-reader, the reader of the Needletail product."""
+        return (f"/usr/local/bin/needletail-reader --stream 1 --entry {self.entry(site)} "
+                f"--session {tag}-reader --readers {readers} --duration-seconds {seconds} "
+                f"--buffer-ms 1000 --tls-ca {CA} --server-name {SERVER_NAME} --report {out}.json")
+
+
+# ---- steps ----
+
+def run_hosts(session: Session, step: str, scripts: dict[str, str], seconds: int) -> dict:
+    """Run one script on each named host at the same time and fetch the results."""
+    remote = f"{REMOTE}/runs/{session.name}/{step}"
+    local = session.dir / step
+    local.mkdir(parents=True, exist_ok=True)
+
+    def one(name: str) -> str:
+        item = session.node(name)
+        script = (f"set +e\n. {REMOTE}/env\nrm -rf {remote}; mkdir -p {remote}; cd {remote}\n"
+                  + scripts[name] + "\ntrue\n")
+        result = common.ssh(item, "bash -s", check=False, timeout=seconds + 150,
+                            stdin=script.encode())
+        (local / name).mkdir(exist_ok=True)
+        try:
+            common.rsync_from(item, remote + "/", str(local / name) + "/", timeout=600)
+        except RuntimeError as error:
+            return f"rsync failed: {error}"
+        return result.stderr.decode(errors="replace")[-400:]
+
+    started = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(scripts)) as pool:
+        futures = {name: pool.submit(one, name) for name in scripts}
+        errors = {}
+        for name, future in futures.items():
+            try:
+                text = future.result()
+            except Exception as error:  # noqa: BLE001
+                text = f"{type(error).__name__}: {error}"
+            if text.strip():
+                errors[name] = text.strip()
+    return {"started_unix": started, "seconds": round(time.time() - started, 1), "host_errors": errors}
+
+
+def step(session: Session, lane: Lane, phase: str, detail: str, rung: str, scripts: dict[str, str],
+         seconds: int, extra: dict | None = None) -> None:
+    name = f"{lane.name}.{phase}.{detail}"
+    log(f"{name}: {len(scripts)} hosts, {seconds} s")
+    result = run_hosts(session, name, scripts, seconds)
+    meta = {"step": name, "lane": lane.name, "phase": phase, "detail": detail, "rung": rung,
+            "session": session.name, "source": lane.source_status(), **result, **(extra or {})}
+    (session.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+    session.steps.append({"step": name, "seconds": result["seconds"],
+                          "host_errors": len(result["host_errors"])})
+    if result["host_errors"]:
+        log(f"  host errors: {json.dumps(result['host_errors'])[:500]}")
+
+
+def together(*commands: str) -> str:
+    return "\n".join(f"( {command} ) >/dev/null 2>>errors.log &" for command in commands if command) + "\nwait"
+
+
+def baseline(session: Session, lane: Lane, rung: str, seconds: int, phase: str = "baseline",
+             detail: str | None = None, netem: str | None = None, with_player: bool = True) -> None:
+    scripts = {}
+    for site in SITES:
+        tag = f"{session.name}-{lane.name}-{site}"
+        variants = ["ll", "std"] if lane.name == "cfhls" and phase == "baseline" else [""]
+        if lane.name == "cfhls" and phase != "baseline":
+            variants = ["ll"]
+        nano, view = [], []
+        for variant in variants:
+            suffix = f".{variant}" if variant else ""
+            nano.append(lane.probe(site, rung, seconds, f"probe{suffix}", 1, True, tag + "-nano", variant))
+            view.append(lane.probe(site, rung, seconds, f"probe{suffix}", 1, True, tag + "-view", variant))
+        if with_player:
+            # One Chrome at a time on a host: a second would share its cores.
+            first = variants[0]
+            view.append(lane.player(site, seconds, "player" + (f".{first}" if first else ""),
+                                    tag, first))
+        if lane.name == "nt":
+            view.append(lane.reader(site, seconds, "reader", tag))
+        pre = f"compare-netem apply '{netem}' >netem.log 2>&1\n" if netem else ""
+        post = "\ncompare-netem show >>netem.log 2>&1; compare-netem clear >>netem.log 2>&1" if netem else ""
+        scripts[f"{site}-nano"] = pre + together(*nano) + post
+        scripts[f"{site}-view"] = pre + together(*view) + post
+        if lane.name == "cfhls" and phase == "baseline" and with_player:
+            # The second Chrome, for standard HLS, after the first.
+            scripts[f"{site}-view"] += "\n" + together(
+                lane.player(site, seconds, "player.std", tag, "std"))
+    step(session, lane, phase, detail or rung, rung, scripts,
+         seconds * (2 if lane.name == "cfhls" and phase == "baseline" else 1),
+         {"netem": netem})
+
+
+def ttff(session: Session, lane: Lane, rung: str) -> None:
+    scripts = {}
+    hold = 12 if lane.name == "cfhls" else 6
+    for site in SITES:
+        tag = f"{session.name}-{lane.name}-{site}"
+        joins = []
+        for i in range(8):
+            joins.append(lane.probe(site, rung, hold, f"join{i}", 1, False, f"{tag}-j{i}", "")
+                         + " >/dev/null 2>>errors.log")
+        scripts[f"{site}-nano"] = "\n".join(joins)
+        plays = []
+        for i in range(3):
+            plays.append(lane.player(site, hold + 6, f"play{i}", f"{tag}-p{i}", "", token_line=i + 2)
+                         + " >/dev/null 2>>errors.log")
+        scripts[f"{site}-view"] = "\n".join(plays)
+    step(session, lane, "ttff", rung, rung, scripts, 8 * (hold + 3))
+
+
+def fanout(session: Session, lane: Lane, rung: str, seconds: int) -> None:
+    for total, spread in FANOUT.items():
+        scripts = {}
+        for site, count in spread.items():
+            tag = f"{session.name}-{lane.name}-{site}-f{total}"
+            commands = [lane.probe(site, rung, seconds, "probe", count, count == 1, tag, "")]
+            if lane.name == "nt":
+                commands.append(lane.reader(site, seconds, "reader", tag, readers=count))
+            scripts[f"{site}-view"] = (
+                "S0=$(grep '^cpu ' /proc/stat)\n" + together(*commands)
+                + "\necho \"$S0\" >cpu.txt; grep '^cpu ' /proc/stat >>cpu.txt")
+        step(session, lane, "fanout", str(total), rung, scripts, seconds, {"viewers": total})
+
+
+def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> None:
+    lane = Lane(session, name)
+    if name == "lkcloud":
+        if session.cloud is None:
+            log("lkcloud: ~/wavey.ai/LIVEKIT_CLOUD.env is not filled in; the lane is skipped")
+            return
+        session.cloud_tokens(lane.room)
+    base_phases = [phase for phase in phases if phase in ("baseline", "ttff", "impair", "fanout")]
+    try:
+        if base_phases:
+            lane.start(BASE_RUNG)
+            if "baseline" in phases:
+                baseline(session, lane, BASE_RUNG, seconds)
+            if "ttff" in phases:
+                ttff(session, lane, BASE_RUNG)
+            if "impair" in phases:
+                for label, spec in IMPAIRMENTS.items():
+                    baseline(session, lane, BASE_RUNG, 45, phase="impair", detail=label, netem=spec)
+            if "fanout" in phases:
+                fanout(session, lane, BASE_RUNG, 40)
+        if "ramp" in phases:
+            rungs = RAMP if name != "cfhls" else ["1080p6", "2160p16"]
+            for rung in rungs:
+                try:
+                    lane.start(rung)
+                except RuntimeError as error:
+                    log(f"{name}.ramp.{rung}: source failed: {str(error)[:300]}")
+                    (session.dir / f"{name}.ramp.{rung}").mkdir(exist_ok=True)
+                    (session.dir / f"{name}.ramp.{rung}" / "meta.json").write_text(json.dumps(
+                        {"step": f"{name}.ramp.{rung}", "lane": name, "phase": "ramp", "rung": rung,
+                         "source_failed": str(error)[:2000]}) + "\n")
+                    continue
+                baseline(session, lane, rung, 40, phase="ramp", with_player=True)
+    finally:
+        stop_sources(session)
+        for item in lab.viewers():
+            common.ssh(item, "compare-netem clear >/dev/null 2>&1; pkill -f run.mjs; pkill -x chrome; "
+                             "pkill -x ntcmp; pkill -x ntcmp-lk; true", check=False)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--session", required=True, help="name of the session, e.g. a1")
+    parser.add_argument("--lanes", default=",".join(LANES))
+    parser.add_argument("--phases", default="baseline,ttff,impair,fanout,ramp")
+    parser.add_argument("--seconds", type=int, default=60, help="length of the baseline")
+    args = parser.parse_args()
+    session = Session(args.session)
+    started = time.time()
+    for name in args.lanes.split(","):
+        log(f"lane {name}")
+        try:
+            run_lane(session, name, args.phases.split(","), args.seconds)
+        except Exception as error:  # noqa: BLE001 - one lane must not end the session
+            log(f"lane {name} failed: {type(error).__name__}: {str(error)[:600]}")
+    record = {"session": args.session, "lanes": args.lanes, "phases": args.phases,
+              "started_unix": started, "ended_unix": time.time(), "lab_run": session.state["run_id"],
+              "steps": session.steps}
+    existing = session.dir / "session.json"
+    history = json.loads(existing.read_text()) if existing.is_file() else []
+    history.append(record)
+    existing.write_text(json.dumps(history, indent=1) + "\n")
+    log(f"session {args.session}: {len(session.steps)} steps in {(time.time() - started) / 60:.1f} min")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""Run the audio comparison on the lab: Opus at the smallest frames each
+system forwards, and lossless 48 kHz / 24-bit stereo PCM.
+
+Every system receives the same 64-second loop from lon-src at the same time,
+and the same listeners in London, New York, Tokyo and Sydney hear all of them
+at once, so every system is measured under the same network conditions. The
+loop is locked to the wall clock and every sender sends a unit when its last
+sample has been spoken (tools/ntcmp/audio.go), so a listener knows the age of
+every sample it receives.
+
+Lanes
+  cf        Cloudflare Realtime (SFU): an Opus track; PCM blocks on a data channel
+  whep      Cloudflare Stream WHIP/WHEP: an Opus track (it has no data channel)
+  lkregion  LiveKit self-hosted, one SFU in each region: Opus track; PCM data packets
+  lkmulti   LiveKit self-hosted, multi-region set on one Redis: the same
+  lkcloud   LiveKit Cloud: the same
+  nt-opus   Needletail, SoundKit Opus in 5 ms parts from its DAW source (stream 3001)
+  nt-flac   Needletail, FLAC in 5 ms parts from its DAW source (stream 2001)
+  nt-pcm    Needletail, 24-bit PCM in 5 ms parts from its AEP1 sender (stream 4001)
+
+Configurations: opus-2.5, opus-5, opus-10, opus-20 (the frame length of the
+WebRTC senders), opus-max510 (510 kbit/s, the nearest that Opus comes to
+lossless) and pcm. Needletail's frame length is fixed at 5 ms by its
+producers, and it publishes one rendition in each configuration: Opus with
+opus-2.5, opus-5 and opus-10, FLAC with opus-20 and opus-max510, PCM with pcm.
+
+Phases
+  baseline  60 s of probes on both listener hosts of each region, and
+            headless Chrome on the viewer host for each WebRTC system in turn
+  impair    the same netem on every listener host, for each impairment
+  fanout    1, 10 and 100 listeners
+  attempts  ask each WebRTC system for an L16 and an L24 audio track
+
+Results: target/compare/runs/SESSION/audio.CONFIG.PHASE.DETAIL/HOST/LANE.*.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import pathlib
+import subprocess
+import sys
+import time
+
+HERE = pathlib.Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_file_location("compare_run", HERE / "compare-run.py")
+run = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(run)
+common = run.common
+
+REMOTE = run.REMOTE
+AUDIO = f"{REMOTE}/audio"
+INDEX = f"{REMOTE}/index"
+SITES = run.SITES
+CONFIGS = ["opus-2.5", "opus-5", "opus-10", "opus-20", "opus-max510", "pcm"]
+WEBRTC = ["cf", "whep", "lkregion", "lkmulti", "lkcloud"]
+NEEDLETAIL = {"nt-opus": (3001, "nt-opus"), "nt-flac": (2001, "nt-flac"), "nt-pcm": (4001, "pcm-5ms")}
+# One Needletail rendition at a time. The contributor is a 1 vCPU Nanode: one
+# audio rendition takes 30% to 38% of it, two take 65% to 70%, and with three
+# it keeps a standing backlog (see the write-up). So each configuration
+# publishes one rendition, and the contributor is restarted with that format.
+NT_RENDITION = {"opus-2.5": "nt-opus", "opus-5": "nt-opus", "opus-10": "nt-opus",
+                "opus-20": "nt-flac", "opus-max510": "nt-flac", "pcm": "nt-pcm"}
+NT_FORMAT = {"nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
+# Three readers of each Needletail rendition:
+#   (none)  one request for each 5 ms part, HTTP/2: what needletail-reader does
+#   -w      40 requests in flight (200 ms of parts), HTTP/2
+#   -h3     40 requests in flight, HTTP/3
+NT_READERS = {"": "--window 1", "-w": "--window 40", "-h3": "--window 40 --http3"}
+SAMPLED = ("contrib-lon", "relay-primary", "relay-secondary")
+SAMPLER = (
+    "[ -f /var/tmp/compare-sampler.pid ] && kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
+    "cat >/var/tmp/compare-sampler.sh <<'EOS'\n"
+    "echo $$ >/var/tmp/compare-sampler.pid\n"
+    "while true; do\n"
+    "  line=\"$(date +%s) $(head -1 /proc/stat)\"\n"
+    "  for name in av-mesh av-contrib livekit-server; do for pid in $(pgrep -x $name); do\n"
+    "    line=\"$line | $name $pid $(awk '{print $14+$15}' /proc/$pid/stat) $(awk '/VmRSS/{print $2}' /proc/$pid/status)\"\n"
+    "  done; done\n"
+    "  echo \"$line\"; sleep 5\n"
+    "done\n"
+    "EOS\n"
+    "(setsid nohup sh /var/tmp/compare-sampler.sh >/var/tmp/compare-sampler.log 2>&1 </dev/null &)")
+FANOUT = {1: {"lon": 1}, 10: {"lon": 3, "new": 3, "tok": 2, "syd": 2},
+          100: {"lon": 25, "new": 25, "tok": 25, "syd": 25}}
+CLOUD_PER_HOST = 24     # LiveKit Cloud's free plan allows 100 connections in all
+
+
+class Audio:
+    def __init__(self, session: run.Session, config: str, lanes: list[str]):
+        self.session = session
+        self.config = config
+        self.pcm = config == "pcm"
+        self.lanes = [lane for lane in lanes if lane in WEBRTC and not (self.pcm and lane == "whep")]
+        if session.cloud is None and "lkcloud" in self.lanes:
+            self.lanes.remove("lkcloud")
+            run.log("lkcloud: ~/wavey.ai/LIVEKIT_CLOUD.env is not filled in; the lane is skipped")
+        self.nt_base = [lane for lane in lanes if lane == NT_RENDITION[config]]
+        self.nt = [lane + suffix for lane in self.nt_base for suffix in NT_READERS]
+        self.room = f"needletail-compare-{session.name}-{config.replace('.', '')}"
+        self.cf_session = ""
+        self.index = f"{INDEX}/pcm-2.5ms.index.json" if self.pcm else f"{INDEX}/{config}.index.json"
+
+    # ---- sources ----
+    def start(self) -> None:
+        s = self.session
+        run.stop_sources(s)
+        run.src(s, "pkill -x daw-test-source; pkill -x aep1-48k-probe; true", check=False)
+        media = f"--audio {AUDIO}/audio.s24le --data" if self.pcm else f"--audio {AUDIO}/{self.config}.opus"
+        if self.nt:
+            contributor = s.node("contrib-lon")
+            wanted = NT_FORMAT[self.nt_base[0]]
+            settings = json.loads((common.ARTIFACT_DIR / "settings.json").read_text())
+            if settings.get("daw_hls_formats") != wanted:
+                subprocess.run([sys.executable, str(HERE.parent / "linode-small-mesh-deploy.py"), "restart",
+                                "--roles", "contributor", "--set", f"daw_hls_formats={wanted}"],
+                               check=True, capture_output=True)
+            else:
+                common.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
+                                        "systemctl is-active needletail-contrib.service")
+            target = f"{contributor['vlan_ipv4']}:27100"
+            # Both producers start on a boundary of the 64-second loop. The DAW
+            # source delivers 512-sample buffers when they are complete; the AEP1
+            # sender is started 5 ms later so that it sends a block when its last
+            # sample has been spoken.
+            daw = run.background("nt-daw", (
+                "env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS=${START}000000000 daw-test-source "
+                f"--direct-contributor --prepared-pcm {target} 1900 {REMOTE}/daw-fixture"))
+            aep1 = run.background("nt-pcm", (
+                f"/usr/local/bin/aep1-48k-probe send --target {target} "
+                "--session-id ${START}005000000 --group-id 0 --duration-seconds 1900 --payload pcm "
+                f"--channels 2 --group-channels 8 --pcm-s24le-file {AUDIO}/audio.s24le "
+                "--repair-percent 12 --min-repair-symbols 1"))
+            run.src(s, (
+                "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
+                "[ $(( START - NOW )) -lt 8 ] && START=$(( START + 64 )); export START; "
+                "echo $START >nt.start; " + (aep1 if self.nt_base[0] == "nt-pcm" else daw)))
+        if "cf" in self.lanes:
+            run.src(s, "rm -f cf.session; " + run.background(
+                "cf", f"ntcmp pub --lane cf {media} --session-out cf.session --status cf.status"))
+        if "whep" in self.lanes:
+            run.src(s, run.background(
+                "whep", f"ntcmp pub --lane whip --url \"$CF_WHIP_URL\" {media} --status whep.status"))
+        keys = "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET"
+        if "lkregion" in self.lanes:
+            for site in SITES:
+                run.src(s, run.background(f"lkregion-{site}", (
+                    f"{keys} ntcmp-lk pub --lane lk --url ws://{s.ip(site + '-lk')}:7880 "
+                    f"--room {self.room} {media} --status lkregion-{site}.status")))
+        if "lkmulti" in self.lanes:
+            run.src(s, run.background("lkmulti", (
+                f"{keys} ntcmp-lk pub --lane lk --url ws://{s.ip('lon-lk')}:7890 "
+                f"--room {self.room} {media} --status lkmulti.status")))
+        if "lkcloud" in self.lanes:
+            s.cloud_tokens(self.room)
+            run.src(s, run.background("lkcloud", (
+                "LIVEKIT_TOKEN=$LK_CLOUD_PUB_TOKEN ntcmp-lk pub --lane lk --url \"$LK_CLOUD_URL\" "
+                f"--room {self.room} {media} --status lkcloud.status")))
+        if "cf" in self.lanes:
+            for _ in range(20):
+                time.sleep(1)
+                self.cf_session = run.src(s, "cat cf.session 2>/dev/null", check=False).strip()
+                if self.cf_session:
+                    break
+            if not self.cf_session:
+                run.log("cf: no publisher session: " + run.src(s, "tail -c 300 cf.log", check=False))
+                self.lanes.remove("cf")
+        if self.nt:
+            wait = int(run.src(s, "echo $(( $(cat nt.start) - $(date +%s) ))").strip() or 0)
+            time.sleep(max(0, wait) + 12)
+        else:
+            time.sleep(8)
+        alive = run.src(s, "pgrep -c -x ntcmp; pgrep -c -x ntcmp-lk; pgrep -c -x daw-test-source; "
+                           "pgrep -c -x aep1-48k-probe", check=False).split()
+        run.log(f"{self.config}: sources running (ntcmp, ntcmp-lk, daw, aep1): {' '.join(alive)}")
+
+    def status(self) -> dict:
+        return run.Lane(self.session, "audio").source_status()
+
+    # ---- listeners ----
+    def probe(self, lane: str, site: str, seconds: int, count: int, tag: str) -> str:
+        s = self.session
+        if lane == "lkcloud" and count > CLOUD_PER_HOST:
+            count = CLOUD_PER_HOST
+        # A crowd arrives over ten seconds at most: 2.5 listeners a second on each host.
+        tail = (f"--duration {seconds} --skip-seconds {5 if count == 1 else 12} "
+                f"--report {lane}.probe.json --label {tag} "
+                f"--count {count} " + (f"--spread-ms {min(10000, 400 * count)} " if count > 1 else "")
+                + (f"--frames {lane}.probe.csv " if count == 1 else ""))
+        data = "--data " if self.pcm else ""
+        if lane.startswith("nt-"):
+            base = "-".join(lane.split("-")[:2])
+            stream, index = NEEDLETAIL[base]
+            entry = f"https://{s.ip(site + '-dist-a')}:19444"
+            return (f"ntcmp hls --lane {lane} --mode chase {NT_READERS[lane[len(base):]]} "
+                    f"--url '{entry}/live/{stream}/master.m3u8"
+                    f"?sid={tag}-{lane}-{{i}}' --ca {run.CA} --server-name {run.SERVER_NAME} "
+                    f"--audio-index {INDEX}/{index}.index.json " + tail)
+        if lane == "cf":
+            return (f"ntcmp sub --lane cf --session {self.cf_session} --no-video {data}"
+                    f"--audio-index {self.index} " + tail)
+        if lane == "whep":
+            return (f"ntcmp sub --lane whep --url \"$CF_WHEP_URL\" --no-video "
+                    f"--audio-index {self.index} " + tail)
+        if lane in ("lkregion", "lkmulti"):
+            port = 7880 if lane == "lkregion" else 7890
+            return ("LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET "
+                    f"ntcmp-lk sub --lane lk --url ws://{s.ip(site + '-lk')}:{port} --room {self.room} "
+                    f"--identity {tag}-{lane} {data}--audio-index {self.index} " + tail)
+        if lane == "lkcloud":
+            return (f". {REMOTE}/lkcloud.env; LIVEKIT_TOKEN_FILE={REMOTE}/lkcloud.tokens "
+                    f"ntcmp-lk sub --lane lk --url \"$LK_CLOUD_URL\" --room {self.room} {data}"
+                    f"--audio-index {self.index} " + tail)
+        raise ValueError(lane)
+
+    def player(self, lane: str, site: str, seconds: int, tag: str, line: int) -> str:
+        s = self.session
+        # The listener is tuned for latency too: the smallest jitter buffer
+        # target that Chrome accepts.
+        base = (f"node /opt/compare-player/run.mjs --duration {seconds} --out {lane}.player.json "
+                f"--label {tag} --lane {lane} --audio --audio-only --jitter-target 0 ")
+        if lane == "cf":
+            return ("export CF_REALTIME_APP_ID CF_REALTIME_APP_SECRET; " + base
+                    + f"--kind cf --session {self.cf_session}")
+        if lane == "whep":
+            return base + "--kind whep --url \"$CF_WHEP_URL\""
+        if lane in ("lkregion", "lkmulti"):
+            port = 7880 if lane == "lkregion" else 7890
+            return ("TOKEN=$(LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET ntcmp-lk "
+                    f"lk-token {self.room} {tag}-chrome-$RANDOM sub); " + base
+                    + f"--kind livekit --url ws://{s.ip(site + '-lk')}:{port} --token \"$TOKEN\"")
+        if lane == "lkcloud":
+            return (f". {REMOTE}/lkcloud.env; TOKEN=$(sed -n {line}p {REMOTE}/lkcloud.player-tokens); "
+                    + base + "--kind livekit --url \"$LK_CLOUD_URL\" --token \"$TOKEN\"")
+        raise ValueError(lane)
+
+    # ---- steps ----
+    def step(self, phase: str, detail: str, seconds: int, chrome: int, netem: str | None,
+             fan: dict | None = None, token_line: int = 1, only: list[str] | None = None) -> None:
+        s = self.session
+        scripts = {}
+        lanes = [lane for lane in self.lanes + self.nt if only is None or lane in only]
+        if not lanes:
+            return
+        for site in (fan or {name: 1 for name in SITES}):
+            tag = f"{s.name}-{site}"
+            count = (fan or {}).get(site, 1)
+            hosts = [f"{site}-view"] if fan else [f"{site}-nano", f"{site}-view"]
+            for host in hosts:
+                probes = [self.probe(lane, site, seconds, count, f"{tag}-{host[4:]}") for lane in lanes]
+                script = run.together(*probes) if not (chrome and host.endswith("-view")) else (
+                    "\n".join(f"( {probe} ) >/dev/null 2>>errors.log &" for probe in probes))
+                if chrome and host.endswith("-view"):
+                    script += "\n" + "\n".join(
+                        self.player(lane, site, chrome, tag, token_line) + " >/dev/null 2>>errors.log"
+                        for lane in self.lanes if lane in lanes) + "\nwait"
+                if netem:
+                    script = (f"compare-netem apply '{netem}' >netem.log 2>&1\n" + script
+                              + "\ncompare-netem show >>netem.log 2>&1; compare-netem clear >>netem.log 2>&1")
+                scripts[host] = script
+        name = f"audio.{self.config}.{phase}.{detail}"
+        total = max(seconds, chrome * len(self.lanes) + 10 if chrome else 0)
+        run.log(f"{name}: {len(scripts)} hosts, {total} s, lanes {' '.join(lanes)}")
+        result = run.run_hosts(s, name, scripts, total)
+        meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
+                "lanes": lanes, "listeners": sum((fan or {}).values()) if fan else None,
+                "session": s.name, "source": self.status(), **result}
+        (s.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+        s.steps.append({"step": name, "seconds": result["seconds"]})
+        if result["host_errors"]:
+            run.log(f"  host errors: {json.dumps(result['host_errors'])[:400]}")
+
+
+def attempts(session: run.Session) -> None:
+    """Ask each WebRTC system for an uncompressed audio track, and keep its answer."""
+    out = []
+    s = session
+    room = f"needletail-compare-{s.name}-attempt"
+    if s.cloud is not None:
+        s.cloud_tokens(room)
+    keys = "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET"
+    for mime in ("audio/L16", "audio/L24"):
+        commands = {
+            "cf": f"ntcmp pub --lane cf --codec-attempt {mime} --duration 12",
+            "whep": f"ntcmp pub --lane whip --url \"$CF_WHIP_URL\" --codec-attempt {mime} --duration 12",
+            "lkself": (f"{keys} ntcmp-lk pub --lane lk --url ws://{s.ip('lon-lk')}:7880 --room {room} "
+                       f"--codec-attempt {mime} --duration 12 2>lk-attempt.err"),
+        }
+        if s.cloud is not None:
+            commands["lkcloud"] = ("LIVEKIT_TOKEN=$LK_CLOUD_PUB_TOKEN ntcmp-lk pub --lane lk "
+                                   f"--url \"$LK_CLOUD_URL\" --room {room} --codec-attempt {mime} "
+                                   "--duration 12 2>lk-attempt.err")
+        for lane, command in commands.items():
+            text = run.src(s, command + "; true", check=False, timeout=90)
+            try:
+                record = json.loads(text[text.index("{"):])
+            except ValueError:
+                record = {"raw": text[-600:]}
+            if lane.startswith("lk"):
+                record["client_log"] = run.src(
+                    s, "grep -iE 'published track|codec|remote description' lk-attempt.err | "
+                       "grep -v 'pion.ice' | cut -c1-260 | tail -4", check=False)[-900:]
+            record["system"], record["mime"] = lane, mime
+            out.append(record)
+            run.log(f"attempt {lane} {mime}: {json.dumps(record)[:260]}")
+    (s.dir / "codec-attempts.json").write_text(json.dumps(out, indent=1) + "\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--session", required=True)
+    parser.add_argument("--configs", default=",".join(CONFIGS))
+    parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL)))
+    parser.add_argument("--phases", default="baseline,impair,fanout,attempts")
+    parser.add_argument("--seconds", type=int, default=60)
+    parser.add_argument("--chrome-seconds", type=int, default=25)
+    args = parser.parse_args()
+    session = run.Session(args.session)
+    phases = args.phases.split(",")
+    started = time.time()
+    sampled = [item for item in session.nodes.values()
+               if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit")]
+    common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
+    time.sleep(5)
+    try:
+        if "attempts" in phases:
+            attempts(session)
+        for config in args.configs.split(","):
+            audio = Audio(session, config, args.lanes.split(","))
+            full = config in ("opus-2.5", "pcm")       # the two lanes of the comparison
+            try:
+                audio.start()
+                chrome = 0 if audio.pcm else args.chrome_seconds
+                if "baseline" in phases:
+                    audio.step("baseline", "clean", args.seconds, chrome, None)
+                if "impair" in phases and full:
+                    for label, spec in run.IMPAIRMENTS.items():
+                        audio.step("impair", label, 35, 20 if chrome else 0, spec, token_line=2)
+                if "fanout" in phases and full:
+                    # Two passes, so that systems that share a node are not
+                    # loaded together: the two self-hosted LiveKit lanes share
+                    # the London Nanode, and the Needletail readers share the edges.
+                    first = [lane for lane in audio.lanes if lane != "lkmulti"] + audio.nt_base
+                    second = ["lkmulti"] + [lane + "-h3" for lane in audio.nt_base]
+                    for total, spread in FANOUT.items():
+                        audio.step("fanout", str(total), 40, 0, None, fan=spread, only=first)
+                        audio.step("fanoutb", str(total), 40, 0, None, fan=spread, only=second)
+            except Exception as error:  # noqa: BLE001 - one configuration must not end the session
+                run.log(f"{config} failed: {type(error).__name__}: {str(error)[:500]}")
+    finally:
+        run.stop_sources(session)
+        run.src(session, "pkill -x daw-test-source; pkill -x aep1-48k-probe; true", check=False)
+        for item in run.lab.viewers():
+            common.ssh(item, "compare-netem clear >/dev/null 2>&1; pkill -f run.mjs; pkill -x chrome; "
+                             "pkill -x ntcmp; pkill -x ntcmp-lk; true", check=False)
+    (session.dir / "samplers").mkdir(exist_ok=True)
+
+    def collect(item: dict) -> None:
+        text = common.ssh_text(item, "kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
+                                     "cat /var/tmp/compare-sampler.log",
+                               check=False)
+        (session.dir / "samplers" / f"{item['name']}.log").write_text(text + "\n")
+
+    common.parallel(sampled, collect)
+    record = {"session": args.session, "kind": "audio", "configs": args.configs, "lanes": args.lanes,
+              "phases": args.phases, "started_unix": started, "ended_unix": time.time(),
+              "lab_run": session.state["run_id"], "steps": session.steps}
+    path = session.dir / "session.json"
+    history = json.loads(path.read_text()) if path.is_file() else []
+    history.append(record)
+    path.write_text(json.dumps(history, indent=1) + "\n")
+    run.log(f"audio session {args.session}: {len(session.steps)} steps in "
+            f"{(time.time() - started) / 60:.1f} min")
+
+
+if __name__ == "__main__":
+    main()
