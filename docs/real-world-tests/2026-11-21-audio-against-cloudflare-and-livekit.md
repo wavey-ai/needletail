@@ -80,7 +80,8 @@ Where Needletail loses:
   about a second late in the two sessions of three in which one London edge
   reached 171% and 174% of one vCPU (86% and 88% of its two), losing up to
   5.3% of the parts; in Sydney one session lost 12.6%. The same crowd of
-  Opus was served with nothing lost (unit latency 12, 43, 119 and 138 ms).
+  Opus was served with nothing lost (unit latency 12, 43, 119 and 138 ms
+  with the DAW source's buffer, about 5 ms less without it).
   Self-hosted LiveKit with an SFU in each region served 100 PCM listeners at
   about the latency of one; its multi-region set was 7.7 to 7.9 s late.
 - **Burst loss on the UDP mode.** With Gilbert-Elliott bursts (4.8% lost,
@@ -466,9 +467,14 @@ listener was 100 ms away, in all three sessions, as in the first pass.
 
 ### Listeners
 
-One and ten listeners: every system served them all. LiveKit and PCM stayed at
-the latency of one. With ten, Needletail's Opus was about 5.5 ms later in
-London and 5 ms later in Sydney, and Cloudflare 5 to 9 ms later in Sydney.
+One and ten listeners: every system served them all, at about the latency of
+one; Cloudflare was 5 to 9 ms later in Sydney with ten.
+
+A listener of a crowd keeps percentiles, not every unit, so the DAW source's
+buffer cannot be taken off part by part: in the crowd tables Needletail's
+Opus and FLAC figures (both client modes) include it, 5.2 ms at the median.
+The one-listener column has it taken off; the difference between that column
+and the crowd columns is this buffer, not the crowd.
 
 One hundred listeners, 25 on one host in each region. The UDP listeners ran
 together with 25 HTTP/3 listeners of the same stream and with the LiveKit
@@ -478,7 +484,8 @@ each region.
 
 Figures are the unit latency of the median listener.
 
-- **Needletail, UDP mode:** Opus at 12, 43, 119 and 138 ms, nothing lost.
+- **Needletail, UDP mode:** Opus at 12, 43, 119 and 138 ms with the DAW
+  buffer (about 7, 38, 114 and 133 ms without it), nothing lost.
   PCM in London about a second late in two sessions of three (up to 5.3%
   lost), and 34, 111 and 129 ms elsewhere, with 12.6% lost in Sydney in one
   session. In those sessions one London edge was at 171% and 174% of one
@@ -625,7 +632,7 @@ scripts/compare/cloudflare.py teardown
 
 ## Tables
 
-### Opus, shortest frame (2.5 ms; Needletail 5 ms)
+### Opus, shortest frame (2.5 ms)
 
 Mouth to ear, played on arrival, median (ms):
 
