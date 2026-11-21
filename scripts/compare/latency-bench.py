@@ -108,6 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seconds", type=int, default=60, help="D: how long the readers listen")
     parser.add_argument("--readers", type=int, default=1, help="N: readers of each kind on each host")
     parser.add_argument("--hosts", default=",".join(READER_HOSTS), help="reader namespaces")
+    parser.add_argument("--video", action="store_true",
+                        help="also run the lab's 4K source (SRT into the contributor), so the "
+                             "audio crosses a mesh that carries 4K")
     parser.add_argument("--payload", choices=sorted(PAYLOAD_STREAM), default="pcm",
                         help="what the AEP1 sender sends (opus: CELT frames encoded by the probe "
                              "from the same loop); the stream follows (pcm 4001, flac 2001, opus 3001)")
@@ -474,6 +477,8 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     steps["hops"]["source_start_ns"] = start * 1_000_000_000
     steps["sender"]["command"] = sender_command(args, start, steps["media"]["loop"])
     sender_log = open(out / "sender.log", "ab")
+    if args.video:
+        lab.start_sources(args.seconds + 120, video=True, audio=None)
     sender = subprocess.Popen(lab.enter("contrib-lon") + steps["sender"]["command"], stdout=sender_log,
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")
