@@ -461,7 +461,7 @@ def remote_readers(self, key: str, stream: int, count: int, seconds: int,
 
 def deployed(key: str):
     """The value of a setting that the scenario in hand deployed."""
-    for item in _deployed["overrides"]:
+    for item in _deployed["overrides"] or []:
         name, _, value = item.partition("=")
         if name == key:
             return json.loads(value)
@@ -550,7 +550,11 @@ def prepare() -> None:
 
 # ------------------------------------------------------------------ the run
 
-_deployed = {"overrides": []}
+# What this process has deployed. `None`: nothing yet, so the first scenario
+# deploys its settings whatever an earlier run left on the lab. A run that
+# began on the settings of the run before it played 17 streams where it
+# meant to play three.
+_deployed = {"overrides": None}
 
 
 def deploy_settings(overrides: list[str]) -> None:
