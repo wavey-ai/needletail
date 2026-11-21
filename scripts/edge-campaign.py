@@ -1438,12 +1438,16 @@ def slope(points: list[tuple[float, float]]) -> float:
 
 # ================================================================== long tail
 
+# The long tail is tested with a small album and few slots, so that the
+# contributor is not the limit: 4K and two tracks in two codecs are five
+# streams. The album of eight tracks (17 streams) is the capacity scenario.
+SMALL_ALBUM = [VIDEO, 2001, 2002, 3001, 3002]
 ALBUM = [VIDEO] + [2001 + track for track in range(8)] + [3001 + track for track in range(8)]
 
 
-def album_readers(ctx, seconds: int, **options) -> dict:
-    return {stream: ctx.readers(f"s{stream}", stream, 1, seconds, **options)
-            for stream in ALBUM}
+def album_readers(ctx, seconds: int, streams=None, prefix="s", **options) -> dict:
+    return {stream: ctx.readers(f"{prefix}{stream}", stream, 1, seconds, **options)
+            for stream in (streams or ALBUM)}
 
 
 def slot_refusals(names) -> dict:
@@ -1452,29 +1456,33 @@ def slot_refusals(names) -> dict:
     import re
     out = {}
     for name in names:
-        text = lab.node_log(name)
+        text = re.sub(r"\x1b\[[0-9;]*m", "", lab.node_log(name))
         refused = sorted({int(item) for item in re.findall(
-            r"stream_id\S*?=\S*?(\d+)[^\n]*every playlist slot holds a live stream", text)})
+            r"every playlist slot holds a live stream[^\n]*?stream_id=(\d+)", text)})
         if refused:
             out[name] = refused
     return out
 
 
+def plays_clean(job) -> bool:
+    summary = job.summary
+    return (summary.get("readers_ok") == 1 and summary.get("parts_missing") == 0
+            and summary.get("longest_stall_ms", 1) == 0)
+
+
 @scenario("long-tail-one-stream-too-many", "audience",
-          "A region carries 17 streams: 4K video and an album of eight tracks, lossless and "
-          "HQ. A node has 16 playlist slots. What do the readers of each stream see?",
-          "Sixteen streams play without a missing part and without a stall. The stream "
-          "that does not fit is refused by name on the nodes that are full, and its "
-          "readers are told at once that it is not there.",
-          needs=["daw_album_tracks=8"])
+          "A region carries five streams, and every node has four playlist slots. What do "
+          "the readers of each stream see?",
+          "Four streams play without a missing part and without a stall. The stream that "
+          "does not fit is refused by name on the nodes that are full, and its readers are "
+          "told at once that it is not there.",
+          needs=["daw_album_tracks=2", "playlist_slots=4"])
 def long_tail_full(ctx):
     time.sleep(8)
-    jobs = album_readers(ctx, 40)
+    jobs = album_readers(ctx, 40, SMALL_ALBUM)
     ctx.wait_readers()
-    played = [stream for stream, job in jobs.items()
-              if job.summary.get("readers_ok") == 1 and job.summary.get("parts_missing") == 0
-              and job.summary.get("longest_stall_ms", 1) == 0]
-    absent = [stream for stream in ALBUM if stream not in played]
+    played = [stream for stream, job in jobs.items() if plays_clean(job)]
+    absent = [stream for stream in SMALL_ALBUM if stream not in played]
     refused = slot_refusals(lab.names())
     ctx.measure("streams_played_clean", played)
     ctx.measure("streams_not_played", {
@@ -1482,7 +1490,7 @@ def long_tail_full(ctx):
             "readers_ok", "parts_received", "parts_missing", "stalls", "longest_stall_ms",
             "request_errors")} for stream in absent})
     ctx.measure("refused_for_want_of_a_slot", refused)
-    ctx.check("sixteen streams play without a missing part or a stall", len(played) == 16,
+    ctx.check("four streams play without a missing part or a stall", len(played) == 4,
               f"{len(played)} played clean; not clean: {absent}")
     named = {stream for streams in refused.values() for stream in streams}
     ctx.check("the stream that does not play is the one that the full nodes refuse by name",
@@ -1491,38 +1499,68 @@ def long_tail_full(ctx):
         status, _head, _body = lab.curl("lon-dist-a", f"/live/{stream}/stream.m3u8", timeout=6)
         ctx.check(f"the entry point answers 404 for stream {stream} at once", status == 404,
                   f"HTTP {status}")
-    ctx.gap = "a node holds 16 streams unless --playlist-slots is raised"
+    ctx.gap = "a node holds as many streams as it has playlist slots (--playlist-slots)"
 
 
 @scenario("long-tail-more-slots", "audience",
-          "The same 17 streams with 24 playlist slots on every node. Do they all play, and "
-          "can one edge serve a reader of every stream?",
+          "The same five streams with eight playlist slots on every node. Do they all play, "
+          "and can one edge serve a reader of every stream?",
           "Every stream plays without a missing part and without a stall, through the "
-          "entry point and on one edge that holds all 17.",
-          needs=["daw_album_tracks=8", "playlist_slots=24"])
+          "entry point and on one edge that holds all five.",
+          needs=["daw_album_tracks=2", "playlist_slots=8"])
 def long_tail_slots(ctx):
     time.sleep(8)
-    jobs = album_readers(ctx, 40)
+    jobs = album_readers(ctx, 40, SMALL_ALBUM)
     ctx.wait_readers()
     for stream, job in jobs.items():
         ctx.expect_clean(job, f"stream {stream}")
     ctx.measure("refused_for_want_of_a_slot", slot_refusals(lab.names()))
     core.idle_edges(30)
-    pinned = {stream: ctx.readers(f"one-edge-s{stream}", stream, 1, 30, cache="lon-edge-1")
-              for stream in ALBUM}
-    ctx.at(60)
+    began = time.time()
+    pinned = album_readers(ctx, 30, SMALL_ALBUM, prefix="one-edge-s", cache="lon-edge-1")
+    time.sleep(max(0.0, began + 12 - time.time()))
     held = lab.edge_view("lon-edge-1")["playlists"]
     ctx.wait_readers(*pinned.values())
-    ctx.check("one edge holds all 17 playlists", len(held) >= 17, sorted(held, key=int))
-    clean = [stream for stream, job in pinned.items()
-             if job.summary.get("readers_ok") == 1 and job.summary.get("parts_missing") == 0
-             and job.summary.get("longest_stall_ms", 1) == 0]
-    ctx.check("every stream plays clean on the one edge", len(clean) == 17,
-              f"{len(clean)} of 17; not clean: {[s for s in ALBUM if s not in clean]}")
-    node = lab.read_cgroup(lab.cgroup_dir("lon-dist-a"))
-    ctx.measure("distributor_memory_mb", round(node.get("memory_bytes", 0) / 1e6))
-    ctx.measure("edge_memory_mb", round(lab.read_cgroup(
-        lab.cgroup_dir("lon-edge-1")).get("memory_bytes", 0) / 1e6))
+    ctx.check("one edge holds all five playlists", len(held) >= 5, sorted(held, key=int))
+    clean = [stream for stream, job in pinned.items() if plays_clean(job)]
+    ctx.check("every stream plays clean on the one edge", len(clean) == 5,
+              f"{len(clean)} of 5; not clean: {[s for s in SMALL_ALBUM if s not in clean]}")
+
+
+@scenario("capacity-seventeen-streams", "capacity",
+          "A region carries 17 streams: 4K video and an album of eight tracks, lossless and "
+          "HQ, all audio in 5 ms parts: 3,205 parts a second. Which role is the limit on "
+          "one vCPU?",
+          "Reported: the CPU of each role and the share of the parts that a reader of each "
+          "stream receives. No relay, distributor or edge is the limit.",
+          needs=["daw_album_tracks=8", "playlist_slots=24"])
+def capacity_seventeen_streams(ctx):
+    time.sleep(10)
+    roles = {"contributor": "contrib-lon", "relay": "relay-primary",
+             "distributor": "lon-dist-a", "edge": "lon-edge-1"}
+    before = {role: cpu_seconds(name) for role, name in roles.items()}
+    began = time.time()
+    jobs = album_readers(ctx, 40, ALBUM, cache="lon-edge-1")
+    ctx.wait_readers()
+    elapsed = time.time() - began
+    cpu = {role: round((cpu_seconds(name)[0] - before[role][0]) / elapsed * 100, 1)
+           for role, name in roles.items()}
+    ctx.measure("cpu_percent_by_role", cpu)
+    received = {}
+    for stream, job in jobs.items():
+        expected = 40 * (5 if stream == VIDEO else 200)
+        received[stream] = round(job.summary.get("parts_received", 0) / expected, 2)
+    ctx.measure("share_of_parts_received", received)
+    ctx.measure("streams_played_clean", [stream for stream, job in jobs.items()
+                                         if plays_clean(job)])
+    ctx.measure("refused_for_want_of_a_slot", slot_refusals(lab.names()))
+    ctx.check("no relay, distributor or edge is above 90% of its CPU",
+              all(cpu[role] < 90 for role in ("relay", "distributor", "edge")), cpu)
+    ctx.check("every stream plays without a missing part or a stall",
+              all(plays_clean(job) for job in jobs.values()),
+              f"CPU {cpu}; share of parts received {received}")
+    ctx.gap = ("a contributor on one vCPU does not carry sixteen audio streams of 5 ms "
+               "parts beside 4K: the cost is for each part, and grouped parts are gap 9")
 
 
 @scenario("capacity-scales-with-edges", "capacity",

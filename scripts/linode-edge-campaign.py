@@ -79,7 +79,7 @@ LINODE_SET = [
     "player-hlsjs-4k", "player-hlsjs-4k-second-region", "player-hlsjs-cache-kill",
     "player-hlsjs-region-lost",
     "ladder-playlists", "ladder-hlsjs-browser-cap", "ladder-hlsjs-browser-steps",
-    "long-tail-one-stream-too-many", "long-tail-more-slots",
+    "long-tail-one-stream-too-many", "long-tail-more-slots", "capacity-seventeen-streams",
 ]
 
 
@@ -536,10 +536,12 @@ def prepare() -> None:
     ladder = [str(path) for _stream, path, *_ in lab.LADDER[1:] if path.exists()]
     if ladder:
         common.rsync_to(source, ladder, f"{REMOTE_MEDIA}/video/", timeout=1800)
-    for album in sorted(lab.DAW_TRACKS.parent.glob("daw-nexus-album-8-track-pcm-*"))[-1:]:
-        common.ssh(source, f"mkdir -p {REMOTE_MEDIA}/daw-tracks-8")
-        common.rsync_to(source, [str(album) + "/"], f"{REMOTE_MEDIA}/daw-tracks-8/",
-                        timeout=3600)
+    for tracks in (2, 8):
+        for album in sorted(lab.DAW_TRACKS.parent.glob(
+                f"daw-nexus-album-{tracks}-track-pcm-*"))[-1:]:
+            common.ssh(source, f"mkdir -p {REMOTE_MEDIA}/daw-tracks-{tracks}")
+            common.rsync_to(source, [str(album) + "/"],
+                            f"{REMOTE_MEDIA}/daw-tracks-{tracks}/", timeout=3600)
     for host in ("lon-readers", "new-readers"):
         common.ssh(by_name(host), f"{READER} --help >/dev/null && mkdir -p {REMOTE_RUNS}")
     print(f"prepared: {lab.VIDEO_CLIP.name} and {lab.DAW_TRACKS.name} on {source['name']}; "
