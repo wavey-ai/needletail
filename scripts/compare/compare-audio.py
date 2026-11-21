@@ -15,15 +15,25 @@ Lanes
   lkregion  LiveKit self-hosted, one SFU in each region: Opus track; PCM data packets
   lkmulti   LiveKit self-hosted, multi-region set on one Redis: the same
   lkcloud   LiveKit Cloud: the same
-  nt-opus   Needletail, SoundKit Opus in 5 ms parts from its DAW source (stream 3001)
-  nt-flac   Needletail, FLAC in 5 ms parts from its DAW source (stream 2001)
-  nt-pcm    Needletail, 24-bit PCM in 5 ms parts from its AEP1 sender (stream 4001)
+  nt-popus  Needletail, Opus in 2.5 ms parts (120 samples, CELT) that its AEP1
+            sender encodes from the same loop (stream 3001)
+  nt-opus   Needletail, SoundKit Opus from its DAW source (stream 3001)
+  nt-flac   Needletail, FLAC from its DAW source (stream 2001)
+  nt-pcm    Needletail, 24-bit PCM from its AEP1 sender, one 48-sample (1 ms)
+            epoch per part (--nt-pcm-samples; stream 4001)
+  nt-udp    Needletail's RaptorQ FEC UDP client (needletail-udp-client, from
+            av-mesh) of the same Needletail stream, assigned an edge by the
+            site's distributor. It reports publish -> arrival per part; the
+            analysis adds the HLS lane's source -> publish of the same stream
+            for an estimate of its latency from the source.
 
 Configurations: opus-2.5, opus-5, opus-10, opus-20 (the frame length of the
 WebRTC senders), opus-max510 (510 kbit/s, the nearest that Opus comes to
-lossless) and pcm. Needletail's frame length is fixed at 5 ms by its
-producers, and it publishes one rendition in each configuration: Opus with
-opus-2.5, opus-5 and opus-10, FLAC with opus-20 and opus-max510, PCM with pcm.
+lossless) and pcm. Needletail parts are one producer frame each, the smallest
+by default: it publishes one rendition in each configuration, Opus 2.5 ms
+from the AEP1 sender with opus-2.5 (or from its DAW source when nt-popus is
+not among --lanes), DAW Opus with opus-5 and opus-10, FLAC with opus-20 and
+opus-max510, PCM with pcm.
 
 Phases
   baseline  60 s of probes on both listener hosts of each region, and
@@ -57,17 +67,27 @@ INDEX = f"{REMOTE}/index"
 SITES = run.SITES
 CONFIGS = ["opus-2.5", "opus-5", "opus-10", "opus-20", "opus-max510", "pcm"]
 WEBRTC = ["cf", "whep", "lkregion", "lkmulti", "lkcloud"]
-NEEDLETAIL = {"nt-opus": (3001, "nt-opus"), "nt-flac": (2001, "nt-flac"), "nt-pcm": (4001, "pcm-5ms")}
+NEEDLETAIL = {"nt-popus": (3001, "nt-popus-120s"), "nt-opus": (3001, "nt-opus"),
+              "nt-flac": (2001, "nt-flac"), "nt-pcm": (4001, "nt-pcm-48s")}
+SAMPLE_RATE = 48_000
+# Samples of one AEP1 epoch (one part) of the Needletail lanes that the AEP1
+# sender feeds; --nt-pcm-samples changes PCM's (24, 12: the halvings).
+NT_EPOCH_SAMPLES = {"nt-popus": 120, "nt-pcm": 48}
+NT_PCM_SAMPLES = (48, 24, 12)
+# The DAW source's lanes: their frame as the analysis takes it.
+NT_DAW_FRAME_MS = {"nt-opus": 2.5, "nt-flac": 5.0}
+UDP_LANE = "nt-udp"
 # One Needletail rendition at a time. The contributor is a 1 vCPU Nanode: one
 # audio rendition takes 30% to 38% of it, two take 65% to 70%, and with three
 # it keeps a standing backlog (see the write-up). So each configuration
 # publishes one rendition, and the contributor is restarted with that format.
-NT_RENDITION = {"opus-2.5": "nt-opus", "opus-5": "nt-opus", "opus-10": "nt-opus",
-                "opus-20": "nt-flac", "opus-max510": "nt-flac", "pcm": "nt-pcm"}
-NT_FORMAT = {"nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
+# The candidates of each configuration, in order: the first among --lanes.
+NT_RENDITION = {"opus-2.5": ("nt-popus", "nt-opus"), "opus-5": ("nt-opus",), "opus-10": ("nt-opus",),
+                "opus-20": ("nt-flac",), "opus-max510": ("nt-flac",), "pcm": ("nt-pcm",)}
+NT_FORMAT = {"nt-popus": "opus", "nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
 # Three readers of each Needletail rendition:
-#   (none)  one request for each 5 ms part, HTTP/2: what needletail-reader does
-#   -w      40 requests in flight (200 ms of parts), HTTP/2
+#   (none)  one request for each part, HTTP/2
+#   -w      40 requests in flight (100 ms of 2.5 ms parts, 40 ms of 1 ms), HTTP/2
 #   -h3     40 requests in flight, HTTP/3
 NT_READERS = {"": "--window 1", "-w": "--window 40", "-h3": "--window 40 --http3"}
 SAMPLED = ("contrib-lon", "relay-primary", "relay-secondary")
@@ -89,17 +109,49 @@ FANOUT = {1: {"lon": 1}, 10: {"lon": 3, "new": 3, "tok": 2, "syd": 2},
 CLOUD_PER_HOST = 24     # LiveKit Cloud's free plan allows 100 connections in all
 
 
+def epoch_ns(samples: int) -> int:
+    return round(samples * 1_000_000_000 / SAMPLE_RATE)
+
+
+def nt_index(base: str, pcm_samples: int) -> str:
+    """The ntcmp index of a Needletail lane (compare_lab.py audio makes them)."""
+    if base == "nt-pcm":
+        return f"nt-pcm-{pcm_samples}s"
+    return NEEDLETAIL[base][1]
+
+
+def aep1_command(target: str, base: str, samples: int, audio: str) -> str:
+    """The AEP1 sender of a Needletail lane. It sends epoch k when its last
+    sample has been spoken: the session id is the loop START plus one epoch."""
+    payload = NT_FORMAT[base]
+    return (f"/usr/local/bin/aep1-48k-probe send --target {target} "
+            f"--session-id ${{START}}{epoch_ns(samples):09d} --group-id 0 --duration-seconds 1900 "
+            f"--payload {payload} --epoch-samples {samples} "
+            f"--channels 2 --group-channels 8 --pcm-s24le-file {audio} "
+            "--repair-percent 12 --min-repair-symbols 1")
+
+
+def udp_command(entry: str, stream: int, seconds: int, tag: str) -> str:
+    """needletail-udp-client of a Needletail stream: its JSON report."""
+    return (f"needletail-udp-client --entry {entry} --stream {stream} --tls-ca {run.CA} "
+            f"--server-name {run.SERVER_NAME} --duration-seconds {seconds} "
+            f"--session {tag}-{UDP_LANE} >{UDP_LANE}.udp.json 2>{UDP_LANE}.udp.err")
+
+
 class Audio:
-    def __init__(self, session: run.Session, config: str, lanes: list[str]):
+    def __init__(self, session: run.Session, config: str, lanes: list[str], pcm_samples: int = 48):
         self.session = session
         self.config = config
+        self.pcm_samples = pcm_samples
         self.pcm = config == "pcm"
         self.lanes = [lane for lane in lanes if lane in WEBRTC and not (self.pcm and lane == "whep")]
         if session.cloud is None and "lkcloud" in self.lanes:
             self.lanes.remove("lkcloud")
             run.log("lkcloud: ~/wavey.ai/LIVEKIT_CLOUD.env is not filled in; the lane is skipped")
-        self.nt_base = [lane for lane in lanes if lane == NT_RENDITION[config]]
+        self.nt_base = [lane for lane in NT_RENDITION[config] if lane in lanes][:1]
         self.nt = [lane + suffix for lane in self.nt_base for suffix in NT_READERS]
+        if self.nt_base and UDP_LANE in lanes:
+            self.nt.append(UDP_LANE)
         self.room = f"needletail-compare-{session.name}-{config.replace('.', '')}"
         self.cf_session = ""
         self.index = f"{INDEX}/pcm-2.5ms.index.json" if self.pcm else f"{INDEX}/{config}.index.json"
@@ -123,21 +175,21 @@ class Audio:
                                         "systemctl is-active needletail-contrib.service")
             target = f"{contributor['vlan_ipv4']}:27100"
             # Both producers start on a boundary of the 64-second loop. The DAW
-            # source delivers 512-sample buffers when they are complete; the AEP1
-            # sender is started 5 ms later so that it sends a block when its last
-            # sample has been spoken.
+            # source delivers its buffers when they are complete; the AEP1
+            # sender is started one epoch later so that it sends an epoch when
+            # its last sample has been spoken.
+            base = self.nt_base[0]
             daw = run.background("nt-daw", (
                 "env RUST_LOG=warn DAW_TEST_SOURCE_START_UNIX_NS=${START}000000000 daw-test-source "
                 f"--direct-contributor --prepared-pcm {target} 1900 {REMOTE}/daw-fixture"))
-            aep1 = run.background("nt-pcm", (
-                f"/usr/local/bin/aep1-48k-probe send --target {target} "
-                "--session-id ${START}005000000 --group-id 0 --duration-seconds 1900 --payload pcm "
-                f"--channels 2 --group-channels 8 --pcm-s24le-file {AUDIO}/audio.s24le "
-                "--repair-percent 12 --min-repair-symbols 1"))
+            producer = daw
+            if base in NT_EPOCH_SAMPLES:
+                producer = run.background(base, aep1_command(
+                    target, base, self.epoch_samples(base), f"{AUDIO}/audio.s24le"))
             run.src(s, (
                 "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
                 "[ $(( START - NOW )) -lt 8 ] && START=$(( START + 64 )); export START; "
-                "echo $START >nt.start; " + (aep1 if self.nt_base[0] == "nt-pcm" else daw)))
+                "echo $START >nt.start; " + producer))
         if "cf" in self.lanes:
             run.src(s, "rm -f cf.session; " + run.background(
                 "cf", f"ntcmp pub --lane cf {media} --session-out cf.session --status cf.status"))
@@ -177,6 +229,20 @@ class Audio:
                            "pgrep -c -x aep1-48k-probe", check=False).split()
         run.log(f"{self.config}: sources running (ntcmp, ntcmp-lk, daw, aep1): {' '.join(alive)}")
 
+    def epoch_samples(self, base: str) -> int:
+        return self.pcm_samples if base == "nt-pcm" else NT_EPOCH_SAMPLES[base]
+
+    def nt_frame_ms(self) -> dict:
+        """The frame of each Needletail lane of this configuration, for the
+        analysis (one part is one frame)."""
+        out = {}
+        for base in self.nt_base:
+            if base in NT_EPOCH_SAMPLES:
+                out[base] = self.epoch_samples(base) * 1000 / SAMPLE_RATE
+            else:
+                out[base] = NT_DAW_FRAME_MS[base]
+        return out
+
     def status(self) -> dict:
         return run.Lane(self.session, "audio").source_status()
 
@@ -191,9 +257,14 @@ class Audio:
                 f"--count {count} " + (f"--spread-ms {min(10000, 400 * count)} " if count > 1 else "")
                 + (f"--frames {lane}.probe.csv " if count == 1 else ""))
         data = "--data " if self.pcm else ""
+        if lane == UDP_LANE:
+            # One client: it has no --count, and it is not in the fan-out.
+            stream = NEEDLETAIL[self.nt_base[0]][0]
+            return udp_command(f"https://{s.ip(site + '-dist-a')}:19444", stream, seconds, tag)
         if lane.startswith("nt-"):
             base = "-".join(lane.split("-")[:2])
-            stream, index = NEEDLETAIL[base]
+            stream = NEEDLETAIL[base][0]
+            index = nt_index(base, self.pcm_samples)
             entry = f"https://{s.ip(site + '-dist-a')}:19444"
             return (f"ntcmp hls --lane {lane} --mode chase {NT_READERS[lane[len(base):]]} "
                     f"--url '{entry}/live/{stream}/master.m3u8"
@@ -266,7 +337,7 @@ class Audio:
         run.log(f"{name}: {len(scripts)} hosts, {total} s, lanes {' '.join(lanes)}")
         result = run.run_hosts(s, name, scripts, total)
         meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
-                "lanes": lanes, "listeners": sum((fan or {}).values()) if fan else None,
+                "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(), "listeners": sum((fan or {}).values()) if fan else None,
                 "session": s.name, "source": self.status(), **result}
         (s.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
         s.steps.append({"step": name, "seconds": result["seconds"]})
@@ -313,7 +384,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--session", required=True)
     parser.add_argument("--configs", default=",".join(CONFIGS))
-    parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL)))
+    parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL) + [UDP_LANE]))
+    parser.add_argument("--nt-pcm-samples", type=int, default=NT_EPOCH_SAMPLES["nt-pcm"],
+                        choices=NT_PCM_SAMPLES, help="samples of one Needletail PCM part (one epoch)")
     parser.add_argument("--phases", default="baseline,impair,fanout,attempts")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--chrome-seconds", type=int, default=25)
@@ -329,7 +402,7 @@ def main() -> None:
         if "attempts" in phases:
             attempts(session)
         for config in args.configs.split(","):
-            audio = Audio(session, config, args.lanes.split(","))
+            audio = Audio(session, config, args.lanes.split(","), args.nt_pcm_samples)
             full = config in ("opus-2.5", "pcm")       # the two lanes of the comparison
             try:
                 audio.start()

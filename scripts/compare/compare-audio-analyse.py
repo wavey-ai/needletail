@@ -47,6 +47,8 @@ LOOP_SAMPLES = 64 * 48000
 DAW_BUFFER = 512
 FRAME_MS = {"opus-2.5": 2.5, "opus-5": 5.0, "opus-10": 10.0, "opus-20": 20.0, "opus-max510": 10.0,
             "pcm": 2.5}
+# A Needletail part is one producer frame; compare-audio.py records the frame
+# of each lane in the step's meta (nt_frame_ms). Runs before that were 5 ms.
 NT_FRAME_MS = 5.0
 SITES = {"lon": "London", "new": "New York", "tok": "Tokyo", "syd": "Sydney"}
 
@@ -65,6 +67,51 @@ def load(path: pathlib.Path):
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def nt_frame_ms(meta: dict, lane: str) -> float:
+    """The frame of a Needletail lane (`nt-pcm-h3` -> its base `nt-pcm`)."""
+    base = "-".join(lane.split("-")[:2])
+    return float((meta.get("nt_frame_ms") or {}).get(base) or NT_FRAME_MS)
+
+
+def source_to_publish_ms(csv_path: pathlib.Path) -> list[float]:
+    """Last sample spoken -> the contributor published the part, for every
+    recognised part of an HLS probe record (complete - latency is the spoken
+    time; published_unix_us is the part's own header)."""
+    values = []
+    if not csv_path.is_file():
+        return values
+    with csv_path.open() as handle:
+        for row in csv.DictReader(handle):
+            published = (row.get("published_unix_us") or "").strip()
+            if row.get("kind") != "a" or int(row["index"]) < 0 or not published or int(published) <= 0:
+                continue
+            spoken = int(row["complete_unix_us"]) - int(row["latency_us"])
+            values.append((int(published) - spoken) / 1000.0)
+    return values
+
+
+def analyse_udp(record: dict, host_dir: pathlib.Path, meta: dict) -> dict:
+    """needletail-udp-client's report. It times each part from publication
+    to arrival; the HLS probe of the same stream on the same host gives the
+    source -> publish part, and their medians add up to an estimate of the
+    UDP lane's latency from the source."""
+    keys = ("received_parts", "gap_parts", "missing_parts", "recovered_parts", "duplicate_parts",
+            "datagram_loss", "final_repair_permille", "final_min_repair", "time_to_first_part_ms",
+            "publish_to_arrival_ms", "available_to_arrival_ms", "error")
+    out = {key: record[key] for key in keys if key in record}
+    bases = sorted({"-".join(lane.split("-")[:2]) for lane in meta.get("lanes") or []
+                    if lane.startswith("nt-") and lane != "nt-udp"})
+    if bases:
+        spoken = dist(source_to_publish_ms(host_dir / f"{bases[0]}.probe.csv"))
+        out["source_to_publish_ms"] = spoken
+        arrival = record.get("publish_to_arrival_ms") or {}
+        if spoken and isinstance(arrival.get("p50"), (int, float)):
+            out["estimated_unit_latency_p50_ms"] = round(spoken["p50"] + arrival["p50"], 2)
+            out["note"] = ("estimated_unit_latency_p50_ms is the sum of the medians of source -> "
+                           f"publish ({bases[0]} HLS probe) and publish -> arrival (UDP)")
+    return out
 
 
 def daw_wait_ms(index: int) -> float:
@@ -211,7 +258,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -253,7 +300,7 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             if record is None or ".probe" not in name:
                 continue
             lane = name.split(".probe")[0]
-            frame = NT_FRAME_MS if lane.startswith("nt-") else FRAME_MS[config]
+            frame = nt_frame_ms(meta, lane) if lane.startswith("nt-") else FRAME_MS[config]
             analysed = analyse_probe(record, host_dir / f"{lane}.probe.csv", lane, frame, end_ms)
             if name.endswith(".probe"):
                 lanes.setdefault(lane, {})["probe"] = analysed
@@ -282,6 +329,9 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             if errors:
                 summary["errors"] = errors[:4]
             lanes.setdefault(lane, {})["listeners"] = summary
+        for name, record in records.items():
+            if record is not None and name.endswith(".udp") and isinstance(record, dict):
+                lanes.setdefault(name[:-4], {})["udp"] = analyse_udp(record, host_dir, meta)
         for name, record in records.items():
             if record is None or not name.endswith(".player"):
                 continue
