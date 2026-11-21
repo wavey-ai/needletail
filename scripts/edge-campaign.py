@@ -1086,6 +1086,23 @@ def player_hlsjs_4k(ctx):
               f"{summary.get('frames_dropped')} of {summary.get('frames')}")
 
 
+@scenario("player-hlsjs-4k-second-region", "players",
+          "Does hls.js play the 4K stream from the second region, 5,600 km from the "
+          "contributor, with a viewer who is near that region?",
+          "The player plays without a stall and without a fatal error, and drops no "
+          "frame.")
+def player_hlsjs_4k_second_region(ctx):
+    _process, report = hlsjs(ctx, "video", entry_url(VIDEO, "hlsjs-4k-ny", site="newyork"), 45,
+                             host=NEW_READERS)
+    summary = player_summary(report)
+    ctx.measure("hlsjs", summary)
+    ctx.check("hls.js played without a stall", summary.get("verdict") == "played",
+              f"{summary.get('reason')}; errors {summary.get('errors')}")
+    ctx.check("no frame was dropped", summary.get("frames_dropped") == 0
+              and (summary.get("frames") or 0) > 500,
+              f"{summary.get('frames_dropped')} of {summary.get('frames')}")
+
+
 @scenario("player-hlsjs-edge-kill", "players",
           "hls.js plays the 4K stream, and the cache that serves it is killed. Does the "
           "player move to another cache without a stall?",

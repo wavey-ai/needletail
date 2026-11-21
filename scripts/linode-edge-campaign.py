@@ -76,7 +76,8 @@ LINODE_SET = [
     "edge-cpu-starved", "edge-out-of-memory", "region-lost",
     "capacity-scales-with-edges", "capacity-entry-joins",
     "clock-skew-edge", "clock-skew-distributor", "clock-skew-contributor", "edge-disk-full",
-    "player-hlsjs-4k", "player-hlsjs-cache-kill", "player-hlsjs-region-lost",
+    "player-hlsjs-4k", "player-hlsjs-4k-second-region", "player-hlsjs-cache-kill",
+    "player-hlsjs-region-lost",
     "ladder-playlists", "ladder-hlsjs-browser-cap", "ladder-hlsjs-browser-steps",
     "long-tail-one-stream-too-many", "long-tail-more-slots",
 ]
