@@ -37,17 +37,26 @@ type fakeEdge struct {
 	part        time.Duration
 	refuseAhead int64
 	delay       time.Duration // added to every answer: half a round trip
+	noHeaders   bool          // answer as a server that is not Needletail
 	mu          sync.Mutex
 	inFlight    int
 	maxInFlight int
 	served      map[int64]int
+	partConns   map[string]bool // client addresses that asked for parts
 }
 
 var fakePart = regexp.MustCompile(`/part(\d+)\.bin$`)
 
 func newFakeEdge(refuseAhead int64, delay time.Duration) *fakeEdge {
 	return &fakeEdge{start: time.Now(), base: 1000, part: 5 * time.Millisecond, refuseAhead: refuseAhead,
-		delay: delay, served: map[int64]int{}}
+		delay: delay, served: map[int64]int{}, partConns: map[string]bool{}}
+}
+
+// connections is how many client connections asked for parts.
+func (e *fakeEdge) connections() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.partConns)
 }
 
 func (e *fakeEdge) newest() int64 {
@@ -89,6 +98,9 @@ func (e *fakeEdge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n, _ := strconv.ParseInt(match[1], 10, 64)
+	e.mu.Lock()
+	e.partConns[r.RemoteAddr] = true
+	e.mu.Unlock()
 	if n-e.newest() > e.refuseAhead {
 		http.NotFound(w, r)
 		return
@@ -105,12 +117,16 @@ func (e *fakeEdge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e.served[n]++
 	e.mu.Unlock()
 	published := e.publishedAt(n)
+	body := make([]byte, 1440)
+	body[0] = byte(n)
+	if e.noHeaders {
+		w.Write(body)
+		return
+	}
 	w.Header().Set("x-needletail-published-unix-us", strconv.FormatInt(published-300, 10))
 	w.Header().Set("x-needletail-cache-available-unix-us", strconv.FormatInt(published, 10))
 	w.Header().Set("x-needletail-edge-committed-unix-us", strconv.FormatInt(published, 10))
 	w.Header().Set("x-needletail-reply-unix-us", strconv.FormatInt(time.Now().UnixMicro(), 10))
-	body := make([]byte, 1440)
-	body[0] = byte(n)
 	w.Write(body)
 }
 
@@ -131,10 +147,11 @@ func testCertificate(t *testing.T) tls.Certificate {
 }
 
 // serveH2 serves the edge over HTTP/2 with the stream limit of the
-// Needletail server (256).
+// Needletail server (256; httptest's own default is 250).
 func serveH2(t *testing.T, edge *fakeEdge) string {
 	server := httptest.NewUnstartedServer(edge)
 	server.EnableHTTP2 = true
+	server.Config.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 256}
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	return server.URL
@@ -279,16 +296,60 @@ func TestServerColumnsAreEmptyWithoutHeaders(t *testing.T) {
 	if got := serverColumns(&serverTimes{Reply: 7, Part: 3}); got != ",,,7,3" {
 		t.Fatalf("%q", got)
 	}
+	if readServerTimes(http.Header{}) != nil {
+		t.Fatal("a response without timing headers has server times")
+	}
+	header := http.Header{}
+	header.Set("x-needletail-reply-unix-us", "9")
+	if got := readServerTimes(header); got == nil || got.Reply != 9 || got.Part != -1 {
+		t.Fatalf("%+v", got)
+	}
 }
 
-// A window much larger than the round trip, over HTTP/2: more requests than
-// one connection may carry, and parts further ahead than the edge holds.
+// Parts of a server that is not Needletail: no server columns, the part
+// number column included. The audio row's own number (fifth column) stays.
+func TestProbeCSVOfAnotherServerHasNoServerColumns(t *testing.T) {
+	edge := newFakeEdge(1000, 0)
+	edge.noHeaders = true
+	result := runChase(t, edge, serveH2(t, edge), 1, false, 0.4)
+	if len(result.rows) < 20 {
+		t.Fatalf("only %d rows", len(result.rows))
+	}
+	for _, row := range result.rows[1:] {
+		if strings.Join(row[8:], ",") != ",,,," {
+			t.Fatalf("server columns of a response without headers: %v", row)
+		}
+		if _, err := strconv.ParseInt(row[4], 10, 64); err != nil || row[0] != "a" {
+			t.Fatalf("row %v", row)
+		}
+	}
+}
+
+// A window much larger than the round trip, over HTTP/2, with parts further
+// ahead than the edge holds: those are refused and asked for again when
+// nearer, and nothing is lost. (Over HTTP/2 the spread of the window over
+// connections is not what keeps it whole: Go's transport opens another
+// connection by itself when a server's stream limit is reached. The HTTP/3
+// test below is the one that needs the spread.)
 func TestChaseWindow400OverHTTP2(t *testing.T) {
 	edge := newFakeEdge(150, 2*time.Millisecond)
 	result := runChase(t, edge, serveH2(t, edge), 400, false, 2.5)
 	checkContiguous(t, result, result.newest-10)
-	if result.summary.Detail["part_connections"] != 2 {
-		t.Fatalf("connections: %v", result.summary.Detail["part_connections"])
+	if got := edge.connections(); got < 2 {
+		t.Fatalf("parts came over %d connections", got)
+	}
+}
+
+// A window of 400 held at once over HTTP/2: more requests in flight than one
+// connection's 256 streams, and every part arrives.
+func TestChaseWindow400OverHTTP2BeyondOneConnection(t *testing.T) {
+	edge := newFakeEdge(1000, 2*time.Millisecond)
+	result := runChase(t, edge, serveH2(t, edge), 400, false, 2.5)
+	checkContiguous(t, result, result.newest-10)
+	edge.mu.Lock()
+	defer edge.mu.Unlock()
+	if edge.maxInFlight < 257 || len(edge.partConns) < 2 {
+		t.Fatalf("at most %d requests in flight over %d connections", edge.maxInFlight, len(edge.partConns))
 	}
 }
 

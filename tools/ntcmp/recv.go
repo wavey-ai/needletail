@@ -29,8 +29,10 @@ import (
 //   the last five columns are filled for Needletail HLS parts: the timing
 //   headers of the part response (x-needletail-published-unix-us,
 //   x-needletail-cache-available-unix-us, x-needletail-edge-committed-unix-us,
-//   x-needletail-reply-unix-us) and the part number of its URI. They are
-//   empty when the response had no such header, and for other lanes. They
+//   x-needletail-reply-unix-us) and the part number of its URI. A column
+//   is empty when the response had no such header; all five, the part
+//   number too, are empty when it had none of the four (any server that is
+//   not Needletail), and for other lanes. They
 //   come after the first eight so that a reader of the older files still
 //   reads these.
 type Recorder struct {

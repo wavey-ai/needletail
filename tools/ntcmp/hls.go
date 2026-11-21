@@ -58,6 +58,8 @@ const maxWindow = 400
 // connection; the rest of that is left for playlist reloads and retries. A
 // larger window opens more connections and spreads the parts over them, so a
 // request never waits for stream credit behind requests for later parts.
+// That matters over HTTP/3; over HTTP/2 Go's transport would also open
+// another connection by itself when the server's limit is reached.
 const streamsPerConnection = 200
 
 // serverTimes are the timing headers of a Needletail part response, in Unix
@@ -86,14 +88,21 @@ func headerMicros(header http.Header, name string) int64 {
 	return value
 }
 
+// readServerTimes reads the timing headers of a response, or returns nil
+// when it carries none of them: not a Needletail part response, so its
+// record line gets no server columns and no part number either.
 func readServerTimes(header http.Header) *serverTimes {
-	return &serverTimes{
+	times := &serverTimes{
 		Published:      headerMicros(header, serverTimeHeaders[0]),
 		CacheAvailable: headerMicros(header, serverTimeHeaders[1]),
 		EdgeCommitted:  headerMicros(header, serverTimeHeaders[2]),
 		Reply:          headerMicros(header, serverTimeHeaders[3]),
 		Part:           -1,
 	}
+	if times.Published == 0 && times.CacheAvailable == 0 && times.EdgeCommitted == 0 && times.Reply == 0 {
+		return nil
+	}
+	return times
 }
 
 type hlsPart struct {
