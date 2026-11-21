@@ -842,20 +842,19 @@ on each is at the end of [Media edge gaps](../media-edge-gaps.md).
 
 ## Revisions
 
-| Repository | Branch | Commit | Against origin |
+| Repository | Branch | Commit | State |
 | --- | --- | --- | --- |
-| `av-mesh` | `regional-llhls-cache` | `07e7d4a` | 26 commits ahead of `a9cb1dd`, not pushed |
-| `playlists` | `regional-llhls-cache` | `483765e` | 4 commits ahead of `151eaee`, not pushed |
-| `av-contrib` | `edge-hardening` | `12abbef` | new branch, 8 commits on `probe-soundkit-opus-plain` `412014d`, not pushed |
-| `raptor-fec` | `bounded-sequence-tracker` | `68a1840` | new branch, 1 commit on `main` `b9c570d`, not pushed |
-| `needletail` | `regional-llhls-cache` | this commit | ahead of `23dd320`, not pushed |
-| `boxer` | `fix-rtmp-aac-frame-start` | `ee90c8f` | as pushed before this round |
+| `av-mesh` | `regional-llhls-cache` | `07e7d4a` | pushed; 26 commits on `a9cb1dd` |
+| `playlists` | `regional-llhls-cache` | `483765e` | pushed; 4 commits on `151eaee` |
+| `av-contrib` | `edge-hardening` | `12abbef` | pushed, new branch; 8 commits on `probe-soundkit-opus-plain` `412014d` |
+| `raptor-fec` | `bounded-sequence-tracker` | `68a1840` | pushed, new branch; 1 commit on `main` `b9c570d` |
+| `needletail` | `regional-llhls-cache` | this commit | pushed |
+| `boxer` | `fix-rtmp-aac-frame-start` | `ee90c8f` | pushed before this round |
 
-None of it is merged to `main`. The SSH agent of the operator host held no
-key during the round, so no branch could be pushed. `av-mesh` names
-`playlists` and `raptor-fec` by commit, and `av-contrib` names `raptor-fec`
-and `boxer` by commit: push `playlists` and `raptor-fec` first. Until then a
-build needs them from the local checkouts:
+None of it is merged to `main`. `av-mesh` names `playlists` and `raptor-fec`
+by commit, and `av-contrib` names `raptor-fec` and `boxer` by commit, all at
+their GitHub addresses. The builds of this round took them from the local
+checkouts, because the branches were pushed only at its end:
 
     export CARGO_NET_GIT_FETCH_WITH_CLI=true GIT_CONFIG_COUNT=3
     export GIT_CONFIG_KEY_0=url.file://$HOME/wavey.ai/playlists/.git.insteadOf
@@ -864,6 +863,8 @@ build needs them from the local checkouts:
     export GIT_CONFIG_VALUE_1=https://github.com/wavey-ai/raptor-fec.git
     export GIT_CONFIG_KEY_2=url.file://$HOME/wavey.ai/boxer/.git.insteadOf
     export GIT_CONFIG_VALUE_2=https://github.com/wavey-ai/boxer.git
+
+A build that fetches them from GitHub was not tried.
 
 Which binaries ran what. Local pass 9: `av-mesh` `edebdcb`. The reruns of
 08:57 and 09:25 UTC: `725b4a3`, which adds the age of an advertisement by

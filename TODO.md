@@ -265,9 +265,11 @@ The work is on `regional-llhls-cache` of `needletail`, `av-mesh` and
 - [x] Refuse a stream on a full node; answer 503 from an edge that has lost
   its parents; judge the age of an advertisement by receipt; kernel fragment
   settings and allocator settings on every node.
-- [ ] Push the five branches: `playlists` and `raptor-fec`
-  (`bounded-sequence-tracker`) first, because `av-mesh` and `av-contrib` name
-  them by commit.
+- [x] Push the five branches (`regional-llhls-cache` of `needletail`,
+  `av-mesh` and `playlists`; `edge-hardening` of `av-contrib`;
+  `bounded-sequence-tracker` of `raptor-fec`). None is merged to `main`.
+- [ ] Build `av-mesh` and `av-contrib` with their git dependencies fetched
+  from GitHub. The round built them from the local checkouts.
 - [ ] Release `raptorq-datagram-fec` with the bounded sequence tracker and
   `wavey-boxer` 0.1.1, and go back to registry versions.
 - [ ] Carry the deadline of a relay object as an age, not as a time of day.
