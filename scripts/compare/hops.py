@@ -29,8 +29,13 @@ maximum of each hop (the delta between consecutive stages of one part) and
 of every stage counted from the source. Parts are followed twice: once for
 every part that every edge committed (journal only), and once for every part
 that a listener received, when probe.csv files are given. A listener's reply
-time and edge-committed time are the headers of its own response; its edge is
-the edge whose journal holds that reply (or the host of its playlist).
+time and edge-committed time are the headers of its own response. Its edge is
+the host of its playlist when that is an edge (every part comes from there);
+else the one edge whose journal holds exactly that reply time (av-mesh stamps
+the header and the event from one clock reading, but journals only the first 4
+replies of a part, so a near miss is another reader's reply on another edge);
+else the one edge whose edge_committed event is exactly the listener's
+x-needletail-edge-committed-unix-us (journaled for every part).
 
 Source time. The AEP1 sender of the harness starts its loop on a wall-clock
 instant START and sends epoch k when its last sample has been spoken, at
@@ -39,6 +44,14 @@ START + (k+1) * 5 ms; compare-audio.py and latency-bench.py pass
 --source-start-ns START (or --session-id, from which START = session_id -
 5 ms). Without either, the spoken time is taken from the listener's own record
 (probe.csv: complete - latency, which ntcmp computes from the same loop).
+
+This is deliberately NOT the low-latency spec's "session_id + (epoch+1) * 5 ms".
+aep1-48k-probe sends epoch k at its deadline session_id + k * 5 ms (epoch 0
+at session_id itself), and ntcmp's 64-second loop puts the last sample of unit
+i at loop start + (i+1) * 5 ms. The spec's formula would put the spoken time
+5 ms after the epoch was handed to the kernel, and source -> src_last would be
+negative. Do not change it back. It assumes --session-id = loop START + 5 ms,
+which is what the harness passes.
 Whether part seq equals epoch id is checked and reported (seq_minus_epoch).
 
 Clocks: the offset of every node from `chronyc -c tracking` (field 5, the
@@ -289,14 +302,40 @@ class Journal:
         best = self.sent_to.get((stream, seq, edge))
         return best[0] if best else None
 
-    def edge_by_reply(self, stream: int, seq: int, reply_us: int, within_us: int) -> str | None:
-        best = None
-        for edge in self.named("edge"):
-            for t in self.replies.get((edge, stream, seq), ()):
-                gap = abs(t - reply_us)
-                if gap <= within_us and (best is None or gap < best[1]):
-                    best = (edge, gap)
-        return best[0] if best else None
+    def edge_by_reply(self, stream: int, seq: int, reply_us: int) -> str | None:
+        """The edge that journaled exactly this reply time. av-mesh stamps the
+        header and the journal event from one clock reading, so the true edge
+        has a gap of 0, but it journals only the first few replies of a part:
+        a near miss is another edge's reply to another reader, never a match."""
+        found = [edge for edge in self.named("edge")
+                 if reply_us in self.replies.get((edge, stream, seq), ())]
+        return found[0] if len(found) == 1 else None
+
+    def edge_by_committed(self, stream: int, seq: int, committed_us: int) -> str | None:
+        """The edge whose edge_committed event (journaled for every part, from
+        the same value as the x-needletail-edge-committed-unix-us header) is
+        exactly this time. Two edges committing in the same microsecond are
+        ambiguous: no match."""
+        found = [edge for edge in self.named("edge")
+                 if self.first.get((edge, "edge_committed", stream, seq)) == committed_us]
+        return found[0] if len(found) == 1 else None
+
+    def edge_of_listener(self, stream: int, seq: int, row: dict,
+                         host_edge: str | None) -> tuple[str | None, str | None]:
+        """The edge that served a listener's part, and how it was found: the
+        playlist host when it is an edge (every part comes from there), else
+        an exact reply match, else an exact edge-committed match."""
+        if host_edge:
+            return host_edge, "playlist_host"
+        if row.get("reply_us"):
+            edge = self.edge_by_reply(stream, seq, row["reply_us"])
+            if edge:
+                return edge, "reply"
+        if row.get("edge_committed_us"):
+            edge = self.edge_by_committed(stream, seq, row["edge_committed_us"])
+            if edge:
+                return edge, "edge_committed"
+        return None, None
 
 
 def follow(journal: Journal, stream: int, seq: int, edge: str | None, primary: list[str],
@@ -372,7 +411,7 @@ class Pool:
 def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
             source_start_us: int | None = None, epoch_us: int = EPOCH_US,
             primary: str = "relay-primary", since_us: int | None = None,
-            until_us: int | None = None, reply_match_us: int = 2000) -> dict:
+            until_us: int | None = None) -> dict:
     journal = Journal(nodes, events, stream, since_us, until_us)
     primaries = [primary] if primary in nodes else journal.named("backbone")[:1]
 
@@ -414,17 +453,16 @@ def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
         host_edge = journal.by_ip.get(probe.get("host_ip"))
         if host_edge and journal.role(host_edge) != "edge":
             host_edge = None
-        matched = by_reply = 0
+        matched = 0
+        found_by = {"playlist_host": 0, "reply": 0, "edge_committed": 0}
         for seq, row in sorted(probe["rows"].items()):
             if since_us is not None and row["complete_us"] < since_us:
                 continue
             if until_us is not None and row["complete_us"] > until_us:
                 continue
-            edge = None
-            if row.get("reply_us"):
-                edge = journal.edge_by_reply(stream, seq, row["reply_us"], reply_match_us)
-                by_reply += edge is not None
-            edge = edge or host_edge
+            edge, how = journal.edge_of_listener(stream, seq, row, host_edge)
+            if how:
+                found_by[how] += 1
             site = journal.site(edge) or probe.get("site") or "unknown"
             source = source_of(seq, row)
             if source_start_us is not None and row.get("spoken_us") is not None \
@@ -435,14 +473,19 @@ def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
             pool(site, "listener_parts").add(times)
             pool("all", "listener_parts").add(times)
         listeners.append({"probe": probe["path"], "site": probe.get("site"), "parts": matched,
-                          "edge_by_playlist_host": host_edge, "edge_found_by_reply": by_reply})
+                          "edge_by_playlist_host": host_edge,
+                          "edge_found_by_reply": found_by["reply"],
+                          "edge_found_by_edge_committed": found_by["edge_committed"],
+                          "edge_unknown": matched - sum(found_by.values())})
 
     return {
         "stream": stream,
         "window_us": {"since": since_us, "until": until_us},
         "source": {"source_start_us": source_start_us, "epoch_us": epoch_us,
-                   "rule": "source = source_start + (epoch + 1) * epoch_us, epoch of src_last; "
-                           "else the listener's complete - latency"},
+                   "rule": "source = source_start + (epoch + 1) * epoch_us, epoch of src_last "
+                           "(= session_id + epoch * epoch_us; assumes the sender's --session-id "
+                           "is the loop START + epoch_us, as compare-audio.py and latency-bench.py "
+                           "pass); else the listener's complete - latency"},
         "primary_relay": primaries,
         "nodes": {name: {**{k: v for k, v in item.items() if k != "addrs"},
                          "events": journal.counts.get(name, 0)}
@@ -596,8 +639,6 @@ def main(argv: list[str] | None = None) -> int:
                        help="the AEP1 sender's --session-id (ns); START = session_id - 5 ms")
     parser.add_argument("--epoch-us", type=int, default=EPOCH_US)
     parser.add_argument("--primary-relay", default="relay-primary")
-    parser.add_argument("--reply-match-us", type=int, default=2000,
-                        help="a listener's reply header and an edge's reply event this close are one reply")
     parser.add_argument("--raw-out", type=pathlib.Path, help="save the collected events (NDJSON)")
     parser.add_argument("--out", type=pathlib.Path, help="hops.json (default standard output)")
     parser.add_argument("--summary", type=pathlib.Path, help="also write the text summary here")
@@ -618,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
         start_us = args.session_id // 1000 - args.epoch_us
     probes = [read_probe(spec) for spec in args.probe]
     result = analyse(nodes, events, probes, args.stream, start_us, args.epoch_us,
-                     args.primary_relay, args.since_us, args.until_us, args.reply_match_us)
+                     args.primary_relay, args.since_us, args.until_us)
     text = json.dumps(result, indent=1) + "\n"
     summary = format_summary(result)
     if args.out:

@@ -218,6 +218,75 @@ class Join(unittest.TestCase):
         names = [item["hop"] for item in listener["hops"]]
         self.assertNotIn("edge.reply -> listener.complete", names)
 
+    def two_london_edges(self) -> tuple[dict, list[dict]]:
+        """lon-edge-2 also serves London and commits and replies within 2 ms of
+        lon-edge-1. lon-edge-1 has used its 4 journaled replies on other readers
+        before the listener's, so the listener's own reply is not in its journal."""
+        nodes = {**NODES, "lon-edge-2": {"role": "edge", "site": "london",
+                                         "addrs": ["10.90.0.22", "10.77.1.22"]}}
+        events = [item for item in journal()
+                  if not (item["_node"] == "lon-edge-1" and item["stage"] == "reply")]
+        for seq in SEQS:
+            s = spoken(seq)
+            for n in range(1, 5):
+                events.append(event("lon-edge-1", "reply", seq, s + 3600 + 10 * n, n=n))
+            events += [
+                event("lon-edge-2", "mesh_first", seq, s + 3500, peer="10.77.1.11:29101"),
+                event("lon-edge-2", "edge_committed", seq, s + 3800),
+                # 100 µs from the listener's reply on lon-edge-1 (s + 3900), and
+                # nearer to it than any reply that lon-edge-1 journaled.
+                event("lon-edge-2", "reply", seq, s + 4000 if seq != SPIKE else s + 13_800, n=1),
+            ]
+        return nodes, events
+
+    def write_late_probe(self, host: str) -> dict:
+        """A London listener of lon-edge-1, its 5th reader: reply s + 3900."""
+        path = write_probe(self.directory, "late.probe.csv")
+        (self.directory / "late.probe.json").write_text(
+            json.dumps({"detail": {"playlist_url_host": host}}))
+        return hops.read_probe(str(path))
+
+    def test_a_near_reply_on_another_edge_is_not_the_listeners(self):
+        nodes, events = self.two_london_edges()
+        # The playlist host is not an edge: the edge comes from the headers.
+        probe = self.write_late_probe("10.90.0.11:19444")
+        result = hops.analyse(nodes, events, [probe], STREAM, START_US)
+        found = result["listeners"][0]
+        # No exact reply anywhere; lon-edge-2's reply 100 µs away is not taken.
+        self.assertEqual(found["edge_found_by_reply"], 0)
+        # The listener's edge-committed header is lon-edge-1's journal event.
+        self.assertEqual(found["edge_found_by_edge_committed"], 100)
+        self.assertEqual(found["edge_unknown"], 0)
+        listener = result["regions"]["london"]["listener_parts"]
+        # lon-edge-1's mesh_first (s + 3300), not lon-edge-2's (s + 3500).
+        self.assertEqual(stage(listener, "edge.mesh_first")["p50"], 3.3)
+        self.assertEqual(hop(listener, "parent.mesh_sent -> edge.mesh_first")["p50"], 0.3)
+        self.assertEqual(hop(listener, "edge.edge_committed -> edge.reply")["p50"], 0.3)
+
+    def test_the_playlist_host_edge_wins(self):
+        nodes, events = self.two_london_edges()
+        # Make lon-edge-2's reply exactly the listener's: the host still wins.
+        events = [item if not (item["_node"] == "lon-edge-2" and item["stage"] == "reply")
+                  else {**item, "t_us": item["t_us"] - 100} for item in events]
+        probe = self.write_late_probe("10.90.0.21:19444")
+        result = hops.analyse(nodes, events, [probe], STREAM, START_US)
+        found = result["listeners"][0]
+        self.assertEqual(found["edge_by_playlist_host"], "lon-edge-1")
+        self.assertEqual(found["edge_found_by_reply"], 0)
+        listener = result["regions"]["london"]["listener_parts"]
+        self.assertEqual(stage(listener, "edge.mesh_first")["p50"], 3.3)
+
+    def test_an_exact_reply_finds_the_edge(self):
+        nodes, events = self.two_london_edges()
+        probe = self.write_late_probe("10.90.0.11:19444")
+        for row in probe["rows"].values():
+            row["reply_us"] += 100              # lon-edge-2's reply exactly
+            row["edge_committed_us"] = None
+        result = hops.analyse(nodes, events, [probe], STREAM, START_US)
+        found = result["listeners"][0]
+        self.assertEqual(found["edge_found_by_reply"], 99)   # the spike part's reply differs
+        self.assertEqual(found["edge_unknown"], 1)
+
     def test_seq_not_epoch_is_reported_and_epoch_wins(self):
         result = hops.analyse(NODES, journal(seq_offset=7), [], STREAM, START_US)
         self.assertFalse(result["seq_check"]["seq_equals_epoch"])
