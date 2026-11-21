@@ -420,6 +420,32 @@ def epoch_samples(settings: dict, payload: str) -> int:
     return max(32, samples) if payload == "flac" else samples
 
 
+def stream_part_us(settings: dict, epoch_samples: int) -> float:
+    """Duration in µs of one audio part of a stream whose source sends
+    epochs (or Opus frames) of `epoch_samples`, under the contributor's
+    audio_part: one epoch, or the samples or µs that it names."""
+    audio = part_plan(settings)["audio_part"]
+    if audio == "epoch":
+        return epoch_samples * 1_000_000 / SAMPLE_RATE
+    if audio.endswith("samples"):
+        return int(audio[:-len("samples")]) * 1_000_000 / SAMPLE_RATE
+    return float(int(audio[:-len("us")]))
+
+
+def whole_part_ms(settings: dict, epoch_samples: int, what: str) -> int:
+    """stream_part_us in whole ms, for the checkers that take only that
+    (aep1-48k-probe receive-hls and load-hls --part-ms, soundkit-part-check);
+    ValueError when the part is not a whole number of ms."""
+    ms = stream_part_us(settings, epoch_samples) / 1000
+    if ms <= 0 or abs(ms - round(ms)) > 1e-9:
+        raise ValueError(
+            f"{what} are {ms:g} ms (audio_part {part_plan(settings)['audio_part']}, "
+            f"{epoch_samples}-sample epochs); aep1-48k-probe receive-hls, load-hls and "
+            "soundkit-part-check take whole ms parts: send epochs of a multiple of 48 "
+            "samples, or deploy with --set audio_part=<N*1000>us")
+    return int(round(ms))
+
+
 def deployed_part_ms(settings: dict) -> float:
     """The nominal part of a deployed settings file in ms, for the tools that
     still speak ms (version 1 files have `part_ms`, version 2 `part_us`)."""

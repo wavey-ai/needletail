@@ -19,6 +19,7 @@ summary. Nothing is hidden when a lane fails: the summary carries the error.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import pathlib
 import shlex
@@ -28,7 +29,46 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import small_mesh_common as common  # noqa: E402
 
+_deploy_spec = importlib.util.spec_from_file_location(
+    "small_mesh_deploy", pathlib.Path(__file__).resolve().parent / "linode-small-mesh-deploy.py")
+deploy = importlib.util.module_from_spec(_deploy_spec)
+_deploy_spec.loader.exec_module(deploy)
+
 PROBE = "/usr/local/bin/aep1-48k-probe"
+# The epochs that this tool's sources send. The checkers (aep1-48k-probe
+# receive-hls and load-hls --part-ms, soundkit-part-check) take whole ms
+# parts, and with audio_part "epoch" a part is one epoch: 48 samples (1 ms)
+# for the AEP1 sender and the DAW source's lossless lane, and 240-sample (5 ms)
+# Opus frames from the DAW source, whose 120-sample default (2.5 ms) the
+# checkers cannot count.
+PROBE_EPOCH_SAMPLES = 48
+DAW_LOSSLESS_EPOCH_SAMPLES = 48
+DAW_OPUS_FRAME_SAMPLES = 240
+
+
+def daw_epoch_args(lossless_samples: int, opus_samples: int) -> str:
+    """daw-test-source arguments that fix its epochs (rather than rely on
+    the defaults of the build that is installed)."""
+    return (f"--lossless-epoch-samples {lossless_samples} "
+            f"--opus-frame-samples {opus_samples} ")
+
+
+def assign_part_ms(settings: dict, streams: list[dict]) -> None:
+    """Give each stream (with its source `epoch_samples`) the whole-ms part
+    that its checkers are told; SystemExit naming every stream whose part is
+    not a whole number of ms."""
+    # A settings file written before a key existed lacks it: the defaults
+    # fill it in (nothing saved is dropped).
+    settings = {**deploy.DEFAULT_SETTINGS, **settings}
+    errors = []
+    for stream in streams:
+        try:
+            stream["part_ms"] = deploy.whole_part_ms(settings, stream["epoch_samples"],
+                                                     f"the parts of {stream['name']}")
+        except ValueError as error:
+            errors.append(str(error))
+    if errors:
+        raise SystemExit("this run's checkers take whole ms parts: " + "; ".join(errors))
 TLS = (f"--server-name {common.TLS_SERVER_NAME} "
        "--tls-ca /usr/local/share/ca-certificates/needletail-qualification.crt")
 REMOTE_RUNS = "/var/lib/needletail-runs"
@@ -74,10 +114,10 @@ def background(name: str, command: str) -> str:
 
 
 def hls_command(edge: str, stream_id: int, args: argparse.Namespace, session_id: int,
-                codec: str, response_ms: int | None = None) -> str:
+                codec: str, response_ms: int | None = None, part_ms: int | None = None) -> str:
     command = (f"{PROBE} receive-hls --edge {edge} {TLS} --transport h3 "
                f"--stream-id {stream_id} --session-id {session_id} "
-               f"--duration-seconds {args.duration} --part-ms {args.part_ms} "
+               f"--duration-seconds {args.duration} --part-ms {part_ms or args.part_ms} "
                f"--deadline-ms {args.deadline_ms} --render-buffer-ms 150 "
                f"--tail-seconds {args.tail} --expected-audio-codec {codec}")
     if codec in ("opus", "soundkit-opus", "ipcm"):
@@ -97,14 +137,16 @@ def stream_plan(args: argparse.Namespace, settings: dict, group_id: int) -> dict
         for index in range(args.tracks):
             if "flac" in formats:
                 streams.append({"name": f"flac{index}", "stream_id": base + index,
-                                "codec": "opaque-flac" if opaque else "flac"})
+                                "codec": "opaque-flac" if opaque else "flac",
+                                "epoch_samples": args.daw_lossless_epoch_samples})
             if "opus" in formats:
                 streams.append({"name": f"opus{index}", "stream_id": base + 1000 + index,
-                                "codec": args.opus_codec})
+                                "codec": args.opus_codec,
+                                "epoch_samples": args.daw_opus_frame_samples})
         return {"group_id": 0, "group_count": args.tracks, "streams": streams}
     return {"group_id": group_id, "group_count": 1, "streams": [
         {"name": "flac0", "stream_id": base + group_id,
-         "codec": "opaque-flac" if opaque else "flac"}]}
+         "codec": "opaque-flac" if opaque else "flac", "epoch_samples": args.epoch_samples}]}
 
 
 def loss_commands(port: int, percent: float, chain: str) -> tuple[str, str]:
@@ -248,13 +290,8 @@ def node_usage(before: dict, after: dict) -> dict:
 def run(args: argparse.Namespace) -> None:
     state = common.load_state()
     settings = json.loads((common.ARTIFACT_DIR / "settings.json").read_text())
-    # The probe's receive-hls and soundkit-part-check take a whole number of
-    # ms: a settings file of version 2 names its part in µs (part_us).
-    part_ms = settings.get("part_ms") or (settings.get("part_us") or 2500) / 1000
-    if part_ms != int(part_ms):
-        raise SystemExit(f"this run's checkers take whole ms parts; the mesh has {part_ms} ms "
-                         "parts (deploy with --set part_ms=5 to run it)")
-    args.part_ms = int(part_ms)
+    if args.source != "daw" and args.epoch_samples < 32:
+        raise SystemExit("the AEP1 sender sends FLAC: --epoch-samples is at least 32")
     contributor = common.nodes_by_role(state, "contributor")[0]
     distributors = common.nodes_by_role(state, "distributor")
     edges = common.nodes_by_role(state, "edge")
@@ -273,6 +310,14 @@ def run(args: argparse.Namespace) -> None:
     remote = f"{REMOTE_RUNS}/{run_id}"
     group_id = 30000 + int(time.time()) % 30000
     plan = stream_plan(args, settings, group_id)
+    # The checkers are told each stream's audio part, not the caches'
+    # nominal part: with audio_part "epoch" a part is one source epoch.
+    if not plan["streams"]:
+        raise SystemExit("no LL-HLS stream to read: daw_hls_formats has neither flac nor opus")
+    assign_part_ms(settings, plan["streams"])
+    args.part_ms = plan["streams"][0]["part_ms"]
+    opus_parts = [item["part_ms"] for item in plan["streams"] if item["name"].startswith("opus")]
+    args.opus_part_ms = opus_parts[0] if opus_parts else args.part_ms
 
     loss_removals: list[tuple[dict, str]] = []
     if args.loss_relay:
@@ -313,7 +358,8 @@ def run(args: argparse.Namespace) -> None:
                             f"--deadline-ms {args.deadline_ms} --tail-seconds {args.tail}"))
                 for stream in plan["streams"]:
                     command = hls_command(f"{address}:{HTTP_PORT}", stream["stream_id"],
-                                          args, session_id, stream["codec"])
+                                          args, session_id, stream["codec"],
+                                          part_ms=stream["part_ms"])
                     if args.verify_opus_crc and stream["codec"] == "soundkit-opus":
                         command += (f" --raw-part-output-dir "
                                     f"{remote}/crc@{target['name']}@{stream['name']}")
@@ -344,7 +390,8 @@ def run(args: argparse.Namespace) -> None:
             if node["role"] in ("distributor", "edge"):
                 for stream in plan["streams"]:
                     command = hls_command(
-                        local, stream["stream_id"], args, session_id, stream["codec"])
+                        local, stream["stream_id"], args, session_id, stream["codec"],
+                        part_ms=stream["part_ms"])
                     if (args.raw_parts and node["role"] == "edge"
                             and node["name"] == edges[0]["name"]
                             and stream["name"] in ("opus0", "flac0")):
@@ -365,18 +412,21 @@ def run(args: argparse.Namespace) -> None:
                          if item["name"] == args.load_stream), stream)
                     if not args.remote_probes:
                         script += background(f"hls-vlan-{edge['name']}", hls_command(
-                            target, stream["stream_id"], args, session_id, stream["codec"]))
+                            target, stream["stream_id"], args, session_id, stream["codec"],
+                            part_ms=stream["part_ms"]))
                     if args.late_join:
                         script += background(f"hls-late-{edge['name']}", hls_command(
                             target, stream["stream_id"], args, session_id,
-                            stream["codec"]) + f" --start-offset-ms {args.late_join * 1000}")
+                            stream["codec"], part_ms=stream["part_ms"])
+                            + f" --start-offset-ms {args.late_join * 1000}")
                     if args.readers and (not args.load_edges
                                          or edge_index < args.load_edges):
                         command = (
                             f"{PROBE} load-hls --edge {target} {TLS} --transport h3 "
                             f"--stream-id {load_stream['stream_id']} "
                             f"--session-id {session_id} "
-                            f"--duration-seconds {args.duration} --part-ms {args.part_ms} "
+                            f"--duration-seconds {args.duration} "
+                            f"--part-ms {load_stream['part_ms']} "
                             f"--deadline-ms {args.load_deadline_ms} "
                             f"--tail-seconds {args.tail} --readers {args.readers} "
                             f"--expected-audio-codec {load_stream['codec']}")
@@ -415,7 +465,8 @@ def run(args: argparse.Namespace) -> None:
                 f"RUST_LOG=info DAW_TEST_SOURCE_START_UNIX_NS={session_id} "
                 f"DAW_TEST_SOURCE_CAPACITY_OUTPUT={remote}/daw-capacity.ndjson "
                 f"/usr/local/bin/daw-test-source --direct-contributor --prepared-pcm "
-                f"127.0.0.1:27100 {args.duration} {shlex.quote(args.track_directory)} "
+                + daw_epoch_args(args.daw_lossless_epoch_samples, args.daw_opus_frame_samples)
+                + f"127.0.0.1:27100 {args.duration} {shlex.quote(args.track_directory)} "
                 f">source.log 2>source.err; echo exit=$?")
         else:
             pcm = (f"--pcm-s24le-file {shlex.quote(args.pcm_file)} "
@@ -423,7 +474,8 @@ def run(args: argparse.Namespace) -> None:
             source_command = (
                 f"mkdir -p {remote}; cd {remote}; {PROBE} send --target 127.0.0.1:27100 "
                 f"--session-id {session_id} --group-id {plan['group_id']} "
-                f"--duration-seconds {args.duration} --payload flac --channels 2 "
+                f"--duration-seconds {args.duration} --payload flac "
+                f"--epoch-samples {args.epoch_samples} --channels 2 "
                 f"--group-channels 8 {pcm}--repair-percent {args.repair_percent} "
                 f"--min-repair-symbols {args.min_repair_symbols} "
                 f">source.json 2>source.err; echo exit=$?")
@@ -466,14 +518,14 @@ def run(args: argparse.Namespace) -> None:
                 common.ssh(node, (
                     f"cd {remote} && for d in crc@*; do [ -d \"$d\" ] || continue; "
                     "t=${d#crc@}; target=${t%%@*}; stream=${t#*@}; "
-                    f"/usr/local/bin/soundkit-part-check \"$d\" {args.part_ms} "
+                    f"/usr/local/bin/soundkit-part-check \"$d\" {args.opus_part_ms} "
                     ">\"T@${target}@opus-crc-${stream}.json\" 2>/dev/null; "
                     "rm -rf \"$d\"; done"), check=False, timeout=900)
             if args.verify_opus_crc and node["role"] == "edge":
                 # Check every saved Opus part on the node; keep only the verdict.
                 common.ssh(node, (
                     f"cd {remote} && for d in crc-*; do [ -d \"$d\" ] || continue; "
-                    f"/usr/local/bin/soundkit-part-check \"$d\" {args.part_ms} "
+                    f"/usr/local/bin/soundkit-part-check \"$d\" {args.opus_part_ms} "
                     f">opus-${{d}}.json 2>opus-${{d}}.err; rm -rf \"$d\"; done"),
                     check=False, timeout=600)
             target = result_dir / node["name"]
@@ -601,6 +653,17 @@ def main() -> None:
     parser.add_argument("--tracks", type=int, default=1)
     parser.add_argument("--udp-formats", default="flac")
     parser.add_argument("--opus-codec", default="opus")
+    parser.add_argument("--epoch-samples", type=int, default=PROBE_EPOCH_SAMPLES,
+                        help="samples of one epoch of the AEP1 sender (synthetic, lori; FLAC, "
+                             "at least 32); one part each with audio_part epoch")
+    parser.add_argument("--daw-lossless-epoch-samples", type=int,
+                        default=DAW_LOSSLESS_EPOCH_SAMPLES,
+                        help="the DAW source's lossless epoch (daw-test-source "
+                             "--lossless-epoch-samples)")
+    parser.add_argument("--daw-opus-frame-samples", type=int, default=DAW_OPUS_FRAME_SAMPLES,
+                        choices=(120, 240, 480, 960),
+                        help="the DAW source's Opus frame (--opus-frame-samples); 120 (2.5 ms) "
+                             "parts are not a whole ms, which the checkers need")
     parser.add_argument("--duration", type=int, default=30)
     parser.add_argument("--tail", type=int, default=4)
     parser.add_argument("--start-delay", type=int, default=14)

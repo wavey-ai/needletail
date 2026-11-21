@@ -61,6 +61,17 @@ scripts/linode-small-mesh-deploy.py hunt
 scripts/linode-small-mesh-run.py --name baseline --source lori --duration 60
 ```
 
+The checkers of `linode-small-mesh-run.py` and `linode-small-mesh-soak.py`
+(`aep1-48k-probe receive-hls` and `load-hls --part-ms`, `soundkit-part-check`)
+count parts in whole milliseconds. Each stream's checker is told that
+stream's audio part, not the caches' nominal part: with `audio_part` `epoch`
+one source epoch. The tools therefore start their sources with whole-ms
+epochs: the AEP1 sender with `--epoch-samples 48` (1 ms), the DAW source with
+`--lossless-epoch-samples 48` and `--opus-frame-samples 240` (5 ms; its 2.5 ms
+default is not a whole millisecond). `--epoch-samples`,
+`--daw-lossless-epoch-samples` and `--daw-opus-frame-samples` change them, and
+a part that is not a whole millisecond is refused before anything starts.
+
 ### Cost controls
 
 `up` refuses a topology with more than 40 nodes or a price above $1.00 per
