@@ -136,6 +136,12 @@ DEFAULT_SETTINGS = {
     },
     "path_loss_ppm": 20000,
     "relay_min_repair_symbols": 0,
+    # Send each part from the contributor straight to the distributors of its
+    # own site too, one hop less than through a backbone relay (av-contrib
+    # --relay-direct-target; each such distributor gets --relay-direct-peer).
+    # Off: av-mesh does not yet accept a third, direct parent, and rejects and
+    # logs every datagram from an address that is not a backbone parent.
+    "contributor_direct_region": False,
     "failover_primary_silence_ms": 100,
     "failover_primary_recovery_ms": 500,
     "failover_secondary_warm_ms": 300,
@@ -208,6 +214,9 @@ CONTRIB_HTTP_PORT = 19443
 TELEMETRY_PORT = 27300
 MEDIA_FEC_PORT = 22101
 DAW_MEDIA_PORT = 27100
+# Source port of the contributor's direct lanes to the distributors of its
+# site (contributor_direct_region).
+CONTRIB_DIRECT_PORT = 22303
 
 
 def parse_overrides(overrides: list[str]) -> dict:
@@ -883,16 +892,45 @@ def contributor_args(service: dict, settings: dict) -> list[str]:
     return args + list(settings["extra_contributor_args"])
 
 
+def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str, list[str]]]:
+    """contributor_direct_region: the contributor's --relay-direct-* arguments
+    for the distributors of its site, and for each of those distributors the
+    arguments that register the contributor's direct source endpoint as a
+    parent. A direct target is the port on which the distributor takes its
+    primary backbone parent; the symbols are the same."""
+    contrib = common.nodes_by_role(state, "contributor")[0]
+    mates = [node for node in common.nodes_by_role(state, "distributor")
+             if node["site"] == contrib["site"]]
+    if not mates:
+        return [], {}
+    bind = f"{link_addresses(contrib, mates[0])[0]}:{CONTRIB_DIRECT_PORT}"
+    contrib_args = ["--relay-direct-bind", bind]
+    mesh_args = {}
+    for node in sorted(mates, key=lambda item: item["name"]):
+        source, target = link_addresses(contrib, node)
+        if f"{source}:{CONTRIB_DIRECT_PORT}" != bind:
+            continue
+        port = services[("av_mesh", relay_node_id(node))]["primary_parent"]["bind"].rsplit(":", 1)[1]
+        contrib_args += ["--relay-direct-target", f"{target}:{port}",
+                         "--relay-direct-id", relay_node_id(node)]
+        mesh_args[node["name"]] = ["--relay-direct-peer", bind,
+                                   "--relay-direct-id", relay_node_id(contrib)]
+    return contrib_args, mesh_args
+
+
 def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     """Return {node name: {service, args, env}} for every service node."""
     services = {
         (item["service"], item["node_id"]): item for item in plan["services"]
     }
+    direct_contrib, direct_mesh = (direct_region_args(state, services)
+                                   if settings.get("contributor_direct_region") else ([], {}))
     rendered: dict[str, dict] = {}
     for node in state["nodes"].values():
         role = node["role"]
         if role == "contributor":
             args = contributor_args(services[("av_contrib", "contrib")], settings)
+            args += direct_contrib
             rendered[node["name"]] = {
                 "service": "needletail-contrib", "args": args,
                 "rust_log": settings["rust_log_contrib"]}
@@ -902,6 +940,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         args = common_mesh_args(node, settings, state)
         if role in ("backbone", "distributor"):
             args += relay_args(services[("av_mesh", relay_node_id(node))])
+            args += direct_mesh.get(node["name"], [])
         if role == "backbone":
             args += ["--mesh-bind", f"0.0.0.0:{MESH_PORT}", "--edge-webtransport"]
             args += list(settings["extra_backbone_args"])
