@@ -183,7 +183,41 @@ def step_run(step: str, seconds: int, out: pathlib.Path, udp_port: int | None) -
             "hls": hls, "pass": all(v["pass"] for v in verdicts.values()) and len(verdicts) == len(STREAMS)}
 
 
-def start_sources(seconds: int) -> None:
+# The smallest frames: 2.5 ms Opus (120 samples, Opus's shortest frame),
+# 1 ms PCM and FLAC (48 samples), one video frame per part. Each AEP1 epoch
+# becomes one part (the contributor cuts a part at 1 ms or more).
+# The defaults: Opus at its shortest frame (2.5 ms) and lossless at the
+# smallest block that the distribution tier carried without loss on 21
+# November 2026 (5 ms; see the lossless curve in the record). `--epoch-samples`
+# tries others.
+SMALLEST = {"opus": ("opus", 120), "pcm": ("pcm", 240), "flac": ("flac", 240)}
+SMALLEST_OVERRIDES = ["fmp4_part_ms=1", "fmp4_video_part_ms=null"]
+
+
+def start_probe_sender(name: str, payload: str, epoch_samples: int, seconds: int,
+                       sources: dict) -> None:
+    log = open(lab.WORK / "logs" / f"source-{name}.log", "ab")
+    process = subprocess.Popen(
+        lab.enter("contrib-lon") + [
+            lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+            "--session-id", str(time.time_ns() + 2_000_000_000), "--group-id", "0",
+            "--duration-seconds", str(seconds), "--payload", payload,
+            "--epoch-samples", str(epoch_samples),
+            "--channels", "2", "--group-channels", "2",
+            "--pcm-s24le-file", str(lab.AUDIO_PCM),
+            "--repair-percent", "12", "--min-repair-symbols", "1"],
+        stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    sources[name] = process.pid
+
+
+def start_sources(seconds: int, smallest: bool = False) -> None:
+    if smallest:
+        lab.start_sources(seconds, video=True, audio=None)
+        sources = lab.load("sources.json")
+        for name, (payload, samples) in SMALLEST.items():
+            start_probe_sender(name, payload, samples, seconds, sources)
+        lab.save("sources.json", sources)
+        return
     lab.start_sources(seconds, video=True, audio="daw")
     # The 24-bit PCM rendition comes from the AEP1 sender, as in the
     # comparison of 21 November.
@@ -211,21 +245,34 @@ def main() -> None:
     parser.add_argument("--udp-port", type=int, default=None,
                         help="client UDP port, when the entry point does not name one")
     parser.add_argument("--no-up", action="store_true")
+    parser.add_argument("--smallest", action="store_true", default=True,
+                        help="(default) probe sources at the smallest frames: 2.5 ms Opus, "
+                             "5 ms PCM and FLAC, one video frame per part")
+    parser.add_argument("--daw", dest="smallest", action="store_false",
+                        help="the DAW test source for Opus and FLAC (5 ms) instead")
+    parser.add_argument("--epoch-samples", default="",
+                        help="with --smallest: e.g. opus=120,pcm=240,flac=240")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     steps = [step for step in args.steps.split(",") if step]
+    for item in filter(None, args.epoch_samples.split(",")):
+        name, _, samples = item.partition("=")
+        SMALLEST[name] = (SMALLEST[name][0], int(samples))
     if not args.no_up:
-        lab.up(OVERRIDES + args.overrides)
+        lab.up(OVERRIDES + (SMALLEST_OVERRIDES if args.smallest else []) + args.overrides)
     lab.stop_sources()
-    start_sources(len(steps) * (args.seconds + 25) + 60)
+    start_sources(len(steps) * (args.seconds + 25) + 60, smallest=args.smallest)
     for stream in STREAMS.values():
         try:
             lab.wait_live(stream, timeout=60)
         except lab.LabError as error:
             print(f"stream {stream} is not live: {error}", file=sys.stderr)
     result = {"started_unix": time.time(), "binaries": lab.load("binaries.json"),
+              "frames": ({name: f"{payload} {samples} samples ({samples / 48:g} ms)"
+                          for name, (payload, samples) in SMALLEST.items()}
+                         | {"video-4k": "one frame per part"}) if args.smallest else "default",
               "client": str(CLIENT), "steps": []}
     for step in steps:
         outcome = step_run(step, args.seconds, out, args.udp_port)

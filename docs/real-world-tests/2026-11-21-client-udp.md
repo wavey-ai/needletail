@@ -257,12 +257,192 @@ stopped on a transient error. Still open below.
 - **Loss shape.** Only random loss was tried. Burst loss longer than a part's
   repair loses that part.
 
+## Cut-through at the edge (second round, same day)
+
+The owner then asked for the UDP client mode to forward datagrams as they
+arrive (source symbols first, no wait for a block), to carry 2.5 ms Opus and
+parts of 1 ms or less, and to have no timer or batching on its hot path.
+
+**What changed** (`av-mesh` `bcc885f` to `7497fc2`, `playlists` `client-udp`
+`a225609`):
+
+- `playlists` gives the cache mesh a receive observer: told of every
+  datagram before it is decoded, and of every block once it decodes.
+- The cache mesh carries a part as one systematic RaptorQ block of a chunk
+  frame, so each source symbol is a slice of the frame. When one arrives at
+  the edge, the edge sends it on at once to the clients of the stream, cut
+  into client symbols (a divisor of the mesh symbol that fits a client
+  datagram: 16 kB 4K symbols go out as 1,000-byte symbols, so nothing is IP
+  fragmented on the client's path; a part in one symbol goes out at its own
+  size). This runs inline on the mesh receive task with non-blocking sends:
+  no timer, no queue, no batching.
+- When the edge has decoded the block it sends each client the symbols that
+  it never received and the repair of the client's current policy, from
+  the same frame in the same symbols, on a blocking thread. If the other
+  distributor's block of the part decodes first, that block is sent whole.
+  The cache sender skips the parts that cut-through carries.
+- The client decodes a cut-through object (a chunk frame) to the LL-HLS
+  part bytes with the edge's own slot rules, and reads the publication time
+  from the part's media object. It keeps one decoder per block id space.
+- `--client-udp-cut-through false` (deploy `client_udp_cut_through`) turns
+  it off.
+
+**Small parts** (`small_parts_reach_a_udp_client_cut_through_at_their_rate`:
+a distributor and an edge in one process, a real cache mesh over loopback,
+parts published at their rate, a UDP client). Every part arrived identical
+to the LL-HLS part, all by cut-through:
+
+| Parts | Rate | Publish to client p50 | p99 | Edge's share (first datagram at the edge to client) |
+| --- | ---: | ---: | ---: | ---: |
+| 2.5 ms Opus | 400/s | 0.51 to 0.69 ms | 0.70 to 0.94 ms | about 0.1 ms |
+| 1 ms PCM | 1,000/s | 0.49 to 0.65 ms | 1.1 to 1.5 ms | about 0.1 ms |
+| 0.25 ms PCM | 4,000/s | 12 to 177 ms | 39 to 357 ms | 0.03 ms |
+| 4K, one frame | 24/s | 2.8 to 4.1 ms | 3.2 to 7.6 ms | 1.6 ms (the rest of the part arriving) |
+
+At 4,000 parts/s the parts queue at the distributor, before they reach the
+edge. That is the distributor's publication path, owned by the latency
+round (its wave 2 targets it). The producers still make 5 ms parts; 2.5 ms
+Opus end to end waits for that round's `--epoch-samples`.
+
+**Local lab**: the end-to-end test passed twice more with cut-through
+(4 streams, 0 %, 1 %, 5 % loss and a drain: about 63,000 parts, none missing,
+every one identical to LL-HLS). Evidence:
+`evidence/local-20261121-client-udp-cut-through.json`. The local lab is too
+loaded to show the fraction of a millisecond that cut-through saves on
+audio.
+
+**Linode**, a second short run, run id `cudp2`, the same topology, every
+node dedicated, 19:30 to 19:55 UTC (0.40 h, about $0.54):
+
+- The first two runs failed: 1 and 2 4K parts missing at 5 % and 1 % loss.
+  A second adversarial review found the cause: the client kept one RaptorQ
+  decoder for every block id, and a decoder forgets blocks far below the
+  last one it decodes, so an init segment or a part sent whole threw away
+  the 4K parts being cut through. Fixed in `7497fc2`, with a test that fails
+  without the fix; the same review's other findings were fixed with it.
+- Then two runs passed every step: 4K, Opus, FLAC and PCM, 0 %, 1 % and 5 %
+  loss and a drain, no part missing, every part identical to LL-HLS
+  (`evidence/20261121T194453Z-client-udp.json`,
+  `evidence/20261121T194816Z-client-udp.json`). The edge sent 117,632 parts
+  by cut-through in one run, 3,103 of them completed from the other
+  distributor's block; no send found its socket full.
+- Then the same instances with cut-through off
+  (`evidence/20261121T195150Z-client-udp.json`). Publish to arrival, p50
+  and p99 in ms:
+
+| Step | Stream | Cut-through (two runs) | Cache path |
+| --- | --- | --- | --- |
+| 0 % | Opus | 2.72 to 2.75 / 59 to 73 | 3.00 / 49 |
+| 0 % | FLAC | 2.90 to 2.93 / 48 to 62 | 3.55 / 53 |
+| 0 % | PCM | 2.22 to 2.23 / 52 to 62 | 2.94 / 64 |
+| 0 % | 4K | 42.6 to 42.9 / 105 to 113 | 50.9 / 167 |
+| 5 % | Opus | 2.86 / 62 to 67 | 3.22 / 44 |
+| 5 % | FLAC | 3.00 / 44 to 45 | 3.60 / 45 |
+| 5 % | PCM | 2.31 to 2.38 / 48 to 49 | 2.88 / 47 |
+| 5 % | 4K | 60.7 to 61.2 / 135 to 145 | 54.4 / 201 |
+
+Cut-through takes 0.3 to 0.7 ms off the audio median and 8 ms off the 4K
+median on a clean path. With 5 % loss a lost 4K source symbol waits for the
+edge to decode the whole part before its repair goes out, and the 4K median
+is 6 ms worse than the cache path's. The p99 of 44 to 73 ms on audio is the
+same with or without it and is made upstream of the edge. Against the first
+Linode run (same day, before the latency round's mesh changes were merged)
+the audio median fell from 3.6 to 4.6 ms to 2.2 to 3.0 ms.
+
+Still open from this round: the edge sends to each client inline on the
+mesh receive task (one system call per client symbol per client); a lost 4K
+source symbol waits for the whole block; init segments are not sent to
+cut-through clients (a client fetches `init.mp4` over HTTP, as it reads the
+playlist); 2.5 ms Opus and 1 ms PCM end to end wait for the producers.
+
+## Smallest frames on the UDP lane (third round, same day)
+
+The owner: smallest frames by default, and "keep testing in the meantime
+with the existing 2.5 ms" Opus. The producer side of the defaults (the AEP1
+epoch, part durations in microseconds, the DAW source, deploy and docs
+defaults, the lossless halving curve) is the latency round's, by agreement
+between the two sessions; until it lands, `aep1-48k-probe send` here has a
+stop-gap `--epoch-samples` and `--payload opus` (av-contrib `client-udp`
+`4b8a12d`, which also merges the latency round's av-contrib). With the
+contributor's opaque packager at `fmp4_part_ms=1` each epoch is one part.
+`scripts/client-udp-lab.py run --smallest [--epoch-samples opus=120,pcm=48,flac=48]`
+runs the end-to-end test with these sources and one video frame per part
+(`fmp4_video_part_ms=42`).
+
+| Frames | Steps | Result |
+| --- | --- | --- |
+| Opus 2.5 ms (120 samples), PCM and FLAC 5 ms, 4K one frame per part | 0 %, 1 %, 5 %, drain | PASS: no part missing, every part identical to LL-HLS (Opus about 32,000 parts at 400 per second) |
+| as above, PCM 1 ms (48 samples) | 0 %, 5 % | FAIL upstream of the edge: LL-HLS readers miss the same parts |
+| Opus 2.5 ms, PCM and FLAC 1 ms | 0 % | FAIL upstream of the edge |
+
+**The lossless curve** (Opus 2.5 ms and 4K one frame per part beside it; 15 s
+per step for 2.5 ms and 2 ms):
+
+| PCM and FLAC block | Parts a second per stream | 0 % loss | 5 % loss | Where parts were lost |
+| --- | ---: | --- | --- | --- |
+| 5 ms (240 samples) | 200 | no part missing | no part missing | none |
+| 2.5 ms (120) | 400 | no part missing | 2 parts of about 5,500 missing on each audio stream, the same part numbers on every stream | upstream: the edge sent them as gaps, the client saw no datagram of them, LL-HLS readers missed 158 |
+| 2 ms (96) | 500 | 121 to 125 missing | 404 missing | upstream: LL-HLS missed about 1,180 |
+| 1 ms (48) | 1,000 | thousands missing | thousands missing | upstream: relay datagrams expired at the distributors |
+
+The UDP lane added no loss at any size. On today's contributor and
+distribution tier the smallest lossless block that is carried at full rate
+without loss is 5 ms; 2.5 ms is carried without loss on a clean path and
+loses a few parts upstream under load. That is the default to use until the
+distribution tier is rebuilt, and the curve to repeat after it. Opus is at its
+smallest frame, 2.5 ms, and carried without loss.
+
+Evidence: `evidence/local-20261121-client-udp-lossless-120-samples.json`,
+`evidence/local-20261121-client-udp-lossless-96-samples.json`,
+`evidence/local-20261121-client-udp-opus-2.5ms.json`,
+`evidence/local-20261121-client-udp-pcm-1ms.json`,
+`evidence/local-20261121-client-udp-lossless-1ms.json`.
+
+With 1 ms lossless parts (1,000 parts a second per stream) the distributors
+drop thousands of relay datagrams as expired (their deadline is publication
+plus 1 s), and with the contributor of this branch before the merge its
+publication queue was full. The edge and the UDP client deliver everything
+that reaches the edge; the parts are lost in the distribution tier, which the
+latency round's wave 2 is rebuilding for these rates (its target: publish to
+edge p99 under 2 ms at 4,000 parts a second). The in-process test above
+already carries 1 ms and 0.25 ms parts through the edge to a client. So:
+2.5 ms Opus works on the UDP lane end to end today; 1 ms lossless works from
+the edge to the client and waits for the distribution tier. No further
+Linode run was made for this round.
+
+## Smallest frames are the default
+
+On `client-udp` the defaults are now the smallest frames, so a stream set up
+with no options gets them:
+
+| Where | Default |
+| --- | --- |
+| `av-contrib` `--fmp4-part-ms` (was 50) | 1: every audio epoch is one part, and every video frame is one part (`--fmp4-video-part-ms` follows it) |
+| `aep1-48k-probe send --epoch-samples` | 120 (2.5 ms) for `--payload opus`; 240 (5 ms) for lossless, the measured winner of the curve above |
+| deploy `fmp4_part_ms` (was 200), lab `fmp4_part_ms` (was 5) and `fmp4_video_part_ms` (was 200) | 1 and unset: one part per epoch and per frame |
+| `client-udp-lab.py`, `linode-client-udp.py` sources | 2.5 ms Opus, 5 ms PCM and FLAC, 4K one frame per part (`--daw` for the DAW source) |
+
+Larger parts stay a setting for HTTP readers that need them. The local
+end-to-end test with no options passed every step: Opus 2.5 ms (about 8,000
+parts a step), PCM and FLAC 5 ms, 4K one frame per part (24 a second); 0 %,
+1 %, 5 % loss and a drain; no part missing on the UDP lane or on LL-HLS, every
+UDP part identical to LL-HLS (`evidence/local-20261121-client-udp-defaults.json`).
+
+Open with these defaults, for the latency round's microsecond timeline: the
+DAW test source still makes 5 ms Opus; the playlists declare
+`PART-TARGET=0.002` while video parts are 0.042 s and 2.5 ms parts are rounded
+to 0.003, which the LL-HLS rule (no part longer than the part target) does
+not allow. The UDP lane names parts by number and is not affected; an LL-HLS
+player that checks the rule needs the microsecond part targets, or larger
+parts as a setting.
+
 ## Revisions
 
 | Repository | Branch | Commit | On |
 | --- | --- | --- | --- |
-| `av-mesh` | `client-udp` | `8eed26c` | `regional-llhls-cache` `07e7d4a` |
-| `av-contrib` | `client-udp` | `f05298a` | `edge-hardening` `12abbef` |
+| `av-mesh` | `client-udp` | `7497fc2` | `regional-llhls-cache` `07e7d4a`, with `low-latency` `113386f` merged |
+| `playlists` | `client-udp` | `a225609` | `low-latency` `3317b29` |
+| `av-contrib` | `client-udp` | head | `edge-hardening` `12abbef`, with `low-latency` merged |
 | `needletail` | `client-udp` | this commit | `regional-llhls-cache` `9a633d1` |
 
 Built as in the edge hardening record (local `playlists`, `raptor-fec` and
