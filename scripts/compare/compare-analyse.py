@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import pathlib
 import statistics
@@ -126,7 +127,7 @@ def analyse_probe(summary: dict, csv_path: pathlib.Path, end_ms: float | None) -
     out["window_s"] = round((hi - lo) / 1000.0, 1)
     turn = median + STALL_MARGIN_MS
     missing = late = undecodable = 0
-    stalls, stall_ms, run = 0, 0.0, 0.0
+    stalls, stall_ms, run, longest = 0, 0.0, 0.0, 0.0
     broken = False
     for number in range(window[0], window[-1] + 1):
         record = by_number.get(number)
@@ -151,13 +152,19 @@ def analyse_probe(summary: dict, csv_path: pathlib.Path, end_ms: float | None) -
             run = max(run + FRAME_MS, bad_for) if record is None or broken else max(run, bad_for)
         elif run:
             stall_ms += run
+            longest = max(longest, run)
             run = 0.0
     stall_ms += run
+    longest = max(longest, run)
     expected = window[-1] - window[0] + 1
     out.update({
         "frames_expected": expected, "frames_missing": missing, "frames_late": late,
         "frames_undecodable": undecodable,
         "delivered_percent": round(100.0 * (expected - missing) / expected, 3),
+        # A frame is on time when it arrived, can be decoded, and was not later
+        # than 250 ms after the median.
+        "on_time_percent": round(100.0 * (expected - missing - undecodable - late) / expected, 3),
+        "longest_stall_ms": round(longest),
         "stalls": stalls, "stall_ms": round(stall_ms),
         "stalls_per_minute": round(stalls * 60000.0 / (hi - lo), 2),
         "stall_ms_per_minute": round(stall_ms * 60000.0 / (hi - lo)),
@@ -266,7 +273,25 @@ def analyse_reader(record: dict) -> dict:
     return {key: summary.get(key) for key in keep}
 
 
+ANALYSIS_VERSION = 2
+
+
 def analyse_step(path: pathlib.Path) -> dict | None:
+    """The analysis of a step is kept beside its records and reused."""
+    cache = path / "analysis.json"
+    meta_time = (path / "meta.json").stat().st_mtime if (path / "meta.json").is_file() else 0
+    if cache.is_file() and cache.stat().st_mtime > meta_time:
+        kept = load(cache)
+        if kept and kept.get("analysis_version") == ANALYSIS_VERSION:
+            return kept
+    step = analyse_step_now(path)
+    if step is not None:
+        step["analysis_version"] = ANALYSIS_VERSION
+        cache.write_text(json.dumps(step) + "\n")
+    return step
+
+
+def analyse_step_now(path: pathlib.Path) -> dict | None:
     meta = load(path / "meta.json")
     if meta is None:
         return None
@@ -343,9 +368,50 @@ def many(probes: list[dict]) -> dict:
     return out
 
 
+_spec = importlib.util.spec_from_file_location(
+    "compare_audio_analyse", pathlib.Path(__file__).resolve().parent / "compare-audio-analyse.py")
+audio = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(audio)
+
+PLAYER_KEEP = ("error", "first_frame_ms", "sizes", "chrome_cpu_cores", "presented_fps", "freezes",
+               "freeze_ms", "longest_freeze_ms", "freezes_per_minute", "freeze_ms_per_minute", "kbps",
+               "jitter_buffer_ms", "hls_js_latency_s", "audio_minus_video_ms", "window_s")
+PROBE_KEEP = ("error", "connect_ms", "first_byte_ms", "first_key_frame_ms", "frames_expected",
+              "frames_missing", "frames_late", "frames_undecodable", "frames_from_recovery_encode",
+              "on_time_percent", "delivered_percent", "stalls", "stall_ms", "longest_stall_ms",
+              "stalls_per_minute", "stall_ms_per_minute", "kbps", "window_s", "audio_packets_missing",
+              "audio_kbps", "counts", "livekit_server", "frames_incomplete", "frames")
+
+
+def slim(step: dict) -> dict:
+    """The versioned form of a step: the figures that the tables use."""
+    out = {key: value for key, value in step.items() if key not in ("hosts", "source", "analysis_version")}
+    hosts = {}
+    for name, host in step["hosts"].items():
+        kept = {key: host[key] for key in ("host_cpu_busy_percent", "host_cpu_steal_percent") if key in host}
+        for kind, keep in (("probes", PROBE_KEEP), ("players", PLAYER_KEEP)):
+            for label, record in (host.get(kind) or {}).items():
+                if "viewers" in record:          # the summary of a crowd
+                    kept.setdefault(kind, {})[label] = record
+                    continue
+                item = {key: record[key] for key in keep if record.get(key) is not None}
+                for key in ("latency_ms", "glass_to_glass_ms", "audio_latency_ms", "audio_glass_to_glass_ms"):
+                    if record.get(key):
+                        item[key] = {k: record[key].get(k) for k in ("p50", "p95", "p99", "max")}
+                kept.setdefault(kind, {})[label] = item
+        if host.get("readers"):
+            kept["readers"] = host["readers"]
+        if kept:
+            hosts[name] = kept
+    out["hosts"] = hosts
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("sessions", nargs="+")
+    parser.add_argument("--slim", action="store_true",
+                        help="the versioned form: only the figures that the tables use")
     parser.add_argument("--out", required=True)
     parser.add_argument("--runs", default=str(RUNS))
     args = parser.parse_args()
@@ -357,19 +423,38 @@ def main() -> None:
         if not directory.is_dir():
             sys.exit(f"no such session: {directory}")
         steps = {}
-        for path in sorted(p for p in directory.iterdir() if p.is_dir()):
+        samplers = audio.load_samplers(directory)
+        for path in sorted(p for p in directory.iterdir() if p.is_dir() and p.name != "samplers"):
             step = analyse_step(path)
             if step is None:
                 continue
-            if step["phase"] == "fanout":
+            step = dict(step)
+            if step.get("phase") == "fanout":
                 for host in step["hosts"].values():
                     probes = list((host.get("probes") or {}).values())
                     if len(probes) > 1:
                         host["probes"] = {"all": many(probes)}
-            steps[step["step"]] = step
+            if samplers and step.get("started_unix"):
+                step["nodes"] = audio.node_usage(samplers, step["started_unix"] + 8,
+                                                 step["started_unix"] + max(20, (step.get("seconds") or 40) - 8))
+            steps[step["step"]] = slim(step) if args.slim else step
         evidence["sessions"][name] = {"record": load(directory / "session.json"), "steps": steps}
         print(f"{name}: {len(steps)} steps")
-    pathlib.Path(args.out).write_text(json.dumps(evidence, indent=1) + "\n")
+    evidence = audio.scrub(evidence)
+    if args.slim:
+        lines = []
+        for name, session in evidence["sessions"].items():
+            steps = session.pop("steps")
+            head = json.dumps(session, separators=(",", ":"))[:-1]
+            body = ",\n".join(f"  {json.dumps(key)}:{json.dumps(value, separators=(',', ':'))}"
+                              for key, value in steps.items())
+            lines.append(f" {json.dumps(name)}:{head},\"steps\":{{\n{body}\n }}}}")
+        top = {key: value for key, value in evidence.items() if key != "sessions"}
+        text = json.dumps(top, separators=(",", ":"))[:-1] + ",\"sessions\":{\n" + ",\n".join(lines) + "\n}}\n"
+        json.loads(text)
+        pathlib.Path(args.out).write_text(text)
+    else:
+        pathlib.Path(args.out).write_text(json.dumps(evidence, indent=1) + "\n")
 
 
 if __name__ == "__main__":

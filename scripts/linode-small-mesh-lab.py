@@ -39,7 +39,10 @@ DEFAULT_TOPOLOGY = ROOT / "deploy" / "linode-small-mesh" / "topology.json"
 DEFAULT_TOKEN_FILE = ROOT.parent / "LINODE_PAT"
 MAX_NODES = int(os.environ.get("NEEDLETAIL_LINODE_MAX_NODES", "40"))
 MAX_HOURLY_USD = float(os.environ.get("NEEDLETAIL_LINODE_MAX_HOURLY_USD", "1.00"))
-ALLOWED_CLASSES = {"nanode", "standard"}
+# Dedicated CPU only (owner, 21 November 2026: "do not use shared instances").
+# A shared-CPU instance (Nanode, g6-standard) loses its processor to other
+# tenants without warning, and that is measured as late media.
+ALLOWED_CLASSES = {"dedicated"}
 
 
 def load_token() -> str:
@@ -146,12 +149,9 @@ def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
     addresses: set[tuple[str, str]] = set()
     for node in nodes:
         plan = types.get(node["type"])
-        # A listener host is a measurement instrument, not a mesh node. It may
-        # use dedicated cores, so that its own stalls do not appear as late
-        # media. The hourly price ceiling still applies to the whole lab.
-        allowed = ALLOWED_CLASSES | ({"dedicated"} if node.get("role") == "load" else set())
-        if plan is None or plan["class"] not in allowed:
-            sys.exit(f"{node['name']}: {node['type']} is not a small shared plan")
+        if plan is None or plan["class"] not in ALLOWED_CLASSES:
+            sys.exit(f"{node['name']}: {node['type']} is not a dedicated-CPU plan; "
+                     "shared instances are not allowed")
         region = regions.get(node["region"])
         if region is None or region["status"] != "ok":
             sys.exit(f"{node['name']}: region {node['region']} is unavailable")
@@ -484,12 +484,20 @@ def command_status(args: argparse.Namespace) -> None:
         print(f"watchdog deletes the lab in {(deadline - time.time()) / 60:.0f} min")
     print(f"{'NAME':<18} {'ROLE':<12} {'REGION':<13} {'TYPE':<14} "
           f"{'PUBLIC':<16} {'VLAN':<13} STATUS")
+    shared = []
     for name in sorted(state["nodes"]):
         node = state["nodes"][name]
         live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
+        live_type = live.get("type", node["type"])
+        if not live_type.startswith("g6-dedicated") and live:
+            shared.append(f"{name} ({live_type})")
         print(f"{name:<18} {node['role']:<12} {node['region']:<13} "
-              f"{node['type']:<14} {node['public_ipv4']:<16} "
+              f"{live_type:<14} {node['public_ipv4']:<16} "
               f"{node['vlan_ipv4'] or '-':<13} {live.get('status', 'absent')}")
+    if shared:
+        print("SHARED INSTANCES IN THE LAB: " + ", ".join(shared))
+        sys.exit(2)
+    print(f"every one of the {len(state['nodes'])} instances is a dedicated-CPU type")
 
 
 def command_down(args: argparse.Namespace) -> None:

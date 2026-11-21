@@ -23,7 +23,7 @@ echo "$a $b" | awk '{printf "%.1f", 100*($4-$2)/($3-$1)}'
 def main() -> None:
     limit = float(sys.argv[1]) if len(sys.argv) > 1 else 3.0
     state = common.load_state()
-    nodes = [node for node in state["nodes"].values() if node["type"] == "g6-nanode-1"]
+    nodes = list(state["nodes"].values())
     results = common.parallel(nodes, lambda node: float(common.ssh_text(node, BURN, timeout=90) or 0))
     noisy = []
     for name in sorted(results):

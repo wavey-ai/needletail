@@ -55,12 +55,12 @@ REMOTE = "/var/lib/compare"
 CA = "/usr/local/share/ca-certificates/needletail-qualification.crt"
 SERVER_NAME = common.TLS_SERVER_NAME
 SITES = ["lon", "new", "tok", "syd"]
-BASE_RUNG = "2160p8"
+BASE_RUNG = "2160p5"     # the rung that every system carries whole
 RAMP = ["1080p6", "2160p16", "2160p25", "2160p40", "2160p80"]
 # Raw throughput: 4K at a rising bit rate until the system no longer carries it.
-THROUGHPUT = ["2160p8", "2160p16", "2160p25", "2160p40", "2160p80", "2160p120", "2160p160",
+THROUGHPUT = ["2160p5", "2160p8", "2160p16", "2160p25", "2160p40", "2160p80", "2160p120", "2160p160",
               "2160p240", "2160p320"]
-CHROME_UP_TO = ("2160p8", "2160p16", "2160p25")      # a browser decodes these in real time
+CHROME_UP_TO = ("2160p5", "2160p8", "2160p16", "2160p25")      # a browser decodes these in real time
 SIZES = {"1080p6": (1920, 1080)}
 IMPAIRMENTS = {
     "loss1": "loss 1%",
@@ -103,7 +103,8 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
     def collect(item: dict) -> None:
         text = common.ssh_text(item, "kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
                                      "cat /var/tmp/compare-sampler.log", check=False)
-        (session.dir / "samplers" / f"{item['name']}.log").write_text(text + "\n")
+        # One file for each invocation: a session can be run in several parts.
+        (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
 
     common.parallel(sampled, collect)
 
@@ -122,6 +123,8 @@ class Session:
         self.source = self.nodes["lon-src"]
         self.cloud = self.load_cloud()
         self.steps: list[dict] = []
+        self.rungs: list[str] | None = None      # the rungs of a throughput sweep, when not all
+        self.pace = 2.5                          # pacing factor of the WebRTC senders
 
     def node(self, name: str) -> dict:
         return self.nodes[name]
@@ -224,7 +227,7 @@ class Lane:
             self.warm = 12
         elif self.name == "cf":
             src(s, "rm -f cf.session; " + background("cf", (
-                f"ntcmp pub --lane cf --clip {clip} --session-out cf.session --status cf.status")))
+                f"ntcmp pub --lane cf --clip {clip} --pace {s.pace} --session-out cf.session --status cf.status")))
             for _ in range(20):
                 time.sleep(1)
                 self.cf_session = src(s, "cat cf.session 2>/dev/null", check=False).strip()
@@ -235,7 +238,7 @@ class Lane:
                                    + src(s, "tail -c 400 cf.log", check=False))
         elif self.name == "whep":
             src(s, background("whep", (
-                f"ntcmp pub --lane whip --url \"$CF_WHIP_URL\" --clip {clip} --status whep.status")))
+                f"ntcmp pub --lane whip --url \"$CF_WHIP_URL\" --clip {clip} --pace {s.pace} --status whep.status")))
         elif self.name == "cfhls":
             src(s, background("cfhls", (
                 f"ntcmp flv --clip {clip} | ffmpeg -hide_banner -loglevel warning -nostdin "
@@ -246,17 +249,17 @@ class Lane:
                 src(s, background(f"lkregion-{site}", (
                     "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET "
                     f"ntcmp-lk pub --lane lk --url ws://{s.ip(site + '-lk')}:7880 --room {self.room} "
-                    f"--clip {clip} --width {width} --height {height} --status lkregion-{site}.status")))
+                    f"--clip {clip} --pace {s.pace} --width {width} --height {height} --status lkregion-{site}.status")))
         elif self.name == "lkmulti":
             src(s, background("lkmulti", (
                 "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET "
                 f"ntcmp-lk pub --lane lk --url ws://{s.ip('lon-lk')}:7890 --room {self.room} "
-                f"--clip {clip} --width {width} --height {height} --status lkmulti.status")))
+                f"--clip {clip} --pace {s.pace} --width {width} --height {height} --status lkmulti.status")))
         elif self.name == "lkcloud":
             src(s, background("lkcloud", (
                 "LIVEKIT_TOKEN=$LK_CLOUD_PUB_TOKEN "
                 f"ntcmp-lk pub --lane lk --url \"$LK_CLOUD_URL\" --room {self.room} "
-                f"--clip {clip} --width {width} --height {height} --status lkcloud.status")))
+                f"--clip {clip} --pace {s.pace} --width {width} --height {height} --status lkcloud.status")))
         else:
             raise ValueError(self.name)
         time.sleep(self.warm)
@@ -514,9 +517,9 @@ def carried(session: Session, step_name: str, seconds: int) -> dict:
     return out
 
 
-def throughput(session: Session, lane: Lane, seconds: int) -> None:
+def throughput(session: Session, lane: Lane, seconds: int, rungs: list[str] | None = None) -> None:
     failed = 0
-    for rung in THROUGHPUT:
+    for rung in rungs or THROUGHPUT:
         try:
             lane.start(rung)
         except RuntimeError as error:
@@ -575,7 +578,7 @@ def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> No
             if "fanout" in phases:
                 fanout(session, lane, BASE_RUNG, 40)
         if "throughput" in phases:
-            throughput(session, lane, 30 if name == "lkcloud" else 40)
+            throughput(session, lane, 30 if name == "lkcloud" else 40, session.rungs)
         if "ramp" in phases:
             rungs = RAMP if name != "cfhls" else ["1080p6", "2160p16"]
             for rung in rungs:
@@ -602,8 +605,13 @@ def main() -> None:
     parser.add_argument("--lanes", default=",".join(LANES))
     parser.add_argument("--phases", default="baseline,ttff,impair,fanout,ramp")
     parser.add_argument("--seconds", type=int, default=60, help="length of the baseline")
+    parser.add_argument("--rungs", default="", help="rungs of the throughput sweep (default all)")
+    parser.add_argument("--pace", type=float, default=2.5,
+                        help="a WebRTC sender spreads a frame at this multiple of the clip bit rate")
     args = parser.parse_args()
     session = Session(args.session)
+    session.rungs = args.rungs.split(",") if args.rungs else None
+    session.pace = args.pace
     started = time.time()
     sampled = start_samplers(session)
     for name in args.lanes.split(","):

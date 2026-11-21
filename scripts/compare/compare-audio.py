@@ -58,10 +58,11 @@ SITES = run.SITES
 CONFIGS = ["opus-2.5", "opus-5", "opus-10", "opus-20", "opus-max510", "pcm"]
 WEBRTC = ["cf", "whep", "lkregion", "lkmulti", "lkcloud"]
 NEEDLETAIL = {"nt-opus": (3001, "nt-opus"), "nt-flac": (2001, "nt-flac"), "nt-pcm": (4001, "pcm-5ms")}
-# One Needletail rendition at a time. The contributor is a 1 vCPU Nanode: one
-# audio rendition takes 30% to 38% of it, two take 65% to 70%, and with three
-# it keeps a standing backlog (see the write-up). So each configuration
-# publishes one rendition, and the contributor is restarted with that format.
+# Which Needletail rendition each configuration measures. The contributor (alone
+# on a g6-dedicated-4) publishes all three at once, from both producers, in
+# every configuration: NT_FORMATS. Set NT_FORMATS to one format to publish one
+# rendition at a time, as the Nanode sessions did.
+NT_FORMATS = "flac,opus,pcm"
 NT_RENDITION = {"opus-2.5": "nt-opus", "opus-5": "nt-opus", "opus-10": "nt-opus",
                 "opus-20": "nt-flac", "opus-max510": "nt-flac", "pcm": "nt-pcm"}
 NT_FORMAT = {"nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
@@ -70,6 +71,7 @@ NT_FORMAT = {"nt-opus": "opus", "nt-flac": "flac", "nt-pcm": "pcm"}
 #   -w      40 requests in flight (200 ms of parts), HTTP/2
 #   -h3     40 requests in flight, HTTP/3
 NT_READERS = {"": "--window 1", "-w": "--window 40", "-h3": "--window 40 --http3"}
+NT_STREAM = {"nt-opus": 3001, "nt-flac": 2001, "nt-pcm": 4001}
 SAMPLED = ("contrib-lon", "relay-primary", "relay-secondary")
 SAMPLER = (
     "[ -f /var/tmp/compare-sampler.pid ] && kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
@@ -112,7 +114,7 @@ class Audio:
         media = f"--audio {AUDIO}/audio.s24le --data" if self.pcm else f"--audio {AUDIO}/{self.config}.opus"
         if self.nt:
             contributor = s.node("contrib-lon")
-            wanted = NT_FORMAT[self.nt_base[0]]
+            wanted = NT_FORMATS if "," in NT_FORMATS else NT_FORMAT[self.nt_base[0]]
             settings = json.loads((common.ARTIFACT_DIR / "settings.json").read_text())
             if settings.get("daw_hls_formats") != wanted:
                 subprocess.run([sys.executable, str(HERE.parent / "linode-small-mesh-deploy.py"), "restart",
@@ -137,7 +139,8 @@ class Audio:
             run.src(s, (
                 "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
                 "[ $(( START - NOW )) -lt 8 ] && START=$(( START + 64 )); export START; "
-                "echo $START >nt.start; " + (aep1 if self.nt_base[0] == "nt-pcm" else daw)))
+                "echo $START >nt.start; " + (daw + "; " + aep1 if "," in NT_FORMATS else
+                                              aep1 if self.nt_base[0] == "nt-pcm" else daw)))
         if "cf" in self.lanes:
             run.src(s, "rm -f cf.session; " + run.background(
                 "cf", f"ntcmp pub --lane cf {media} --session-out cf.session --status cf.status"))
@@ -216,6 +219,15 @@ class Audio:
                     f"--audio-index {self.index} " + tail)
         raise ValueError(lane)
 
+    def product_reader(self, site: str, seconds: int, count: int, tag: str) -> str:
+        """needletail-reader itself on the audio stream: the reader of the product."""
+        s = self.session
+        return (f"/usr/local/bin/needletail-reader --stream {NT_STREAM[self.nt_base[0]]} "
+                f"--entry https://{s.ip(site + '-dist-a')}:19444 --session {tag}-product "
+                f"--readers {count} --arrival-spread-ms {min(10000, 400 * count)} "
+                f"--duration-seconds {seconds} --buffer-ms 1000 --tls-ca {run.CA} "
+                f"--server-name {run.SERVER_NAME} --report nt-reader.reader.json")
+
     def player(self, lane: str, site: str, seconds: int, tag: str, line: int) -> str:
         s = self.session
         # The listener is tuned for latency too: the smallest jitter buffer
@@ -243,6 +255,8 @@ class Audio:
         s = self.session
         scripts = {}
         lanes = [lane for lane in self.lanes + self.nt if only is None or lane in only]
+        if only and "nt-reader" in only and self.nt_base:
+            lanes.append("nt-reader")
         if not lanes:
             return
         for site in (fan or {name: 1 for name in SITES}):
@@ -250,7 +264,10 @@ class Audio:
             count = (fan or {}).get(site, 1)
             hosts = [f"{site}-view"] if fan else [f"{site}-nano", f"{site}-view"]
             for host in hosts:
-                probes = [self.probe(lane, site, seconds, count, f"{tag}-{host[4:]}") for lane in lanes]
+                probes = [self.probe(lane, site, seconds, count, f"{tag}-{host[4:]}") for lane in lanes
+                          if lane != "nt-reader"]
+                if "nt-reader" in lanes:
+                    probes.append(self.product_reader(site, seconds, count, f"{tag}-{host[4:]}"))
                 script = run.together(*probes) if not (chrome and host.endswith("-view")) else (
                     "\n".join(f"( {probe} ) >/dev/null 2>>errors.log &" for probe in probes))
                 if chrome and host.endswith("-view"):
@@ -317,7 +334,16 @@ def main() -> None:
     parser.add_argument("--phases", default="baseline,impair,fanout,attempts")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--chrome-seconds", type=int, default=25)
+    parser.add_argument("--nt-formats", default=NT_FORMATS,
+                        help="renditions the contributor publishes; one format publishes one at a time")
+    parser.add_argument("--window", type=int, default=40,
+                        help="part requests that the pipelined readers of Needletail keep in flight")
+    parser.add_argument("--product-reader", action="store_true",
+                        help="also run needletail-reader itself with 25 readers in each region")
     args = parser.parse_args()
+    globals()["NT_FORMATS"] = args.nt_formats
+    NT_READERS["-w"] = f"--window {args.window}"
+    NT_READERS["-h3"] = f"--window {args.window} --http3"
     session = run.Session(args.session)
     phases = args.phases.split(",")
     started = time.time()
@@ -348,6 +374,8 @@ def main() -> None:
                     for total, spread in FANOUT.items():
                         audio.step("fanout", str(total), 40, 0, None, fan=spread, only=first)
                         audio.step("fanoutb", str(total), 40, 0, None, fan=spread, only=second)
+                        if args.product_reader and total == 100:
+                            audio.step("fanoutc", str(total), 40, 0, None, fan=spread, only=["nt-reader"])
             except Exception as error:  # noqa: BLE001 - one configuration must not end the session
                 run.log(f"{config} failed: {type(error).__name__}: {str(error)[:500]}")
     finally:
@@ -362,10 +390,11 @@ def main() -> None:
         text = common.ssh_text(item, "kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
                                      "cat /var/tmp/compare-sampler.log",
                                check=False)
-        (session.dir / "samplers" / f"{item['name']}.log").write_text(text + "\n")
+        (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
 
     common.parallel(sampled, collect)
     record = {"session": args.session, "kind": "audio", "configs": args.configs, "lanes": args.lanes,
+              "pipelined_window_parts": args.window, "nt_formats": args.nt_formats,
               "phases": args.phases, "started_unix": started, "ended_unix": time.time(),
               "lab_run": session.state["run_id"], "steps": session.steps}
     path = session.dir / "session.json"

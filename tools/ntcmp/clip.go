@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -158,8 +159,26 @@ func splitAnnexB(data []byte) [][]byte {
 	return nals
 }
 
+// readShared maps a file read-only. Several senders of one clip then share
+// one copy in memory: the 333 Mbit/s clip is 3 GB.
+func readShared(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() == 0 {
+		return nil, errors.New("empty file: " + path)
+	}
+	return syscall.Mmap(int(file.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
+}
+
 func loadVideo(path string, fps int) (*Clip, error) {
-	data, err := os.ReadFile(path)
+	data, err := readShared(path)
 	if err != nil {
 		return nil, err
 	}

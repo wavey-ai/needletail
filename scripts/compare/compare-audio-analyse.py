@@ -211,7 +211,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -283,6 +283,15 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
                 summary["errors"] = errors[:4]
             lanes.setdefault(lane, {})["listeners"] = summary
         for name, record in records.items():
+            if record is not None and name.endswith(".reader") and "summary" in record:
+                summary = record["summary"]
+                behind = sorted(reader.get("max_behind_ms", 0) for reader in record.get("readers", []))
+                lanes.setdefault(name[:-7], {})["reader"] = {
+                    key: summary.get(key) for key in ("readers", "readers_ok", "parts_received",
+                                                      "parts_missing", "underruns", "max_behind_ms",
+                                                      "moves", "rejections")} | {
+                    "max_behind_ms_median_reader": behind[len(behind) // 2] if behind else None}
+        for name, record in records.items():
             if record is None or not name.endswith(".player"):
                 continue
             lane = name[:-7]
@@ -320,7 +329,10 @@ def load_samplers(directory: pathlib.Path) -> dict:
                     processes[name] = (used + int(bits[2]), rss + int(bits[3]))
             rows.append((int(head[0]), total - fields[3] - fields[4], total, fields[7], processes))
         if rows:
-            out[path.stem] = rows
+            # NODE.log, or NODE.UNIXTIME.log when a session ran in several parts.
+            out.setdefault(path.name.split(".")[0], []).extend(rows)
+    for rows in out.values():
+        rows.sort(key=lambda row: row[0])
     return out
 
 
@@ -380,6 +392,8 @@ def slim(step: dict) -> dict:
                 kept["probe"] = item
             if entry.get("listeners"):
                 kept["listeners"] = entry["listeners"]
+            if entry.get("reader"):
+                kept["reader"] = entry["reader"]
             chrome = entry.get("chrome")
             if chrome:
                 item = {key: chrome[key] for key in CHROME_KEEP if chrome.get(key) is not None}

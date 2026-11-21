@@ -45,6 +45,9 @@ type hlsOptions struct {
 	// a request for a part that is not published yet and answers when it is.
 	Window int
 	HTTP3  bool
+	// AudioParts says that the stream is audio: each part is one or more
+	// audio units, and any part is a place to start.
+	AudioParts bool
 }
 
 type hlsPart struct {
@@ -279,7 +282,7 @@ func (h *hlsProbe) unit(target string, body []byte, first, done int64) {
 		h.mu.Unlock()
 		os.WriteFile(filepath.Join(h.options.Save, name), body, 0o644)
 	}
-	if audio := h.rec.audio; audio != nil {
+	if audio := h.rec.audio; audio != nil && h.options.AudioParts {
 		// Needletail's opaque PCM parts are the producer's bytes: whole blocks.
 		size := audio.BytesPerUnit
 		number := int64(-1)
@@ -470,7 +473,7 @@ func (h *hlsProbe) chase(ctx context.Context, playlistURL string, playlist *hlsP
 		}
 	}
 	start := len(playlist.Parts) - 1
-	if h.rec.audio == nil {
+	if !h.options.AudioParts {
 		for i := len(playlist.Parts) - 1; i >= 0; i-- {
 			if playlist.Parts[i].Independent {
 				start = i
@@ -514,7 +517,7 @@ func (h *hlsProbe) chase(ctx context.Context, playlistURL string, playlist *hlsP
 				if err == nil {
 					fresh := parsePlaylist(string(body))
 					for i := len(fresh.Parts) - 1; i >= 0; i-- {
-						if fresh.Parts[i].Independent || h.rec.audio != nil {
+						if fresh.Parts[i].Independent || h.options.AudioParts {
 							if m := numbered.FindStringSubmatch(fresh.Parts[i].URI); m != nil {
 								next, _ = strconv.ParseInt(m[2], 10, 64)
 							}

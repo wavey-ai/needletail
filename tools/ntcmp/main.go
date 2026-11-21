@@ -380,6 +380,7 @@ func cmdHLS(args []string) error {
 		if audioIndex, err = loadAudioIndex(*audioIndexPath); err != nil {
 			return err
 		}
+		options.AudioParts = true
 	}
 	host, _ := os.Hostname()
 	var group sync.WaitGroup

@@ -39,7 +39,7 @@ CLIPS = MEDIA / "clips2"       # the encodes whose video is close to the nominal
 LIVEKIT_VERSION = "1.13.11"
 LK_CLI_VERSION = "2.20.1"
 REMOTE = "/var/lib/compare"
-RUNGS = ["1080p6", "2160p8", "2160p16", "2160p25", "2160p40", "2160p80", "2160p120", "2160p160",
+RUNGS = ["1080p6", "2160p5", "2160p8", "2160p16", "2160p25", "2160p40", "2160p80", "2160p120", "2160p160",
          "2160p240", "2160p320"]
 SHORT = {"london": "lon", "newyork": "new", "tokyo": "tok", "sydney": "syd"}
 PLACES = {"london": (51.5074, -0.1278), "newyork": (40.7128, -74.0060),
