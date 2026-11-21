@@ -1184,13 +1184,15 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     # NEEDLETAIL_AV_CONTRIB_ROOT selects another av-contrib checkout.
     contrib = pathlib.Path(os.environ.get(
         "NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib"))) / target
-    daw = common.WORKSPACE / "daw-nexus" / target
+    # NEEDLETAIL_DAW_NEXUS_ROOT selects another daw-nexus checkout or build.
+    daw = pathlib.Path(os.environ.get(
+        "NEEDLETAIL_DAW_NEXUS_ROOT", str(common.WORKSPACE / "daw-nexus"))) / target
     probe = contrib / "aep1-48k-probe"
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
         return [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
-                common.WORKSPACE / "daw-nexus" / target / "daw-test-source",
+                daw / "daw-test-source",
                 common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
                 common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                 / target / "soundkit-part-check"]
