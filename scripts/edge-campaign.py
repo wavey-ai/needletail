@@ -1100,6 +1100,75 @@ def player_hlsjs_edge_kill(ctx):
               f"{failover.get('media_gap_after_kill_ms')} ms after the kill")
 
 
+@scenario("player-hlsjs-cache-kill", "players",
+          "hls.js plays the 4K stream, and the cache that serves it is killed. The same "
+          "question as player-hlsjs-edge-kill, with the faults of the lab in hand, so "
+          "that it also runs on real instances.",
+          "The player plays on with less than 1 s of stall in all, and its media comes "
+          "from another cache.")
+def player_hlsjs_cache_kill(ctx):
+    import subprocess
+    process, report = hlsjs(ctx, "video", entry_url(VIDEO, "hlsjs-cache-kill"), 60,
+                            wait=False)
+    ctx.at(25)
+    victim, counts = core.busiest_edge(VIDEO)
+    lab.kill_service(victim)
+    ctx.event(f"kill -9 {victim}; sessions {counts}")
+    ctx.defer(lambda: lab.start_service(victim))
+    try:
+        process.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        process.kill()
+    summary = player_summary(report)
+    ctx.measure("hlsjs", summary)
+    ctx.check("hls.js played on, with less than 1 s of stall in all",
+              summary.get("verdict") in ("played", "stalled")
+              and (summary.get("stalled_ms") or 0) <= 1000
+              and not any("(fatal)" in error for error in summary.get("errors") or []),
+              f"{summary.get('verdict')}: {summary.get('stalled_ms')} ms stalled; "
+              f"{summary.get('reason')}; errors {summary.get('errors')}")
+    dead = lab.node(victim)["public_ipv4"]
+    hosts = summary.get("hosts") or []
+    ctx.check("the media came from another cache after the kill",
+              any(when > 25_000 and dead not in str(host) for when, host in hosts),
+              f"hosts over time: {hosts}")
+
+
+@scenario("player-hlsjs-region-lost", "players",
+          "hls.js plays the 4K stream, and every edge and distributor of its region is "
+          "killed at once. Does the player go on from the neighbouring region?",
+          "The player plays on without a fatal error, stalls for less than 6 s in all, "
+          "and its media comes from a cache of the neighbouring region within 8 s.")
+def player_hlsjs_region_lost(ctx):
+    import subprocess
+    process, report = hlsjs(ctx, "video", entry_url(VIDEO, "hlsjs-region-lost"), 70,
+                            wait=False)
+    ctx.at(25)
+    region = lab.edges() + lab.distributors()
+    for name in region:
+        lab.kill_service(name)
+    ctx.event("every edge and distributor of London killed")
+    try:
+        process.wait(timeout=130)
+    except subprocess.TimeoutExpired:
+        process.kill()
+    summary = player_summary(report)
+    ctx.measure("hlsjs", summary)
+    ctx.check("hls.js played on, with less than 6 s of stall in all",
+              summary.get("verdict") in ("played", "stalled")
+              and (summary.get("stalled_ms") or 0) <= 6000
+              and not any("(fatal)" in error for error in summary.get("errors") or []),
+              f"{summary.get('verdict')}: {summary.get('stalled_ms')} ms stalled, "
+              f"{summary.get('media_played_s')} s of media in {summary.get('wall_s')} s; "
+              f"{summary.get('reason')}; errors {summary.get('errors')}")
+    far = {lab.node(name)["public_ipv4"] for name in lab.edges("newyork")}
+    hosts = summary.get("hosts") or []
+    moved = [when for when, host in hosts
+             if when > 25_000 and str(host).split(":")[0] in far]
+    ctx.check("the media came from the neighbouring region within 8 s of the loss",
+              bool(moved) and moved[0] <= 33_000, f"hosts over time: {hosts}")
+
+
 @scenario("player-hlsjs-drain", "players",
           "hls.js plays the 4K stream, and the cache that serves it is drained. Does the "
           "player move without a stall?",
@@ -1299,10 +1368,7 @@ def slot_refusals(names) -> dict:
     import re
     out = {}
     for name in names:
-        try:
-            text = (lab.WORK / "logs" / f"{name}.log").read_text(errors="replace")
-        except OSError:
-            continue
+        text = lab.node_log(name)
         refused = sorted({int(item) for item in re.findall(
             r"stream_id\S*?=\S*?(\d+)[^\n]*every playlist slot holds a live stream", text)})
         if refused:
@@ -1710,6 +1776,42 @@ def ladder_hlsjs_reorder(ctx):
     ladder_player_checks(ctx, "player", report, 1000)
     timeline = level_timeline(report)
     ctx.measure("rendition_at_the_end", height_at(timeline, 60_000))
+
+
+@scenario("ladder-hlsjs-browser-cap", "ladder",
+          "hls.js plays the ladder with the download rate of the browser limited to "
+          "8 Mbit/s (DevTools network emulation, for a player on a network that the lab "
+          "cannot shape). Which rendition does it play?",
+          "The player settles on 1080p, stalls for less than 500 ms in all and drops no "
+          "frame.",
+          needs=LADDER)
+def ladder_hlsjs_browser_cap(ctx):
+    _process, report = hlsjs(ctx, "player", entry_url(VIDEO, "ladder-browser-cap"), 60,
+                             extra=["--throttle", "0:8000"])
+    ladder_player_checks(ctx, "player", report, 500)
+    timeline = level_timeline(report)
+    ctx.check("the player is on 1080p from 20 s to the end",
+              height_at(timeline, 20_000) == 1080 and height_at(timeline, 60_000) == 1080,
+              f"renditions over time: {timeline[:12]}")
+
+
+@scenario("ladder-hlsjs-browser-steps", "ladder",
+          "hls.js plays the ladder. The download rate of the browser drops to 3 Mbit/s "
+          "after 20 s and is unlimited again after 45 s. Does the player follow?",
+          "The player is on 2160p before the drop, on 720p or less within 15 s of it, and "
+          "on 2160p again within 25 s of the recovery. It stalls for less than 2 s in all.",
+          needs=LADDER)
+def ladder_hlsjs_browser_steps(ctx):
+    _process, report = hlsjs(ctx, "player", entry_url(VIDEO, "ladder-browser-steps"), 75,
+                             extra=["--throttle", "0:0,20:3000,45:0"])
+    ladder_player_checks(ctx, "player", report, 2000)
+    timeline = level_timeline(report)
+    before, low, after = (height_at(timeline, 19_500), height_at(timeline, 35_000),
+                          height_at(timeline, 70_000))
+    ctx.check("2160p before the drop", before == 2160, f"{before}p; {timeline[:14]}")
+    ctx.check("720p or less within 15 s of the drop", low is not None and low <= 720,
+              f"{low}p at 35 s")
+    ctx.check("2160p again within 25 s of the recovery", after == 2160, f"{after}p at 70 s")
 
 
 @scenario("ladder-hlsjs-rate-steps", "ladder",

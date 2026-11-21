@@ -401,6 +401,14 @@ def set_link(name: str, network: str, up: bool) -> None:
     run_in(None, ["ip", "link", "set", outside, "up" if up else "down"])
 
 
+def node_log(name: str) -> str:
+    """The log of the service of one node."""
+    try:
+        return (WORK / "logs" / f"{name}.log").read_text(errors="replace")
+    except OSError:
+        return ""
+
+
 def set_clock(name: str, offset_seconds: int | None) -> None:
     """Move the wall clock of one node. Namespaces share the clock of the
     host, so this needs real instances."""

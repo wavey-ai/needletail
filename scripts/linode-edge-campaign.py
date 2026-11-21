@@ -74,7 +74,11 @@ LINODE_SET = [
     "distributors-both-kill", "relay-primary-kill", "contributor-freeze",
     "mesh-loss-0.5pct", "mesh-loss-2pct", "mesh-burst-loss", "mesh-partition-edge-heals",
     "edge-cpu-starved", "edge-out-of-memory", "region-lost",
-    "player-hlsjs-4k", "player-hlsjs-edge-kill", "player-ffmpeg-4k",
+    "capacity-scales-with-edges",
+    "clock-skew-edge", "clock-skew-distributor", "clock-skew-contributor", "edge-disk-full",
+    "player-hlsjs-4k", "player-hlsjs-cache-kill", "player-hlsjs-region-lost",
+    "ladder-playlists", "ladder-hlsjs-browser-cap", "ladder-hlsjs-browser-steps",
+    "long-tail-one-stream-too-many", "long-tail-more-slots",
 ]
 
 
@@ -242,6 +246,11 @@ def heal_all() -> None:
     common.parallel(nodes, lambda item: common.ssh(
         item, "tc qdisc del dev eth1 root 2>/dev/null; tc qdisc del dev ifb0 root "
               "2>/dev/null; true", check=False))
+
+
+def node_log(name: str) -> str:
+    return remote(name, f"journalctl -u {service_of(name)} --since '-10 min' --no-pager "
+                        "| grep -F 'every playlist slot' | tail -200", timeout=60)
 
 
 def set_clock(name: str, offset_seconds: int | None) -> None:
@@ -437,22 +446,47 @@ def remote_readers(self, key: str, stream: int, count: int, seconds: int,
 
 # ------------------------------------------------------------------ sources
 
+def deployed(key: str):
+    """The value of a setting that the scenario in hand deployed."""
+    for item in _deployed["overrides"]:
+        name, _, value = item.partition("=")
+        if name == key:
+            return json.loads(value)
+    return None
+
+
+def album_directory() -> str:
+    tracks = deployed("daw_album_tracks") or 1
+    return f"{REMOTE_MEDIA}/daw-tracks" if tracks == 1 else f"{REMOTE_MEDIA}/daw-tracks-{tracks}"
+
+
 def start_sources(seconds: int = 6 * 3600, **_kwargs) -> None:
     contributor = common.nodes_by_role(state(), "contributor")[0]
     source = by_name("lon-readers")
-    clip = lab.VIDEO_CLIP.name
     target = contributor["vlan_ipv4"]
+    if deployed("hls_renditions"):
+        # An encoder that sends a ladder: each rendition under the key of
+        # its stream.
+        inputs = " ".join(f"-re -stream_loop -1 -i {REMOTE_MEDIA}/video/{path.name}"
+                          for _stream, path, *_ in lab.LADDER)
+        outputs = " ".join(
+            f"-map {index}:v:0 -map {index}:a:0 -c copy -t {seconds} -f flv "
+            f"rtmp://{target}:{RTMP_PORT}/live/{stream}"
+            for index, (stream, *_rest) in enumerate(lab.LADDER))
+        video = f"ffmpeg -hide_banner -loglevel error -nostdin {inputs} {outputs}"
+    else:
+        video = (f"ffmpeg -hide_banner -loglevel error -nostdin -re -stream_loop -1 "
+                 f"-i {REMOTE_MEDIA}/video/{lab.VIDEO_CLIP.name} -t {seconds} "
+                 f"-map 0:v:0 -map 0:a:0 -c copy "
+                 f"-f flv rtmp://{target}:{RTMP_PORT}/live/needletail-lab")
     common.ssh(source, (
         f"mkdir -p {REMOTE_RUNS}; pgrep -x ffmpeg >/dev/null || "
-        f"(nohup ffmpeg -hide_banner -loglevel error -nostdin -re -stream_loop -1 "
-        f"-i {REMOTE_MEDIA}/video/{clip} -t {seconds} -map 0:v:0 -map 0:a:0 -c copy "
-        f"-f flv rtmp://{target}:{RTMP_PORT}/live/needletail-lab "
-        f">{REMOTE_RUNS}/source-video.log 2>&1 </dev/null &)"))
+        f"(nohup {video} >{REMOTE_RUNS}/source-video.log 2>&1 </dev/null &)"))
     common.ssh(contributor, (
         f"mkdir -p {REMOTE_RUNS}; pgrep -x daw-test-source >/dev/null || "
         f"(RUST_LOG=info DAW_TEST_SOURCE_START_UNIX_NS=$(( $(date +%s%N) + 3000000000 )) "
         f"nohup {DAW_SOURCE} --direct-contributor --loop-prepared-pcm 127.0.0.1:27100 "
-        f"{seconds} {REMOTE_MEDIA}/daw-tracks >{REMOTE_RUNS}/source-audio.log 2>&1 "
+        f"{seconds} {album_directory()} >{REMOTE_RUNS}/source-audio.log 2>&1 "
         f"</dev/null &)"))
 
 
@@ -478,6 +512,13 @@ def prepare() -> None:
     common.ssh(contributor, f"mkdir -p {REMOTE_MEDIA}/daw-tracks")
     common.rsync_to(contributor, [str(lab.DAW_TRACKS) + "/"],
                     f"{REMOTE_MEDIA}/daw-tracks/", timeout=1800)
+    ladder = [str(path) for _stream, path, *_ in lab.LADDER[1:] if path.exists()]
+    if ladder:
+        common.rsync_to(source, ladder, f"{REMOTE_MEDIA}/video/", timeout=1800)
+    for album in sorted(lab.DAW_TRACKS.parent.glob("daw-nexus-album-8-track-pcm-*"))[-1:]:
+        common.ssh(contributor, f"mkdir -p {REMOTE_MEDIA}/daw-tracks-8")
+        common.rsync_to(contributor, [str(album) + "/"], f"{REMOTE_MEDIA}/daw-tracks-8/",
+                        timeout=3600)
     for host in ("lon-readers", "new-readers"):
         common.ssh(by_name(host), f"{READER} --help >/dev/null && mkdir -p {REMOTE_RUNS}")
     print(f"prepared: {lab.VIDEO_CLIP.name} on {source['name']}, "
@@ -573,6 +614,7 @@ def install() -> pathlib.Path:
     lab.set_link = set_link
     lab.heal_all = heal_all
     lab.set_clock = set_clock
+    lab.node_log = node_log
     lab.fill_disk = fill_disk
     lab.set_wan = unavailable
     lab.set_wan_link = unavailable
