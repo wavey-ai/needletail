@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 import sys
 import time
 
@@ -1724,6 +1725,7 @@ def clock_skew_edge(ctx):
           "Every reader plays without a missing part and without a stall, through either "
           "entry point.")
 def clock_skew_distributor(ctx):
+    before = deadline_drops()
     lab.set_clock("lon-dist-a", 4)
     ctx.defer(lambda: lab.set_clock("lon-dist-a", None))
     time.sleep(8)
@@ -1731,9 +1733,60 @@ def clock_skew_distributor(ctx):
             ctx.readers("via-true", AUDIO, 4, 30, entries=["lon-dist-b"]),
             ctx.readers("video", VIDEO, 2, 30)]
     ctx.wait_readers()
+    after = deadline_drops()
+    ctx.measure("relay_objects_dropped_at_their_deadline",
+                {name: after[name] - before.get(name, 0) for name in after})
     for job in jobs:
         ctx.expect_clean(job)
     report_experience(ctx, jobs)
+    ctx.gap = RELAY_DEADLINE_GAP
+
+
+RELAY_DEADLINE_GAP = (
+    "a relay object carries its deadline as a time of day, one second after its "
+    "publication on the clock of the contributor: a relay or a distributor whose clock is "
+    "more than that ahead of the contributor drops every object as expired")
+
+
+def deadline_drops() -> dict:
+    """Relay symbols that each relay and distributor refused because their
+    object was past its deadline."""
+    out = {}
+    for name in lab.names("backbone") + lab.names("distributor"):
+        try:
+            snapshot = lab.mesh_local(name)
+        except (lab.LabError, subprocess.TimeoutExpired):
+            continue
+        out[name] = int((snapshot.get("relay_session") or {}).get("deadline_drops") or 0)
+    return out
+
+
+@scenario("clock-skew-contributor-behind", "node",
+          "The clock of the contributor is 2 s behind true time for 20 s while readers "
+          "play. What do they see?",
+          "No part is missing and no reader stalls for more than 1 s.")
+def clock_skew_contributor_behind(ctx):
+    jobs = play(ctx, 60, video=2, audio=4)
+    before = deadline_drops()
+    ctx.at(15)
+    lab.set_clock("contrib-lon", -2)
+    ctx.defer(lambda: lab.set_clock("contrib-lon", None))
+    ctx.event("the clock of the contributor is 2 s behind")
+    ctx.at(35)
+    lab.set_clock("contrib-lon", None)
+    ctx.event("the clock of the contributor is true again")
+    ctx.wait_readers()
+    after = deadline_drops()
+    ctx.measure("relay_objects_dropped_at_their_deadline",
+                {name: after[name] - before.get(name, 0) for name in after})
+    for job in jobs:
+        ctx.expect_served(job)
+        ctx.expect_complete(job)
+        ctx.check(f"{job.key}: no stall of more than 1 s",
+                  job.summary.get("longest_stall_ms", 1 << 30) <= 1000,
+                  f"longest {job.summary.get('longest_stall_ms')} ms")
+    report_experience(ctx, jobs)
+    ctx.gap = RELAY_DEADLINE_GAP
 
 
 @scenario("clock-skew-contributor", "node",

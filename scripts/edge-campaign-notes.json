@@ -226,7 +226,7 @@
   ],
   "clock-skew-distributor": [
     "Age of an advertisement by receipt: readers are assigned and served",
-    "Audio readers of the region miss a quarter of their 5 ms parts"
+    "The deadline of a relay object is a time of day: the skewed distributor drops every object"
   ],
   "clock-skew-contributor": [
     "",
@@ -237,8 +237,8 @@
     ""
   ],
   "endurance-churn": [
-    "Allocator settings; target duration follows a duration that recurs",
-    "Measured for 30 minutes after the fixes, not for hours"
+    "Allocator settings; target duration follows a duration that recurs; an edge keeps no set of received slots; bounded packet sequence tracker",
+    ""
   ],
   "ladder-hlsjs-browser-cap": [
     "Ladder of four renditions; one date in every rendition",
@@ -259,5 +259,17 @@
   "mesh-loss-0.5pct": [
     "Loss-adaptive protection; one parent fills a hole",
     ""
+  ],
+  "clock-skew-contributor-behind": [
+    "",
+    "The deadline of a relay object is a time of day: the relays drop every object of a contributor whose clock is behind"
+  ],
+  "capacity-nine-streams": [
+    "",
+    "The contributor falls behind between five and nine streams of 5 ms parts (gap 9)"
+  ],
+  "capacity-thirteen-streams": [
+    "",
+    "The contributor falls behind between five and nine streams of 5 ms parts (gap 9)"
   ]
 }

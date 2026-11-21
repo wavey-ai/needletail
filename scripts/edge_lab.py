@@ -432,10 +432,46 @@ def node_log(name: str) -> str:
         return ""
 
 
-def set_clock(name: str, offset_seconds: int | None) -> None:
-    """Move the wall clock of one node. Namespaces share the clock of the
-    host, so this needs real instances."""
-    raise LabError("the clock of one node cannot be moved in the namespace lab")
+CLOCK_SHIM_SOURCE = pathlib.Path(__file__).resolve().parent / "clock_shift.c"
+
+
+def clock_shim() -> pathlib.Path:
+    return WORK / "bin" / "clock_shift.so"
+
+
+def build_clock_shim() -> None:
+    """Build the library that lets one service of the lab have its own wall
+    clock. Without a C compiler the lab runs as before, and the clock
+    scenarios need real instances."""
+    import shutil
+    compiler = shutil.which("cc") or shutil.which("gcc")
+    clock_shim().unlink(missing_ok=True)
+    if not compiler or not CLOCK_SHIM_SOURCE.is_file():
+        return
+    (WORK / "bin").mkdir(parents=True, exist_ok=True)
+    subprocess.run([compiler, "-O2", "-fPIC", "-shared", "-o", str(clock_shim()),
+                    str(CLOCK_SHIM_SOURCE), "-ldl"], capture_output=True)
+
+
+def set_clock(name: str, offset_seconds: float | None) -> None:
+    """Move the wall clock of the service of one node, or give it back.
+
+    Namespaces share the clock of the host, so the service is started with
+    `clock_shift.so` preloaded, which adds the seconds in a file of the node
+    to CLOCK_REALTIME. The step reaches the running service within 50 ms.
+    The monotonic clock does not move, as on an instance whose clock is
+    stepped."""
+    if not clock_shim().is_file():
+        raise LabError("the clock of one node cannot be moved in this lab: no clock shim "
+                       "(a C compiler is needed when the lab starts)")
+    node(name)
+    directory = WORK / "clock"
+    directory.mkdir(parents=True, exist_ok=True)
+    if offset_seconds is None:
+        (directory / name).unlink(missing_ok=True)
+    else:
+        (directory / name).write_text(f"{float(offset_seconds)}\n")
+    time.sleep(0.12)
 
 
 def fill_disk(name: str, full: bool) -> int:
@@ -459,6 +495,8 @@ def heal_all() -> None:
         set_wan(site, "both", None)
     set_tcp_per_packet(False)
     save("shaped.json", {})
+    for file in (WORK / "clock").glob("*"):
+        file.unlink(missing_ok=True)
 
 
 def build_networks() -> None:
@@ -638,8 +676,11 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
     # limit stands for.
     threads = load("settings.json").get("tokio_worker_threads") or max(
         1, limits["cpu_percent"] // 100)
+    shim = ({"LD_PRELOAD": str(clock_shim()),
+             "NEEDLETAIL_CLOCK_OFFSET_FILE": str(WORK / "clock" / name)}
+            if clock_shim().is_file() else {})
     process = subprocess.Popen(
-        command, env={**os.environ, "RUST_LOG": item["rust_log"],
+        command, env={**os.environ, **shim, "RUST_LOG": item["rust_log"],
                       "TOKIO_WORKER_THREADS": str(threads),
                       **{key: str(value) for key, value in
                          (load("settings.json").get("node_env") or {}).items()},
@@ -745,6 +786,7 @@ def up(overrides: list[str], start: bool = True) -> dict:
     save("limits.json", limits)
     build_networks()
     snapshot_binaries()
+    build_clock_shim()
     rendered = render(plain)
     # The kernel settings that the deploy tool gives a node.
     sysctls = load("sysctls.json")

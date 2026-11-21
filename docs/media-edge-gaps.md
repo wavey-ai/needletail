@@ -255,7 +255,11 @@ edge whose clock was 4 s behind was never given a reader.
 What was built. The age of an advertisement is the time since this node
 received a new one from that node.
 
-Proof. Scenarios `clock-skew-edge` and `clock-skew-distributor` on Linode.
+Proof. Scenario `clock-skew-edge` in both labs; `clock-skew-distributor`
+for assignment: readers through the skewed entry point are served.
+
+What is left. Assignment no longer compares clocks. The relay lanes still
+do: see the open items at the end.
 
 ### 7b. An edge that has lost its source
 
@@ -427,10 +431,18 @@ Faults that the campaign found, with their scenario, that are not fixed.
   backlog (`contributor-freeze`).
 - **A step of the contributor clock loses one 4K part**
   (`clock-skew-contributor`).
-- **With the clock of a distributor 4 s ahead, audio readers of the region
-  miss about a quarter of their parts** while video is untouched
-  (`clock-skew-distributor`, after the fix of 7a). The audio lane still
-  compares times of two clocks somewhere.
+- **The deadline of a relay object is a time of day.** The contributor stamps
+  each object with its publication time plus one second
+  (`--relay-deadline-ms`), and each relay and distributor compares that with
+  its own clock. A distributor whose clock is 4 s ahead drops every object:
+  its edges get 4K whole from the other distributor and miss a quarter of
+  the 5 ms audio parts (`clock-skew-distributor`: 200,732 symbols dropped at
+  the deadline on that node, none elsewhere). A contributor whose clock is
+  2 s behind is dropped by both relays, and the region has nothing
+  (`clock-skew-contributor-behind`). Until the deadline is carried as an age,
+  the nodes of the relay lanes need clocks within a fraction of a second of
+  each other, and a node should refuse to start without a synchronised
+  clock.
 - **A flapping private link** costs a 4K reader one stall of 0.6 to 2.1 s
   (`mesh-flap-edge`): it leaves the edge on its 503, and the next edge holds
   its request for 1.5 s.

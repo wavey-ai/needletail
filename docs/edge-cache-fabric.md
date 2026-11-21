@@ -323,7 +323,11 @@ A node holds `--playlist-slots` streams (default 16). A relay and a distributor 
 
 ### The allocator
 
-Every service runs with `MALLOC_MMAP_THRESHOLD_=65536`, `MALLOC_TRIM_THRESHOLD_=1048576` and `MALLOC_ARENA_MAX=2` (deploy setting `node_env`). Without them an edge that takes and releases 4K playlists keeps the memory of every part that it has freed.
+Every service runs with `MALLOC_MMAP_THRESHOLD_=65536`, `MALLOC_TRIM_THRESHOLD_=1048576` and `MALLOC_ARENA_MAX=2` (deploy setting `node_env`). Without them glibc keeps freed 4K parts in its heap.
+
+### What a node remembers
+
+Two sets grew for the life of a process and are now bounded. The cache mesh recorded every slot that a node took from a peer; an edge, which sends nothing on, never pruned it. The packet sequence tracker of the FEC datagram decoder kept every sequence number after the first datagram that was lost or out of order. An edge no longer keeps the first set, and the tracker holds the numbers that are missing within 4,096 of the newest. The tracker fix is in `raptor-fec`, which `av-mesh` and `av-contrib` name by commit until a release has it.
 
 Open items:
 
@@ -331,7 +335,7 @@ Open items:
 - symbols that fit one packet, so that the cache network does not depend on IP fragmentation;
 - do not send more readers to an edge through the alternates of full edges than it admits;
 - report CPU steal, and keep readers off an edge that has it;
-- the audio lane loses parts when the clock of a distributor is seconds ahead;
+- carry the deadline of a relay object as an age, not as a time of day: a relay or a distributor whose clock is more than the deadline ahead of the contributor drops every object;
 - serve audio parts in groups for standard players and narrow uplinks, and audio as its own rendition next to a video ladder;
 - authorise viewers, and move the control paths off the playback port;
 - two contributors for one stream;

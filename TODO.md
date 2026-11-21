@@ -265,19 +265,26 @@ The work is on `regional-llhls-cache` of `needletail`, `av-mesh` and
 - [x] Refuse a stream on a full node; answer 503 from an edge that has lost
   its parents; judge the age of an advertisement by receipt; kernel fragment
   settings and allocator settings on every node.
-- [ ] Push the four branches. `playlists` first: `av-mesh` names it by commit.
+- [ ] Push the five branches: `playlists` and `raptor-fec`
+  (`bounded-sequence-tracker`) first, because `av-mesh` and `av-contrib` name
+  them by commit.
+- [ ] Release `raptorq-datagram-fec` with the bounded sequence tracker and
+  `wavey-boxer` 0.1.1, and go back to registry versions.
+- [ ] Carry the deadline of a relay object as an age, not as a time of day.
+  Until then a relay or a distributor whose clock is more than
+  `--relay-deadline-ms` ahead of the contributor drops every object. Refuse to
+  start a node without a synchronised clock.
 - [ ] Work through the open items at the end of `docs/media-edge-gaps.md`:
   bursts of loss on the cache network, a copy that warms on a lossy link,
   over-admission through alternates, CPU steal, the audio lane under a skewed
   distributor clock, the backlog of a contributor after a freeze, memory of
   relays and distributors with many streams.
-- [ ] Run the churn scenario for hours on the final binaries. The memory
-  fixes are measured over 30 minutes only.
+- [ ] Run the churn scenario for a day on real instances. The memory fixes
+  are measured over 90 minutes in the local lab.
+- [ ] Two `av-contrib` tests of `audio_epoch_hls` fail on `412014d` and after;
+  two tests of `raptor-fec` `tests/video_loss_matrix.rs` time out on `main`.
 - [ ] Make hls.js hold a ladder at one-second latency on a link with little
   headroom: a cheaper first variant, `EXT-X-START`, CMSD hints.
-- [ ] Publish `wavey-boxer` 0.1.1 (`fix-rtmp-aac-frame-start`). Until then a
-  plain build of `av-contrib` drops the first two bytes of every RTMP AAC
-  frame.
 - [ ] Signal a part that is lost for good: `GAP=YES` and `EXT-X-GAP`.
 - [ ] Serve audio parts in groups, as a second view of the same playlist, for
   standard players and narrow uplinks. Audio as its own rendition group.
