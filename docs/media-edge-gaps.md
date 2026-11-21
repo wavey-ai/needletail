@@ -146,10 +146,17 @@ reports the three others. `ladder-hlsjs-rate-cap`: on an 8 Mbit/s link hls.js
 settles on 1080p after 2.7 s and stays there, and the player beside it with a
 good link settles on 2160p.
 
-What is left. hls.js at a one-second latency stalls on a link that has
-little room above the rendition: 3.9 s in 60 s on the 8 Mbit/s link, where
-1080p needs 5.4 Mbit/s on average and more at each key frame, and it is slow
-to step down when the rate collapses. Start-up is on the first variant, the
+`ladder-hlsjs-browser-cap`: with the browser limited to 8 Mbit/s hls.js plays
+59.4 of 60 s on 1080p with no stall. `ladder-hlsjs-browser-steps`: through a
+fall to 3 Mbit/s and back it plays 71 of 75 s with no stall, down to 360p and
+up again to 2160p.
+
+What is left. hls.js at a one-second latency stalls on a link that is shaped
+in the network and has little room above the rendition: 3.1 s in 60 s on a
+link of 8 Mbit/s with a quarter-second queue, where 1080p needs 5.4 Mbit/s on
+average and several times that for the part with a key frame. It is slow to
+step down when such a link collapses (10.7 s of stall in 75 s). The date of
+the renditions was verified in the local lab only. Start-up is on the first variant, the
 highest. A cheaper first variant, `EXT-X-START`, and CMSD hints are the
 server's levers. Audio is inside each video rendition: audio as its own
 rendition group is rank 9. Admission by the entry point assumes the bit rate
@@ -226,11 +233,17 @@ name. A stream that has had no part for 10 s gives up its slot.
 `--playlist-slots` (deploy setting `playlist_slots`) sets the number. A slot
 costs under 1 MB until it holds media.
 
+An edge keeps one slot for a standby copy. An edge whose other slots all
+hold a playlist with readers answers the reader of one more playlist with 429
+and the other caches. Before, that reader got nothing.
+
 Proof. Scenarios `long-tail-one-stream-too-many` and `long-tail-more-slots`.
 
 What is left. Slots are not the only limit. With audio in 5 ms parts a
-Nanode contributor is at 98% of its vCPU with 17 streams, and a relay or a
-distributor holds about 830 MB of its 1 GB for them. See rank 9.
+Nanode contributor is at 98% of its vCPU with 17 streams and delivers a third
+of the parts. In a 40-minute run with 17 streams every relay and distributor
+went from about 400 MB to about 830 MB of its 1 GB; whether it stops there
+was not measured. See rank 9.
 
 ### 7a. A node with a wrong clock
 
@@ -418,8 +431,12 @@ Faults that the campaign found, with their scenario, that are not fixed.
   miss about a quarter of their parts** while video is untouched
   (`clock-skew-distributor`, after the fix of 7a). The audio lane still
   compares times of two clocks somewhere.
-- **A flapping private link** costs a 4K reader one stall of about 0.6 s
-  (`mesh-flap-edge`).
+- **A flapping private link** costs a 4K reader one stall of 0.6 to 2.1 s
+  (`mesh-flap-edge`): it leaves the edge on its 503, and the next edge holds
+  its request for 1.5 s.
+- **Bursts of loss on the cache network** (`mesh-burst-loss`: bursts that
+  lose 70% of the packets, 3.4% on average): 2 to 3% of the 4K parts are not
+  delivered.
 - **A 4K reader that is drained to an edge that has just restarted** stalls
   for under half a second while the copy warms (`edge-rolling-restart`).
 - **A starved edge serves late until the entry point sees it fall behind**

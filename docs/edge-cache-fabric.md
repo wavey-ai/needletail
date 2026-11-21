@@ -295,6 +295,8 @@ The nodes do not transcode. An encoder sends each rendition as its own stream: o
 
 `--hls-rendition master:stream:peak:average:WIDTHxHEIGHT:rate` on the caches describes the ladder. The Multivariant Playlist lists every rendition for every pathway. An edge holds the whole ladder while it has a reader of one rendition, and each rendition playlist carries `EXT-X-RENDITION-REPORT` for the others.
 
+A rendition of a ladder carries the date of its Media Sequence Number times the segment duration as `EXT-X-PROGRAM-DATE-TIME`. The same segment has the same date in every rendition and on every cache, which is how a player finds its place when it changes rendition.
+
 ### Admission by what a reader costs
 
 A session is charged the larger of its bit rate and its share of the request capacity of the node (`--egress-request-capacity`, default 8,000 requests a second for each worker thread). A reader of 5 ms audio parts sends 200 requests a second, and an edge on one vCPU serves about 60 of them.
@@ -303,11 +305,21 @@ The HTTP server runs on its own runtime at lower priority (`--http-worker-thread
 
 ### Loss on the cache network
 
-Each node measures the loss of each peer and reports it. A sender protects an object by the measured loss of the path. A hole is filled by one parent, with the hole and nothing after it.
+Each node measures the loss of each peer and reports it. A sender protects an object by the measured loss of the path. A hole is filled by one parent, with the hole and nothing after it. A source symbol that arrives up to 250 ms late, on a path that reorders packets, is not counted as lost.
+
+A 4K part travels in symbols of up to 16 kB, which IP fragments. The defaults of the kernel for fragments do not suit that: a node needs `net.ipv4.ipfrag_time=1`, `net.ipv4.ipfrag_high_thresh=67108864` and `net.ipv4.ipfrag_max_dist=0` (deploy setting `node_sysctls`). Without them 2% loss or a few milliseconds of jitter on the private network stops 4K.
+
+### An edge that has lost its parents
+
+The nodes of the cache network say hello every 100 ms. An edge that has heard no parent for 400 ms answers a playlist or part request with 503 and the other caches, and a blocking reload that is waiting ends the same way. A reader leaves at once and does not wait for a timeout.
+
+### Clocks
+
+The age of the advertisement of a cache is the time since this node received a new one from it. Assignment does not compare the clocks of two nodes. A node whose clock is seconds wrong is assigned readers, and assigns them, like any other.
 
 ### Playlist slots
 
-A node holds `--playlist-slots` streams (default 16). A relay and a distributor hold every stream of a region, so this is the number of streams of the region. A full node refuses a new stream by name and keeps the streams that it holds. An edge holds one playlist less for its readers.
+A node holds `--playlist-slots` streams (default 16). A relay and a distributor hold every stream of a region, so this is the number of streams of the region. A full node refuses a new stream by name and keeps the streams that it holds. An edge holds one playlist less for its readers, and answers a reader of one more with 429 and the other caches.
 
 ### The allocator
 
@@ -316,6 +328,10 @@ Every service runs with `MALLOC_MMAP_THRESHOLD_=65536`, `MALLOC_TRIM_THRESHOLD_=
 Open items:
 
 - signal a part that is lost for good, with `GAP=YES` and `EXT-X-GAP`;
+- symbols that fit one packet, so that the cache network does not depend on IP fragmentation;
+- do not send more readers to an edge through the alternates of full edges than it admits;
+- report CPU steal, and keep readers off an edge that has it;
+- the audio lane loses parts when the clock of a distributor is seconds ahead;
 - serve audio parts in groups for standard players and narrow uplinks, and audio as its own rendition next to a video ladder;
 - authorise viewers, and move the control paths off the playback port;
 - two contributors for one stream;

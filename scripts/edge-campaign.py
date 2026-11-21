@@ -1535,12 +1535,25 @@ def long_tail_slots(ctx):
           "stream receives. No relay, distributor or edge is the limit.",
           needs=["daw_album_tracks=8", "playlist_slots=24"])
 def capacity_seventeen_streams(ctx):
+    many_streams(ctx, 8)
+    ctx.gap = ("a contributor on one vCPU does not carry sixteen audio streams of 5 ms "
+               "parts beside 4K: the cost is for each part, and grouped parts are gap 9")
+
+
+def album_of(tracks: int) -> list:
+    return ([VIDEO] + [2001 + track for track in range(tracks)]
+            + [3001 + track for track in range(tracks)])
+
+
+def many_streams(ctx, tracks: int) -> None:
+    """One reader of every stream of an album on one edge: the CPU of each
+    role and what the readers received."""
     time.sleep(10)
     roles = {"contributor": "contrib-lon", "relay": "relay-primary",
              "distributor": "lon-dist-a", "edge": "lon-edge-1"}
     before = {role: cpu_seconds(name) for role, name in roles.items()}
     began = time.time()
-    jobs = album_readers(ctx, 40, ALBUM, cache="lon-edge-1")
+    jobs = album_readers(ctx, 40, album_of(tracks), cache="lon-edge-1")
     ctx.wait_readers()
     elapsed = time.time() - began
     cpu = {role: round((cpu_seconds(name)[0] - before[role][0]) / elapsed * 100, 1)
@@ -1559,8 +1572,32 @@ def capacity_seventeen_streams(ctx):
     ctx.check("every stream plays without a missing part or a stall",
               all(plays_clean(job) for job in jobs.values()),
               f"CPU {cpu}; share of parts received {received}")
-    ctx.gap = ("a contributor on one vCPU does not carry sixteen audio streams of 5 ms "
-               "parts beside 4K: the cost is for each part, and grouped parts are gap 9")
+
+
+@scenario("capacity-nine-streams", "capacity",
+          "A region carries 9 streams: 4K video and an album of four tracks, lossless and "
+          "HQ, all audio in 5 ms parts: 1,605 parts a second. Does every stream play, and "
+          "what does each role use of its vCPU?",
+          "Every stream plays without a missing part or a stall. No relay, distributor or "
+          "edge is above 90% of its CPU.",
+          needs=["daw_album_tracks=4", "playlist_slots=24"])
+def capacity_nine_streams(ctx):
+    many_streams(ctx, 4)
+    ctx.gap = ("the cost of a stream of 5 ms parts is for each part: grouped parts are "
+               "gap 9")
+
+
+@scenario("capacity-thirteen-streams", "capacity",
+          "A region carries 13 streams: 4K video and an album of six tracks, lossless and "
+          "HQ, all audio in 5 ms parts: 2,405 parts a second. Does every stream play, and "
+          "what does each role use of its vCPU?",
+          "Every stream plays without a missing part or a stall. No relay, distributor or "
+          "edge is above 90% of its CPU.",
+          needs=["daw_album_tracks=6", "playlist_slots=24"])
+def capacity_thirteen_streams(ctx):
+    many_streams(ctx, 6)
+    ctx.gap = ("the cost of a stream of 5 ms parts is for each part: grouped parts are "
+               "gap 9")
 
 
 @scenario("capacity-scales-with-edges", "capacity",

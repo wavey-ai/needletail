@@ -102,9 +102,40 @@ def headline(item: dict) -> str:
     """One line of what a scenario showed: its failed checks, or what its
     players and readers saw."""
     failed = [check for check in item["checks"] if not check["pass"]]
+    parts = []
+    measured = item["measurements"]
+    steps = measured.get("steps") if isinstance(measured.get("steps"), list) else []
+    if "ceiling_readers" in measured:
+        clean = [step for step in steps if not step.get("readers_stalled")]
+        over = [step for step in steps if step.get("readers_stalled")]
+        text = f"no stall up to {measured['ceiling_readers']} readers of one edge"
+        if clean:
+            text += f" (edge CPU {clean[-1].get('edge_cpu_percent')}%)"
+        if over:
+            text += (f"; at {over[0].get('readers')} readers "
+                     f"{over[0].get('readers_stalled')} stall")
+        return text
+    if "joins_per_second_answered_in_time" in measured:
+        best = [step for step in steps if step.get("in_time")]
+        text = (f"every join answered in time up to "
+                f"{measured['joins_per_second_answered_in_time']} a second")
+        if best:
+            text += (f" (p99 {best[-1].get('join_ms_p99')} ms, entry CPU "
+                     f"{best[-1].get('entry_cpu_percent')}%)")
+        if failed:
+            text += "; " + "; ".join(f"{check['check']}: {check['detail']}"
+                                     for check in failed[:1])
+        return text
+    if "four_to_two_ratio" in measured:
+        return (f"two edges admitted {measured.get('two-edges_served_in_region')} readers, "
+                f"four admitted {measured.get('four-edges_served_in_region')}: ratio "
+                f"{measured['four_to_two_ratio']}")
+    if "cpu_percent_by_role" in measured:
+        return (f"CPU by role {measured['cpu_percent_by_role']}; streams that played clean: "
+                f"{len(measured.get('streams_played_clean') or [])} of "
+                f"{len(measured.get('share_of_parts_received') or [])}")
     if failed:
         return "; ".join(f"{check['check']}: {check['detail']}" for check in failed[:2])
-    parts = []
     for key, value in item["measurements"].items():
         if key.startswith("hlsjs") and isinstance(value, dict) and "media_played_s" in value:
             parts.append(f"hls.js: {value.get('media_played_s')} s of media in "

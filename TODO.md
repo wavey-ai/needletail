@@ -262,6 +262,19 @@ The work is on `regional-llhls-cache` of `needletail`, `av-mesh` and
   ffmpeg.
 - [x] Content Steering that survives a cache failure; a pathway in the
   neighbouring region; a ladder of renditions; admission by request cost.
+- [x] Refuse a stream on a full node; answer 503 from an edge that has lost
+  its parents; judge the age of an advertisement by receipt; kernel fragment
+  settings and allocator settings on every node.
+- [ ] Push the four branches. `playlists` first: `av-mesh` names it by commit.
+- [ ] Work through the open items at the end of `docs/media-edge-gaps.md`:
+  bursts of loss on the cache network, a copy that warms on a lossy link,
+  over-admission through alternates, CPU steal, the audio lane under a skewed
+  distributor clock, the backlog of a contributor after a freeze, memory of
+  relays and distributors with many streams.
+- [ ] Run the churn scenario for hours on the final binaries. The memory
+  fixes are measured over 30 minutes only.
+- [ ] Make hls.js hold a ladder at one-second latency on a link with little
+  headroom: a cheaper first variant, `EXT-X-START`, CMSD hints.
 - [ ] Publish `wavey-boxer` 0.1.1 (`fix-rtmp-aac-frame-start`). Until then a
   plain build of `av-contrib` drops the first two bytes of every RTMP AAC
   frame.
