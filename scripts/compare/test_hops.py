@@ -22,6 +22,7 @@ _spec.loader.exec_module(hops)
 
 STREAM = 4001
 START_US = 1_795_000_000_000_000
+EPOCH_US = 5000      # the fixture's parts are 240-sample (5 ms) epochs
 NODES = {
     "contrib-lon": {"role": "contributor", "site": "london", "addrs": ["10.90.0.5", "10.77.1.5"]},
     "relay-primary": {"role": "backbone", "site": "london", "addrs": ["10.90.0.6", "10.77.1.6"]},
@@ -37,7 +38,12 @@ SPIKE = 150          # this part waits 10 ms longer at lon-edge-1 before it is c
 
 
 def spoken(seq: int, offset: int = 0) -> int:
-    return START_US + (seq - offset + 1) * 5000
+    return START_US + (seq - offset + 1) * EPOCH_US
+
+
+def analyse(*args, **kwargs):
+    kwargs.setdefault("epoch_us", EPOCH_US)
+    return hops.analyse(*args, **kwargs)
 
 
 def event(node, stage, seq, t, **extra):
@@ -151,7 +157,7 @@ class Join(unittest.TestCase):
         self.directory = pathlib.Path(tempfile.mkdtemp())
 
     def test_every_hop_of_the_edge_parts(self):
-        result = hops.analyse(NODES, journal(), [], STREAM, START_US)
+        result = analyse(NODES, journal(), [], STREAM, START_US)
         self.assertTrue(result["seq_check"]["seq_equals_epoch"])
         self.assertEqual(result["seq_check"]["parts"], 100)
         london = result["regions"]["london"]["edge_parts"]
@@ -190,7 +196,7 @@ class Join(unittest.TestCase):
 
     def test_listener_parts_join_the_probe(self):
         probe = hops.read_probe(str(write_probe(self.directory, "nt-pcm.probe.csv")))
-        result = hops.analyse(NODES, journal(), [probe], STREAM, START_US)
+        result = analyse(NODES, journal(), [probe], STREAM, START_US)
         listener = result["regions"]["london"]["listener_parts"]
         self.assertEqual(listener["parts"], 100)
         # The listener's reply is its own (the header): the edge's second reply.
@@ -208,7 +214,7 @@ class Join(unittest.TestCase):
         # Without a source clock, the spoken time is the listener's own.
         probe = hops.read_probe("london=" + str(write_probe(self.directory, "old.probe.csv", old_format=True)))
         self.assertEqual(probe["site"], "london")
-        result = hops.analyse(NODES, journal(), [probe], STREAM, None)
+        result = analyse(NODES, journal(), [probe], STREAM, None)
         listener = result["regions"]["london"]["listener_parts"]
         self.assertEqual(listener["parts"], 100)
         self.assertEqual(stage(listener, "listener.complete")["p50"], 4.2)
@@ -251,7 +257,7 @@ class Join(unittest.TestCase):
         nodes, events = self.two_london_edges()
         # The playlist host is not an edge: the edge comes from the headers.
         probe = self.write_late_probe("10.90.0.11:19444")
-        result = hops.analyse(nodes, events, [probe], STREAM, START_US)
+        result = analyse(nodes, events, [probe], STREAM, START_US)
         found = result["listeners"][0]
         # No exact reply anywhere; lon-edge-2's reply 100 µs away is not taken.
         self.assertEqual(found["edge_found_by_reply"], 0)
@@ -270,7 +276,7 @@ class Join(unittest.TestCase):
         events = [item if not (item["_node"] == "lon-edge-2" and item["stage"] == "reply")
                   else {**item, "t_us": item["t_us"] - 100} for item in events]
         probe = self.write_late_probe("10.90.0.21:19444")
-        result = hops.analyse(nodes, events, [probe], STREAM, START_US)
+        result = analyse(nodes, events, [probe], STREAM, START_US)
         found = result["listeners"][0]
         self.assertEqual(found["edge_by_playlist_host"], "lon-edge-1")
         self.assertEqual(found["edge_found_by_reply"], 0)
@@ -283,13 +289,13 @@ class Join(unittest.TestCase):
         for row in probe["rows"].values():
             row["reply_us"] += 100              # lon-edge-2's reply exactly
             row["edge_committed_us"] = None
-        result = hops.analyse(nodes, events, [probe], STREAM, START_US)
+        result = analyse(nodes, events, [probe], STREAM, START_US)
         found = result["listeners"][0]
         self.assertEqual(found["edge_found_by_reply"], 99)   # the spike part's reply differs
         self.assertEqual(found["edge_unknown"], 1)
 
     def test_seq_not_epoch_is_reported_and_epoch_wins(self):
-        result = hops.analyse(NODES, journal(seq_offset=7), [], STREAM, START_US)
+        result = analyse(NODES, journal(seq_offset=7), [], STREAM, START_US)
         self.assertFalse(result["seq_check"]["seq_equals_epoch"])
         self.assertEqual(result["seq_check"]["seq_minus_epoch"], {"7": 100})
         # The source time comes from the epoch, so the hops are unchanged.
@@ -303,8 +309,8 @@ class Join(unittest.TestCase):
         since = spoken(100)
         # The synthetic run is half a second long: count 100 ms as late.
         with mock.patch.object(hops, "LATE_JOURNAL_US", 100_000):
-            result = hops.analyse(NODES, events, [], STREAM, START_US, since_us=since)
-            whole = hops.analyse(NODES, journal(), [], STREAM, START_US, since_us=since)
+            result = analyse(NODES, events, [], STREAM, START_US, since_us=since)
+            whole = analyse(NODES, journal(), [], STREAM, START_US, since_us=since)
         self.assertEqual(list(result["journal_starts_late"]), ["lon-edge-1"])
         self.assertEqual(result["journal_starts_late"]["lon-edge-1"], 0.203)
         # Its mesh_first of part 140; the other stream's event is not counted.
@@ -316,7 +322,7 @@ class Join(unittest.TestCase):
 
     def test_time_window(self):
         since = spoken(150) + 0
-        result = hops.analyse(NODES, journal(), [], STREAM, START_US, since_us=since)
+        result = analyse(NODES, journal(), [], STREAM, START_US, since_us=since)
         london = result["regions"]["london"]["edge_parts"]
         self.assertEqual(london["parts"], 50)
 
@@ -326,10 +332,11 @@ class Join(unittest.TestCase):
         probe = write_probe(self.directory, "nt-pcm.probe.csv")
         out = self.directory / "hops.json"
         summary = self.directory / "summary.txt"
-        # --session-id is the sender's: START + 5 ms.
+        # --session-id is the sender's: START + one epoch.
         with contextlib.redirect_stdout(io.StringIO()) as printed:
             code = hops.main(["--journal", str(raw), "--probe", str(probe), "--session-id",
-                              str((START_US + 5000) * 1000), "--out", str(out), "--summary", str(summary)])
+                              str((START_US + EPOCH_US) * 1000), "--epoch-samples", "240",
+                              "--out", str(out), "--summary", str(summary)])
         self.assertEqual(printed.getvalue(), summary.read_text())
         self.assertEqual(code, 0)
         result = json.loads(out.read_text())
@@ -340,6 +347,102 @@ class Join(unittest.TestCase):
         text = summary.read_text()
         self.assertIn("london / listener_parts: 100 parts", text)
         self.assertIn("edge.reply -> listener.complete", text)
+
+
+class Epochs(unittest.TestCase):
+    """The epoch is the run's, never a constant."""
+
+    def setUp(self):
+        self.directory = pathlib.Path(tempfile.mkdtemp())
+
+    def test_epoch_of_samples(self):
+        self.assertEqual(hops.epoch_us_of(48), 1000.0)
+        self.assertEqual(hops.epoch_us_of(120), 2500.0)
+        self.assertEqual(hops.epoch_us_of(24), 500.0)
+        self.assertEqual(hops.epoch_us_of(12), 250.0)
+        self.assertAlmostEqual(hops.epoch_us_of(32), 666.6667, places=3)
+        self.assertEqual(hops.epoch_us_of(240), 5000.0)
+        with self.assertRaises(ValueError):
+            hops.epoch_us_of(0)
+
+    def test_resolve_prefers_what_was_given_then_the_sender(self):
+        self.assertEqual(hops.resolve_epoch()["epoch_us"], 1000.0)          # pcm: 48 samples
+        self.assertEqual(hops.resolve_epoch(payload="opus")["epoch_us"], 2500.0)
+        self.assertEqual(hops.resolve_epoch(payload="flac")["epoch_samples"], 48)
+        summary = {"epochs": 10, "epoch_samples": 24, "sample_rate": 48000}
+        got = hops.resolve_epoch(payload="pcm", summary=summary)
+        self.assertEqual((got["epoch_us"], got["from"]), (500.0, "sender_summary"))
+        self.assertEqual(hops.resolve_epoch(epoch_samples=12, summary=summary)["epoch_us"], 250.0)
+        self.assertEqual(hops.resolve_epoch(epoch_us=750, summary=summary)["epoch_us"], 750.0)
+        # An older sender names it frame_count.
+        self.assertEqual(hops.sender_epoch_samples({"epochs": 1, "frame_count": 240}), 240)
+
+    def test_the_sender_summary_is_found_in_its_log(self):
+        log = self.directory / "sender.log"
+        summary = {"schema": "aep1-48k-probe.send.v1", "payload": "opus", "epochs": 4000,
+                   "epoch_samples": 120, "sample_rate": 48000,
+                   "send_lateness_ms": {"p50": 0.01}}
+        log.write_text("2026-11-21T00:00:00Z INFO sending {not json}\n"
+                       + json.dumps({"epochs": 1, "epoch_samples": 48}) + "\n"
+                       + "a warning\n" + json.dumps(summary, indent=2) + "\n")
+        self.assertEqual(hops.read_sender_summary(log), summary)
+        self.assertIsNone(hops.read_sender_summary(self.directory / "missing.log"))
+        log.write_text("killed before it reported\n")
+        self.assertIsNone(hops.read_sender_summary(log))
+
+    def journal_at(self, epoch_us: float, seq_count: int = 50) -> list[dict]:
+        out = []
+        for seq in range(1000, 1000 + seq_count):
+            s = START_US + round((seq + 1) * epoch_us)
+            out += [event("contrib-lon", "src_last", seq, s + 150, epoch=seq),
+                    event("contrib-lon", "sent", seq, s + 400),
+                    event("lon-edge-1", "mesh_first", seq, s + 1200, peer="10.77.1.11:29101"),
+                    event("lon-edge-1", "edge_committed", seq, s + 1300)]
+        return out
+
+    def test_small_epochs_time_the_source_exactly(self):
+        for samples in (48, 24, 12, 32, 120):
+            epoch_us = hops.epoch_us_of(samples)
+            result = analyse(NODES, self.journal_at(epoch_us), [], STREAM, START_US, epoch_us=epoch_us)
+            london = result["regions"]["london"]["edge_parts"]
+            self.assertEqual(hop(london, "source -> contrib.src_last")["p50"], 0.15, samples)
+            self.assertEqual(stage(london, "edge.edge_committed")["p50"], 1.3, samples)
+            # The 5 ms epoch of before would put the source far from the truth.
+            wrong = analyse(NODES, self.journal_at(epoch_us), [], STREAM, START_US, epoch_us=5000)
+            self.assertNotEqual(hop(wrong["regions"]["london"]["edge_parts"],
+                                    "source -> contrib.src_last")["p50"], 0.15)
+
+    def test_command_line_takes_the_epoch_from_the_sender(self):
+        epoch_us = hops.epoch_us_of(24)
+        raw = self.directory / "raw.ndjson"
+        hops.save_raw(raw, NODES, self.journal_at(epoch_us))
+        log = self.directory / "sender.log"
+        log.write_text(json.dumps({"epochs": 100, "epoch_samples": 24, "payload": "pcm"}) + "\n")
+        out = self.directory / "hops.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = hops.main(["--journal", str(raw), "--sender-summary", str(log), "--session-id",
+                              str(round((START_US + epoch_us) * 1000)), "--out", str(out)])
+        self.assertEqual(code, 0)
+        result = json.loads(out.read_text())
+        self.assertEqual(result["source"]["source_start_us"], START_US)
+        self.assertEqual(result["source"]["epoch_us"], 500.0)
+        self.assertEqual(result["source"]["epoch_from"], "sender_summary")
+        london = result["regions"]["london"]["edge_parts"]
+        self.assertEqual(hop(london, "source -> contrib.src_last")["p50"], 0.15)
+
+    def test_command_line_payload_names_the_stream(self):
+        events = [dict(item, stream=3001) for item in self.journal_at(2500.0)]
+        raw = self.directory / "raw.ndjson"
+        hops.save_raw(raw, NODES, events)
+        out = self.directory / "hops.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            hops.main(["--journal", str(raw), "--payload", "opus", "--source-start-ns",
+                       str(START_US * 1000), "--out", str(out)])
+        result = json.loads(out.read_text())
+        self.assertEqual(result["stream"], 3001)
+        self.assertEqual(result["source"]["epoch_samples"], 120)
+        self.assertEqual(hop(result["regions"]["london"]["edge_parts"],
+                             "source -> contrib.src_last")["p50"], 0.15)
 
 
 if __name__ == "__main__":

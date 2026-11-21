@@ -39,18 +39,23 @@ x-needletail-edge-committed-unix-us (journaled for every part).
 
 Source time. The AEP1 sender of the harness starts its loop on a wall-clock
 instant START and sends epoch k when its last sample has been spoken, at
-START + (k+1) * 5 ms; compare-audio.py and latency-bench.py pass
---session-id START + 5 ms, so epoch k leaves at session_id + k * 5 ms. Give
---source-start-ns START (or --session-id, from which START = session_id -
-5 ms). Without either, the spoken time is taken from the listener's own record
-(probe.csv: complete - latency, which ntcmp computes from the same loop).
+START + (k+1) * E, where E is one epoch: --epoch-samples N at --sample-rate
+(48 kHz), so 48 samples are 1 ms, 120 are 2.5 ms, 12 are 0.25 ms. The epoch
+is the run's: --epoch-samples, --epoch-us, the sender's JSON summary
+(--sender-summary, its `epoch_samples`), or else the default epoch of the
+payload (--payload: pcm and flac 48 samples, opus 120), never a constant.
+compare-audio.py and latency-bench.py pass --session-id START + E, so epoch k
+leaves at session_id + k * E. Give --source-start-ns START (or --session-id,
+from which START = session_id - E). Without either, the spoken time is taken
+from the listener's own record (probe.csv: complete - latency, which ntcmp
+computes from the same loop).
 
-This is deliberately NOT the low-latency spec's "session_id + (epoch+1) * 5 ms".
-aep1-48k-probe sends epoch k at its deadline session_id + k * 5 ms (epoch 0
-at session_id itself), and ntcmp's 64-second loop puts the last sample of unit
-i at loop start + (i+1) * 5 ms. The spec's formula would put the spoken time
-5 ms after the epoch was handed to the kernel, and source -> src_last would be
-negative. Do not change it back. It assumes --session-id = loop START + 5 ms,
+This is deliberately NOT the low-latency spec's "session_id + (epoch+1) * E".
+aep1-48k-probe sends epoch k at its deadline session_id + k * E (epoch 0 at
+session_id itself), and ntcmp's 64-second loop puts the last sample of unit i
+at loop start + (i+1) * E. The spec's formula would put the spoken time one
+epoch after the epoch was handed to the kernel, and source -> src_last would
+be negative. Do not change it back. It assumes --session-id = loop START + E,
 which is what the harness passes.
 Whether part seq equals epoch id is checked and reported (seq_minus_epoch).
 
@@ -75,7 +80,14 @@ import urllib.parse
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
-EPOCH_US = 5000
+SAMPLE_RATE = 48_000
+# The default AEP1 epoch of each payload of aep1-48k-probe send, in samples:
+# one part each (the contributor's --audio-part epoch). FLAC frames are at
+# least 32 samples; Opus frames are 120, 240, 480 or 960.
+DEFAULT_EPOCH_SAMPLES = {"pcm": 48, "flac": 48, "opus": 120}
+# The LL-HLS stream of each payload of AEP1 group 0 at the lab contributor:
+# --daw-hls-base-stream-id 2001, + 1000 for Opus, + 2000 for PCM.
+PAYLOAD_STREAM = {"flac": 2001, "opus": 3001, "pcm": 4001}
 MESH_PORT = 19444
 CONTRIB_PORT = 19443
 QUANTILES = (("p50", 0.5), ("p95", 0.95), ("p99", 0.99))
@@ -98,6 +110,74 @@ CHAIN = [
     ("listener.complete", "listener", None),
 ]
 EPOCH_STAGES = ("src_first", "src_last", "recovered", "packaged")
+
+
+# ------------------------------------------------------------------ epochs
+
+def epoch_us_of(samples: int, sample_rate: int = SAMPLE_RATE) -> float:
+    """One epoch of `samples` in µs (exact; 32 samples are 666.67 µs)."""
+    if samples <= 0 or sample_rate <= 0:
+        raise ValueError(f"an epoch of {samples} samples at {sample_rate} Hz")
+    return samples * 1_000_000 / sample_rate
+
+
+def read_sender_summary(path: pathlib.Path) -> dict | None:
+    """The JSON summary that aep1-48k-probe send prints when it ends, from a
+    log that may hold other lines before it (its stderr). The last JSON object
+    that starts a line and names `epochs` is the summary."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    decoder = json.JSONDecoder()
+    found = None
+    at = 0
+    while True:
+        start = text.find("{", at)
+        if start < 0:
+            return found
+        at = start + 1
+        if start and text[start - 1] != "\n":
+            continue
+        try:
+            item, end = decoder.raw_decode(text, start)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and "epochs" in item:
+            found = item
+            at = end
+
+
+def sender_epoch_samples(summary: dict | None) -> int | None:
+    """Samples per epoch from a sender summary (`epoch_samples`; older
+    senders name it `frame_count`)."""
+    if not summary:
+        return None
+    for key in ("epoch_samples", "frame_count"):
+        value = summary.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def resolve_epoch(epoch_samples: int | None = None, epoch_us: float | None = None,
+                  payload: str = "pcm", summary: dict | None = None,
+                  sample_rate: int = SAMPLE_RATE) -> dict:
+    """The epoch of a run, and where it came from: given in samples or µs,
+    else the sender's summary, else the payload's default."""
+    if epoch_us is not None:
+        return {"epoch_us": float(epoch_us), "epoch_samples": None, "from": "epoch_us"}
+    if epoch_samples is not None:
+        return {"epoch_us": epoch_us_of(epoch_samples, sample_rate),
+                "epoch_samples": epoch_samples, "from": "epoch_samples"}
+    samples = sender_epoch_samples(summary)
+    rate = (summary or {}).get("sample_rate") or sample_rate
+    if samples:
+        return {"epoch_us": epoch_us_of(samples, rate), "epoch_samples": samples,
+                "from": "sender_summary"}
+    samples = DEFAULT_EPOCH_SAMPLES[payload]
+    return {"epoch_us": epoch_us_of(samples, sample_rate), "epoch_samples": samples,
+            "from": f"default for {payload}"}
 
 
 # ------------------------------------------------------------------ numbers
@@ -412,7 +492,8 @@ class Pool:
 
 
 def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
-            source_start_us: int | None = None, epoch_us: int = EPOCH_US,
+            source_start_us: int | None = None,
+            epoch_us: float = epoch_us_of(DEFAULT_EPOCH_SAMPLES["pcm"]),
             primary: str = "relay-primary", since_us: int | None = None,
             until_us: int | None = None) -> dict:
     journal = Journal(nodes, events, stream, since_us, until_us)
@@ -421,7 +502,7 @@ def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
     def source_of(seq: int, listener: dict | None = None) -> int | None:
         epoch = journal.last_epoch(stream, seq)
         if source_start_us is not None and epoch is not None:
-            return source_start_us + (epoch + 1) * epoch_us
+            return source_start_us + round((epoch + 1) * epoch_us)
         if listener and listener.get("spoken_us") is not None:
             return listener["spoken_us"]
         return None
@@ -654,20 +735,36 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--journal", type=pathlib.Path, help="a collection saved with --raw-out")
     parser.add_argument("--since-us", type=int, help="Unix µs; events before are not asked for")
     parser.add_argument("--until-us", type=int, help="Unix µs; events after are left out")
-    parser.add_argument("--stream", type=int, default=4001)
+    parser.add_argument("--payload", choices=sorted(PAYLOAD_STREAM), default="pcm",
+                        help="the AEP1 payload of the run: its stream (pcm 4001, flac 2001, "
+                             "opus 3001) and its default epoch")
+    parser.add_argument("--stream", type=int, help="default: the stream of --payload")
     parser.add_argument("--probe", action="append", default=[],
                         help="a listener's probe.csv, or SITE=probe.csv (repeat)")
     clock = parser.add_mutually_exclusive_group()
     clock.add_argument("--source-start-ns", type=int,
                        help="Unix ns at which sample 0 of AEP1 epoch 0 is spoken (the loop START)")
     clock.add_argument("--session-id", type=int,
-                       help="the AEP1 sender's --session-id (ns); START = session_id - 5 ms")
-    parser.add_argument("--epoch-us", type=int, default=EPOCH_US)
+                       help="the AEP1 sender's --session-id (ns); START = session_id - one epoch")
+    epoch = parser.add_mutually_exclusive_group()
+    epoch.add_argument("--epoch-samples", type=int,
+                       help="samples of one AEP1 epoch (the sender's --epoch-samples)")
+    epoch.add_argument("--epoch-us", type=float, help="one AEP1 epoch in µs")
+    epoch.add_argument("--sender-summary", type=pathlib.Path,
+                       help="the sender's output; its JSON summary names epoch_samples")
+    parser.add_argument("--sample-rate", type=int, default=SAMPLE_RATE)
     parser.add_argument("--primary-relay", default="relay-primary")
     parser.add_argument("--raw-out", type=pathlib.Path, help="save the collected events (NDJSON)")
     parser.add_argument("--out", type=pathlib.Path, help="hops.json (default standard output)")
     parser.add_argument("--summary", type=pathlib.Path, help="also write the text summary here")
     args = parser.parse_args(argv)
+    if args.stream is None:
+        args.stream = PAYLOAD_STREAM[args.payload]
+    summary = read_sender_summary(args.sender_summary) if args.sender_summary else None
+    if args.sender_summary and sender_epoch_samples(summary) is None:
+        parser.error(f"{args.sender_summary}: no sender summary with epoch_samples")
+    epoch = resolve_epoch(args.epoch_samples, args.epoch_us, args.payload, summary,
+                          args.sample_rate)
 
     if args.journal:
         nodes, events = load_raw(args.journal)
@@ -681,10 +778,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.source_start_ns is not None:
         start_us = args.source_start_ns // 1000
     elif args.session_id is not None:
-        start_us = args.session_id // 1000 - args.epoch_us
+        start_us = round(args.session_id / 1000 - epoch["epoch_us"])
     probes = [read_probe(spec) for spec in args.probe]
-    result = analyse(nodes, events, probes, args.stream, start_us, args.epoch_us,
+    result = analyse(nodes, events, probes, args.stream, start_us, epoch["epoch_us"],
                      args.primary_relay, args.since_us, args.until_us)
+    result["source"].update({"epoch_samples": epoch["epoch_samples"], "epoch_from": epoch["from"],
+                             "payload": args.payload})
     text = json.dumps(result, indent=1) + "\n"
     summary = format_summary(result)
     if args.out:
