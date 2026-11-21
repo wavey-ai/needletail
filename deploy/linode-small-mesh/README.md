@@ -144,6 +144,32 @@ before 22 November 2026.
 | `extra_distributor_args` | none | `--udp-socket-buffer-bytes 524288` | Shallow relay ingest queues. |
 | `response_ms` | none | none | Server limit for aggregated tail responses. |
 
+### Class isolation and the audio hot path
+
+Audio never shares a socket, a thread or a qdisc band with 4K. Video streams
+use the relay and cache-mesh ports plus `class_port_offset` (22001 -> 23001,
+22200 -> 23200, 29101 -> 30101). Audio streams use the ports themselves. The
+Linode firewall already admits every UDP port between lab nodes, and
+`linode-small-mesh-run.py --loss-relay/--loss-mesh/--blackout-ms` drop on
+both ports. Each flag is rendered on or off explicitly, so `false` gives the
+behaviour from before the change on any binary that has the flags.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `class_isolation` | true | All pieces below that are None. `false` restores the previous paths. |
+| `relay_class_split` | None | Contributor `--relay-class-lanes` and relay/distributor `--relay-class-threads` together, because they share the ports. |
+| `cache_mesh_class_split` | None | `--cache-mesh-class-port-offset` on every av-mesh node (0 when off). |
+| `client_udp_class_sockets` | None | `--client-udp-class-sockets` on distributors and edges. |
+| `class_port_offset` | 1000 | Video port offset. The render refuses a video port that collides with another socket or relay endpoint. |
+| `relay_class_cpus` | `auto` | `--relay-class-cpus`: `0,1` on instances with 2 or more vCPUs, unpinned in the namespace lab. |
+| `relay_class_realtime` | true | Audio thread SCHED_FIFO 10, video thread nice -10. |
+| `relay_video_pacing_mbps` | 0 | Contributor video `SO_MAX_PACING_RATE` under the fq band. |
+| `audio_hot_path` | true | Contributor `--relay-audio-inline` and `--audio-hot-thread`. |
+| `audio_hot_cpu` | `auto` | CPU 2 on instances with 4 or more vCPUs, otherwise -1. |
+| `relay_repair_both_lanes` | true | `--relay-repair-both-lanes`. The primary backbone also gets `--relay-primary-promoted` so that it admits the repair. |
+| `host_qdisc` | `prio` | On every NIC: a `prio bands 3` root, band 0 `pfifo` for SO_PRIORITY 6 (audio sockets), band 1 `fq limit 65536 flow_limit 4096` for everything else. Checked with `tc -s qdisc` and recorded in `qdisc/<node>.txt`. `none` restores the kernel default. In the namespace lab the prio is a child of each link's netem with FIFO bands. |
+| `service_capabilities` | true | `AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN` in the units. |
+
 ### Source-port selection
 
 `hunt` measures the one-way delay from each backbone relay to the real ingest

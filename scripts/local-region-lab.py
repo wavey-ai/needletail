@@ -288,17 +288,30 @@ def netem(enable: bool) -> None:
     if not enable:
         return
     # Band 3 carries the cache mesh (the private network of a region). Band 4
-    # carries the relay lanes between regions.
+    # carries the relay lanes between regions. With the deploy's class split
+    # their video twins (the ports plus class_port_offset) go the same way.
+    try:
+        settings = json.loads((WORK / "artifacts" / "settings.json").read_text())
+    except (OSError, ValueError):
+        settings = {}
+    offset = int(settings.get("class_port_offset") or 0)
+    if settings.get("class_isolation") is False or not offset:
+        offset = 0
+    filters = []
+    for shift in sorted({0, offset}):
+        filters += [
+            "tc filter add dev lo parent 1: protocol ip prio 1 u32 "
+            f"match ip protocol 17 0xff match ip dport {29101 + shift} 0xffff flowid 1:3",
+            "tc filter add dev lo parent 1: protocol ip prio 2 u32 "
+            "match ip protocol 17 0xff match ip dst 10.90.0.0/16 "
+            f"match ip dport {22200 + shift} 0xff00 flowid 1:4",
+        ]
     script = " && ".join([
         "tc qdisc add dev lo root handle 1: prio bands 4 "
         "priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
         f"tc qdisc add dev lo parent 1:3 handle 30: netem {NETEM_CACHE_MESH}",
         f"tc qdisc add dev lo parent 1:4 handle 40: netem {NETEM_RELAY}",
-        "tc filter add dev lo parent 1: protocol ip prio 1 u32 "
-        "match ip protocol 17 0xff match ip dport 29101 0xffff flowid 1:3",
-        "tc filter add dev lo parent 1: protocol ip prio 2 u32 "
-        "match ip protocol 17 0xff match ip dst 10.90.0.0/16 "
-        "match ip dport 22200 0xff00 flowid 1:4",
+        *filters,
     ])
     ns_run(["bash", "-c", script])
 

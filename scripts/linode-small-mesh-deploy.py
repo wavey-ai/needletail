@@ -10,8 +10,10 @@ and receive cache objects from the two regional distributors.
 Subcommands:
   plan      measure routes, generate the relay program, compile it, and render
             one argument file per service under the artifact directory
-  push      bootstrap hosts, install binaries, TLS, and services, then restart
-  restart   re-render arguments from current settings and restart services
+  push      bootstrap hosts, install binaries, TLS, the host qdisc and
+            services, then restart
+  restart   re-render arguments and the host qdisc from current settings and
+            restart services
   status    show service state, clock offset, and cache-mesh role per node
 
 Tuning knobs live in the settings file and can be changed with
@@ -152,6 +154,55 @@ DEFAULT_SETTINGS = {
     "failover_heartbeat_ms": 25,
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
+    # Class isolation (low-latency item 2): at no node does an audio datagram
+    # share a socket, a thread or a qdisc band with 4K. Video streams travel
+    # on the relay and cache-mesh ports plus `class_port_offset` (22001 ->
+    # 23001, 29101 -> 30101), audio on the ports themselves. False renders
+    # every piece off, which is the behaviour before the change. Each piece
+    # can be set on its own (None follows class_isolation):
+    # - relay_class_split: the contributor's class lane sockets
+    #   (av-contrib --relay-class-lanes) and the per-class forward-first
+    #   threads of relays and distributors (av-mesh --relay-class-threads).
+    #   They share the port convention, so they go together.
+    # - cache_mesh_class_split: video playlists on a second cache-mesh socket
+    #   (--cache-mesh-class-port-offset; 0 is off).
+    # - client_udp_class_sockets: the client UDP port as an audio/video
+    #   socket pair (--client-udp-class-sockets).
+    "class_isolation": True,
+    "class_port_offset": 1000,
+    "relay_class_split": None,
+    "cache_mesh_class_split": None,
+    "client_udp_class_sockets": None,
+    # CPUs of the audio and video fast-plane threads of a relay or
+    # distributor, "AUDIO,VIDEO": "auto" pins them to 0,1 on an instance of
+    # two or more vCPUs (from its Linode type) and leaves them unpinned
+    # elsewhere (the namespace lab shares one host); "" never pins.
+    "relay_class_cpus": "auto",
+    # SCHED_FIFO 10 for the audio thread, nice -10 for the video one
+    # (refused without CAP_SYS_NICE: normal threads and one info line).
+    "relay_class_realtime": True,
+    # SO_MAX_PACING_RATE of the contributor's video sockets in Mbit/s under
+    # the fq band (0: not paced).
+    "relay_video_pacing_mbps": 0,
+    # The contributor audio hot path (low-latency item 3): audio parts are
+    # published on the packager's thread and each lane takes its symbols with
+    # non-blocking sendmmsg, with no join across lanes
+    # (--relay-audio-inline, --audio-hot-thread). `audio_hot_cpu` "auto" pins
+    # that thread to CPU 2 on an instance of three or more vCPUs, else -1.
+    "audio_hot_path": True,
+    "audio_hot_cpu": "auto",
+    # Repair on both contributor lanes (--relay-repair-both-lanes); the
+    # primary backbone then admits repair (--relay-primary-promoted).
+    "relay_repair_both_lanes": True,
+    # Host qdisc of every mesh node and the contributor: "prio" is a 3-band
+    # prio root on each NIC, band 0 (SO_PRIORITY 6: the audio sockets) a
+    # pfifo and band 1 (priority 0: video, HTTP) an fq, so a 4K burst never
+    # sits ahead of audio in the NIC queue. "none" puts the kernel default
+    # back.
+    "host_qdisc": "prio",
+    # Give the services CAP_SYS_NICE (SCHED_FIFO, nice -10, pinning) and
+    # CAP_NET_ADMIN (socket buffers beyond rmem_max) in their units.
+    "service_capabilities": True,
     # Part of the contributor's audio (av-contrib --audio-part): "epoch", one
     # AEP1 epoch per part whatever its sample count, or "<N>samples" or
     # "<N>us". Video (--video-part): "frame", one access unit per part, or
@@ -231,12 +282,106 @@ AV_MESH_DIRECT_PARENT = False
 
 def check_settings(settings: dict) -> None:
     """Raise ValueError for settings the services cannot run with: the part
-    settings (part_plan) and contributor_direct_region."""
+    settings (part_plan), contributor_direct_region and the class isolation
+    settings (class_plan)."""
     part_plan(settings)
     if settings.get("contributor_direct_region") and not AV_MESH_DIRECT_PARENT:
         raise ValueError("contributor_direct_region needs av-mesh --relay-direct-peer and "
                          "--relay-direct-id, which av-mesh does not have yet; a distributor "
                          "would not start. Leave it false")
+    class_plan(settings)
+
+
+# SO_PRIORITY of the audio sockets: band 0 of the prio qdisc's default
+# priomap (TC_PRIO_INTERACTIVE). Priority 0, every other socket, is band 1.
+AUDIO_SOCKET_PRIORITY = 6
+HOST_QDISCS = ("prio", "none")
+CLASS_CPUS = re.compile(r"^(auto|[0-9]+,[0-9]+|)$")
+
+
+def flag(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def class_plan(settings: dict) -> dict:
+    """The class isolation and audio hot path pieces that the services are
+    started with. A piece set to None follows `class_isolation`. Raises
+    ValueError for a setting that cannot be rendered."""
+    master = bool(settings.get("class_isolation", True))
+
+    def piece(key: str) -> bool:
+        value = settings.get(key)
+        return master if value is None else bool(value)
+
+    plan = {
+        "relay_class_split": piece("relay_class_split"),
+        "cache_mesh_class_split": piece("cache_mesh_class_split"),
+        "client_udp_class_sockets": piece("client_udp_class_sockets"),
+        "audio_hot_path": bool(settings.get("audio_hot_path", True)),
+        "relay_repair_both_lanes": bool(settings.get("relay_repair_both_lanes", True)),
+        "relay_class_realtime": bool(settings.get("relay_class_realtime", True)),
+    }
+    try:
+        offset = int(settings.get("class_port_offset", 1000))
+    except (TypeError, ValueError):
+        raise ValueError(f"class_port_offset {settings.get('class_port_offset')!r} "
+                         "is not a whole number") from None
+    if (plan["relay_class_split"] or plan["cache_mesh_class_split"]) and not 0 < offset < 30000:
+        raise ValueError(f"class_port_offset={offset}: the video class ports are the ports "
+                         "plus 1 to 29999")
+    plan["class_port_offset"] = offset
+    cpus = "" if settings.get("relay_class_cpus") is None else str(settings["relay_class_cpus"])
+    if not CLASS_CPUS.match(cpus):
+        raise ValueError(f"relay_class_cpus {cpus!r} is not auto, \"\" or AUDIO,VIDEO")
+    plan["relay_class_cpus"] = cpus
+    hot_cpu = settings.get("audio_hot_cpu", "auto")
+    if hot_cpu != "auto":
+        try:
+            hot_cpu = int(hot_cpu)
+        except (TypeError, ValueError):
+            raise ValueError(f"audio_hot_cpu {hot_cpu!r} is not auto or a CPU") from None
+    plan["audio_hot_cpu"] = hot_cpu
+    try:
+        plan["relay_video_pacing_mbps"] = int(settings.get("relay_video_pacing_mbps") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("relay_video_pacing_mbps is not a whole number of Mbit/s") from None
+    qdisc = settings.get("host_qdisc") or "none"
+    if qdisc not in HOST_QDISCS:
+        raise ValueError(f"host_qdisc {qdisc!r} is not one of {', '.join(HOST_QDISCS)}")
+    plan["host_qdisc"] = qdisc
+    return plan
+
+
+def node_vcpus(node: dict) -> int | None:
+    """vCPUs of a Linode type (g6-dedicated-2: 2, g6-nanode-1: 1); None for
+    anything else, such as a node of the namespace lab."""
+    match = re.match(r"^g[0-9]+-[a-z]+-([0-9]+)$", str(node.get("type") or ""))
+    return int(match.group(1)) if match else None
+
+
+def relay_class_cpus(node: dict, plan: dict) -> str:
+    """--relay-class-cpus of a node: "auto" pins the audio thread to CPU 0
+    and the video thread to CPU 1 where the instance has both."""
+    if plan["relay_class_cpus"] != "auto":
+        return plan["relay_class_cpus"]
+    vcpus = node_vcpus(node)
+    return "0,1" if vcpus is not None and vcpus >= 2 else ""
+
+
+def audio_hot_cpu(node: dict, plan: dict) -> int:
+    """--audio-hot-cpu of the contributor: "auto" is CPU 2 where the
+    instance has a CPU 2 and one more for the rest (the design's
+    g6-dedicated-4: ingest on 0-1, audio on 2, video on 3), else unpinned."""
+    if plan["audio_hot_cpu"] != "auto":
+        return int(plan["audio_hot_cpu"])
+    vcpus = node_vcpus(node)
+    return 2 if vcpus is not None and vcpus >= 4 else -1
+
+
+def class_ports(port: int, offset: int, split: bool) -> list[int]:
+    """The ports of one class-split endpoint: audio on the port, video on the
+    port plus the offset."""
+    return [port, port + offset] if split and offset else [port]
 
 
 def parse_overrides(overrides: list[str]) -> dict:
@@ -940,8 +1085,20 @@ def relay_args(service: dict) -> list[str]:
     return args
 
 
-def contributor_args(service: dict, settings: dict) -> list[str]:
-    """Port of deploy/gcp-lab/av-contrib-run."""
+def yield_to(extra: list[str], pairs: list[str]) -> list[str]:
+    """The `--flag value` pairs that the extra arguments of a role do not
+    give themselves: clap refuses a flag given twice, and an extra argument
+    is how one run overrides a rendered one."""
+    out = []
+    for index in range(0, len(pairs), 2):
+        if pairs[index] not in extra:
+            out += pairs[index:index + 2]
+    return out
+
+
+def contributor_args(service: dict, settings: dict, node: dict | None = None) -> list[str]:
+    """Port of deploy/gcp-lab/av-contrib-run, with the class isolation and
+    audio hot path arguments of the contributor on `node`."""
     args = [
         "/usr/local/bin/av-contrib",
         "--cert", "/etc/needletail/tls/fullchain.pem",
@@ -993,7 +1150,118 @@ def contributor_args(service: dict, settings: dict) -> list[str]:
         ]
         if observed.get("observed_at_unix_ms") is not None:
             args += [f"{prefix}-observed-at-unix-ms", str(observed["observed_at_unix_ms"])]
-    return args + list(settings["extra_contributor_args"])
+    extra = list(settings["extra_contributor_args"])
+    args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
+    return args + extra
+
+
+def contributor_class_args(node: dict, plan: dict) -> list[str]:
+    """av-contrib arguments of class isolation and the audio hot path. Every
+    flag is rendered, on or off, so that a setting of false is the
+    behaviour before the change whatever the binary's defaults are."""
+    split = plan["relay_class_split"]
+    hot = plan["audio_hot_path"]
+    return [
+        "--relay-class-lanes", flag(split),
+        "--relay-class-port-offset", str(plan["class_port_offset"]),
+        "--relay-audio-socket-priority", str(AUDIO_SOCKET_PRIORITY if split else 0),
+        "--relay-video-pacing-mbps", str(plan["relay_video_pacing_mbps"] if split else 0),
+        "--relay-audio-inline", flag(hot),
+        "--audio-hot-thread", flag(hot),
+        "--audio-hot-cpu", str(audio_hot_cpu(node, plan)),
+        "--relay-repair-both-lanes", flag(plan["relay_repair_both_lanes"]),
+    ]
+
+
+def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
+    """av-mesh arguments of class isolation for a node rendered with `args`:
+    the cache-mesh class socket on every node (every node of a mesh uses the
+    same offset), the forward-first class threads on relays and
+    distributors, and the client socket pair where clients are served."""
+    out = ["--cache-mesh-class-port-offset",
+           str(plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0)]
+    if "--relay-controlled-local" in args:
+        split = plan["relay_class_split"]
+        out += ["--relay-class-threads", flag(split),
+                "--relay-class-port-offset", str(plan["class_port_offset"])]
+        if split:
+            out += ["--relay-class-realtime", flag(plan["relay_class_realtime"])]
+            cpus = relay_class_cpus(node, plan)
+            if cpus:
+                out += ["--relay-class-cpus", cpus]
+    if "--client-udp-bind" in args:
+        out += ["--client-udp-class-sockets", flag(plan["client_udp_class_sockets"])]
+    return out
+
+
+# The arguments that bind a UDP socket, and whether the class split gives the
+# socket a video twin at the port plus the offset ("relay": with
+# relay_class_split on a relay or distributor; "mesh": with
+# cache_mesh_class_split). A value is ADDR:PORT, or BIND=... for the relay
+# forward and failover arguments. The HTTP port is QUIC (HTTP/3,
+# WebTransport) too.
+UDP_BIND_ARGS = {
+    "--fec-bind": "relay", "--relay-primary-bind": "relay",
+    "--relay-secondary-bind": "relay", "--mesh-bind": "mesh",
+    "--media-fec-bind": None, "--telemetry-bind": None, "--client-udp-bind": None,
+    "--relay-forward": None, "--relay-failover-listener": None,
+    "--relay-failover-controller": None, "--relay-direct-bind": None,
+    "--daw-media-bind": None, "--rist-bind": None, "--srt-bind": None,
+    "--http-port": None,
+}
+
+
+def udp_binds(args: list[str], plan: dict) -> list[tuple[str, int, str]]:
+    """(socket, port, argument) of every UDP socket that a service rendered
+    with `args` binds, the video twins of the class split included. Two
+    arguments that name the same address are one socket (av-mesh's
+    --fec-bind and --relay-primary-bind). The contributor's lane sockets
+    have no twin port: its class pair shares the lane's endpoint."""
+    contributor = "--audio-epoch-ingress-target" in args
+    relay = "--relay-controlled-local" in args
+    out = []
+    for index, arg in enumerate(args[:-1]):
+        if arg not in UDP_BIND_ARGS:
+            continue
+        value = args[index + 1]
+        bind = value.split("=", 1)[0] if "=" in value else value
+        if arg == "--http-port":
+            bind = f"0.0.0.0:{value}"
+        port = int(bind.rsplit(":", 1)[1])
+        out.append((bind, port, arg))
+        twin = UDP_BIND_ARGS[arg]
+        split = ((twin == "relay" and relay and not contributor and plan["relay_class_split"])
+                 or (twin == "mesh" and plan["cache_mesh_class_split"]))
+        if split:
+            out.append((f"{bind} video", port + plan["class_port_offset"], f"{arg} (video)"))
+    return out
+
+
+def check_class_ports(rendered: dict[str, dict], plan: dict) -> None:
+    """Raise ValueError when a video class port is past 65535, collides with
+    another socket of its node, or is a port that a compiled relay endpoint
+    or another service uses anywhere in the lab (22001, 22002, 22200+,
+    22301+, 22401+, 22501+, the cache mesh, the HTTP and client ports)."""
+    problems = []
+    base_ports: dict[int, str] = {}
+    video_ports: dict[int, str] = {}
+    for name, item in sorted(rendered.items()):
+        sockets: dict[int, str] = {}
+        for socket, port, arg in udp_binds(item["args"], plan):
+            if port > 65535:
+                problems.append(f"{name}: {arg} {socket} would bind port {port}")
+                continue
+            if sockets.setdefault(port, socket) != socket:
+                problems.append(f"{name}: port {port} is bound by {sockets[port]} "
+                                f"and {socket} ({arg})")
+            target = video_ports if socket.endswith(" video") else base_ports
+            target.setdefault(port, f"{name} {arg}")
+    for port in sorted(set(base_ports) & set(video_ports)):
+        problems.append(f"video class port {port} ({video_ports[port]}) is the port of "
+                        f"{base_ports[port]}")
+    if problems:
+        raise ValueError("class ports collide (class_port_offset "
+                         f"{plan['class_port_offset']}): " + "; ".join(problems))
 
 
 def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str, list[str]]]:
@@ -1028,13 +1296,14 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         (item["service"], item["node_id"]): item for item in plan["services"]
     }
     check_settings(settings)
+    classes = class_plan(settings)
     direct_contrib, direct_mesh = (direct_region_args(state, services)
                                    if settings.get("contributor_direct_region") else ([], {}))
     rendered: dict[str, dict] = {}
     for node in state["nodes"].values():
         role = node["role"]
         if role == "contributor":
-            args = contributor_args(services[("av_contrib", "contrib")], settings)
+            args = contributor_args(services[("av_contrib", "contrib")], settings, node)
             args += direct_contrib
             rendered[node["name"]] = {
                 "service": "needletail-contrib", "args": args,
@@ -1044,22 +1313,32 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             continue
         args = common_mesh_args(node, settings, state)
         if role in ("backbone", "distributor"):
-            args += relay_args(services[("av_mesh", relay_node_id(node))])
+            service = services[("av_mesh", relay_node_id(node))]
+            args += relay_args(service)
+            # The contributor sends repair on its primary lane too: the
+            # backbone at the end of that lane admits it.
+            if (classes["relay_repair_both_lanes"]
+                    and service["primary_parent"]["parent_node_id"] == "contrib"
+                    and "--relay-primary-promoted" not in args
+                    and "--relay-primary-promoted" not in settings[f"extra_{role}_args"]):
+                args.append("--relay-primary-promoted")
             args += direct_mesh.get(node["name"], [])
         if role == "backbone":
             args += ["--mesh-bind", f"0.0.0.0:{MESH_PORT}", "--edge-webtransport"]
-            args += list(settings["extra_backbone_args"])
+            extra = list(settings["extra_backbone_args"])
         elif role == "distributor":
             args += cache_mesh_args(node, settings, state)
             args += ["--edge-webtransport"]
-            args += list(settings["extra_distributor_args"])
+            extra = list(settings["extra_distributor_args"])
         else:
             args += cache_mesh_args(node, settings, state)
             args += ["--edge-http3"]
-            args += list(settings["extra_edge_args"])
+            extra = list(settings["extra_edge_args"])
+        args += yield_to(extra, mesh_class_args(node, args, classes)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
+    check_class_ports(rendered, classes)
     out = common.ARTIFACT_DIR / "nodes"
     out.mkdir(parents=True, exist_ok=True)
     for name, item in rendered.items():
@@ -1152,6 +1431,11 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
     thread_line = f"Environment=TOKIO_WORKER_THREADS={threads}\n" if threads else ""
     for key, value in sorted((settings.get("node_env") or {}).items()):
         thread_line += f"Environment={key}={value}\n"
+    if settings.get("service_capabilities", True):
+        # SCHED_FIFO, nice -10 and pinning of the fast-plane and audio
+        # threads; socket buffers beyond rmem_max (SO_RCVBUFFORCE). The
+        # service is still the needletail user, and NoNewPrivileges holds.
+        thread_line += "AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN\n"
     return f"""[Unit]
 Description={description} (small-mesh lab)
 After=network-online.target
@@ -1209,6 +1493,81 @@ def node_sysctls(settings: dict) -> dict:
     return {str(key): str(value) for key, value in merged.items() if str(value) != ""}
 
 
+PRIOMAP = "1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1"
+# Every NIC of the host (a device under /sys/class/net/*/device: eth0, and
+# eth1 on the VLAN; not lo or the ifb of a loss injection). The prio root
+# puts SO_PRIORITY 6 (the audio sockets of the contributor, the relays and
+# the edges) in band 0 and priority 0 (video, the cache mesh, HTTP) in band
+# 1. Band 1 is fq, so that SO_MAX_PACING_RATE paces a video socket and
+# flows share it fairly; its per-flow limit holds a 4K part's burst of a few
+# thousand datagrams, where fq's default of 100 would drop most of it.
+HOST_QDISC_SCRIPT = {
+    "prio": r"""
+modprobe sch_prio 2>/dev/null || true
+modprobe sch_fq 2>/dev/null || true
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] || continue
+  dev=${path##*/}
+  tc qdisc replace dev "$dev" root handle 1: prio bands 3 priomap PRIOMAP
+  tc qdisc replace dev "$dev" parent 1:1 handle 10: pfifo limit 10000
+  tc qdisc replace dev "$dev" parent 1:2 handle 20: fq limit 65536 flow_limit 4096
+  echo "== $dev"
+  tc -s qdisc show dev "$dev"
+done
+""".replace("PRIOMAP", PRIOMAP),
+    "none": r"""
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] || continue
+  dev=${path##*/}
+  if tc qdisc show dev "$dev" | head -1 | grep -q '^qdisc prio 1: root'; then
+    tc qdisc del dev "$dev" root
+  fi
+  echo "== $dev"
+  tc -s qdisc show dev "$dev"
+done
+""",
+}
+
+
+def check_host_qdisc(output: str, qdisc: str) -> list[str]:
+    """The NICs of a `HOST_QDISC_SCRIPT` output that do not carry the
+    qdisc; ["no NIC"] when the output names none."""
+    sections = {}
+    for block in output.split("== ")[1:]:
+        device, _, shown = block.partition("\n")
+        sections[device.strip()] = shown
+    if not sections:
+        return ["no NIC"]
+    wrong = []
+    for device, shown in sorted(sections.items()):
+        lines = [line for line in shown.splitlines() if line.startswith("qdisc ")]
+        has_prio = bool(lines) and lines[0].startswith("qdisc prio 1: root")
+        if qdisc == "prio":
+            ok = (has_prio and any(line.startswith("qdisc pfifo 10: parent 1:1") for line in lines)
+                  and any(line.startswith("qdisc fq 20: parent 1:2") for line in lines))
+        else:
+            ok = not has_prio
+        if not ok:
+            wrong.append(device)
+    return wrong
+
+
+def apply_host_qdisc(node: dict, settings: dict) -> str:
+    """Put the host qdisc of `host_qdisc` on every NIC of a node, check it
+    with `tc -s qdisc` and record what the node shows under the artifact
+    directory (qdisc/<node>.txt)."""
+    qdisc = class_plan(settings)["host_qdisc"]
+    output = common.ssh_text(node, "set -e\n" + HOST_QDISC_SCRIPT[qdisc], timeout=60)
+    directory = common.ARTIFACT_DIR / "qdisc"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{node['name']}.txt").write_text(output)
+    wrong = check_host_qdisc(output, qdisc)
+    if wrong:
+        raise RuntimeError(f"{node['name']}: host qdisc {qdisc} is not on {', '.join(wrong)}: "
+                           f"{output[-600:]}")
+    return output
+
+
 def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
     if binaries:
         sources = [str(path) for path in binaries_for(node["role"])]
@@ -1237,6 +1596,7 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
         ]
     item = rendered.get(node["name"])
     if item:
+        apply_host_qdisc(node, settings)
         service = item["service"]
         args_file = common.ARTIFACT_DIR / "nodes" / f"{node['name']}.args"
         common.rsync_to(node, [str(args_file)], f"/etc/needletail/{service}.args")
