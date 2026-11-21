@@ -58,6 +58,9 @@ DEFAULT_SETTINGS = {
     # Limits of one edge. They are what admission and assignment enforce.
     "edge_egress_capacity_bps": None,
     "edge_session_limit": 0,
+    # RaptorQ FEC UDP to clients, on every distributor and edge (0: off).
+    # The assignment API of a node names this port. (As on branch client-udp.)
+    "client_udp_port": 19446,
     # Address in the playback URL that a cache advertises: "public", or "vlan"
     # when readers reach the caches over the private network.
     "playback_address": "public",
@@ -505,6 +508,8 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         capacity = settings["edge_egress_capacity_bps"] or capacity
         args += ["--edge-session-limit", str(settings["edge_session_limit"])]
     args += ["--egress-capacity-bps", str(capacity)]
+    if node["role"] in ("distributor", "edge") and settings.get("client_udp_port"):
+        args += ["--client-udp-bind", f"0.0.0.0:{settings['client_udp_port']}"]
     if node["role"] in ("distributor", "edge"):
         # Every node of a region can be an entry point for its readers.
         args += [
@@ -806,13 +811,16 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     # that carries a candidate patch.
     mesh = pathlib.Path(os.environ.get(
         "NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh"))) / target
-    contrib = common.WORKSPACE / "av-contrib" / target
+    # NEEDLETAIL_AV_CONTRIB_ROOT selects another av-contrib checkout or build.
+    contrib = pathlib.Path(os.environ.get(
+        "NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib"))) / target
     daw = common.WORKSPACE / "daw-nexus" / target
     probe = contrib / "aep1-48k-probe"
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
         return [probe, mesh / "needletail-reader",
+                *([mesh / "needletail-udp-client"] if (mesh / "needletail-udp-client").is_file() else []),
                 common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
                 common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                 / target / "soundkit-part-check"]

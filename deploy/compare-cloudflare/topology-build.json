@@ -1,0 +1,7 @@
+{
+  "description": "One dedicated build host for the comparison: builds the Needletail binaries of the branches under test (av-mesh, av-contrib, daw-nexus). It carries no measurement.",
+  "image": "linode/debian13",
+  "nodes": [
+    {"name": "build", "role": "load", "site": "london", "region": "gb-lon", "type": "g6-dedicated-8"}
+  ]
+}

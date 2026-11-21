@@ -15,9 +15,11 @@ import statistics
 
 SITES = [("lon", "London"), ("new", "New York"), ("tok", "Tokyo"), ("syd", "Sydney")]
 SYSTEMS = [
-    ("nt", "Needletail, reader as shipped"),
-    ("nt-w", "Needletail, pipelined reader, HTTP/2"),
-    ("nt-h3", "Needletail, pipelined reader, HTTP/3"),
+    ("nt-uc", "Needletail, RaptorQ FEC over UDP from the edge"),
+    ("nt-udp", "Needletail, UDP at the distributor (interim, before client-udp)"),
+    ("nt", "Needletail, LL-HLS, reader as shipped"),
+    ("nt-w", "Needletail, LL-HLS, pipelined reader, HTTP/2"),
+    ("nt-h3", "Needletail, LL-HLS, pipelined reader, HTTP/3"),
     ("cf", "Cloudflare Realtime"),
     ("whep", "Cloudflare Stream WHIP/WHEP"),
     ("lkregion", "LiveKit, SFU in each region"),
@@ -52,6 +54,8 @@ class Evidence:
         self.sessions = list(self.data["sessions"])
 
     def lane(self, system: str, config: str) -> str:
+        if system in ("nt-udp", "nt-uc"):
+            return system
         return NT_LANE[config] + system[2:] if system.startswith("nt") else system
 
     def get(self, session: str, step: str, host: str, lane: str, kind: str):
@@ -116,7 +120,7 @@ def chrome(e: Evidence, config: str) -> None:
                         ("Chrome concealed samples (%)", ["concealed_percent"])):
         print(f"{label}:\n")
         rows = []
-        for system, name in SYSTEMS[3:]:
+        for system, name in SYSTEMS[5:]:
             rows.append([name] + [e.cell(step, f"{site}-view", system, "chrome", path,
                                          3 if "percent" in path[0] else 1) for site, _ in SITES])
         table(header, rows)
@@ -195,7 +199,10 @@ def fan_entry(e: Evidence, session: str, config: str, total: str, site: str, lan
             return entry["listeners"]
         if "probe" in entry:
             p = entry["probe"]
-            ok = not p.get("error") and (p.get("units") or 0) > 100
+            received = p.get("units")
+            if received is None and p.get("units_expected") is not None:
+                received = p["units_expected"] - (p.get("units_missing") or 0)
+            ok = not p.get("error") and (received or 0) > 100 and bool(p.get("unit_latency_ms"))
             return {"listeners": 1, "listeners_with_audio": 1 if ok else 0,
                     "unit_latency_p50_ms_median_listener": (p.get("unit_latency_ms") or {}).get("p50"),
                     "unit_latency_p99_ms_worst_listener": (p.get("unit_latency_ms") or {}).get("p99"),

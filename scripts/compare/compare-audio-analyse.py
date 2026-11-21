@@ -151,11 +151,94 @@ def analyse_probe(summary: dict, csv_path: pathlib.Path, lane: str, frame_ms: fl
 
     out.update(figures(latencies))
     out["longest_silence_between_arrivals_ms"] = round(max(spacing), 1) if spacing else None
-    if lane.startswith(("nt-opus", "nt-flac")):
+    if lane.startswith(("nt-opus", "nt-flac")) or summary.get("audio_clip") in ("nt-opus", "nt-flac"):
         out["raw"] = figures(latencies)
         out["daw_buffer_wait_ms"] = dist([daw_wait_ms(row[0]) for row in known])
         out.update(figures([row[1] - daw_wait_ms(row[0]) for row in known]))
         out["note"] = "top-level figures are without_daw_buffer; raw has the measured values"
+    return out
+
+
+# Offset from the probe's reference (session + PTS of the first sample of an
+# epoch) to this record's (the moment the last content sample was spoken). The
+# DAW source's epochs carry 512 samples of leading silence; Opus adds its
+# 120-sample look-ahead. The AEP1 sender's session is already 5 ms late.
+UDP_OFFSET_MS = {"opus": 632 / 48.0 - 5.0, "flac": 512 / 48.0 - 5.0, "pcm": 0.0}
+# The UDP probe reports percentiles, not each epoch, so the DAW source's buffer
+# wait (a known sawtooth, 0 to 10.3 ms, 5.33 ms at the median; see daw_wait_ms)
+# cannot be taken off epoch by epoch as for LL-HLS. It is taken off at its
+# median. That is exact at the median and leaves up to 5 ms of it in the tail:
+# conservative against Needletail. `raw` keeps the values with the buffer.
+DAW_WAIT_MEDIAN_MS = 16 / 3.0
+
+
+def quantile_points(bucket: dict) -> list[float]:
+    """Rebuild the latencies of one second from its percentiles: a piecewise
+    linear quantile function through min, p50, p95, p99 and max."""
+    count = int(bucket.get("count") or 0)
+    if not count:
+        return []
+    knots = [(0.0, bucket["min"]), (0.5, bucket["p50"]), (0.95, bucket["p95"]),
+             (0.99, bucket["p99"]), (1.0, bucket["max"])]
+    if count == 1:
+        return [bucket["max"]]
+    out = []
+    for i in range(count):
+        q = i / (count - 1)
+        for (q0, v0), (q1, v1) in zip(knots, knots[1:]):
+            if q <= q1:
+                out.append(v0 + (v1 - v0) * (q - q0) / max(q1 - q0, 1e-9))
+                break
+    return out
+
+
+def analyse_udp(report: dict, launch: float | None) -> dict:
+    """A receive-udp report, cut to the seconds inside the step."""
+    buckets = report.get("latency_time_series") or []
+    formats = report.get("formats") or ["pcm"]
+    fmt = formats[0] if isinstance(formats, list) else str(formats)
+    out = {"lane_kind": "native_udp_fec", "format": fmt, "frame_ms": 5.0,
+           "datagrams": report.get("datagrams_received"),
+           "source_datagrams": report.get("source_datagrams_received"),
+           "repair_datagrams": report.get("repair_datagrams_received"),
+           "raptorq_shards_recovered": report.get("raptorq_shards_recovered"),
+           "erasure_epochs_total": report.get("erasure_epochs"),
+           "includes_daw_buffer": fmt in ("opus", "flac")}
+    if not buckets or not report.get("datagrams_received"):
+        out["error"] = "no datagram received"
+        return out
+    start = (launch or buckets[0]["start_unix_ns"] / 1e9) + HEAD_MS / 1000.0
+    # The probe outlives the step by 2 s and its last buckets are partial.
+    kept = [b for b in buckets if b["start_unix_ns"] / 1e9 >= start][:-4]
+    kept = [b for b in kept if b.get("expected_epochs")]
+    if len(kept) < 5:
+        out["error"] = "too few seconds in the step"
+        return out
+    expected = sum(b["expected_epochs"] for b in kept)
+    missing = sum(b.get("missing_epochs", 0) for b in kept)
+    offset = UDP_OFFSET_MS.get(fmt, 0.0)
+    raw = [value + offset for b in kept for value in quantile_points(b.get("render_ready_latency_ms") or {})]
+    daw = DAW_WAIT_MEDIAN_MS if out["includes_daw_buffer"] else 0.0
+    latencies = [value - daw for value in raw]
+    out.update({
+        "window_s": len(kept), "units_expected": expected, "units_missing": missing,
+        "missing_percent": round(100.0 * missing / expected, 4) if expected else None,
+        "deadline_misses": sum(b.get("deadline_misses", 0) for b in kept),
+        "erasure_epochs": sum(b.get("erasure_epochs", 0) for b in kept),
+        "seconds_with_loss": sum(1 for b in kept if b.get("missing_epochs")),
+        "kbit_per_second": None,
+    })
+    if latencies:
+        unit = dist(latencies)
+        out["unit_latency_ms"] = unit
+        out["mouth_to_ear_ms"] = dist(mouth_to_ear(latencies, 5.0))
+        out["jitter_p99_minus_p50_ms"] = round(unit["p99"] - unit["p50"], 2)
+        out["jitter_max_minus_p50_ms"] = round(unit["max"] - unit["p50"], 2)
+        if daw:
+            out["raw"] = {"unit_latency_ms": dist(raw), "mouth_to_ear_ms": dist(mouth_to_ear(raw, 5.0))}
+        out["note"] = ("latency rebuilt from per-second percentiles of the probe"
+                       + ("; the DAW source's buffer taken off at its median (5.33 ms), so up to 5 ms "
+                          "of it remains in the tail" if daw else ""))
     return out
 
 
@@ -211,7 +294,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 7
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -249,8 +332,24 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
         end_ms = min(ends) if ends else None
         lanes: dict = {}
         many: dict = {}
+        udp_stems = {f.name[:-len(".launch")] for f in host_dir.glob("*.launch")}
+        udp_stems |= {name[:-4] for name in records if name.endswith(".udp")}
+        for stem in sorted(udp_stems):
+            record = records.get(stem + ".udp")
+            launch_file = host_dir / f"{stem}.launch"
+            launch = float(launch_file.read_text().strip()) if launch_file.is_file() else None
+            if record is None:
+                err = host_dir / f"{stem}.udp.err"
+                analysed = {"lane_kind": "native_udp_fec", "frame_ms": 5.0,
+                            "error": (err.read_text()[-300:].strip() if err.is_file() else "") or "no report"}
+            else:
+                analysed = analyse_udp(record, launch)
+            if stem == "nt-udp":
+                lanes.setdefault("nt-udp", {})["probe"] = analysed
+            else:
+                many.setdefault("nt-udp", []).append(analysed)
         for name, record in records.items():
-            if record is None or ".probe" not in name:
+            if record is None or ".probe" not in name or name.endswith(".udp"):
                 continue
             lane = name.split(".probe")[0]
             frame = NT_FRAME_MS if lane.startswith("nt-") else FRAME_MS[config]
@@ -260,11 +359,14 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             else:
                 many.setdefault(lane, []).append(analysed)
         for lane, probes in many.items():
-            good = [p for p in probes if not p.get("error") and (p.get("units") or 0) > 100
-                    and p.get("unit_latency_ms")]
+            def received(p):
+                if p.get("lane_kind") == "native_udp_fec":
+                    return (p.get("units_expected") or 0) - (p.get("units_missing") or 0)
+                return p.get("units") or 0
+            good = [p for p in probes if not p.get("error") and p.get("unit_latency_ms") and received(p) > 100]
             summary = {"listeners": len(probes), "listeners_with_audio": len(good)}
             if good:
-                units = sum(p["units"] for p in good)
+                units = sum(p.get("units") or p.get("units_expected") or 0 for p in good)
                 summary.update({
                     "unit_latency_p50_ms_median_listener": round(statistics.median(
                         p["unit_latency_ms"]["p50"] for p in good), 2),
@@ -273,10 +375,12 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
                         p["unit_latency_ms"]["p99"] for p in good), 2),
                     "unit_latency_p99_ms_worst_listener": max(p["unit_latency_ms"]["p99"] for p in good),
                     "units": units,
-                    "missing_percent": round(100.0 * sum(p.get("sequence_gaps") or 0 for p in good)
+                    "missing_percent": round(100.0 * sum((p.get("units_missing") if p.get("lane_kind")
+                                                          else p.get("sequence_gaps")) or 0 for p in good)
                                              / max(1, units), 4),
                     "not_bit_exact": sum(p.get("units_not_bit_exact") or 0 for p in good),
-                    "first_audio_ms_median": round(statistics.median(p["first_audio_ms"] for p in good), 1),
+                    "first_audio_ms_median": round(statistics.median(p["first_audio_ms"] for p in good), 1)
+                    if all(p.get("first_audio_ms") is not None for p in good) else None,
                 })
             errors = sorted({(p.get("error") or "")[:120] for p in probes if p.get("error")})
             if errors:
@@ -323,11 +427,18 @@ def load_samplers(directory: pathlib.Path) -> dict:
             processes = {}
             for item in parts[1:]:
                 bits = item.split()
+                if bits and bits[0] == "net":
+                    # interface:tx_bytes:tx_packets for every interface
+                    for field in bits[1:]:
+                        name, tx_bytes, tx_packets = field.split(":")
+                        if name in ("eth0", "eth1"):
+                            processes["net_" + name] = (int(tx_bytes), int(tx_packets))
+                    continue
                 if len(bits) >= 4:
                     name = bits[0]
                     used, rss = processes.get(name, (0, 0))
                     processes[name] = (used + int(bits[2]), rss + int(bits[3]))
-            rows.append((int(head[0]), total - fields[3] - fields[4], total, fields[7], processes))
+            rows.append((float(head[0]), total - fields[3] - fields[4], total, fields[7], processes))
         if rows:
             # NODE.log, or NODE.UNIXTIME.log when a session ran in several parts.
             out.setdefault(path.name.split(".")[0], []).extend(rows)
@@ -349,6 +460,10 @@ def node_usage(samplers: dict, start: float, end: float) -> dict:
         entry = {"node_busy_percent": round(100.0 * (last[1] - first[1]) / total, 1),
                  "steal_percent": round(100.0 * (last[3] - first[3]) / total, 2)}
         for process, (jiffies, rss) in last[4].items():
+            if process.startswith("net_") and process in first[4]:
+                entry[process + "_mbit_per_s"] = round((jiffies - first[4][process][0]) * 8 / seconds / 1e6, 3)
+                entry[process + "_packets_per_s"] = round((rss - first[4][process][1]) / seconds)
+                continue
             if process in first[4]:
                 entry[process + "_cpu_percent"] = round((jiffies - first[4][process][0]) / seconds, 1)
                 entry[process + "_rss_mb"] = round(rss / 1024.0)
@@ -356,7 +471,9 @@ def node_usage(samplers: dict, start: float, end: float) -> dict:
     return usage
 
 
-PROBE_KEEP = ("error", "frame_ms", "first_audio_ms", "units", "units_in_window", "units_missing", "missing_percent",
+PROBE_KEEP = ("error", "frame_ms", "first_audio_ms", "units", "units_in_window", "units_expected",
+              "lane_kind", "format", "repair_datagrams", "raptorq_shards_recovered", "deadline_misses",
+              "erasure_epochs", "seconds_with_loss", "includes_daw_buffer", "note", "units_missing", "missing_percent",
               "gaps", "longest_gap_ms", "bit_exact_percent", "kbit_per_second", "jitter_p99_minus_p50_ms",
               "rfc3550_jitter_ms", "longest_silence_between_arrivals_ms", "livekit_server")
 CHROME_KEEP = ("error", "codec", "jitter_buffer_ms", "rfc3550_jitter_ms", "packets_lost", "concealed_percent",

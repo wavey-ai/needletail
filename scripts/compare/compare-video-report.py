@@ -23,7 +23,8 @@ import statistics
 
 SITES = [("lon", "London"), ("new", "New York"), ("tok", "Tokyo"), ("syd", "Sydney")]
 SYSTEMS = [
-    ("nt", "Needletail"),
+    ("nt-uc", "Needletail, RaptorQ FEC over UDP from the edge"),
+    ("nt", "Needletail, LL-HLS"),
     ("cf", "Cloudflare Realtime"),
     ("whep", "Cloudflare Stream WHIP/WHEP"),
     ("lkregion", "LiveKit, SFU in each region"),
@@ -67,10 +68,21 @@ class Evidence:
         return f"{self.rates[rung]:.0f}" if rung in self.rates else rung
 
     def step(self, session: str, lane: str, phase: str, detail: str) -> dict | None:
+        # The UDP client of Needletail runs in the Needletail steps as probe "probe.uc".
+        if lane == "nt-uc":
+            step = self.data["sessions"][session]["steps"].get(f"nt.{phase}.{detail}")
+            if not step:
+                return None
+            hosts = {}
+            for name, host in (step.get("hosts") or {}).items():
+                probe = (host.get("probes") or {}).get("probe.uc")
+                if probe:
+                    hosts[name] = {**host, "probes": {"probe": probe}, "players": {}}
+            return {**step, "hosts": hosts}
         return self.data["sessions"][session]["steps"].get(f"{lane}.{phase}.{detail}")
 
     def probes(self, step: dict | None, site: str, label: str = "probe") -> list[dict]:
-        """The probes of a region: the Nanode and the viewer host."""
+        """The probes of a region: the listener host and the viewer host."""
         if not step:
             return []
         out = []

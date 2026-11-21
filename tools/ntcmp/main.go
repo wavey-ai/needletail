@@ -38,6 +38,8 @@ func main() {
 		err = cmdIndex(os.Args[2:])
 	case "audio-index":
 		err = cmdAudioIndex(os.Args[2:])
+	case "udp-ingest":
+		err = cmdUDPIngest(os.Args[2:])
 	case "flv":
 		err = cmdFLV(os.Args[2:])
 	case "pub":

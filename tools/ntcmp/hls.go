@@ -290,8 +290,15 @@ func (h *hlsProbe) unit(target string, body []byte, first, done int64) {
 			number, _ = strconv.ParseInt(match[2], 10, 64)
 		}
 		if size > 0 && len(body)%size == 0 {
-			for at := 0; at < len(body); at += size {
-				h.rec.AudioUnit(body[at:at+size], done, number, false)
+			// A segment carries many blocks: give each its own number, so that
+			// the blocks after the first are not counted as duplicates.
+			k := int64(len(body) / size)
+			for i, at := int64(0), 0; at < len(body); i, at = i+1, at+size {
+				n := number
+				if number >= 0 && k > 1 {
+					n = number*k + i
+				}
+				h.rec.AudioUnit(body[at:at+size], done, n, false)
 			}
 		} else {
 			h.rec.AudioUnit(body, done, number, false)

@@ -78,7 +78,7 @@ SAMPLER = (
     "cat >/var/tmp/compare-sampler.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-sampler.pid\n"
     "while true; do\n"
-    "  line=\"$(date +%s) $(head -1 /proc/stat)\"\n"
+    "  line=\"$(date +%s.%N) $(head -1 /proc/stat) | net $(awk 'NR>2{gsub(\":\",\" \"); printf \"%s:%s:%s \", $1, $10, $11}' /proc/net/dev)\"\n"
     "  for name in av-mesh av-contrib livekit-server; do for pid in $(pgrep -x $name); do\n"
     "    line=\"$line | $name $pid $(awk '{print $14+$15}' /proc/$pid/stat) $(awk '/VmRSS/{print $2}' /proc/$pid/status)\"\n"
     "  done; done\n"
@@ -312,6 +312,16 @@ class Lane:
         common_args = (f"--duration {seconds} --report {out}.json --label {tag} --count {count} "
                        + (f"--spread-ms {min(5000, 200 * count)} " if count > 1 else "")
                        + (f"--frames {out}.csv " if frames else ""))
+        if self.name == "nt" and variant == "uc":
+            # RaptorQ FEC over UDP from the assigned edge, measured by the same index.
+            return (f"date +%s.%N >{out}.launch; /usr/local/bin/needletail-udp-client --entry {self.entry(site)} "
+                    f"--stream 1 --tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
+                    f"--session {tag}uc --arrivals {out}.arrivals.csv --write-parts {out}.parts.bin "
+                    f">{out}.uc.json 2>{out}.uc.err; ntcmp udp-ingest --arrivals {out}.arrivals.csv "
+                    f"--parts {out}.parts.bin --started $(cat {out}.launch) --index {index} --lane nt-uc "
+                    f"--label {tag} --client {out}.uc.json --report {out}.json "
+                    + (f"--frames {out}.csv " if frames else "")
+                    + f">{out}.ingest.log 2>&1; rm -f {out}.parts.bin {out}.launch")
         if self.name == "nt":
             reader = "--window 8 --http3 " if variant == "h3" else ""
             return (f"ntcmp hls --lane nt{'-h3' if variant == 'h3' else ''} --mode chase {reader}"
@@ -539,6 +549,8 @@ def throughput(session: Session, lane: Lane, seconds: int, rungs: list[str] | No
             view = [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")]
             if lane.name == "nt":
                 view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
+                view.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-view", "uc"))
+                nano.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-nano", "uc"))
             if rung in CHROME_UP_TO:
                 view.append(lane.player(site, seconds, "player", tag))
             if lane.name == "nt":
