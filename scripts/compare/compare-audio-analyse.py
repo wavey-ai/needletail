@@ -411,9 +411,9 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             # configuration's Needletail lane: its frame and DAW buffer.
             measured = lane
             if lane == "nt-uc":
+                bases = ["-".join(item.split("-")[:2]) for item in meta.get("lanes") or []]
                 measured = meta.get("nt_uc_base") or next(
-                    (item for item in meta.get("lanes") or [] if item in ("nt-popus", "nt-opus", "nt-flac",
-                                                                          "nt-pcm")), lane)
+                    (item for item in bases if item in ("nt-popus", "nt-opus", "nt-flac", "nt-pcm")), lane)
             frame = nt_frame_ms(meta, measured) if lane.startswith("nt-") else FRAME_MS[config]
             analysed = analyse_probe(record, host_dir / f"{lane}.probe.csv", measured, frame, end_ms,
                                      daw_source(meta, measured))
