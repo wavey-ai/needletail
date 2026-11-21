@@ -16,12 +16,15 @@ The 4K video comparison is a separate record.
 
 ## Answer
 
-**Self-hosted LiveKit is still the fastest, by 2.4 to 2.8 ms for lossless
-PCM and by 1.2 to 6.4 ms for Opus at the median. Needletail's UDP client mode
-is next: it beats Cloudflare for PCM in every region and LiveKit Cloud
-everywhere. It is the only system that carries lossless audio as audio, and
-the only one that loses nothing to random loss of 1% or 5%, at no cost in
-latency.**
+**Self-hosted LiveKit is still the fastest at the median: ahead of
+Needletail by 2.6 to 2.8 ms for lossless PCM (5.1 ms in Tokyo) and by 6.3 to
+6.4 ms for Opus, against its faster setup in each region. For PCM,
+Needletail's UDP client mode comes next, ahead of Cloudflare Realtime and
+LiveKit Cloud in every region. For Opus it is level with Cloudflare in New
+York and Tokyo, behind it in London and Sydney, and ahead of LiveKit Cloud
+everywhere. Needletail is the only system that carries lossless audio as
+audio, and its UDP mode the only lane that lost nothing to random loss of 1%
+or 5%, at no cost in latency.**
 
 Mouth to ear is the age of a sample when a listener that plays audio on
 arrival would play it. Median of three sessions, in milliseconds:
@@ -49,40 +52,50 @@ UDP was 13.2, 44.1, 122.6 and 139.3 ms for Opus against LiveKit's 4.2, 40.3,
 
 Where Needletail loses:
 
-- **Latency, against self-hosted LiveKit.** Needletail's UDP mode is 2.4 to
-  2.8 ms behind for PCM in every region, and 6.3 to 6.4 ms behind for Opus
-  (1.2 ms in New York, where LiveKit's own route is slower). Its frame is
-  5 ms where the others forward 2.5 ms, which is 1.25 ms of the gap at the
-  median and 2.5 ms at the top. The rest is the path: contributor, relay,
-  distributor and edge, against one SFU. Needletail's Opus is about 3 ms
-  later than its PCM over the same path; the cause is in the producer's
-  path and was not isolated.
+- **Latency, against self-hosted LiveKit.** Against LiveKit's faster setup
+  in each region, Needletail's UDP mode is 2.6 to 2.8 ms behind for PCM
+  (5.1 ms in Tokyo, where the multi-region set was faster) and 6.3 to 6.4 ms
+  behind for Opus. Its frame is 5 ms where the others forward 2.5 ms, which
+  is 1.25 ms of the gap at the median and 2.5 ms at the top. The rest is the
+  path: contributor, relay, distributor and edge, against one SFU.
+  Needletail's Opus is 3.1 to 3.6 ms later than its PCM over the same path:
+  1.0 to 1.2 ms of it lies between the two producers (FLAC from the DAW
+  source against PCM from the AEP1 sender), about 2.3 ms between Opus and
+  FLAC from the same DAW source. Neither step was isolated.
+- **Opus, against Cloudflare.** 2.1 to 3.0 ms behind Cloudflare in London and
+  3.7 to 5.3 ms behind in Sydney.
 - **Jitter.** The 99th percentile of Needletail's unit latency is 3.5 to
   3.8 ms above its median for Opus, 2.5 to 3.6 ms for PCM. Self-hosted
-  LiveKit's (an SFU in each region) is 1.2 to 2.0 ms.
+  LiveKit's (an SFU in each region) is 1.2 to 2.0 ms: 2.0 to 2.6 ms less for
+  Opus, 0.7 to 1.9 ms less for PCM.
 - **Time to first audio, at a cold edge.** A Needletail edge holds a stream
   only while someone reads it. The first listener at an edge that does not
-  hold the stream waited 1.0 to 1.9 seconds; at an edge that holds it, 30 to
-  100 ms. Self-hosted LiveKit with an SFU in the region: 30 to 160 ms.
+  hold the stream waited about 0.9 to 2.0 seconds; at an edge that holds it,
+  13 to about 280 ms. Self-hosted LiveKit with an SFU in the region: 20 to
+  52 ms for PCM and 157 to 178 ms for Opus. Cloudflare (0.75 to 6 s), the
+  LiveKit multi-region set (1.2 to 4.9 s outside London) and LiveKit Cloud
+  (0.25 to 2 s) were mostly as slow as a cold Needletail edge or slower.
 - **Lossless crowds at one edge pair.** With 25 UDP listeners and 25 HTTP/3
-  listeners of PCM in each region at once, London's two edges reached 100% to
-  171% of a vCPU (of two), and the UDP listeners there were about a second
-  late in two sessions of three, losing up to 5.3% of the parts; in Sydney
-  one session lost 12.6%. The same crowd of Opus was served with nothing
-  lost (unit latency 12, 43, 119 and 138 ms). Self-hosted LiveKit served 100
-  PCM listeners at about the latency of one.
+  listeners of PCM in each region at once, the UDP listeners in London were
+  about a second late in the two sessions of three in which one London edge
+  reached 171% and 174% of one vCPU (86% and 88% of its two), losing up to
+  5.3% of the parts; in Sydney one session lost 12.6%. The same crowd of
+  Opus was served with nothing lost (unit latency 12, 43, 119 and 138 ms).
+  Self-hosted LiveKit with an SFU in each region served 100 PCM listeners at
+  about the latency of one; its multi-region set was 7.7 to 7.9 s late.
 - **Burst loss on the UDP mode.** With Gilbert-Elliott bursts (4.8% lost,
-  five packets at a time), the UDP mode lost 0.17% to 0.24% of the PCM parts
-  and 0.4% to 0.7% of the Opus parts, in gaps of 5 to 10 ms. The SFUs lost
-  about 5%. LL-HLS lost nothing, late.
-- **A browser.** Chrome plays every WebRTC lane (72 to 91 ms mouth to ear in
-  London, 188 to 229 ms in Sydney). No browser plays Needletail's Opus or PCM
-  parts without a player written for them.
+  five packets at a time on average), the UDP mode lost 0.15% to 0.30% of the
+  PCM parts and 0.4% to 0.7% of the Opus parts, in gaps of 5 to 10 ms. The
+  SFUs lost about 5%. LL-HLS lost nothing in all but one run, late.
+- **A browser.** Chrome plays every WebRTC Opus lane (72 to 91 ms mouth to
+  ear in London, 188 to 229 ms in Sydney). No browser plays Needletail's Opus
+  or PCM parts without a player written for them; nor the SFUs' PCM data
+  channels.
 
 Where Needletail wins:
 
-- **Lossless audio.** Needletail delivered 24-bit PCM and FLAC bit for bit,
-  as audio, in both client modes. Cloudflare Realtime, Cloudflare Stream and
+- **Lossless audio.** Needletail delivered 24-bit PCM bit for bit, and every
+  FLAC part, as audio, in both client modes. Cloudflare Realtime, Cloudflare Stream and
   LiveKit (self-hosted and Cloud) refused an uncompressed audio track
   (`L16` and `L24`), again in this pass. Cloudflare Realtime and LiveKit
   carry PCM bit for bit only on a data channel, to a client written for it,
@@ -90,15 +103,18 @@ Where Needletail wins:
 - **Random loss, with no cost in latency.** With 1% and 5% loss at the
   listener, the UDP mode delivered every part and its 99th percentile did not
   move: Opus 13 and 139 ms in London and Sydney at 0%, 1% and 5% loss. Every
-  SFU lost about 1% and 5%, and Chrome concealed 1.3% to 18% of the samples.
+  SFU lost about 1% and 5%, and Chrome concealed 1.1% to 18.5% of the
+  samples.
 - **Cloudflare and LiveKit Cloud.** For PCM, Needletail's UDP mode is ahead
-  of Cloudflare Realtime in every region (1.2 to 4.4 ms; 17 ms in Sydney,
-  where Cloudflare's data channel had a 3-second fault in one session), and
-  ahead of LiveKit Cloud by 10 to 22 ms. For Opus it is level with
-  Cloudflare in New York and Tokyo and 6 to 18 ms ahead of LiveKit Cloud.
-- **An Opus crowd.** 100 UDP listeners of Opus, 25 in each region, had a
-  unit latency of 12, 43, 119 and 138 ms, nothing lost; the worst listener's
-  99th percentile was 19, 49, 126 and 145 ms.
+  of Cloudflare Realtime at the median in every region: 1.2 to 4.4 ms in
+  London, New York and Tokyo, 17 ms in Sydney (not consistent there:
+  Cloudflare was 148 ms in one session, 3.3 s in another, 1.4 ms ahead in the
+  third). It is ahead of LiveKit Cloud by 10 to 22 ms. For Opus it is level
+  with Cloudflare in New York and Tokyo and 6 to 18 ms ahead of LiveKit
+  Cloud.
+- **The product reader in a crowd.** `needletail-reader` itself (with its
+  1-second buffer), 25 in each region, received every part, with no underrun
+  and at most 93 ms behind, in every session.
 - **The contributor.** On its own g6-dedicated-4 the contributor published
   Opus, FLAC and PCM at once from two producers at 61% of one vCPU, with no
   publication backlog in two hours.
@@ -108,18 +124,21 @@ What Needletail should fix to win, in order of what it buys:
 1. **2.5 ms Opus parts and smaller PCM blocks by default.** Worth 1.25 ms at
    the median and 2.5 ms at the top. In progress on `low-latency`.
 2. **The hop path and its jitter.** About 1.2 to 1.5 ms of PCM and 5 ms of
-   Opus at the median, and 2 ms of jitter, remain after the frame. The
-   per-hop measurement in the 4K record places them.
+   Opus at the median remain after the frame, and 0.7 to 2.6 ms more jitter
+   than LiveKit. The per-hop measurement in the 4K record places them.
 3. **A cold edge.** Subscribe an edge to a stream before its first listener,
    or answer the first listener from the distributor while the edge fills.
-4. **UDP sending at an edge.** A g6-dedicated-2 edge with 25 PCM UDP
-   listeners and 25 HTTP listeners ran out of processor. Batch sends
+4. **UDP sending at an edge.** With 25 PCM UDP listeners and 25 HTTP/3
+   listeners in a region, one g6-dedicated-2 edge reached 88% of its
+   processor and its UDP listeners fell about a second behind. Batch sends
    (`sendmmsg`, GSO) and encode each part once for all subscribers.
 5. **Bursts.** Spread repair across parts, or let the client ask for a part
    again, so that a burst of five packets does not lose a part.
-6. **The LL-HLS reader as shipped.** One request for each 5 ms part falls
-   behind with any loss or delay (22 s behind at 5% loss). Ship the
-   pipelined HTTP/3 reader with a window longer than the round trip.
+6. **The LL-HLS reader.** One request for each 5 ms part, as
+   `needletail-reader` asks, falls behind with any loss or delay (15 to 22 s
+   at 5% loss in ntcmp's emulation; the product reader itself kept up in a
+   clean crowd but was not run under impairment). Ship the pipelined HTTP/3
+   reader with a window longer than the round trip.
 7. A browser player for the audio lanes (WebTransport carrying the UDP
    mode's datagrams).
 
@@ -138,11 +157,10 @@ Cloudflare Stream Live with RTMPS in and HLS or LL-HLS out is not here. It
 carries AAC, not Opus or PCM, and the account cannot use it at all: see
 [Not measured](#not-measured).
 
-Needletail is the pushed head of the branch on which the product work and the
-UDP client mode were merged, `low-latency`: `av-mesh` `c5d75c8` with one
-measurement option added on `compare-low-latency` (`9c34c98`: the UDP client
-writes the arrival of each part), `av-contrib` `7a41cea`, `playlists`
-`a225609`, built with cargo 1.100.0 on a Debian 13 g6-dedicated-8. `daw-nexus`
+Needletail is `av-mesh` `c5d75c8` (the merge of `low-latency` into
+`client-udp`, pushed at 19:08) with one measurement option on
+`compare-low-latency` (`9c34c98`: the UDP client writes the arrival of each
+part), `av-contrib` `7a41cea`, `playlists` `a225609`, built with cargo 1.100.0 on a Debian 13 g6-dedicated-8. `daw-nexus`
 `qualification-source-loop` `49cfceb`. The deploy tool and the harness are on
 `needletail` `compare-cloudflare`. The Nanode sessions of the first pass ran
 `regional-llhls-cache` (`av-mesh` `a9cb1dd`).
@@ -160,7 +178,8 @@ Every sender plays the 64 seconds in a loop that is locked to the wall clock:
 sample `s` of the loop is spoken when the Unix time is `s / 48000` seconds past
 a multiple of 64. A listener that recognises a unit of audio therefore knows
 when each of its samples was spoken, with no side channel. The hosts keep time
-with chrony; the largest offset seen was 0.23 ms.
+with chrony; the largest offset seen was 0.23 ms (from the deploy tool's
+status, not kept in the evidence file).
 
 A live sender cannot send a unit before its last sample exists. Every sender
 here sends a unit at the moment its last sample has been spoken, and not
@@ -245,12 +264,15 @@ A reader can therefore keep requests in flight. Three readers were measured:
 
 | Reader | What it does |
 | --- | --- |
-| as shipped | One request for each part, HTTP/2. What `needletail-reader` does. |
+| as shipped | One request for each part, HTTP/2: ntcmp's emulation of `needletail-reader`'s requests. |
 | pipelined, HTTP/2 | 40 requests in flight (200 ms of parts), one TCP connection. |
 | pipelined, HTTP/3 | 40 requests in flight, QUIC. |
 
 The pipelined readers are in `tools/ntcmp` (`ntcmp hls --window 40 [--http3]`).
-They are not in the product.
+They are not in the product. The product's own `needletail-reader` (with a
+1000 ms buffer) also ran, as a crowd of 25 in each region in a pass of its
+own (lane `nt-reader`); it reports parts received and how far behind it was,
+not the latency of each part.
 
 ### Lossless on a WebRTC SFU
 
@@ -282,7 +304,9 @@ tool refuses any other plan and checks the live type of every instance.
 | Listeners | in each region one g6-dedicated-2 and one g6-dedicated-4 (Chrome, crowds) | |
 
 `scripts/compare/steal-check.py` ran before each session: no instance had
-steal time above 0.2%.
+steal time above 0.2% (its output is not in the evidence). During the steps,
+the node samplers kept steal at or below 0.2% except in 14 node-steps, the
+highest 4% on a Sydney edge for one step.
 
 ### Listeners
 
@@ -293,7 +317,8 @@ smaller host `-nano`, the name it had in the first pass.)
 
 Every system is heard by the same listeners at the same time, so all of them
 see the same network. Systems that share a node are not loaded together in the
-crowd steps.
+crowd steps, but Needletail's two client modes are: its 25 UDP and 25 HTTP/3
+listeners in each region share the same edges.
 
 ### Impairment
 
@@ -312,11 +337,10 @@ both directions, for IPv4 and IPv6, with SSH left out:
 | Session | Start (UTC, 21 November) | Configurations |
 | --- | --- | --- |
 | 1 | 19:44 | every frame length, lossless attempts, impairment and crowds for 2.5 ms Opus and PCM |
-| 2 | 20:26 | 2.5 ms Opus, FLAC beside 20 ms Opus, PCM; impairment and crowds |
-| 3 | 20:57 | the same as session 2 |
+| 2 | 20:25 | 2.5 ms Opus, FLAC beside 20 ms Opus, PCM; impairment and crowds |
+| 3 | 20:56 | the same as session 2 |
 
-Before each session `steal-check.py` found no instance with steal time. A
-cell in a table is the median of the sessions, with the lowest and the highest
+A cell in a table is the median of the sessions, with the lowest and the highest
 session in brackets when they differ.
 
 ## Settings
@@ -348,9 +372,13 @@ Every WebRTC system forwarded Opus frames of 2.5, 5, 10 and 20 ms unchanged:
 every packet at every listener was bit for bit the packet sent. None of them
 forces a frame length on a native sender. Chrome cannot send a frame shorter
 than 10 ms, so a browser source is 3.75 ms worse than these figures at the
-median and 7.5 ms worse at the top. Needletail's Opus frame is 5 ms: its
-producer fixes it. (For the 20 ms and 510 kbit/s columns of the frame-length
-table, Needletail's lane is FLAC.)
+median and 7.5 ms worse at the top. Every packet that arrived was bit for bit
+the packet sent (the 5, 10 and 20 ms frames ran in session 1 only;
+Cloudflare Realtime's 5 ms session in Sydney failed to start). Needletail's
+Opus frame here is 5 ms, the DAW source's setting, not the owner's default of
+2.5 ms, which waits for the producer of `low-latency`; against 2.5 ms it
+adds about 1.25 ms at the median and 2.5 ms at the top. (For the 20 ms and
+510 kbit/s columns of the frame-length table, Needletail's lane is FLAC.)
 
 Self-hosted LiveKit is the floor. In London the packet is at the listener
 about 1 ms after its last sample. The single-region and multi-region
@@ -358,8 +386,8 @@ deployments are the same to within 2 ms, except in New York, where the
 multi-region set's media, relayed from London, was 5 ms earlier than the New
 York SFU's own copy from the source.
 
-Cloudflare Realtime and Stream WHIP/WHEP are the same network: they differ by
-about a millisecond. LiveKit Cloud is the slowest in every region; it served
+Cloudflare Realtime and Stream WHIP/WHEP are within 0.1 to 1.6 ms of each
+other. LiveKit Cloud is the slowest in every region; it served
 the London listener from Germany.
 
 Needletail's two client modes have nearly the same median: the UDP mode is
@@ -384,42 +412,53 @@ Each system was asked again for an audio track of `audio/L16` and of
 
 Their documentation agrees: Cloudflare lists Opus and G.711, and LiveKit
 registers Opus, RED, PCMU and PCMA. None of them carries lossless PCM as
-audio. On a data channel, PCM arrived bit for bit through Cloudflare Realtime
-and LiveKit, and lost what the network lost. Cloudflare Stream has no data
-channel.
+audio. On a data channel, what arrived of the PCM through Cloudflare Realtime
+and LiveKit was bit for bit, and what the network lost was gone. Without
+impairment, Cloudflare Realtime's PCM was 17 ms later than its Opus in Sydney
+(3.3 s in one session), and LiveKit Cloud lost 3.7% of it in Tokyo in one
+session. Cloudflare Stream has no data channel.
 
-Needletail's PCM and FLAC were bit-exact at every listener, in both client
-modes. FLAC was about 1 ms later than PCM at the median (it comes from the DAW
+Needletail's PCM was bit-exact at every listener, in both client modes, and
+every FLAC part arrived (FLAC parts are recognised by number, so their bytes
+were not compared). FLAC was about 1 ms later than PCM at the median (it comes from the DAW
 source, PCM from the AEP1 sender).
 
 ### Impairment
 
 With random loss the UDP mode recovers every part from the repair datagrams
 that travel with it, so nothing is late: the 99th percentile was the same at
-0%, 1% and 5% loss. Its client measured the datagram loss and its edge sized
-the repair to it. It pays in packets: a 5 ms Opus part travelled as one source
-and three repair datagrams.
+0%, 1% and 5% loss. Its client measures the datagram loss and its edge sizes
+the repair to it. It pays in packets: in the client's own report (not in the
+evidence file), a London listener of 5 ms Opus received about four datagrams
+for each part, one source and three repair.
 
-With bursts, five packets at a time, the repair of one part was sometimes not
-enough: 0.17% to 0.24% of PCM parts and 0.4% to 0.7% of Opus parts were lost,
-in gaps of 5 to 10 ms.
+With bursts, five packets at a time on average, the repair of one part was
+sometimes not enough: 0.15% to 0.30% of PCM parts and 0.4% to 0.7% of Opus
+parts were lost, in gaps of 5 to 10 ms.
 
 An SFU sends each packet once. With 1% loss about 1% of the audio is gone,
-with 5% about 5%, with bursts about 5% in gaps of 10 to 25 ms. What arrives
-is on time. Chrome concealed 4% and 18% of the samples from Cloudflare at 1%
-and 5% loss, and only 1.3% to 3.5% from LiveKit, which is consistent with
+with 5% about 5%, with bursts about 5%, the longest gaps 7.5 to 15 ms at the
+median (up to 52.5 ms in one session). What arrives is mostly on time:
+LiveKit's Opus 99th percentile did not move, Cloudflare Stream's in Sydney
+rose by 19 to 23 ms, and single data-channel PCM sessions through Cloudflare
+and LiveKit had a 99th percentile of 3 to 10 seconds with bursts. Chrome
+concealed about 4% and 18% of the samples from Cloudflare at 1% and 5% loss,
+and only 1.1% to 3.5% from LiveKit, which is consistent with
 LiveKit answering Chrome's requests to retransmit audio (not checked in the
 server).
 
-Needletail's LL-HLS mode delivers every part and pays in time:
+Needletail's LL-HLS mode delivered every part in all but three of its
+impaired runs (0.64% in 50 ms gaps once with bursts on the pipelined HTTP/2
+reader, up to 0.08% twice on HTTP/3), and pays in time:
 
-- the reader as shipped falls behind and does not recover within the step:
-  0.4 to 1.6 seconds at 1% loss, 15 to 22 seconds at 5%;
+- the one-request-for-each-part reader falls behind: a 99th percentile of
+  0.4 to 0.9 seconds at 1% loss (1.6 s in one session) and 15 to 22 seconds
+  at 5%;
 - pipelined over HTTP/3, the 99th percentile at 5% loss was 21 and 148 ms
   in London and Sydney for Opus, 49 and 167 ms for PCM.
 
-With 100 ms of delay each way, every SFU and the UDP mode were 100 ms later
-and nothing else changed. The LL-HLS readers fell behind: a window of 40
+With 100 ms of delay each way, every SFU and the UDP mode were 100 ms later.
+Apart from LiveKit Cloud's PCM data channel (below), nothing else changed. The LL-HLS readers fell behind: a window of 40
 parts in flight is 200 ms of audio, the round trip was 200 ms.
 
 LiveKit Cloud dropped 88% of the PCM blocks on its data channel when the
@@ -427,28 +466,35 @@ listener was 100 ms away, in all three sessions, as in the first pass.
 
 ### Listeners
 
-One and ten listeners: every system served them all, at about the latency of
-one.
+One and ten listeners: every system served them all. LiveKit and PCM stayed at
+the latency of one. With ten, Needletail's Opus was about 5.5 ms later in
+London and 5 ms later in Sydney, and Cloudflare 5 to 9 ms later in Sydney.
 
 One hundred listeners, 25 on one host in each region. The UDP listeners ran
 together with 25 HTTP/3 listeners of the same stream and with the LiveKit
 multi-region set's crowd; the other systems' crowds ran in a pass of their
-own.
+own. The product's own `needletail-reader` ran as a third crowd pass of 25 in
+each region.
 
 Figures are the unit latency of the median listener.
 
 - **Needletail, UDP mode:** Opus at 12, 43, 119 and 138 ms, nothing lost.
   PCM in London about a second late in two sessions of three (up to 5.3%
   lost), and 34, 111 and 129 ms elsewhere, with 12.6% lost in Sydney in one
-  session. The London edges were at 100% to 171% of one vCPU.
-- **Needletail, LL-HLS:** the reader as shipped fell 3.6 to 5.2 seconds
-  behind with Opus in London and Tokyo and 8 to 14 seconds with PCM; the pipelined HTTP/3 reader
-  held Opus at 21, 50, 136 and 144 ms and fell behind with PCM.
+  session. In those sessions one London edge was at 171% and 174% of one
+  vCPU (of two), the other below 50%.
+- **Needletail, LL-HLS:** ntcmp's one-request-for-each-part reader, in the
+  same pass as the Cloudflare and LiveKit crowds, fell 3.6 to 5.2 seconds
+  behind with Opus in London and Tokyo and 8 to 14 seconds with PCM.
+  `needletail-reader` itself, 25 in each region in a pass of its own,
+  received every part, never more than 93 ms behind (its latency was not
+  measured). The pipelined HTTP/3 reader held Opus at 21, 50, 136 and 144 ms and fell behind with PCM.
 - **LiveKit, an SFU in each region:** all 100, Opus at 1.5, 37.6, 109.1 and
   127.4 ms, PCM at 3.0, 33.6, 110.7 and 128.6 ms.
 - **LiveKit, multi-region set:** the room is on the London node. Opus was
-  served; PCM was 7.7 seconds late, with the London node at 198% of a vCPU.
-- **Cloudflare:** Opus at the latency of one. One or two of 100 Realtime
+  served; PCM was 7.7 to 7.9 seconds late in every region, with the London node at 198% of a vCPU.
+- **Cloudflare:** Realtime's Opus at the latency of one, Stream WHIP/WHEP's
+  11 ms later in Sydney. One or two of 100 Realtime
   listeners did not connect in two sessions, and two or three of 25 Stream
   WHIP/WHEP listeners in Sydney in every session. PCM to Tokyo and Sydney had a worst listener
   6.8 and 8.7 seconds late in two sessions of three.
@@ -460,18 +506,20 @@ Figures are the unit latency of the median listener.
 The contributor ran alone on a g6-dedicated-4 (4 dedicated vCPUs) and
 published all three renditions at once, from both producers (the DAW source's
 Opus and FLAC, the AEP1 sender's PCM), 200 parts a second each. `av-contrib`
-used 61% of one vCPU, 15% of the instance, in every step. From the deploy of
-the build measured (19:36) to the end of the sessions (21:30) it logged no
-`publication queue is full`. On the earlier `regional-llhls-cache` build, on
-the same instance, it logged 359 of them in one minute during a crowd step.
+used 60% to 62% of one vCPU, 15% of the instance, in every step. Its journal
+(`journalctl -u needletail-contrib`, counted by minute; not in the evidence
+file) has no `publication queue is full` from the deploy of the build measured
+(19:36) to the end of the sessions (21:30). On the earlier
+`regional-llhls-cache` build, on the same instance, it logged 359 of them in
+one minute (18:48) during a crowd step.
 Four vCPUs are more than audio needs; the 4K record says what video needs.
 
-The primary relay used 39% of one vCPU of its g6-dedicated-2, a London
-distributor 22%, an edge 9% to 41% with one to ten listeners.
+The primary relay used 38% to 39% of one vCPU of its g6-dedicated-2, a London
+distributor 19% to 23%, an edge 8% to 48% with one to ten listeners.
 
 ## Side note: the first pass, on shared Nanodes (superseded)
 
-The first pass (sessions A, B and C, 14:08 to 16:00 UTC) ran every Needletail
+The first pass (sessions A, B and C, 14:08 to 16:17 UTC) ran every Needletail
 role, every LiveKit node and the smaller listeners on Nanodes, shared-CPU
 instances of 1 vCPU, with Needletail's `regional-llhls-cache` build and LL-HLS
 only. The owner ruled that shared instances measure the neighbours, not the
@@ -482,8 +530,10 @@ system, and those results are superseded. What they showed, for the record:
   four nodes in the path; each was a chance of a noisy host.
 - On that build Needletail's Opus was 12.0, 47.1, 118.6 and 138.5 ms mouth to
   ear (LL-HLS) against self-hosted LiveKit's 1.9, 32.6, 109.1 and 127.8; on
-  the dedicated lab, with the `low-latency` build, it is 9.2, 40.1, 117.1 and
-  135.5 over LL-HLS and 8.6, 39.6, 116.4 and 134.7 over UDP.
+  the dedicated lab, with the newer build, it is 9.2, 40.1, 117.1 and 135.5
+  over LL-HLS and 8.6, 39.6, 116.4 and 134.7 over UDP, against LiveKit's
+  2.3, 38.4, 110.0 and 128.3 (LiveKit's New York route was 5.8 ms slower in
+  this lab).
 - A contributor on one shared vCPU could publish one audio rendition, not
   three.
 
@@ -496,12 +546,14 @@ Its evidence is kept as
   parts are raw samples. A browser needs a player written for them; the UDP
   mode needs WebTransport to carry its datagrams.
 - **2.5 ms Opus and smaller PCM blocks on Needletail.** The producers of the
-  build measured make 5 ms parts. The owner's default of 2.5 ms Opus and the
-  halving of PCM blocks (1 ms and below) wait for the producer options on
-  `low-latency`; this record will be rerun on them.
+  build measured make 5 ms parts. The owner's default of 2.5 ms Opus, and PCM
+  blocks from 1 ms down while they measure faster, need the producer options
+  pushed on `low-latency` after these sessions; this record will be rerun on
+  them.
 - **Sound quality.** Every lane delivered its packets unchanged, so quality
   is the codec's: 256 kbit/s Opus on the SFUs, 96 kbit/s SoundKit Opus on
-  Needletail, and no loss at all on the lossless lanes. No listening score
+  Needletail, and no coding loss on the lossless lanes: every PCM unit that
+  arrived was bit for bit the unit sent. No listening score
   was computed.
 - **A listener far from an edge.** Every listener was in the data centre of
   its edge or, for Cloudflare and LiveKit Cloud, as near as their networks
@@ -517,19 +569,23 @@ Its evidence is kept as
 
 ## Open
 
-- Needletail's Opus is about 3 ms later than its PCM over the same path and
-  client mode. The two come from different producers (the DAW source and the
-  AEP1 sender); which step costs the 3 ms was not isolated.
-- The UDP listeners of PCM in the London crowd were about a second late
-  while the edges were near their processor limit. Whether the edge's UDP
+- Needletail's Opus is 3.1 to 3.6 ms later than its PCM over the same path
+  and client mode: 1.0 to 1.2 ms between the producers (FLAC from the DAW
+  source against PCM from the AEP1 sender), about 2.3 ms between Opus and FLAC
+  from the same source. Neither step was isolated.
+- The UDP listeners of PCM in the London crowd were about a second late in
+  the two sessions in which one of the two London edges was near its
+  processor limit (171% and 174% of one vCPU, of two); the other edge was
+  below 50%. Whether the edge's UDP
   sender or the 25 HTTP/3 readers sharing the edges took the processor was
   not separated; the tier record measures UDP listeners alone.
 - The LL-HLS readers need a window longer than the round trip. With 40
   parts in flight and a 200 ms round trip they ran late.
 - LiveKit Cloud's loss of 88% of data-channel blocks with a 100 ms delay was
   not investigated.
-- Cloudflare Realtime's data channel to Sydney ran about 3 seconds late for a
-  whole step in one session of three.
+- Cloudflare Realtime's data channel to Sydney ran seconds late in two
+  sessions of three: 3.3 s at the median in session 1's clean step and 8 to
+  10 s in its loss and delay steps; 9.3 s in session 3's burst step.
 
 ## Evidence and harness
 
