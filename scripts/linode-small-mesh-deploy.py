@@ -67,6 +67,8 @@ DEFAULT_SETTINGS = {
     # RaptorQ FEC UDP to clients, on every distributor and edge (0: off).
     # The assignment API of a node names this port.
     "client_udp_port": 19446,
+    # Forward parts to UDP clients as their datagrams reach the edge.
+    "client_udp_cut_through": True,
     # Address in the playback URL that a cache advertises: "public", or "vlan"
     # when readers reach the caches over the private network.
     "playback_address": "public",
@@ -573,6 +575,8 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     args += ["--egress-capacity-bps", str(capacity)]
     if node["role"] in ("distributor", "edge") and settings.get("client_udp_port"):
         args += ["--client-udp-bind", f"0.0.0.0:{settings['client_udp_port']}"]
+        if not settings.get("client_udp_cut_through", True):
+            args += ["--client-udp-cut-through", "false"]
     if node["role"] in ("distributor", "edge"):
         # Every node of a region can be an entry point for its readers.
         args += [
