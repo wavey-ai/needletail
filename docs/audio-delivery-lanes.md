@@ -57,9 +57,12 @@ media rendition.
 Every AEP1 payload kind reaches mandatory LL-HLS. The route chooses one policy:
 
 - `opaque` publishes the exact recovered bytes. `av-contrib` and `av-mesh` do
-  not parse SoundKit, PCM, FLAC, Opus, or any other inner format. A 5 ms part
-  contains one producer unit; a larger part may concatenate consecutive units
-  only when the producer/client contract makes them self-delimiting.
+  not parse SoundKit, PCM, FLAC, Opus, or any other inner format. By default a
+  part contains one producer unit, one AEP1 epoch whatever its sample count:
+  2.5 ms (120 samples) for Opus, 1 ms (48 samples) for PCM and FLAC, and PCM
+  epochs down to 0.25 ms (12 samples; FLAC at least 32). A larger part
+  (`--audio-part <N>samples|<N>us`) may concatenate consecutive units only when
+  the producer/client contract makes them self-delimiting.
 - `fmp4` keeps boxing in `av-contrib` for elementary FLAC and PCM. FLAC remains
   FLAC; S16, S24, and S32 PCM retain their exact integer width in `ipcm`; F32
   remains F32 in `fpcm`.
@@ -93,13 +96,16 @@ while retaining LL-HLS as the mandatory delivery and cache format.
 
 ## Measured latency
 
+The measurements below were taken with 5 ms parts, before parts became the
+smallest frame by default (2.5 ms Opus, 1 ms lossless, one video frame).
+
 With 5 ms parts, LL-HLS uses a certificate-verified TLS 1.3/H3 connection that
 remains open for init, playlist, and part requests. Tail requests block on cache
 notifications; there is no fixed polling sleep in the delivery path. Known-
 duration FLAC parts close as soon as they reach the target duration rather than
 waiting for the next access unit.
 
-The playback edge can keep those 5 ms cache units while serving a slower
+The playback edge can keep those small cache units while serving a slower
 response cadence. `AV_LL_HLS_RESPONSE_MS=200`, for example, waits for and
 returns 40 exact consecutive units per blocking tail response. Aggregation is
 valid only for a self-delimiting opaque stream such as SoundKit v2; it does not
@@ -130,7 +136,7 @@ SMOKE_BUILD_PROFILE=release \
   scripts/two-region-smoke.sh
 ```
 
-The 5 ms real-time gate uses optimized binaries. Debug builds retain the same
+The real-time gate uses optimized binaries. Debug builds retain the same
 correctness tests but are not used for latency or real-time encoding claims.
 
 The Google Cloud run uses a London contributor, Amsterdam and Osaka relay

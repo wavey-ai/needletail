@@ -1,0 +1,405 @@
+{
+ "harness": {
+  "name": "ffmpeg-play",
+  "version": "0.1.0",
+  "label": "ffmpeg-edge-2001",
+  "url": "https://10.90.0.21:19444/live/2001/stream.m3u8",
+  "seconds_requested": 40.0,
+  "started_utc": "2026-11-21T03:00:24.005+00:00",
+  "realtime_read": true,
+  "ffmpeg_version": "ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+  "ffprobe_version": "ffprobe version n9.0.2 Copyright (c) 2007-2026 the FFmpeg developers",
+  "timestamps": "milliseconds since the ffmpeg process was started, unless a field name says otherwise",
+  "note": "the ffmpeg HLS demuxer ignores EXT-X-PART / preload hints and content steering; it plays whole segments of one variant",
+  "transport": {
+   "tls_proxy": true,
+   "tls_verify_flag": null,
+   "note": "ffmpeg talks plain HTTP/1.1 to a loopback forwarder in this process, which talks HTTP/1.1 over TLS (no certificate verification) to the servers and rewrites absolute playlist URIs; URLs in this report are the real ones"
+  },
+  "command": "/usr/bin/ffmpeg -hide_banner -nostdin -loglevel level+info -nostats -stats_period 0.1 -progress pipe:1 -re -i https://10.90.0.21:19444/live/2001/stream.m3u8 -f null -"
+ },
+ "verdict": {
+  "result": "failed",
+  "reason": "ffmpeg produced no decoded output in 0.2 s (exit code 234, exited on its own); first error: [out#0/null] Output file does not contain any stream",
+  "notes": [
+   "needed 8 start attempts; attempt 1 exited with code 234 after 201 ms: [in#0 @ 0x557258003340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+   "3 error line(s), 1 warning line(s)",
+   "ffprobe could not open the playlist: [hls @ 0x56544e453e00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+  ]
+ },
+ "ffprobe": {
+  "command": "/usr/bin/ffprobe -hide_banner -loglevel level+warning -print_format json -show_format -show_streams -show_programs https://10.90.0.21:19444/live/2001/stream.m3u8",
+  "timed_out": false,
+  "exit_code": 0,
+  "wall_s": 0.103,
+  "stderr_lines": 1,
+  "stderr_first": [
+   "[hls @ 0x56544e453e00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+  ],
+  "streams": [],
+  "format": {
+   "format_name": "hls",
+   "format_long_name": "Apple HTTP Live Streaming",
+   "nb_streams": 0,
+   "nb_programs": 1,
+   "probe_score": 100
+  },
+  "programs": [
+   {
+    "program_id": 0,
+    "nb_streams": 0,
+    "variant_bitrate": "0",
+    "streams": []
+   }
+  ],
+  "opened": false,
+  "attempts": [
+   {
+    "attempt": 1,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.113,
+    "stderr_first": [
+     "[hls @ 0x55a572e00e00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 2,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.112,
+    "stderr_first": [
+     "[hls @ 0x5628789e5e00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 3,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.111,
+    "stderr_first": [
+     "[hls @ 0x55918b914e00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 4,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.118,
+    "stderr_first": [
+     "[hls @ 0x55d46717de00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 5,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.117,
+    "stderr_first": [
+     "[hls @ 0x56143665de00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 6,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.101,
+    "stderr_first": [
+     "[hls @ 0x55b38ca4be00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 7,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.116,
+    "stderr_first": [
+     "[hls @ 0x55b75468de00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   },
+   {
+    "attempt": 8,
+    "opened": false,
+    "exit_code": 0,
+    "wall_s": 0.103,
+    "stderr_first": [
+     "[hls @ 0x56544e453e00] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+    ]
+   }
+  ],
+  "note": "run after the play step; with --start-attempts > 1 it is repeated until it opens the playlist"
+ },
+ "startup": {
+  "attempts": [
+   {
+    "attempt": 1,
+    "started_ms_after_first_attempt": 0.6,
+    "ran_ms": 201.1,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x557258003340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x55725800c480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 2,
+    "started_ms_after_first_attempt": 1202.8,
+    "ran_ms": 150.6,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x5623e1b8d340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x5623e1b96480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 3,
+    "started_ms_after_first_attempt": 2355.0,
+    "ran_ms": 150.8,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x563cd6d6e340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x563cd6d77480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 4,
+    "started_ms_after_first_attempt": 3506.7,
+    "ran_ms": 150.7,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x55c38909e340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x55c3890a7480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 5,
+    "started_ms_after_first_attempt": 4658.5,
+    "ran_ms": 150.7,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x558a40820340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x558a40829480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 6,
+    "started_ms_after_first_attempt": 5810.1,
+    "ran_ms": 150.6,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x55969b09c340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x55969b0a5480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 7,
+    "started_ms_after_first_attempt": 6961.5,
+    "ran_ms": 150.7,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x562016c65340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x562016c6e480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   },
+   {
+    "attempt": 8,
+    "started_ms_after_first_attempt": 8113.2,
+    "ran_ms": 151.1,
+    "exit_code": 234,
+    "how_stopped": "exited on its own",
+    "produced_output": false,
+    "first_problem_lines": [
+     "[in#0 @ 0x55f9fcacd340] [warning] Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]",
+     "[out#0/null @ 0x55f9fcad6480] [error] Output file does not contain any stream",
+     "[error] Error opening output file -.",
+     "[fatal] Error opening output files: Invalid argument"
+    ]
+   }
+  ],
+  "attempts_made": 8,
+  "time_to_first_decoded_frame_including_failed_attempts_ms": null,
+  "time_to_first_decoded_frame_ms": null,
+  "time_to_first_video_frame_ms": null,
+  "resolution_ms": 100.0,
+  "note": "time from ffmpeg process start to the first -progress block that reports decoded output (video frame count > 0 or output time > 0); blocks are emitted every 100 ms. With --start-attempts > 1 all other figures in this report are those of the last attempt."
+ },
+ "progress": {
+  "wall_s": 0.151,
+  "media_s": 0.0,
+  "wall_after_first_frame_s": null,
+  "media_after_first_frame_s": 0.0,
+  "speed_factor": null,
+  "ffmpeg_reported_speed": null,
+  "frames": null,
+  "dup_frames": null,
+  "drop_frames": null,
+  "progress_blocks": 0,
+  "samples": [],
+  "note": "speed_factor = media seconds output / wall seconds, both counted from the first decoded frame; 1.0 is real time"
+ },
+ "stalls": {
+  "threshold_ms": 500.0,
+  "count": 0,
+  "total_stalled_ms": 0,
+  "list": [],
+  "note": "a stall is a period after the first decoded frame in which the output media time did not advance; resolution 100 ms"
+ },
+ "log": {
+  "counts": {
+   "panic": 0,
+   "fatal": 1,
+   "error": 2,
+   "warning": 1
+  },
+  "by_category": {
+   "demux": {
+    "warning": 1
+   },
+   "output": {
+    "error": 1
+   },
+   "other": {
+    "error": 1,
+    "fatal": 1
+   }
+  },
+  "http_error_codes": {},
+  "by_message": {
+   "[in#N] Empty segment [https://N.N.N.N:N/live/N/stream.mNuN]": 1,
+   "[out#N/null] Output file does not contain any stream": 1,
+   "[-] Error opening output file -.": 1,
+   "[-] Error opening output files: Invalid argument": 1
+  },
+  "first": [
+   {
+    "t_ms": 115.2,
+    "level": "warning",
+    "category": "demux",
+    "component": "in#0",
+    "text": "Empty segment [https://10.90.0.21:19444/live/2001/stream.m3u8]"
+   },
+   {
+    "t_ms": 115.3,
+    "level": "error",
+    "category": "output",
+    "component": "out#0/null",
+    "text": "Output file does not contain any stream"
+   },
+   {
+    "t_ms": 115.3,
+    "level": "error",
+    "category": "other",
+    "component": null,
+    "text": "Error opening output file -."
+   },
+   {
+    "t_ms": 115.3,
+    "level": "fatal",
+    "category": "other",
+    "component": null,
+    "text": "Error opening output files: Invalid argument"
+   }
+  ],
+  "total_lines": 11,
+  "input_description": [
+   "Input #0, hls, from 'https://10.90.0.21:19444/live/2001/stream.m3u8':",
+   "  Duration: N/A, bitrate: N/A",
+   "  Program 0"
+  ],
+  "last_lines": [
+   "[info]   Duration: N/A, bitrate: N/A",
+   "[info]   Program 0 ",
+   "[info]     Metadata:",
+   "[info]       variant_bitrate : 0",
+   "[info] Output #0, null, to 'pipe:':",
+   "[out#0/null @ 0x55f9fcad6480] [error] Output file does not contain any stream",
+   "[error] Error opening output file -.",
+   "[fatal] Error opening output files: Invalid argument"
+  ]
+ },
+ "opens": {
+  "count": 0,
+  "by_host": {},
+  "by_kind": {},
+  "list": [],
+  "note": "from ffmpeg 'Opening ... for reading' lines; reused keep-alive connections are included"
+ },
+ "http": {
+  "requests": 2,
+  "by_status": {
+   "200": 2
+  },
+  "by_kind": {
+   "media_playlist": {
+    "200": 2
+   }
+  },
+  "by_host": {
+   "10.90.0.21:19444": 2
+  },
+  "bytes": 8124,
+  "non_2xx_or_failed": [],
+  "list": [
+   {
+    "t_ms": 72.5,
+    "url": "https://10.90.0.21:19444/live/2001/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.21:19444",
+    "status": 200,
+    "bytes": 4062,
+    "ttfb_ms": 23.2,
+    "total_ms": 23.4,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   },
+   {
+    "t_ms": 98.1,
+    "url": "https://10.90.0.21:19444/live/2001/stream.m3u8",
+    "kind": "media_playlist",
+    "host": "10.90.0.21:19444",
+    "status": 200,
+    "bytes": 4062,
+    "ttfb_ms": 17.6,
+    "total_ms": 17.7,
+    "error": null,
+    "range": "bytes=0-",
+    "content_type": "application/vnd.apple.mpegurl"
+   }
+  ],
+  "note": "upstream requests made for ffmpeg by the loopback forwarder during the last play attempt (the ffprobe step is excluded); t_ms is since ffmpeg start"
+ },
+ "exit": {
+  "code": 234,
+  "how_stopped": "exited on its own",
+  "end_ms": 151.1
+ }
+}

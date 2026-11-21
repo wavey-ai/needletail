@@ -1,0 +1,18 @@
+{
+  "name": "hls-player-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Real-player LL-HLS test harness: hls.js in headless Chromium, plus an ffmpeg wrapper.",
+  "scripts": {
+    "install-browser": "bash install-browser.sh"
+  },
+  "dependencies": {
+    "hls.js": "1.7.4",
+    "puppeteer-core": "25.18.1"
+  },
+  "devDependencies": {
+    "@puppeteer/browsers": "3.2.7",
+    "yauzl": "3.4.0"
+  }
+}

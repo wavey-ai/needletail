@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Measure the steal time of every Nanode of the lab under a 20-second
+"""Measure the steal time of every node of the lab under a 20-second
 processor burn, and name the nodes whose host takes more than a few percent.
 
-A shared-CPU instance only shows steal when it wants the processor, so an
-idle node looks clean. The burn makes the node ask for one full vCPU.
+The labs use dedicated-CPU plans only, which should show no steal. The burn
+checks that: an instance only shows steal when it wants the processor, so an
+idle node looks clean, and the burn makes the node ask for one full vCPU.
 `linode-small-mesh-lab.py replace NAME...` recreates a node on another host.
 """
 import pathlib

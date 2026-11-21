@@ -58,6 +58,11 @@ Current regional cache feature record:
 [2026-11-19 regional LL-HLS cache features on Linode](2026-11-19-regional-llhls-cache-features.md).
 The run passed demand replication, load balance, failover, drain, assignment and pinning for 4K video and lossless audio on Nanodes.
 
+Current edge hardening record:
+[2026-11-21 edge hardening](2026-11-21-edge-hardening.md).
+A fault campaign of about 80 scenarios against the regional cache in a local namespace lab and on Linode Nanodes, with what broke, what was fixed and what is open.
+Its strict result is `FAIL`: the scenarios that did not hold are listed in the record under "Still open".
+
 Current comparison with other networks, audio:
 [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail (RaptorQ FEC over UDP and LL-HLS), Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud, on dedicated-CPU instances only.

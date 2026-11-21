@@ -1,0 +1,2563 @@
+{
+ "harness": {
+  "name": "hlsjs-play",
+  "version": "0.1.0",
+  "label": "offline-vod-of-saved-parts-3001",
+  "url": "/files/vod.m3u8",
+  "seconds_requested": 14,
+  "started_utc": "2026-11-21T03:23:36.616Z",
+  "started_epoch_ms": 1795231417070,
+  "low_latency": false,
+  "recover_on_fatal": true,
+  "node": "v26.13.1",
+  "hostname": "localhost",
+  "uid": 1000,
+  "timestamps": "milliseconds since hls.loadSource() (wall clock: started_epoch_ms), unless a field name says otherwise"
+ },
+ "verdict": {
+  "result": "played",
+  "reason": "played 12.00 s of media in 12.04 s after first \"playing\" without a stall",
+  "notes": [
+   "the media ended at 12355.3 ms (not a live playlist, or EXT-X-ENDLIST appeared)"
+  ]
+ },
+ "browser": {
+  "executable": "/home/jamieb/wavey.ai/needletail-features/scripts/players/.browsers/chrome/linux-158.0.8127.36/chrome-linux64/chrome",
+  "headless": "new",
+  "version": "Chrome/158.0.8127.36",
+  "ld_library_path": "/home/jamieb/wavey.ai/needletail-features/scripts/players/.browsers/syslibs/lib",
+  "args": [
+   "--autoplay-policy=no-user-gesture-required",
+   "--disable-background-timer-throttling",
+   "--disable-backgrounding-occluded-windows",
+   "--disable-renderer-backgrounding",
+   "--disable-background-media-suspend",
+   "--disable-features=CalculateNativeWinOcclusion,MediaEngagementBypassAutoplayPolicies",
+   "--mute-audio",
+   "--no-proxy-server",
+   "--no-first-run",
+   "--no-default-browser-check",
+   "--disable-component-update",
+   "--disable-domain-reliability",
+   "--disable-sync",
+   "--disable-dev-shm-usage",
+   "--window-size=640,360",
+   "--ignore-certificate-errors"
+  ],
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+  "hardware_concurrency": 32
+ },
+ "hlsjs": {
+  "version": "1.7.4",
+  "config_passed": {
+   "lowLatencyMode": false,
+   "backBufferLength": 30,
+   "liveSyncOnStallIncrease": 0,
+   "enableWorker": true,
+   "cmcd": {
+    "sessionId": "2e75c218-6887-4e81-9005-cdbb12edb281",
+    "contentId": "offline-vod-of-saved-parts-3001",
+    "useHeaders": false
+   }
+  },
+  "effective_config": {
+   "lowLatencyMode": false,
+   "backBufferLength": 30,
+   "liveSyncOnStallIncrease": 0,
+   "liveSyncDurationCount": 3,
+   "liveMaxLatencyDurationCount": null,
+   "liveSyncDuration": null,
+   "liveMaxLatencyDuration": null,
+   "liveSyncMode": "edge",
+   "maxLiveSyncPlaybackRate": 1,
+   "maxBufferLength": 30,
+   "maxMaxBufferLength": 600,
+   "maxBufferSize": 60000000,
+   "maxBufferHole": 0.1,
+   "highBufferWatchdogPeriod": 2,
+   "nudgeOffset": 0.1,
+   "nudgeMaxRetry": 3,
+   "nudgeOnVideoHole": true,
+   "detectStallWithCurrentTimeMs": 1250,
+   "enableWorker": true,
+   "startPosition": -1,
+   "manifestLoadingTimeOut": 10000,
+   "levelLoadingTimeOut": 10000,
+   "fragLoadingTimeOut": 20000,
+   "startFragPrefetch": false,
+   "testBandwidth": true,
+   "progressive": false,
+   "preferManagedMediaSource": false,
+   "capLevelToPlayerSize": false,
+   "abrEwmaDefaultEstimate": 500000,
+   "startLevel": null,
+   "cmcd": {
+    "sessionId": "2e75c218-6887-4e81-9005-cdbb12edb281",
+    "contentId": "offline-vod-of-saved-parts-3001",
+    "useHeaders": false
+   },
+   "load_policies": {
+    "manifest": {
+     "default": {
+      "maxTimeToFirstByteMs": null,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 1,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "playlist": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "fragment": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 120000,
+      "timeoutRetry": {
+       "maxNumRetry": 4,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 6,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "steering": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 1,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    }
+   }
+  }
+ },
+ "codec_support": {
+  "media_source": {
+   "avc1_high_5.1_4k": {
+    "type": "video/mp4; codecs=\"avc1.640033\"",
+    "supported": true
+   },
+   "avc1_high_5.1_plus_aac": {
+    "type": "video/mp4; codecs=\"avc1.640033,mp4a.40.2\"",
+    "supported": true
+   },
+   "aac_lc": {
+    "type": "audio/mp4; codecs=\"mp4a.40.2\"",
+    "supported": true
+   },
+   "flac_lowercase": {
+    "type": "audio/mp4; codecs=\"flac\"",
+    "supported": true
+   },
+   "flac_fLaC": {
+    "type": "audio/mp4; codecs=\"fLaC\"",
+    "supported": true
+   },
+   "opus_lowercase": {
+    "type": "audio/mp4; codecs=\"opus\"",
+    "supported": true
+   },
+   "opus_Opus": {
+    "type": "audio/mp4; codecs=\"Opus\"",
+    "supported": true
+   }
+  },
+  "can_play_type": {
+   "avc1_high_5.1_4k": "probably",
+   "avc1_high_5.1_plus_aac": "probably",
+   "aac_lc": "probably",
+   "flac_lowercase": "probably",
+   "flac_fLaC": "probably",
+   "opus_lowercase": "probably",
+   "opus_Opus": "probably"
+  },
+  "media_capabilities": {
+   "avc1_4k24": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": false
+   },
+   "flac_48k_stereo": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": true
+   },
+   "opus_48k_stereo": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": true
+   }
+  },
+  "has_media_source": true,
+  "has_managed_media_source": false,
+  "hls_is_supported": true
+ },
+ "startup": {
+  "manifest_loading_ms": 16.8,
+  "manifest_parsed_ms": 27.1,
+  "manifest_loaded_ms": 35.4,
+  "first_level_loaded_ms": 43,
+  "media_attached_ms": 48.2,
+  "first_media_loaded_ms": 165.3,
+  "first_buffer_appended_ms": 250.9,
+  "loadedmetadata_ms": 252.6,
+  "loadeddata_ms": 314.9,
+  "canplay_ms": 314.9,
+  "playing_ms": 315,
+  "time_to_first_frame_ms": 314.9,
+  "time_to_playing_ms": 315,
+  "note": "first_frame_presented_ms is the first requestVideoFrameCallback (video only); loadeddata_ms is the element having the first frame/sample; playing_ms is the first \"playing\" event"
+ },
+ "playback": {
+  "wall_s": 14.021,
+  "wall_after_first_playing_s": 12.04,
+  "ended_ms": 12355.3,
+  "media_played_s": 12,
+  "media_played_ratio": 0.997,
+  "media_jumped_s": 0,
+  "played_ranges_s": 12,
+  "played_ranges": [
+   [
+    0,
+    12
+   ]
+  ],
+  "seeks": [],
+  "final": {
+   "ct": 12,
+   "ready_state": 4,
+   "paused": true,
+   "ended": true,
+   "buffer": {
+    "ranges": [
+     [
+      0,
+      12
+     ]
+    ],
+    "ahead": 0,
+    "end": 12
+   },
+   "quality": {
+    "total": 0,
+    "dropped": 0,
+    "corrupted": 0
+   },
+   "presented_frames": null,
+   "video_width": 0,
+   "video_height": 0,
+   "fatal_unrecovered": null,
+   "media_error": null,
+   "pathways": [
+    "."
+   ],
+   "pathway_priority": null,
+   "pathway": ".",
+   "level": 0,
+   "level_url": [
+    "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu"
+   ],
+   "latency_s": 12.335,
+   "target_latency_s": 3
+  },
+  "note": "media_played_s integrates currentTime advances that are compatible with playback (50 ms steps); jumps (seeks, gap skips) are in media_jumped_s"
+ },
+ "frames": {
+  "total": 0,
+  "dropped": 0,
+  "corrupted": 0,
+  "dropped_ratio": null,
+  "presented": null,
+  "decoded_fps_over_played_time": 0,
+  "presented_fps_over_played_time": null,
+  "video_width": 0,
+  "video_height": 0,
+  "note": "total/dropped/corrupted from getVideoPlaybackQuality(); presented from requestVideoFrameCallback metadata.presentedFrames"
+ },
+ "stalls": {
+  "threshold_ms": 200,
+  "total_stalled_ms": 0,
+  "total_note": "union of playhead stalls and element waiting->playing stalls after the first \"playing\"",
+  "playhead": [],
+  "playhead_total_ms": 0,
+  "element_waiting": [],
+  "element_waiting_total_ms": 0,
+  "hls_buffer_stalled": [],
+  "hls_buffer_stalled_total_ms": 0,
+  "hls_buffer_stalled_error_count": 0
+ },
+ "latency": {
+  "hls_latency_s": {
+   "n": 29,
+   "min": 12.334,
+   "p50": 12.334,
+   "p90": 12.335,
+   "p99": 12.335,
+   "max": 12.335,
+   "mean": 12.334
+  },
+  "hls_target_latency_s": {
+   "n": 29,
+   "min": 3,
+   "p50": 3,
+   "p90": 3,
+   "p99": 3,
+   "max": 3,
+   "mean": 3
+  },
+  "program_date_time_latency_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "note": "hls_latency_s is hls.latency (distance from the playlist live edge, per hls.js); program_date_time_latency_ms is Date.now() minus hls.playingDate and needs the reader clock to match the packager clock"
+ },
+ "buffer": {
+  "forward_buffer_s": {
+   "n": 29,
+   "min": 0,
+   "p50": 4.837,
+   "p90": 10.837,
+   "p99": 11.837,
+   "max": 11.837,
+   "mean": 5.038
+  }
+ },
+ "errors": {
+  "count": 0,
+  "fatal": 0,
+  "by_details": {},
+  "list": [],
+  "recoveries": []
+ },
+ "steering": {
+  "manifest": {
+   "url": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+   "levels": [
+    {
+     "url": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+     "bitrate": 0
+    }
+   ],
+   "audio_tracks": 0,
+   "content_steering": null,
+   "session_data": false,
+   "variable_list": null,
+   "is_media_playlist": false
+  },
+  "manifest_parsed": {
+   "first_level": 0,
+   "audio": false,
+   "video": false,
+   "alt_audio": false,
+   "levels_after_filter": 1
+  },
+  "levels": [
+   {
+    "index": 0,
+    "url": [
+     "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu"
+    ],
+    "uri": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+    "bitrate": 0,
+    "codecs": "",
+    "width": 0,
+    "height": 0,
+    "pathway_id": "."
+   }
+  ],
+  "level_events": [
+   {
+    "t": 33.2,
+    "event": "switching",
+    "level": 0,
+    "url": [
+     "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu"
+    ],
+    "pathway": "."
+   },
+   {
+    "t": 316.2,
+    "event": "switched",
+    "level": 0,
+    "url": [
+     "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu"
+    ],
+    "pathway": "."
+   }
+  ],
+  "pathway_events": [
+   {
+    "t": 27.4,
+    "event": "manifest_parsed",
+    "pathways": [
+     "."
+    ],
+    "priority": null,
+    "pathway": "."
+   }
+  ],
+  "steering_manifest_loads": [],
+  "steering_manifest_load_count": 0,
+  "final_pathway": ".",
+  "final_pathways": [
+   "."
+  ],
+  "final_pathway_priority": null,
+  "host_timeline": [
+   {
+    "t": 43.3,
+    "from": null,
+    "to": "127.0.0.1:43493",
+    "first_request": "playlist",
+    "pathway": "."
+   }
+  ],
+  "host_changes": 0,
+  "by_host": {
+   "127.0.0.1:43493": {
+    "parts": 0,
+    "segments": 60,
+    "init": 0,
+    "playlists": 1,
+    "steering": 0,
+    "bytes": 168720,
+    "first_ms": 43.2,
+    "last_ms": 487
+   }
+  }
+ },
+ "loads": {
+  "parts": 0,
+  "whole_segments": 60,
+  "init_segments": 0,
+  "part_bytes": 0,
+  "segment_bytes": 168720,
+  "part_load_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "part_ttfb_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "segment_load_ms": {
+   "n": 60,
+   "min": 1.9,
+   "p50": 2.4,
+   "p90": 3.1,
+   "p99": 4.2,
+   "max": 4.2,
+   "mean": 2.5
+  },
+  "part_duration_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "segment_duration_s": {
+   "n": 60,
+   "min": 0.2,
+   "p50": 0.2,
+   "p90": 0.2,
+   "p99": 0.2,
+   "max": 0.2,
+   "mean": 0.2
+  },
+  "buffer_codecs": [
+   {
+    "t": 246.2,
+    "audio": {
+     "codec": "opus",
+     "level_codec": "opus",
+     "container": "audio/mp4",
+     "id": "main"
+    },
+    "tracks": {}
+   }
+  ],
+  "fragments": [
+   {
+    "t": 165.3,
+    "kind": "segment",
+    "type": "main",
+    "sn": 0,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8324.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 0,
+    "independent": null,
+    "ttfb_ms": 3.9,
+    "load_ms": 4.2,
+    "pathway": "."
+   },
+   {
+    "t": 261,
+    "kind": "segment",
+    "type": "main",
+    "sn": 1,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8325.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 0.2,
+    "independent": null,
+    "ttfb_ms": 3.5,
+    "load_ms": 3.8,
+    "pathway": "."
+   },
+   {
+    "t": 265.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 2,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8326.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 0.4,
+    "independent": null,
+    "ttfb_ms": 2.4,
+    "load_ms": 2.6,
+    "pathway": "."
+   },
+   {
+    "t": 270.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 3,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8327.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 0.6,
+    "independent": null,
+    "ttfb_ms": 2.9,
+    "load_ms": 3.1,
+    "pathway": "."
+   },
+   {
+    "t": 274.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 4,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8328.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 0.8,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 278.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 5,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8329.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 1,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 282.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 6,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8330.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 1.2,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 287.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 7,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8331.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 1.4,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 291.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 8,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8332.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 1.6,
+    "independent": null,
+    "ttfb_ms": 2.4,
+    "load_ms": 2.6,
+    "pathway": "."
+   },
+   {
+    "t": 295.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 9,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8333.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 1.8,
+    "independent": null,
+    "ttfb_ms": 1.9,
+    "load_ms": 2,
+    "pathway": "."
+   },
+   {
+    "t": 299.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 10,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8334.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 2,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 303.6,
+    "kind": "segment",
+    "type": "main",
+    "sn": 11,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8335.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 2.2,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 307.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 12,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8336.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 2.4,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 310.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 13,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8337.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 2.6,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 314.3,
+    "kind": "segment",
+    "type": "main",
+    "sn": 14,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8338.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 2.8,
+    "independent": null,
+    "ttfb_ms": 2.1,
+    "load_ms": 2.2,
+    "pathway": "."
+   },
+   {
+    "t": 319.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 15,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8339.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 3,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 323.6,
+    "kind": "segment",
+    "type": "main",
+    "sn": 16,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8340.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 3.2,
+    "independent": null,
+    "ttfb_ms": 2.4,
+    "load_ms": 2.6,
+    "pathway": "."
+   },
+   {
+    "t": 327.3,
+    "kind": "segment",
+    "type": "main",
+    "sn": 17,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8341.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 3.4,
+    "independent": null,
+    "ttfb_ms": 2.1,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 331.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 18,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8342.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 3.6,
+    "independent": null,
+    "ttfb_ms": 3.1,
+    "load_ms": 3.2,
+    "pathway": "."
+   },
+   {
+    "t": 335.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 19,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8343.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 3.8,
+    "independent": null,
+    "ttfb_ms": 2.4,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 339.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 20,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8344.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 4,
+    "independent": null,
+    "ttfb_ms": 2.1,
+    "load_ms": 2.2,
+    "pathway": "."
+   },
+   {
+    "t": 342.5,
+    "kind": "segment",
+    "type": "main",
+    "sn": 21,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8345.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 4.2,
+    "independent": null,
+    "ttfb_ms": 2,
+    "load_ms": 2.2,
+    "pathway": "."
+   },
+   {
+    "t": 345.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 22,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8346.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 4.4,
+    "independent": null,
+    "ttfb_ms": 2,
+    "load_ms": 2.1,
+    "pathway": "."
+   },
+   {
+    "t": 349.3,
+    "kind": "segment",
+    "type": "main",
+    "sn": 23,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8347.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 4.6,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 352.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 24,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8348.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 4.8,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 356.4,
+    "kind": "segment",
+    "type": "main",
+    "sn": 25,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8349.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 5,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 359.6,
+    "kind": "segment",
+    "type": "main",
+    "sn": 26,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8350.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 5.2,
+    "independent": null,
+    "ttfb_ms": 1.9,
+    "load_ms": 2.1,
+    "pathway": "."
+   },
+   {
+    "t": 363.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 27,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8351.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 5.4,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 367,
+    "kind": "segment",
+    "type": "main",
+    "sn": 28,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8352.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 5.6,
+    "independent": null,
+    "ttfb_ms": 2.5,
+    "load_ms": 2.6,
+    "pathway": "."
+   },
+   {
+    "t": 370.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 29,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8353.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 5.8,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 375,
+    "kind": "segment",
+    "type": "main",
+    "sn": 30,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8354.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 6,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 378.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 31,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8355.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 6.2,
+    "independent": null,
+    "ttfb_ms": 2.4,
+    "load_ms": 2.6,
+    "pathway": "."
+   },
+   {
+    "t": 383,
+    "kind": "segment",
+    "type": "main",
+    "sn": 32,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8356.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 6.4,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.7,
+    "pathway": "."
+   },
+   {
+    "t": 388.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 33,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8357.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 6.6,
+    "independent": null,
+    "ttfb_ms": 2.9,
+    "load_ms": 3.3,
+    "pathway": "."
+   },
+   {
+    "t": 393.6,
+    "kind": "segment",
+    "type": "main",
+    "sn": 34,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8358.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 6.8,
+    "independent": null,
+    "ttfb_ms": 2.8,
+    "load_ms": 3.1,
+    "pathway": "."
+   },
+   {
+    "t": 398.5,
+    "kind": "segment",
+    "type": "main",
+    "sn": 35,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8359.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 7,
+    "independent": null,
+    "ttfb_ms": 2.7,
+    "load_ms": 2.9,
+    "pathway": "."
+   },
+   {
+    "t": 402.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 36,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8360.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 7.2,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 406.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 37,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8361.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 7.4,
+    "independent": null,
+    "ttfb_ms": 2.6,
+    "load_ms": 2.8,
+    "pathway": "."
+   },
+   {
+    "t": 410.5,
+    "kind": "segment",
+    "type": "main",
+    "sn": 38,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8362.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 7.6,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 414.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 39,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8363.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 7.8,
+    "independent": null,
+    "ttfb_ms": 2.7,
+    "load_ms": 2.9,
+    "pathway": "."
+   },
+   {
+    "t": 419.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 40,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8364.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 8,
+    "independent": null,
+    "ttfb_ms": 2.7,
+    "load_ms": 2.8,
+    "pathway": "."
+   },
+   {
+    "t": 423,
+    "kind": "segment",
+    "type": "main",
+    "sn": 41,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8365.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 8.2,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 426.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 42,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8366.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 8.4,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 430.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 43,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8367.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 8.6,
+    "independent": null,
+    "ttfb_ms": 2.5,
+    "load_ms": 2.7,
+    "pathway": "."
+   },
+   {
+    "t": 435,
+    "kind": "segment",
+    "type": "main",
+    "sn": 44,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8368.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 8.8,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 440.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 45,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8369.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 9,
+    "independent": null,
+    "ttfb_ms": 3.6,
+    "load_ms": 3.8,
+    "pathway": "."
+   },
+   {
+    "t": 443.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 46,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8370.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 9.2,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 447.5,
+    "kind": "segment",
+    "type": "main",
+    "sn": 47,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8371.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 9.4,
+    "independent": null,
+    "ttfb_ms": 2.1,
+    "load_ms": 2.3,
+    "pathway": "."
+   },
+   {
+    "t": 451.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 48,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8372.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 9.6,
+    "independent": null,
+    "ttfb_ms": 2.5,
+    "load_ms": 2.7,
+    "pathway": "."
+   },
+   {
+    "t": 454.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 49,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8373.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 9.8,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 458.4,
+    "kind": "segment",
+    "type": "main",
+    "sn": 50,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8374.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 10,
+    "independent": null,
+    "ttfb_ms": 2.2,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 461.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 51,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8375.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 10.2,
+    "independent": null,
+    "ttfb_ms": 2,
+    "load_ms": 2.2,
+    "pathway": "."
+   },
+   {
+    "t": 465.3,
+    "kind": "segment",
+    "type": "main",
+    "sn": 52,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8376.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 10.4,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.5,
+    "pathway": "."
+   },
+   {
+    "t": 468,
+    "kind": "segment",
+    "type": "main",
+    "sn": 53,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8377.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 10.6,
+    "independent": null,
+    "ttfb_ms": 1.7,
+    "load_ms": 1.9,
+    "pathway": "."
+   },
+   {
+    "t": 471.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 54,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8378.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 10.8,
+    "independent": null,
+    "ttfb_ms": 1.9,
+    "load_ms": 2.1,
+    "pathway": "."
+   },
+   {
+    "t": 474.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 55,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8379.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 11,
+    "independent": null,
+    "ttfb_ms": 1.9,
+    "load_ms": 2,
+    "pathway": "."
+   },
+   {
+    "t": 477.6,
+    "kind": "segment",
+    "type": "main",
+    "sn": 56,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8380.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 11.2,
+    "independent": null,
+    "ttfb_ms": 2.3,
+    "load_ms": 2.4,
+    "pathway": "."
+   },
+   {
+    "t": 480.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 57,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8381.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 11.4,
+    "independent": null,
+    "ttfb_ms": 1.8,
+    "load_ms": 1.9,
+    "pathway": "."
+   },
+   {
+    "t": 483.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 58,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8382.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 11.6,
+    "independent": null,
+    "ttfb_ms": 1.9,
+    "load_ms": 2.1,
+    "pathway": "."
+   },
+   {
+    "t": 487,
+    "kind": "segment",
+    "type": "main",
+    "sn": 59,
+    "part": null,
+    "host": "127.0.0.1:43493",
+    "file": "part8383.mp4",
+    "bytes": 2812,
+    "duration_s": 0.2,
+    "start_s": 11.8,
+    "independent": null,
+    "ttfb_ms": 2,
+    "load_ms": 2.1,
+    "pathway": "."
+   }
+  ]
+ },
+ "playlists": {
+  "requests": 0,
+  "loaded": 1,
+  "blocking_reload_used": false,
+  "with_hls_msn_and_part": 0,
+  "with_hls_msn_only": 0,
+  "without_directives": 1,
+  "hls_skip_used": false,
+  "with_hls_skip": 0,
+  "request_ms": {
+   "n": 1,
+   "min": 8.8,
+   "p50": 8.8,
+   "p90": 8.8,
+   "p99": 8.8,
+   "max": 8.8,
+   "mean": 8.8
+  },
+  "blocking_request_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "attribute_changes": [],
+  "attribute_changes_note": "as seen by hls.js, i.e. only between playlists it accepted; raw_checks covers every response",
+  "raw_checks": {
+   "note": "from the text of every Media Playlist response with status 200 (DevTools), per playlist URL without query",
+   "responses": 1,
+   "without_complete_segment": 0,
+   "events": [],
+   "events_dropped": 0,
+   "per_url": {
+    "http://127.0.0.1:43493/files/vod.m3u8": {
+     "responses": 1,
+     "without_complete_segment": 0,
+     "without_parts_or_segments": 0,
+     "target_duration_values": [
+      1
+     ],
+     "part_target_values": [],
+     "hold_back_values": [],
+     "part_hold_back_values": [],
+     "media_sequence_first": 0,
+     "media_sequence_last": 0,
+     "media_sequence_decreases": 0
+    }
+   }
+  },
+  "first_details": {
+   "url": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+   "live": false,
+   "type": "VOD",
+   "version": 7,
+   "start_sn": 0,
+   "end_sn": 59,
+   "fragments": 60,
+   "parts": 0,
+   "target_duration": 1,
+   "part_target": 0,
+   "hold_back": 0,
+   "part_hold_back": 0,
+   "can_block_reload": false,
+   "can_skip_until": 0,
+   "can_skip_dateranges": false,
+   "skipped_segments": 0,
+   "total_duration": 12,
+   "has_program_date_time": false,
+   "age_s": 0.023,
+   "edge_s": 12,
+   "last_part_sn": 59,
+   "last_part_index": -1,
+   "preload_hint": null,
+   "rendition_reports": 0,
+   "fragment_hint": false,
+   "updated": true,
+   "advanced": true,
+   "misses": 0,
+   "tune_in_goal": 0,
+   "drift": 1,
+   "parsing_error": null
+  },
+  "last_details": {
+   "url": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+   "live": false,
+   "type": "VOD",
+   "version": 7,
+   "start_sn": 0,
+   "end_sn": 59,
+   "fragments": 60,
+   "parts": 0,
+   "target_duration": 1,
+   "part_target": 0,
+   "hold_back": 0,
+   "part_hold_back": 0,
+   "can_block_reload": false,
+   "can_skip_until": 0,
+   "can_skip_dateranges": false,
+   "skipped_segments": 0,
+   "total_duration": 12,
+   "has_program_date_time": false,
+   "age_s": 0.024,
+   "edge_s": 12,
+   "last_part_sn": 59,
+   "last_part_index": -1,
+   "preload_hint": null,
+   "rendition_reports": 0,
+   "fragment_hint": false,
+   "updated": true,
+   "advanced": true,
+   "misses": 0,
+   "tune_in_goal": 0,
+   "drift": 1,
+   "parsing_error": null
+  },
+  "bodies": {
+   "multivariant_playlist": null,
+   "steering_manifest_first": null,
+   "media_playlist_first": {
+    "url": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231417120,
+    "text": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:0.200,\npart8324.mp4\n#EXTINF:0.200,\npart8325.mp4\n#EXTINF:0.200,\npart8326.mp4\n#EXTINF:0.200,\npart8327.mp4\n#EXTINF:0.200,\npart8328.mp4\n#EXTINF:0.200,\npart8329.mp4\n#EXTINF:0.200,\npart8330.mp4\n#EXTINF:0.200,\npart8331.mp4\n#EXTINF:0.200,\npart8332.mp4\n#EXTINF:0.200,\npart8333.mp4\n#EXTINF:0.200,\npart8334.mp4\n#EXTINF:0.200,\npart8335.mp4\n#EXTINF:0.200,\npart8336.mp4\n#EXTINF:0.200,\npart8337.mp4\n#EXTINF:0.200,\npart8338.mp4\n#EXTINF:0.200,\npart8339.mp4\n#EXTINF:0.200,\npart8340.mp4\n#EXTINF:0.200,\npart8341.mp4\n#EXTINF:0.200,\npart8342.mp4\n#EXTINF:0.200,\npart8343.mp4\n#EXTINF:0.200,\npart8344.mp4\n#EXTINF:0.200,\npart8345.mp4\n#EXTINF:0.200,\npart8346.mp4\n#EXTINF:0.200,\npart8347.mp4\n#EXTINF:0.200,\npart8348.mp4\n#EXTINF:0.200,\npart8349.mp4\n#EXTINF:0.200,\npart8350.mp4\n#EXTINF:0.200,\npart8351.mp4\n#EXTINF:0.200,\npart8352.mp4\n#EXTINF:0.200,\npart8353.mp4\n#EXTINF:0.200,\npart8354.mp4\n#EXTINF:0.200,\npart8355.mp4\n#EXTINF:0.200,\npart8356.mp4\n#EXTINF:0.200,\npart8357.mp4\n#EXTINF:0.200,\npart8358.mp4\n#EXTINF:0.200,\npart8359.mp4\n#EXTINF:0.200,\npart8360.mp4\n#EXTINF:0.200,\npart8361.mp4\n#EXTINF:0.200,\npart8362.mp4\n#EXTINF:0.200,\npart8363.mp4\n#EXTINF:0.200,\npart8364.mp4\n#EXTINF:0.200,\npart8365.mp4\n#EXTINF:0.200,\npart8366.mp4\n#EXTINF:0.200,\npart8367.mp4\n#EXTINF:0.200,\npart8368.mp4\n#EXTINF:0.200,\npart8369.mp4\n#EXTINF:0.200,\npart8370.mp4\n#EXTINF:0.200,\npart8371.mp4\n#EXTINF:0.200,\npart8372.mp4\n#EXTINF:0.200,\npart8373.mp4\n#EXTINF:0.200,\npart8374.mp4\n#EXTINF:0.200,\npart8375.mp4\n#EXTINF:0.200,\npart8376.mp4\n#EXTINF:0.200,\npart8377.mp4\n#EXTINF:0.200,\npart8378.mp4\n#EXTINF:0.200,\npart8379.mp4\n#EXTINF:0.200,\npart8380.mp4\n#EXTINF:0.200,\npart8381.mp4\n#EXTINF:0.200,\npart8382.mp4\n#EXTINF:0.200,\npart8383.mp4\n#EXT-X-ENDLIST\n"
+   },
+   "media_playlist_second": null,
+   "media_playlist_last": null
+  },
+  "reloads": [
+   {
+    "t": 43.3,
+    "host": "127.0.0.1:43493",
+    "level": 0,
+    "req_msn": null,
+    "req_part": null,
+    "req_skip": null,
+    "request_ms": 8.8,
+    "ttfb_ms": 8.5,
+    "start_sn": 0,
+    "end_sn": 59,
+    "segments": 60,
+    "parts": 0,
+    "last_part": null,
+    "target_duration": 1,
+    "edge_s": 12,
+    "age_s": 0.023,
+    "updated": true,
+    "bytes": 1847
+   }
+  ]
+ },
+ "network": {
+  "source": "Chrome DevTools Network domain",
+  "requests": 62,
+  "by_protocol": {
+   "http/1.1": 62
+  },
+  "by_status": {
+   "200": 62
+  },
+  "by_category": {
+   "media_playlist": {
+    "responses": 1,
+    "status": {
+     "200": 1
+    }
+   },
+   "init_segment": {
+    "responses": 1,
+    "status": {
+     "200": 1
+    }
+   },
+   "part": {
+    "responses": 60,
+    "status": {
+     "200": 60
+    }
+   }
+  },
+  "remote_addresses": {
+   "127.0.0.1:43493": 62
+  },
+  "non_2xx": [],
+  "failed": [],
+  "truncated": {},
+  "cors": {
+   "disable_web_security_used": false,
+   "page_origin": "http://127.0.0.1:43493",
+   "responses": [
+    {
+     "category": "media_playlist",
+     "host": "127.0.0.1:43493",
+     "sample_url": "http://127.0.0.1:43493/files/vod.m3u8?CMCD=cid%3D%22offline-vod-of-saved-parts-3001%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Csu",
+     "status": 200,
+     "protocol": "http/1.1",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": null,
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store",
+     "responses": 1,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "init_segment",
+     "host": "127.0.0.1:43493",
+     "sample_url": "http://127.0.0.1:43493/files/init.mp4?CMCD=br%3D0%2Ccid%3D%22offline-vod-of-saved-parts-3001%22%2Cd%3D0%2Cmtp%3D500%2Cot%3Di%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Cst%3Dv%2Csu",
+     "status": 200,
+     "protocol": "http/1.1",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": null,
+     "content_type": "video/mp4",
+     "cache_control": "no-store",
+     "responses": 1,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "part",
+     "host": "127.0.0.1:43493",
+     "sample_url": "http://127.0.0.1:43493/files/part8324.mp4?CMCD=bl%3D0%2Cbr%3D0%2Ccid%3D%22offline-vod-of-saved-parts-3001%22%2Cd%3D200%2Cdl%3D0%2Cmtp%3D500%2Cnor%3D%22part8325.mp4%22%2Crtp%3D0%2Csf%3Dh%2Csid%3D%222e75c218-6887-4e81-9005-cdbb12edb281%22%2Cst%3Dv%2Csu",
+     "status": 200,
+     "protocol": "http/1.1",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": null,
+     "content_type": "video/mp4",
+     "cache_control": "no-store",
+     "responses": 60,
+     "without_allow_origin": 0
+    }
+   ],
+   "responses_without_allow_origin": 0,
+   "blocked_by_cors": [],
+   "preflight_requests": 0,
+   "web_security_needed_to_be_disabled": "no: ran with web security on and no request was blocked by CORS"
+  }
+ },
+ "media_events": [
+  {
+   "t": 19.1,
+   "event": "play",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 19.4,
+   "event": "waiting",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 19.5,
+   "event": "loadstart",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 252.5,
+   "event": "resize",
+   "ct": 0,
+   "ready_state": 1,
+   "width": 0,
+   "height": 0
+  },
+  {
+   "t": 252.6,
+   "event": "loadedmetadata",
+   "ct": 0,
+   "ready_state": 1
+  },
+  {
+   "t": 314.9,
+   "event": "loadeddata",
+   "ct": 0.001,
+   "ready_state": 4
+  },
+  {
+   "t": 314.9,
+   "event": "canplay",
+   "ct": 0.001,
+   "ready_state": 4
+  },
+  {
+   "t": 315,
+   "event": "playing",
+   "ct": 0.001,
+   "ready_state": 4
+  },
+  {
+   "t": 316.3,
+   "event": "canplaythrough",
+   "ct": 0.002,
+   "ready_state": 4
+  },
+  {
+   "t": 12354.8,
+   "event": "pause",
+   "ct": 12,
+   "ready_state": 4
+  },
+  {
+   "t": 12355.3,
+   "event": "ended",
+   "ct": 12,
+   "ready_state": 4
+  }
+ ],
+ "samples": [
+  {
+   "t": 517.4,
+   "ct": 0.163,
+   "buffer_s": 11.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 9.498,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 1017.3,
+   "ct": 0.663,
+   "buffer_s": 11.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 9.997,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 1517,
+   "ct": 1.163,
+   "buffer_s": 10.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 10.497,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 2017.4,
+   "ct": 1.663,
+   "buffer_s": 10.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 10.997,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 2517.2,
+   "ct": 2.163,
+   "buffer_s": 9.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 3017.4,
+   "ct": 2.663,
+   "buffer_s": 9.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 3517.3,
+   "ct": 3.163,
+   "buffer_s": 8.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 4017,
+   "ct": 3.663,
+   "buffer_s": 8.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 4517,
+   "ct": 4.163,
+   "buffer_s": 7.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 5017.1,
+   "ct": 4.663,
+   "buffer_s": 7.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 5517,
+   "ct": 5.163,
+   "buffer_s": 6.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 6017.1,
+   "ct": 5.663,
+   "buffer_s": 6.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 6517.4,
+   "ct": 6.163,
+   "buffer_s": 5.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 7017.2,
+   "ct": 6.663,
+   "buffer_s": 5.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 7517.2,
+   "ct": 7.163,
+   "buffer_s": 4.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 8017.1,
+   "ct": 7.663,
+   "buffer_s": 4.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 8517.1,
+   "ct": 8.163,
+   "buffer_s": 3.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 9017,
+   "ct": 8.663,
+   "buffer_s": 3.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 9517,
+   "ct": 9.163,
+   "buffer_s": 2.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 10017,
+   "ct": 9.663,
+   "buffer_s": 2.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 10517,
+   "ct": 10.162,
+   "buffer_s": 1.838,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 11017.1,
+   "ct": 10.663,
+   "buffer_s": 1.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 11517.2,
+   "ct": 11.163,
+   "buffer_s": 0.837,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.334,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 12017.7,
+   "ct": 11.663,
+   "buffer_s": 0.337,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 12517.1,
+   "ct": 12,
+   "buffer_s": 0,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": true,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 13017.1,
+   "ct": 12,
+   "buffer_s": 0,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": true,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 13517.1,
+   "ct": 12,
+   "buffer_s": 0,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": true,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 14017.1,
+   "ct": 12,
+   "buffer_s": 0,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": true,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  },
+  {
+   "t": 14021,
+   "ct": 12,
+   "buffer_s": 0,
+   "buffered": [
+    [
+     0,
+     12
+    ]
+   ],
+   "ready_state": 4,
+   "paused": true,
+   "rate": 1,
+   "latency_s": 12.335,
+   "target_latency_s": 3,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 11,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 8550432,
+   "host": "127.0.0.1:43493",
+   "pathway": "."
+  }
+ ],
+ "hls_log": {
+  "lines": [],
+  "dropped": 0
+ },
+ "truncated_lists": {},
+ "play_rejected": null
+}

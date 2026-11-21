@@ -356,7 +356,8 @@ func cmdHLS(args []string) error {
 	flags.StringVar(&options.Save, "save", "", "keep every media unit in this directory")
 	flags.StringVar(&options.Query, "query", "", "query string added to playlist requests")
 	flags.DurationVar(&options.Timeout, "timeout", 1500*time.Millisecond, "time allowed for one media request")
-	flags.IntVar(&options.Window, "window", 1, "part requests in flight in chase mode (1 is needletail-reader's way)")
+	flags.IntVar(&options.Window, "window", 1, fmt.Sprintf("part requests in flight in chase mode, 1 to %d "+
+		"(1 is needletail-reader's way)", maxWindow))
 	flags.BoolVar(&options.HTTP3, "http3", false, "HTTP/3 instead of HTTP/2")
 	indexPath := flags.String("index", "", "clip index from `ntcmp index`")
 	audioIndexPath := flags.String("audio-index", "", "audio index: the parts are blocks of PCM")
@@ -369,6 +370,9 @@ func cmdHLS(args []string) error {
 	spread := flags.Int("spread-ms", 0, "start the viewers over this time")
 	skip := flags.Float64("skip-seconds", 0, "leave the first seconds out of the latency summary")
 	flags.Parse(args)
+	if options.Window < 1 || options.Window > maxWindow {
+		return fmt.Errorf("--window must be 1 to %d", maxWindow)
+	}
 	var index *Index
 	if *indexPath != "" {
 		var err error

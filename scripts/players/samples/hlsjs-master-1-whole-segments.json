@@ -1,0 +1,6216 @@
+{
+ "harness": {
+  "name": "hlsjs-play",
+  "version": "0.1.0",
+  "label": "hlsjs-master-1-whole-segments",
+  "url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=hlsjs-master-1-segments",
+  "seconds_requested": 40,
+  "started_utc": "2026-11-21T03:19:43.047Z",
+  "started_epoch_ms": 1795231183437,
+  "low_latency": false,
+  "recover_on_fatal": true,
+  "node": "v26.13.1",
+  "hostname": "localhost",
+  "uid": 0,
+  "timestamps": "milliseconds since hls.loadSource() (wall clock: started_epoch_ms), unless a field name says otherwise"
+ },
+ "verdict": {
+  "result": "stalled",
+  "reason": "1 playhead stall(s), 3 waiting->playing stall(s), 3 hls.js stall report(s); 772.7 ms stalled in total, longest 559.4 ms; played 37.80 s of media in 38.58 s after first \"playing\"",
+  "notes": [
+   "hls.js errors: levelEmptyError x1, bufferStalledError x3, levelLoadTimeOut x6"
+  ]
+ },
+ "browser": {
+  "executable": "/home/jamieb/wavey.ai/needletail-features/scripts/players/.browsers/chrome/linux-158.0.8127.36/chrome-linux64/chrome",
+  "headless": "new",
+  "version": "Chrome/158.0.8127.36",
+  "ld_library_path": "/home/jamieb/wavey.ai/needletail-features/scripts/players/.browsers/syslibs/lib",
+  "args": [
+   "--autoplay-policy=no-user-gesture-required",
+   "--disable-background-timer-throttling",
+   "--disable-backgrounding-occluded-windows",
+   "--disable-renderer-backgrounding",
+   "--disable-background-media-suspend",
+   "--disable-features=CalculateNativeWinOcclusion,MediaEngagementBypassAutoplayPolicies",
+   "--mute-audio",
+   "--no-proxy-server",
+   "--no-first-run",
+   "--no-default-browser-check",
+   "--disable-component-update",
+   "--disable-domain-reliability",
+   "--disable-sync",
+   "--disable-dev-shm-usage",
+   "--window-size=640,360",
+   "--ignore-certificate-errors",
+   "--no-sandbox"
+  ],
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+  "hardware_concurrency": 32
+ },
+ "hlsjs": {
+  "version": "1.7.4",
+  "config_passed": {
+   "lowLatencyMode": false,
+   "backBufferLength": 30,
+   "liveSyncOnStallIncrease": 0,
+   "enableWorker": true,
+   "cmcd": {
+    "sessionId": "e674ad47-9946-40c2-8215-74c200eda570",
+    "contentId": "hlsjs-master-1-whole-segments",
+    "useHeaders": false
+   }
+  },
+  "effective_config": {
+   "lowLatencyMode": false,
+   "backBufferLength": 30,
+   "liveSyncOnStallIncrease": 0,
+   "liveSyncDurationCount": 3,
+   "liveMaxLatencyDurationCount": null,
+   "liveSyncDuration": null,
+   "liveMaxLatencyDuration": null,
+   "liveSyncMode": "edge",
+   "maxLiveSyncPlaybackRate": 1,
+   "maxBufferLength": 30,
+   "maxMaxBufferLength": 600,
+   "maxBufferSize": 60000000,
+   "maxBufferHole": 0.1,
+   "highBufferWatchdogPeriod": 2,
+   "nudgeOffset": 0.1,
+   "nudgeMaxRetry": 3,
+   "nudgeOnVideoHole": true,
+   "detectStallWithCurrentTimeMs": 1250,
+   "enableWorker": true,
+   "startPosition": -1,
+   "manifestLoadingTimeOut": 10000,
+   "levelLoadingTimeOut": 10000,
+   "fragLoadingTimeOut": 20000,
+   "startFragPrefetch": false,
+   "testBandwidth": true,
+   "progressive": false,
+   "preferManagedMediaSource": false,
+   "capLevelToPlayerSize": false,
+   "abrEwmaDefaultEstimate": 500000,
+   "startLevel": null,
+   "cmcd": {
+    "sessionId": "e674ad47-9946-40c2-8215-74c200eda570",
+    "contentId": "hlsjs-master-1-whole-segments",
+    "useHeaders": false
+   },
+   "load_policies": {
+    "manifest": {
+     "default": {
+      "maxTimeToFirstByteMs": null,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 1,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "playlist": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "fragment": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 120000,
+      "timeoutRetry": {
+       "maxNumRetry": 4,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 6,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    },
+    "steering": {
+     "default": {
+      "maxTimeToFirstByteMs": 10000,
+      "maxLoadTimeMs": 20000,
+      "timeoutRetry": {
+       "maxNumRetry": 2,
+       "retryDelayMs": 0,
+       "maxRetryDelayMs": 0
+      },
+      "errorRetry": {
+       "maxNumRetry": 1,
+       "retryDelayMs": 1000,
+       "maxRetryDelayMs": 8000
+      }
+     }
+    }
+   }
+  }
+ },
+ "codec_support": {
+  "media_source": {
+   "avc1_high_5.1_4k": {
+    "type": "video/mp4; codecs=\"avc1.640033\"",
+    "supported": true
+   },
+   "avc1_high_5.1_plus_aac": {
+    "type": "video/mp4; codecs=\"avc1.640033,mp4a.40.2\"",
+    "supported": true
+   },
+   "aac_lc": {
+    "type": "audio/mp4; codecs=\"mp4a.40.2\"",
+    "supported": true
+   },
+   "flac_lowercase": {
+    "type": "audio/mp4; codecs=\"flac\"",
+    "supported": true
+   },
+   "flac_fLaC": {
+    "type": "audio/mp4; codecs=\"fLaC\"",
+    "supported": true
+   },
+   "opus_lowercase": {
+    "type": "audio/mp4; codecs=\"opus\"",
+    "supported": true
+   },
+   "opus_Opus": {
+    "type": "audio/mp4; codecs=\"Opus\"",
+    "supported": true
+   }
+  },
+  "can_play_type": {
+   "avc1_high_5.1_4k": "probably",
+   "avc1_high_5.1_plus_aac": "probably",
+   "aac_lc": "probably",
+   "flac_lowercase": "probably",
+   "flac_fLaC": "probably",
+   "opus_lowercase": "probably",
+   "opus_Opus": "probably"
+  },
+  "media_capabilities": {
+   "avc1_4k24": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": false
+   },
+   "flac_48k_stereo": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": true
+   },
+   "opus_48k_stereo": {
+    "supported": true,
+    "smooth": true,
+    "powerEfficient": true
+   }
+  },
+  "has_media_source": true,
+  "has_managed_media_source": false,
+  "hls_is_supported": true
+ },
+ "startup": {
+  "manifest_loading_ms": 15.6,
+  "media_attached_ms": 20.5,
+  "manifest_parsed_ms": 42.9,
+  "manifest_loaded_ms": 55,
+  "first_level_loaded_ms": 1115.5,
+  "first_media_loaded_ms": 1237.8,
+  "first_buffer_appended_ms": 1332.7,
+  "loadedmetadata_ms": 1337.9,
+  "first_frame_presented_ms": 1413.2,
+  "first_frame": {
+   "width": 3840,
+   "height": 2160,
+   "media_time": 0.042
+  },
+  "loadeddata_ms": 1444,
+  "canplay_ms": 1444.3,
+  "playing_ms": 1444.3,
+  "time_to_first_frame_ms": 1413.2,
+  "time_to_playing_ms": 1444.3,
+  "note": "first_frame_presented_ms is the first requestVideoFrameCallback (video only); loadeddata_ms is the element having the first frame/sample; playing_ms is the first \"playing\" event"
+ },
+ "playback": {
+  "wall_s": 40.02,
+  "wall_after_first_playing_s": 38.576,
+  "ended_ms": null,
+  "media_played_s": 37.803,
+  "media_played_ratio": 0.98,
+  "media_jumped_s": 0,
+  "played_ranges_s": 37.803,
+  "played_ranges": [
+   [
+    0,
+    37.803
+   ]
+  ],
+  "seeks": [],
+  "final": {
+   "ct": 37.803,
+   "ready_state": 4,
+   "paused": false,
+   "ended": false,
+   "buffer": {
+    "ranges": [
+     [
+      6.042,
+      40
+     ]
+    ],
+    "ahead": 2.197,
+    "end": 40
+   },
+   "quality": {
+    "total": 913,
+    "dropped": 4,
+    "corrupted": 0
+   },
+   "presented_frames": 905,
+   "video_width": 3840,
+   "video_height": 2160,
+   "fatal_unrecovered": null,
+   "media_error": null,
+   "pathways": [
+    "lon-edge-4",
+    "lon-edge-3",
+    "lon-edge-1"
+   ],
+   "pathway_priority": [
+    "lon-edge-4",
+    "lon-edge-3",
+    "lon-edge-1"
+   ],
+   "pathway": "lon-edge-4",
+   "level": 0,
+   "level_url": [
+    "https://10.90.0.24:19444/live/1/stream.m3u8"
+   ],
+   "latency_s": 3.327,
+   "target_latency_s": 6
+  },
+  "note": "media_played_s integrates currentTime advances that are compatible with playback (50 ms steps); jumps (seeks, gap skips) are in media_jumped_s"
+ },
+ "frames": {
+  "total": 913,
+  "dropped": 4,
+  "corrupted": 0,
+  "dropped_ratio": 0.0044,
+  "presented": 905,
+  "decoded_fps_over_played_time": 24.15,
+  "presented_fps_over_played_time": 23.94,
+  "video_width": 3840,
+  "video_height": 2160,
+  "note": "total/dropped/corrupted from getVideoPlaybackQuality(); presented from requestVideoFrameCallback metadata.presentedFrames"
+ },
+ "stalls": {
+  "threshold_ms": 200,
+  "total_stalled_ms": 772.7,
+  "total_note": "union of playhead stalls and element waiting->playing stalls after the first \"playing\"",
+  "playhead": [
+   {
+    "start_ms": 3365.8,
+    "duration_ms": 550,
+    "ct": 1.84,
+    "buffer_ahead_s": 0.035,
+    "ready_state": 2,
+    "resolved": true
+   }
+  ],
+  "playhead_total_ms": 550,
+  "element_waiting": [
+   {
+    "start_ms": 3323.3,
+    "duration_ms": 559.4,
+    "ct": 1.84,
+    "buffer_ahead_s": 0.035,
+    "resolved": true
+   },
+   {
+    "start_ms": 9908.8,
+    "duration_ms": 26.9,
+    "ct": 7.873,
+    "buffer_ahead_s": 2.127,
+    "resolved": true
+   },
+   {
+    "start_ms": 13895.8,
+    "duration_ms": 153.3,
+    "ct": 11.844,
+    "buffer_ahead_s": 0.031,
+    "resolved": true
+   }
+  ],
+  "element_waiting_total_ms": 739.6,
+  "hls_buffer_stalled": [
+   {
+    "start_ms": 3421.1,
+    "duration_ms": 499.2,
+    "ct": 1.84,
+    "buffer_ahead_s": 0.035,
+    "reports": 1,
+    "resolved": true
+   },
+   {
+    "start_ms": 9920.4,
+    "duration_ms": 99.7,
+    "ct": 7.873,
+    "buffer_ahead_s": 2.127,
+    "reports": 1,
+    "resolved": true
+   },
+   {
+    "start_ms": 13920.3,
+    "duration_ms": 199.7,
+    "ct": 11.844,
+    "buffer_ahead_s": 0.031,
+    "reports": 1,
+    "resolved": true
+   }
+  ],
+  "hls_buffer_stalled_total_ms": 798.6,
+  "hls_buffer_stalled_error_count": 3
+ },
+ "latency": {
+  "hls_latency_s": {
+   "n": 79,
+   "min": 2.297,
+   "p50": 3.343,
+   "p90": 3.497,
+   "p99": 3.505,
+   "max": 3.505,
+   "mean": 3.328
+  },
+  "hls_target_latency_s": {
+   "n": 79,
+   "min": 6,
+   "p50": 6,
+   "p90": 6,
+   "p99": 6,
+   "max": 6,
+   "mean": 6
+  },
+  "program_date_time_latency_ms": {
+   "n": 79,
+   "min": 2798,
+   "p50": 3583,
+   "p90": 3588,
+   "p99": 3589,
+   "max": 3589,
+   "mean": 3484
+  },
+  "note": "hls_latency_s is hls.latency (distance from the playlist live edge, per hls.js); program_date_time_latency_ms is Date.now() minus hls.playingDate and needs the reader clock to match the packager clock"
+ },
+ "buffer": {
+  "forward_buffer_s": {
+   "n": 79,
+   "min": 0.035,
+   "p50": 1.617,
+   "p90": 2.576,
+   "p99": 3.076,
+   "max": 3.076,
+   "mean": 1.562
+  }
+ },
+ "errors": {
+  "count": 10,
+  "fatal": 0,
+  "by_details": {
+   "levelEmptyError": 1,
+   "bufferStalledError": 3,
+   "levelLoadTimeOut": 6
+  },
+  "list": [
+   {
+    "t": 91,
+    "type": "networkError",
+    "details": "levelEmptyError",
+    "fatal": false,
+    "response_code": 200,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=br%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D5000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+    "host": "10.90.0.24:19444",
+    "reason": "No Segments found in Playlist",
+    "message": "No Segments found in Playlist",
+    "sn": null,
+    "part": null,
+    "level": 0,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 0,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3421.1,
+    "type": "mediaError",
+    "details": "bufferStalledError",
+    "fatal": false,
+    "response_code": null,
+    "response_text": null,
+    "url": null,
+    "host": null,
+    "reason": null,
+    "message": "Playback stalling at @1.840102 due to low buffer ({\"len\":0.034898000000000096,\"start\":0.009667,\"end\":1.875,\"buffered\":[{\"start\":0.009667,\"end\":1.875}],\"bufferedIndex\":0})",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": 0.035,
+    "error_action": {
+     "action": 0,
+     "flags": 0
+    },
+    "ct": 1.84,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 9920.4,
+    "type": "mediaError",
+    "details": "bufferStalledError",
+    "fatal": false,
+    "response_code": null,
+    "response_text": null,
+    "url": null,
+    "host": null,
+    "reason": null,
+    "message": "Playback stalling at @7.87275 due to low buffer ({\"len\":2.12725,\"start\":0.009667,\"end\":10,\"buffered\":[{\"start\":0.009667,\"end\":10}],\"bufferedIndex\":0})",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": 2.127,
+    "error_action": {
+     "action": 0,
+     "flags": 0
+    },
+    "ct": 7.873,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 12449.3,
+    "type": "networkError",
+    "details": "levelLoadTimeOut",
+    "fatal": false,
+    "response_code": 0,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=73&_HLS_part=8&CMCD=bl%3D2100%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D210500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "host": "10.90.0.24:19444",
+    "reason": null,
+    "message": "A network timeout occurred while loading level: 0 id: 0",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 10.398,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 13920.3,
+    "type": "mediaError",
+    "details": "bufferStalledError",
+    "fatal": false,
+    "response_code": null,
+    "response_text": null,
+    "url": null,
+    "host": null,
+    "reason": null,
+    "message": "Playback stalling at @11.844431 due to low buffer ({\"len\":0.030568999999999846,\"start\":0.009667,\"end\":11.875,\"buffered\":[{\"start\":0.009667,\"end\":11.875}],\"bufferedIndex\":0})",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": 0.031,
+    "error_action": {
+     "action": 0,
+     "flags": 0
+    },
+    "ct": 11.844,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 18487.6,
+    "type": "networkError",
+    "details": "levelLoadTimeOut",
+    "fatal": false,
+    "response_code": 0,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=76&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D190900%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "host": "10.90.0.24:19444",
+    "reason": null,
+    "message": "A network timeout occurred while loading level: 0 id: 0",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 16.271,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 22442.6,
+    "type": "networkError",
+    "details": "levelLoadTimeOut",
+    "fatal": false,
+    "response_code": 0,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=78&_HLS_part=8&CMCD=bl%3D2400%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D198300%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "host": "10.90.0.24:19444",
+    "reason": null,
+    "message": "A network timeout occurred while loading level: 0 id: 0",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 20.223,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 28489.3,
+    "type": "networkError",
+    "details": "levelLoadTimeOut",
+    "fatal": false,
+    "response_code": 0,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=81&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D209200%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "host": "10.90.0.24:19444",
+    "reason": null,
+    "message": "A network timeout occurred while loading level: 0 id: 0",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 26.273,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 32448.3,
+    "type": "networkError",
+    "details": "levelLoadTimeOut",
+    "fatal": false,
+    "response_code": 0,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=83&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D214000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "host": "10.90.0.24:19444",
+    "reason": null,
+    "message": "A network timeout occurred while loading level: 0 id: 0",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 30.23,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 38494.1,
+    "type": "networkError",
+    "details": "levelLoadTimeOut",
+    "fatal": false,
+    "response_code": 0,
+    "response_text": null,
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=86&_HLS_part=8&CMCD=bl%3D2000%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D202000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "host": "10.90.0.24:19444",
+    "reason": null,
+    "message": "A network timeout occurred while loading level: 0 id: 0",
+    "sn": null,
+    "part": null,
+    "level": null,
+    "buffer_s": null,
+    "error_action": {
+     "action": 5,
+     "flags": 0,
+     "retry": true,
+     "resolved": true
+    },
+    "ct": 36.277,
+    "pathway": "lon-edge-4"
+   }
+  ],
+  "recoveries": []
+ },
+ "steering": {
+  "manifest": {
+   "url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=hlsjs-master-1-segments&CMCD=cid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+   "levels": [
+    {
+     "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+     "bitrate": 17000000,
+     "codecs": "avc1.640033,mp4a.40.2",
+     "pathway_id": "lon-edge-4"
+    },
+    {
+     "url": "https://10.90.0.23:19444/live/1/stream.m3u8",
+     "bitrate": 17000000,
+     "codecs": "avc1.640033,mp4a.40.2",
+     "pathway_id": "lon-edge-3"
+    },
+    {
+     "url": "https://10.90.0.21:19444/live/1/stream.m3u8",
+     "bitrate": 17000000,
+     "codecs": "avc1.640033,mp4a.40.2",
+     "pathway_id": "lon-edge-1"
+    }
+   ],
+   "audio_tracks": 0,
+   "content_steering": {
+    "uri": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+    "pathwayId": "lon-edge-4"
+   },
+   "session_data": false,
+   "variable_list": null,
+   "is_media_playlist": false
+  },
+  "manifest_parsed": {
+   "first_level": 0,
+   "audio": true,
+   "video": true,
+   "alt_audio": false,
+   "levels_after_filter": 1
+  },
+  "levels": [
+   {
+    "index": 0,
+    "url": [
+     "https://10.90.0.24:19444/live/1/stream.m3u8"
+    ],
+    "uri": "https://10.90.0.24:19444/live/1/stream.m3u8",
+    "bitrate": 17000000,
+    "codecs": "avc1.640033,mp4a.40.2",
+    "video_codec": "avc1.640033",
+    "audio_codec": "mp4a.40.2",
+    "width": 0,
+    "height": 0,
+    "pathway_id": "lon-edge-4"
+   }
+  ],
+  "level_events": [
+   {
+    "t": 50.3,
+    "event": "switching",
+    "level": 0,
+    "url": [
+     "https://10.90.0.24:19444/live/1/stream.m3u8"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 1445,
+    "event": "switched",
+    "level": 0,
+    "url": [
+     "https://10.90.0.24:19444/live/1/stream.m3u8"
+    ],
+    "pathway": "lon-edge-4"
+   }
+  ],
+  "pathway_events": [
+   {
+    "t": 43,
+    "event": "manifest_parsed",
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": null,
+    "pathway": "lon-edge-4"
+   }
+  ],
+  "steering_manifest_loads": [
+   {
+    "t": 58.9,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=5000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": null,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 1064.7,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=5000000",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 2070.3,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=148554447",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3075.8,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=148554447",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 4081.3,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=179346722",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 5086.8,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=179346722",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 6091.9,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=201716437",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 7097.4,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=206402054",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 8102.2,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=206402054",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 9107.2,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=206402054",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 10112.3,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=210497843",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 11117.5,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215122109",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 12123,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215122109",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 13128.7,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215122109",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 14134.2,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=184495674",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 15139.8,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=184495674",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 16145.3,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=190887254",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 17150.9,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=194714401",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 18156.3,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=194714401",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 19162.8,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=194714401",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 20168.5,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=198298743",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 21173.9,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=201766946",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 22180.4,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=201766946",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 23185.6,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=201766946",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 24191.5,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=206172634",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 25196.5,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=206172634",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 26201.7,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=209168543",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 27207.4,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=211948577",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 28213.6,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=211948577",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 29219,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=211948577",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 30224.3,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=214048565",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 31230.2,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215479242",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 32235.7,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215479242",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 33241.9,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215479242",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 34247.2,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215905583",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 35252.5,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=215905583",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 36258.9,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=202023514",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 37264.6,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=204776070",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 38270.4,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=204776070",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 39275.5,
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=204776070",
+    "manifest": {
+     "VERSION": 1,
+     "TTL": 1,
+     "RELOAD-URI": "steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570",
+     "PATHWAY-PRIORITY": [
+      "lon-edge-4",
+      "lon-edge-3",
+      "lon-edge-1"
+     ]
+    },
+    "pathways": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "priority": [
+     "lon-edge-4",
+     "lon-edge-3",
+     "lon-edge-1"
+    ],
+    "pathway": "lon-edge-4"
+   }
+  ],
+  "steering_manifest_load_count": 40,
+  "final_pathway": "lon-edge-4",
+  "final_pathways": [
+   "lon-edge-4",
+   "lon-edge-3",
+   "lon-edge-1"
+  ],
+  "final_pathway_priority": [
+   "lon-edge-4",
+   "lon-edge-3",
+   "lon-edge-1"
+  ],
+  "host_timeline": [
+   {
+    "t": 1115.6,
+    "from": null,
+    "to": "10.90.0.24:19444",
+    "first_request": "playlist",
+    "pathway": "lon-edge-4"
+   }
+  ],
+  "host_changes": 0,
+  "by_host": {
+   "10.90.0.11:19444": {
+    "parts": 0,
+    "segments": 0,
+    "init": 0,
+    "playlists": 0,
+    "steering": 40,
+    "bytes": 0,
+    "first_ms": 58.9,
+    "last_ms": 39275.5
+   },
+   "10.90.0.24:19444": {
+    "parts": 0,
+    "segments": 20,
+    "init": 0,
+    "playlists": 55,
+    "steering": 0,
+    "bytes": 81952793,
+    "first_ms": 1115.6,
+    "last_ms": 39845.4
+   }
+  }
+ },
+ "loads": {
+  "parts": 0,
+  "whole_segments": 20,
+  "init_segments": 0,
+  "part_bytes": 0,
+  "segment_bytes": 81952793,
+  "part_load_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "part_ttfb_ms": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "segment_load_ms": {
+   "n": 20,
+   "min": 92.2,
+   "p50": 121.9,
+   "p90": 148.7,
+   "p99": 311.2,
+   "max": 311.2,
+   "mean": 138.9
+  },
+  "part_duration_s": {
+   "n": 0,
+   "min": null,
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "max": null,
+   "mean": null
+  },
+  "segment_duration_s": {
+   "n": 20,
+   "min": 1.872,
+   "p50": 2.08,
+   "p90": 2.08,
+   "p99": 2.08,
+   "max": 2.08,
+   "mean": 1.997
+  },
+  "buffer_codecs": [
+   {
+    "t": 1327.7,
+    "audiovideo": {
+     "codec": "mp4a.40.2,avc1.640033",
+     "container": "video/mp4",
+     "id": "main"
+    },
+    "tracks": {}
+   }
+  ],
+  "fragments": [
+   {
+    "t": 1237.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 67,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg67.mp4",
+    "bytes": 3879128,
+    "duration_s": 1.872,
+    "start_s": 0,
+    "independent": null,
+    "ttfb_ms": 7,
+    "load_ms": 103,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 3816.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 68,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg68.mp4",
+    "bytes": 4128917,
+    "duration_s": 2.08,
+    "start_s": 1.875,
+    "independent": null,
+    "ttfb_ms": 6.2,
+    "load_ms": 130.8,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 5896.4,
+    "kind": "segment",
+    "type": "main",
+    "sn": 69,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg69.mp4",
+    "bytes": 4579260,
+    "duration_s": 2.08,
+    "start_s": 3.958,
+    "independent": null,
+    "ttfb_ms": 6.4,
+    "load_ms": 127.7,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 7021.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 70,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg70.mp4",
+    "bytes": 3874788,
+    "duration_s": 1.872,
+    "start_s": 6.042,
+    "independent": null,
+    "ttfb_ms": 6.5,
+    "load_ms": 119.7,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 9872.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 71,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg71.mp4",
+    "bytes": 4648365,
+    "duration_s": 2.08,
+    "start_s": 7.917,
+    "independent": null,
+    "ttfb_ms": 7.3,
+    "load_ms": 148.2,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 10950.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 72,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg72.mp4",
+    "bytes": 3635138,
+    "duration_s": 1.872,
+    "start_s": 10,
+    "independent": null,
+    "ttfb_ms": 6.5,
+    "load_ms": 101.9,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 13975.5,
+    "kind": "segment",
+    "type": "main",
+    "sn": 73,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg73.mp4",
+    "bytes": 4195563,
+    "duration_s": 2.08,
+    "start_s": 11.875,
+    "independent": null,
+    "ttfb_ms": 6.5,
+    "load_ms": 305.3,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 15904.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 74,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg74.mp4",
+    "bytes": 4564766,
+    "duration_s": 2.08,
+    "start_s": 13.958,
+    "independent": null,
+    "ttfb_ms": 6.1,
+    "load_ms": 133,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 16998.4,
+    "kind": "segment",
+    "type": "main",
+    "sn": 75,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg75.mp4",
+    "bytes": 3679078,
+    "duration_s": 1.872,
+    "start_s": 16.042,
+    "independent": null,
+    "ttfb_ms": 8,
+    "load_ms": 110.1,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 19824.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 76,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg76.mp4",
+    "bytes": 3605112,
+    "duration_s": 2.08,
+    "start_s": 17.917,
+    "independent": null,
+    "ttfb_ms": 6.5,
+    "load_ms": 106.2,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 20934.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 77,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg77.mp4",
+    "bytes": 3225156,
+    "duration_s": 1.872,
+    "start_s": 20,
+    "independent": null,
+    "ttfb_ms": 7.2,
+    "load_ms": 92.2,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 23820.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 78,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg78.mp4",
+    "bytes": 3915521,
+    "duration_s": 2.08,
+    "start_s": 21.875,
+    "independent": null,
+    "ttfb_ms": 7.2,
+    "load_ms": 103.1,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 25895.4,
+    "kind": "segment",
+    "type": "main",
+    "sn": 79,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg79.mp4",
+    "bytes": 4309104,
+    "duration_s": 2.08,
+    "start_s": 23.958,
+    "independent": null,
+    "ttfb_ms": 8.2,
+    "load_ms": 127.6,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 27011.2,
+    "kind": "segment",
+    "type": "main",
+    "sn": 80,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg80.mp4",
+    "bytes": 4295722,
+    "duration_s": 1.872,
+    "start_s": 26.042,
+    "independent": null,
+    "ttfb_ms": 7,
+    "load_ms": 121.9,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 29891.3,
+    "kind": "segment",
+    "type": "main",
+    "sn": 81,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg81.mp4",
+    "bytes": 4435963,
+    "duration_s": 2.08,
+    "start_s": 27.917,
+    "independent": null,
+    "ttfb_ms": 18.3,
+    "load_ms": 137.4,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 30954.9,
+    "kind": "segment",
+    "type": "main",
+    "sn": 82,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg82.mp4",
+    "bytes": 3605852,
+    "duration_s": 1.872,
+    "start_s": 30,
+    "independent": null,
+    "ttfb_ms": 7.4,
+    "load_ms": 106.6,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 33870.8,
+    "kind": "segment",
+    "type": "main",
+    "sn": 83,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg83.mp4",
+    "bytes": 4435636,
+    "duration_s": 2.08,
+    "start_s": 31.875,
+    "independent": null,
+    "ttfb_ms": 19.1,
+    "load_ms": 148.7,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 36077.1,
+    "kind": "segment",
+    "type": "main",
+    "sn": 84,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg84.mp4",
+    "bytes": 4482074,
+    "duration_s": 2.08,
+    "start_s": 33.958,
+    "independent": null,
+    "ttfb_ms": 7,
+    "load_ms": 311.2,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 37014.7,
+    "kind": "segment",
+    "type": "main",
+    "sn": 85,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg85.mp4",
+    "bytes": 4206305,
+    "duration_s": 1.872,
+    "start_s": 36.042,
+    "independent": null,
+    "ttfb_ms": 7.8,
+    "load_ms": 120.5,
+    "pathway": "lon-edge-4"
+   },
+   {
+    "t": 39845.4,
+    "kind": "segment",
+    "type": "main",
+    "sn": 86,
+    "part": null,
+    "host": "10.90.0.24:19444",
+    "file": "seg86.mp4",
+    "bytes": 4251345,
+    "duration_s": 2.08,
+    "start_s": 37.917,
+    "independent": null,
+    "ttfb_ms": 7.2,
+    "load_ms": 122.4,
+    "pathway": "lon-edge-4"
+   }
+  ]
+ },
+ "playlists": {
+  "requests": 63,
+  "loaded": 55,
+  "blocking_reload_used": true,
+  "with_hls_msn_and_part": 55,
+  "with_hls_msn_only": 0,
+  "without_directives": 0,
+  "hls_skip_used": false,
+  "with_hls_skip": 0,
+  "request_ms": {
+   "n": 55,
+   "min": 4.1,
+   "p50": 6,
+   "p90": 1123.1,
+   "p99": 1599.4,
+   "max": 1599.4,
+   "mean": 310.1
+  },
+  "blocking_request_ms": {
+   "n": 55,
+   "min": 4.1,
+   "p50": 6,
+   "p90": 1123.1,
+   "p99": 1599.4,
+   "max": 1599.4,
+   "mean": 310.1
+  },
+  "attribute_changes": [],
+  "attribute_changes_note": "as seen by hls.js, i.e. only between playlists it accepted; raw_checks covers every response",
+  "raw_checks": {
+   "note": "from the text of every Media Playlist response with status 200 (DevTools), per playlist URL without query",
+   "responses": 56,
+   "without_complete_segment": 1,
+   "events": [
+    {
+     "t": 1122,
+     "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+     "kind": "target_duration_changed",
+     "from": 1,
+     "to": 2,
+     "segments": 1,
+     "parts": 11
+    },
+    {
+     "t": 1122,
+     "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+     "kind": "hold_back_changed",
+     "from": 3,
+     "to": 6,
+     "segments": 1,
+     "parts": 11
+    },
+    {
+     "t": 1122,
+     "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+     "kind": "independent_segments_changed",
+     "from": false,
+     "to": true,
+     "segments": 1,
+     "parts": 11
+    },
+    {
+     "t": 2477,
+     "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+     "kind": "media_sequence_decreased",
+     "from": 67,
+     "to": 66,
+     "segments": 2,
+     "parts": 28
+    },
+    {
+     "t": 4765,
+     "url": "https://10.90.0.24:19444/live/1/stream.m3u8",
+     "kind": "media_sequence_decreased",
+     "from": 66,
+     "to": 65,
+     "segments": 4,
+     "parts": 29
+    }
+   ],
+   "events_dropped": 0,
+   "per_url": {
+    "https://10.90.0.24:19444/live/1/stream.m3u8": {
+     "responses": 56,
+     "without_complete_segment": 1,
+     "without_parts_or_segments": 0,
+     "target_duration_values": [
+      1,
+      2
+     ],
+     "part_target_values": [
+      0.208
+     ],
+     "hold_back_values": [
+      3,
+      6
+     ],
+     "part_hold_back_values": [
+      0.624
+     ],
+     "media_sequence_first": 67,
+     "media_sequence_last": 82,
+     "media_sequence_decreases": 2
+    }
+   }
+  },
+  "first_details": {
+   "url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=br%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D5000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+   "live": true,
+   "type": null,
+   "version": 10,
+   "start_sn": 67,
+   "end_sn": 67,
+   "fragments": 1,
+   "parts": 11,
+   "target_duration": 2,
+   "part_target": 0.208,
+   "hold_back": 6,
+   "part_hold_back": 0.624,
+   "can_block_reload": true,
+   "can_skip_until": 0,
+   "can_skip_dateranges": false,
+   "skipped_segments": 0,
+   "total_duration": 2.288,
+   "has_program_date_time": true,
+   "age_s": 0.02,
+   "edge_s": 2.288,
+   "last_part_sn": 68,
+   "last_part_index": 1,
+   "preload_hint": {
+    "TYPE": "PART",
+    "URI": "part13566.mp4"
+   },
+   "rendition_reports": 0,
+   "fragment_hint": true,
+   "updated": true,
+   "advanced": true,
+   "misses": 0,
+   "tune_in_goal": 0,
+   "drift": 1,
+   "parsing_error": null
+  },
+  "last_details": {
+   "url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=bl%3D1800%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D204800%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+   "live": true,
+   "type": null,
+   "version": 10,
+   "start_sn": 82,
+   "end_sn": 86,
+   "fragments": 5,
+   "parts": 23,
+   "target_duration": 2,
+   "part_target": 0.208,
+   "hold_back": 6,
+   "part_hold_back": 0.624,
+   "can_block_reload": true,
+   "can_skip_until": 0,
+   "can_skip_dateranges": false,
+   "skipped_segments": 0,
+   "total_duration": 10.829,
+   "has_program_date_time": true,
+   "age_s": 0.002,
+   "edge_s": 40.829,
+   "last_part_sn": 87,
+   "last_part_index": 3,
+   "preload_hint": {
+    "TYPE": "PART",
+    "URI": "part13751.mp4"
+   },
+   "rendition_reports": 0,
+   "fragment_hint": true,
+   "updated": true,
+   "advanced": true,
+   "misses": 0,
+   "tune_in_goal": 0,
+   "drift": 0.996,
+   "parsing_error": null
+  },
+  "bodies": {
+   "multivariant_playlist": {
+    "url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=hlsjs-master-1-segments&CMCD=cid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231183497,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570\",PATHWAY-ID=\"lon-edge-4\"\n#EXT-X-STREAM-INF:BANDWIDTH=17000000,CODECS=\"avc1.640033,mp4a.40.2\",PATHWAY-ID=\"lon-edge-4\"\nhttps://10.90.0.24:19444/live/1/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=17000000,CODECS=\"avc1.640033,mp4a.40.2\",PATHWAY-ID=\"lon-edge-3\"\nhttps://10.90.0.23:19444/live/1/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=17000000,CODECS=\"avc1.640033,mp4a.40.2\",PATHWAY-ID=\"lon-edge-1\"\nhttps://10.90.0.21:19444/live/1/stream.m3u8\n"
+   },
+   "steering_manifest_first": {
+    "url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=5000000",
+    "status": 200,
+    "epoch_ms": 1795231183498,
+    "text": "{\"VERSION\":1,\"TTL\":1,\"RELOAD-URI\":\"steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570\",\"PATHWAY-PRIORITY\":[\"lon-edge-4\",\"lon-edge-3\",\"lon-edge-1\"]}"
+   },
+   "media_playlist_first": {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=br%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D5000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231183530,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:67\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.208\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.624,HOLD-BACK=3.000\n#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:19:43.168Z\n#EXT-X-PART:DURATION=0.208,URI=\"part13560.mp4\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part13561.mp4\"\n"
+   },
+   "media_playlist_second": {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=br%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D5000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+    "status": 200,
+    "epoch_ms": 1795231184559,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:67\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.208\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.624,HOLD-BACK=6.000\n#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:19:42.122Z\n#EXT-X-PART:DURATION=0.208,URI=\"part13555.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.208,URI=\"part13556.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13557.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13558.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13559.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13560.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13561.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13562.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13563.mp4\"\n#EXTINF:1.872,\nseg67.mp4\n#EXT-X-PART:DURATION=0.208,URI=\"part13564.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.208,URI=\"part13565.mp4\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part13566.mp4\"\n"
+   },
+   "media_playlist_last": {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=bl%3D1800%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D204800%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "status": 200,
+    "epoch_ms": 1795231223162,
+    "text": "#EXTM3U\n#EXT-X-VERSION:10\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:82\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.208\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.624,HOLD-BACK=6.000\n#EXT-X-PROGRAM-DATE-TIME:2026-11-21T03:20:12.082Z\n#EXTINF:1.872,\nseg82.mp4\n#EXTINF:2.080,\nseg83.mp4\n#EXTINF:2.080,\nseg84.mp4\n#EXT-X-PART:DURATION=0.208,URI=\"part13728.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.208,URI=\"part13729.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13730.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13731.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13732.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13733.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13734.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13735.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13736.mp4\"\n#EXTINF:1.872,\nseg85.mp4\n#EXT-X-PART:DURATION=0.208,URI=\"part13737.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.208,URI=\"part13738.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13739.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13740.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13741.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13742.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13743.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13744.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13745.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13746.mp4\"\n#EXTINF:2.080,\nseg86.mp4\n#EXT-X-PART:DURATION=0.208,URI=\"part13747.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.208,URI=\"part13748.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13749.mp4\"\n#EXT-X-PART:DURATION=0.208,URI=\"part13750.mp4\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part13751.mp4\"\n"
+   }
+  },
+  "reloads": [
+   {
+    "t": 1115.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 68,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 5.5,
+    "ttfb_ms": 5.3,
+    "start_sn": 67,
+    "end_sn": 67,
+    "segments": 1,
+    "parts": 11,
+    "last_part": [
+     68,
+     1
+    ],
+    "target_duration": 2,
+    "edge_s": 2.288,
+    "age_s": 0.019,
+    "updated": true,
+    "bytes": 917
+   },
+   {
+    "t": 2475.1,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 68,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 1374.2,
+    "ttfb_ms": 1373.9,
+    "start_sn": 66,
+    "end_sn": 67,
+    "segments": 2,
+    "parts": 28,
+    "last_part": [
+     68,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 3.747,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1757
+   },
+   {
+    "t": 2678.9,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 68,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 203.4,
+    "ttfb_ms": 203.2,
+    "start_sn": 66,
+    "end_sn": 67,
+    "segments": 2,
+    "parts": 29,
+    "last_part": [
+     68,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 3.955,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1804
+   },
+   {
+    "t": 2683.5,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 68,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.3,
+    "ttfb_ms": 4.1,
+    "start_sn": 66,
+    "end_sn": 67,
+    "segments": 2,
+    "parts": 29,
+    "last_part": [
+     68,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 3.955,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1804
+   },
+   {
+    "t": 3685.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 69,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 5.3,
+    "ttfb_ms": 4.9,
+    "start_sn": 66,
+    "end_sn": 68,
+    "segments": 3,
+    "parts": 23,
+    "last_part": [
+     69,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 4.787,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1547
+   },
+   {
+    "t": 4762.7,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 69,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1076.6,
+    "ttfb_ms": 1076.4,
+    "start_sn": 65,
+    "end_sn": 68,
+    "segments": 4,
+    "parts": 29,
+    "last_part": [
+     69,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 6.038,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1854
+   },
+   {
+    "t": 4767.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 69,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.6,
+    "ttfb_ms": 4.4,
+    "start_sn": 65,
+    "end_sn": 68,
+    "segments": 4,
+    "parts": 29,
+    "last_part": [
+     69,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 6.038,
+    "age_s": 0.006,
+    "updated": false,
+    "bytes": 1854
+   },
+   {
+    "t": 5768.8,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 70,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.7,
+    "ttfb_ms": 4.5,
+    "start_sn": 65,
+    "end_sn": 69,
+    "segments": 5,
+    "parts": 24,
+    "last_part": [
+     70,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 6.87,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1644
+   },
+   {
+    "t": 6902.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 70,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1132.7,
+    "ttfb_ms": 1132.5,
+    "start_sn": 65,
+    "end_sn": 70,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     71,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 8.122,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 8502.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 71,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 1599.4,
+    "ttfb_ms": 1599.1,
+    "start_sn": 66,
+    "end_sn": 70,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     71,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 9.789,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 8718.5,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 71,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 215.4,
+    "ttfb_ms": 215.1,
+    "start_sn": 66,
+    "end_sn": 70,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     71,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 9.997,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 8722.4,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 71,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.2,
+    "ttfb_ms": 4,
+    "start_sn": 66,
+    "end_sn": 70,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     71,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 9.997,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 9724.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 72,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 6,
+    "ttfb_ms": 5.8,
+    "start_sn": 67,
+    "end_sn": 71,
+    "segments": 5,
+    "parts": 23,
+    "last_part": [
+     72,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 10.829,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1597
+   },
+   {
+    "t": 10849.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 72,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1123.8,
+    "ttfb_ms": 1123.5,
+    "start_sn": 67,
+    "end_sn": 72,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     73,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 12.08,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 12455.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 73,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 5.6,
+    "ttfb_ms": 5.4,
+    "start_sn": 68,
+    "end_sn": 72,
+    "segments": 5,
+    "parts": 27,
+    "last_part": [
+     73,
+     7
+    ],
+    "target_duration": 2,
+    "edge_s": 13.539,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1785
+   },
+   {
+    "t": 12513.9,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 73,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 57.6,
+    "ttfb_ms": 57.4,
+    "start_sn": 68,
+    "end_sn": 72,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     73,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 13.747,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 12664.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 73,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 149.8,
+    "ttfb_ms": 149.5,
+    "start_sn": 68,
+    "end_sn": 72,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     73,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 13.955,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 12668.9,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 73,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 5,
+    "ttfb_ms": 4.9,
+    "start_sn": 68,
+    "end_sn": 72,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     73,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 13.955,
+    "age_s": 0.006,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 13670.5,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 74,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 5.1,
+    "ttfb_ms": 4.9,
+    "start_sn": 69,
+    "end_sn": 73,
+    "segments": 5,
+    "parts": 23,
+    "last_part": [
+     74,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 14.787,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1597
+   },
+   {
+    "t": 14765.7,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 74,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1095.8,
+    "ttfb_ms": 1095.6,
+    "start_sn": 69,
+    "end_sn": 73,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     74,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 16.038,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 14770.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 74,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.7,
+    "ttfb_ms": 4.5,
+    "start_sn": 69,
+    "end_sn": 73,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     74,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 16.038,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 15771.1,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 75,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.8,
+    "ttfb_ms": 4.6,
+    "start_sn": 70,
+    "end_sn": 74,
+    "segments": 5,
+    "parts": 24,
+    "last_part": [
+     75,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 16.87,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1644
+   },
+   {
+    "t": 16888.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 75,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1116.1,
+    "ttfb_ms": 1115.8,
+    "start_sn": 70,
+    "end_sn": 75,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     76,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 18.122,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 18501.7,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 76,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 13.4,
+    "ttfb_ms": 13.2,
+    "start_sn": 71,
+    "end_sn": 75,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     76,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 19.789,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 18713.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 76,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 210.7,
+    "ttfb_ms": 210.5,
+    "start_sn": 71,
+    "end_sn": 75,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     76,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 19.997,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 18717.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 76,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.5,
+    "ttfb_ms": 4.3,
+    "start_sn": 71,
+    "end_sn": 75,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     76,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 19.997,
+    "age_s": 0.006,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 19718.9,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 77,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 5.3,
+    "ttfb_ms": 5.1,
+    "start_sn": 72,
+    "end_sn": 76,
+    "segments": 5,
+    "parts": 23,
+    "last_part": [
+     77,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 20.829,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1597
+   },
+   {
+    "t": 20843,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 77,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1123.1,
+    "ttfb_ms": 1122.8,
+    "start_sn": 72,
+    "end_sn": 77,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     78,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 22.08,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 22450,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 78,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 5.9,
+    "ttfb_ms": 5.3,
+    "start_sn": 73,
+    "end_sn": 77,
+    "segments": 5,
+    "parts": 27,
+    "last_part": [
+     78,
+     7
+    ],
+    "target_duration": 2,
+    "edge_s": 23.539,
+    "age_s": 0.003,
+    "updated": true,
+    "bytes": 1785
+   },
+   {
+    "t": 22468.8,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 78,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 18.4,
+    "ttfb_ms": 18.2,
+    "start_sn": 73,
+    "end_sn": 77,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     78,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 23.747,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 22711.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 78,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 242.1,
+    "ttfb_ms": 241.8,
+    "start_sn": 73,
+    "end_sn": 77,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     78,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 23.955,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 22716,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 78,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.6,
+    "ttfb_ms": 4.4,
+    "start_sn": 73,
+    "end_sn": 77,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     78,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 23.955,
+    "age_s": 0.006,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 23717.5,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 79,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 5,
+    "ttfb_ms": 4.8,
+    "start_sn": 74,
+    "end_sn": 78,
+    "segments": 5,
+    "parts": 24,
+    "last_part": [
+     79,
+     4
+    ],
+    "target_duration": 2,
+    "edge_s": 24.995,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1644
+   },
+   {
+    "t": 24762.4,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 79,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1044.5,
+    "ttfb_ms": 1044.1,
+    "start_sn": 74,
+    "end_sn": 78,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     79,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 26.038,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 24766.7,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 79,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.9,
+    "ttfb_ms": 4.8,
+    "start_sn": 74,
+    "end_sn": 78,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     79,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 26.038,
+    "age_s": 0.006,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 25768.1,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 80,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.8,
+    "ttfb_ms": 4.6,
+    "start_sn": 75,
+    "end_sn": 79,
+    "segments": 5,
+    "parts": 24,
+    "last_part": [
+     80,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 26.87,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1644
+   },
+   {
+    "t": 26889.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 80,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1120.6,
+    "ttfb_ms": 1120.2,
+    "start_sn": 75,
+    "end_sn": 80,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     81,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 28.122,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 28508.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 81,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 17.9,
+    "ttfb_ms": 17.6,
+    "start_sn": 76,
+    "end_sn": 80,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     81,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 29.789,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 28748.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 81,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 239.8,
+    "ttfb_ms": 239.6,
+    "start_sn": 76,
+    "end_sn": 80,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     81,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 29.997,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 28752.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 81,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.1,
+    "ttfb_ms": 4,
+    "start_sn": 76,
+    "end_sn": 80,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     81,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 29.997,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 29754.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 82,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.8,
+    "ttfb_ms": 4.6,
+    "start_sn": 77,
+    "end_sn": 81,
+    "segments": 5,
+    "parts": 23,
+    "last_part": [
+     82,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 30.829,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1597
+   },
+   {
+    "t": 30848.5,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 82,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1093.7,
+    "ttfb_ms": 1093.5,
+    "start_sn": 77,
+    "end_sn": 82,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     83,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 32.08,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 32454.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 83,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 5.1,
+    "ttfb_ms": 4.9,
+    "start_sn": 78,
+    "end_sn": 82,
+    "segments": 5,
+    "parts": 27,
+    "last_part": [
+     83,
+     7
+    ],
+    "target_duration": 2,
+    "edge_s": 33.539,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1785
+   },
+   {
+    "t": 32472.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 83,
+    "req_part": 8,
+    "req_skip": null,
+    "request_ms": 17.4,
+    "ttfb_ms": 17.2,
+    "start_sn": 78,
+    "end_sn": 82,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     83,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 33.747,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 32716.4,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 83,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 243.8,
+    "ttfb_ms": 243.6,
+    "start_sn": 78,
+    "end_sn": 82,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     83,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 33.955,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 32720.5,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 83,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.4,
+    "ttfb_ms": 4.3,
+    "start_sn": 78,
+    "end_sn": 82,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     83,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 33.955,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 33722.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 84,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.8,
+    "ttfb_ms": 4.6,
+    "start_sn": 79,
+    "end_sn": 83,
+    "segments": 5,
+    "parts": 23,
+    "last_part": [
+     84,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 34.787,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1597
+   },
+   {
+    "t": 34759.1,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 84,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1036.8,
+    "ttfb_ms": 1036.6,
+    "start_sn": 79,
+    "end_sn": 83,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     84,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 36.038,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 34763.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 84,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.5,
+    "ttfb_ms": 4.3,
+    "start_sn": 79,
+    "end_sn": 83,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     84,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 36.038,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 35766,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 85,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 5.5,
+    "ttfb_ms": 5.3,
+    "start_sn": 80,
+    "end_sn": 84,
+    "segments": 5,
+    "parts": 24,
+    "last_part": [
+     85,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 36.87,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1644
+   },
+   {
+    "t": 36894.6,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 85,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 1127.7,
+    "ttfb_ms": 1127.6,
+    "start_sn": 80,
+    "end_sn": 85,
+    "segments": 6,
+    "parts": 20,
+    "last_part": [
+     86,
+     0
+    ],
+    "target_duration": 2,
+    "edge_s": 38.122,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1481
+   },
+   {
+    "t": 38511,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 86,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 15.9,
+    "ttfb_ms": 15.7,
+    "start_sn": 81,
+    "end_sn": 85,
+    "segments": 5,
+    "parts": 28,
+    "last_part": [
+     86,
+     8
+    ],
+    "target_duration": 2,
+    "edge_s": 39.789,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1832
+   },
+   {
+    "t": 38717.2,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 86,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 205.7,
+    "ttfb_ms": 205.4,
+    "start_sn": 81,
+    "end_sn": 85,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     86,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 39.997,
+    "age_s": 0.001,
+    "updated": true,
+    "bytes": 1879
+   },
+   {
+    "t": 38721.3,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 86,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.5,
+    "ttfb_ms": 4.4,
+    "start_sn": 81,
+    "end_sn": 85,
+    "segments": 5,
+    "parts": 29,
+    "last_part": [
+     86,
+     9
+    ],
+    "target_duration": 2,
+    "edge_s": 39.997,
+    "age_s": 0.005,
+    "updated": false,
+    "bytes": 1879
+   },
+   {
+    "t": 39723.4,
+    "host": "10.90.0.24:19444",
+    "level": 0,
+    "req_msn": 87,
+    "req_part": 9,
+    "req_skip": null,
+    "request_ms": 4.8,
+    "ttfb_ms": 4.6,
+    "start_sn": 82,
+    "end_sn": 86,
+    "segments": 5,
+    "parts": 23,
+    "last_part": [
+     87,
+     3
+    ],
+    "target_duration": 2,
+    "edge_s": 40.829,
+    "age_s": 0.002,
+    "updated": true,
+    "bytes": 1597
+   }
+  ]
+ },
+ "network": {
+  "source": "Chrome DevTools Network domain",
+  "requests": 118,
+  "by_protocol": {
+   "h2": 118
+  },
+  "by_status": {
+   "200": 118
+  },
+  "by_category": {
+   "multivariant_playlist": {
+    "responses": 1,
+    "status": {
+     "200": 1
+    }
+   },
+   "steering_manifest": {
+    "responses": 40,
+    "status": {
+     "200": 40
+    }
+   },
+   "media_playlist": {
+    "responses": 56,
+    "status": {
+     "200": 56
+    }
+   },
+   "init_segment": {
+    "responses": 1,
+    "status": {
+     "200": 1
+    }
+   },
+   "segment": {
+    "responses": 20,
+    "status": {
+     "200": 20
+    }
+   }
+  },
+  "remote_addresses": {
+   "10.90.0.11:19444": 41,
+   "10.90.0.24:19444": 77
+  },
+  "non_2xx": [],
+  "failed": [
+   {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=73&_HLS_part=8&CMCD=bl%3D2100%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D210500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "category": "media_playlist",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 12451
+   },
+   {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=76&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D190900%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "category": "media_playlist",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 18488
+   },
+   {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=78&_HLS_part=8&CMCD=bl%3D2400%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D198300%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "category": "media_playlist",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 22444
+   },
+   {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=81&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D209200%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "category": "media_playlist",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 28490
+   },
+   {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=83&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D214000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "category": "media_playlist",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 32449
+   },
+   {
+    "url": "https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=86&_HLS_part=8&CMCD=bl%3D2000%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D202000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll",
+    "category": "media_playlist",
+    "error_text": "net::ERR_ABORTED",
+    "canceled": true,
+    "blocked_reason": null,
+    "cors_error": null,
+    "t": 38495
+   }
+  ],
+  "truncated": {},
+  "cors": {
+   "disable_web_security_used": false,
+   "page_origin": "http://127.0.0.1:46283",
+   "responses": [
+    {
+     "category": "multivariant_playlist",
+     "host": "10.90.0.11:19444",
+     "sample_url": "https://10.90.0.11:19444/live/1/master.m3u8?sid=hlsjs-master-1-segments&CMCD=cid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store, max-age=0",
+     "responses": 1,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "steering_manifest",
+     "host": "10.90.0.11:19444",
+     "sample_url": "https://10.90.0.11:19444/live/1/steering.json?sid=e674ad47-9946-40c2-8215-74c200eda570&_HLS_pathway=lon-edge-4&_HLS_throughput=5000000",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/json",
+     "cache_control": "no-store, max-age=0",
+     "responses": 40,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "media_playlist",
+     "host": "10.90.0.24:19444",
+     "sample_url": "https://10.90.0.24:19444/live/1/stream.m3u8?CMCD=br%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D5000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "application/vnd.apple.mpegurl",
+     "cache_control": "no-store, max-age=0",
+     "responses": 56,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "init_segment",
+     "host": "10.90.0.24:19444",
+     "sample_url": "https://10.90.0.24:19444/live/1/init.mp4?CMCD=br%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cd%3D0%2Cmtp%3D5000%2Cot%3Di%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll%2Csu",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "video/mp4",
+     "cache_control": "no-store, max-age=0",
+     "responses": 1,
+     "without_allow_origin": 0
+    },
+    {
+     "category": "segment",
+     "host": "10.90.0.24:19444",
+     "sample_url": "https://10.90.0.24:19444/live/1/seg67.mp4?CMCD=bl%3D0%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cd%3D1872%2Cdl%3D0%2Cmtp%3D5000%2Cot%3Dav%2Crtp%3D85000%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll%2Csu%2Ctb%3D17000",
+     "status": 200,
+     "protocol": "h2",
+     "access_control_allow_origin": "*",
+     "access_control_expose_headers": "x-sequence, stream-id, etag, content-length, accept-ranges, content-range",
+     "content_type": "video/mp4",
+     "cache_control": null,
+     "responses": 20,
+     "without_allow_origin": 0
+    }
+   ],
+   "responses_without_allow_origin": 0,
+   "blocked_by_cors": [],
+   "preflight_requests": 0,
+   "web_security_needed_to_be_disabled": "no: ran with web security on and no request was blocked by CORS"
+  }
+ },
+ "media_events": [
+  {
+   "t": 18.4,
+   "event": "play",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 18.5,
+   "event": "waiting",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 18.7,
+   "event": "loadstart",
+   "ct": 0,
+   "ready_state": 0
+  },
+  {
+   "t": 1337.8,
+   "event": "resize",
+   "ct": 0,
+   "ready_state": 1,
+   "width": 3840,
+   "height": 2160
+  },
+  {
+   "t": 1337.9,
+   "event": "loadedmetadata",
+   "ct": 0,
+   "ready_state": 1
+  },
+  {
+   "t": 1444,
+   "event": "loadeddata",
+   "ct": 0.001,
+   "ready_state": 4
+  },
+  {
+   "t": 1444.3,
+   "event": "canplay",
+   "ct": 0.001,
+   "ready_state": 4
+  },
+  {
+   "t": 1444.3,
+   "event": "playing",
+   "ct": 0.001,
+   "ready_state": 4
+  },
+  {
+   "t": 1445.1,
+   "event": "canplaythrough",
+   "ct": 0.002,
+   "ready_state": 4
+  },
+  {
+   "t": 3323.3,
+   "event": "waiting",
+   "ct": 1.84,
+   "ready_state": 2
+  },
+  {
+   "t": 3882.6,
+   "event": "canplay",
+   "ct": 1.887,
+   "ready_state": 4
+  },
+  {
+   "t": 3882.7,
+   "event": "playing",
+   "ct": 1.887,
+   "ready_state": 4
+  },
+  {
+   "t": 3883.4,
+   "event": "canplaythrough",
+   "ct": 1.888,
+   "ready_state": 4
+  },
+  {
+   "t": 9908.8,
+   "event": "waiting",
+   "ct": 7.873,
+   "ready_state": 2
+  },
+  {
+   "t": 9935.7,
+   "event": "canplay",
+   "ct": 7.887,
+   "ready_state": 4
+  },
+  {
+   "t": 9935.7,
+   "event": "playing",
+   "ct": 7.887,
+   "ready_state": 4
+  },
+  {
+   "t": 9936,
+   "event": "canplaythrough",
+   "ct": 7.888,
+   "ready_state": 4
+  },
+  {
+   "t": 13895.8,
+   "event": "waiting",
+   "ct": 11.844,
+   "ready_state": 2
+  },
+  {
+   "t": 14049,
+   "event": "canplay",
+   "ct": 11.892,
+   "ready_state": 4
+  },
+  {
+   "t": 14049.1,
+   "event": "playing",
+   "ct": 11.893,
+   "ready_state": 4
+  },
+  {
+   "t": 14049.5,
+   "event": "canplaythrough",
+   "ct": 11.893,
+   "ready_state": 4
+  }
+ ],
+ "samples": [
+  {
+   "t": 516.2,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 5000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 1016,
+   "ct": 0,
+   "buffer_s": 0,
+   "buffered": [],
+   "ready_state": 0,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 0,
+   "target_latency_s": null,
+   "max_latency_s": 0,
+   "drift": 1,
+   "live_sync_position": null,
+   "pdt_latency_ms": null,
+   "dropped": 0,
+   "total_frames": 0,
+   "presented": null,
+   "bw_est": 5000000,
+   "host": null,
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 1516,
+   "ct": 0.033,
+   "buffer_s": 1.842,
+   "buffered": [
+    [
+     0.01,
+     1.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 2.297,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 0.003,
+   "pdt_latency_ms": 2799,
+   "dropped": 0,
+   "total_frames": 4,
+   "presented": 1,
+   "bw_est": 148554447,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 2015.9,
+   "ct": 0.533,
+   "buffer_s": 1.342,
+   "buffered": [
+    [
+     0.01,
+     1.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 2.679,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 0.003,
+   "pdt_latency_ms": 2799,
+   "dropped": 0,
+   "total_frames": 16,
+   "presented": 13,
+   "bw_est": 148554447,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 2516.2,
+   "ct": 1.033,
+   "buffer_s": 0.842,
+   "buffered": [
+    [
+     0.01,
+     1.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 2.758,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 0,
+   "pdt_latency_ms": 2798,
+   "dropped": 0,
+   "total_frames": 28,
+   "presented": 25,
+   "bw_est": 148554447,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 3015.8,
+   "ct": 1.533,
+   "buffer_s": 0.342,
+   "buffered": [
+    [
+     0.01,
+     1.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 2.76,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.015,
+   "live_sync_position": 0,
+   "pdt_latency_ms": 2799,
+   "dropped": 0,
+   "total_frames": 40,
+   "presented": 37,
+   "bw_est": 148554447,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 3515.9,
+   "ct": 1.84,
+   "buffer_s": 0.035,
+   "buffered": [
+    [
+     0.01,
+     1.875
+    ]
+   ],
+   "ready_state": 2,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 2.76,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.015,
+   "live_sync_position": 0,
+   "pdt_latency_ms": 2991,
+   "dropped": 0,
+   "total_frames": 44,
+   "presented": 44,
+   "bw_est": 148554447,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 4016.5,
+   "ct": 1.981,
+   "buffer_s": 1.977,
+   "buffered": [
+    [
+     0.01,
+     3.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 2.948,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.86,
+   "live_sync_position": 0.003,
+   "pdt_latency_ms": 3396,
+   "dropped": 2,
+   "total_frames": 52,
+   "presented": 46,
+   "bw_est": 179346722,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 4515.8,
+   "ct": 2.48,
+   "buffer_s": 1.478,
+   "buffered": [
+    [
+     0.01,
+     3.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.143,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.86,
+   "live_sync_position": 0.003,
+   "pdt_latency_ms": 3395,
+   "dropped": 2,
+   "total_frames": 64,
+   "presented": 59,
+   "bw_est": 179346722,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 5015.9,
+   "ct": 2.98,
+   "buffer_s": 0.978,
+   "buffered": [
+    [
+     0.01,
+     3.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.312,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 0.293,
+   "pdt_latency_ms": 3395,
+   "dropped": 2,
+   "total_frames": 76,
+   "presented": 70,
+   "bw_est": 179346722,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 5515.9,
+   "ct": 3.48,
+   "buffer_s": 0.478,
+   "buffered": [
+    [
+     0.01,
+     3.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.312,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 0.793,
+   "pdt_latency_ms": 3395,
+   "dropped": 2,
+   "total_frames": 88,
+   "presented": 82,
+   "bw_est": 179346722,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 6015.8,
+   "ct": 3.98,
+   "buffer_s": 2.061,
+   "buffered": [
+    [
+     0.01,
+     6.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.145,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.948,
+   "live_sync_position": 1.123,
+   "pdt_latency_ms": 3395,
+   "dropped": 2,
+   "total_frames": 100,
+   "presented": 94,
+   "bw_est": 201716438,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 6515.8,
+   "ct": 4.48,
+   "buffer_s": 1.561,
+   "buffered": [
+    [
+     0.01,
+     6.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.142,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.948,
+   "live_sync_position": 1.623,
+   "pdt_latency_ms": 3376,
+   "dropped": 2,
+   "total_frames": 112,
+   "presented": 107,
+   "bw_est": 201716438,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 7015.9,
+   "ct": 4.98,
+   "buffer_s": 1.061,
+   "buffered": [
+    [
+     0.01,
+     6.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.26,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.988,
+   "live_sync_position": 2.238,
+   "pdt_latency_ms": 3375,
+   "dropped": 2,
+   "total_frames": 124,
+   "presented": 118,
+   "bw_est": 201716438,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 7515.9,
+   "ct": 5.48,
+   "buffer_s": 2.436,
+   "buffered": [
+    [
+     0.01,
+     7.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.26,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.988,
+   "live_sync_position": 2.741,
+   "pdt_latency_ms": 3376,
+   "dropped": 2,
+   "total_frames": 136,
+   "presented": 131,
+   "bw_est": 206402054,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 8015.8,
+   "ct": 5.98,
+   "buffer_s": 1.936,
+   "buffered": [
+    [
+     0.01,
+     7.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.26,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.988,
+   "live_sync_position": 3.241,
+   "pdt_latency_ms": 3376,
+   "dropped": 2,
+   "total_frames": 148,
+   "presented": 143,
+   "bw_est": 206402054,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 8515.9,
+   "ct": 6.48,
+   "buffer_s": 1.436,
+   "buffered": [
+    [
+     0.01,
+     7.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.325,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.002,
+   "live_sync_position": 3.805,
+   "pdt_latency_ms": 3379,
+   "dropped": 2,
+   "total_frames": 160,
+   "presented": 154,
+   "bw_est": 206402054,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 9016.3,
+   "ct": 6.98,
+   "buffer_s": 0.936,
+   "buffered": [
+    [
+     0.01,
+     7.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.316,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 4.296,
+   "pdt_latency_ms": 3379,
+   "dropped": 2,
+   "total_frames": 172,
+   "presented": 167,
+   "bw_est": 206402054,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 9515.9,
+   "ct": 7.48,
+   "buffer_s": 0.436,
+   "buffered": [
+    [
+     0.01,
+     7.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.315,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 4.796,
+   "pdt_latency_ms": 3379,
+   "dropped": 2,
+   "total_frames": 184,
+   "presented": 179,
+   "bw_est": 206402054,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 10015.8,
+   "ct": 7.965,
+   "buffer_s": 2.035,
+   "buffered": [
+    [
+     0.01,
+     10
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.145,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.977,
+   "live_sync_position": 5.125,
+   "pdt_latency_ms": 3395,
+   "dropped": 2,
+   "total_frames": 196,
+   "presented": 190,
+   "bw_est": 210497843,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 10515.8,
+   "ct": 8.465,
+   "buffer_s": 1.535,
+   "buffered": [
+    [
+     0.01,
+     10
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.16,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.977,
+   "live_sync_position": 5.625,
+   "pdt_latency_ms": 3380,
+   "dropped": 2,
+   "total_frames": 208,
+   "presented": 202,
+   "bw_est": 210497843,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 11015.9,
+   "ct": 8.965,
+   "buffer_s": 2.91,
+   "buffered": [
+    [
+     0.01,
+     11.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.287,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.995,
+   "live_sync_position": 6.252,
+   "pdt_latency_ms": 3380,
+   "dropped": 2,
+   "total_frames": 220,
+   "presented": 214,
+   "bw_est": 215122109,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 11515.9,
+   "ct": 9.464,
+   "buffer_s": 2.411,
+   "buffered": [
+    [
+     0.01,
+     11.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.287,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.995,
+   "live_sync_position": 6.752,
+   "pdt_latency_ms": 3380,
+   "dropped": 2,
+   "total_frames": 232,
+   "presented": 226,
+   "bw_est": 215122109,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 12015.8,
+   "ct": 9.965,
+   "buffer_s": 1.91,
+   "buffered": [
+    [
+     0.01,
+     11.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.287,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.995,
+   "live_sync_position": 7.252,
+   "pdt_latency_ms": 3380,
+   "dropped": 2,
+   "total_frames": 244,
+   "presented": 238,
+   "bw_est": 215122109,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 12515.9,
+   "ct": 10.465,
+   "buffer_s": 1.41,
+   "buffered": [
+    [
+     0.01,
+     11.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.286,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.996,
+   "live_sync_position": 7.75,
+   "pdt_latency_ms": 3383,
+   "dropped": 2,
+   "total_frames": 256,
+   "presented": 250,
+   "bw_est": 215122109,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 13015.9,
+   "ct": 10.965,
+   "buffer_s": 0.91,
+   "buffered": [
+    [
+     0.01,
+     11.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.343,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.002,
+   "live_sync_position": 8.308,
+   "pdt_latency_ms": 3383,
+   "dropped": 2,
+   "total_frames": 268,
+   "presented": 262,
+   "bw_est": 215122109,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 13515.9,
+   "ct": 11.465,
+   "buffer_s": 0.41,
+   "buffered": [
+    [
+     0.01,
+     11.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.343,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.002,
+   "live_sync_position": 8.808,
+   "pdt_latency_ms": 3383,
+   "dropped": 2,
+   "total_frames": 280,
+   "presented": 274,
+   "bw_est": 215122109,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 14015.8,
+   "ct": 11.844,
+   "buffer_s": 2.114,
+   "buffered": [
+    [
+     0.01,
+     13.958
+    ]
+   ],
+   "ready_state": 2,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.171,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.986,
+   "live_sync_position": 9.138,
+   "pdt_latency_ms": 3503,
+   "dropped": 4,
+   "total_frames": 287,
+   "presented": 284,
+   "bw_est": 184495674,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 14515.8,
+   "ct": 12.319,
+   "buffer_s": 1.639,
+   "buffered": [
+    [
+     0.01,
+     13.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.319,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.986,
+   "live_sync_position": 9.638,
+   "pdt_latency_ms": 3563,
+   "dropped": 4,
+   "total_frames": 301,
+   "presented": 293,
+   "bw_est": 184495674,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 15015.8,
+   "ct": 12.819,
+   "buffer_s": 1.139,
+   "buffered": [
+    [
+     0.01,
+     13.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.469,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 10.289,
+   "pdt_latency_ms": 3563,
+   "dropped": 4,
+   "total_frames": 313,
+   "presented": 306,
+   "bw_est": 184495674,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 15515.8,
+   "ct": 13.319,
+   "buffer_s": 0.639,
+   "buffered": [
+    [
+     0.01,
+     13.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.47,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 10.789,
+   "pdt_latency_ms": 3563,
+   "dropped": 4,
+   "total_frames": 325,
+   "presented": 317,
+   "bw_est": 184495674,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 16015.9,
+   "ct": 13.819,
+   "buffer_s": 2.222,
+   "buffered": [
+    [
+     0.01,
+     16.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.301,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.987,
+   "live_sync_position": 11.121,
+   "pdt_latency_ms": 3563,
+   "dropped": 4,
+   "total_frames": 337,
+   "presented": 330,
+   "bw_est": 190887254,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 16515.9,
+   "ct": 14.319,
+   "buffer_s": 1.722,
+   "buffered": [
+    [
+     0.01,
+     16.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.302,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.987,
+   "live_sync_position": 11.621,
+   "pdt_latency_ms": 3562,
+   "dropped": 4,
+   "total_frames": 349,
+   "presented": 342,
+   "bw_est": 190887254,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 17022.8,
+   "ct": 14.806,
+   "buffer_s": 1.235,
+   "buffered": [
+    [
+     0.01,
+     16.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.433,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.997,
+   "live_sync_position": 12.262,
+   "pdt_latency_ms": 3582,
+   "dropped": 4,
+   "total_frames": 361,
+   "presented": 353,
+   "bw_est": 190887254,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 17516,
+   "ct": 15.299,
+   "buffer_s": 2.617,
+   "buffered": [
+    [
+     0.01,
+     17.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.455,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.997,
+   "live_sync_position": 12.755,
+   "pdt_latency_ms": 3582,
+   "dropped": 4,
+   "total_frames": 373,
+   "presented": 365,
+   "bw_est": 194714401,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 18015.9,
+   "ct": 15.799,
+   "buffer_s": 2.117,
+   "buffered": [
+    [
+     0.01,
+     17.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.455,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.997,
+   "live_sync_position": 13.255,
+   "pdt_latency_ms": 3582,
+   "dropped": 4,
+   "total_frames": 385,
+   "presented": 377,
+   "bw_est": 194714401,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 18515.8,
+   "ct": 16.299,
+   "buffer_s": 1.617,
+   "buffered": [
+    [
+     0.01,
+     17.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.505,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 13.804,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 397,
+   "presented": 389,
+   "bw_est": 194714401,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 19015.9,
+   "ct": 16.799,
+   "buffer_s": 1.117,
+   "buffered": [
+    [
+     0.01,
+     17.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.501,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 14.301,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 409,
+   "presented": 401,
+   "bw_est": 194714401,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 19518.4,
+   "ct": 17.302,
+   "buffer_s": 0.615,
+   "buffered": [
+    [
+     0.01,
+     17.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.501,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1.001,
+   "live_sync_position": 14.803,
+   "pdt_latency_ms": 3584,
+   "dropped": 4,
+   "total_frames": 421,
+   "presented": 413,
+   "bw_est": 194714401,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 20015.8,
+   "ct": 17.799,
+   "buffer_s": 2.2,
+   "buffered": [
+    [
+     0.01,
+     19.999
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.332,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.991,
+   "live_sync_position": 15.131,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 433,
+   "presented": 425,
+   "bw_est": 198298744,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 20515.9,
+   "ct": 18.299,
+   "buffer_s": 1.7,
+   "buffered": [
+    [
+     0.01,
+     19.999
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.331,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.991,
+   "live_sync_position": 15.631,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 445,
+   "presented": 437,
+   "bw_est": 198298744,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 21015.8,
+   "ct": 18.799,
+   "buffer_s": 3.076,
+   "buffered": [
+    [
+     0.01,
+     21.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.457,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.998,
+   "live_sync_position": 16.258,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 457,
+   "presented": 449,
+   "bw_est": 201766946,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 21515.9,
+   "ct": 19.299,
+   "buffer_s": 2.576,
+   "buffered": [
+    [
+     0.01,
+     21.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.458,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.998,
+   "live_sync_position": 16.758,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 469,
+   "presented": 461,
+   "bw_est": 201766946,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 22015.9,
+   "ct": 19.799,
+   "buffer_s": 2.076,
+   "buffered": [
+    [
+     0.01,
+     21.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.461,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.998,
+   "live_sync_position": 17.258,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 481,
+   "presented": 473,
+   "bw_est": 201766946,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 22515.9,
+   "ct": 20.299,
+   "buffer_s": 1.576,
+   "buffered": [
+    [
+     0.01,
+     21.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.496,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 17.795,
+   "pdt_latency_ms": 3588,
+   "dropped": 4,
+   "total_frames": 493,
+   "presented": 485,
+   "bw_est": 201766946,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 23015.8,
+   "ct": 20.799,
+   "buffer_s": 1.076,
+   "buffered": [
+    [
+     0.01,
+     21.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.461,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 18.261,
+   "pdt_latency_ms": 3588,
+   "dropped": 4,
+   "total_frames": 505,
+   "presented": 497,
+   "bw_est": 201766946,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 23515.8,
+   "ct": 21.299,
+   "buffer_s": 0.576,
+   "buffered": [
+    [
+     0.01,
+     21.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.464,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 18.761,
+   "pdt_latency_ms": 3588,
+   "dropped": 4,
+   "total_frames": 517,
+   "presented": 509,
+   "bw_est": 201766946,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 24015.8,
+   "ct": 21.799,
+   "buffer_s": 2.159,
+   "buffered": [
+    [
+     0.01,
+     23.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.499,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 19.298,
+   "pdt_latency_ms": 3588,
+   "dropped": 4,
+   "total_frames": 529,
+   "presented": 521,
+   "bw_est": 206172635,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 24515.9,
+   "ct": 22.299,
+   "buffer_s": 1.659,
+   "buffered": [
+    [
+     0.01,
+     23.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.499,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 19.798,
+   "pdt_latency_ms": 3584,
+   "dropped": 4,
+   "total_frames": 541,
+   "presented": 533,
+   "bw_est": 206172635,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 25015.8,
+   "ct": 22.799,
+   "buffer_s": 1.159,
+   "buffered": [
+    [
+     0.01,
+     23.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.494,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 20.293,
+   "pdt_latency_ms": 3584,
+   "dropped": 4,
+   "total_frames": 553,
+   "presented": 545,
+   "bw_est": 206172635,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 25515.9,
+   "ct": 23.299,
+   "buffer_s": 0.659,
+   "buffered": [
+    [
+     0.01,
+     23.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.494,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 20.793,
+   "pdt_latency_ms": 3584,
+   "dropped": 4,
+   "total_frames": 565,
+   "presented": 557,
+   "bw_est": 206172635,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 26015.9,
+   "ct": 23.799,
+   "buffer_s": 2.242,
+   "buffered": [
+    [
+     0.01,
+     26.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.321,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.993,
+   "live_sync_position": 21.124,
+   "pdt_latency_ms": 3584,
+   "dropped": 4,
+   "total_frames": 577,
+   "presented": 569,
+   "bw_est": 209168543,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 26515.9,
+   "ct": 24.299,
+   "buffer_s": 1.742,
+   "buffered": [
+    [
+     0.01,
+     26.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.324,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.993,
+   "live_sync_position": 21.624,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 589,
+   "presented": 581,
+   "bw_est": 209168543,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 27033.8,
+   "ct": 24.817,
+   "buffer_s": 1.224,
+   "buffered": [
+    [
+     0.01,
+     26.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.452,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.998,
+   "live_sync_position": 22.272,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 601,
+   "presented": 594,
+   "bw_est": 209168543,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 27515.9,
+   "ct": 25.299,
+   "buffer_s": 2.617,
+   "buffered": [
+    [
+     0.01,
+     27.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.454,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.998,
+   "live_sync_position": 22.754,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 613,
+   "presented": 605,
+   "bw_est": 211948578,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 28015.9,
+   "ct": 25.799,
+   "buffer_s": 2.118,
+   "buffered": [
+    [
+     0.01,
+     27.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.454,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.998,
+   "live_sync_position": 23.254,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 625,
+   "presented": 617,
+   "bw_est": 211948578,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 28515.9,
+   "ct": 26.299,
+   "buffer_s": 1.617,
+   "buffered": [
+    [
+     0.01,
+     27.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.499,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 23.798,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 637,
+   "presented": 629,
+   "bw_est": 211948578,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 29015.9,
+   "ct": 26.799,
+   "buffer_s": 1.117,
+   "buffered": [
+    [
+     0.01,
+     27.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.466,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 24.266,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 649,
+   "presented": 641,
+   "bw_est": 211948578,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 29515.9,
+   "ct": 27.299,
+   "buffer_s": 0.617,
+   "buffered": [
+    [
+     0.01,
+     27.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.466,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 24.766,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 661,
+   "presented": 653,
+   "bw_est": 211948578,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 30016,
+   "ct": 27.799,
+   "buffer_s": 2.201,
+   "buffered": [
+    [
+     0.01,
+     30
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.294,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.993,
+   "live_sync_position": 25.096,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 673,
+   "presented": 665,
+   "bw_est": 214048566,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 30515.9,
+   "ct": 28.299,
+   "buffer_s": 1.701,
+   "buffered": [
+    [
+     0.01,
+     30
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.297,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.993,
+   "live_sync_position": 25.596,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 685,
+   "presented": 677,
+   "bw_est": 214048566,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 31015.9,
+   "ct": 28.799,
+   "buffer_s": 3.076,
+   "buffered": [
+    [
+     0.01,
+     31.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.45,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 26.252,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 697,
+   "presented": 689,
+   "bw_est": 215479242,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 31515.9,
+   "ct": 29.299,
+   "buffer_s": 2.576,
+   "buffered": [
+    [
+     0.01,
+     31.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.452,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 26.752,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 709,
+   "presented": 701,
+   "bw_est": 215479242,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 32015.9,
+   "ct": 29.799,
+   "buffer_s": 2.076,
+   "buffered": [
+    [
+     0.01,
+     31.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.455,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 27.252,
+   "pdt_latency_ms": 3586,
+   "dropped": 4,
+   "total_frames": 721,
+   "presented": 713,
+   "bw_est": 215479242,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 32515.8,
+   "ct": 30.299,
+   "buffer_s": 1.576,
+   "buffered": [
+    [
+     0.01,
+     31.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.493,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 27.792,
+   "pdt_latency_ms": 3589,
+   "dropped": 4,
+   "total_frames": 733,
+   "presented": 725,
+   "bw_est": 215479242,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 33015.9,
+   "ct": 30.799,
+   "buffer_s": 1.076,
+   "buffered": [
+    [
+     0.01,
+     31.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.456,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 28.256,
+   "pdt_latency_ms": 3589,
+   "dropped": 4,
+   "total_frames": 745,
+   "presented": 737,
+   "bw_est": 215479242,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 33515.9,
+   "ct": 31.299,
+   "buffer_s": 0.576,
+   "buffered": [
+    [
+     0.01,
+     31.875
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.457,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 28.756,
+   "pdt_latency_ms": 3589,
+   "dropped": 4,
+   "total_frames": 757,
+   "presented": 749,
+   "bw_est": 215479242,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 34015.9,
+   "ct": 31.799,
+   "buffer_s": 2.159,
+   "buffered": [
+    [
+     0.01,
+     33.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.283,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.993,
+   "live_sync_position": 29.085,
+   "pdt_latency_ms": 3589,
+   "dropped": 4,
+   "total_frames": 769,
+   "presented": 761,
+   "bw_est": 215905583,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 34515.8,
+   "ct": 32.299,
+   "buffer_s": 1.659,
+   "buffered": [
+    [
+     0.01,
+     33.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.286,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.993,
+   "live_sync_position": 29.585,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 781,
+   "presented": 773,
+   "bw_est": 215905583,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 35015.8,
+   "ct": 32.799,
+   "buffer_s": 1.159,
+   "buffered": [
+    [
+     0.01,
+     33.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.497,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 30.296,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 793,
+   "presented": 785,
+   "bw_est": 215905583,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 35515.8,
+   "ct": 33.299,
+   "buffer_s": 0.659,
+   "buffered": [
+    [
+     0.01,
+     33.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.497,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 30.796,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 805,
+   "presented": 797,
+   "bw_est": 215905583,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 36016.1,
+   "ct": 33.799,
+   "buffer_s": 0.159,
+   "buffered": [
+    [
+     0.01,
+     33.958
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.323,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.995,
+   "live_sync_position": 31.122,
+   "pdt_latency_ms": 3583,
+   "dropped": 4,
+   "total_frames": 814,
+   "presented": 809,
+   "bw_est": 215905583,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 36515.8,
+   "ct": 34.299,
+   "buffer_s": 1.742,
+   "buffered": [
+    [
+     4.042,
+     36.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.326,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.995,
+   "live_sync_position": 31.626,
+   "pdt_latency_ms": 3582,
+   "dropped": 4,
+   "total_frames": 829,
+   "presented": 821,
+   "bw_est": 202023515,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 37038.3,
+   "ct": 34.822,
+   "buffer_s": 1.22,
+   "buffered": [
+    [
+     4.042,
+     36.042
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.446,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 32.271,
+   "pdt_latency_ms": 3581,
+   "dropped": 4,
+   "total_frames": 841,
+   "presented": 833,
+   "bw_est": 202023515,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 37515.8,
+   "ct": 35.299,
+   "buffer_s": 2.617,
+   "buffered": [
+    [
+     4.042,
+     37.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.449,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 32.749,
+   "pdt_latency_ms": 3582,
+   "dropped": 4,
+   "total_frames": 853,
+   "presented": 845,
+   "bw_est": 204776071,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 38015.8,
+   "ct": 35.799,
+   "buffer_s": 2.118,
+   "buffered": [
+    [
+     4.042,
+     37.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.449,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.999,
+   "live_sync_position": 33.249,
+   "pdt_latency_ms": 3582,
+   "dropped": 4,
+   "total_frames": 865,
+   "presented": 857,
+   "bw_est": 204776071,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 38515.8,
+   "ct": 36.299,
+   "buffer_s": 1.617,
+   "buffered": [
+    [
+     6.042,
+     37.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.496,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 33.795,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 877,
+   "presented": 869,
+   "bw_est": 204776071,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 39015.9,
+   "ct": 36.799,
+   "buffer_s": 1.117,
+   "buffered": [
+    [
+     6.042,
+     37.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.497,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 34.297,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 889,
+   "presented": 881,
+   "bw_est": 204776071,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 39515.8,
+   "ct": 37.299,
+   "buffer_s": 0.617,
+   "buffered": [
+    [
+     6.042,
+     37.917
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.497,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 1,
+   "live_sync_position": 34.797,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 901,
+   "presented": 893,
+   "bw_est": 204776071,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 40016.3,
+   "ct": 37.799,
+   "buffer_s": 2.201,
+   "buffered": [
+    [
+     6.042,
+     40
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.327,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.996,
+   "live_sync_position": 35.127,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 913,
+   "presented": 905,
+   "bw_est": 207236967,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  },
+  {
+   "t": 40019.8,
+   "ct": 37.803,
+   "buffer_s": 2.197,
+   "buffered": [
+    [
+     6.042,
+     40
+    ]
+   ],
+   "ready_state": 4,
+   "paused": false,
+   "rate": 1,
+   "latency_s": 3.327,
+   "target_latency_s": 6,
+   "max_latency_s": null,
+   "drift": 0.996,
+   "live_sync_position": 35.131,
+   "pdt_latency_ms": 3585,
+   "dropped": 4,
+   "total_frames": 913,
+   "presented": 905,
+   "bw_est": 207236967,
+   "host": "10.90.0.24:19444",
+   "pathway": "lon-edge-4"
+  }
+ ],
+ "hls_log": {
+  "lines": [
+   {
+    "t": 89.6,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelEmptyError\" in 1000ms"
+   },
+   {
+    "t": 1322.8,
+    "level": "warn",
+    "message": "[passthrough-remuxer]: fmp4 does not start with IDR: firstIDR 1/45 dropped: 1 start: 0.041666666666666664"
+   },
+   {
+    "t": 3420.9,
+    "level": "warn",
+    "message": "[gap-controller]: Playback stalling at @1.840102 due to low buffer ({\"len\":0.034898000000000096,\"start\":0.009667,\"end\":1.875,\"buffered\":[{\"start\":0.009667,\"end\":1.875}],\"bufferedIndex\":0})"
+   },
+   {
+    "t": 3421,
+    "level": "warn",
+    "message": "[latency-controller]: Stall detected, adjusting target latency"
+   },
+   {
+    "t": 9920.3,
+    "level": "warn",
+    "message": "[gap-controller]: Playback stalling at @7.87275 due to low buffer ({\"len\":2.12725,\"start\":0.009667,\"end\":10,\"buffered\":[{\"start\":0.009667,\"end\":10}],\"bufferedIndex\":0})"
+   },
+   {
+    "t": 9920.4,
+    "level": "warn",
+    "message": "[latency-controller]: Stall detected, adjusting target latency"
+   },
+   {
+    "t": 12447.8,
+    "level": "warn",
+    "message": "timeout while loading https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=73&_HLS_part=8&CMCD=bl%3D2100%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D210500%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll"
+   },
+   {
+    "t": 12448.2,
+    "level": "warn",
+    "message": "[playlist-loader]: A network timeout occurred while loading level: 0 id: 0"
+   },
+   {
+    "t": 12448.3,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelLoadTimeOut\" without delivery-directives"
+   },
+   {
+    "t": 13920.2,
+    "level": "warn",
+    "message": "[gap-controller]: Playback stalling at @11.844431 due to low buffer ({\"len\":0.030568999999999846,\"start\":0.009667,\"end\":11.875,\"buffered\":[{\"start\":0.009667,\"end\":11.875}],\"bufferedIndex\":0})"
+   },
+   {
+    "t": 13920.3,
+    "level": "warn",
+    "message": "[latency-controller]: Stall detected, adjusting target latency"
+   },
+   {
+    "t": 18486.7,
+    "level": "warn",
+    "message": "timeout while loading https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=76&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D190900%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll"
+   },
+   {
+    "t": 18486.7,
+    "level": "warn",
+    "message": "[playlist-loader]: A network timeout occurred while loading level: 0 id: 0"
+   },
+   {
+    "t": 18486.8,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelLoadTimeOut\" without delivery-directives"
+   },
+   {
+    "t": 22441.6,
+    "level": "warn",
+    "message": "timeout while loading https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=78&_HLS_part=8&CMCD=bl%3D2400%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D198300%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll"
+   },
+   {
+    "t": 22441.7,
+    "level": "warn",
+    "message": "[playlist-loader]: A network timeout occurred while loading level: 0 id: 0"
+   },
+   {
+    "t": 22441.8,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelLoadTimeOut\" without delivery-directives"
+   },
+   {
+    "t": 28488.2,
+    "level": "warn",
+    "message": "timeout while loading https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=81&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D209200%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll"
+   },
+   {
+    "t": 28488.3,
+    "level": "warn",
+    "message": "[playlist-loader]: A network timeout occurred while loading level: 0 id: 0"
+   },
+   {
+    "t": 28488.4,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelLoadTimeOut\" without delivery-directives"
+   },
+   {
+    "t": 32447.3,
+    "level": "warn",
+    "message": "timeout while loading https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=83&_HLS_part=8&CMCD=bl%3D2300%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D214000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll"
+   },
+   {
+    "t": 32447.3,
+    "level": "warn",
+    "message": "[playlist-loader]: A network timeout occurred while loading level: 0 id: 0"
+   },
+   {
+    "t": 32447.5,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelLoadTimeOut\" without delivery-directives"
+   },
+   {
+    "t": 38493,
+    "level": "warn",
+    "message": "timeout while loading https://10.90.0.24:19444/live/1/stream.m3u8?_HLS_msn=86&_HLS_part=8&CMCD=bl%3D2000%2Cbr%3D17000%2Ccid%3D%22hlsjs-master-1-whole-segments%22%2Cmtp%3D202000%2Cot%3Dm%2Csf%3Dh%2Csid%3D%22e674ad47-9946-40c2-8215-74c200eda570%22%2Cst%3Dll"
+   },
+   {
+    "t": 38493.1,
+    "level": "warn",
+    "message": "[playlist-loader]: A network timeout occurred while loading level: 0 id: 0"
+   },
+   {
+    "t": 38493.2,
+    "level": "warn",
+    "message": "[level-controller]: Retrying playlist loading 1/2 after \"levelLoadTimeOut\" without delivery-directives"
+   }
+  ],
+  "dropped": 0
+ },
+ "truncated_lists": {},
+ "play_rejected": null
+}
