@@ -1277,7 +1277,8 @@ def player_hlsjs_drain(ctx):
               f"{summary.get('reason')}; errors {summary.get('errors')}")
     drained_host = lab.node(edge)["public_ipv4"]
     hosts = summary.get("hosts") or []
-    moved = [item for item in hosts if item[0] > 22000 and drained_host not in str(item[1])]
+    # The clock of the player starts about a second after that of the scenario.
+    moved = [item for item in hosts if item[0] > 18000 and drained_host not in str(item[1])]
     ctx.check("the media came from another cache within 5 s of the drain",
               bool(moved) and moved[0][0] <= 27500, f"hosts over time: {hosts}")
 
