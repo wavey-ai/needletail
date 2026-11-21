@@ -770,8 +770,12 @@ def edge_cpu_starved(ctx):
     jobs, edge = with_edge_fault(
         ctx, lambda edge: lab.set_limits(edge, cpu_percent=20),
         lambda edge: lab.set_limits(edge, cpu_percent=100), "edge limited to 20% of a CPU",
-        fault_at=14, heal_at=34, seconds=60)
+        fault_at=14, heal_at=34, seconds=60, steering=True)
     clean(ctx, jobs)
+    # The entry point takes a cache that falls behind out of the steering
+    # manifest. A reader that follows the manifest, as a player does, moves.
+    ctx.gap = ("a starved edge serves late until the entry point sees it fall behind: its "
+               "readers stall for the seconds in between")
 
 
 @scenario("distributor-cpu-starved", "node",
@@ -797,11 +801,17 @@ def distributor_cpu_starved(ctx):
           "reader stalls.")
 def edge_out_of_memory(ctx):
     def squeeze(edge):
-        current = lab.read_cgroup(lab.cgroup_dir(edge)).get("memory_bytes", 0) // (1 << 20)
+        stats = lab.read_cgroup(lab.cgroup_dir(edge))
+        current = stats.get("memory_bytes", 0) // (1 << 20)
+        # What the service cannot give back: its anonymous memory. A limit
+        # just under the whole use only made the kernel drop file pages.
+        anonymous = stats.get("memory_anon_bytes", stats.get("memory_bytes", 0)) // (1 << 20)
         ctx.measure("memory_mb_before", current)
+        ctx.measure("anonymous_mb_before", anonymous)
+        limit = max(12, anonymous - 16)
         # Leave less than the copy needs: the next seconds of parts do not fit.
-        lab.set_limits(edge, memory_mb=max(24, current - 20))
-        ctx.conditions["memory limit of the edge, MB"] = max(24, current - 20)
+        lab.set_limits(edge, memory_mb=limit)
+        ctx.conditions["memory limit of the edge, MB"] = limit
 
     def revive(edge):
         ctx.measure("killed_by_kernel", lab.service_pid(edge) is None)
