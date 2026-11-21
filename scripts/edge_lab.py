@@ -401,6 +401,18 @@ def set_link(name: str, network: str, up: bool) -> None:
     run_in(None, ["ip", "link", "set", outside, "up" if up else "down"])
 
 
+def join_load(host: str, entry: str, stream: int, rate: int, seconds: int,
+              label: str) -> dict:
+    """New playback sessions at an entry point at a fixed rate, from a reader
+    host. Returns the report of `join-load.py`."""
+    out = run_in(host, [
+        "python3", str(ROOT / "scripts" / "join-load.py"),
+        "--url", f"{base_url(entry)}/live/{stream}/master.m3u8",
+        "--rate", str(rate), "--seconds", str(seconds), "--ca", str(ca_file()),
+        "--server-name", SERVER_NAME, "--label", label], timeout=seconds + 120)
+    return json.loads(out.strip().splitlines()[-1])
+
+
 def node_log(name: str) -> str:
     """The log of the service of one node."""
     try:

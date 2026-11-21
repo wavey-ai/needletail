@@ -1477,6 +1477,56 @@ def capacity_scales(ctx):
               f"{served['two-edges']} readers on two edges, {served['four-edges']} on four")
 
 
+@scenario("capacity-entry-joins", "capacity",
+          "How many new sessions a second does one entry point assign, on one vCPU? A "
+          "join is a new TLS connection and a request for the Multivariant Playlist with "
+          "a session of its own.",
+          "The entry point answers every join at 100 a second with a 99th percentile "
+          "under 500 ms, and the readers that play are not disturbed. The highest rate "
+          "that it answers in that time is reported.")
+def capacity_entry_joins(ctx):
+    entry = "lon-dist-a"
+    present = play(ctx, 150, video=1, audio=3)
+    time.sleep(8)
+    rows, failures = [], 0
+    for rate in (50, 100, 200, 400, 800, 1600):
+        used, throttled = cpu_seconds(entry)
+        began = time.time()
+        try:
+            result = lab.join_load("lon-readers-2", entry, AUDIO, rate, 12, f"r{rate}")
+        except (lab.LabError, ValueError, RuntimeError) as error:
+            result = {"joins": 0, "answered": 0, "error": str(error)[:160]}
+        elapsed = time.time() - began
+        used_after, throttled_after = cpu_seconds(entry)
+        row = {"offered_per_second": rate,
+               "entry_cpu_percent": round((used_after - used) / elapsed * 100, 1),
+               "entry_throttled_s": round(throttled_after - throttled, 2),
+               **{key: result.get(key) for key in (
+                   "joins", "answered", "answered_200", "answered_per_second", "by_answer",
+                   "join_ms_p50", "join_ms_p99", "started_late_ms_p99", "error")}}
+        row["in_time"] = bool(result.get("joins")) \
+            and result.get("answered") == result.get("joins") \
+            and (result.get("join_ms_p99") or 1e9) < 500 \
+            and (result.get("started_late_ms_p99") or 0) < 250
+        rows.append(row)
+        ctx.event(f"{rate} joins a second: {row['answered']} of {row['joins']} answered, "
+                  f"p99 {row['join_ms_p99']} ms, entry CPU {row['entry_cpu_percent']}%, "
+                  f"{row['by_answer']}")
+        failures = 0 if row["in_time"] else failures + 1
+        if failures >= 2:
+            break
+        time.sleep(4)
+    in_time = [row["offered_per_second"] for row in rows if row["in_time"]]
+    ctx.measure("steps", rows)
+    ctx.measure("joins_per_second_answered_in_time", max(in_time, default=0))
+    ctx.check("every join at 100 a second is answered, with a 99th percentile under 500 ms",
+              100 in in_time, [(row["offered_per_second"], row["answered"], row["joins"],
+                                row["join_ms_p99"]) for row in rows])
+    ctx.wait_readers()
+    for job in present:
+        ctx.expect_clean(job, f"{job.key} during the joins")
+
+
 # =========================================================== real instances
 
 @scenario("clock-skew-edge", "node",

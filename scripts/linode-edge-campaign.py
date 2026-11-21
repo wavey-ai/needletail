@@ -74,7 +74,7 @@ LINODE_SET = [
     "distributors-both-kill", "relay-primary-kill", "contributor-freeze",
     "mesh-loss-0.5pct", "mesh-loss-2pct", "mesh-burst-loss", "mesh-partition-edge-heals",
     "edge-cpu-starved", "edge-out-of-memory", "region-lost",
-    "capacity-scales-with-edges",
+    "capacity-scales-with-edges", "capacity-entry-joins",
     "clock-skew-edge", "clock-skew-distributor", "clock-skew-contributor", "edge-disk-full",
     "player-hlsjs-4k", "player-hlsjs-cache-kill", "player-hlsjs-region-lost",
     "ladder-playlists", "ladder-hlsjs-browser-cap", "ladder-hlsjs-browser-steps",
@@ -246,6 +246,18 @@ def heal_all() -> None:
     common.parallel(nodes, lambda item: common.ssh(
         item, "tc qdisc del dev eth1 root 2>/dev/null; tc qdisc del dev ifb0 root "
               "2>/dev/null; true", check=False))
+
+
+def join_load(host: str, entry: str, stream: int, rate: int, seconds: int,
+              label: str) -> dict:
+    node = by_name(host)
+    common.rsync_to(node, [str(HERE / "join-load.py")], "/usr/local/bin/")
+    text = common.ssh_text(node, (
+        f"ulimit -n 65536; python3 /usr/local/bin/join-load.py "
+        f"--url {lab.base_url(entry)}/live/{stream}/master.m3u8 --rate {rate} "
+        f"--seconds {seconds} --ca {REMOTE_CA} --server-name {lab.SERVER_NAME} "
+        f"--label {label} --processes 4"), check=True, timeout=seconds + 180)
+    return json.loads(text.strip().splitlines()[-1])
 
 
 def node_log(name: str) -> str:
@@ -615,6 +627,7 @@ def install() -> pathlib.Path:
     lab.heal_all = heal_all
     lab.set_clock = set_clock
     lab.node_log = node_log
+    lab.join_load = join_load
     lab.fill_disk = fill_disk
     lab.set_wan = unavailable
     lab.set_wan_link = unavailable
