@@ -51,7 +51,9 @@ steps/STEP/HOST/..., scale.json, summary.md).
                                            the deploy --set arguments
   scale-run.py plan [--topology-only] [--steps ...] [--cost FILE]
                                            allocation, capacity, duration and
-                                           cost of each step
+                                           cost of each step, and the whole
+                                           run's schedule against the watchdog
+                                           (phases-scale.json "schedule")
   scale-run.py prepare --audio-file PATH   the loop and the readers' indexes
   scale-run.py run --config pcm-1 [--name NAME] [--steps 100,1000,5000,10000]
   scale-run.py analyse NAME|DIR            aggregate a run's files again
@@ -503,7 +505,7 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
                udp_mbps: float | None = None,
                inbound_gbps: float = LOAD_HOST_INBOUND_GBPS, fit: bool = False,
                lk_per_sfu: int = 0, joins: int = 0, joins_from: int = 0,
-               over_headroom: bool = False) -> dict:
+               over_headroom: bool = False, joins_at: list[int] | None = None) -> dict:
     """The allocation, the capacity check, the edges' planned egress and the
     duration of every step. With `fit` (a lab whose account refused some
     listener hosts: `listeners_missing` in its state, or --fit-hosts), each
@@ -518,7 +520,8 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
     on the listener hosts and in their load. `joins`: new listeners of each
     lane on each view host in the joins phase of every step of `joins_from`
     listeners or more, whose hold is then long enough for them
-    (joins_seconds)."""
+    (joins_seconds); with `joins_at`, only in the steps asked as one of
+    those (`requested`, the step as given before any fit)."""
     regions = regions_of(state, standby)
     if not regions:
         raise ValueError("the lab has no region with an edge and a listener host")
@@ -536,6 +539,8 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
     out["livekit_per_sfu"] = lk_per_sfu
     out["joins"] = {"per_lane": joins, "from": joins_from,
                     "hold_s": joins_seconds(joins) if joins else 0.0}
+    if joins_at is not None:
+        out["joins"]["at"] = sorted(joins_at)
     # A region whose listener hosts were all refused keeps its share of
     # every step, run by nobody: the others' mix stays the one planned.
     idle = idle_regions(state, standby)
@@ -597,7 +602,10 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
         biggest = max((item["udp"] + item["hls"] for by_host in alloc.values()
                        for item in by_host.values()), default=0)
         step_ramp, step_hold = step_seconds(biggest, ramp, hold)
-        step_joins = joins if joins and total >= joins_from else 0
+        if joins_at is not None:
+            step_joins = joins if joins and requested in joins_at else 0
+        else:
+            step_joins = joins if joins and total >= joins_from else 0
         if step_joins:
             step_hold = max(step_hold, joins_seconds(step_joins))
         udp = sum(item["udp"] for by_host in alloc.values() for item in by_host.values())
@@ -3119,7 +3127,9 @@ def build_plan(args: argparse.Namespace, lab: dict, standby: list[str]) -> dict:
                       fit=fit_wanted(args, lab), lk_per_sfu=getattr(args, "lk_per_sfu", 0) or 0,
                       joins=getattr(args, "joins", 0) or 0,
                       joins_from=getattr(args, "joins_from", 0) or 0,
-                      over_headroom=bool(getattr(args, "force", False)))
+                      over_headroom=bool(getattr(args, "force", False)),
+                      joins_at=(parse_steps(args.joins_at) if getattr(args, "joins_at", None)
+                                else None))
 
 
 def fit_line(plan: dict) -> str | None:
@@ -3159,6 +3169,112 @@ def idle_line(plan: dict) -> str | None:
             "or bring the lab down and up again without it (--without-sites)")
 
 
+def load_schedule(path: str | pathlib.Path) -> dict | None:
+    """The whole run's schedule of a phase plan file ("schedule"), or None."""
+    return json.loads(pathlib.Path(path).read_text()).get("schedule")
+
+
+def plan_schedule(spec: dict, lab: dict, topology_standby: list[str],
+                  cost: str | None = None) -> dict:
+    """Minutes and cost of the whole run, block by block, from lab up to
+    `down`, against the watchdog. A block is fixed ("minutes": bring-up,
+    the referee's windows, deploy restarts, reruns, teardown) or one
+    `scale-run.py run` ("run": its arguments, parsed by this tool's own
+    `run` parser; "edges_per_region" or "second_curve" for the edges in
+    service), timed by this plan on `lab`: ramps, holds, the joins where
+    asked and each step's overhead, or a phase group's held step. The
+    limit is the watchdog's hours less the 5 minutes by which its `down`
+    starts early and the margin before that (`margin_min`)."""
+    parser = build_parser()
+    nodes = list(lab["nodes"].values())
+    standby_base = [name for name in topology_standby if name in lab["nodes"]]
+    blocks = []
+    livekit_gb = 0.0
+    for block in spec["blocks"]:
+        row = {"name": block["name"], "what": block.get("what", "")}
+        if "run" not in block:
+            row.update(kind="fixed", minutes=float(block["minutes"]))
+            blocks.append(row)
+            continue
+        args = parser.parse_args(["run", *shlex.split(block["run"])])
+        if args.phase_plan and not pathlib.Path(args.phase_plan).is_absolute():
+            args.phase_plan = str(ROOT / args.phase_plan)
+        if cost and not args.cost:
+            args.cost = cost
+        phases = phase_setup(args)
+        resolve_defaults(args)
+        standby = standby_for(nodes, [] if block.get("second_curve") else standby_base,
+                              block.get("edges_per_region"))
+        plan = build_plan(args, lab, standby)
+        estimate = cost_estimate(lab, plan)
+        livekit_gb += estimate["livekit_public_gb"]
+        undrivable = [step["listeners"] for step in plan["steps"] if not step["drivable"]]
+        row.update(kind="phases" if phases else "ramp", run=block["run"],
+                   minutes=round(plan["seconds"] / 60, 2), config=args.config,
+                   steps=[step["listeners"] for step in plan["steps"]],
+                   joins_steps=[step["listeners"] for step in plan["steps"] if step["joins"]],
+                   livekit_public_gb=estimate["livekit_public_gb"],
+                   undrivable=undrivable, force=bool(args.force))
+        blocks.append(row)
+    total = sum(row["minutes"] for row in blocks)
+    watchdog_min = float(spec["watchdog_hours"]) * 60
+    down_at = watchdog_min - float(spec.get("down_lead_min", 5))
+    limit = down_at - float(spec.get("margin_min", 10))
+    hourly = sum(HOURLY.get(node.get("type"), 0.0) for node in nodes)
+    billed = math.ceil(total / 60 - 1e-9)
+    return {"blocks": blocks, "total_min": round(total, 1), "limit_min": round(limit, 1),
+            "watchdog_hours": float(spec["watchdog_hours"]), "down_at_min": round(down_at, 1),
+            "margin_min": float(spec.get("margin_min", 10)),
+            "fits": total <= limit + 1e-9, "slack_min": round(limit - total, 1),
+            "nodes": len(nodes), "hourly_usd": round(hourly, 3), "billed_hours": billed,
+            "instances_usd": round(billed * hourly, 2),
+            "joins_steps": sum(len(row.get("joins_steps", [])) for row in blocks),
+            "livekit_public_gb": round(livekit_gb, 1),
+            "livekit_public_usd_past_pool": round(livekit_gb * TRANSFER_USD_PER_GB, 2),
+            "cuts": spec.get("cuts", [])}
+
+
+def schedule_for(args: argparse.Namespace, lab: dict) -> dict | None:
+    """The whole run's schedule (plan_schedule) of the phase plan file, on
+    the live lab, or with --topology-only on the topology without the
+    sites that the schedule leaves out (and --without-sites)."""
+    path = pathlib.Path(getattr(args, "phase_plan", None) or PHASES)
+    spec = load_schedule(path)
+    if not spec:
+        return None
+    topology = pathlib.Path(args.topology)
+    standby = json.loads(topology.read_text()).get("standby_edges", [])
+    left_out: list[str] = []
+    if getattr(args, "topology_only", False):
+        left_out = sorted({site for site in (spec.get("without_sites") or [])
+                           + (getattr(args, "without_sites", "") or "").split(",") if site})
+        lab = topology_state(topology, left_out)
+    out = plan_schedule(spec, lab, standby, getattr(args, "cost", None))
+    out["sites_left_out"] = left_out
+    return out
+
+
+def schedule_lines(schedule: dict) -> list[str]:
+    """The schedule, for the operator."""
+    left = schedule.get("sites_left_out") or []
+    lines = [f"schedule{' without ' + ', '.join(left) if left else ''} ({schedule['nodes']} nodes, "
+             f"${schedule['hourly_usd']}/h): {schedule['total_min']} min, limit "
+             f"{schedule['limit_min']} (the watchdog's down at {schedule['down_at_min']} min of "
+             f"{schedule['watchdog_hours']:g} h, less {schedule['margin_min']:g}): "
+             + ("fits" if schedule["fits"] else "DOES NOT FIT")
+             + f", {schedule['slack_min']} min spare; {schedule['billed_hours']} billed hours, "
+             f"${schedule['instances_usd']}; joins in {schedule['joins_steps']} ramp steps; "
+             f"LiveKit's crowd {schedule['livekit_public_gb']} GB public "
+             f"(${schedule['livekit_public_usd_past_pool']} past the pool)"]
+    for row in schedule["blocks"]:
+        extra = ""
+        if row["kind"] != "fixed":
+            extra = f"  steps {row['steps']}" + (f", joins at {row['joins_steps']}"
+                                                  if row["joins_steps"] else "")
+        lines.append(f"  {row['name']:<16} {row['minutes']:>6.1f} min{extra}")
+    return lines
+
+
 def command_plan(args: argparse.Namespace) -> dict:
     phases = phase_setup(args)
     resolve_defaults(args)
@@ -3177,6 +3293,9 @@ def command_plan(args: argparse.Namespace) -> dict:
         plan["phases"] = {"timeline": phases["timeline"],
                           "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
                                              plan["cost"]["hourly_usd"])}
+    schedule = schedule_for(args, lab)
+    if schedule:
+        plan["schedule"] = schedule
     if args.json:
         print(json.dumps(plan, indent=1))
         return plan
@@ -3189,7 +3308,8 @@ def command_plan(args: argparse.Namespace) -> dict:
     joins = plan.get("joins") or {}
     print(f"self-hosted LiveKit: up to {plan.get('livekit_per_sfu', 0)} listeners per SFU on the "
           f"listener hosts; joins phase: {joins.get('per_lane', 0)} per lane per view host"
-          + (f" in steps of {joins['from']} or more" if joins.get("from") else "")
+          + (f" in steps {joins['at']} only" if "at" in joins else
+             f" in steps of {joins['from']} or more" if joins.get("from") else "")
           + (f", the step held at least {joins['hold_s']:.0f} s" if joins.get("per_lane") else ""))
     for name, cap in sorted(plan["capacity"].items()):
         print(f"  {name:<12} {cap['vcpus']} vCPU: UDP {cap['udp']} (CPU {cap['udp_by_cpu']}, "
@@ -3225,6 +3345,8 @@ def command_plan(args: argparse.Namespace) -> dict:
             item = priced["scenarios"][row["name"]]
             print(f"  {row['name']:<4} {item['minutes']:>5} min  fault at "
                   f"{row['fault']:>6.0f} s  {', '.join(row['targets'] or row['joins']) or '-'}")
+    if schedule:
+        print("\n".join(schedule_lines(schedule)))
     return plan
 
 
@@ -3949,58 +4071,65 @@ def command_analyse(args: argparse.Namespace) -> None:
     print((directory / "summary.md").read_text())
 
 
-def main(argv: list[str] | None = None) -> None:
+def add_planning_args(item: argparse.ArgumentParser) -> None:
+    """The options of `plan` and `run` that shape the steps."""
+    item.add_argument("--config", choices=sorted(CONFIGS), default=None,
+                      help="the audio lane (default pcm-1, or the phase plan's)")
+    item.add_argument("--steps", default=None, help=f"default {DEFAULT_STEPS}, or the phase "
+                                                    "plan's listeners")
+    item.add_argument("--hls-share", type=float, default=None,
+                      help="share of each step's listeners that are LL-HLS readers "
+                           "(default 0.5, or the phase plan's)")
+    item.add_argument("--phase-plan", default=None,
+                      help=f"failover, redistribution and autoscale phases in one held "
+                           f"step ({PHASES.relative_to(ROOT)})")
+    item.add_argument("--group", choices=("F", "R", "A"), default=None,
+                      help="the phase plan's scenarios of one group")
+    item.add_argument("--scenarios", default="", help="comma-separated scenario names")
+    item.add_argument("--hls-cap-per-host", type=int, default=None,
+                      help="LL-HLS readers on one listener host at most; the rest UDP")
+    item.add_argument("--hold", type=float, default=60.0, help="seconds each step holds")
+    item.add_argument("--ramp", type=float, default=None,
+                      help="seconds over which a step's listeners join (default by count)")
+    item.add_argument("--cost", default=None,
+                      help='JSON {"udp_vcpu": ..., "hls_vcpu": ...}: vCPU per listener at '
+                           "1,000 parts/s (needletail-load's bench)")
+    item.add_argument("--udp-mbps", type=float, default=None,
+                      help="wire rate of one UDP listener (default per config)")
+    item.add_argument("--inbound-gbps", type=float, default=LOAD_HOST_INBOUND_GBPS)
+    item.add_argument("--topology", default=str(TOPOLOGY))
+    item.add_argument("--lk-per-sfu", type=int, default=None,
+                      help=f"the self-hosted LiveKit crowd of each region's SFU, on its "
+                           f"listener hosts beside Needletail's: the step's listeners of the "
+                           f"region up to this many (default {LK_PER_SFU}; 0 for a phase run, "
+                           "0 to leave it out)")
+    item.add_argument("--joins", type=int, default=None,
+                      help=f"the joins phase in every step (the referee's: new listeners of "
+                           f"each lane on each view host, one after another, timed to first "
+                           f"audio; default {JOINS}, 0 for a phase run, 0 to leave it out)")
+    item.add_argument("--joins-from", type=int, default=None,
+                      help="the joins phase only in steps of this many listeners or more")
+    item.add_argument("--joins-at", default=None,
+                      help="the joins phase only in these steps (comma-separated, as asked in "
+                           "--steps; the representative steps of the 6-hour schedule); "
+                           "--joins-from is then not used")
+    item.add_argument("--fit-hosts", action="store_true",
+                      help="each region takes at most what its listener hosts drive (the "
+                           "default when the lab misses listener hosts that the account "
+                           "refused)")
+    item.add_argument("--no-fit", action="store_true",
+                      help="on a lab missing listener hosts: each region's share on the "
+                           "hosts it has, not fitted to them")
+    item.add_argument("--force", action="store_true",
+                      help="run steps that the plan says the listener hosts cannot drive; "
+                           "on a lab missing listener hosts, fitted to be as far over the "
+                           "headroom as on the whole lab")
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-
-    def planning(item):
-        item.add_argument("--config", choices=sorted(CONFIGS), default=None,
-                          help="the audio lane (default pcm-1, or the phase plan's)")
-        item.add_argument("--steps", default=None, help=f"default {DEFAULT_STEPS}, or the phase "
-                                                        "plan's listeners")
-        item.add_argument("--hls-share", type=float, default=None,
-                          help="share of each step's listeners that are LL-HLS readers "
-                               "(default 0.5, or the phase plan's)")
-        item.add_argument("--phase-plan", default=None,
-                          help=f"failover, redistribution and autoscale phases in one held "
-                               f"step ({PHASES.relative_to(ROOT)})")
-        item.add_argument("--group", choices=("F", "R", "A"), default=None,
-                          help="the phase plan's scenarios of one group")
-        item.add_argument("--scenarios", default="", help="comma-separated scenario names")
-        item.add_argument("--hls-cap-per-host", type=int, default=None,
-                          help="LL-HLS readers on one listener host at most; the rest UDP")
-        item.add_argument("--hold", type=float, default=60.0, help="seconds each step holds")
-        item.add_argument("--ramp", type=float, default=None,
-                          help="seconds over which a step's listeners join (default by count)")
-        item.add_argument("--cost", default=None,
-                          help='JSON {"udp_vcpu": ..., "hls_vcpu": ...}: vCPU per listener at '
-                               "1,000 parts/s (needletail-load's bench)")
-        item.add_argument("--udp-mbps", type=float, default=None,
-                          help="wire rate of one UDP listener (default per config)")
-        item.add_argument("--inbound-gbps", type=float, default=LOAD_HOST_INBOUND_GBPS)
-        item.add_argument("--topology", default=str(TOPOLOGY))
-        item.add_argument("--lk-per-sfu", type=int, default=None,
-                          help=f"the self-hosted LiveKit crowd of each region's SFU, on its "
-                               f"listener hosts beside Needletail's: the step's listeners of the "
-                               f"region up to this many (default {LK_PER_SFU}; 0 for a phase run, "
-                               "0 to leave it out)")
-        item.add_argument("--joins", type=int, default=None,
-                          help=f"the joins phase in every step (the referee's: new listeners of "
-                               f"each lane on each view host, one after another, timed to first "
-                               f"audio; default {JOINS}, 0 for a phase run, 0 to leave it out)")
-        item.add_argument("--joins-from", type=int, default=None,
-                          help="the joins phase only in steps of this many listeners or more")
-        item.add_argument("--fit-hosts", action="store_true",
-                          help="each region takes at most what its listener hosts drive (the "
-                               "default when the lab misses listener hosts that the account "
-                               "refused)")
-        item.add_argument("--no-fit", action="store_true",
-                          help="on a lab missing listener hosts: each region's share on the "
-                               "hosts it has, not fitted to them")
-        item.add_argument("--force", action="store_true",
-                          help="run steps that the plan says the listener hosts cannot drive; "
-                               "on a lab missing listener hosts, fitted to be as far over the "
-                               "headroom as on the whole lab")
+    planning = add_planning_args
 
     settings = sub.add_parser("settings", help="the deploy's --set arguments")
     settings.add_argument("--topology", default=str(TOPOLOGY))
@@ -4055,7 +4184,11 @@ def main(argv: list[str] | None = None) -> None:
     analyse.set_defaults(handler=command_analyse)
     sub.add_parser("stop", help="stop sources, listeners, samplers").set_defaults(
         handler=command_stop)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     args.handler(args)
 
 

@@ -1593,6 +1593,87 @@ class Joins(unittest.TestCase):
         self.assertFalse(job.record()["ran"])
         self.assertEqual(logged, [])
 
+    def test_joins_only_at_the_steps_named(self):
+        plan = scale.plan_steps(self.state, [100, 1000, 10000, 16000], "pcm-1", hls_share=0.0,
+                                standby=STANDBY, joins=20, joins_from=1000, joins_at=[100, 10000])
+        self.assertEqual([step["joins"] for step in plan["steps"]], [20, 0, 20, 0])
+        self.assertEqual([step["hold_s"] for step in plan["steps"]], [140.0, 60.0, 140.0, 60.0])
+        self.assertEqual(plan["joins"]["at"], [100, 10000])
+        args = scale.build_parser().parse_args(
+            ["run", "--steps", "100,1000,10000", "--joins-at", "100,10000", "--hls-share", "0"])
+        scale.resolve_defaults(args)
+        built = scale.build_plan(args, self.state, STANDBY)
+        self.assertEqual([step["joins"] for step in built["steps"]], [20, 0, 20])
+
+
+class Schedule(unittest.TestCase):
+    """The whole run in six billed hours without Sydney (agreed with the
+    referee, 22 November): lab up to `down`, the two windows first, ending
+    at least 10 minutes before the watchdog's `down` (6.0 h less 5 min)."""
+
+    @classmethod
+    def setUpClass(cls):
+        with redirect_stdout(io.StringIO()) as out:
+            scale.main(["plan", "--topology-only", "--json"])
+        cls.plan = json.loads(out.getvalue())
+        cls.schedule = cls.plan["schedule"]
+
+    def test_plan_json_reports_a_total_within_the_watchdogs_limit(self):
+        schedule = self.schedule
+        self.assertEqual(schedule["watchdog_hours"], 6.0)
+        self.assertEqual(schedule["down_at_min"], 6 * 60 - 5)
+        self.assertEqual(schedule["limit_min"], 6 * 60 - 5 - 10)
+        self.assertLessEqual(schedule["total_min"], schedule["limit_min"])
+        self.assertTrue(schedule["fits"])
+        self.assertAlmostEqual(schedule["total_min"],
+                               sum(row["minutes"] for row in schedule["blocks"]), places=0)
+        self.assertEqual(schedule["sites_left_out"], ["sydney"])
+        self.assertEqual(schedule["nodes"], 69)
+        self.assertAlmostEqual(schedule["hourly_usd"], 7.884, places=3)
+        self.assertEqual(schedule["billed_hours"], 6)
+        self.assertAlmostEqual(schedule["instances_usd"], 47.30, places=2)
+        # The referee's budget: well under $67 with the LiveKit crowd's transfer.
+        self.assertLess(schedule["instances_usd"] + schedule["livekit_public_usd_past_pool"], 67)
+
+    def test_the_windows_come_first_and_f_r_a_and_the_livekit_control_are_kept(self):
+        names = [row["name"] for row in self.schedule["blocks"]]
+        self.assertEqual(names[:3], ["bring-up", "A-headline", "B-4k-gso"])
+        self.assertEqual(names[-1], "down")
+        for kept in ("ph-f", "ph-r", "ph-a", "c1-opus1-mixed", "c2-pcm-udp", "c2-opus25-udp",
+                     "c2-opus25-mixed"):
+            self.assertIn(kept, names)
+        ramps = [row for row in self.schedule["blocks"] if row["kind"] == "ramp"]
+        self.assertTrue(all(row["livekit_public_gb"] > 0 for row in ramps))
+        phases = {row["name"]: row for row in self.schedule["blocks"] if row["kind"] == "phases"}
+        self.assertEqual(sorted(phases), ["ph-a", "ph-f", "ph-r"])
+        self.assertTrue(all(row["steps"] == [6000] for row in phases.values()))
+        # Joins only at the representative steps (the referee's own sessions
+        # of window A run theirs in full).
+        joins = {row["name"]: row["joins_steps"] for row in self.schedule["blocks"]
+                 if row.get("joins_steps")}
+        self.assertEqual(joins, {"c1-pcm-udp": [100, 10000], "c1-opus25-udp": [40000]})
+        self.assertEqual(self.schedule["joins_steps"], 3)
+
+    def test_every_ramp_that_runs_a_step_over_the_listener_hosts_is_forced(self):
+        # `run` refuses a step over the headroom without --force: a block
+        # that would be refused on the day is not a block of the schedule.
+        for row in self.schedule["blocks"]:
+            if row.get("undrivable"):
+                self.assertTrue(row["force"], row["name"])
+
+    def test_a_schedule_past_the_limit_does_not_fit(self):
+        spec = json.loads(PHASES.read_text())["schedule"]
+        spec = {**spec, "blocks": spec["blocks"] + [{"name": "late", "minutes": 30}]}
+        longer = scale.plan_schedule(spec, lab(["sydney"]), lab()["standby_edges"])
+        self.assertFalse(longer["fits"])
+        self.assertEqual(longer["total_min"], round(self.schedule["total_min"] + 30, 1))
+
+    def test_scale_md_states_the_planned_total(self):
+        text = (scale.ROOT / "deploy" / "low-latency" / "SCALE.md").read_text()
+        total = re.search(r"\| \*\*Total\*\* \|[^|]*\| \*\*([\d.]+) min", text)
+        self.assertIsNotNone(total, "SCALE.md's timeline has no total row")
+        self.assertAlmostEqual(float(total.group(1)), self.schedule["total_min"], delta=0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

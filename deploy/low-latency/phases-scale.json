@@ -523,5 +523,117 @@
       "shed": 0
     }
   ],
-  "shedding": "Drop the scenario of the lowest `shed` first when the run's projected end passes 5.75 h of the lab's life (the watchdog deletes it at 6.0 h): F8, R5, then curve 1's c1-opus1-mixed (SCALE.md), F2r, R4, F7, ... ; 0 is not run until its Phase AM work lands."
+  "shedding": "When the run's projected end passes 345 min of the lab's life (5.75 h; the watchdog's down starts at 355 min and the lab is gone at 6.0 h): first the joins of the representative steps not yet run, then what is left of the 10 min of reruns, then curve 1's c1-opus1-mixed, then half of curve 2's steps (SCALE.md), then the scenarios, the lowest `shed` first: F8, R5, F2r, R4, F7, ... ; 0 is not run until its Phase AM work lands.",
+  "schedule": {
+    "description": "The whole large-mesh run in six billed hours, as agreed with the referee on 22 November: no Sydney (69 nodes, $7.884 an hour), the watchdog armed for 6.0 h from the lab's creation (its down starts 5 min before), the schedule ending at least margin_min before that down. Two windows run first, with the referee's own tools on this lab (A: the wave 7 audio headline; B: 4K with GSO); then the ramps and the phase groups. A fixed block is timed by estimate (minutes); a block with `run` is the scale-run.py run command (without $COST) and is timed by `scale-run.py plan` itself, which reports the total (`schedule` in plan --json). A refused core stops the run with no retry; nothing is added past this schedule. deploy/low-latency/SCALE.md has the commands.",
+    "watchdog_hours": 6.0,
+    "down_lead_min": 5,
+    "margin_min": 10,
+    "without_sites": [
+      "sydney"
+    ],
+    "blocks": [
+      {
+        "name": "bring-up",
+        "minutes": 78,
+        "what": "lab up --without-sites sydney (69 nodes, staged), bootstrap and push in the windows' settings (one edge a region, public path, GSO on), the referee's gobuild, prepare (4K indexes of clips6-full), livekit, audio and secrets, scale-run.py prepare, and the 4K clips (five rungs, 6.4 GB) onto lon-src"
+      },
+      {
+        "name": "A-headline",
+        "minutes": 23,
+        "what": "wave 7 audio headline, the referee's compare-audio.py: session scale-w7 (opus-2.5 with 1 ms Opus Custom, pcm with 1 ms PCM; about 15 min) and scale-w7-std (standard 2.5 ms Opus; about 7.5 min), lanes lkregion, nt-popus/nt-pcm (LL-HLS, -w, -h3) and nt-uc, phases baseline, joins (20 a lane) and impair (1%, 5%, burst, and the harness's 100 ms delay)"
+      },
+      {
+        "name": "B-4k-gso",
+        "minutes": 8,
+        "what": "4K with GSO, the referee's compare-run.py --lanes nt --phases throughput, rungs 2160p25, 40, 80, 160, 240 (about 80 s a rung; the sweep ends early after two rungs that reach no region whole): contributor, one edge a region, the view hosts on the public path, no simulated listeners"
+      },
+      {
+        "name": "restart-e2",
+        "minutes": 2,
+        "what": "deploy restart $(scale-run.py settings --edges-per-region 2): the VLAN, two edges a region"
+      },
+      {
+        "name": "e2-pcm-udp",
+        "edges_per_region": 2,
+        "run": "--config pcm-1 --name e2-pcm-udp --hls-share 0 --steps 100,1000,3000,4000,5000,6000,7000 --joins 0"
+      },
+      {
+        "name": "restart-c1",
+        "minutes": 2,
+        "what": "deploy restart $(scale-run.py settings): five edges a region"
+      },
+      {
+        "name": "cal",
+        "run": "--config pcm-1 --name cal --steps 100,1000,8000 --hold 30 --keep-going --force --joins 0"
+      },
+      {
+        "name": "c1-pcm-udp",
+        "run": "--config pcm-1 --name c1-pcm-udp --hls-share 0 --steps 100,1000,5000,10000,13000,16000 --joins-at 100,10000"
+      },
+      {
+        "name": "c1-pcm-mixed",
+        "run": "--config pcm-1 --name c1-pcm-mixed --force --joins 0"
+      },
+      {
+        "name": "c1-opus1-mixed",
+        "run": "--config opus-1 --name c1-opus1-mixed --force --joins 0"
+      },
+      {
+        "name": "c1-opus25-mixed",
+        "run": "--config opus-2.5 --name c1-opus25-mixed --force --joins 0"
+      },
+      {
+        "name": "c1-opus25-udp",
+        "run": "--config opus-2.5 --name c1-opus25-udp --hls-share 0 --steps 100,1000,10000,20000,30000,40000 --joins-at 40000"
+      },
+      {
+        "name": "ph-f",
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group F --name ph-f --steps 6000"
+      },
+      {
+        "name": "ph-r",
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group R --name ph-r --steps 6000"
+      },
+      {
+        "name": "ph-a",
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group A --name ph-a --steps 6000"
+      },
+      {
+        "name": "start-standby",
+        "minutes": 1,
+        "what": "deploy start --nodes (the standby edges): ten edges a region"
+      },
+      {
+        "name": "c2-pcm-udp",
+        "second_curve": true,
+        "run": "--config pcm-1 --name c2-pcm-udp --hls-share 0 --steps 100,1000,10000,20000,24000,28000,32000 --force --joins 0"
+      },
+      {
+        "name": "c2-opus25-udp",
+        "second_curve": true,
+        "run": "--config opus-2.5 --name c2-opus25-udp --hls-share 0 --steps 100,1000,10000,20000,40000,60000,80000 --force --joins 0"
+      },
+      {
+        "name": "c2-opus25-mixed",
+        "second_curve": true,
+        "run": "--config opus-2.5 --name c2-opus25-mixed --force --joins 0"
+      },
+      {
+        "name": "reruns",
+        "minutes": 10,
+        "what": "reruns of steps or scenarios that failed for reasons other than load (was 10 of phases and 30 of steps)"
+      },
+      {
+        "name": "down",
+        "minutes": 10,
+        "what": "scale-run.py stop, lab down, the VLAN and leftover check"
+      }
+    ],
+    "cuts": [
+      "1. joins only at representative steps: c1-pcm-udp's first step (100) and 10,000 (where five edges a region reach about 93% of their outbound cap at 1 ms PCM without Sydney), and the top of curve 1 (c1-opus25-udp's 40,000), plus all of (A): 3 ramp steps instead of 53, 66.6 min saved (437.7 min before any cut, 371.1 after this one)",
+      "2. reruns: 40 min (10 of phases, 30 of steps) cut to 10, 30 min saved (341.1 min)",
+      "not cut: c1-opus1-mixed, curve 2's steps, F, R, A and the LiveKit control"
+    ]
+  }
 }
