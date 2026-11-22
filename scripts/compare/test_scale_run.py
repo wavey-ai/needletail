@@ -857,8 +857,8 @@ class Phases(unittest.TestCase):
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
         with mock.patch.object(scale, "ssh", lambda node, command, **k: done.append(
                 (node["name"], command.split(";")[0])) or ""), \
-                mock.patch.object(scale, "http_post", lambda node, path, **k: done.append(
-                    (node["name"], path)) or 200), \
+                mock.patch.object(scale, "http_post", lambda node, path, body, **k: done.append(
+                    (node["name"], path, body["node_id"])) or 200), \
                 mock.patch.object(scale, "http_get", lambda node, path, **k: {}):
             runner = scale.PhaseRunner(state, timeline, time.time() - 10_000, logged.append,
                                        args)
@@ -867,7 +867,7 @@ class Phases(unittest.TestCase):
         self.assertEqual(done, [
             ("new-edge-2", "systemctl kill -s KILL needletail-mesh.service"),
             ("new-edge-2", "systemctl start needletail-mesh.service"),
-            ("tok-dist-a", "/api/control/drain-node"),
+            ("tok-dist-a", "/api/control/drain-node", "tok-dist-a"),
             ("tok-dist-a", "systemctl stop needletail-mesh.service"),
             ("tok-dist-a", "systemctl start needletail-mesh.service")])
         actions = [item for item in logged if item.get("event") == "action"]
@@ -887,6 +887,9 @@ class Phases(unittest.TestCase):
                                 ("new-edge-2", "systemctl start needletail-mesh.service")])
         with self.assertRaises(ValueError):
             runner.node("contrib-lon")
+        # A control request that names no node would be global in av-mesh.
+        with self.assertRaises(ValueError):
+            scale.http_post(state["nodes"]["lon-edge-1"], "/api/control/drain-node", {})
 
     def test_plan_prints_the_phases_and_their_cost(self):
         args = argparse.Namespace(

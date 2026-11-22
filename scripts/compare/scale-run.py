@@ -2041,7 +2041,10 @@ class PhaseRunner:
                 if kind in NODE_COMMANDS:
                     ssh(self.node(target), NODE_COMMANDS[kind], timeout=60, check=True)
                 elif kind in ("drain", "resume"):
-                    http_post(self.node(target), f"/api/control/{kind}-node")
+                    # Always naming the node: av-mesh takes a request with
+                    # no node_id and no region as global.
+                    http_post(self.node(target), f"/api/control/{kind}-node",
+                              {"node_id": target})
                 elif kind in ("join", "leave"):
                     deploy_nodes("start" if kind == "join" else "stop", target)
                 elif kind == "add":
@@ -2170,12 +2173,15 @@ class PhaseRunner:
                 process.terminate()
 
 
-def http_post(node: dict, path: str, timeout: float = 5.0) -> int:
+def http_post(node: dict, path: str, body: dict, timeout: float = 5.0) -> int:
+    if path.startswith("/api/control/") and not (body or {}).get("node_id"):
+        raise ValueError("a control request must name its node (av-mesh takes one without "
+                         "node_id or region as global)")
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     request = urllib.request.Request(f"https://{node['public_ipv4']}:{HTTP_PORT}{path}",
-                                     data=b"{}", method="POST",
+                                     data=json.dumps(body).encode(), method="POST",
                                      headers={"content-type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         return response.status

@@ -332,12 +332,22 @@ def http_json(address: str, path: str, timeout: float = 2.0):
         return None
 
 
-def http_post(address: str, path: str, timeout: float = 5.0) -> int:
+def control_body(node_id: str) -> dict:
+    """The body of a drain-node or resume-node request. It always names its
+    node: av-mesh takes a request with no node_id and no region as global
+    (control_targets_local), so an empty body could drain every node that
+    hears it."""
+    if not node_id:
+        raise Refused("a control request must name its node")
+    return {"node_id": node_id}
+
+
+def http_post(address: str, path: str, body: dict, timeout: float = 5.0) -> int:
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
-    request = urllib.request.Request(f"https://{address}:{HTTP_PORT}{path}", data=b"{}",
-                                     method="POST",
+    request = urllib.request.Request(f"https://{address}:{HTTP_PORT}{path}",
+                                     data=json.dumps(body).encode(), method="POST",
                                      headers={"content-type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         return response.status
@@ -542,10 +552,10 @@ class LinodeBackend(Backend):
         self.deploy("stop", name)
 
     def drain(self, name: str) -> None:
-        http_post(self.public(name), "/api/control/drain-node")
+        http_post(self.public(name), "/api/control/drain-node", control_body(name))
 
     def resume(self, name: str) -> None:
-        http_post(self.public(name), "/api/control/resume-node")
+        http_post(self.public(name), "/api/control/resume-node", control_body(name))
 
     def delete(self, name: str) -> None:
         state = self.state()
@@ -661,13 +671,13 @@ class EdgeLabBackend(Backend):
 
     def drain(self, name):
         status, _ = self.edge_lab.http_json(name, "/api/control/drain-node", method="POST",
-                                            body={})
+                                            body=control_body(name))
         if status != 200:
             raise RuntimeError(f"drain {name}: HTTP {status}")
 
     def resume(self, name):
         status, _ = self.edge_lab.http_json(name, "/api/control/resume-node", method="POST",
-                                            body={})
+                                            body=control_body(name))
         if status != 200:
             raise RuntimeError(f"resume {name}: HTTP {status}")
 

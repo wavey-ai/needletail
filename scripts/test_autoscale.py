@@ -482,6 +482,22 @@ class Safety(Base):
         self.assertIn("load_permille", join["inputs"])
 
 
+class ControlBody(unittest.TestCase):
+    def test_every_drain_and_resume_names_its_node(self):
+        sent = []
+        backend = auto.LinodeBackend.__new__(auto.LinodeBackend)
+        backend.public = lambda name: "192.0.2.7"
+        with mock.patch.object(auto, "http_post", lambda address, path, body, **k:
+                               sent.append((address, path, body))):
+            backend.drain("lon-edge-3")
+            backend.resume("lon-edge-3")
+        self.assertEqual(sent, [("192.0.2.7", "/api/control/drain-node", {"node_id": "lon-edge-3"}),
+                                ("192.0.2.7", "/api/control/resume-node",
+                                 {"node_id": "lon-edge-3"})])
+        with self.assertRaises(auto.Refused):
+            auto.control_body("")
+
+
 class LinodeBackendTests(unittest.TestCase):
     """The linode backend's roster and budget from a lab state on disk,
     and its delete through the lab tool: no Linode call is made (the lab
