@@ -106,8 +106,10 @@ class Steps(unittest.TestCase):
         self.assertFalse(plan["steps"][2]["drivable"])
         capacity = plan["capacity"]["lon-load-1"]
         self.assertEqual(capacity["vcpus"], 8)
-        # 1 ms PCM: the host's inbound is what bounds UDP.
-        self.assertEqual(capacity["udp"], capacity["udp_by_network"])
+        # 1 ms PCM: the measured CPU a datagram bounds UDP (about 1,000 per
+        # g6-dedicated-8 within 70%), before the host's inbound.
+        self.assertEqual(capacity["udp"], capacity["udp_by_cpu"])
+        self.assertEqual(capacity["udp"], 1018)
         cost = scale.cost_estimate(lab(), plan)
         self.assertAlmostEqual(cost["hourly_usd"], 4.158, places=3)
         self.assertGreater(cost["listener_traffic_gb"], 0)
@@ -125,7 +127,7 @@ class Steps(unittest.TestCase):
     def test_plan_command_offline(self):
         args = argparse.Namespace(
             topology_only=True, topology=str(TOPOLOGY), without_sites="sydney",
-            second_curve=False, steps="100,1000", config="opus-1", hls_share=0.5,
+            second_curve=False, edges_per_region=None, steps="100,1000", config="opus-1", hls_share=0.5,
             hls_cap_per_host=None, hold=30.0, ramp=None, cost=None, udp_mbps=None,
             inbound_gbps=10.0, json=False)
         with redirect_stdout(io.StringIO()) as out:
@@ -143,8 +145,17 @@ class Commands(unittest.TestCase):
         self.assertIn("pcm", first["daw_hls_formats"])
         with redirect_stdout(io.StringIO()) as out:
             scale.command_settings(argparse.Namespace(topology=str(TOPOLOGY),
-                                                      second_curve=True))
+                                                      second_curve=True, edges_per_region=None))
         self.assertIn("--set standby_edges=[]", out.getvalue())
+        # Two edges per region: the rest of each region on standby.
+        with redirect_stdout(io.StringIO()) as out:
+            scale.command_settings(argparse.Namespace(topology=str(TOPOLOGY),
+                                                      second_curve=False, edges_per_region=2))
+        standby = json.loads(out.getvalue().split("--set standby_edges=")[1])
+        self.assertEqual(len(standby), 4 + 4 * 2)
+        self.assertNotIn("lon-edge-2", standby)
+        self.assertIn("syd-edge-3", standby)
+        self.assertEqual(scale.standby_for(lab()["nodes"].values(), ["x"], None), ["x"])
         # Every setting is one the deploy tool knows.
         spec = importlib.util.spec_from_file_location(
             "deploy_for_scale", HERE.parent / "linode-small-mesh-deploy.py")
@@ -171,10 +182,11 @@ class Commands(unittest.TestCase):
     def test_load_command(self):
         alloc = {"udp": 700, "hls": 0, "hls_by_edge": {}}
         command = scale.load_command(alloc, ["10.80.1.21:19446", "10.80.1.22:19446"], "pcm-1",
-                                     20, 80, 20, "/r/7", "run-1000-lon-load-1", "10.80.1.101")
+                                     20, 80, 20, "/r/7", "run-1000-lon-load-1", "10.80.1.101",
+                                     threads=8)
         for part in ("needletail-load ", "--edges 10.80.1.21:19446,10.80.1.22:19446",
                      "--stream 4001", "--listeners 700", "--duration 80", "--sample 20",
-                     "--bind 10.80.1.101", "--out /r/7/udp", "--quiet", "ulimit -n 1048576"):
+                     "--bind 10.80.1.101", "--threads 8", "--out /r/7/udp", "--quiet", "ulimit -n 1048576"):
             self.assertIn(part, command)
         self.assertEqual(scale.load_command({"udp": 0}, [], "pcm-1", 1, 1, 1, "/r"), "")
         self.assertIn("--sample 5 ", scale.load_command({"udp": 5}, ["a:1"], "pcm-1", 1, 1, 20,

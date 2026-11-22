@@ -40,7 +40,8 @@ The ramp ends at the first step where something gave out (--keep-going
 runs on). Results: target/compare/scale-NAME/ (plan.json, events.jsonl,
 steps/STEP/HOST/..., scale.json, summary.md).
 
-  scale-run.py settings [--second-curve]   the deploy --set arguments
+  scale-run.py settings [--second-curve] [--edges-per-region N]
+                                           the deploy --set arguments
   scale-run.py plan [--topology-only] [--steps ...] [--cost FILE]
                                            allocation, capacity, duration and
                                            cost of each step
@@ -114,15 +115,18 @@ CONFIGS = {
 OPUS_BITRATE = 320_000
 DEFAULT_STEPS = "100,1000,5000,10000,20000"
 # What one listener costs a listener host, in vCPUs, for a stream of 1,000
-# parts a second (scaled by the stream's parts a second), until the
-# in-process bench of needletail-load (spec-scale part L) gives its own
-# (--cost FILE with {"udp_vcpu": ..., "hls_vcpu": ...}):
-# - UDP: the spec's target, 5,000 listeners of a 1 ms stream on a
-#   g6-dedicated-4 (0.0008 vCPU each), with 25% for the kernel's share;
-# - LL-HLS: an ntcmp reader of 1 ms parts with 40 requests in flight asks
-#   for 1,000 parts a second, and Go's HTTP client spends about a vCPU on
-#   25,000-40,000 requests a second (0.03 vCPU each).
-COSTS = {"udp_vcpu": 0.001, "hls_vcpu": 0.03}
+# parts a second (scaled by the stream's parts a second; --cost FILE with
+# {"udp_vcpu": ..., "hls_vcpu": ...} replaces them):
+# - UDP: measured by needletail-load's in-process bench (part L, 22 Nov, AMD
+#   EPYC 7713, 1 ms compact PCM, nothing missing): 3.96 µs of worker CPU a
+#   datagram, kernel included, plus about 1.5 µs of NIC receive softirq
+#   that loopback does not charge: 5.5 µs, 0.0055 vCPU per listener (about
+#   600 per g6-dedicated-4 at 80%). The cost is per datagram: one socket per
+#   listener, so 5,000 per g6-dedicated-4 at 1 ms is out of reach;
+# - LL-HLS: not measured yet. An ntcmp reader of 1 ms parts with 40
+#   requests in flight asks for 1,000 parts a second, and Go's HTTP client
+#   spends about a vCPU on 25,000-40,000 requests a second (0.03 vCPU each).
+COSTS = {"udp_vcpu": 0.0055, "hls_vcpu": 0.03}
 # The share of a listener host that the plan fills at most.
 PLAN_HEADROOM = 0.70
 # Inbound that a listener host is planned to take, Gbit/s (Linode publishes
@@ -416,11 +420,12 @@ def ramp_spec(listeners: int, ramp_s: float, stages: int = RAMP_STAGES) -> str:
 
 def load_command(alloc: dict, edges: list[str], config: str, ramp_s: float,
                  duration_s: float, sample: int, remote_dir: str, label: str = "scale",
-                 bind: str | None = None, extra: str = "") -> str:
+                 bind: str | None = None, extra: str = "", threads: int | None = None) -> str:
     """needletail-load of one listener host for one step (empty when it runs
     no UDP listener). `edges`: the region's edges' VLAN host:port (a
     listener starts at edge i mod n and follows MOVE as the real client
-    does); `bind`: the host's VLAN address for the sockets."""
+    does); `bind`: the host's VLAN address for the sockets; `threads`: its
+    workers, one per vCPU."""
     if not alloc["udp"]:
         return ""
     return (f"ulimit -n 1048576; nohup {LOAD_PROCESS} "
@@ -428,6 +433,7 @@ def load_command(alloc: dict, edges: list[str], config: str, ramp_s: float,
             f"--listeners {alloc['udp']} --ramp {ramp_spec(alloc['udp'], ramp_s)} "
             f"--duration {int(round(duration_s))} --sample {min(sample, alloc['udp'])} "
             + (f"--bind {bind} " if bind else "")
+            + (f"--threads {threads} " if threads else "")
             + f"--out {remote_dir}/{LOAD_DIR} --label {shlex.quote(label)} --quiet "
             f"{extra} >{remote_dir}/udp.out 2>{remote_dir}/udp.err </dev/null &")
 
@@ -1283,9 +1289,29 @@ def wait_live(lab: dict, stream: int, timeout: float = 120) -> bool:
     return False
 
 
+def standby_for(nodes: list[dict], standby: list[str], edges_per_region: int | None) -> list[str]:
+    """`standby` and, with `edges_per_region`, every edge of a region past
+    its first N in service (by name): fewer edges take more listeners each,
+    so that an edge gives out before the listener hosts do."""
+    out = list(standby)
+    if not edges_per_region:
+        return out
+    by_site: dict[str, list[str]] = {}
+    for node in nodes:
+        if node["role"] == "edge" and node["name"] not in standby:
+            by_site.setdefault(node["site"], []).append(node["name"])
+    for names in by_site.values():
+        names.sort(key=lambda name: [int(part) if part.isdigit() else part
+                                     for part in re.split(r"([0-9]+)", name)])
+        out += names[edges_per_region:]
+    return out
+
+
 def command_settings(args: argparse.Namespace) -> None:
     topology = json.loads(pathlib.Path(args.topology).read_text())
-    standby = [] if args.second_curve else topology.get("standby_edges", [])
+    standby = standby_for(topology["nodes"],
+                          [] if args.second_curve else topology.get("standby_edges", []),
+                          args.edges_per_region)
     print(" ".join(f"--set {key}={json.dumps(value, separators=(',', ':'))}"
                    for key, value in scale_settings(standby).items()))
 
@@ -1300,7 +1326,9 @@ def command_plan(args: argparse.Namespace) -> dict:
     if args.topology_only:
         lab = topology_state(pathlib.Path(args.topology),
                              [site for site in args.without_sites.split(",") if site])
-        standby = [] if args.second_curve else lab["standby_edges"]
+        standby = standby_for(list(lab["nodes"].values()),
+                              [] if args.second_curve else lab["standby_edges"],
+                              args.edges_per_region)
     else:
         lab = state()
         standby = list(deploy_settings().get("standby_edges") or [])
@@ -1426,7 +1454,7 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args) -> dict[str
                 f"mkdir -p {remote_dir}",
                 load_command(alloc, edges, args.config, step["ramp_s"], duration, args.sample,
                              remote_dir, label, lab["nodes"][name].get("vlan_ipv4"),
-                             args.load_args),
+                             args.load_args, vcpus(lab["nodes"][name])),
                 *hls_commands(alloc, entry, args.config, step["ramp_s"], duration, remote_dir,
                               label, args.hls_window, not args.hls_http2, args.hls_steering))
                 if part)
@@ -1613,6 +1641,8 @@ def main(argv: list[str] | None = None) -> None:
     settings.add_argument("--topology", default=str(TOPOLOGY))
     settings.add_argument("--second-curve", action="store_true",
                           help="no standby edge: London's extra edges in")
+    settings.add_argument("--edges-per-region", type=int, default=None,
+                          help="the first N edges of each region in service, the rest standby")
     settings.set_defaults(handler=command_settings)
     plan = sub.add_parser("plan", help="allocation, capacity, duration and cost of the steps")
     planning(plan)
@@ -1620,6 +1650,8 @@ def main(argv: list[str] | None = None) -> None:
                       help="plan from the topology file, without a lab")
     plan.add_argument("--without-sites", default="", help="with --topology-only")
     plan.add_argument("--second-curve", action="store_true", help="with --topology-only")
+    plan.add_argument("--edges-per-region", type=int, default=None,
+                      help="with --topology-only: the first N edges of each region")
     plan.add_argument("--json", action="store_true")
     plan.set_defaults(handler=command_plan)
     prepare = sub.add_parser("prepare", help="the loop and the indexes on the hosts")

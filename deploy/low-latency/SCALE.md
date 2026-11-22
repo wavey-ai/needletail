@@ -44,8 +44,10 @@ and both reasons are given below. The topology file is
   figures would describe the load host, not the mesh.
 - **The ramp ends** at the first step where something gave out
   (`--keep-going` runs past it).
-- **Second curve:** London with eight edges instead of four. This should
-  show the curve moving out.
+- **Moving the curve out:** two edges per region, then four, then London
+  with eight. The standby setting switches edges in and out with a
+  restart, so no instances are created mid-run. Which lane shows each
+  curve depends on the listener hosts' capacity (see Expectations).
 - **Control:** self-hosted LiveKit at a listener count it can carry, about
   450 per 2-vCPU SFU on wave 2. The referee runs it with its own tools.
 
@@ -114,17 +116,17 @@ current figures, run `scale-run.py plan --topology-only`.
 | Phase | Minutes |
 | --- | ---: |
 | `up`, bootstrap and `push` of 49 nodes, LiveKit, `prepare` | 60 |
-| Curve 1, pcm-1: mixed ramp, then a UDP-only ramp (`--hls-share 0`) | 26 |
-| Curve 1, opus-1 mixed ramp, opus-2.5 mixed ramp | 26 |
-| Second curve: restart with eight London edges, pcm-1 UDP-only and mixed | 31 |
+| Two edges per region: pcm-1 UDP-only ramp to the edges' limit | 15 |
+| Four edges per region: pcm-1 UDP-only and mixed, opus-1 and opus-2.5 mixed | 52 |
+| Second curve: restart with eight London edges, opus-2.5 UDP-only and mixed | 31 |
 | Self-hosted LiveKit control | 20 |
 | Reruns of steps that failed for reasons other than load | 30 |
 | `down`, VLAN and leftover check | 10 |
-| **Total** | **about 3.4 h** |
+| **Total** | **about 3.7 h** |
 
-At $4.158 an hour, 3.4 hours is about $14. The watchdog is armed for 5.5
+At $4.158 an hour, 3.7 hours is about $15. The watchdog is armed for 5.5
 hours, which caps the bill at about $23. One full rerun brings it to
-about $37, under the $60 limit. Listener traffic stays on the VLAN and is
+about $38, under the $60 limit. Listener traffic stays on the VLAN and is
 not billed. `scale-run.py plan` prints what it would cost if it were
 public.
 
@@ -137,19 +139,38 @@ public.
   LL-HLS 5,000 step as over the listener hosts. That is why the UDP-only
   ramp is in the schedule. `--hls-cap-per-host N` keeps LL-HLS at what the
   hosts carry and sends the rest over UDP (marked "clipped" in the plan).
-- **UDP at 1 ms PCM is bounded by bandwidth.** A listener host is planned
-  at 10 Gbit/s inbound, which is about 1,250 PCM listeners at 70%. An
-  edge sends at most 4 Gbit/s, which is about 700 PCM listeners, or about
-  3,000 at 1 ms Opus. The edges should give out at about 11,000 UDP PCM
-  listeners over 16 edges, unless their CPU goes first. That is the
-  question the run answers.
+- **At 1 ms, the listener hosts carry about 8,000 UDP listeners.**
+  needletail-load's bench (part L, 22 Nov) measured 3.96 µs of CPU per
+  datagram, kernel included, with nothing missing. Adding about 1.5 µs of
+  NIC receive softirq gives 5.5 µs, or 0.0055 vCPU per listener of a
+  1,000-part stream. That is about 1,000 listeners per g6-dedicated-8 and
+  500 per g6-dedicated-4 within 70% busy. The listener hosts have 64
+  vCPUs in all, about 8,000 listeners at 1 ms (pcm-1, opus-1) and about
+  20,000 at 2.5 ms (opus-2.5, 400 parts a second). The cost is per
+  datagram because each listener has its own socket, so the spec's 5,000
+  per g6-dedicated-4 at 1 ms is out of reach. Memory is about 0.44 MB per
+  listener and does not bind. One measured figure is still missing: what
+  an LL-HLS reader costs. The plan assumes 0.03 vCPU at 1 ms parts.
+- **An edge sends at most 4 Gbit/s,** about 700 PCM listeners at 1 ms or
+  about 3,000 at 1 ms Opus. Over 16 edges that is about 11,000 PCM
+  listeners, more than the listener hosts drive at 1 ms. To see an edge
+  give out at 1 ms PCM, the run uses two edges per region
+  (`settings --edges-per-region 2`). Eight edges then carry about 5,000 to
+  6,000 listeners while the listener hosts stay near 75% busy. Four edges
+  per region then shows how far the curve moves out, up to the listener
+  hosts' 8,000. With opus-2.5, the listener hosts drive about 20,000
+  listeners, about 1,250 per edge on 16 edges. That is 750 Mbit/s per
+  edge, so an edge's CPU, not its NIC, is what that ramp tests.
+- **London with eight edges (the second curve)** cannot reach its edges'
+  bandwidth at 1 ms PCM with London's two listener hosts (about 2,000
+  listeners). It shows the curve moving out at opus-2.5, or at 1 ms PCM
+  with about three more g6-dedicated-8 listener hosts in London
+  (+$0.648/h, 52 nodes). Those hosts are not in the topology.
 - **The contributor and forwarder tiers should stay flat:** one stream in,
   and one feed per edge and per remote forwarder.
-- The per-listener figures are planning numbers until needletail-load's
-  in-process bench gives its own. Pass them to `plan` and `run` with
-  `--cost FILE` (`{"udp_vcpu": ..., "hls_vcpu": ...}`, vCPU per listener
-  at 1,000 parts a second), and with `--udp-mbps` once a step has measured
-  the wire rate.
+- Pass better figures to `plan` and `run` with `--cost FILE`
+  (`{"udp_vcpu": ..., "hls_vcpu": ...}`, vCPU per listener at 1,000 parts
+  a second) and `--udp-mbps` once a step has measured them.
 
 ## How the referee runs it
 
@@ -181,15 +202,26 @@ scripts/compare/scale-run.py prepare \
   --audio-file /home/jamieb/wavey.ai/needletail-compare/target/compare-media/audio/audio.s24le
 ```
 
+Two edges per region (an edge gives out before the listener hosts):
+
+```sh
+scripts/linode-small-mesh-deploy.py restart $(scripts/compare/scale-run.py settings --edges-per-region 2)
+scripts/compare/scale-run.py plan                                     # from the lab
+scripts/compare/scale-run.py run --config pcm-1 --name e2-pcm-udp --hls-share 0 \
+  --steps 100,1000,3000,4000,5000,6000,7000
+```
+
 Curve 1 (four edges per region):
 
 ```sh
-scripts/compare/scale-run.py plan                                     # from the lab
-scripts/compare/scale-run.py run --config pcm-1 --name c1-pcm-mixed --force
+scripts/linode-small-mesh-deploy.py restart $(scripts/compare/scale-run.py settings)
 scripts/compare/scale-run.py run --config pcm-1 --name c1-pcm-udp --hls-share 0 \
-  --steps 100,1000,5000,10000,20000,40000
+  --steps 100,1000,4000,6000,8000
+scripts/compare/scale-run.py run --config pcm-1 --name c1-pcm-mixed --force
 scripts/compare/scale-run.py run --config opus-1 --name c1-opus1-mixed --force
 scripts/compare/scale-run.py run --config opus-2.5 --name c1-opus25-mixed --force
+scripts/compare/scale-run.py run --config opus-2.5 --name c1-opus25-udp --hls-share 0 \
+  --steps 100,1000,5000,10000,15000,20000
 ```
 
 `--force` runs steps that the plan marks as over the listener hosts. The
@@ -200,9 +232,9 @@ Second curve (eight London edges):
 
 ```sh
 scripts/linode-small-mesh-deploy.py restart $(scripts/compare/scale-run.py settings --second-curve)
-scripts/compare/scale-run.py run --config pcm-1 --name c2-pcm-udp --hls-share 0 \
-  --steps 100,1000,5000,10000,20000,40000
-scripts/compare/scale-run.py run --config pcm-1 --name c2-pcm-mixed --force
+scripts/compare/scale-run.py run --config opus-2.5 --name c2-opus25-udp --hls-share 0 \
+  --steps 100,1000,5000,10000,15000,20000
+scripts/compare/scale-run.py run --config opus-2.5 --name c2-opus25-mixed --force
 ```
 
 End of the run:
