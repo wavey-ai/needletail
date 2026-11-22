@@ -45,9 +45,17 @@ mesh did) follows another path from the parent on:
                     threads and tee
   edge.reply / listener.complete
 
+Wherever a node's class threads took a part (forwarders and edges on the
+fast plane, from av-mesh wave 5), its relay_first is the kernel's receive time
+of the part's first symbol (SO_TIMESTAMPNS) and relay_woken the time the
+thread read it off the socket: relay_first -> relay_woken is the thread's
+wake-up, and the wire ends at relay_first. Both are optional stages (older
+journals have no relay_woken; the hops go around it).
+
 and every part that the edge sent to a mode-2 UDP listener has edge.udp_sent,
 a side stage measured from the part's first arrival at the edge (relay_first
-or mesh_first) and from the source. Each region's report counts the parts of
+or mesh_first), from the edge's wake-up (relay_woken, the fast lane's own
+work) and from the source. Each region's report counts the parts of
 each plane.
 
 For every region (the site of the edge) it reports the median, p95, p99 and
@@ -131,8 +139,10 @@ CHAIN = [
     ("contrib.sent_first", "contrib", "sent_first"),
     ("contrib.sent", "contrib", "sent"),
     ("primary.relay_first", "primary", "relay_first"),
+    ("primary.relay_woken", "primary", "relay_woken"),
     ("primary.relay_forward", "primary", "relay_forward"),
     ("parent.relay_first", "parent", "relay_first"),
+    ("parent.relay_woken", "parent", "relay_woken"),
     ("parent.committed", "parent", "committed"),
     ("parent.watermark", "parent", "watermark"),
     ("parent.mesh_sent", "parent", "mesh_sent"),
@@ -149,9 +159,10 @@ CHAIN = [
 # threads take them (relay_first, `peer` the parent's --relay-lease-bind),
 # its tee decodes (relay_decoded) and commits the part (committed, the
 # forwarders' own commit; edge_committed is the cache mesh's).
-FAST_CHAIN = CHAIN[:8] + [
+FAST_CHAIN = CHAIN[:10] + [
     ("parent.relay_forward", "parent", "relay_forward"),
     ("edge.relay_first", "edge", "relay_first"),
+    ("edge.relay_woken", "edge", "relay_woken"),
     ("edge.relay_decoded", "edge", "relay_decoded"),
     ("edge.committed", "edge", "committed"),
     ("edge.reply", "edge", "reply"),
@@ -166,13 +177,14 @@ UDP_SENT = "edge.udp_sent"
 EPOCH_STAGES = ("src_first", "src_last", "recovered", "packaged")
 # Stages that a journal may lack, because the node's build does not record
 # them: a hop goes around a missing one to the stage before it.
-OPTIONAL = {"contrib.sent_first", "parent.relay_forward", "edge.relay_decoded"}
+OPTIONAL = {"contrib.sent_first", "parent.relay_forward", "edge.relay_decoded",
+            "primary.relay_woken", "parent.relay_woken", "edge.relay_woken"}
 MESH_LABELS = [label for label, _, _ in CHAIN]
 FAST_LABELS = [label for label, _, _ in FAST_CHAIN]
 # Every label, in the order of a report.
-LABELS = (MESH_LABELS[:8] + ["parent.relay_forward"] + MESH_LABELS[8:12]
-          + ["edge.relay_first", "edge.relay_decoded"] + MESH_LABELS[12:13]
-          + ["edge.committed", UDP_SENT] + MESH_LABELS[13:])
+LABELS = (MESH_LABELS[:10] + ["parent.relay_forward"] + MESH_LABELS[10:14]
+          + ["edge.relay_first", "edge.relay_woken", "edge.relay_decoded"]
+          + MESH_LABELS[14:15] + ["edge.committed", UDP_SENT] + MESH_LABELS[15:])
 # A part's times carry this key when the edge's parent is a first forwarder
 # itself (the merged topology): its path has no primary relay, and its hops
 # go around the primary stages.
@@ -208,6 +220,9 @@ def hop_pairs(times: dict) -> list[tuple[str, str]]:
     arrival = "edge.relay_first" if FAST_PLANE in times else "edge.mesh_first"
     if UDP_SENT in times and arrival in times:
         pairs.append((arrival, UDP_SENT))
+    # The fast lane's own work at the edge, after its thread woke.
+    if UDP_SENT in times and FAST_PLANE in times and "edge.relay_woken" in times:
+        pairs.append(("edge.relay_woken", UDP_SENT))
     return pairs
 
 

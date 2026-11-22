@@ -481,6 +481,34 @@ class FastPlane(unittest.TestCase):
         self.assertLess(names.index("edge.relay_decoded -> edge.committed"),
                         names.index("edge.committed -> edge.reply"))
 
+    def test_relay_woken_splits_the_wire_from_the_wake(self):
+        # Wave 5 W1: the class threads journal relay_woken beside the
+        # kernel's relay_first, at the forwarder and at the edge.
+        events = fast_plane_journal()
+        for seq in SEQS:
+            s = spoken(seq)
+            events += [
+                event("lon-dist-a", "relay_woken", seq, s + 2610),
+                event("lon-edge-1", "relay_woken", seq, s + 2706, peer="10.77.1.11:22901"),
+            ]
+        result = analyse(NODES, events, [], STREAM, START_US)
+        london = result["regions"]["london"]["edge_parts"]
+        self.assertEqual(hop(london, "parent.relay_first -> parent.relay_woken")["p50"], 0.01)
+        self.assertEqual(hop(london, "parent.relay_woken -> parent.relay_forward")["p50"], 0.02)
+        self.assertEqual(hop(london, "parent.relay_forward -> edge.relay_first")["p50"], 0.07)
+        self.assertEqual(hop(london, "edge.relay_first -> edge.relay_woken")["p50"], 0.006)
+        self.assertEqual(hop(london, "edge.relay_woken -> edge.relay_decoded")["p50"], 0.044)
+        # The fast lane's own work, beside the hop from the first arrival.
+        self.assertEqual(hop(london, "edge.relay_woken -> edge.udp_sent")["p50"], 0.014)
+        self.assertEqual(hop(london, "edge.relay_first -> edge.udp_sent")["p50"], 0.02)
+        names = [item["hop"] for item in london["hops"]]
+        self.assertLess(names.index("edge.relay_first -> edge.relay_woken"),
+                        names.index("edge.relay_woken -> edge.relay_decoded"))
+        # A journal without relay_woken goes around it (the test above).
+        plain = analyse(NODES, fast_plane_journal(), [], STREAM, START_US)
+        self.assertFalse(any("relay_woken" in item["hop"]
+                             for item in plain["regions"]["london"]["edge_parts"]["hops"]))
+
     def test_a_forwarder_without_relay_forward_is_gone_around(self):
         result = analyse(NODES, fast_plane_journal(), [], STREAM, START_US)
         newyork = result["regions"]["newyork"]["edge_parts"]
