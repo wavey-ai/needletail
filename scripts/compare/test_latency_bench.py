@@ -631,6 +631,62 @@ class Video(unittest.TestCase):
         self.assertIn("audio", streams)
 
 
+class EdgeLoad(unittest.TestCase):
+    """Wave 8: needletail-load crowds on the edges, the edges' counters and
+    their class threads' wake."""
+
+    def test_the_load_ramp_is_per_edge(self):
+        self.assertEqual(bench.load_ramp("32@0,96@20", 4), "128@0,384@20")
+        with self.assertRaises(SystemExit):
+            bench.load_ramp("32", 4)
+
+    def test_a_crowd_for_each_site_over_its_edges(self):
+        args = parse("--load-listeners", "64", "--load-sites", "london,newyork",
+                     "--load-args=--silence-nack false", "--payload", "opus")
+        edges = {"london": ["lon-edge-1", "lon-edge-2"], "newyork": ["new-edge-1"]}
+        with mock.patch.object(bench.lab, "edges", side_effect=lambda site: edges[site]):
+            items = bench.load_commands(args, pathlib.Path("/x"))
+        self.assertEqual([item["host"] for item in items], ["lon-readers-2", "new-readers"])
+        london = items[0]["command"]
+        self.assertEqual(london[london.index("--listeners") + 1], "128")
+        self.assertEqual(london[london.index("--ramp") + 1], "128@0")
+        self.assertEqual(london[london.index("--edges") + 1],
+                         "10.90.0.21:19446,10.90.0.22:19446")
+        self.assertEqual(london[-2:], ["--silence-nack", "false"])
+        self.assertEqual(bench.load_commands(parse(), pathlib.Path("/x")), [])
+
+    def test_the_edges_counters_over_the_window(self):
+        before = {"lon-edge-1": {"nack_parts": 10, "subscriptions": 1,
+                                 "fast_lane": {"fanout_shed": 3, "class_repair_max_us": 5}}}
+        after = {"lon-edge-1": {"nack_parts": 25, "subscriptions": 65,
+                                "fast_lane": {"fanout_shed": 7, "clients": 65,
+                                              "class_repair_max_us": 900}}}
+        delta = bench.edge_stats_delta(before, after)["lon-edge-1"]
+        self.assertEqual(delta["nack_parts"], 15)
+        self.assertEqual(delta["subscriptions"], 64)
+        self.assertEqual(delta["fast"]["fanout_shed"], 4)
+        self.assertEqual(delta["fast"]["class_repair_max_us"], 900)
+        self.assertEqual(delta["fast_clients"], 65)
+        self.assertIn("nack parts 15", "\n".join(bench.edge_stats_lines({"lon-edge-1": delta})))
+
+    def test_the_class_thread_wake_of_each_edge(self):
+        events = []
+        for seq in range(100):
+            rx = 1_000_000 + seq * 1_000
+            events += [{"_node": "lon-edge-1", "stage": "relay_first", "seq": seq, "t_us": rx},
+                       {"_node": "lon-edge-1", "stage": "relay_woken", "seq": seq,
+                        "t_us": rx + (2_000 if seq == 50 else 50)},
+                       {"_node": "lon-edge-1", "stage": "udp_sent", "seq": seq,
+                        "t_us": rx + (2_100 if seq == 50 else 150)},
+                       {"_node": "lon-dist-a", "stage": "relay_first", "seq": seq, "t_us": rx}]
+        report = bench.edge_wake_report(events, None, None)
+        self.assertEqual(list(report), ["lon-edge-1"])
+        self.assertEqual(report["lon-edge-1"]["wake_over_1ms"], 1)
+        self.assertEqual(report["lon-edge-1"]["wake_ms"]["max"], 2.0)
+        self.assertEqual(report["lon-edge-1"]["woken_to_sent_ms"]["p50"], 0.1)
+        self.assertIn("1 over 1 ms", "\n".join(bench.edge_wake_lines(report)))
+
+
 class UnreadPayloads(unittest.TestCase):
     """Renditions nobody reads, for wave 7 item 5."""
 
