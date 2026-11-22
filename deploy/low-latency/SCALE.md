@@ -207,11 +207,22 @@ and 6 hours costs the same; a scenario costs nothing more unless it pushes
 the end past an hour boundary, and then the whole lab's hour ($10.42).
 
 **The watchdog is armed for 6.0 hours** (`up --watchdog-hours 6`, before
-the first instance is created): it deletes the lab at 6.0 h, so no seventh
-hour is ever billed (6.2 h would bill 7 x $10.422 = $72.95). The margin
-between the schedule and the watchdog is 17 minutes. The autoscaler and
-`lab add` refuse to create anything when the watchdog is not armed, or is
-armed for more than 6.0 h of the lab's life.
+the first instance is created, counted from the lab's creation). Its
+deadline is when the lab must be gone, not when deleting starts: it starts
+`down` 5 minutes before (polling every 5 s, deleting in parallel, a `down`
+that fails tried again), so the first instances, created a few seconds
+after the lab, are deleted before they start a seventh hour (6.2 h would
+bill 7 x $10.422 = $72.95). The margin between the schedule (343 min) and
+the watchdog's `down` (355 min) is 12 minutes. The autoscaler and `lab
+add` refuse to create anything when the watchdog is not armed, is less
+than 15 minutes ahead, or is armed for more than 6.0 h of the lab's life
+(no tolerance; `NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS`): a deadline moved
+later with `watchdog --hours` mid-run stops every create. `down` marks
+itself begun before it lists the lab and sweeps the run tag again at the
+end; an `add` whose create lands once `down` has begun deletes what it
+made and writes no state. A slot whose Cloud Firewall cannot be set is
+deleted, and the autoscaler pushes nothing to a node the firewall does
+not cover.
 
 **Slots.** An autoscale slot created during the run bills its own whole
 hours, from its creation to its deletion or `down`: at most 2 hours each
@@ -530,12 +541,26 @@ scenario's baseline shows whether the mesh came back.
   on the dev box to change it.
 - **Pass criteria, every scenario.** Stranded 0 (needletail-load's own
   gauge when it has one; until then listeners that exist but are not
-  subscribed for 5 s from 10 s after the fault); the unaffected listeners
-  miss nothing; the survivors' busiest core under 90%, CPU under 80%, tx
+  subscribed for 5 s from 10 s after the fault); no listener misses a
+  part, the moved ones included (needletail-load books a moved listener's
+  losses on the edge it moved to, so "the unaffected listeners alone miss
+  nothing" is reported open, with the figure on the edges not faulted,
+  until AM item 10); the survivors' busiest core under 90%, CPU under 80%, tx
   under 80% of the cap; no rise in would-block, send-queue drops or
   refusals. Each scenario adds its own (F1: moves spread max/mean at most
   1.3; F3, F4: no move, nothing missing; ...). A criterion the run cannot
   measure yet is reported open, with what it waits for, never passed.
+- **What gave out first** leaves out only the scenarios that fault a node
+  (kill, crash, drain, stop, leave, remove), from the fault to the end of
+  the settle, and a faulted node only inside its own scenario: an edge that
+  saturates during A1's ramp, or a node of F8 before F8, is reported.
+- **Faults at once, and a clean stop.** The targets of one action are
+  faulted together (one thread each; the spread of their starts is
+  logged). A fault is owed its restore before it is carried out, nothing
+  new starts once the step is stopped, and the restores wait for the
+  action under way. An `add` is put back by stopping the slot (`down`
+  deletes it); a `remove` needs a drain of the slot earlier in its
+  scenario and a drain that ended.
 - **The controller.** `scripts/linode-autoscale.py`, on the operator host
   (it needs the Linode token, which never goes onto a mesh node): a
   control-plane loop that decides from the mesh's own advertisement
@@ -551,7 +576,15 @@ scenario's baseline shows whether the mesh came back.
   standby edges first, then drained slots inside their paid hour (the warm
   pool), then a create; a warm slot is deleted 5 min before its next billed
   hour; every intent written to its state before it acts, so a restart
-  picks up where it stopped.
+  picks up where it stopped. A forwarder slot counts as drained only when
+  its lease children and cache-mesh children read 0 as well (AM item 12;
+  until then it is resumed, never deleted). SIGINT or SIGTERM: it resumes
+  every drain in flight, then exits. One controller per state file (a
+  lock). In a phase run its state is `autoscale-state.json` in the step's
+  directory (A1 hands its warm pool to A2), its output
+  `controller-<scenario>.log`, its exit code a `controller_exit` event; A2's
+  controller starts only once A1's has exited (waited for up to 5 min,
+  then SIGINT), and the step's end stops it the same way.
 
 ### What waits for Phase AM (honestly)
 
@@ -626,6 +659,13 @@ scripts/edge_lab.py up slots=lon-edge-4 && scripts/edge_lab.py sources 900
 scripts/linode-autoscale.py run --backend edge_lab --stream 1 --sites london --dry-run --once
 scripts/edge_lab.py start lon-edge-4 && scripts/edge_lab.py status
 scripts/edge_lab.py drain lon-edge-4 && scripts/edge_lab.py stop lon-edge-4
+# 4. One controller per state file, and SIGINT resumes a drain in flight
+#    (the events end wound_down, controller_stop; no edge left draining):
+scripts/linode-autoscale.py run --backend edge_lab --stream 1 --sites london --duration 120 \
+  --events target/compare/local-controller.jsonl &
+sleep 5; scripts/linode-autoscale.py run --backend edge_lab --stream 1 --sites london --once
+#    (the second is refused: another controller holds the state)
+kill -INT %1; wait; scripts/edge_lab.py status
 scripts/edge_lab.py down
 ```
 
