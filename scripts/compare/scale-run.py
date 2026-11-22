@@ -76,6 +76,7 @@ import math
 import pathlib
 import re
 import shlex
+import signal
 import ssl
 import subprocess
 import sys
@@ -1024,15 +1025,17 @@ def tier_of(node: dict) -> str:
 
 def excluded(exclude: dict | None, name: str, at: float | None) -> bool:
     """Whether an event of `name` at `at` falls under a fault (`exclude`:
-    {"nodes": names under fault, "windows": [(start, end)] of the faults and
-    their observation}): a node that a phase killed or drained, or any
-    node while a fault is being observed, did not give out by load."""
+    {"windows": [(start, end)] of the faults and their observation,
+    "node_windows": {name: its own faults' windows}}): any node while a
+    fault is being observed, or a faulted node within its own fault, did
+    not give out by load. A faulted node outside its fault is judged like
+    any other; an event with no time is left out only for a faulted node."""
     if not exclude:
         return False
-    if name in set(exclude.get("nodes") or ()):
-        return True
-    return at is not None and any(start <= at <= end
-                                  for start, end in exclude.get("windows") or ())
+    own = (exclude.get("node_windows") or {}).get(name) or []
+    if at is None:
+        return bool(own)
+    return any(start <= at <= end for start, end in list(exclude.get("windows") or ()) + own)
 
 
 def gave_out_first(state: dict, nodes: dict[str, dict], edges_missing: dict[str, float | None],
@@ -1357,9 +1360,16 @@ PHASES = ROOT / "deploy" / "low-latency" / "phases-scale.json"
 ACTION_KINDS = ("kill", "crash", "drain", "resume", "stop", "start", "join", "leave", "add",
                 "remove", "autoscale")
 # What puts a fault back after its observation, when the scenario names no
-# restore of its own. A crash restarts by itself (Restart=always, 2 s).
+# restore of its own. A crash restarts by itself (Restart=always, 2 s). An
+# added slot is only stopped (leave), never deleted while listeners may
+# still be on it: `down` deletes it, or a scenario's own drain then remove.
 RESTORE_OF = {"kill": "start", "drain": "resume", "stop": "start", "join": "leave",
-              "add": "remove"}
+              "add": "leave"}
+# How long a scale run waits for the previous scenario's controller to exit
+# before it starts the next (SIGINT then, and it resumes its drains), and
+# for a controller stopped with SIGINT before SIGTERM, then SIGKILL.
+CONTROLLER_WAIT_S = 300
+CONTROLLER_STOP_S = 90
 # The service commands of a node: a kill is SIGKILL and then the unit
 # stopped, or Restart=always would bring the node back in 2 s (D4); a
 # crash is the SIGKILL alone, the 2 s restart.
@@ -1405,6 +1415,17 @@ def load_phase_plan(path: str | pathlib.Path, group: str | None = None,
                 raise ValueError(f"{name}: {action['kind']} needs a list of targets")
             if float(action.get("at_s", 0)) < 0:
                 raise ValueError(f"{name}: at_s is negative")
+        # A slot is deleted only after a drain of it earlier in the same
+        # scenario (and the run checks at run time that the drain ended).
+        for action in scenario["actions"] + scenario.get("restore", []):
+            if action["kind"] != "remove":
+                continue
+            at = float(action.get("at_s", 0)) if action in scenario["actions"] else math.inf
+            drained = {target for other in scenario["actions"] if other["kind"] == "drain"
+                       and float(other.get("at_s", 0)) < at for target in other["targets"]}
+            if set(action["targets"]) - drained:
+                raise ValueError(f"{name}: remove of {sorted(set(action['targets']) - drained)} "
+                                 "with no drain of it earlier in the scenario")
         for point in scenario.get("profile") or []:
             if len(point) != 2 or float(point[0]) < 0 or not 0 <= float(point[1]) <= 1:
                 raise ValueError(f"{name}: a profile point is [seconds, share of the step]")
@@ -1500,11 +1521,21 @@ def fault_nodes(timeline: dict) -> set[str]:
 
 
 def exclusion(timeline: dict, start: float) -> dict:
-    """The faults of a phase run in Unix time, for gave_out_first: the
-    nodes under fault, and each fault's window to the end of its settle."""
-    return {"nodes": sorted(fault_nodes(timeline)),
-            "windows": [(start + row["fault"], start + row["end"])
-                        for row in timeline["scenarios"]]}
+    """The faults of a phase run in Unix time, for gave_out_first: each
+    scenario that faults a node (a kill, crash, drain, stop, leave or
+    remove), from its fault to the end of its settle, for every node; and
+    each faulted node within its own scenario's window only. A scenario
+    that faults nothing (an autoscale ramp, a join) excludes nothing: an
+    edge that saturates as the load ramps is exactly what it must report."""
+    windows, by_node = [], {}
+    for row in timeline["scenarios"]:
+        if not row["targets"]:
+            continue
+        window = (start + row["fault"], start + row["end"])
+        windows.append(window)
+        for name in row["targets"]:
+            by_node.setdefault(name, []).append(window)
+    return {"windows": windows, "node_windows": {name: by_node[name] for name in sorted(by_node)}}
 
 
 def entry_nodes(region: dict, avoid: set[str]) -> list[dict]:
@@ -1898,8 +1929,19 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
     out.append(check("stranded = 0", None if stranded is None else stranded == 0, stranded,
                      None if stranded is not None else
                      "needletail-load's active/stranded gauges (Phase AM item 10)"))
-    lost = [result["udp"][key]["unaffected"]["missing"] for key in ("during", "after")]
-    out.append(check("unaffected listeners: 0 missing", sum(lost) == 0, sum(lost)))
+    # needletail-load books a listener's missing parts on its current edge,
+    # and a move switches the edge before the parts lost around it settle:
+    # the edges not faulted carry the moved listeners' losses too. So the
+    # judged criterion is every listener's; the unaffected listeners' own
+    # figure waits for per-listener moves (Phase AM item 10).
+    on_edges_not_faulted = sum(result["udp"][key]["unaffected"]["missing"]
+                               for key in ("during", "after"))
+    every = on_edges_not_faulted + sum(result["udp"][key]["faulted"]["missing"]
+                                       for key in ("during", "after"))
+    out.append(check("all listeners (moved ones included): 0 missing", every == 0, every))
+    out.append(check("unaffected listeners alone: 0 missing", None, on_edges_not_faulted,
+                     "per-listener moves from needletail-load (Phase AM item 10): until then "
+                     "a moved listener's losses are booked on the edge it moved to"))
     before = result["survivors"]["before"]
     worst = {key: max(result["survivors"][window][key] for window in ("during", "after"))
              for key in ("cpu_max", "core_max", "nic_share_max")}
@@ -1949,7 +1991,10 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
 
 def format_phases(phases: list[dict]) -> str:
     lines = ["", "## Phases", "",
-             "| scenario | targets | stranded | unaffected missing (during/after) | "
+             "Missing on edges not faulted includes the losses of listeners that moved "
+             "there (needletail-load books them on the edge they moved to; the "
+             "per-listener split waits for Phase AM item 10).", "",
+             "| scenario | targets | stranded | missing on edges not faulted (during/after) | "
              "UDP moves | HLS moves | survivors core max | criteria passed/failed/open |",
              "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |"]
     for item in phases:
@@ -1981,22 +2026,32 @@ def format_phases(phases: list[dict]) -> str:
 
 class PhaseRunner:
     """Carries out a phase timeline against the lab, in a thread: each
-    action at its time, the watchers that log when a drain ends and when a
-    joining node first serves, and on stop every restore that a fault still
-    owes (a step stopped early leaves no node killed)."""
+    action at its time (the targets of one action at once), the watchers
+    that log when a drain ends and when a joining node first serves, and on
+    stop every restore that a fault still owes (a step stopped early leaves
+    no node killed: a fault is owed before it is carried out, no new one
+    starts once stopped, and finish() waits for the one under way before it
+    restores). At most one autoscale controller runs at a time."""
 
     def __init__(self, lab: dict, timeline: dict, start: float, log, args,
-                 events_path: pathlib.Path | None = None):
+                 events_path: pathlib.Path | None = None,
+                 directory: pathlib.Path | None = None):
         self.lab = lab
         self.timeline = timeline
         self.start = start
         self.log = log
         self.args = args
         self.events_path = events_path
+        # Where the controllers' output and their state go (the step's
+        # directory): a controller state of another run or lab is never read.
+        self.directory = directory or (events_path.parent if events_path else None)
         self.stop = threading.Event()
         self.owed: list[dict] = []
+        self.owed_lock = threading.Lock()
         self.threads: list[threading.Thread] = []
-        self.processes: list = []
+        self.processes: list[dict] = []
+        self.drained: set[str] = set()
+        self.thread: threading.Thread | None = None
 
     def schedule(self) -> list[dict]:
         items = []
@@ -2004,19 +2059,28 @@ class PhaseRunner:
             items += row["actions"] + row["restores"]
         return sorted(items, key=lambda item: (item["t"], bool(item.get("restore"))))
 
+    def begin(self) -> None:
+        """run() in a thread of its own; finish() waits for it."""
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
     def run(self) -> None:
         for item in self.schedule():
             delay = self.start + item["t"] - time.time()
-            if delay > 0 and self.stop.wait(delay):
+            if (delay > 0 and self.stop.wait(delay)) or self.stop.is_set():
                 break
-            if item.get("restore"):
-                self.owed = [owed for owed in self.owed if owed["scenario"] != item["scenario"]]
+            with self.owed_lock:
+                if item.get("restore"):
+                    self.owed = [owed for owed in self.owed
+                                 if owed["scenario"] != item["scenario"]]
+                elif item["kind"] in RESTORE_OF:
+                    # Owed before it is carried out: a step stopped while
+                    # it runs still puts it back.
+                    self.owed.append(item)
             self.act(item)
-            if not item.get("restore") and item["kind"] in RESTORE_OF:
-                self.owed.append(item)
-        for process in self.processes:
+        for entry in list(self.processes):
             try:
-                process.wait(timeout=5)
+                entry["process"].wait(timeout=5)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2035,34 +2099,67 @@ class PhaseRunner:
         if kind == "autoscale":
             self.autoscale(item, base)
             return
-        for target in item["targets"]:
-            self.log({**base, "event": "action", "node": target, "unix_us": unix_us()})
-            try:
-                if kind in NODE_COMMANDS:
-                    ssh(self.node(target), NODE_COMMANDS[kind], timeout=60, check=True)
-                elif kind in ("drain", "resume"):
-                    # Always naming the node: av-mesh takes a request with
-                    # no node_id and no region as global.
-                    http_post(self.node(target), f"/api/control/{kind}-node",
-                              {"node_id": target})
-                elif kind in ("join", "leave"):
-                    deploy_nodes("start" if kind == "join" else "stop", target)
-                elif kind == "add":
-                    lab_tool_slot("add", target, self.args)
-                    deploy_nodes("push", target)
-                    self.lab = state()
-                elif kind == "remove":
-                    deploy_nodes("stop", target)
-                    lab_tool_slot("remove", target, self.args)
-                self.log({**base, "event": "done", "node": target, "unix_us": unix_us()})
-            except Exception as error:  # noqa: BLE001 - the run records it and goes on
-                self.log({**base, "event": "failed", "node": target, "unix_us": unix_us(),
-                          "error": str(error)[-400:]})
-                continue
-            if kind == "drain" and not item.get("restore"):
-                self.watch(self.watch_drain, target, item)
-            if kind in ("join", "add", "start"):
-                self.watch(self.watch_serving, target, item)
+        targets = list(item["targets"])
+        if len(targets) == 1:
+            self.act_one(item, base, targets[0])
+            return
+        # The targets of one action at once (F7, F8 kill several "at
+        # once"): one thread each, and the spread of their starts logged.
+        started: dict[str, int] = {}
+        threads = [threading.Thread(target=self.act_one, args=(item, base, target, started))
+                   for target in targets]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if started:
+            self.log({**base, "event": "spread", "targets": targets, "unix_us": unix_us(),
+                      "spread_us": max(started.values()) - min(started.values())})
+
+    def act_one(self, item: dict, base: dict, target: str,
+                started: dict | None = None) -> None:
+        kind = item["kind"]
+        if self.stop.is_set() and not item.get("restore"):
+            # Stopped early: no new fault (the restore of this one is owed
+            # all the same, and is harmless on a node it never reached).
+            self.log({**base, "event": "skipped", "node": target, "unix_us": unix_us(),
+                      "why": "the step was stopped"})
+            return
+        at = unix_us()
+        if started is not None:
+            started[target] = at
+        self.log({**base, "event": "action", "node": target, "unix_us": at})
+        try:
+            if kind in NODE_COMMANDS:
+                ssh(self.node(target), NODE_COMMANDS[kind], timeout=60, check=True)
+            elif kind in ("drain", "resume"):
+                # Always naming the node: av-mesh takes a request with no
+                # node_id and no region as global.
+                http_post(self.node(target), f"/api/control/{kind}-node",
+                          {"node_id": target})
+            elif kind in ("join", "leave"):
+                deploy_nodes("start" if kind == "join" else "stop", target)
+            elif kind == "add":
+                lab_tool_slot("add", target, self.args)
+                deploy_nodes("push", target)
+                self.lab = state()
+            elif kind == "remove":
+                # Only a slot whose drain ended (its live gauges read 0) is
+                # deleted; otherwise it is left for `down`.
+                if target not in self.drained:
+                    raise RuntimeError(f"{target}: its drain did not end (no drain_end): "
+                                       "not deleted; `down` deletes it")
+                deploy_nodes("stop", target)
+                lab_tool_slot("remove", target, self.args)
+            self.log({**base, "event": "done", "node": target, "unix_us": unix_us()})
+        except Exception as error:  # noqa: BLE001 - the run records it and goes on
+            self.log({**base, "event": "failed", "node": target, "unix_us": unix_us(),
+                      "error": str(error)[-400:]})
+            return
+        if kind == "drain" and not item.get("restore"):
+            self.watch(self.watch_drain, target, item)
+        if kind in ("join", "add", "start"):
+            self.watch(self.watch_serving, target, item)
 
     def watch(self, function, target: str, item: dict) -> None:
         thread = threading.Thread(target=function, args=(target, item), daemon=True)
@@ -2090,6 +2187,7 @@ class PhaseRunner:
             hls = edge.get("active_playback_sessions")
             last = (udp, hls)
             if udp == 0 and hls == 0:
+                self.drained.add(target)
                 self.log({"source": "scale-run", "scenario": item["scenario"],
                           "event": "drain_end", "node": target, "unix_us": unix_us()})
                 return
@@ -2143,34 +2241,98 @@ class PhaseRunner:
     def autoscale(self, item: dict, base: dict) -> None:
         """The controller, set loose for the scenario: linode-autoscale.py
         with the run's events file, until the scenario's observation ends.
-        Every decision it takes is its own."""
+        Every decision it takes is its own. One controller at a time: the
+        previous scenario's is waited for (its last tick can run long: a
+        create and a push), and stopped with SIGINT if it has not exited
+        after CONTROLLER_WAIT_S. Its state lives in the step's directory
+        (A1 hands its warm pool to A2; no other run's state is read), its
+        output goes to controller-<scenario>.log there, and its exit code
+        is logged."""
+        for entry in list(self.processes):
+            if entry["process"].poll() is None:
+                self.log({**base, "event": "controller_wait", "unix_us": unix_us(),
+                          "previous": entry["scenario"]})
+                deadline = time.time() + CONTROLLER_WAIT_S
+                while entry["process"].poll() is None and time.time() < deadline \
+                        and not self.stop.is_set():
+                    self.stop.wait(1.0)
+                self.stop_controller(entry)
+        if self.stop.is_set():
+            return
         seconds = max(1.0, self.scenario_end(item) - time.time())
         command = [sys.executable, str(HERE.parent / "linode-autoscale.py"), "run",
                    "--backend", "linode", "--stream", str(self.args.stream),
                    "--duration", str(int(seconds))]
         if self.events_path:
             command += ["--events", str(self.events_path)]
+        output = subprocess.DEVNULL
+        if self.directory is not None:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            command += ["--controller-state", str(self.directory / "autoscale-state.json")]
+            output = open(self.directory / f"controller-{item['scenario']}.log", "ab")
         if getattr(self.args, "budget_usd", None) is not None:
             command += ["--budget-usd", str(self.args.budget_usd),
                         "--spent-before-usd", str(self.args.spent_before_usd)]
         command += [str(value) for value in item.get("controller_args", [])]
         self.log({**base, "event": "controller_start", "unix_us": unix_us(),
                   "command": command[2:]})
-        self.processes.append(subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                               stdout=subprocess.DEVNULL,
-                                               stderr=subprocess.DEVNULL))
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
+                                       stderr=subprocess.STDOUT)
+        finally:
+            if output is not subprocess.DEVNULL:
+                output.close()
+        entry = {"process": process, "scenario": item["scenario"]}
+        self.processes.append(entry)
+        self.watch(self.watch_controller, entry, item)
 
-    def finish(self) -> None:
-        """Stop, and put back every fault still owed its restore."""
+    def watch_controller(self, entry: dict, item: dict) -> None:
+        """Log a controller's exit and its code (a refusal or a crash is
+        never mistaken for "nothing scaled"), with the end of its output."""
+        code = entry["process"].wait()
+        event = {"source": "scale-run", "scenario": entry["scenario"],
+                 "event": "controller_exit", "unix_us": unix_us(), "returncode": code}
+        if code != 0 and self.directory is not None:
+            path = self.directory / f"controller-{entry['scenario']}.log"
+            if path.is_file():
+                event["output_tail"] = path.read_text(errors="replace")[-800:]
+        self.log(event)
+
+    def stop_controller(self, entry: dict) -> None:
+        """SIGINT (the controller resumes its drains in flight and exits),
+        then SIGTERM, then SIGKILL."""
+        process = entry["process"]
+        steps = (("SIGINT", lambda: process.send_signal(signal.SIGINT)),
+                 ("SIGTERM", process.terminate), ("SIGKILL", process.kill))
+        for name, send in steps:
+            if process.poll() is not None:
+                return
+            send()
+            self.log({"source": "scale-run", "scenario": entry["scenario"],
+                      "event": "controller_stop", "unix_us": unix_us(), "signal": name})
+            try:
+                process.wait(timeout=CONTROLLER_STOP_S)
+            except subprocess.TimeoutExpired:
+                continue
+
+    def finish(self, join_s: float = 120.0) -> None:
+        """Stop: let the action under way end (run() starts no other), then
+        put back every fault still owed its restore, then stop a controller
+        still running (SIGINT: it resumes its drains in flight)."""
         self.stop.set()
-        for item in list(self.owed):
+        if self.thread is not None and self.thread is not threading.current_thread():
+            self.thread.join(timeout=join_s)
+            if self.thread.is_alive():
+                self.log({"source": "scale-run", "event": "runner_still_acting",
+                          "unix_us": unix_us(), "waited_s": join_s})
+        with self.owed_lock:
+            owed, self.owed = list(self.owed), []
+        for item in owed:
             restore = {"kind": RESTORE_OF[item["kind"]], "targets": item["targets"],
                        "scenario": item["scenario"], "restore": True, "t": 0}
             self.act(restore)
-        self.owed = []
-        for process in self.processes:
-            if process.poll() is None:
-                process.terminate()
+        for entry in list(self.processes):
+            self.stop_controller(entry)
 
 
 def http_post(node: dict, path: str, body: dict, timeout: float = 5.0) -> int:
@@ -2589,19 +2751,17 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
     log({"step": step["listeners"], "started": round(started), "udp": step["udp"],
          "hls": step["hls"], "seconds": duration,
          **({"readers_launched_us": int(started * 1e6)} if phases else {})})
-    runner = thread = None
+    runner = None
     if phases:
         args.stream = stream
         runner = PhaseRunner(lab, phases["timeline"], started + step["ramp_s"], log, args,
-                             phases.get("events"))
-        thread = threading.Thread(target=runner.run, daemon=True)
-        thread.start()
+                             phases.get("events"), directory=step_dir)
+        runner.begin()
     try:
         saturated, why = monitor(hosts, remote_dir, started + duration + 5, args.poll, log)
     finally:
         if runner is not None:
             runner.finish()
-            thread.join(timeout=120)
     stopped = None
     if saturated:
         stopped = f"{saturated}: {why}"
