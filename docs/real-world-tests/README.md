@@ -65,8 +65,8 @@ Its strict result is `FAIL`: the scenarios that did not hold are listed in the r
 
 Current comparison with other networks, audio:
 [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
-Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail (RaptorQ FEC over UDP and LL-HLS), Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud, on dedicated-CPU instances only.
-Self-hosted LiveKit is fastest by 2.6 to 2.8 ms for PCM (5.1 in Tokyo) and 3.8 to 3.9 ms for Opus; for PCM Needletail's UDP mode is next. Needletail is the only system that carries lossless audio as audio, and its UDP mode lost nothing to 1% and 5% loss.
+Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail (RaptorQ FEC over UDP and LL-HLS, smallest frames by default), Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud, on dedicated-CPU instances only.
+For lossless PCM Needletail's UDP mode had the lowest median in every region (0.4 to 3.2 ms ahead of self-hosted LiveKit's 2.5 ms blocks); for Opus self-hosted LiveKit leads by 0.5 to 0.8 ms except in Tokyo; Needletail is 12 to 25 ms ahead of LiveKit Cloud's mesh; its limit is crowds at 1 ms parts.
 
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
 Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).

@@ -567,6 +567,7 @@ def node_usage(samplers: dict, start: float, end: float) -> dict:
 
 
 PROBE_KEEP = ("error", "frame_ms", "first_audio_ms", "units", "units_in_window", "units_expected",
+              "webrtc_opus_send_corrected_ms",
               "lane_kind", "format", "repair_datagrams", "raptorq_shards_recovered", "deadline_misses",
               "erasure_epochs", "seconds_with_loss", "includes_daw_buffer", "note", "units_missing", "missing_percent",
               "gaps", "longest_gap_ms", "bit_exact_percent", "kbit_per_second", "jitter_p99_minus_p50_ms",
