@@ -16,7 +16,10 @@ The relay DAG is the deploy tool's `topology` setting. "merged" (the
 default, low-latency item 4): the contributor feeds lon-dist-a and
 lon-dist-b, which feed new-dist-a and new-dist-b crossed; the two backbone
 namespaces stay empty (no service). `up topology=legacy` puts the backbone
-relays relay-primary and relay-secondary between them again.
+relays relay-primary and relay-secondary between them again. Edges are fed
+by the fast plane from the two distributors of their site, beside the cache
+mesh (the deploy tool's `edge_fast_plane`; `up edge_fast_plane=false` leaves
+them to the cache mesh alone, for an A/B).
 
 Nothing needs root. The namespaces belong to a rootless user namespace, and
 the cgroups are scopes of the user's systemd manager.
@@ -725,7 +728,9 @@ def render(overrides: list[str]) -> dict:
                 index += 1
         if contributor:
             fixed += ["--srt-bind", "0.0.0.0:27001", "--srt-stream-id", str(VIDEO_STREAM)]
-        elif node(name)["role"] == "edge":
+        elif node(name)["role"] == "edge" and "--fec-bind" not in fixed:
+            # An edge on the cache mesh alone; one fed by the fast plane
+            # (edge_fast_plane) has its relay parents' --fec-bind already.
             fixed += ["--fec-bind", "0.0.0.0:12001"]
         out[name] = {"args": fixed, "rust_log": item["rust_log"]}
     save("rendered.json", out)

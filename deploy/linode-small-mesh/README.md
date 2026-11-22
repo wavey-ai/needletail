@@ -54,7 +54,25 @@ lon-dist-b --(public, source)--> new-dist-b <--(public, repair + failover)-- lon
 - No backbone relay is used. `plan` names any in the lab, and `push` and
   `restart` stop their service. `deploy/low-latency/topology-merged.json` is
   the dedicated lab without them.
-- Edges stay on the regional cache mesh in both topologies.
+- Edges are fed by the fast plane as well as the regional cache mesh, in both
+  topologies (`edge_fast_plane`, default true). Each distributor is a
+  forwarder of its site's edges: a cache-mesh lease that it serves to an edge
+  makes the edge a lease child of that stream (`--relay-lease-bind
+  <VLAN>:22901`), and its class threads send the contributor's RaptorQ
+  symbols on as they arrive. Each edge binds its site's first two
+  distributors (by name) as relay parents, primary on 22001 and secondary on
+  22002, video on both plus `class_port_offset`. Which one is primary
+  alternates by edge, so each distributor is primary for half of the edges
+  (`--relay-lease-primary-children`). Audio comes in full from both. Video
+  comes in full from the primary; the secondary sends repair only, until the
+  edge's failover controller (22903) promotes it on its lease failover
+  listener (22902). Every edge of a site has its own
+  `--client-udp-edge-rank`, so the fast client lane's repair from each edge
+  is distinct. `--set edge_fast_plane=false` leaves the edges to the cache
+  mesh alone, for an A/B. The fast plane is off when the relay class split is
+  off. `client_udp_fast_lane` (default true) renders `--client-udp-fast-lane`
+  on every node that serves UDP clients. These ports are VLAN only, and the
+  lab firewall already admits every lab address.
 - Both parents of a remote forwarder are in London, so the program declares
   each such node in `shared_domain_parents`. The compiled plan records it as
   the production-readiness gap `shared_parent_failure_domain:<node>`, and

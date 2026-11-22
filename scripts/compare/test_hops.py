@@ -280,6 +280,8 @@ class Join(unittest.TestCase):
         # The playlist host is a distributor, not an edge: the edge is not known,
         # so no edge stage, and no reply from the journal.
         self.assertEqual(result["listeners"][0]["edge_by_playlist_host"], None)
+        self.assertEqual(listener["planes"], {"fast": 0, "mesh": 0, "unknown": 100})
+        self.assertIn("100 by an edge not known", hops.format_summary(result))
         names = [item["hop"] for item in listener["hops"]]
         self.assertNotIn("edge.reply -> listener.complete", names)
 
@@ -405,6 +407,132 @@ class Join(unittest.TestCase):
         text = summary.read_text()
         self.assertIn("london / listener_parts: 100 parts", text)
         self.assertIn("edge.reply -> listener.complete", text)
+
+
+def fast_plane_journal() -> list[dict]:
+    """The merged topology with edges fed by the fast plane (wave 5 W0): no
+    backbone; lon-edge-1 is a lease child of lon-dist-a (its primary, lease
+    bind 10.77.1.11:22901) and lon-dist-b; its tee commits every part except
+    the odd ones that the cache mesh committed first. new-edge-1 is a lease
+    child of new-dist-a, which has no compiled children and so journals no
+    relay_forward. Each edge sends every part to a UDP listener."""
+    events = []
+    for item in journal():
+        if item["node"] == "relay-primary":
+            continue
+        if item["node"] == "lon-dist-a" and item["stage"] == "relay_first":
+            events.append(event("lon-dist-a", "relay_forward", item["seq"], item["t_us"] + 30))
+        events.append(item)
+    for seq in SEQS:
+        s = spoken(seq)
+        mesh_first = seq % 2 == 1
+        events += [
+            # lon-dist-a: relay_first s + 2600, forward s + 2630.
+            event("lon-edge-1", "relay_first", seq, s + 2700, peer="10.77.1.11:22901"),
+            event("lon-edge-1", "relay_decoded", seq, s + 2750, peer="10.77.1.11:22901"),
+            # The mesh committed odd parts at s + 3600 (journal()).
+            event("lon-edge-1", "committed", seq, s + (3700 if mesh_first else 2800)),
+            event("lon-edge-1", "udp_sent", seq, s + 2720, peer="10.90.0.101:40000", n=1),
+            event("new-edge-1", "relay_first", seq, s + 40_100, peer="10.77.2.11:22901"),
+            event("new-edge-1", "committed", seq, s + 40_250),
+            event("new-edge-1", "udp_sent", seq, s + 40_120, peer="10.90.2.101:40000", n=1),
+        ]
+    return events
+
+
+class FastPlane(unittest.TestCase):
+    """Edges fed by the fast plane: their tee's stages and udp_sent."""
+
+    def setUp(self):
+        self.directory = pathlib.Path(tempfile.mkdtemp())
+
+    def test_a_part_that_the_tee_committed_first_follows_the_fast_path(self):
+        result = analyse(NODES, fast_plane_journal(), [], STREAM, START_US)
+        london = result["regions"]["london"]["edge_parts"]
+        self.assertEqual(london["planes"], {"fast": 50, "mesh": 50, "unknown": 0})
+        fast = {
+            "contrib.sent -> parent.relay_first": 2.1,
+            "parent.relay_first -> parent.relay_forward": 0.03,
+            "parent.relay_forward -> edge.relay_first": 0.07,
+            "edge.relay_first -> edge.relay_decoded": 0.05,
+            "edge.relay_decoded -> edge.committed": 0.05,
+            "edge.committed -> edge.reply": 0.9,
+        }
+        for name, ms in fast.items():
+            self.assertEqual(hop(london, name)["p50"], ms, name)
+            # The contributor's hop is every part's, whatever its plane.
+            self.assertEqual(hop(london, name)["count"], 100 if name.startswith("contrib.") else 50,
+                             name)
+        # The parts that the cache mesh committed first keep the mesh path.
+        self.assertEqual(hop(london, "edge.mesh_first -> edge.edge_committed")["count"], 50)
+        self.assertEqual(hop(london, "parent.mesh_sent -> edge.mesh_first")["p50"], 0.3)
+        # Merged topology: lon-dist-a is a first forwarder, no primary hop.
+        self.assertFalse(any(item["hop"].startswith("primary.") for item in london["hops"]))
+        # udp_sent from the first arrival, on each plane.
+        self.assertEqual(hop(london, "edge.relay_first -> edge.udp_sent")["p50"], 0.02)
+        self.assertEqual(hop(london, "edge.relay_first -> edge.udp_sent")["count"], 50)
+        self.assertEqual(hop(london, "edge.mesh_first -> edge.udp_sent")["p50"], -0.58)
+        self.assertEqual(stage(london, "edge.udp_sent")["p50"], 2.72)
+        self.assertEqual(stage(london, "edge.udp_sent")["count"], 100)
+        # In the order of the path.
+        names = [item["hop"] for item in london["hops"]]
+        self.assertLess(names.index("parent.relay_first -> parent.relay_forward"),
+                        names.index("parent.relay_forward -> edge.relay_first"))
+        self.assertLess(names.index("edge.relay_decoded -> edge.committed"),
+                        names.index("edge.committed -> edge.reply"))
+
+    def test_a_forwarder_without_relay_forward_is_gone_around(self):
+        result = analyse(NODES, fast_plane_journal(), [], STREAM, START_US)
+        newyork = result["regions"]["newyork"]["edge_parts"]
+        self.assertEqual(newyork["planes"], {"fast": 100, "mesh": 0, "unknown": 0})
+        # new-dist-a: relay_first s + 40,000, no relay_forward.
+        self.assertEqual(hop(newyork, "parent.relay_first -> edge.relay_first")["p50"], 0.1)
+        # No relay_decoded at new-edge-1 either.
+        self.assertEqual(hop(newyork, "edge.relay_first -> edge.committed")["p50"], 0.15)
+        self.assertEqual(stage(newyork, "edge.committed")["p50"], 40.25)
+        self.assertIn("edge.relay_first", result["stages_seen"])
+        summary = hops.format_summary(result)
+        self.assertIn("newyork / edge_parts: 100 parts (100 on the fast plane, 0 over the cache mesh)",
+                      summary)
+        self.assertIn("source -> edge.udp_sent", summary)
+
+    def test_the_listeners_edge_is_found_by_the_tees_commit(self):
+        probe = self.directory / "fast.probe.csv"
+        lines = ["kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets,"
+                 "published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part"]
+        for seq in SEQS:
+            s = spoken(seq)
+            # The slot's time: the tee's commit, or the mesh's for the odd
+            # parts, which the mesh committed first.
+            committed = s + (3600 if seq % 2 else 2800)
+            lines.append(f"a,{seq},{3000},{s + 3000},{seq},1440,0,1,{s + 300},{committed},"
+                         f"{committed},,{seq}")
+        probe.write_text("\n".join(lines) + "\n")
+        (self.directory / "fast.probe.json").write_text(
+            json.dumps({"detail": {"playlist_url_host": "10.90.0.11:19444"}}))
+        result = analyse(NODES, fast_plane_journal(), [hops.read_probe(str(probe))], STREAM,
+                         START_US)
+        # By the tee's committed event, or the mesh's edge_committed.
+        self.assertEqual(result["listeners"][0]["edge_found_by_edge_committed"], 100)
+        listener = result["regions"]["london"]["listener_parts"]
+        self.assertEqual(listener["planes"]["fast"], 50)
+        self.assertEqual(hop(listener, "edge.committed -> edge.reply")["p50"], 0.9)
+
+    def test_the_plane_of_a_part(self):
+        journal_ = hops.Journal(NODES, fast_plane_journal(), STREAM)
+        self.assertTrue(journal_.fast_plane("lon-edge-1", STREAM, 100))
+        self.assertFalse(journal_.fast_plane("lon-edge-1", STREAM, 101))
+        self.assertEqual(journal_.parent_of("lon-edge-1", STREAM, 100, fast=True), "lon-dist-a")
+        # Without commits, the first arrival decides.
+        only = hops.Journal(NODES, [event("lon-edge-1", "relay_first", 5, 10, peer="10.77.1.12:22901"),
+                                    event("lon-edge-1", "mesh_first", 5, 20, peer="10.77.1.11:29101")],
+                            STREAM)
+        self.assertTrue(only.fast_plane("lon-edge-1", STREAM, 5))
+        self.assertEqual(only.parent_of("lon-edge-1", STREAM, 5, fast=True), "lon-dist-b")
+        self.assertEqual(only.parent_of("lon-edge-1", STREAM, 5), "lon-dist-a")
+        self.assertEqual(hops.hop_pairs({hops.FAST_PLANE: 1, "edge.relay_first": 1,
+                                         hops.UDP_SENT: 2}),
+                         [("edge.relay_first", hops.UDP_SENT)])
 
 
 class Epochs(unittest.TestCase):

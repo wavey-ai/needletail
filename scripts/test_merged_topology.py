@@ -202,10 +202,16 @@ class Render(Base):
             self.assertNotIn("--relay-secondary-id", args[name])
             # Repair on both contributor lanes is admitted on both.
             self.assertEqual(args[name].count("--relay-primary-promoted"), 1, name)
-        # distributor -> edge: the cache mesh of the site.
+        # distributor -> edge: the cache mesh of the site, and the fast plane
+        # from the same two distributors (edge_fast_plane).
         for edge in lab.edges("london"):
             self.assertEqual(values_of(args[edge], "--peer"),
                              ["10.77.1.11:29101", "10.77.1.12:29101"], edge)
+            self.assertEqual({value_of(args[edge], "--relay-primary-id"),
+                              value_of(args[edge], "--relay-secondary-id")},
+                             {"lon-dist-a", "lon-dist-b"}, edge)
+        _program, _plan, args = self.render(["edge_fast_plane=false"])
+        for edge in lab.edges("london"):
             self.assertNotIn("--relay-controlled-local", args[edge])
 
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
