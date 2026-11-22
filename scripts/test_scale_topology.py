@@ -755,8 +755,10 @@ class LabTool(unittest.TestCase):
         self.assertEqual(events[0], ("watchdog", 5.5, False))
         self.assertEqual(events[1][0], "create")
         self.assertEqual(events[-1], ("down",))
-        # The core stops at its first refusal: one create, not 69.
-        self.assertEqual(sum(1 for item in events if item[0] == "create"), 1)
+        # The core stops at its first refusal: only the creates already under
+        # way (CREATE_WORKERS at most), not 69.
+        self.assertLessEqual(sum(1 for item in events if item[0] == "create"),
+                             lab_tool.CREATE_WORKERS)
         self.assertEqual(json.loads((tmp / "state.json").read_text())["watchdog_deadline_unix"],
                          123)
 
