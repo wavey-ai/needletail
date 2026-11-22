@@ -48,6 +48,8 @@ class Limits(unittest.TestCase):
 
     def test_restore_gives_the_contributor_its_own_limits(self):
         lab.save("limits.json", {EDGE: {"memory_mb": 512}})
+        # The legacy topology: every node runs a service.
+        lab.save("rendered.json", {name: {"args": [], "rust_log": ""} for name in lab.names()})
         calls = {}
 
         def set_limits(name, cpu_percent=None, memory_mb=None):

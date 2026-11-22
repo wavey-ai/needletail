@@ -156,6 +156,34 @@ class Join(unittest.TestCase):
     def setUp(self):
         self.directory = pathlib.Path(tempfile.mkdtemp())
 
+    def test_merged_topology_first_forwarders_are_the_primary(self):
+        """Low-latency item 4: no backbone journals. The first forwarders
+        (the distributors of the contributor's site) stand for the primary:
+        a London edge fed by one of them has no primary hop, a New York edge
+        has the earliest of the two as its primary."""
+        events = []
+        for item in journal():
+            if item["node"] == "relay-primary":
+                continue
+            if item["node"] == "lon-dist-a" and item["stage"] == "relay_first":
+                events.append(event("lon-dist-a", "relay_forward", item["seq"], item["t_us"] + 30))
+            if item["node"] == "lon-dist-b" and item["stage"] == "relay_first":
+                events.append(event("lon-dist-b", "relay_forward", item["seq"], item["t_us"] + 40))
+            events.append(item)
+        result = analyse(NODES, events, [], STREAM, START_US)
+        self.assertEqual(result["primary_relay"], ["lon-dist-a", "lon-dist-b"])
+        london = {item["hop"] for item in result["regions"]["london"]["edge_parts"]["hops"]}
+        self.assertIn("contrib.sent -> parent.relay_first", london)
+        self.assertFalse(any("primary." in name for name in london), london)
+        newyork = result["regions"]["newyork"]["edge_parts"]
+        # lon-dist-b had each part first (s + 2000) and forwarded it 40 µs later.
+        self.assertEqual(hop(newyork, "contrib.sent -> primary.relay_first")["p50"], 1.5)
+        self.assertEqual(hop(newyork, "primary.relay_first -> primary.relay_forward")["p50"], 0.04)
+        self.assertEqual(hop(newyork, "primary.relay_forward -> parent.relay_first")["p50"], 37.96)
+        # A legacy journal keeps relay-primary.
+        self.assertEqual(analyse(NODES, journal(), [], STREAM, START_US)["primary_relay"],
+                         ["relay-primary"])
+
     def test_every_hop_of_the_edge_parts(self):
         result = analyse(NODES, journal(), [], STREAM, START_US)
         self.assertTrue(result["seq_check"]["seq_equals_epoch"])

@@ -23,7 +23,11 @@ Each part is followed along the path that it took to a listener:
                     journal without it (before low-latency item 3) gives
                     packaged -> sent as one hop.
   contrib.sent      last source symbol handed to the kernel, primary lane
-  primary.relay_first / primary.relay_forward   the backbone relay-primary
+  primary.relay_first / primary.relay_forward   the backbone relay-primary;
+                    in the merged topology (no backbone journals) the first
+                    forwarders, the distributors of the contributor's site,
+                    earliest of the two, and no primary hop for an edge that
+                    one of them fed itself
   parent.relay_first / parent.committed / parent.watermark / parent.mesh_sent
                     the distributor that fed the edge (found from the edge's
                     mesh_first `peer`), mesh_sent to that edge
@@ -125,17 +129,24 @@ EPOCH_STAGES = ("src_first", "src_last", "recovered", "packaged")
 # them: a hop goes around a missing one to the stage before it.
 OPTIONAL = {"contrib.sent_first"}
 LABELS = [label for label, _, _ in CHAIN]
+# A part's times carry this key when the edge's parent is a first forwarder
+# itself (the merged topology): its path has no primary relay, and its hops
+# go around the primary stages.
+NO_PRIMARY = "primary.none"
+PRIMARY_STAGES = {label for label, where, _ in CHAIN if where == "primary"}
 
 
 def hop_pairs(times: dict) -> list[tuple[str, str]]:
     """The hops of one part: consecutive stages of the CHAIN that it has,
-    going around a missing OPTIONAL stage only."""
+    going around a missing OPTIONAL stage only (and the primary stages of a
+    part marked NO_PRIMARY)."""
     pairs = []
+    optional = OPTIONAL | (PRIMARY_STAGES if NO_PRIMARY in times else set())
     for index, after in enumerate(LABELS[1:], 1):
         if after not in times:
             continue
         before = index - 1
-        while before > 0 and LABELS[before] in OPTIONAL and LABELS[before] not in times:
+        while before > 0 and LABELS[before] in optional and LABELS[before] not in times:
             before -= 1
         if LABELS[before] in times:
             pairs.append((LABELS[before], after))
@@ -457,6 +468,21 @@ class Journal:
         return None, None
 
 
+def first_relays(journal: Journal, primary: str) -> list[str]:
+    """The relays that the contributor feeds: the named primary backbone
+    when it journaled (the legacy topology), else the first backbone that
+    did, else the distributors of the contributor's site that did (the
+    merged topology of low-latency item 4: they are the first forwarders)."""
+    if journal.counts.get(primary):
+        return [primary]
+    backbones = [name for name in journal.named("backbone") if journal.counts.get(name)]
+    if backbones:
+        return backbones[:1]
+    sites = {journal.site(name) for name in journal.named("contributor")}
+    return [name for name in journal.named("distributor")
+            if journal.site(name) in sites and journal.counts.get(name)]
+
+
 def follow(journal: Journal, stream: int, seq: int, edge: str | None, primary: list[str],
            source_us: int | None, listener: dict | None) -> dict[str, int]:
     """The time of every stage of the CHAIN for one part on its way to one
@@ -471,7 +497,12 @@ def follow(journal: Journal, stream: int, seq: int, edge: str | None, primary: l
         if where == "contrib":
             t = journal.earliest(contrib, stage, stream, seq)
         elif where == "primary":
-            t = journal.earliest(primary, stage, stream, seq)
+            # Merged topology: a first forwarder that fed the edge itself
+            # is the parent; its stages are the parent's.
+            if parent not in primary:
+                t = journal.earliest(primary, stage, stream, seq)
+            else:
+                times[NO_PRIMARY] = 1
         elif where == "parent" and parent:
             if stage == "mesh_sent":
                 t = journal.mesh_sent.get((parent, stream, seq, edge))
@@ -530,7 +561,7 @@ def analyse(nodes: dict, events: list[dict], probes: list[dict], stream: int,
             primary: str = "relay-primary", since_us: int | None = None,
             until_us: int | None = None) -> dict:
     journal = Journal(nodes, events, stream, since_us, until_us)
-    primaries = [primary] if primary in nodes else journal.named("backbone")[:1]
+    primaries = first_relays(journal, primary)
 
     def source_of(seq: int, listener: dict | None = None) -> int | None:
         epoch = journal.last_epoch(stream, seq)
