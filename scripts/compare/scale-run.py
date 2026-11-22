@@ -194,12 +194,17 @@ def parts_per_s(config: str) -> float:
     return SAMPLE_RATE / CONFIGS[config]["epoch_samples"]
 
 
+def natural(name: str) -> list:
+    """A sort key that puts lon-edge-2 before lon-edge-10."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", name)]
+
+
 def regions_of(state: dict, standby: list[str] = ()) -> dict:
     """{site: {"edges", "distributors", "listeners", "view"}} of the lab, by
     name; standby edges are left out. A site without an edge or a listener
     host takes no listeners."""
     out: dict[str, dict] = {}
-    for node in sorted(state["nodes"].values(), key=lambda item: item["name"]):
+    for node in sorted(state["nodes"].values(), key=lambda item: natural(item["name"])):
         site = out.setdefault(node["site"], {"edges": [], "distributors": [], "listeners": [],
                                              "view": []})
         if node["role"] == "edge" and node["name"] not in standby:
@@ -1411,8 +1416,7 @@ def standby_for(nodes: list[dict], standby: list[str], edges_per_region: int | N
         if node["role"] == "edge" and node["name"] not in standby:
             by_site.setdefault(node["site"], []).append(node["name"])
     for names in by_site.values():
-        names.sort(key=lambda name: [int(part) if part.isdigit() else part
-                                     for part in re.split(r"([0-9]+)", name)])
+        names.sort(key=natural)
         out += names[edges_per_region:]
     return out
 
@@ -1560,7 +1564,9 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args) -> dict[str
         entry = regions[site]["distributors"][0]["vlan_ipv4"]
         for name, alloc in by_host.items():
             label = f"{run}-{step['listeners']}-{name}"
-            commands[name] = "; ".join(part for part in (
+            # One line each: every tool ends in `&`, and `&;` is a syntax
+            # error of the shell.
+            commands[name] = "\n".join(part for part in (
                 f"mkdir -p {remote_dir}",
                 load_command(alloc, edges, args.config, step["ramp_s"], duration, args.sample,
                              remote_dir, label, lab["nodes"][name].get("vlan_ipv4"),
