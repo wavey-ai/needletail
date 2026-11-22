@@ -259,6 +259,11 @@ DEFAULT_SETTINGS = {
     # (fMP4, WebRTC). Only the lab tools read these.
     "pcm_epoch_samples": 48,
     "opus_epoch_samples": 48,
+    # Opus bitrate (CBR) of the lab's Opus sources (daw-test-source and
+    # aep1-48k-probe send --opus-bitrate): 320 kb/s, the lane's default, the
+    # smallest rate at which 1 ms frames are at least as good as standard
+    # 5 ms at 192 kb/s; 256000 is the lower-bandwidth option. Lab tools only.
+    "opus_bitrate": 320000,
     # Version 1: `fmp4_part_ms` maps to `audio_part` "<N*1000>us" (and to
     # `video_part` "<N>ms" when `fmp4_video_part_ms` is not given),
     # `fmp4_video_part_ms` to `video_part` "<N>ms". None: not used.
@@ -635,6 +640,9 @@ def part_plan(settings: dict) -> dict:
     opus = whole(settings["opus_epoch_samples"], "opus_epoch_samples")
     if opus not in OPUS_EPOCH_SAMPLES:
         raise ValueError(f"opus_epoch_samples={opus}: Opus frames are {OPUS_EPOCH_SAMPLES} samples")
+    opus_bitrate = whole(settings.get("opus_bitrate", 320000), "opus_bitrate")
+    if not 6000 <= opus_bitrate <= 512000:
+        raise ValueError(f"opus_bitrate={opus_bitrate}: Opus takes 6000 to 512000 b/s")
 
     smallest_us = smallest_audio_part_us(audio, pcm, opus)
     window_ms = whole(settings["window_ms"], "window_ms")
@@ -647,6 +655,7 @@ def part_plan(settings: dict) -> dict:
                  else ["--window-parts", str(window_parts)])
     return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
             "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
+            "opus_bitrate": opus_bitrate,
             "smallest_part_us": smallest_us,
             "window_parts": window_parts if window_parts is not None else -(-window_ms * 1000 // part_us)}
 

@@ -201,6 +201,14 @@ class Settings(unittest.TestCase):
         for frame in (64, 72, 120):
             settings_frame, _ = self.load([f"opus_epoch_samples={frame}"])
             self.assertEqual(deploy.epoch_samples(settings_frame, "opus"), frame)
+        # The lane's Opus rate: 320 kb/s CBR; 256 kb/s is the cheaper option.
+        self.assertEqual(settings["opus_bitrate"], 320000)
+        self.assertEqual(deploy.part_plan(settings)["opus_bitrate"], 320000)
+        settings_rate, _ = self.load(["opus_bitrate=256000"])
+        self.assertEqual(deploy.part_plan(settings_rate)["opus_bitrate"], 256000)
+        with self.assertRaises(SystemExit) as caught:
+            self.load(["opus_bitrate=1000000"])
+        self.assertIn("opus_bitrate=1000000", str(caught.exception))
         settings, _ = self.load(["pcm_epoch_samples=12"])
         self.assertEqual(deploy.epoch_samples(settings, "pcm"), 12)
         self.assertEqual(deploy.epoch_samples(settings, "flac"), 32)

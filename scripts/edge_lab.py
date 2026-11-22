@@ -928,6 +928,12 @@ def probe_epoch_samples(payload: str) -> int:
     return max(32, samples) if payload == "flac" else samples
 
 
+def opus_bitrate() -> int:
+    """Opus bitrate (CBR) of the lab's Opus sources, from the settings of the
+    running lab (`opus_bitrate`): the lane's 320 kb/s by default."""
+    return int(load("settings.json").get("opus_bitrate") or 320000)
+
+
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
     """Start the sources next to the contributor, as an encoder on its LAN.
@@ -965,8 +971,10 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         process = subprocess.Popen(
             enter("contrib-lon") + [
                 str(DAW_SOURCE), "--direct-contributor", "--loop-prepared-pcm",
-                # The DAW lane's Opus frame: 1 ms Opus Custom by default.
+                # The DAW lane's Opus frame and rate: 1 ms Opus Custom at
+                # 320 kb/s by default.
                 "--opus-frame-samples", str(probe_epoch_samples("opus")),
+                "--opus-bitrate", str(opus_bitrate()),
                 "127.0.0.1:27100", str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),
