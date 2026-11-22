@@ -815,6 +815,9 @@ def udp_client_verdict(item: dict, report: dict | None, parts: dict[int, dict],
         "wire_kbps": None if report.get("wire_bits_per_second") is None
         else round(report["wire_bits_per_second"] / 1000, 1),
         "window_parts": len(parts),
+        # Kernel receive -> the client read the datagram: the listener
+        # host's own delay (clients from before wave 6 do not report it).
+        "host_delay_ms": report.get("kernel_to_arrival_ms"),
         "unit_latency_ms": hops.distribution(unit),
         "publish_to_arrival_ms": hops.distribution(published)})
     return out
@@ -913,6 +916,9 @@ def udp_summary_lines(hosts: dict) -> list[str]:
                          f"moves {item.get('moves')} plan {item.get('compact_plan')} "
                          f"nack {item.get('nack_parts')} wire {item.get('wire_bytes_per_part')} "
                          f"B/part ({item.get('wire_per_payload')}x, {item.get('wire_kbps')} kbit/s)"
+                         + (f" host delay p99/max {(item.get('host_delay_ms') or {}).get('p99')}/"
+                            f"{(item.get('host_delay_ms') or {}).get('max')}"
+                            if item.get("host_delay_ms") else "")
                          + (f" ({item['error']})" if item.get("error") else ""))
     return lines
 
