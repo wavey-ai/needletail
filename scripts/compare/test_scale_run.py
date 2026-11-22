@@ -49,6 +49,24 @@ def lab(without=()) -> dict:
     return scale.topology_state(TOPOLOGY, list(without))
 
 
+_lab_spec = importlib.util.spec_from_file_location("small_mesh_lab",
+                                                   HERE.parent / "linode-small-mesh-lab.py")
+lab_tool = importlib.util.module_from_spec(_lab_spec)
+_lab_spec.loader.exec_module(lab_tool)
+
+
+def missing_entry(node: dict, kind: str = "account") -> dict:
+    """A `listeners_missing` entry as the lab tool records it."""
+    return lab_tool.missing_entry(node, kind, "HTTP 400: Account Limit reached")
+
+
+def lab_tool_batches(state: dict) -> list[list[dict]]:
+    """The lab tool's listener batches (`up --listener-batches 2`) of a lab."""
+    hosts = sorted((node for node in state["nodes"].values()
+                    if lab_tool.is_listener_host(node)), key=lambda node: scale.natural(node["name"]))
+    return lab_tool.listener_batches(hosts, 2)
+
+
 class Steps(unittest.TestCase):
     def test_parse_steps(self):
         self.assertEqual(scale.parse_steps("100,1000,5k,10_000"), [100, 1000, 5000, 10000])
@@ -143,9 +161,7 @@ class Steps(unittest.TestCase):
         # The account refused Tokyo's last six listener hosts at `up`.
         state = lab(["sydney"])
         missing = [f"tok-load-{index}" for index in range(3, 9)]
-        for name in missing:
-            del state["nodes"][name]
-        state["listeners_missing"] = [{"name": name, "kind": "account"} for name in missing]
+        state["listeners_missing"] = [missing_entry(state["nodes"].pop(name)) for name in missing]
         regions = scale.regions_of(state, STANDBY)
         plain = scale.plan_steps(state, [1000, 12000, 15000, 20000], "pcm-1", hls_share=0,
                                  standby=STANDBY)
@@ -171,15 +187,70 @@ class Steps(unittest.TestCase):
         self.assertEqual(plan["fit"]["dropped"], [40000])
         self.assertEqual(plan["fit"]["listeners_missing"], missing)
         self.assertIn("tokyo", scale.fit_line(plan))
-        # A lab that misses listener hosts is fitted by default, unless --force.
+        # A lab that misses listener hosts is fitted by default, with --force
+        # too (it only lets over-headroom steps run); --no-fit turns it off.
         self.assertTrue(scale.fit_wanted(argparse.Namespace(force=False), state))
-        self.assertFalse(scale.fit_wanted(argparse.Namespace(force=True), state))
+        self.assertTrue(scale.fit_wanted(argparse.Namespace(force=True), state))
+        self.assertFalse(scale.fit_wanted(argparse.Namespace(force=True, no_fit=True), state))
         self.assertFalse(scale.fit_wanted(argparse.Namespace(force=False), lab()))
         self.assertTrue(scale.fit_wanted(argparse.Namespace(force=False, fit_hosts=True), lab()))
         for name, cap in caps.items():
             one = {name: regions[name]}
             self.assertTrue(scale.drivable(scale.allocate(cap, one, 0), plan["capacity"]))
             self.assertFalse(scale.drivable(scale.allocate(cap + 1, one, 0), plan["capacity"]))
+
+    def test_the_documented_forced_ramp_is_fitted_and_as_far_over_as_on_the_whole_lab(self):
+        # Curve 2's pcm-1 UDP-only ramp, run with --force as SCALE.md says,
+        # on a lab whose second listener batch the account refused (half of
+        # every region's hosts missing).
+        steps = "100,1000,10000,20000,24000,28000,32000"
+        whole = lab()
+        short = lab()
+        short["listeners_missing"] = [
+            missing_entry(short["nodes"].pop(node["name"]))
+            for node in lab_tool_batches(whole)[1]]
+        self.assertEqual(len(short["listeners_missing"]), 20)
+        args = argparse.Namespace(steps=steps, config="pcm-1", hls_share=0.0,
+                                  hls_cap_per_host=None, hold=60.0, ramp=None, cost=None,
+                                  udp_mbps=None, inbound_gbps=scale.LOAD_HOST_INBOUND_GBPS,
+                                  lk_per_sfu=450, joins=0, joins_from=0, force=True,
+                                  fit_hosts=False, no_fit=False)
+        full = scale.build_plan(args, whole, [])
+        fitted = scale.build_plan(args, short, [])
+        self.assertIn("fit", fitted)
+        # The whole lab: 32,000 is the one step over the headroom (106%).
+        self.assertEqual([step["drivable"] for step in full["steps"]], [True] * 6 + [False])
+        over = max(full["steps"][-1]["host_load"].values())
+        self.assertGreater(over, 1.0)
+        # Half the hosts: no host is loaded past the headroom or what the
+        # whole lab would load it, and the forced step stays over the
+        # headroom as planned, not clipped to it nor doubled. 24,000 and
+        # 28,000 add nobody past 20,000 (clipped to the headroom) and go.
+        planned = {step["listeners"]: step for step in full["steps"]}
+        self.assertEqual([step["requested"] for step in fitted["steps"]],
+                         [100, 1000, 10000, 20000, 32000])
+        self.assertEqual(fitted["fit"]["dropped"], [24000, 28000])
+        for step in fitted["steps"]:
+            self.assertLessEqual(max(step["host_load"].values()), max(
+                1.0, max(planned[step["requested"]]["host_load"].values())) + 1e-9)
+        last = fitted["steps"][-1]
+        self.assertEqual(last["requested"], 32000)
+        self.assertGreater(max(last["host_load"].values()), 1.0)
+        self.assertAlmostEqual(max(last["host_load"].values()), over, delta=0.01)
+        self.assertTrue(last["fit_load_limit"])
+        self.assertIn("as far over it as on the whole lab", scale.fit_line(fitted))
+        # Unfitted (--no-fit), the same step puts about twice the load on
+        # the hosts that exist: what the fit prevents.
+        loose = scale.build_plan(argparse.Namespace(**{**vars(args), "no_fit": True}), short, [])
+        self.assertNotIn("fit", loose)
+        self.assertGreater(max(loose["steps"][-1]["host_load"].values()), 1.8 * over)
+        # Without --force the fit keeps every host within the headroom.
+        within = scale.build_plan(argparse.Namespace(**{**vars(args), "force": False}), short, [])
+        self.assertTrue(all(step["drivable"] for step in within["steps"]))
+        # On a whole lab --fit-hosts --force changes nothing.
+        same = scale.build_plan(argparse.Namespace(**{**vars(args), "fit_hosts": True}), whole, [])
+        self.assertEqual([step["listeners"] for step in same["steps"]],
+                         [step["listeners"] for step in full["steps"]])
 
     def test_plan_command_offline(self):
         args = argparse.Namespace(

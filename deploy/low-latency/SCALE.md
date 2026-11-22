@@ -236,9 +236,15 @@ per-host capacity and the step's LL-HLS share), the other regions keep
 their share, a step is named by the listeners it runs
 (`requested` is what was asked), and a step that would add no listener is
 dropped. The fit is printed, logged (`fit` in events.jsonl) and kept in
-plan.json. `--force` runs the steps as given (the monitor still stops a
-step whose listener host saturates); `--fit-hosts` fits a whole lab too.
-The schedule below then ends early: the run costs the hours it lasts.
+plan.json. `--force` does not turn it off, so every command below,
+`--force` or not, is fitted on a short lab: `--force` lets a step over the
+headroom run, and the fit then fills each region's hosts as far over the
+headroom as the whole lab would (the 106% step stays at 106%, not twice
+that on half the hosts; `fit_load_limit` in the step). `--no-fit` puts
+each region's share on the hosts it has, unfitted (the monitor still stops
+a step whose listener host saturates); `--fit-hosts` fits a whole lab to
+the headroom too. The schedule below then ends early: the run costs the
+hours it lasts.
 
 **Listeners on the VLAN.** The listener and view hosts are on their
 region's VLAN (.100 the view host, .101 up the listener hosts), and every
@@ -550,7 +556,9 @@ scripts/compare/scale-run.py run $COST --config opus-2.5 --name c1-opus25-udp --
 
 `--force` runs steps that the plan marks as over the listener hosts. The
 monitor still stops a step when a listener host saturates, and the ramp
-ends there.
+ends there. On a lab missing listener hosts the steps are still fitted
+(above): `--force` keeps a step as far over the headroom as on the whole
+lab, never more.
 
 The phases, on curve 1 (five edges a region). Each group is one held step;
 `plan` shows its timeline. R4 and A3 run only when named, once Phase AM
@@ -603,8 +611,8 @@ the last step of the two UDP-only ramps a few percent over the plan's 70%
 headroom (32,000 at 106%, 80,000 at 107%): `--force` runs it, and the
 monitor still stops a step whose listener host saturates. Without Sydney
 the last two or three steps of those ramps are over (as they were before
-the crowd), and the fit to the hosts (above) does not apply to a lab that
-misses no host.
+the crowd). The fit to the hosts (above) changes nothing on a lab that
+misses no host; on one that does, these `--force` ramps are fitted too.
 
 The scoreboard at scale, with the referee's own tools (each step is a
 session of its records, `<name>-<step>`):
