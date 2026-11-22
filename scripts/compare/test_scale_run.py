@@ -1107,7 +1107,8 @@ class Phases(unittest.TestCase):
         runner = scale.PhaseRunner(lab(), timeline, time.time(), logged.append, args,
                                    directory / "events.jsonl", directory=directory)
         with mock.patch.object(scale.subprocess, "Popen", Process), \
-                mock.patch.object(scale, "CONTROLLER_WAIT_S", 0.2):
+                mock.patch.object(scale, "CONTROLLER_WAIT_S", 0.2), \
+                mock.patch.dict(scale.os.environ, {"NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS": "7"}):
             runner.act(items[0])
             # A1's controller is still in its last tick when A2 begins: it
             # is waited for, then stopped with SIGINT, before A2's starts.
@@ -1121,6 +1122,8 @@ class Phases(unittest.TestCase):
             command = process.command
             self.assertEqual(command[command.index("--controller-state") + 1],
                              str(directory / "autoscale-state.json"))
+            # The lab tool's ceiling on the watchdog's hours is the controller's.
+            self.assertEqual(command[command.index("--max-watchdog-hours") + 1], "7")
         self.assertTrue((directory / "controller-A1.log").exists())
         exits = {item["scenario"]: item["returncode"] for item in logged
                  if item.get("event") == "controller_exit"}
@@ -1319,6 +1322,123 @@ class Referee(unittest.TestCase):
                                      "steps": [{"listeners": 5000, **figures}]})
         self.assertIn("Self-hosted LiveKit beside Needletail", text)
         self.assertIn("| 5000 | london | 450 | 6 | 6 | 43 | 55 | 0.05 | 400 | 0.5 |", text)
+
+
+@unittest.skipUnless(REFEREE, "the referee's harness (needletail-compare) is not checked out")
+class Joins(unittest.TestCase):
+    """The joins phase in every held step (item 3): the referee's
+    Audio.joins on the view hosts, its records read by the referee's
+    analysis and scoreboard."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = lab(["sydney"])
+        self.ref = scale.referee()
+        self.session = scale.referee_session(self.ref, "r1-5000", self.tmp, self.state)
+        self.audio = scale.referee_audio(self.ref, self.session, "pcm-1",
+                                         scale.livekit_room("r1", "pcm-1"), ["lon", "new", "tok"])
+
+    def test_every_step_holds_long_enough_for_its_joins(self):
+        self.assertEqual(scale.joins_seconds(20), 20 * 6.5 + 10)
+        plan = scale.plan_steps(self.state, [1000, 5000], "pcm-1", standby=STANDBY, joins=20)
+        self.assertEqual([step["joins"] for step in plan["steps"]], [20, 20])
+        self.assertEqual([step["hold_s"] for step in plan["steps"]], [140.0, 140.0])
+        late = scale.plan_steps(self.state, [1000, 5000], "pcm-1", standby=STANDBY, joins=20,
+                                joins_from=5000)
+        self.assertEqual([step["joins"] for step in late["steps"]], [0, 20])
+        self.assertEqual([step["hold_s"] for step in late["steps"]], [60.0, 140.0])
+        self.assertEqual(scale.plan_steps(self.state, [1000], "pcm-1", standby=STANDBY,
+                                          joins=20, hold=300)["steps"][0]["hold_s"], 300)
+
+    def test_a_phase_run_has_no_joins_unless_asked_and_never_with_dist_a_faulted(self):
+        args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="", steps=None,
+                                  hls_share=None, config=None, hold=60.0, joins=None,
+                                  lk_per_sfu=None)
+        scale.phase_setup(args)
+        self.assertEqual((args.joins, args.lk_per_sfu), (0, 0))
+        args = argparse.Namespace(phase_plan=str(PHASES), group="F", scenarios="", steps=None,
+                                  hls_share=None, config=None, hold=60.0, joins=20,
+                                  lk_per_sfu=None)
+        with self.assertRaises(ValueError) as caught:
+            scale.phase_setup(args)
+        self.assertIn("lon-dist-a", str(caught.exception))
+        ramp = argparse.Namespace(steps=None, hls_share=None, config=None)
+        scale.resolve_defaults(ramp)
+        self.assertEqual((ramp.joins, ramp.lk_per_sfu, ramp.joins_from), (20, 450, 0))
+
+    def fake_hosts(self, scripts_seen):
+        """compare-run.py's run_hosts without ssh: keep each view host's
+        script and leave the records each join would leave."""
+        def run_hosts(session, step, scripts, seconds):
+            scripts_seen.update(scripts)
+            for host in scripts:
+                directory = session.dir / step / host
+                directory.mkdir(parents=True, exist_ok=True)
+                for lane, first in (("nt-uc", 120.0), ("lkregion", 900.0), ("nt-pcm-h3", 300.0)):
+                    for index in range(1, 21):
+                        (directory / f"{lane}.join-{index:02d}.json").write_text(json.dumps({
+                            "first_audio_ms": first + index, "connect_ms": 50.0}))
+                (directory / "nt-uc.join-01.uc.json").write_text("{}")
+            return {"started_unix": time.time(), "seconds": 150.0, "host_errors": {}}
+        return run_hosts
+
+    def test_the_referees_joins_run_on_the_view_hosts_and_fill_the_scoreboard(self):
+        scripts: dict = {}
+        logged: list = []
+        with mock.patch.object(self.ref.run, "run_hosts", self.fake_hosts(scripts)), \
+                mock.patch.object(self.ref.run, "src", lambda *args, **kw: ""), \
+                redirect_stdout(io.StringIO()):
+            job = scale.JoinsJob(self.audio, 20, time.time(), time.time() + 600, logged.append,
+                                 5000).start()
+            job.wait()
+        self.assertEqual(sorted(scripts), ["lon-view", "new-view", "tok-view"])
+        london = scripts["lon-view"]
+        # 20 new listeners of each lane, one after another, the lanes side by side.
+        self.assertEqual(london.count("ntcmp-lk sub --lane lk"), 20)
+        self.assertEqual(london.count("needletail-udp-client --entry"), 20)
+        self.assertEqual(london.count("--lane nt-pcm-h3 "), 20)
+        self.assertEqual(london.count("&\n"), 5)
+        self.assertIn("mv -f lkregion.probe.json lkregion.join-20.json", london)
+        self.assertIn("r1-5000-lon-join01", london)
+        record = job.record()
+        self.assertEqual(record["step"], "audio.pcm.joins.20")
+        self.assertTrue(record["within_hold"])
+        self.assertIsNone(record["error"])
+        self.assertEqual([item["joins"] for item in logged], ["start", "end"])
+        self.assertEqual(logged[0]["lanes"], ["lkregion", "nt-pcm", "nt-pcm-w", "nt-pcm-h3",
+                                              "nt-uc"])
+        meta = json.loads((self.session.dir / "audio.pcm.joins.20" / "meta.json").read_text())
+        self.assertEqual((meta["phase"], meta["joins_per_lane"], meta["join_seconds"]),
+                         ("joins", 20, 5))
+        # The referee's analysis, then its scoreboard: the time to first
+        # audio row, Needletail (nt-uc) against LiveKit (lkregion).
+        result = {"nodes": {}, "control": {"session": self.session.name, "crowd": None,
+                                           "joins_run": record}}
+        figures = scale.control_results(self.state, self.tmp, result)
+        self.assertEqual(figures["joins"]["lon-view"]["nt-uc"]["first_audio_ms"]["p50"], 131.0)
+        self.assertEqual(figures["joins"]["lon-view"]["lkregion"]["with_audio"], 20)
+        analyse = scale.referee("compare-audio-analyse.py")
+        steps = {"audio.pcm.joins.20": analyse.analyse_step_now(
+            self.session.dir / "audio.pcm.joins.20")}
+        rows = scale.referee("scoreboard.py").board(
+            {"sessions": {self.session.name: {"steps": steps}}}, [self.session.name])
+        first = {row["region"]: row for row in rows if row["metric"] == "first_audio"}
+        self.assertEqual(sorted(first), ["London", "New York", "Tokyo"])
+        self.assertEqual((first["London"]["needletail"], first["London"]["livekit"],
+                          first["London"]["result"]), (131.0, 911.0, "win"))
+        text = scale.format_summary({"run": "r1", "config": "pcm-1", "hls_share": 0,
+                                     "steps": [{"listeners": 5000, **figures}]})
+        self.assertIn("| 5000 | lon-view | nt-uc | 20 | 20 | 131 | 139 | 140 |", text)
+
+    def test_a_step_stopped_before_its_ramp_ends_runs_no_joins(self):
+        logged: list = []
+        job = scale.JoinsJob(self.audio, 20, time.time() + 60, time.time() + 120, logged.append,
+                             5000).start()
+        job.stop()
+        job.wait()
+        self.assertFalse(job.record()["ran"])
+        self.assertEqual(logged, [])
 
 
 if __name__ == "__main__":

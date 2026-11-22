@@ -24,7 +24,8 @@ London, New York, Tokyo and Sydney:
 
 Sized for the owner's budget of 22 November (first about $60 to $70, then
 the shared $100 of the Needletail work, the failover, redistribution and
-autoscale phases included; the 6 h watchdog caps the lab at $62.53 plus
+autoscale phases included; the watchdog caps the lab at $72.95 in 7 h, the
+schedule with the joins phase in every step, or $62.53 in 6 h, plus
 whatever slots the autoscaler creates): as many simulated listeners as it
 buys, and in
 each region enough edges that on the second curve the edges, not the
@@ -47,8 +48,9 @@ and dist-b and a cache-mesh parent of its edges, never a compiled relay
 child, so no other node's relay ports move).
 
 Sydney's nodes come first in the file: it is the region short of dedicated
-capacity. `lab up --optional-sites sydney` creates them before the rest and
-goes on without Sydney when one cannot be created; `--without-sites sydney`
+capacity. `lab up --optional-sites sydney` creates its core before the rest (its
+listener hosts with the other regions', after the core) and goes on
+without Sydney when its core cannot be created; `--without-sites sydney`
 leaves it out (or a file made with --sites london,newyork,tokyo).
 
   scale_topology.py                       print topology-scale.json
@@ -230,8 +232,10 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
         "of billed transfer), and a self-hosted LiveKit SFU (g6-dedicated-2) per region; the "
         "contributor alone on a "
         "g6-dedicated-4 in London with its source host lon-src. Dedicated plans only. Sydney "
-        "first: the region short of capacity is created first; the run works without it "
-        "(lab up --optional-sites sydney, or --without-sites sydney). "
+        "first: the core of the region short of capacity is created first; the run works "
+        "without it (lab up --optional-sites sydney, or --without-sites sydney). The listener "
+        "hosts are created last, in batches: the lab is kept when the account refuses some "
+        "(listeners_missing), and scale-run.py fits its steps to the hosts that exist. "
         + (f"Standby edges ({', '.join(held)}): created, held out of the first curve by the "
            "deploy setting standby_edges, started in (deploy start --nodes) for the second. "
            if held else "")
@@ -239,7 +243,8 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
            "push, created only by the autoscaler (lab add), never by up or grow. "
            if slot_names else "")
         + "Sized for the owner's budget of 22 November (the shared $100 of the Needletail "
-        "work; the 6 h watchdog caps the created nodes at $62.53): the referee's plan (needletail-compare target/compare/scale-plan.md) grown to as "
+        "work; the watchdog caps the created nodes at $72.95 in 7 h, or $62.53 in 6 h): the "
+        "referee's plan (needletail-compare target/compare/scale-plan.md) grown to as "
         "many listener hosts as it buys, and enough edges a region that on the second curve "
         "the edges give out before the listener hosts; Sydney's listener hosts are "
         "g6-dedicated-4, for it had no g6-dedicated-8 capacity on 22 November (same vCPUs, "
