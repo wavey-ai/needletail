@@ -146,6 +146,18 @@ DEFAULT_SETTINGS = {
         "net.ipv4.ipfrag_max_dist": "0",
     },
     "path_loss_ppm": 20000,
+    # The contributor's legacy AEP1 lanes (wave 7 item 1): each AEP1 epoch
+    # re-framed as SoundKit v2 with four repair datagrams and sent to the two
+    # first forwarders (--audio-epoch-ingress-target and -redundant-), which
+    # relay it on their slow path. Nothing on the RelaySession path consumes
+    # it (edges, LL-HLS and UDP clients take RLS1); only WebTransport
+    # WAVEY-AUDIO-EPOCH readers and native relay subscribers at a distributor
+    # would. False renders --audio-epoch-mesh-lane off and no AEP1 target:
+    # 10 of the contributor's 16 datagrams per 1 ms part, and the same 10 on
+    # each first forwarder's long haul. True renders the lane's targets as
+    # before (an av-contrib with --audio-epoch-mesh-lane then needs it `on`
+    # under --relay-exclusive: give it in extra_contributor_args).
+    "audio_epoch_lane": False,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1488,7 +1500,6 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
         "--http-port", str(CONTRIB_HTTP_PORT),
         "--mesh-fec-target", service["primary"]["target"],
         "--mesh-media-fec-target", service["primary"]["target"],
-        "--audio-epoch-ingress-target", service["audio_epoch_ingress_target"],
         "--daw-media-bind", f"0.0.0.0:{DAW_MEDIA_PORT}",
         "--daw-hls-queue-capacity", "4096",
         "--daw-hls-packaging", settings["daw_hls_packaging"],
@@ -1515,9 +1526,15 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
         "--relay-deadline-ms", str(service["media_deadline_ms"]),
         "--relay-min-repair-symbols", str(settings["relay_min_repair_symbols"]),
     ]
-    if service.get("audio_epoch_redundant_ingress_target"):
-        args += ["--audio-epoch-redundant-ingress-target",
-                 service["audio_epoch_redundant_ingress_target"]]
+    if settings.get("audio_epoch_lane"):
+        # As before the flag existed (av-contrib's `auto` keeps the lane
+        # with these targets only when told `on`; an older binary has no flag).
+        args += ["--audio-epoch-ingress-target", service["audio_epoch_ingress_target"]]
+        if service.get("audio_epoch_redundant_ingress_target"):
+            args += ["--audio-epoch-redundant-ingress-target",
+                     service["audio_epoch_redundant_ingress_target"]]
+    else:
+        args += ["--audio-epoch-mesh-lane", "off"]
     for key, prefix in (("source_path_observation", "--relay-path"),
                         ("secondary_path_observation", "--relay-secondary-path")):
         observed = service.get(key)
@@ -1535,6 +1552,12 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
     extra = list(settings["extra_contributor_args"])
     args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
     return args + extra
+
+
+def is_contributor_args(args: list[str]) -> bool:
+    """Whether `args` are av-contrib's: it alone takes the DAW media ingest
+    (and, with audio_epoch_lane, the AEP1 ingress targets)."""
+    return "--daw-media-bind" in args or "--audio-epoch-ingress-target" in args
 
 
 def contributor_class_args(node: dict, plan: dict) -> list[str]:
@@ -1623,7 +1646,7 @@ def class_offsets(args: list[str]) -> dict | None:
         except ValueError:
             raise ValueError(f"{flag} {value(flag)!r} is not a port offset") from None
 
-    if "--audio-epoch-ingress-target" in args:
+    if is_contributor_args(args):
         on = value("--relay-class-lanes") == "true"
         return {"relay": whole("--relay-class-port-offset") if on else 0, "mesh": None}
     given = flag_names(args)
@@ -1713,7 +1736,7 @@ def udp_binds(args: list[str], plan: dict) -> list[tuple[str, int, str]]:
     gives none). Two arguments that name the same address are one socket
     (av-mesh's --fec-bind and --relay-primary-bind). The contributor's lane
     sockets have no twin port: its class pair shares the lane's endpoint."""
-    contributor = "--audio-epoch-ingress-target" in args
+    contributor = is_contributor_args(args)
     relay = "--relay-controlled-local" in args
     offsets = {"relay": plan["class_port_offset"] if plan["relay_class_split"] else 0,
                "mesh": plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0}

@@ -191,8 +191,16 @@ class Render(Base):
         self.assertEqual(value_of(contrib, "--relay-primary-target"), "10.77.1.11:22001")
         self.assertEqual(value_of(contrib, "--relay-secondary-id"), "lon-dist-b")
         self.assertEqual(value_of(contrib, "--relay-secondary-target"), "10.77.1.12:22002")
-        self.assertEqual(value_of(contrib, "--audio-epoch-ingress-target"), "10.77.1.11:22001")
-        self.assertEqual(value_of(contrib, "--audio-epoch-redundant-ingress-target"),
+        # No legacy AEP1 lane by default (wave 7 item 1); with
+        # audio_epoch_lane the two first forwarders are its targets.
+        self.assertEqual(value_of(contrib, "--audio-epoch-mesh-lane"), "off")
+        self.assertNotIn("--audio-epoch-ingress-target", contrib)
+        self.assertNotIn("--audio-epoch-redundant-ingress-target", contrib)
+        _program, _plan, lane = self.render(["audio_epoch_lane=true"])
+        self.assertNotIn("--audio-epoch-mesh-lane", lane["contrib-lon"])
+        self.assertEqual(value_of(lane["contrib-lon"], "--audio-epoch-ingress-target"),
+                         "10.77.1.11:22001")
+        self.assertEqual(value_of(lane["contrib-lon"], "--audio-epoch-redundant-ingress-target"),
                          "10.77.1.12:22002")
         for name, port, source in (("lon-dist-a", "22001", "10.77.1.5:22301"),
                                    ("lon-dist-b", "22002", "10.77.1.5:22302")):
