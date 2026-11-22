@@ -1532,6 +1532,58 @@ class Joins(unittest.TestCase):
                                      "steps": [{"listeners": 5000, **figures}]})
         self.assertIn("| 5000 | lon-view | nt-uc | 20 | 20 | 131 | 139 | 140 |", text)
 
+    def test_joins_past_the_hold_are_set_aside_and_not_scored(self):
+        # The referee's own estimate for 20 joins is 190 s; the hold is
+        # 140 s. Each join here starts 6.5 s after the one before, from the
+        # end of the ramp, and the hold ends 100 s later: joins 1 to 14 ran
+        # wholly inside it (14 x 6.5 + 5 = 96 s), 15 to 20 did not.
+        base_ms = 1_800_000_000_000
+        step = "audio.pcm.joins.20"
+        for host in ("lon-view", "new-view"):
+            directory = self.session.dir / step / host
+            directory.mkdir(parents=True, exist_ok=True)
+            for lane, first in (("nt-uc", 120.0), ("lkregion", 900.0)):
+                for index in range(1, 21):
+                    (directory / f"{lane}.join-{index:02d}.json").write_text(json.dumps({
+                        "started_unix_ms": base_ms + index * 6500,
+                        # The late ones met an emptying mesh: much faster.
+                        "first_audio_ms": first + (index if index <= 14 else -100.0),
+                        "connect_ms": 50.0}))
+                    if lane == "nt-uc":
+                        (directory / f"nt-uc.join-{index:02d}.uc.json").write_text("{}")
+        (self.session.dir / step / "meta.json").write_text(json.dumps(
+            {"step": step, "config": "pcm", "phase": "joins", "lanes": ["lkregion", "nt-uc"],
+             "join_seconds": 5, "joins_per_lane": 20, "nt_uc_base": "nt-pcm"}))
+        record = {"step": step, "per_lane": 20, "hold_end": base_ms / 1000 + 100.0,
+                  "join_seconds": 5, "ran": True}
+        result = {"nodes": {}, "control": {"session": self.session.name, "crowd": None,
+                                           "joins_run": record}}
+        figures = scale.control_results(self.state, self.tmp, result)
+        london = figures["joins"]["lon-view"]
+        self.assertEqual((london["nt-uc"]["joins"], london["nt-uc"]["late"]), (14, 6))
+        self.assertEqual((london["lkregion"]["joins"], london["lkregion"]["late"]), (14, 6))
+        # Only the joins inside the hold are scored: 121 to 134 ms (the
+        # referee's p50 of 14 is the upper median).
+        self.assertEqual(london["nt-uc"]["first_audio_ms"]["max"], 134.0)
+        self.assertEqual(london["nt-uc"]["first_audio_ms"]["p50"], 128.0)
+        aside = self.session.dir / step / "lon-view" / scale.LATE_JOINS
+        self.assertTrue((aside / "nt-uc.join-15.json").is_file())
+        self.assertTrue((aside / "nt-uc.join-15.uc.json").is_file())
+        self.assertFalse((aside / "nt-uc.join-14.json").exists())
+        # scale-run.py analyse reads it again: the same figures.
+        again = scale.control_results(self.state, self.tmp, result)
+        self.assertEqual(again["joins"], figures["joins"])
+        text = scale.format_summary({"run": "r1", "config": "pcm-1", "hls_share": 0,
+                                     "steps": [{"listeners": 5000, **figures}]})
+        self.assertIn("| 5000 | lon-view | nt-uc | 14 | 14 | 128 |", text)
+        self.assertIn("past the hold", text)
+        # A step stopped when a host saturated: its joins count up to then.
+        stopped = {**result, "control": {**result["control"],
+                                         "listeners_stopped": base_ms / 1000 + 50.0}}
+        early = scale.control_results(self.state, self.tmp, stopped)
+        self.assertEqual((early["joins"]["new-view"]["nt-uc"]["joins"],
+                          early["joins"]["new-view"]["nt-uc"]["late"]), (6, 14))
+
     def test_a_step_stopped_before_its_ramp_ends_runs_no_joins(self):
         logged: list = []
         job = scale.JoinsJob(self.audio, 20, time.time() + 60, time.time() + 120, logged.append,

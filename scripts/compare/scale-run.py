@@ -898,10 +898,54 @@ def referee_step(path: pathlib.Path) -> dict | None:
     return referee("compare-audio-analyse.py").analyse_step_now(path)
 
 
-def joins_summary(analysed: dict | None) -> dict | None:
+LATE_JOINS = "past-the-hold"
+
+
+def set_aside_late_joins(step_dir: pathlib.Path, cutoff: float | None,
+                         seconds: float = JOIN_SECONDS) -> dict:
+    """Move the join records of a step's joins phase (VIEW-HOST/LANE.join-
+    NN.json, and nt-uc's .uc.json beside it) whose probe did not run wholly
+    inside the step's hold (its start, `started_unix_ms`, plus its `seconds`
+    past `cutoff`: the end of the hold, or when a saturated step's
+    listeners were stopped) into VIEW-HOST/past-the-hold/, where the
+    referee's analysis (VIEW-HOST/*.json) does not read them: a join that
+    ran on after the listeners and the LiveKit crowd stopped measured an
+    emptying mesh, not one at scale. A record without its start is kept.
+    Again on the same directory, it moves nothing more. Returns {view host:
+    {lane: joins set aside}}."""
+    out: dict = {}
+    if cutoff is None or not step_dir.is_dir():
+        return out
+    for host in sorted(path for path in step_dir.iterdir() if path.is_dir()):
+        aside = host / LATE_JOINS
+        for path in sorted(host.glob("*.join-*.json")):
+            if path.name.endswith(".uc.json"):
+                continue
+            try:
+                started = json.loads(path.read_text()).get("started_unix_ms")
+            except (OSError, ValueError, AttributeError):
+                started = None
+            if started is None or started / 1000.0 + seconds <= cutoff:
+                continue
+            aside.mkdir(exist_ok=True)
+            path.rename(aside / path.name)
+            companion = path.with_name(path.name[:-len(".json")] + ".uc.json")
+            if companion.is_file():
+                companion.rename(aside / companion.name)
+        if aside.is_dir():
+            for path in aside.glob("*.join-*.json"):
+                if not path.name.endswith(".uc.json"):
+                    lane = path.name.split(".join-")[0]
+                    out.setdefault(host.name, {})[lane] = out.get(host.name, {}).get(lane, 0) + 1
+    return out
+
+
+def joins_summary(analysed: dict | None, late: dict | None = None) -> dict | None:
     """{view host: {lane: {"joins", "with_audio", "first_audio_ms",
-    "connect_ms", "errors"}}} of the joins phase: the scoreboard's time to
-    first audio (nt-uc against lkregion), the other Needletail lanes too."""
+    "connect_ms", "errors", "late"}}} of the joins phase: the scoreboard's
+    time to first audio (nt-uc against lkregion), the other Needletail
+    lanes too; "late": the joins set aside for running past the hold
+    (set_aside_late_joins), counted in no other figure."""
     if not analysed:
         return None
     out: dict = {}
@@ -911,6 +955,13 @@ def joins_summary(analysed: dict | None) -> dict | None:
             if joins:
                 out.setdefault(host, {})[lane] = {key: joins.get(key) for key in (
                     "joins", "with_audio", "first_audio_ms", "connect_ms", "errors")}
+    for host, lanes in (late or {}).items():
+        for lane, count in lanes.items():
+            row = out.setdefault(host, {}).setdefault(lane, {"joins": 0, "with_audio": 0})
+            row["late"] = count
+    for lanes in out.values():
+        for row in lanes.values():
+            row.setdefault("late", 0)
     return out
 
 
@@ -1811,15 +1862,19 @@ def format_summary(result: dict) -> str:
         lines += ["", "Time to first audio of a new listener on the running stream (the "
                   "referee's joins phase on each view host, after the ramp; ms from the "
                   "probe's start to its first unit; nt-uc and lkregion are the scoreboard's):",
-                  "", "| step | view host | lane | joins | with audio | p50 | p95 | max |",
-                  "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |"]
+                  "", "Joins that ran past the end of the step's hold met a mesh that was "
+                  "emptying: they are set aside, not scored (the last column).", "",
+                  "| step | view host | lane | joins | with audio | p50 | p95 | max | "
+                  "past the hold |",
+                  "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
         for step in result["steps"]:
             for host, lanes in sorted((step.get("joins") or {}).items()):
                 for lane, row in sorted(lanes.items()):
                     first = row.get("first_audio_ms") or {}
                     lines.append(f"| {step['listeners']} | {host} | {lane} | {row.get('joins')} | "
                                  f"{row.get('with_audio')} | {cell(first.get('p50'))} | "
-                                 f"{cell(first.get('p95'))} | {cell(first.get('max'))} |")
+                                 f"{cell(first.get('p95'))} | {cell(first.get('max'))} | "
+                                 f"{cell(row.get('late'))} |")
     return "\n".join(lines) + "\n"
 
 
@@ -3413,7 +3468,8 @@ class JoinsJob:
 
     def record(self) -> dict:
         return {"step": self.step_name(), "per_lane": self.count, "lanes": self.lanes(),
-                "started": self.started, "ended": self.ended,
+                "started": self.started, "ended": self.ended, "hold_end": self.hold_end,
+                "join_seconds": JOIN_SECONDS,
                 "within_hold": None if self.ended is None else self.ended <= self.hold_end,
                 "ran": self.started is not None, "error": self.error}
 
@@ -3484,7 +3540,9 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
         if runner is not None:
             runner.finish()
     stopped = None
+    saturated_at = None
     if saturated:
+        saturated_at = time.time()
         stopped = f"{saturated}: {why}"
         log({"step": step["listeners"], "stopped": stopped})
         if joins is not None:
@@ -3560,8 +3618,16 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
                              "crowd": crowd.name if crowd else None,
                              "livekit_planned": {site: item.get("livekit", 0)
                                                  for site, item in step["sites"].items()},
-                             "joins_run": joins.record() if joins else None}
+                             "joins_run": joins.record() if joins else None,
+                             # A saturated step's joins count up to here.
+                             "listeners_stopped": saturated_at}
         result.update(control_results(lab, control["base"], result))
+        late = {host: lanes for host, lanes in ((result.get("joins") or {})).items()
+                if any(row.get("late") for row in lanes.values())}
+        if late:
+            log({"step": step["listeners"], "joins_past_the_hold": {
+                host: {lane: row["late"] for lane, row in lanes.items() if row.get("late")}
+                for host, lanes in late.items()}})
     if phases:
         result["phase_start"] = started + step["ramp_s"]
         result["readers_launched"] = started
@@ -3588,9 +3654,15 @@ def control_results(lab: dict, base: pathlib.Path, result: dict) -> dict:
             out["livekit"] = livekit_summary(referee_step(session / control["crowd"]), lab,
                                              result.get("nodes") or {},
                                              control.get("livekit_planned") or {})
-        joined = (control.get("joins_run") or {}).get("step")
+        run = control.get("joins_run") or {}
+        joined = run.get("step")
         if joined:
-            out["joins"] = joins_summary(referee_step(session / joined))
+            cutoff = run.get("hold_end")
+            if control.get("listeners_stopped") is not None:
+                cutoff = min(cutoff or math.inf, control["listeners_stopped"])
+            late = set_aside_late_joins(session / joined, cutoff,
+                                        run.get("join_seconds") or JOIN_SECONDS)
+            out["joins"] = joins_summary(referee_step(session / joined), late)
     except Exception as error:  # noqa: BLE001 - the step's own figures stand
         out["control_error"] = f"{type(error).__name__}: {str(error)[:300]}"
     return out
