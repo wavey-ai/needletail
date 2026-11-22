@@ -87,12 +87,18 @@ LISTENER_BATCHES = 2
 # instances, how many dedicated vCPUs it may have: Linode support raises them
 # on request) are told apart from a region short of capacity for a plan and
 # from errors that pass (Api.call already retries 429 and 5xx, create_node a
-# timed-out create). The account markers are tried first: Linode's limit
-# message, "Account Limit reached. Please open a support ticket ...", names
-# no capacity, but a capacity message may name support.
+# timed-out create). A message that says a region or plan has nothing to
+# give is capacity, even when it suggests a support ticket, unless it names
+# the account's own limit (ACCOUNT_NAMED). The account kind needs a limit
+# marker (Linode's message: "Account Limit reached. Please open a support
+# ticket ..."), or a hint (a quota, a ticket, an increase) with "limit" or
+# "account" in the same message.
 ACCOUNT_MARKERS = ("account limit", "limit reached", "limit exceeded", "exceeds your limit",
-                   "maximum number of", "quota", "support ticket", "cpu limit",
-                   "allowed on your account", "too many linodes", "request an increase")
+                   "maximum number of", "cpu limit", "allowed on your account",
+                   "too many linodes")
+ACCOUNT_HINTS = ("quota", "support ticket", "request an increase")
+ACCOUNT_NAMED = ("account limit", "allowed on your account", "too many linodes",
+                 "exceeds your limit")
 CAPACITY_MARKERS = ("capacity", "not available in this region", "unavailable in this region",
                     "not available in the selected region", "out of stock", "sold out",
                     "no resources available", "not accepting new")
@@ -380,10 +386,13 @@ def refusal_kind(error) -> str:
     region has none of the plan today), "transient" (retried already and
     still failing: a timeout, 429, 5xx, busy) or "other"."""
     text = str(error).lower()
-    if any(marker in text for marker in ACCOUNT_MARKERS):
-        return "account"
-    if any(marker in text for marker in CAPACITY_MARKERS):
+    if any(marker in text for marker in CAPACITY_MARKERS) \
+            and not any(marker in text for marker in ACCOUNT_NAMED):
         return "capacity"
+    if any(marker in text for marker in ACCOUNT_MARKERS) or (
+            any(marker in text for marker in ACCOUNT_HINTS)
+            and ("limit" in text or "account" in text)):
+        return "account"
     if any(marker in text for marker in TRANSIENT_MARKERS):
         return "transient"
     return "other"

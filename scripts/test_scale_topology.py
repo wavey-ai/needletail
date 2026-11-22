@@ -842,6 +842,36 @@ class StagedUp(unittest.TestCase):
         self.assertEqual(lab_tool.refusal_kind("failed with HTTP 503: busy"), "transient")
         self.assertEqual(lab_tool.refusal_kind("HTTP 400: image not found"), "other")
 
+    def test_a_capacity_message_that_names_support_is_capacity(self):
+        # A region or plan with nothing to give, however it suggests a ticket.
+        for text in ("g6-dedicated-8 is not available in this region at this time. Please open a "
+                     "support ticket to request an increase.",
+                     "No capacity in ap-southeast for this plan: open a support ticket with your "
+                     "account manager",
+                     "Out of stock: please try again later"):
+            self.assertEqual(lab_tool.refusal_kind(text), "capacity", text)
+        # The account's own limit wins when the message names it.
+        self.assertEqual(lab_tool.refusal_kind("Account Limit reached: no capacity left on "
+                                               "your account"), "account")
+        # A hint alone is not enough: it needs "limit" or "account".
+        self.assertEqual(lab_tool.refusal_kind("Account quota exceeded"), "account")
+        self.assertEqual(lab_tool.refusal_kind("vCPU quota limit"), "account")
+        self.assertEqual(lab_tool.refusal_kind("quota service unavailable"), "other")
+
+    def test_a_capacity_refusal_naming_support_stops_only_its_plan(self):
+        # Tokyo's first listener host refused with a capacity message that
+        # names a ticket: it was taken for the account's limit before, and
+        # every later listener create in every region stopped.
+        text = ("HTTP 400: g6-dedicated-8 is not available in this region. Please open a "
+                "support ticket to request an increase.")
+        code, _err, state = self.run_up(
+            lambda node, made: text if node["name"] == "tok-load-1" else None)
+        self.assertIsNone(code)
+        self.assertEqual([item["kind"] for item in state["refusals"]], ["capacity"])
+        # Only Tokyo's g6-dedicated-8 is stopped; the other regions' hosts exist.
+        self.assertEqual({item["site"] for item in state["listeners_missing"]}, {"tokyo"})
+        self.assertEqual(sum(1 for name in state["nodes"] if "-load-" in name), 32)
+
     def test_listener_batches_take_a_share_of_every_site(self):
         listeners = [node for node in self.nodes if lab_tool.is_listener_host(node)]
         self.assertEqual(len(listeners), 40)

@@ -227,9 +227,12 @@ creates already under way, at most three, finish and are recorded).
    host is deleted (its edges would carry no one).
 
 Refusals are told apart by the API's message (`refusal_kind` in the lab
-tool): an account limit ("Account Limit reached. Please open a support
-ticket ...", "maximum number of", "quota", "cpu limit", ...), no capacity
-("capacity", "not available in this region", "out of stock", ...) or a
+tool): no capacity ("capacity", "not available in this region", "out of
+stock", ...: tried first, so a capacity message that suggests a support
+ticket is still capacity, unless it names the account's limit), an
+account limit ("Account Limit reached. Please open a support ticket ...",
+"maximum number of", "cpu limit", ...; "quota", "support ticket" or
+"request an increase" only with "limit" or "account" beside them) or a
 transient error (HTTP 408, 429, 5xx, busy, timed out, once `create_node`'s
 retries are spent). A transient refusal stops nothing: its node is tried
 once more at the end of its stage (after 30 s), and only a second refusal
