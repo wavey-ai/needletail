@@ -307,10 +307,17 @@ DEFAULT_SETTINGS = {
     "audio_part": "epoch",
     "video_part": "frame",
     # Epoch of the lab's AEP1 sender (aep1-48k-probe send --epoch-samples) and
-    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, 120
-    # (2.5 ms) for Opus. Only the lab tools read these.
+    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, and
+    # 48 (1 ms Opus Custom, the low-latency Opus lane's default) for Opus.
+    # 120 (2.5 ms) is standard Opus, for anything that must interoperate
+    # (fMP4, WebRTC). Only the lab tools read these.
     "pcm_epoch_samples": 48,
-    "opus_epoch_samples": 120,
+    "opus_epoch_samples": 48,
+    # Opus bitrate (CBR) of the lab's Opus sources (daw-test-source and
+    # aep1-48k-probe send --opus-bitrate): 320 kb/s, the lane's default, the
+    # smallest rate at which 1 ms frames are at least as good as standard
+    # 5 ms at 192 kb/s; 256000 is the lower-bandwidth option. Lab tools only.
+    "opus_bitrate": 320000,
     # Version 1: `fmp4_part_ms` maps to `audio_part` "<N*1000>us" (and to
     # `video_part` "<N>ms" when `fmp4_video_part_ms` is not given),
     # `fmp4_video_part_ms` to `video_part` "<N>ms". None: not used.
@@ -634,7 +641,9 @@ def load_settings(overrides: list[str]) -> dict:
 
 AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
 VIDEO_PART = re.compile(r"^(frame|[1-9][0-9]*ms)$")
-OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+# Opus frames: Opus Custom (48, 64, 72 samples: 1, 1.33, 1.5 ms; SoundKit Opus
+# on the opus-custom-1ms branch) and standard Opus (120 to 960).
+OPUS_EPOCH_SAMPLES = (48, 64, 72, 120, 240, 480, 960)
 SAMPLE_RATE = 48_000
 # The lossless epoch of the DAW source (daw-test-source: 1 ms, 48 samples,
 # unless it is given --lossless-epoch-samples). With audio_part "epoch" its
@@ -724,6 +733,9 @@ def part_plan(settings: dict) -> dict:
     opus = whole(settings["opus_epoch_samples"], "opus_epoch_samples")
     if opus not in OPUS_EPOCH_SAMPLES:
         raise ValueError(f"opus_epoch_samples={opus}: Opus frames are {OPUS_EPOCH_SAMPLES} samples")
+    opus_bitrate = whole(settings.get("opus_bitrate", 320000), "opus_bitrate")
+    if not 6000 <= opus_bitrate <= 512000:
+        raise ValueError(f"opus_bitrate={opus_bitrate}: Opus takes 6000 to 512000 b/s")
 
     smallest_us = smallest_audio_part_us(audio, pcm, opus)
     window_ms = whole(settings["window_ms"], "window_ms")
@@ -736,6 +748,7 @@ def part_plan(settings: dict) -> dict:
                  else ["--window-parts", str(window_parts)])
     return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
             "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
+            "opus_bitrate": opus_bitrate,
             "smallest_part_us": smallest_us,
             "window_parts": window_parts if window_parts is not None else -(-window_ms * 1000 // part_us)}
 

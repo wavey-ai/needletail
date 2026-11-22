@@ -174,7 +174,8 @@ Parts are the smallest frame by default. The settings file has
 | `audio_part` | `epoch` | Contributor audio part (`--audio-part`): one AEP1 epoch per part, or `<N>samples`, `<N>us`. |
 | `video_part` | `frame` | Contributor video part (`--video-part`): one access unit per part, or `<N>ms`. |
 | `pcm_epoch_samples` | 48 | Epoch of the lab's AEP1 sender for PCM and FLAC (1 ms; FLAC at least 32). Lab tools only. |
-| `opus_epoch_samples` | 120 | Opus frame of the lab's sources (2.5 ms). Lab tools only. |
+| `opus_epoch_samples` | 48 | Opus frame of the lab's sources: 1 ms Opus Custom, the low-latency Opus lane's default (120, 2.5 ms, is standard Opus for interop). Lab tools only. |
+| `opus_bitrate` | 320000 | Opus bitrate (CBR) of the lab's Opus sources (`--opus-bitrate`): the lane's default; 256000 is the lower-bandwidth option at 1 ms. Lab tools only. |
 
 The version 1 settings `part_ms`, `parts_per_segment`, `window_parts`,
 `fmp4_part_ms` and `fmp4_video_part_ms` still work and are mapped onto these:

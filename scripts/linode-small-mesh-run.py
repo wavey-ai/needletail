@@ -43,14 +43,19 @@ PROBE = "/usr/local/bin/aep1-48k-probe"
 # checkers cannot count.
 PROBE_EPOCH_SAMPLES = 48
 DAW_LOSSLESS_EPOCH_SAMPLES = 48
-DAW_OPUS_FRAME_SAMPLES = 240
+# The DAW source's Opus frame and bitrate: the low-latency Opus lane's
+# default, 1 ms Opus Custom (48 samples, a whole-ms part) at 320 kb/s CBR.
+DAW_OPUS_FRAME_SAMPLES = 48
+DAW_OPUS_BITRATE = 320000
 
 
-def daw_epoch_args(lossless_samples: int, opus_samples: int) -> str:
-    """daw-test-source arguments that fix its epochs (rather than rely on
-    the defaults of the build that is installed)."""
+def daw_epoch_args(lossless_samples: int, opus_samples: int,
+                   opus_bitrate: int | None = None) -> str:
+    """daw-test-source arguments that fix its epochs and its Opus bitrate
+    (rather than rely on the defaults of the build that is installed)."""
     return (f"--lossless-epoch-samples {lossless_samples} "
-            f"--opus-frame-samples {opus_samples} ")
+            f"--opus-frame-samples {opus_samples} "
+            + (f"--opus-bitrate {opus_bitrate} " if opus_bitrate else ""))
 
 
 def assign_part_ms(settings: dict, streams: list[dict]) -> None:
@@ -479,7 +484,8 @@ def run(args: argparse.Namespace) -> None:
                 f"RUST_LOG=info DAW_TEST_SOURCE_START_UNIX_NS={session_id} "
                 f"DAW_TEST_SOURCE_CAPACITY_OUTPUT={remote}/daw-capacity.ndjson "
                 f"/usr/local/bin/daw-test-source --direct-contributor --prepared-pcm "
-                + daw_epoch_args(args.daw_lossless_epoch_samples, args.daw_opus_frame_samples)
+                + daw_epoch_args(args.daw_lossless_epoch_samples, args.daw_opus_frame_samples,
+                                 args.daw_opus_bitrate)
                 + f"127.0.0.1:27100 {args.duration} {shlex.quote(args.track_directory)} "
                 f">source.log 2>source.err; echo exit=$?")
         else:
@@ -675,9 +681,14 @@ def main() -> None:
                         help="the DAW source's lossless epoch (daw-test-source "
                              "--lossless-epoch-samples)")
     parser.add_argument("--daw-opus-frame-samples", type=int, default=DAW_OPUS_FRAME_SAMPLES,
-                        choices=(120, 240, 480, 960),
+                        choices=(48, 64, 72, 120, 240, 480, 960),
                         help="the DAW source's Opus frame (--opus-frame-samples); 120 (2.5 ms) "
-                             "parts are not a whole ms, which the checkers need")
+                             "parts are not a whole ms, which the checkers need. 48 (1 ms) is "
+                             "the lane's Opus Custom default (whole ms; needs the opus-custom-1ms "
+                             "builds of daw-nexus and av-contrib, and opaque packaging)")
+    parser.add_argument("--daw-opus-bitrate", type=int, default=DAW_OPUS_BITRATE,
+                        help="the DAW source's Opus bitrate, CBR (--opus-bitrate): 320000, the "
+                             "lane's default; 256000 is the lower-bandwidth option at 1 ms")
     parser.add_argument("--duration", type=int, default=30)
     parser.add_argument("--tail", type=int, default=4)
     parser.add_argument("--start-delay", type=int, default=14)

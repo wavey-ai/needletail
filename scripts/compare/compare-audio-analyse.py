@@ -75,14 +75,17 @@ def load(path: pathlib.Path):
         return None
 
 
-def nt_frame_ms(meta: dict, lane: str) -> float:
+def nt_frame_ms(meta: dict, lane: str, default_ms: float | None = None) -> float:
     """The frame of a Needletail lane (`nt-pcm-h3` -> its base `nt-pcm`). A
     DAW source lane of a step without nt_daw is the first runs' 240-sample
-    epoch, whatever nt_frame_ms says (some steps recorded 2.5 ms for it)."""
+    epoch, whatever nt_frame_ms says (some steps recorded 2.5 ms for it). A
+    lane the step's meta does not name has `default_ms` (--nt-frame-ms,
+    NT_FRAME_MS unless given)."""
     base = "-".join(lane.split("-")[:2])
     if base in DAW_SAMPLES_KEY and not meta.get("nt_daw"):
         return DAW_EPOCH_SAMPLES / 48.0
-    return float((meta.get("nt_frame_ms") or {}).get(base) or NT_FRAME_MS)
+    fallback = NT_FRAME_MS if default_ms is None else default_ms
+    return float((meta.get("nt_frame_ms") or {}).get(base) or fallback)
 
 
 def source_to_publish_ms(csv_path: pathlib.Path) -> list[float]:
@@ -492,13 +495,18 @@ def scrub(value):
 
 
 def main() -> None:
+    global NT_FRAME_MS
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("sessions", nargs="+")
     parser.add_argument("--slim", action="store_true",
                         help="the versioned form: only the figures that the tables use")
     parser.add_argument("--out", required=True)
     parser.add_argument("--runs", default=str(RUNS))
+    parser.add_argument("--nt-frame-ms", type=float, default=NT_FRAME_MS,
+                        help="the frame (one part) of a Needletail lane whose step meta does not "
+                             "record it (nt_frame_ms); 5 ms, the producer's frame of those runs")
     args = parser.parse_args()
+    NT_FRAME_MS = args.nt_frame_ms
     evidence = {"schema": "needletail.compare-audio.v1", "head_ms_left_out": HEAD_MS,
                 "tail_ms_left_out": TAIL_MS, "daw_buffer_samples": DAW_BUFFER,
                 "daw_buffer_note": "daw_buffer_samples is that of steps without nt_daw in their "
