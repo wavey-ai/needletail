@@ -132,7 +132,8 @@ class Steps(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         (tmp / "cost.json").write_text(json.dumps({"udp_vcpu": 0.0005, "other": 1}))
         costs = scale.load_costs(str(tmp / "cost.json"))
-        self.assertEqual(costs, {"udp_vcpu": 0.0005, "hls_vcpu": scale.COSTS["hls_vcpu"]})
+        self.assertEqual(costs, {"udp_vcpu": 0.0005, "hls_vcpu": scale.COSTS["hls_vcpu"],
+                                 "lk_vcpu": scale.COSTS["lk_vcpu"]})
         # 2.5 ms parts cost 40% of 1 ms ones per listener.
         fast = scale.host_capacity({"type": "g6-dedicated-8"}, "pcm-1")
         slow = scale.host_capacity({"type": "g6-dedicated-8"}, "opus-2.5")
@@ -1143,6 +1144,181 @@ class Phases(unittest.TestCase):
         self.assertAlmostEqual(cost["scenarios"]["F1"]["minutes"], 3.0)
         self.assertAlmostEqual(cost["minutes"], (plan["steps"][0]["ramp_s"] + 9 * 180 + 75) / 60,
                                places=1)
+
+
+REFEREE = (scale.COMPARE_ROOT / "scripts" / "compare" / "compare-audio.py").is_file()
+
+
+class LiveKitCrowd(unittest.TestCase):
+    """The self-hosted LiveKit control beside Needletail (item 2)."""
+
+    def test_the_crowd_is_capped_at_the_sfu_and_counted_on_the_hosts(self):
+        state = lab(["sydney"])
+        plan = scale.plan_steps(state, [100, 1000, 5000], "pcm-1", hls_share=0, standby=STANDBY,
+                                lk_per_sfu=450)
+        small, middle, large = plan["steps"]
+        # The step's listeners of a region, up to 450 an SFU.
+        self.assertEqual({item["livekit"] for item in small["sites"].values()}, {33, 34})
+        self.assertEqual({item["livekit"] for item in middle["sites"].values()}, {333, 334})
+        self.assertEqual({item["livekit"] for item in large["sites"].values()}, {450})
+        self.assertEqual(large["livekit"], 3 * 450)
+        # Over the region's listener hosts by vCPU, and in their load.
+        london = large["allocation"]["london"]
+        self.assertEqual(sum(item["lk"] for item in london.values()), 450)
+        self.assertLessEqual(max(item["lk"] for item in london.values())
+                             - min(item["lk"] for item in london.values()), 1)
+        capacity = plan["capacity"]["lon-load-1"]
+        self.assertEqual(capacity["lk"], int(8 * 0.7 / (0.02 * 0.4)))
+        without = scale.plan_steps(state, [5000], "pcm-1", hls_share=0, standby=STANDBY)
+        self.assertGreater(large["host_load"]["lon-load-1"],
+                           without["steps"][0]["host_load"]["lon-load-1"])
+        self.assertEqual(without["steps"][0]["livekit"], 0)
+        # Its traffic is public (the SFUs' addresses) and priced.
+        cost = scale.cost_estimate(state, plan)
+        self.assertGreater(cost["livekit_public_gb"], 0)
+        self.assertEqual(scale.cost_estimate(state, without)["livekit_public_gb"], 0)
+        # A region without an SFU runs no crowd.
+        bare = lab(["sydney"])
+        del bare["nodes"]["tok-lk"]
+        plan = scale.plan_steps(bare, [5000], "pcm-1", hls_share=0, standby=STANDBY,
+                                lk_per_sfu=450)
+        self.assertEqual(plan["steps"][0]["sites"]["tokyo"]["livekit"], 0)
+
+    def test_the_cost_of_a_subscriber_is_measured_per_host(self):
+        nodes = {"lon-load-1": {"procs_cores_mean": {"ntcmp-lk": 0.4, "needletail-load": 2.0},
+                                "procs_rss_mb_max": {"ntcmp-lk": 50.0}}}
+        allocation = {"london": {"lon-load-1": {"udp": 500, "hls": 0, "lk": 50}}}
+        costs = scale.measured_costs(nodes, allocation, "pcm-1")
+        # 0.4 cores for 50 subscribers of 400 units a second: 0.02 at 1,000.
+        self.assertAlmostEqual(costs["lk_process_vcpu"], 0.02)
+        self.assertAlmostEqual(costs["lk_vcpu"], 0.02 + scale.SOFTIRQ_VCPU)
+        self.assertEqual(scale.cost_file({"steps": [{"listeners": 1, "measured_costs": costs}]})
+                         ["lk_vcpu"], costs["lk_vcpu"])
+        self.assertIn('"ntcmp-lk"', scale.SAMPLER)
+
+    def test_the_keys_and_nothing_else_go_to_the_listener_hosts(self):
+        text = ("export CF_REALTIME_APP_SECRET=x\nexport LK_SELF_KEY=APIabc\n"
+                "export LK_SELF_SECRET=s3cret\n")
+        self.assertEqual(scale.keys_lines(text), ["export LK_SELF_KEY=APIabc",
+                                                  "export LK_SELF_SECRET=s3cret"])
+
+
+@unittest.skipUnless(REFEREE, "the referee's harness (needletail-compare) is not checked out")
+class Referee(unittest.TestCase):
+    """The LiveKit crowd and the joins phase through the referee's own
+    compare-audio.py, offline (its ssh calls replaced)."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = lab(["sydney"])
+        self.ref = scale.referee()
+        self.session = scale.referee_session(self.ref, "r1-5000", self.tmp, self.state)
+        self.room = scale.livekit_room("r1", "pcm-1")
+        self.audio = scale.referee_audio(self.ref, self.session, "pcm-1", self.room,
+                                         ["lon", "new", "tok"])
+
+    def test_the_referees_lanes_of_each_config(self):
+        self.assertEqual(self.room, "needletail-scale-r1-pcm")
+        self.assertEqual((self.audio.config, self.audio.lanes), ("pcm", ["lkregion"]))
+        self.assertEqual(self.audio.nt, ["nt-pcm", "nt-pcm-w", "nt-pcm-h3", "nt-uc"])
+        self.assertTrue(self.audio.index.endswith("/pcm-2.5ms.index.json"))
+        opus = scale.referee_audio(self.ref, self.session, "opus-1", self.room, ["lon"])
+        self.assertEqual(opus.config, "opus-2.5")
+        self.assertEqual(opus.nt_frame_ms(), {"nt-popus": 1.0})
+        self.assertIn("nt-popus-48s-la", opus.probe("nt-popus", "lon", 5, 1, "t"))
+        standard = scale.referee_audio(self.ref, self.session, "opus-2.5", self.room, ["lon"])
+        self.assertEqual(standard.nt_frame_ms(), {"nt-popus": 2.5})
+        self.assertEqual(self.ref.SITES, ["lon"])
+
+    def test_the_crowd_runs_the_referees_lkregion_probe_on_the_listener_hosts(self):
+        plan = scale.plan_steps(self.state, [5000], "pcm-1", hls_share=0.05, standby=STANDBY,
+                                lk_per_sfu=450)
+        args = argparse.Namespace(config="pcm-1", sample=10, load_args="", hls_window=40,
+                                  hls_http2=False, hls_steering="spread")
+        commands = scale.step_commands(self.state, plan, plan["steps"][0], "r1", args,
+                                       livekit=self.audio)
+        sfu = self.state["nodes"]["lon-lk"]["public_ipv4"]
+        london = commands["lon-load-1"]
+        for part in (f"ntcmp-lk sub --lane lk --url ws://{sfu}:7880 --room {self.room}",
+                     "--count 57 ", "--data ", "--identity r1-5000-lon-load-1-lkregion",
+                     "--audio-index /var/lib/compare/index/pcm-2.5ms.index.json",
+                     "--report lkregion.probe.json", ". /var/lib/compare/env",
+                     "/var/lib/needletail-runs/scale/r1/5000/lk"):
+            self.assertIn(part, london)
+        self.assertIn("ws://" + self.state["nodes"]["tok-lk"]["public_ipv4"],
+                      commands["tok-load-1"])
+        sfus = {node["public_ipv4"] for node in self.state["nodes"].values()
+                if node["role"] == "livekit"}
+        public = {node["public_ipv4"] for node in self.state["nodes"].values()} - sfus
+        for name, command in commands.items():
+            # Needletail's listeners read the VLAN; only the SFUs are public.
+            self.assertFalse([address for address in re.findall(r"[0-9.]+", command)
+                              if address in public], name)
+            checked = subprocess.run(["bash", "-n", "-c", command], capture_output=True,
+                                     text=True)
+            self.assertEqual(checked.returncode, 0, f"{name}: {checked.stderr}")
+        self.assertEqual(sum(len(re.findall(r"--count ([0-9]+)", command)) and
+                             int(re.search(r"ntcmp-lk sub.*?--count ([0-9]+)", command).group(1))
+                             for command in commands.values()), 3 * 450)
+
+    def test_the_publishers_are_the_referees_one_per_sfu(self):
+        sent = []
+        with mock.patch.object(self.ref.run, "src",
+                               lambda session, command, **kw: sent.append(command) or ""):
+            scale.start_livekit(self.ref, self.session, self.audio, ["lon", "new", "tok"])
+            scale.stop_livekit(self.ref, self.session)
+        self.assertEqual(sent[0], "pkill -x ntcmp-lk; true")
+        self.assertEqual(len(sent), 5)
+        sfu = self.state["nodes"]["new-lk"]["public_ipv4"]
+        self.assertIn(f"ntcmp-lk pub --lane lk --url ws://{sfu}:7880 --room {self.room} "
+                      "--audio /var/lib/compare/audio/audio.s24le --data --pcm-ms 2.5 "
+                      "--status lkregion-new.status", sent[2])
+        self.assertIn("LIVEKIT_API_KEY=$LK_SELF_KEY", sent[2])
+        self.assertIn("setsid nohup", sent[2])
+        self.assertEqual(sent[-1], "pkill -x ntcmp-lk; true")
+
+    def write_crowd(self, step: dict) -> pathlib.Path:
+        crowd = self.session.dir / scale.crowd_step_name("pcm-1", step["listeners"])
+        for host, p50, gaps in (("lon-load-1", 41.0, 0), ("lon-load-2", 45.0, 24),
+                                ("new-load-1", 60.0, 0)):
+            (crowd / host).mkdir(parents=True)
+            for index in range(3):
+                (crowd / host / f"lkregion.probe-{index:03d}.json").write_text(json.dumps({
+                    "audio_packets": 24000, "audio_sequence_gaps": gaps, "first_audio_ms": 400.0,
+                    "audio_latency_ms": {"p50": p50, "p95": p50 + 5, "p99": p50 + 10,
+                                         "max": p50 + 30, "min": p50 - 10, "count": 24000}}))
+        (crowd / "meta.json").write_text(json.dumps(
+            scale.crowd_meta(self.audio, "pcm-1", step, "r1", 1_000_000.0, 120.0)))
+        return crowd
+
+    def test_the_crowd_is_summarised_with_the_referees_analysis(self):
+        plan = scale.plan_steps(self.state, [5000], "pcm-1", hls_share=0, standby=STANDBY,
+                                lk_per_sfu=450)
+        step = plan["steps"][0]
+        crowd = self.write_crowd(step)
+        meta = json.loads((crowd / "meta.json").read_text())
+        self.assertEqual((meta["config"], meta["phase"], meta["detail"], meta["lanes"]),
+                         ("pcm", "scale", "5000", ["lkregion"]))
+        self.assertEqual(meta["sfu_pcm_ms"], 2.5)
+        result = {"nodes": {"lon-lk": {"cpu_mean": 0.3, "cpu_max": 0.5, "saturated_at": None}},
+                  "control": {"session": self.session.name, "crowd": crowd.name,
+                              "livekit_planned": {site: item["livekit"]
+                                                  for site, item in step["sites"].items()},
+                              "joins_run": None}}
+        figures = scale.control_results(self.state, self.tmp, result)
+        self.assertNotIn("control_error", figures)
+        london = figures["livekit"]["london"]
+        self.assertEqual((london["planned"], london["listeners"], london["with_audio"]),
+                         (450, 6, 6))
+        self.assertEqual((london["p50_ms"], london["p99_ms"]), (43.0, 55.0))
+        self.assertAlmostEqual(london["missing_percent"], 0.05)
+        self.assertEqual(london["sfu"]["cpu_max"], 0.5)
+        self.assertEqual(figures["livekit"]["tokyo"]["listeners"], 0)
+        text = scale.format_summary({"run": "r1", "config": "pcm-1", "hls_share": 0,
+                                     "steps": [{"listeners": 5000, **figures}]})
+        self.assertIn("Self-hosted LiveKit beside Needletail", text)
+        self.assertIn("| 5000 | london | 450 | 6 | 6 | 43 | 55 | 0.05 | 400 | 0.5 |", text)
 
 
 if __name__ == "__main__":

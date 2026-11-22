@@ -71,8 +71,10 @@ readers below also take the field names of its earlier drafts.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
+import os
 import pathlib
 import re
 import shlex
@@ -135,7 +137,12 @@ DEFAULT_STEPS = "100,1000,5000,10000,20000"
 # - LL-HLS: not measured yet. An ntcmp reader of 1 ms parts with 40
 #   requests in flight asks for 1,000 parts a second, and Go's HTTP client
 #   spends about a vCPU on 25,000-40,000 requests a second (0.03 vCPU each).
-COSTS = {"udp_vcpu": 0.0055, "hls_vcpu": 0.03}
+# - LiveKit (the self-hosted control's crowd, ntcmp-lk sub on the listener
+#   hosts): not measured. A subscriber of 400 units a second (2.5 ms Opus,
+#   or 2.5 ms PCM data packets) with SRTP or DTLS/SCTP in Go: about 20 µs a
+#   unit, 0.008 vCPU, which is 0.02 at 1,000 units a second. The sampler
+#   reads ntcmp-lk's CPU, and the run's cost.json carries what it measured.
+COSTS = {"udp_vcpu": 0.0055, "hls_vcpu": 0.03, "lk_vcpu": 0.02}
 # The share of a listener host that the plan fills at most.
 PLAN_HEADROOM = 0.70
 # Inbound that a listener host is planned to take, Gbit/s (Linode publishes
@@ -176,6 +183,36 @@ LOAD_PROCESS = "needletail-load"
 # Where needletail-load --out writes, under a step's directory on the host.
 LOAD_DIR = "udp"
 RAMP_STAGES = 10
+
+# The self-hosted LiveKit control, run with the referee's own harness: needletail-compare (branch compare-cloudflare),
+# scripts/compare/compare-audio.py, imported from its checkout (referee()).
+COMPARE_ROOT = pathlib.Path(os.environ.get("NEEDLETAIL_COMPARE_ROOT",
+                                           str(ROOT.parent / "needletail-compare")))
+# The lkregion lane: one SFU in each region (<short>-lk), each carrying at
+# most this many listeners (about what a 2-vCPU SFU carried on wave 2), at
+# the step's listeners of the region when fewer. The crowd runs on the
+# region's listener hosts, beside Needletail's, for the step's ramp and hold.
+LK_PER_SFU = 450
+# The SFUs' unit: Opus of 2.5 ms (LiveKit's smallest frame) and PCM data
+# packets of 2.5 ms (compare-audio.py --sfu-pcm-ms, default 2.5), whatever
+# the Needletail lane's part.
+LK_FRAME_MS = 2.5
+LK_UNITS_PER_S = 1000 / LK_FRAME_MS
+LK_PROCESS = "ntcmp-lk"
+# What one LiveKit subscriber receives, Mbit/s, over the public network (the
+# SFUs advertise their public address): PCM 2.5 ms blocks of 720 bytes on
+# a data channel with DTLS/SCTP/UDP/IP, 400 a second; the referee's
+# opus-2.5.opus (about 256 kbit/s) in 2.5 ms packets with RTP, SRTP, UDP and
+# IP. Planning figures, for the transfer that the run bills past the pool.
+LK_MBPS = {"pcm-1": 2.6, "opus-1": 0.42, "opus-2.5": 0.42}
+# The scale run's lanes in the referee's terms: its configuration, its
+# Needletail lane (the same AEP1 sender, stream and part), and the
+# samples of an AEP1 part (compare-audio.py --nt-pcm-samples and
+# --nt-opus-samples). opus-1 is the referee's smallest-frame session:
+# Needletail 1 ms Opus Custom against LiveKit's 2.5 ms Opus.
+REFEREE_CONFIGS = {"pcm-1": {"config": "pcm", "nt": "nt-pcm", "samples": 48},
+                   "opus-1": {"config": "opus-2.5", "nt": "nt-popus", "samples": 48},
+                   "opus-2.5": {"config": "opus-2.5", "nt": "nt-popus", "samples": 120}}
 
 
 # ---------------------------------------------------------------- the plan
@@ -219,17 +256,20 @@ def natural(name: str) -> list:
 
 
 def regions_of(state: dict, standby: list[str] = ()) -> dict:
-    """{site: {"edges", "distributors", "listeners", "view"}} of the lab, by
-    name; standby edges are left out. A site without an edge or a listener
+    """{site: {"edges", "distributors", "listeners", "view", "livekit"}} of
+    the lab, by name; standby edges are left out; "livekit" is the region's
+    SFU (<short>-lk, not the Redis). A site without an edge or a listener
     host takes no listeners."""
     out: dict[str, dict] = {}
     for node in sorted(state["nodes"].values(), key=lambda item: natural(item["name"])):
         site = out.setdefault(node["site"], {"edges": [], "distributors": [], "listeners": [],
-                                             "view": []})
+                                             "view": [], "livekit": []})
         if node["role"] == "edge" and node["name"] not in standby:
             site["edges"].append(node)
         elif node["role"] == "distributor":
             site["distributors"].append(node)
+        elif node["role"] == "livekit" and node["name"].endswith("-lk"):
+            site["livekit"].append(node)
         elif node["role"] == "load":
             purpose = common.load_purpose(node)
             if purpose in ("listeners", "view"):
@@ -292,6 +332,30 @@ def allocate(total: int, regions: dict, hls_share: float = 0.5,
     return out
 
 
+def site_short(region: dict) -> str:
+    """A region's short name (lon, new, tok, syd), from its nodes' names."""
+    for key in ("edges", "listeners", "view", "livekit"):
+        if region.get(key):
+            return region[key][0]["name"].split("-")[0]
+    raise ValueError("a region without nodes")
+
+
+def add_livekit(alloc: dict, regions: dict, lk_per_sfu: int) -> dict:
+    """Give every listener host of `alloc` its share of the LiveKit crowd
+    ("lk"): in a region with an SFU, the step's listeners of the region up
+    to `lk_per_sfu`, over its listener hosts in proportion to their vCPUs.
+    Returns `alloc`."""
+    for site, by_host in alloc.items():
+        region = regions[site]
+        count = 0
+        if lk_per_sfu > 0 and region.get("livekit"):
+            count = min(lk_per_sfu, sum(item["udp"] + item["hls"] for item in by_host.values()))
+        hosts = [host for host in region["listeners"] if host["name"] in by_host]
+        for host, share in zip(hosts, split(count, [vcpus(host) for host in hosts])):
+            by_host[host["name"]]["lk"] = share
+    return alloc
+
+
 def load_costs(path: str | None) -> dict:
     """COSTS, with what a cost file ({"udp_vcpu": ..., "hls_vcpu": ...},
     from needletail-load's in-process bench) gives."""
@@ -306,7 +370,8 @@ def host_capacity(node: dict, config: str, costs: dict | None = None,
                   inbound_gbps: float = LOAD_HOST_INBOUND_GBPS,
                   headroom: float = PLAN_HEADROOM) -> dict:
     """What a listener host drives within the headroom: UDP listeners by CPU
-    and by inbound bandwidth (the smaller), LL-HLS readers by CPU."""
+    and by inbound bandwidth (the smaller), LL-HLS readers by CPU, LiveKit
+    subscribers (400 units a second, whatever the lane) by CPU."""
     costs = {**COSTS, **(costs or {})}
     scale = parts_per_s(config) / 1000
     cores = vcpus(node)
@@ -314,17 +379,20 @@ def host_capacity(node: dict, config: str, costs: dict | None = None,
     by_cpu = int(cores * headroom / (costs["udp_vcpu"] * scale))
     by_net = int(inbound_gbps * 1000 * headroom / mbps) if mbps > 0 else by_cpu
     return {"vcpus": cores, "udp": min(by_cpu, by_net), "udp_by_cpu": by_cpu,
-            "udp_by_network": by_net, "hls": int(cores * headroom / (costs["hls_vcpu"] * scale))}
+            "udp_by_network": by_net, "hls": int(cores * headroom / (costs["hls_vcpu"] * scale)),
+            "lk": int(cores * headroom / (costs["lk_vcpu"] * LK_UNITS_PER_S / 1000))}
 
 
 def host_load(alloc: dict, capacity: dict) -> float:
     """The share of a host's planned capacity that an allocation uses (1.0
-    is the headroom): UDP and LL-HLS add."""
+    is the headroom): UDP, LL-HLS and the LiveKit crowd add."""
     used = 0.0
     if alloc["udp"]:
         used += alloc["udp"] / max(1, capacity["udp"])
     if alloc["hls"]:
         used += alloc["hls"] / max(1, capacity["hls"])
+    if alloc.get("lk"):
+        used += alloc["lk"] / max(1, capacity.get("lk", 0))
     return used
 
 
@@ -371,13 +439,16 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
                hls_cap_per_host: int | None = None, standby: list[str] = (),
                hold: float = 60.0, ramp: float | None = None, costs: dict | None = None,
                udp_mbps: float | None = None,
-               inbound_gbps: float = LOAD_HOST_INBOUND_GBPS, fit: bool = False) -> dict:
+               inbound_gbps: float = LOAD_HOST_INBOUND_GBPS, fit: bool = False,
+               lk_per_sfu: int = 0) -> dict:
     """The allocation, the capacity check, the edges' planned egress and the
     duration of every step. With `fit` (a lab whose account refused some
     listener hosts: `listeners_missing` in its state, or --fit-hosts), each
     region takes at most what its listener hosts drive (fit_caps), a step
     is named by the listeners it runs ("requested": what was asked), and a
-    step that would run no more than the one before is dropped."""
+    step that would run no more than the one before is dropped.
+    `lk_per_sfu`: the self-hosted LiveKit crowd of each region (add_livekit),
+    on the listener hosts and in their load."""
     regions = regions_of(state, standby)
     if not regions:
         raise ValueError("the lab has no region with an edge and a listener host")
@@ -392,16 +463,22 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
            "capacity": {name: host_capacity(node, config, costs, udp_mbps, inbound_gbps)
                         for name, node in hosts.items()},
            "steps": []}
+    out["livekit_per_sfu"] = lk_per_sfu
+
+    def allocate_with(total: int, chosen: dict, region_caps=None) -> dict:
+        return add_livekit(allocate(total, chosen, hls_share, hls_cap_per_host, region_caps),
+                           chosen, lk_per_sfu)
+
     caps = None
     if fit:
-        caps = fit_caps(regions, out["capacity"], hls_share, hls_cap_per_host)
+        caps = fit_caps(regions, out["capacity"], hls_share, hls_cap_per_host, allocate_with)
         out["fit"] = {"caps": caps, "dropped": [],
                       "listeners_missing": [item.get("name") for item in
                                             state.get("listeners_missing") or []]}
     total_s = 0.0
     previous = 0
     for requested in steps:
-        alloc = allocate(requested, regions, hls_share, hls_cap_per_host, caps)
+        alloc = allocate_with(requested, regions, caps)
         uncapped = allocate(requested, regions, hls_share, None, caps)
         total = sum(item["udp"] + item["hls"] for by_host in alloc.values()
                     for item in by_host.values())
@@ -424,6 +501,7 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
             egress = ((site_udp * (udp_mbps or cfg["udp_mbps"]) + site_hls * cfg["hls_mbps"])
                       / len(edges))
             sites[site] = {"udp": site_udp, "hls": site_hls,
+                           "livekit": sum(item.get("lk", 0) for item in alloc[site].values()),
                            "listeners_per_edge": round((site_udp + site_hls) / len(edges), 1),
                            "edge_egress_mbps": round(egress, 1),
                            "edge_nic_share": round(egress / NIC_MBPS.get(edges[0]["type"], 4000),
@@ -432,6 +510,8 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
         total_s += seconds
         out["steps"].append({
             "listeners": total, "requested": requested, "udp": udp, "hls": hls,
+            "livekit": sum(item.get("lk", 0) for by_host in alloc.values()
+                           for item in by_host.values()),
             **({"clipped_regions": {site: caps[site] for site, count in zip(
                 sorted(regions), split(requested, [len(regions[site]["edges"])
                                                    for site in sorted(regions)]))
@@ -448,19 +528,26 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
 def cost_estimate(state: dict, plan: dict, bring_up_hours: float = 1.0) -> dict:
     """Hours and dollars of one ramp: instance time (every instance billed
     a whole hour at least) and, were it public, the listeners' traffic at
-    the transfer price (on the VLAN it is not billed)."""
+    the transfer price (on the VLAN it is not billed); the LiveKit crowd's
+    traffic, which is public (the SFUs advertise their public address) and
+    billed past the account's transfer pool."""
     gigabytes = 0.0
+    livekit = 0.0
     cfg = CONFIGS[plan["config"]]
     for step in plan["steps"]:
         mbps = step["udp"] * cfg["udp_mbps"] + step["hls"] * cfg["hls_mbps"]
         gigabytes += mbps / 8 / 1000 * (step["ramp_s"] / 2 + step["hold_s"])
+        livekit += (step.get("livekit", 0) * LK_MBPS[plan["config"]] / 8 / 1000
+                    * (step["ramp_s"] / 2 + step["hold_s"]))
     hourly = sum(HOURLY.get(node.get("type"), 0.0) for node in state["nodes"].values())
     hours = bring_up_hours + plan["seconds"] / 3600
     return {"ramp_minutes": round(plan["seconds"] / 60, 1), "hours": round(hours, 2),
             "hourly_usd": round(hourly, 3),
             "instances_usd": round(hourly * max(1.0, hours), 2),
             "listener_traffic_gb": round(gigabytes, 1),
-            "listener_traffic_usd_if_public": round(gigabytes * TRANSFER_USD_PER_GB, 2)}
+            "listener_traffic_usd_if_public": round(gigabytes * TRANSFER_USD_PER_GB, 2),
+            "livekit_public_gb": round(livekit, 1),
+            "livekit_public_usd_past_pool": round(livekit * TRANSFER_USD_PER_GB, 2)}
 
 
 # ------------------------------------------------------------ the commands
@@ -553,6 +640,190 @@ def hls_commands(alloc: dict, entry: str, config: str, ramp_s: float, duration_s
     return out
 
 
+# ---------------------------------------------------- the LiveKit control
+#
+# It comes from the referee's harness, imported from its checkout
+# (COMPARE_ROOT), not copied: compare-audio.py's Audio builds the lkregion
+# crowd's command (Audio.probe), and compare-audio-analyse.py reads its
+# records (analyse_step_now). The one part
+# mirrored rather than called is the start of the lkregion publishers:
+# Audio.start also restarts the contributor and starts Needletail's own
+# producers, which this run's sender replaces (start_livekit says how).
+# The referee's records of a step go to target/compare/scale-RUN/compare/
+# RUN-STEP/ (one session per step: audio.CONFIG.scale.STEP), so that compare-audio-analyse.py --runs and
+# scoreboard.py read them as they read the referee's own sessions.
+
+_REFEREE: dict = {}
+
+
+def referee(name: str = "compare-audio.py"):
+    """A module of the referee's harness, COMPARE_ROOT/scripts/compare/NAME,
+    imported once. It imports small_mesh_common, which is this checkout's
+    (already imported), so it reads this lab's state and ssh settings."""
+    if name not in _REFEREE:
+        path = COMPARE_ROOT / "scripts" / "compare" / name
+        if not path.is_file():
+            raise RuntimeError(f"the referee's harness is not at {path} (NEEDLETAIL_COMPARE_ROOT): "
+                               "the LiveKit control runs its compare-audio.py")
+        spec = importlib.util.spec_from_file_location(
+            "referee_" + re.sub(r"[^a-z0-9]", "_", name[:-3]), path)
+        module = importlib.util.module_from_spec(spec)
+        saved = list(sys.path)
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path[:] = saved
+        _REFEREE[name] = module
+    return _REFEREE[name]
+
+
+def referee_session(ref, name: str, base: pathlib.Path, lab: dict):
+    """A compare-run.py Session of this lab whose records go to base/NAME.
+    Built without Session.__init__, which would read the LiveKit Cloud
+    credentials file: the control is self-hosted LiveKit only."""
+    session = object.__new__(ref.run.Session)
+    session.name = name
+    session.dir = base / name
+    session.dir.mkdir(parents=True, exist_ok=True)
+    session.state = lab
+    session.nodes = lab["nodes"]
+    session.source = common.nodes_for(lab, "source")[0]
+    session.cloud = None
+    session.steps = []
+    session.rungs = None
+    session.pace = 2.5
+    return session
+
+
+def referee_audio(ref, session, config: str, room: str, sites: list[str]):
+    """compare-audio.py's Audio of this run's lane: the referee's
+    configuration, the lkregion lane, the Needletail lane of the same sender
+    and its UDP client lane (nt-uc), on `sites` (short names), in `room`."""
+    spec = REFEREE_CONFIGS[config]
+    ref.set_nt_popus(spec["samples"] if spec["nt"] == "nt-popus" else 120)
+    ref.SITES[:] = sites
+    audio = ref.Audio(session, spec["config"], ["lkregion", spec["nt"], ref.UC_LANE],
+                      spec["samples"] if spec["nt"] == "nt-pcm" else 48)
+    audio.room = room
+    return audio
+
+
+def livekit_room(run: str, config: str) -> str:
+    return f"needletail-scale-{run}-{REFEREE_CONFIGS[config]['config'].replace('.', '')}"
+
+
+def start_livekit(ref, session, audio, sites: list[str]) -> None:
+    """The lkregion publishers on lon-src, one to each region's SFU, with
+    the command line of compare-audio.py's Audio.start (mirrored: Audio.start
+    also restarts the contributor and starts Needletail's producers, which
+    this run's AEP1 sender replaces), started the same way (compare-run.py's
+    src and background, in its directory on lon-src, status files that
+    Audio.status reads)."""
+    keys = "LIVEKIT_API_KEY=$LK_SELF_KEY LIVEKIT_API_SECRET=$LK_SELF_SECRET"
+    media = (f"--audio {ref.AUDIO}/audio.s24le --data --pcm-ms {ref.SFU_PCM_MS:g}" if audio.pcm
+             else f"--audio {ref.AUDIO}/{audio.config}.opus")
+    ref.run.src(session, f"pkill -x {LK_PROCESS}; true", check=False)
+    for site in sites:
+        ref.run.src(session, ref.run.background(f"lkregion-{site}", (
+            f"{keys} ntcmp-lk pub --lane lk --url ws://{session.ip(site + '-lk')}:7880 "
+            f"--room {audio.room} {media} --status lkregion-{site}.status")))
+
+
+def stop_livekit(ref, session) -> None:
+    ref.run.src(session, f"pkill -x {LK_PROCESS}; true", check=False)
+
+
+def livekit_command(audio, short: str, alloc: dict, seconds: float, remote_dir: str,
+                    label: str) -> str:
+    """The LiveKit crowd of one listener host for one step: the referee's
+    lkregion probe (Audio.probe: ntcmp-lk sub to the region's SFU, --count,
+    joining over at most 10 s) of `alloc["lk"]` subscribers, run in the
+    step's lk/ directory with the LiveKit keys of compare_lab.py secrets.
+    Empty when the host runs none."""
+    if not alloc.get("lk"):
+        return ""
+    probe = audio.probe("lkregion", short, int(round(seconds)), alloc["lk"], label)
+    return (f"mkdir -p {remote_dir}/lk; (cd {remote_dir}/lk && . {REMOTE_MEDIA}/env && "
+            f"{{ ulimit -n 1048576 || true; }} && exec nohup sh -c {shlex.quote(probe)} "
+            f">lk.out 2>lk.err) </dev/null >/dev/null 2>&1 &")
+
+
+def crowd_step_name(config: str, listeners: int) -> str:
+    """The referee's step name of a scale step's LiveKit crowd."""
+    return f"audio.{REFEREE_CONFIGS[config]['config']}.scale.{listeners}"
+
+
+def crowd_meta(audio, config: str, step: dict, run: str, started: float,
+               seconds: float) -> dict:
+    """meta.json of the crowd's records, in the shape of compare-audio.py's
+    step meta (what compare-audio-analyse.py reads)."""
+    spec = REFEREE_CONFIGS[config]
+    return {"step": crowd_step_name(config, step["listeners"]), "config": audio.config,
+            "phase": "scale", "detail": str(step["listeners"]), "netem": None,
+            "lanes": ["lkregion"], "listeners": step.get("livekit", 0),
+            "livekit_by_site": {site: item.get("livekit", 0)
+                                for site, item in step.get("sites", {}).items()},
+            "nt_frame_ms": audio.nt_frame_ms(), "webrtc_opus_send": "live",
+            "sfu_pcm_ms": LK_FRAME_MS if audio.pcm else None,
+            "nt_pcm_epoch_samples": spec["samples"] if spec["nt"] == "nt-pcm" else None,
+            "nt_popus_samples": spec["samples"] if spec["nt"] == "nt-popus" else None,
+            "session": audio.session.name, "scale_run": run, "scale_config": config,
+            "room": audio.room, "started_unix": started, "seconds": seconds}
+
+
+def referee_step(path: pathlib.Path) -> dict | None:
+    """compare-audio-analyse.py's analysis of one of the referee's step
+    directories (None when it has no meta.json)."""
+    if not (path / "meta.json").is_file():
+        return None
+    return referee("compare-audio-analyse.py").analyse_step_now(path)
+
+
+def livekit_summary(analysed: dict | None, lab: dict, nodes: dict, planned: dict) -> dict:
+    """The LiveKit crowd of a step, per region: subscribers planned and
+    reporting, those with audio, the hosts' median-listener p50 (median) and
+    p99 (worst), the units missing (weighted), and the region's SFU's CPU
+    from the sampler (its saturation is LiveKit's, never a tier of the
+    mesh giving out)."""
+    out: dict = {}
+    for site, count in sorted(planned.items()):
+        out[site] = {"planned": count, "listeners": 0, "with_audio": 0, "p50_ms": None,
+                     "p99_ms": None, "missing_percent": None, "first_audio_ms": None}
+    hosts = (analysed or {}).get("hosts") or {}
+    gathered: dict[str, dict[str, list]] = {}
+    for host, item in hosts.items():
+        site = (lab["nodes"].get(host) or {}).get("site")
+        crowd = ((item.get("lanes") or {}).get("lkregion") or {}).get("listeners")
+        if site is None or not crowd:
+            continue
+        row = out.setdefault(site, {"planned": 0, "listeners": 0, "with_audio": 0})
+        row["listeners"] += crowd.get("listeners") or 0
+        row["with_audio"] += crowd.get("listeners_with_audio") or 0
+        bucket = gathered.setdefault(site, {"p50": [], "p99": [], "missing": [], "first": []})
+        if crowd.get("unit_latency_p50_ms_median_listener") is not None:
+            bucket["p50"].append(crowd["unit_latency_p50_ms_median_listener"])
+            bucket["p99"].append(crowd["unit_latency_p99_ms_median_listener"])
+        if crowd.get("missing_percent") is not None:
+            bucket["missing"].append((crowd["missing_percent"], crowd.get("units") or 0))
+        if crowd.get("first_audio_ms_median") is not None:
+            bucket["first"].append(crowd["first_audio_ms_median"])
+    for site, bucket in gathered.items():
+        row = out[site]
+        row["p50_ms"] = median(bucket["p50"])
+        row["p99_ms"] = max(bucket["p99"]) if bucket["p99"] else None
+        units = sum(weight for _value, weight in bucket["missing"])
+        row["missing_percent"] = (round(sum(value * weight for value, weight in bucket["missing"])
+                                        / units, 4) if units else None)
+        row["first_audio_ms"] = median(bucket["first"])
+    for name, node in lab["nodes"].items():
+        if node.get("role") == "livekit" and name.endswith("-lk") and node.get("site") in out:
+            summary = nodes.get(name) or {}
+            out[node["site"]]["sfu"] = {"node": name, "cpu_mean": summary.get("cpu_mean"),
+                                        "cpu_max": summary.get("cpu_max"),
+                                        "saturated_at": summary.get("saturated_at")}
+    return out
+
+
 # The sampler of every node: one JSON line a second. CPU busy share of the
 # whole host and of its busiest core, steal, bytes and packets a second in
 # and out of each interface (and which one carries the public address:
@@ -561,7 +832,7 @@ def hls_commands(alloc: dict, entry: str, config: str, ramp_s: float, duration_s
 SAMPLER = r"""
 import json, os, socket, subprocess, sys, time
 out, seconds, public = sys.argv[1], float(sys.argv[2]), sys.argv[3]
-WATCH = ("av-mesh", "av-contrib", "needletail-load", "ntcmp", "aep1-48k-probe",
+WATCH = ("av-mesh", "av-contrib", "needletail-load", "ntcmp", "ntcmp-lk", "aep1-48k-probe",
          "livekit-server")
 HZ = os.sysconf("SC_CLK_TCK")
 def ifaces():
@@ -1195,10 +1466,12 @@ def median(values: list[float]) -> float | None:
 def measured_costs(nodes: dict[str, dict], allocation: dict, config: str) -> dict:
     """What a listener cost its listener host in this step, from the
     sampler: the CPU (in vCPUs, per listener of a 1,000-part stream) and the
-    peak memory (MB per listener) of needletail-load and of ntcmp, the
-    median over the hosts that ran them. `udp_vcpu` and `hls_vcpu` add
-    SOFTIRQ_VCPU and are what `--cost FILE` takes."""
-    scale = parts_per_s(config) / 1000
+    peak memory (MB per listener) of needletail-load, of ntcmp and of the
+    LiveKit crowd's ntcmp-lk (per subscriber at 1,000 units a second), the
+    median over the hosts that ran them. `udp_vcpu`, `hls_vcpu` and
+    `lk_vcpu` add SOFTIRQ_VCPU and are what `--cost FILE` takes."""
+    scales = {"udp": parts_per_s(config) / 1000, "hls": parts_per_s(config) / 1000,
+              "lk": LK_UNITS_PER_S / 1000}
     out: dict = {"hosts": {}}
     gathered: dict[str, list[float]] = {}
     for by_host in allocation.values():
@@ -1207,10 +1480,10 @@ def measured_costs(nodes: dict[str, dict], allocation: dict, config: str) -> dic
             cores = summary.get("procs_cores_mean") or {}
             rss = summary.get("procs_rss_mb_max") or {}
             row = {}
-            for lane, process in (("udp", LOAD_PROCESS), ("hls", "ntcmp")):
+            for lane, process in (("udp", LOAD_PROCESS), ("hls", "ntcmp"), ("lk", LK_PROCESS)):
                 count = alloc.get(lane) or 0
                 if count and process in cores:
-                    row[f"{lane}_process_vcpu"] = round(cores[process] / count / scale, 6)
+                    row[f"{lane}_process_vcpu"] = round(cores[process] / count / scales[lane], 6)
                     gathered.setdefault(f"{lane}_process_vcpu", []).append(
                         row[f"{lane}_process_vcpu"])
                 if count and process in rss:
@@ -1220,7 +1493,7 @@ def measured_costs(nodes: dict[str, dict], allocation: dict, config: str) -> dic
                 out["hosts"][host] = row
     for key, values in gathered.items():
         out[key] = round(median(values), 6)
-    for lane in ("udp", "hls"):
+    for lane in ("udp", "hls", "lk"):
         if f"{lane}_process_vcpu" in out:
             out[f"{lane}_vcpu"] = round(out[f"{lane}_process_vcpu"] + SOFTIRQ_VCPU, 6)
     return out
@@ -1377,13 +1650,28 @@ def format_summary(result: dict) -> str:
                      + f" | {step.get('stopped') or '-'} |")
     lines += ["", "What a listener cost its listener host (median over hosts; vCPU per listener "
               "of a 1,000-part stream, process CPU plus NIC softirq; peak MB per listener):", "",
-              "| step | UDP vCPU | UDP MB | LL-HLS vCPU | LL-HLS MB |",
-              "| ---: | ---: | ---: | ---: | ---: |"]
+              "| step | UDP vCPU | UDP MB | LL-HLS vCPU | LL-HLS MB | LiveKit vCPU |",
+              "| ---: | ---: | ---: | ---: | ---: | ---: |"]
     for step in result["steps"]:
         costs = step.get("measured_costs") or {}
         lines.append(f"| {step['listeners']} | {cell(costs.get('udp_vcpu'))} | "
                      f"{cell(costs.get('udp_mb'))} | {cell(costs.get('hls_vcpu'))} | "
-                     f"{cell(costs.get('hls_mb'))} |")
+                     f"{cell(costs.get('hls_mb'))} | {cell(costs.get('lk_vcpu'))} |")
+    if any(step.get("livekit") for step in result["steps"]):
+        lines += ["", "Self-hosted LiveKit beside Needletail, in the same steps (an SFU in each "
+                  "region; the referee's lkregion probe on the listener hosts; unit latency in "
+                  "ms, the hosts' median listener: p50 their median, p99 the worst):", "",
+                  "| step | region | planned | reporting | with audio | p50 | p99 | missing % | "
+                  "first audio | SFU CPU max |",
+                  "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        for step in result["steps"]:
+            for site, row in sorted((step.get("livekit") or {}).items()):
+                lines.append(f"| {step['listeners']} | {site} | {row.get('planned', 0)} | "
+                             f"{row.get('listeners', 0)} | {row.get('with_audio', 0)} | "
+                             f"{cell(row.get('p50_ms'))} | {cell(row.get('p99_ms'))} | "
+                             f"{cell(row.get('missing_percent'))} | "
+                             f"{cell(row.get('first_audio_ms'))} | "
+                             f"{cell((row.get('sfu') or {}).get('cpu_max'))} |")
     return "\n".join(lines) + "\n"
 
 
@@ -1393,7 +1681,7 @@ def cost_file(result: dict) -> dict | None:
     best: dict = {}
     for step in result["steps"]:
         costs = step.get("measured_costs") or {}
-        for key in ("udp_vcpu", "hls_vcpu"):
+        for key in ("udp_vcpu", "hls_vcpu", "lk_vcpu"):
             if costs.get(key) is not None:
                 best[key] = costs[key]
                 best[f"{key}_step"] = step["listeners"]
@@ -2616,7 +2904,7 @@ def build_plan(args: argparse.Namespace, lab: dict, standby: list[str]) -> dict:
     return plan_steps(lab, parse_steps(args.steps), args.config, args.hls_share,
                       args.hls_cap_per_host, standby, args.hold, args.ramp,
                       load_costs(args.cost), args.udp_mbps, args.inbound_gbps,
-                      fit=fit_wanted(args, lab))
+                      fit=fit_wanted(args, lab), lk_per_sfu=getattr(args, "lk_per_sfu", 0) or 0)
 
 
 def fit_line(plan: dict) -> str | None:
@@ -2660,8 +2948,10 @@ def command_plan(args: argparse.Namespace) -> dict:
                         "listener hosts" for site, item in plan["regions"].items())
     costs = plan["costs"]
     print(f"{args.config}: {regions}; {costs['udp_vcpu']} vCPU per UDP listener, "
-          f"{costs['hls_vcpu']} per LL-HLS reader at 1,000 parts/s, hosts filled to "
-          f"{PLAN_HEADROOM:.0%}")
+          f"{costs['hls_vcpu']} per LL-HLS reader, {costs['lk_vcpu']} per LiveKit subscriber "
+          f"at 1,000 parts/s, hosts filled to {PLAN_HEADROOM:.0%}")
+    print(f"self-hosted LiveKit: up to {plan.get('livekit_per_sfu', 0)} listeners per SFU on the "
+          "listener hosts")
     for name, cap in sorted(plan["capacity"].items()):
         print(f"  {name:<12} {cap['vcpus']} vCPU: UDP {cap['udp']} (CPU {cap['udp_by_cpu']}, "
               f"network {cap['udp_by_network']}) or LL-HLS {cap['hls']}")
@@ -2673,14 +2963,17 @@ def command_plan(args: argparse.Namespace) -> dict:
                           f"{item['edge_egress_mbps']:.0f} Mbit/s"
                           for site, item in sorted(step["sites"].items()))
         print(f"step {step['listeners']:>6}: UDP {step['udp']:>6}, LL-HLS {step['hls']:>5}"
-              f"{' (clipped)' if step['hls_clipped'] else ''}; {edges}; busiest load host "
+              f"{' (clipped)' if step['hls_clipped'] else ''}, LiveKit {step.get('livekit', 0)}"
+              f"; {edges}; busiest load host "
               f"{worst * 100:.0f}%{'' if step['drivable'] else ' <- OVER THE LOAD HOSTS'}; "
               f"{step['seconds'] / 60:.1f} min")
     cost = plan["cost"]
     print(f"ramp {cost['ramp_minutes']} min; lab ${cost['hourly_usd']}/h for {cost['hours']} h "
           f"with an hour of bring-up: ${cost['instances_usd']}; listener traffic "
           f"{cost['listener_traffic_gb']} GB (on the VLAN, not billed; "
-          f"${cost['listener_traffic_usd_if_public']} were it public)")
+          f"${cost['listener_traffic_usd_if_public']} were it public); LiveKit's crowd "
+          f"{cost['livekit_public_gb']} GB over the public network "
+          f"(${cost['livekit_public_usd_past_pool']} past the transfer pool)")
     if phases:
         priced = plan["phases"]["cost"]
         print(f"phases: one held step of {plan['steps'][0]['listeners']} listeners, "
@@ -2729,24 +3022,81 @@ def command_prepare(args: argparse.Namespace) -> None:
 
     for name, out in sorted(common.parallel([source] + listeners, one).items()):
         print(f"{name:<12} {out}")
+    if not getattr(args, "no_livekit", False):
+        prepare_livekit(source, listeners, audio.parent)
+
+
+LK_INDEXES = ("pcm-2.5ms.index.json", "opus-2.5.index.json")
+
+
+def livekit_binary() -> pathlib.Path | None:
+    """ntcmp-lk of the referee's checkout (the build its lkregion lane is
+    measured with), else this checkout's (scripts/compare/gobuild.sh)."""
+    for root in (COMPARE_ROOT, ROOT):
+        path = root / "target" / LK_PROCESS
+        if path.is_file():
+            return path
+    return None
+
+
+def keys_lines(text: str) -> list[str]:
+    """The self-hosted LiveKit key lines of compare_lab.py secrets' env file
+    (and nothing else of it)."""
+    return [line for line in text.splitlines()
+            if line.startswith(("export LK_SELF_KEY=", "export LK_SELF_SECRET="))]
+
+
+def prepare_livekit(source: dict, listeners: list[dict], media: pathlib.Path) -> None:
+    """What the LiveKit crowd needs on the listener hosts: ntcmp-lk, the
+    SFUs' indexes (the referee's media: pcm-2.5ms, opus-2.5) and the LiveKit
+    keys, copied from lon-src (compare_lab.py secrets wrote them there) into
+    a file of mode 600, never printed; and the Opus file of the publishers
+    on lon-src."""
+    binary = livekit_binary()
+    if binary is None:
+        sys.exit(f"ntcmp-lk is not built ({COMPARE_ROOT}/target or {ROOT}/target: "
+                 "scripts/compare/gobuild.sh); or prepare --no-livekit")
+    indexes = [media / name for name in LK_INDEXES]
+    if not all(path.is_file() for path in indexes):
+        sys.exit(f"the SFUs' indexes are not in {media} ({', '.join(LK_INDEXES)}: the referee's "
+                 "prepare-media.py); or prepare --no-livekit")
+    keys = keys_lines(ssh(source, f"cat {REMOTE_MEDIA}/env 2>/dev/null; true"))
+    if len(keys) != 2:
+        sys.exit(f"no LiveKit keys in {REMOTE_MEDIA}/env on {source['name']}: run the referee's "
+                 "compare_lab.py livekit and secrets on this lab first; or prepare --no-livekit")
+    if (media / "opus-2.5.opus").is_file():
+        common.rsync_to(source, [str(media / "opus-2.5.opus")], f"{REMOTE_MEDIA}/audio/")
+    common.rsync_to(source, [str(binary)], "/usr/local/bin/")
+    text = "".join(line + "\n" for line in keys).encode()
+
+    def one(node: dict) -> str:
+        common.ssh(node, f"mkdir -p {REMOTE_MEDIA}/index")
+        common.rsync_to(node, [str(binary)], "/usr/local/bin/")
+        common.rsync_to(node, [str(path) for path in indexes], f"{REMOTE_MEDIA}/index/")
+        common.ssh(node, f"umask 077; cat >{REMOTE_MEDIA}/env", stdin=text)
+        return ssh(node, f"{LK_PROCESS} 2>&1 | head -1 | cut -c1-40")
+
+    for name, out in sorted(common.parallel(listeners, one).items()):
+        print(f"{name:<12} LiveKit crowd ready ({out.strip()})")
 
 
 def stop_listeners(lab: dict) -> None:
     hosts = common.nodes_for(lab, "listeners")
     if hosts:
         common.parallel(hosts, lambda node: ssh(
-            node, f"pkill -INT -x {LOAD_PROCESS}; pkill -INT -x ntcmp; sleep 3; "
-                  f"pkill -KILL -x {LOAD_PROCESS}; pkill -KILL -x ntcmp; true"))
+            node, f"pkill -INT -x {LOAD_PROCESS}; pkill -INT -x ntcmp; pkill -INT -x {LK_PROCESS}; "
+                  f"sleep 3; pkill -KILL -x {LOAD_PROCESS}; pkill -KILL -x ntcmp; "
+                  f"pkill -KILL -x {LK_PROCESS}; true"))
 
 
 def command_stop(_args: argparse.Namespace) -> None:
     lab = state()
     stop_listeners(lab)
     for node in common.nodes_for(lab, "source"):
-        ssh(node, "pkill -x aep1-48k-probe; true")
+        ssh(node, f"pkill -x aep1-48k-probe; pkill -x {LK_PROCESS}; true")
     common.parallel(list(lab["nodes"].values()),
                     lambda node: ssh(node, f"pkill -f {REMOTE}/sampler.py; true"))
-    print("stopped the sources, the listeners and the samplers")
+    print("stopped the sources (LiveKit's publishers too), the listeners and the samplers")
 
 
 def monitor(hosts: list[dict], remote_dir: str, until: float, poll: float,
@@ -2772,11 +3122,13 @@ def monitor(hosts: list[dict], remote_dir: str, until: float, poll: float,
 
 def step_commands(lab: dict, plan: dict, step: dict, run: str, args,
                   avoid: set[str] = frozenset(), readers: bool = False,
-                  timeline: dict | None = None) -> dict[str, str]:
+                  timeline: dict | None = None, livekit=None) -> dict[str, str]:
     """The shell command of each listener host for one step. The LL-HLS
     entry is the region's first node that no phase faults (`avoid`);
     `readers`: the LL-HLS listeners are needletail-reader crowds that
-    follow steering and move (a phase run), not ntcmp."""
+    follow steering and move (a phase run), not ntcmp. `livekit`: the
+    referee's Audio, whose lkregion probe is the step's LiveKit crowd (the
+    hosts' "lk" share; livekit_command)."""
     regions = regions_of(lab, plan.get("standby") or [])
     remote_dir = remote_step_dir(run, step["listeners"])
     duration = step["ramp_s"] + step["hold_s"]
@@ -2799,19 +3151,25 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args,
                 *(reader_commands(alloc, entries[:4], args.config, duration, remote_dir, label)
                   if readers else
                   hls_commands(alloc, entry, args.config, step["ramp_s"], duration, remote_dir,
-                               label, args.hls_window, not args.hls_http2, args.hls_steering)))
+                               label, args.hls_window, not args.hls_http2, args.hls_steering)),
+                livekit_command(livekit, site_short(regions[site]), alloc, duration, remote_dir,
+                                label) if livekit is not None else "")
                 if part)
     return commands
 
 
 def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespace,
-             directory: pathlib.Path, log, phases: dict | None = None) -> dict:
+             directory: pathlib.Path, log, phases: dict | None = None,
+             control: dict | None = None) -> dict:
     """One step. With `phases` ({"timeline", "plan", "events"}): the
     listeners are held for the timeline's scenarios, a PhaseRunner carries
     out their actions from the end of the ramp, every edge and distributor
     runs the mesh sampler, the LL-HLS readers are needletail-reader crowds
     entering at nodes that no phase faults, and the faults are left out of
-    what gave out first."""
+    what gave out first. With `control` (control_setup: the referee's
+    harness, the LiveKit room): the step's LiveKit crowd runs on the
+    listener hosts beside Needletail's; it writes the referee's records
+    under compare/RUN-STEP/, summarised with the referee's analysis."""
     remote_dir = remote_step_dir(run, step["listeners"])
     every = list(lab["nodes"].values())
     duration = step["ramp_s"] + step["hold_s"]
@@ -2824,8 +3182,15 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
             node, mesh_sampler_command(node, remote_dir, duration + 60, stream), check=True))
     before = edge_counters(lab, stream)
     avoid = fault_nodes(phases["timeline"]) if phases else set()
+    audio = None
+    if control is not None and step.get("livekit"):
+        session = referee_session(control["ref"], f"{run}-{step['listeners']}", control["base"],
+                                  lab)
+        audio = referee_audio(control["ref"], session, args.config, control["room"],
+                              control["sites"])
     commands = step_commands(lab, plan, step, run, args, avoid, readers=bool(phases),
-                             timeline=phases["timeline"] if phases else None)
+                             timeline=phases["timeline"] if phases else None,
+                             livekit=audio if step.get("livekit") else None)
     step_dir = directory / "steps" / str(step["listeners"])
     step_dir.mkdir(parents=True, exist_ok=True)
     (step_dir / "commands.json").write_text(json.dumps(commands, indent=1) + "\n")
@@ -2834,6 +3199,11 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
     common.parallel(hosts, lambda node: ssh(node, commands[node["name"]], check=True))
     log({"step": step["listeners"], "started": round(started), "udp": step["udp"],
          "hls": step["hls"], "seconds": duration,
+         **({"livekit": step["livekit"], "livekit_per_sfu": plan.get("livekit_per_sfu"),
+             "livekit_by_site": {site: item.get("livekit", 0)
+                                 for site, item in step["sites"].items()},
+             "livekit_room": control["room"]} if audio is not None and step.get("livekit")
+            else {}),
          **({"readers_launched_us": int(started * 1e6)} if phases else {})})
     runner = None
     if phases:
@@ -2855,7 +3225,8 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
         deadline = time.time() + 60
         while time.time() < deadline:
             busy = common.parallel(hosts, lambda node: ssh_quiet(
-                node, f"pgrep -c -x {LOAD_PROCESS}; pgrep -c -x ntcmp"), workers=64)
+                node, f"pgrep -c -x {LOAD_PROCESS}; pgrep -c -x ntcmp; "
+                      f"pgrep -c -x {LK_PROCESS}"), workers=64)
             if not any(int(line) for text in busy.values() for line in text.split()
                        if line.strip().isdigit()):
                 break
@@ -2886,6 +3257,24 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
                 pass
 
     common.parallel(every, fetch)
+    crowd = None
+    if audio is not None and step.get("livekit"):
+        crowd = audio.session.dir / crowd_step_name(args.config, step["listeners"])
+        crowd.mkdir(parents=True, exist_ok=True)
+        lk_hosts = [node for node in hosts
+                    if step["allocation"].get(node["site"], {}).get(node["name"], {}).get("lk")]
+
+        def fetch_crowd(node: dict) -> None:
+            (crowd / node["name"]).mkdir(exist_ok=True)
+            try:
+                common.rsync_from(node, f"{remote_dir}/lk/", str(crowd / node["name"]) + "/",
+                                  timeout=600)
+            except RuntimeError:
+                pass
+
+        common.parallel(lk_hosts, fetch_crowd)
+        (crowd / "meta.json").write_text(json.dumps(
+            crowd_meta(audio, args.config, step, run, started, duration), indent=1) + "\n")
     (step_dir / "counters.json").write_text(json.dumps(counter_delta(before, after), indent=1)
                                             + "\n")
     exclude = exclusion(phases["timeline"], started + step["ramp_s"]) if phases else None
@@ -2894,6 +3283,12 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
                           exclude)
     result["stopped"] = stopped
     result["ramp_s"], result["hold_s"] = step["ramp_s"], step["hold_s"]
+    if audio is not None:
+        result["control"] = {"session": audio.session.name, "room": control["room"],
+                             "crowd": crowd.name if crowd else None,
+                             "livekit_planned": {site: item.get("livekit", 0)
+                                                 for site, item in step["sites"].items()}}
+        result.update(control_results(lab, control["base"], result))
     if phases:
         result["phase_start"] = started + step["ramp_s"]
         result["readers_launched"] = started
@@ -2905,6 +3300,24 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
                                           started)
     (step_dir / "step.json").write_text(json.dumps(result, indent=1) + "\n")
     return result
+
+
+def control_results(lab: dict, base: pathlib.Path, result: dict) -> dict:
+    """The step's LiveKit crowd, from the referee's records under
+    base/SESSION/ and the referee's analysis: {"livekit": per region}. An
+    analysis that fails is recorded,
+    never the end of the run."""
+    control = result.get("control") or {}
+    session = base / control.get("session", "")
+    out: dict = {}
+    try:
+        if control.get("crowd"):
+            out["livekit"] = livekit_summary(referee_step(session / control["crowd"]), lab,
+                                             result.get("nodes") or {},
+                                             control.get("livekit_planned") or {})
+    except Exception as error:  # noqa: BLE001 - the step's own figures stand
+        out["control_error"] = f"{type(error).__name__}: {str(error)[:300]}"
+    return out
 
 
 def phase_setup(args: argparse.Namespace) -> dict | None:
@@ -2927,6 +3340,10 @@ def phase_setup(args: argparse.Namespace) -> dict | None:
     if getattr(args, "config", None) is None:
         args.config = defaults.get("config", "pcm-1")
     args.hold = timeline["hold_s"]
+    # A phase run measures the mesh under faults: no LiveKit crowd unless
+    # asked.
+    if getattr(args, "lk_per_sfu", None) is None:
+        args.lk_per_sfu = 0
     return {"plan": plan, "timeline": timeline}
 
 
@@ -2937,6 +3354,71 @@ def resolve_defaults(args: argparse.Namespace) -> None:
         args.hls_share = 0.5
     if getattr(args, "config", None) is None:
         args.config = "pcm-1"
+    if getattr(args, "lk_per_sfu", None) is None:
+        args.lk_per_sfu = LK_PER_SFU
+
+
+def control_preflight(lab: dict, plan: dict, regions: dict, audio, ref) -> list[str]:
+    """What the LiveKit control needs on the hosts, missing: on lon-src
+    ntcmp-lk, the LiveKit keys and the publishers' media (compare_lab.py
+    livekit, audio, secrets); on the listener hosts that run the crowd
+    ntcmp-lk, the keys and the SFU index (scale-run.py prepare)."""
+    keys = f"grep -q LK_SELF_KEY {REMOTE_MEDIA}/env"
+    media = (f"{REMOTE_MEDIA}/audio/audio.s24le" if audio.pcm
+             else f"{REMOTE_MEDIA}/audio/{audio.config}.opus")
+    source = common.nodes_for(lab, "source")[0]
+    wanted: dict[str, tuple[dict, list[str]]] = {
+        source["name"]: (source, [f"command -v {LK_PROCESS}", keys, f"test -f {media}"])}
+    crowd = {name for step in plan["steps"] for by_host in step["allocation"].values()
+             for name, item in by_host.items() if item.get("lk")}
+    for name in sorted(crowd):
+        wanted[name] = (lab["nodes"][name], [f"command -v {LK_PROCESS}", keys,
+                                             f"test -f {audio.index}"])
+    results = common.parallel([node for node, _tests in wanted.values()], lambda node: ssh_quiet(
+        node, "; ".join(f"{test} >/dev/null 2>&1 || echo {shlex.quote('missing: ' + test)}"
+                        for test in wanted[node["name"]][1]) + "; echo checked"))
+    problems = []
+    for name, text in sorted(results.items()):
+        if "checked" not in text:
+            problems.append(f"{name}: did not answer")
+        problems += [f"{name}: {line}" for line in text.splitlines() if line.startswith("missing")]
+    return problems
+
+
+def control_setup(args: argparse.Namespace, lab: dict, plan: dict, regions: dict, run: str,
+                  directory: pathlib.Path, log) -> dict | None:
+    """The self-hosted LiveKit control of a run (None when its steps run no
+    crowd): the referee's harness imported and the hosts checked
+    (control_preflight), before the run starts anything; control_start
+    then starts the publishers."""
+    if not any(step.get("livekit") for step in plan["steps"]):
+        return None
+    ref = referee()
+    lk_sites = [site_short(region) for region in regions.values() if region["livekit"]]
+    base = directory / "compare"
+    room = livekit_room(run, args.config)
+    session = referee_session(ref, run, base, lab)
+    audio = referee_audio(ref, session, args.config, room, lk_sites)
+    problems = control_preflight(lab, plan, regions, audio, ref)
+    if problems:
+        sys.exit("the LiveKit control cannot run (run the referee's compare_lab.py prepare, "
+                 "livekit, audio and secrets on this lab, then scale-run.py prepare; or "
+                 "--lk-per-sfu 0): " + "; ".join(problems))
+    return {"ref": ref, "base": base, "room": room, "sites": lk_sites, "session": session,
+            "audio": audio, "lk_sites": lk_sites, "per_sfu": plan.get("livekit_per_sfu")}
+
+
+def control_start(control: dict, log) -> None:
+    """The lkregion publishers on lon-src, one to each region's SFU, in the
+    run's room."""
+    ref, session = control["ref"], control["session"]
+    start_livekit(ref, session, control["audio"], control["lk_sites"])
+    time.sleep(8)
+    running = ref.run.src(session, f"pgrep -c -x {LK_PROCESS}; true", check=False).split()
+    log({"livekit": "publishers", "sites": control["lk_sites"], "room": control["room"],
+         "running": int(running[0]) if running and running[0].isdigit() else 0,
+         "per_sfu": control["per_sfu"],
+         "referee": str(COMPARE_ROOT)})
 
 
 def command_run(args: argparse.Namespace) -> None:
@@ -2986,6 +3468,7 @@ def command_run(args: argparse.Namespace) -> None:
              "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
                                 plan["cost"]["hourly_usd"])}, indent=1) + "\n")
 
+    control = control_setup(args, lab, plan, regions, run, directory, log)
     source = common.nodes_for(lab, "source")[0]
     contributor = common.nodes_by_role(lab, "contributor")[0]
     ssh(source, f"mkdir -p {REMOTE}; pkill -x aep1-48k-probe; "
@@ -3000,6 +3483,7 @@ def command_run(args: argparse.Namespace) -> None:
     if not wait_live(lab, stream, avoid=avoid):
         sys.exit(f"stream {stream} is not live at {live_node(lab, avoid)['name']}")
     result = {"run": run, "config": args.config, "hls_share": args.hls_share,
+              "livekit_per_sfu": plan.get("livekit_per_sfu"),
               "standby_edges": standby, "steps": [],
               "lab": {name: {key: node.get(key) for key in ("role", "site", "type", "purpose")}
                       for name, node in lab["nodes"].items()}}
@@ -3007,8 +3491,10 @@ def command_run(args: argparse.Namespace) -> None:
         result["phase_plan"] = str(args.phase_plan)
         result["phase_scenarios"] = [row["name"] for row in phases["timeline"]["scenarios"]]
     try:
+        if control is not None:
+            control_start(control, log)
         for step in plan["steps"]:
-            outcome = run_step(lab, run, plan, step, args, directory, log, phases)
+            outcome = run_step(lab, run, plan, step, args, directory, log, phases, control)
             result["steps"].append(outcome)
             write_results(directory, result)
             first = outcome.get("gave_out_first")
@@ -3025,6 +3511,8 @@ def command_run(args: argparse.Namespace) -> None:
     finally:
         stop_listeners(lab)
         ssh(source, "pkill -x aep1-48k-probe; true")
+        if control is not None:
+            stop_livekit(control["ref"], control["session"])
         events.close()
     print(directory / "summary.md")
 
@@ -3067,6 +3555,9 @@ def command_analyse(args: argparse.Namespace) -> None:
         outcome = analyse_step(lab, step_dir, step, tuple(old["window"]), plan["config"], exclude)
         outcome["stopped"] = old.get("stopped")
         outcome["ramp_s"], outcome["hold_s"] = step["ramp_s"], step["hold_s"]
+        if old.get("control"):
+            outcome["control"] = old["control"]
+            outcome.update(control_results(lab, directory / "compare", outcome))
         if phases and old.get("phase_start") is not None:
             for key in ("phase_start", "readers_launched", "exclude"):
                 outcome[key] = old.get(key)
@@ -3109,6 +3600,11 @@ def main(argv: list[str] | None = None) -> None:
                           help="wire rate of one UDP listener (default per config)")
         item.add_argument("--inbound-gbps", type=float, default=LOAD_HOST_INBOUND_GBPS)
         item.add_argument("--topology", default=str(TOPOLOGY))
+        item.add_argument("--lk-per-sfu", type=int, default=None,
+                          help=f"the self-hosted LiveKit crowd of each region's SFU, on its "
+                               f"listener hosts beside Needletail's: the step's listeners of the "
+                               f"region up to this many (default {LK_PER_SFU}; 0 for a phase run, "
+                               "0 to leave it out)")
         item.add_argument("--fit-hosts", action="store_true",
                           help="each region takes at most what its listener hosts drive (the "
                                "default when the lab misses listener hosts that the account "
@@ -3133,7 +3629,11 @@ def main(argv: list[str] | None = None) -> None:
     plan.set_defaults(handler=command_plan)
     prepare = sub.add_parser("prepare", help="the loop and the indexes on the hosts")
     prepare.add_argument("--audio-file", required=True,
-                         help="the 64 s loop, s24le stereo 48 kHz (compare-media/audio/audio.s24le)")
+                         help="the 64 s loop, s24le stereo 48 kHz (compare-media/audio/audio.s24le); "
+                              "the SFUs' indexes and opus-2.5.opus are taken from its directory")
+    prepare.add_argument("--no-livekit", action="store_true",
+                         help="leave the LiveKit crowd's tools, indexes and keys off the listener "
+                              "hosts")
     prepare.set_defaults(handler=command_prepare)
     run = sub.add_parser("run", help="the ramp")
     planning(run)
