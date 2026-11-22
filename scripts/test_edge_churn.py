@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Tests of the edge-churn settings of the deploy tool (low-latency A5): a
+"""Tests of the long-haul gap hold of the deploy tool (low-latency A5): a
 distributor outside the contributor's region, fed over a long-haul path,
-holds a canonical gap for canonical_gap_hold_long_haul_ms (400 ms), and the
-contributor's region keeps the av-mesh default.
+holds a canonical gap for canonical_gap_hold_long_haul_ms (400 ms) so that no
+part waits behind a lost one for the 1 s av-mesh default (every 1 ms PCM part
+did, under long-haul loss, in the referee's mesh-w test), and the
+contributor's region keeps the default. A hold below media_deadline_ms gives
+up replication of parts later than the hold, and the settings say so.
 python3 -m unittest scripts/test_edge_churn.py"""
 
 from __future__ import annotations
@@ -69,6 +72,35 @@ class GapHold(Base):
         for value in ("0", "null"):
             settings = self.settings([f"canonical_gap_hold_long_haul_ms={value}"])
             self.assertEqual(deploy.gap_hold_args(node, settings, state), [], value)
+
+
+class Tradeoff(Base):
+    def test_a_hold_below_the_deadline_is_stated(self):
+        settings = self.settings()
+        note = deploy.gap_hold_tradeoff(settings)
+        self.assertIsNotNone(note)
+        for words in ("canonical_gap_hold_long_haul_ms=400", "media_deadline_ms=1000",
+                      "400-1000 ms late", "not replicated"):
+            self.assertIn(words, note)
+
+    def test_load_settings_prints_it(self):
+        (self.dir / "settings.json").unlink(missing_ok=True)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            deploy.load_settings([])
+        self.assertIn("is below media_deadline_ms=1000", err.getvalue())
+
+    def test_no_note_at_or_above_the_deadline_or_when_off(self):
+        for overrides in (["canonical_gap_hold_long_haul_ms=1000"],
+                          ["canonical_gap_hold_long_haul_ms=1500"],
+                          ["canonical_gap_hold_long_haul_ms=0"],
+                          ["canonical_gap_hold_long_haul_ms=null"],
+                          ["canonical_gap_hold_long_haul_ms=300", "media_deadline_ms=300"]):
+            settings = self.settings(overrides)
+            self.assertIsNone(deploy.gap_hold_tradeoff(settings), overrides)
+        settings = self.settings(["canonical_gap_hold_long_haul_ms=300",
+                                  "media_deadline_ms=500"])
+        self.assertIn("300-500 ms late", deploy.gap_hold_tradeoff(settings))
 
 
 @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")

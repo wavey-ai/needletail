@@ -177,11 +177,21 @@ DEFAULT_SETTINGS = {
     "media_deadline_ms": 1000,
     # --canonical-gap-hold-ms of a distributor outside the contributor's
     # region, fed over a long-haul path (low-latency A5). A hole that it
-    # holds stops the contiguous watermark of the whole region behind it:
-    # held for the 1 s default, a part late on the long-haul path took
-    # every edge of the region past its lost-parents limit. 400 ms is above
-    # a long-haul round trip; the contributor's region keeps the default.
-    # None or 0 renders nothing (the av-mesh default everywhere).
+    # holds stops the contiguous watermark, and so cache-mesh replication to
+    # every edge of its region, until the hole is filled or the hold ends.
+    # The referee's long-haul test (mesh-w, av-mesh default 1 s) measured
+    # the cost: under 1%, 5% or burst loss every 1 ms PCM part waited
+    # 0.88-0.98 s at the New York, Tokyo and Sydney distributors. A 400 ms
+    # hold caps that wait. The price: the contributor still repairs a part
+    # for media_deadline_ms (1 s), and a part that reaches this distributor
+    # more than the hold late is stored but not replicated; its edges get it
+    # only by hole repair (a hole at most 500 ms behind their head) or the
+    # once-a-second replica request, so live readers miss it and a 4K reader
+    # loses that part's frame. load_settings says so whenever the hold is
+    # below media_deadline_ms. (It is not a cure for edges moving their
+    # clients: that was the edges' liveness, fixed by A1/A2.) The
+    # contributor's region keeps the default. None or 0 renders nothing (the
+    # av-mesh default everywhere).
     "canonical_gap_hold_long_haul_ms": 400,
     # Class isolation (low-latency item 2): at no node does an audio datagram
     # share a socket, a thread or a qdisc band with 4K. Video streams travel
@@ -534,6 +544,9 @@ def load_settings(overrides: list[str]) -> dict:
         check_settings(settings)
     except ValueError as error:
         sys.exit(f"settings: {error}")
+    note = gap_hold_tradeoff(settings)
+    if note:
+        print(f"settings: {note}", file=sys.stderr)
     common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
     return settings
@@ -1656,6 +1669,21 @@ def gap_hold_args(node: dict, settings: dict, state: dict) -> list[str]:
     if not contributors or contributors[0]["region"] == node["region"]:
         return []
     return ["--canonical-gap-hold-ms", str(int(hold))]
+
+
+def gap_hold_tradeoff(settings: dict) -> str | None:
+    """What a long-haul gap hold below the media deadline gives up, or None
+    when it is not below it (or renders nothing)."""
+    hold = settings.get("canonical_gap_hold_long_haul_ms")
+    deadline = settings.get("media_deadline_ms")
+    if not hold or not deadline or int(hold) >= int(deadline):
+        return None
+    return (f"canonical_gap_hold_long_haul_ms={int(hold)} is below media_deadline_ms="
+            f"{int(deadline)}: a part that reaches a distributor outside the contributor's "
+            f"region {int(hold)}-{int(deadline)} ms late is not replicated to its edges (only "
+            "hole repair or the replica request fetch it), so live readers there miss it; "
+            "in exchange no part waits more than the hold behind a lost one. Set it to "
+            f"{int(deadline)} (or 0) to keep every late part")
 
 
 def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
