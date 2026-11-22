@@ -916,7 +916,7 @@ class Controller:
         obs = self.backend.observe(roster)
         by_name = {node["name"]: node for nodes in roster.values() for node in nodes}
         self.progress(now, obs, by_name)
-        self.release_warm(now, by_name)
+        self.release_warm(now, by_name, obs)
         decisions = []
         for site in sorted(roster):
             region = self.region(site)
@@ -1004,6 +1004,8 @@ class Controller:
         except Refused as error:
             self.fail(name, f"{action['kind']} {action['phase']} refused", str(error))
             self.state["actions"].pop(name, None)
+            if action["kind"] == "join":
+                self.park(name)
         except Exception as error:  # noqa: BLE001 - one action's failure; the next tick retries
             action["errors"] = action.get("errors", 0) + 1
             self.events("error", node=name, phase=action["phase"], detail=str(error)[-500:])
@@ -1012,6 +1014,8 @@ class Controller:
                 if action["kind"] == "drain":
                     self.resume_after_failure(name)
                 self.state["actions"].pop(name, None)
+                if action["kind"] == "join":
+                    self.park(name)
         self.save()
 
     def advance_join(self, name: str, action: dict, now: float, view: dict, node: dict) -> None:
@@ -1093,6 +1097,27 @@ class Controller:
             self.events("deleted", node=name, region=action["site"])
             self.state["actions"].pop(name, None)
 
+    def park(self, name: str) -> None:
+        """A join that failed: if its slot exists now (the create went
+        through, the push or the start did not), hold it out and put it in
+        the warm pool as never served, so that it is reused or deleted at
+        the end of its paid hour rather than left to bill until `down`."""
+        try:
+            roster = self.backend.roster()
+        except Exception as error:  # noqa: BLE001
+            self.fail(name, "park", str(error))
+            return
+        node = next((item for nodes in roster.values() for item in nodes
+                     if item["name"] == name), None)
+        if node is None or not node.get("slot") or not node.get("created"):
+            return
+        try:
+            self.backend.stop(name)
+        except Exception as error:  # noqa: BLE001 - it is parked all the same
+            self.fail(name, "park stop", str(error))
+        self.state["warm"][name] = {"since_unix": self.clock(), "proof": "never-served"}
+        self.events("parked", node=name, why="its join failed; held out in the warm pool")
+
     def resume_after_failure(self, name: str) -> None:
         try:
             self.backend.resume(name)
@@ -1100,13 +1125,23 @@ class Controller:
         except Exception as error:  # noqa: BLE001
             self.fail(name, "resume", str(error))
 
-    def release_warm(self, now: float, by_name: dict) -> None:
+    def release_warm(self, now: float, by_name: dict, obs: dict | None = None) -> None:
         """Delete a warm slot before its next billed hour starts (it bills
-        the started hour whatever happens), and forget one that is gone."""
+        the started hour whatever happens), and forget one that is gone. A
+        warm slot that is serving again (someone took it back into service,
+        or it advertises) leaves the pool and is never deleted from it."""
         for name in sorted(self.state["warm"]):
             item = self.state["warm"][name]
             node = by_name.get(name)
             if node is None or not node.get("created"):
+                self.state["warm"].pop(name)
+                continue
+            if item.get("since_unix", 0) >= now:
+                continue  # parked in this pass: the observation is older than that
+            view = (obs or {}).get(name) or {}
+            if not node.get("held") or view.get("advertised"):
+                self.events("warm_left", node=name,
+                            why="in service again: not deleted from the warm pool")
                 self.state["warm"].pop(name)
                 continue
             created = node.get("created_unix")

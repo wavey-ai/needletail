@@ -345,6 +345,39 @@ class Drain(Base):
         self.ticks(controller, 1)
         self.assertEqual(self.mutating()[-1], ("delete", "lon-edge-11"))
 
+    def test_a_warm_slot_back_in_service_is_never_released(self):
+        self.sim.nodes["lon-edge-11"].update(created=True, running=False,
+                                             created_unix=self.clock() - 3500)
+        controller = self.controller()
+        controller.state["warm"]["lon-edge-11"] = {"since_unix": self.clock() - 100,
+                                                   "proof": "drained-to-zero"}
+        # Someone started it again: it serves, it must not be deleted.
+        self.sim.nodes["lon-edge-11"]["running"] = True
+        self.sim.set_load(500)
+        self.ticks(controller, 1)
+        self.assertNotIn(("delete", "lon-edge-11"), self.mutating())
+        self.assertNotIn("lon-edge-11", controller.state["warm"])
+        self.assertIn("warm_left", [item["kind"] for item in self.events()])
+
+    def test_a_create_that_fails_after_the_instance_exists_is_parked_warm(self):
+        for index in range(6, 11):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        controller = self.controller(config=auto.Config(max_per_action=1))
+        original = self.sim.push
+
+        def failing_push(name):
+            self.sim.record("push", name)
+            raise auto.Refused("bootstrap failed")
+
+        self.sim.push = failing_push
+        self.sim.set_load(950)
+        self.ticks(controller, 3)
+        self.sim.push = original
+        self.assertEqual(self.mutating(), [("create", "lon-edge-11"), ("push", "lon-edge-11"),
+                                           ("stop", "lon-edge-11")])
+        self.assertEqual(controller.state["warm"]["lon-edge-11"]["proof"], "never-served")
+        self.assertIn("parked", [item["kind"] for item in self.events()])
+
     def test_the_warm_pool_is_taken_back_before_a_new_create(self):
         for index in range(6, 11):
             self.sim.nodes[f"lon-edge-{index}"]["running"] = True
