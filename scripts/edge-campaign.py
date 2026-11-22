@@ -1557,7 +1557,7 @@ def many_streams(ctx, tracks: int) -> None:
     time.sleep(10)
     roles = {"contributor": "contrib-lon", "relay": "relay-primary",
              "distributor": "lon-dist-a", "edge": "lon-edge-1"}
-    if lab.service_pid("relay-primary") is None:
+    if "relay-primary" not in lab.service_names("backbone"):
         # The merged topology: lon-dist-a is the first relay.
         roles.pop("relay")
     before = {role: cpu_seconds(name) for role, name in roles.items()}
@@ -1577,7 +1577,8 @@ def many_streams(ctx, tracks: int) -> None:
                                          if plays_clean(job)])
     ctx.measure("refused_for_want_of_a_slot", slot_refusals(lab.names()))
     ctx.check("no relay, distributor or edge is above 90% of its CPU",
-              all(cpu[role] < 90 for role in ("relay", "distributor", "edge")), cpu)
+              all(cpu[role] < 90 for role in ("relay", "distributor", "edge")
+                  if role in cpu), cpu)
     ctx.check("every stream plays without a missing part or a stall",
               all(plays_clean(job) for job in jobs.values()),
               f"CPU {cpu}; share of parts received {received}")

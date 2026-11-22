@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Tests of the edge campaign in the merged topology (the default), which
+renders no backbone relay: restore() puts the lab back to health without
+starting or limiting relay-primary and relay-secondary (and so without
+restarting the whole lab), and many_streams measures and checks the roles
+that run.
+python3 -m unittest scripts/test_campaign_merged.py"""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import pathlib
+import shutil
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from unittest import mock
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import edge_lab as lab  # noqa: E402
+import edge_campaign_core as core  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("edge_campaign_merged", HERE / "edge-campaign.py")
+campaign = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(campaign)
+
+BACKBONES = set(lab.names("backbone"))
+
+
+def rendered(names) -> dict:
+    return {name: {"args": [], "rust_log": ""} for name in names}
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work, True)
+        patcher = mock.patch.object(lab, "WORK", self.work)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def merged(self) -> list[str]:
+        names = [name for name in lab.names() if name not in BACKBONES]
+        lab.save("rendered.json", rendered(names))
+        return names
+
+
+class ServiceNames(Base):
+    def test_the_merged_topology_has_no_backbone_service(self):
+        names = self.merged()
+        self.assertEqual(lab.service_names(), names)
+        self.assertEqual(lab.service_names("backbone"), [])
+        self.assertEqual(lab.service_names("distributor", "london"),
+                         lab.names("distributor", "london"))
+
+    def test_the_legacy_topology_runs_every_node(self):
+        lab.save("rendered.json", rendered(lab.names()))
+        self.assertEqual(lab.service_names(), lab.names())
+
+    def test_nothing_before_the_lab_is_rendered(self):
+        self.assertEqual(lab.service_names(), [])
+
+
+class Restore(Base):
+    def run_restore(self, pid=None):
+        """restore() with every service dead (pid None) or alive; the real
+        start_service refuses a node that the topology does not render."""
+        started, limited = [], []
+
+        def start_service(name, **_kwargs):
+            if name not in lab.load("rendered.json"):
+                raise lab.LabError(f"{name} has no service in this lab's topology")
+            started.append(name)
+            return 1
+
+        def set_limits(name, cpu_percent=None, memory_mb=None):
+            limited.append(name)
+
+        ensure = mock.Mock()
+        with mock.patch.multiple(lab, heal_all=mock.DEFAULT, freeze_service=mock.DEFAULT,
+                                 service_pid=mock.Mock(return_value=pid),
+                                 start_service=start_service, set_limits=set_limits,
+                                 wait_live=mock.DEFAULT), \
+                mock.patch.object(core, "idle_edges"), \
+                mock.patch.object(core, "ensure_lab", ensure), \
+                redirect_stdout(io.StringIO()) as out:
+            core.restore()
+        return started, limited, ensure, out.getvalue()
+
+    def test_merged_restore_recovers_without_restarting_the_lab(self):
+        names = self.merged()
+        started, limited, ensure, out = self.run_restore(pid=None)
+        ensure.assert_not_called()
+        self.assertNotIn("did not recover", out)
+        self.assertEqual(started, names)
+        self.assertEqual(limited, names)
+        self.assertFalse(BACKBONES & set(started) or BACKBONES & set(limited))
+
+    def test_legacy_restore_starts_the_relays(self):
+        lab.save("rendered.json", rendered(lab.names()))
+        started, limited, ensure, _ = self.run_restore(pid=None)
+        ensure.assert_not_called()
+        self.assertTrue(BACKBONES <= set(started))
+        self.assertEqual(limited, lab.names())
+
+    def test_running_services_are_not_started_again(self):
+        self.merged()
+        started, _, ensure, _ = self.run_restore(pid=1)
+        ensure.assert_not_called()
+        self.assertEqual(started, [])
+
+    def test_a_lab_with_no_rendered_topology_is_restarted(self):
+        started, _, ensure, out = self.run_restore(pid=None)
+        ensure.assert_called_once()
+        self.assertIn("no rendered topology", out)
+        self.assertEqual(started, [])
+
+
+class Ctx:
+    def __init__(self):
+        self.measures, self.checks = {}, []
+
+    def measure(self, key, value):
+        self.measures[key] = value
+
+    def check(self, label, ok, detail=None):
+        self.checks.append((label, ok, detail))
+
+    def wait_readers(self):
+        pass
+
+
+class Job:
+    summary = {"parts_received": 40 * 200, "readers_ok": 1, "parts_missing": 0,
+               "longest_stall_ms": 0}
+
+
+class ManyStreams(Base):
+    def run_many(self, cpu_by_node):
+        ctx = Ctx()
+        used = {}
+
+        def cpu_seconds(name):
+            # Each call adds the node's share of the elapsed second.
+            used[name] = used.get(name, 0.0) + cpu_by_node[name]
+            return used[name], 0.0
+
+        clock = iter(range(1000, 2000))
+        with mock.patch.object(campaign.time, "sleep"), \
+                mock.patch.object(campaign.time, "time", side_effect=lambda: next(clock)), \
+                mock.patch.object(campaign, "cpu_seconds", cpu_seconds), \
+                mock.patch.object(campaign, "album_readers",
+                                  lambda ctx, seconds, streams, **_: {
+                                      stream: Job() for stream in streams}), \
+                mock.patch.object(campaign, "slot_refusals", return_value={}):
+            campaign.many_streams(ctx, 2)
+        return ctx
+
+    def test_merged_measures_no_relay_and_checks_the_rest(self):
+        self.merged()
+        ctx = self.run_many({"contrib-lon": 0.0, "lon-dist-a": 0.0, "lon-edge-1": 0.0})
+        cpu = ctx.measures["cpu_percent_by_role"]
+        self.assertEqual(set(cpu), {"contributor", "distributor", "edge"})
+        self.assertTrue(all(ok for _, ok, _ in ctx.checks), ctx.checks)
+
+    def test_merged_still_fails_a_busy_distributor(self):
+        self.merged()
+        # The distributor's CPU seconds rise by one per call over a one
+        # second window: 100%.
+        ctx = self.run_many({"contrib-lon": 0.0, "lon-dist-a": 1.0, "lon-edge-1": 0.0})
+        cpu_check = ctx.checks[0]
+        self.assertIn("90%", cpu_check[0])
+        self.assertFalse(cpu_check[1])
+
+    def test_legacy_measures_the_relay(self):
+        lab.save("rendered.json", rendered(lab.names()))
+        ctx = self.run_many({"contrib-lon": 0.0, "relay-primary": 0.0, "lon-dist-a": 0.0,
+                             "lon-edge-1": 0.0})
+        self.assertIn("relay", ctx.measures["cpu_percent_by_role"])
+        self.assertTrue(ctx.checks[0][1])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -230,6 +230,15 @@ def names(role: str | None = None, site: str | None = None) -> list[str]:
             if (role is None or item_role == role) and (site is None or where == site)]
 
 
+def service_names(role: str | None = None, site: str | None = None) -> list[str]:
+    """The nodes of `names` that run a service in this lab's topology, as
+    rendered by the last `up`: the merged topology (the default) renders no
+    backbone relay, so relay-primary and relay-secondary have nothing to
+    start, limit or restore. Empty before the lab is rendered."""
+    rendered = load("rendered.json")
+    return [name for name in names(role, site) if name in rendered]
+
+
 def edges(site: str = "london") -> list[str]:
     return names("edge", site)
 
@@ -881,7 +890,7 @@ def up(overrides: list[str], start: bool = True) -> dict:
         return rendered
     for role in ("backbone", "distributor", "edge", "contributor"):
         # The merged topology renders no backbone relay.
-        for name in [name for name in names(role) if name in rendered]:
+        for name in service_names(role):
             start_service(name)
         time.sleep(1.0)
     time.sleep(1.0)

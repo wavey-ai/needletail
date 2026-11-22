@@ -290,7 +290,12 @@ def restore() -> None:
     """Put the lab back to health after a scenario."""
     try:
         lab.heal_all()
-        for name in lab.names():
+        # Only the nodes that the topology runs: the merged topology (the
+        # default) has no backbone relay to start or to limit.
+        services = lab.service_names()
+        if not services:
+            raise lab.LabError("the lab has no rendered topology")
+        for name in services:
             lab.freeze_service(name, False)
             if lab.service_pid(name) is None:
                 lab.start_service(name)
@@ -300,7 +305,7 @@ def restore() -> None:
         if dead:
             lab.stop_sources()
             lab.start_sources(6 * 3600, audio="daw")
-        for name in lab.names():
+        for name in services:
             # The contributor goes back to its own limits, not a node's.
             limits = lab.service_limits(name)
             lab.set_limits(name, limits["cpu_percent"], limits["memory_mb"])
