@@ -17,12 +17,14 @@ import importlib.util
 import io
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("scale_run", HERE / "scale-run.py")
@@ -30,7 +32,9 @@ scale = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(scale)
 
 TOPOLOGY = scale.TOPOLOGY
-STANDBY = [f"lon-edge-{index}" for index in range(5, 9)]
+# Edges 6 to 10 of every region: the second curve's.
+STANDBY = [f"{short}-edge-{index}" for short in ("syd", "lon", "new", "tok")
+           for index in range(6, 11)]
 
 
 def lab(without=()) -> dict:
@@ -54,12 +58,13 @@ class Steps(unittest.TestCase):
         regions = scale.regions_of(lab(), STANDBY)
         self.assertEqual(sorted(regions), ["london", "newyork", "sydney", "tokyo"])
         self.assertEqual([node["name"] for node in regions["london"]["edges"]],
-                         [f"lon-edge-{index}" for index in range(1, 5)])
+                         [f"lon-edge-{index}" for index in range(1, 6)])
         self.assertEqual([node["name"] for node in regions["sydney"]["listeners"]],
-                         [f"syd-load-{index}" for index in range(1, 5)])
+                         [f"syd-load-{index}" for index in range(1, 17)])
         self.assertEqual([node["name"] for node in regions["tokyo"]["view"]], ["tok-view"])
-        # The second curve: eight London edges.
-        self.assertEqual(len(scale.regions_of(lab(), [])["london"]["edges"]), 8)
+        # The second curve: ten edges a region.
+        self.assertEqual([len(item["edges"]) for item in scale.regions_of(lab(), []).values()],
+                         [10] * 4)
         # Sydney left out.
         self.assertNotIn("sydney", scale.regions_of(lab(["sydney"]), STANDBY))
 
@@ -70,12 +75,13 @@ class Steps(unittest.TestCase):
                     for site, hosts in alloc.items()}
         self.assertEqual(per_site, {"london": 2500, "newyork": 2500, "sydney": 2500,
                                     "tokyo": 2500})
-        # Two g6-dedicated-8 in London share evenly, four g6-dedicated-4 in Sydney too.
-        self.assertEqual(alloc["london"]["lon-load-1"], {
-            "udp": 625, "hls": 625, "hls_by_edge": {f"lon-edge-{i}": 157 if i == 1 else 156
-                                                    for i in range(1, 5)}}
-            if alloc["london"]["lon-load-1"]["hls_by_edge"]["lon-edge-1"] == 157
-            else alloc["london"]["lon-load-1"])
+        # Eight g6-dedicated-8 in London share evenly, sixteen g6-dedicated-4
+        # in Sydney too, at half a g6-dedicated-8's share each.
+        self.assertEqual({(item["udp"], item["hls"]) for item in alloc["london"].values()},
+                         {(156, 156), (157, 157)})
+        self.assertEqual(sum(alloc["london"]["lon-load-1"]["hls_by_edge"].values()),
+                         alloc["london"]["lon-load-1"]["hls"])
+        self.assertLessEqual(max(item["udp"] for item in alloc["sydney"].values()), 79)
         self.assertEqual(sum(item["hls"] for item in alloc["sydney"].values()), 1250)
         # Every edge of a region gets the same readers, to one.
         by_edge: dict[str, int] = {}
@@ -85,7 +91,7 @@ class Steps(unittest.TestCase):
         self.assertEqual(sum(by_edge.values()), 1250)
         self.assertLessEqual(max(by_edge.values()) - min(by_edge.values()), 1)
         # Twice the edges in London: twice London's share.
-        wide = scale.allocate(1000, scale.regions_of(lab(), []), 0.5)
+        wide = scale.allocate(1000, scale.regions_of(lab(), STANDBY[:5] + STANDBY[10:]), 0.5)
         self.assertEqual(sum(item["udp"] + item["hls"] for item in wide["london"].values()), 400)
 
     def test_hls_cap_moves_readers_to_udp(self):
@@ -98,8 +104,8 @@ class Steps(unittest.TestCase):
                              for item in hosts.values()), 10000)
 
     def test_plan_capacity_duration_and_cost(self):
-        plan = scale.plan_steps(lab(), [100, 1000, 5000], "pcm-1", standby=STANDBY)
-        self.assertEqual([step["listeners"] for step in plan["steps"]], [100, 1000, 5000])
+        plan = scale.plan_steps(lab(), [100, 1000, 20000], "pcm-1", standby=STANDBY)
+        self.assertEqual([step["listeners"] for step in plan["steps"]], [100, 1000, 20000])
         self.assertTrue(plan["steps"][0]["drivable"])
         self.assertTrue(plan["steps"][1]["drivable"])
         # Half LL-HLS at 1 ms parts is more than the listener hosts drive.
@@ -111,7 +117,7 @@ class Steps(unittest.TestCase):
         self.assertEqual(capacity["udp"], capacity["udp_by_cpu"])
         self.assertEqual(capacity["udp"], 1018)
         cost = scale.cost_estimate(lab(), plan)
-        self.assertAlmostEqual(cost["hourly_usd"], 4.158, places=3)
+        self.assertAlmostEqual(cost["hourly_usd"], 10.422, places=3)
         self.assertGreater(cost["listener_traffic_gb"], 0)
         # A cost file replaces the planning figures.
         tmp = pathlib.Path(tempfile.mkdtemp())
@@ -134,7 +140,7 @@ class Steps(unittest.TestCase):
             plan = scale.command_plan(args)
         self.assertNotIn("sydney", plan["regions"])
         self.assertIn("step   1000", out.getvalue())
-        self.assertAlmostEqual(plan["cost"]["hourly_usd"], 4.158 - 0.918, places=3)
+        self.assertAlmostEqual(plan["cost"]["hourly_usd"], 10.422 - 2.538, places=3)
 
 
 class Commands(unittest.TestCase):
@@ -152,7 +158,7 @@ class Commands(unittest.TestCase):
             scale.command_settings(argparse.Namespace(topology=str(TOPOLOGY),
                                                       second_curve=False, edges_per_region=2))
         standby = json.loads(out.getvalue().split("--set standby_edges=")[1])
-        self.assertEqual(len(standby), 4 + 4 * 2)
+        self.assertEqual(len(standby), 4 * 8)
         self.assertNotIn("lon-edge-2", standby)
         self.assertIn("syd-edge-3", standby)
         self.assertEqual(scale.standby_for(lab()["nodes"].values(), ["x"], None), ["x"])
@@ -216,12 +222,20 @@ class Commands(unittest.TestCase):
         args = argparse.Namespace(config="pcm-1", sample=10, load_args="", hls_window=40,
                                   hls_http2=False, hls_steering="spread")
         commands = scale.step_commands(state, plan, plan["steps"][0], "r1", args)
-        self.assertEqual(len(commands), 10)
+        self.assertEqual(len(commands), 3 * 8 + 16)
         public = {node["public_ipv4"] for node in state["nodes"].values()}
         for name, command in commands.items():
-            self.assertFalse([address for address in public if address in command], name)
-            self.assertNotIn("lon-edge-5", command)
+            self.assertFalse([address for address in re.findall(r"[0-9.]+", command)
+                              if address in public], name)
+            self.assertNotIn("lon-edge-6", command)
+            # The shell takes it: a host runs needletail-load and several
+            # ntcmp crowds, each sent to the background.
+            checked = subprocess.run(["bash", "-n", "-c", command], capture_output=True,
+                                     text=True)
+            self.assertEqual(checked.returncode, 0, f"{name}: {checked.stderr}")
         self.assertIn("10.80.1.21:19446", commands["lon-load-1"])
+        self.assertIn("ntcmp hls", commands["lon-load-1"])
+        self.assertIn("needletail-load", commands["lon-load-1"])
 
     def test_vlan_guard(self):
         state = lab()
@@ -495,10 +509,11 @@ class Analysis(unittest.TestCase):
         london = result["regions"]["london"]
         self.assertEqual(london["udp"]["latency_ms"]["p50"], 1.0)
         self.assertEqual(london["udp"]["latency_ms"]["p99"], 4.0)
-        self.assertEqual(london["udp"]["listeners"], 12)
+        self.assertEqual(london["udp"]["listeners"], 6 * len(step["allocation"]["london"]))
         self.assertEqual(london["hls"]["latency_ms"]["p50"], 25.0)
-        self.assertEqual(result["edge_listeners"]["lon-edge-1"], 12)
-        self.assertEqual(result["tiers"]["edge"]["nodes"], 16 + 4)  # standby edges sampled too
+        self.assertEqual(result["edge_listeners"]["lon-edge-1"],
+                         6 * len(step["allocation"]["london"]))
+        self.assertEqual(result["tiers"]["edge"]["nodes"], 20 + 20)  # standby edges sampled too
         self.assertEqual(result["gave_out_first"]["node"], "tok-edge-3")
         self.assertNotIn("listeners_missing_parts",
                          [item["reason"] for item in result["gave_out_first"]["others"]])
@@ -578,6 +593,21 @@ class Analysis(unittest.TestCase):
         first = scale.analyse_step(state, tmp, step, (t0 + 5, t0 + 28))["gave_out_first"]
         self.assertEqual((first["tier"], first["node"], first["reason"]),
                          ("edge", edge["name"], "listeners_missing_parts"))
+
+    def test_the_monitor_outlives_a_host_that_does_not_answer(self):
+        hosts = [{"name": f"lon-load-{index}"} for index in range(1, 4)]
+        calls = []
+
+        def fake(node, command, check=False, timeout=None):
+            calls.append(node["name"])
+            if node["name"] == "lon-load-2":
+                raise subprocess.TimeoutExpired("ssh", timeout)
+            return ""
+
+        with mock.patch.object(scale.common, "ssh_text", fake):
+            found = scale.monitor(hosts, "/r", scale.time.time() + 0.3, 0.1, lambda item: None)
+        self.assertEqual(found, (None, None))
+        self.assertIn("lon-load-2", calls)
 
     def test_counter_delta(self):
         self.assertEqual(scale.counter_delta({"e": {"parts": 5, "fast_lane": None}},
