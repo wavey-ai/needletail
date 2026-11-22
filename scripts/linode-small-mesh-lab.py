@@ -12,7 +12,9 @@ Cost controls are part of the tool, not an operator convention:
 * state records exact instance and firewall identifiers, and `down` also
   sweeps by the unique run tag, so only this lab is ever deleted;
 * `watchdog` starts a detached process that deletes the lab at a deadline
-  even when the operator session has ended.
+  even when the operator session has ended (`up --watchdog-hours` arms it
+  before the first instance is created);
+* `down` deletes the run's VLANs too, which Linode keeps once empty.
 
 The Linode token is read from LINODE_TOKEN, LINODE_PAT, or the token file. It
 is never written to state, logs, or generated output.
@@ -357,6 +359,12 @@ def command_up(args: argparse.Namespace) -> None:
         "sites_left_out": [site for site in (args.without_sites or "").split(",") if site],
     }
     write_state(state_path, state)
+    if getattr(args, "watchdog_hours", None):
+        # Armed before the first instance exists: a creation that hangs, or
+        # an operator session that ends during it, still ends in `down`.
+        command_watchdog(argparse.Namespace(state=str(state_path), hours=args.watchdog_hours,
+                                            foreground=False))
+        state["watchdog_deadline_unix"] = read_state(state_path)["watchdog_deadline_unix"]
     print(f"Creating {len(topology['nodes'])} Linodes at ${hourly:.4f}/hour "
           f"(run {run_id})")
     key = key_path.read_text().strip()
@@ -645,6 +653,11 @@ def command_down(args: argparse.Namespace) -> None:
     remaining = api.list_all("/linode/instances", tag)
     if remaining:
         sys.exit(f"{len(remaining)} tagged Linodes remain; rerun down")
+    left = delete_vlans(api, state["run_id"])
+    if left:
+        print(f"VLANs still attached, not deleted (delete them with DELETE "
+              f"/networking/vlans/<region>/<label> once empty): {', '.join(left)}",
+              file=sys.stderr)
     age_hours = (time.time() - state["created_unix"]) / 3600
     archive = state_path.with_name(f"small-mesh-lab-{state['run_id']}.removed.json")
     state["removed_unix"] = int(time.time())
@@ -653,6 +666,30 @@ def command_down(args: argparse.Namespace) -> None:
     print(f"Removed {len(instance_ids)} Linodes and {len(firewall_ids)} firewalls "
           f"after {age_hours:.2f} h (about "
           f"${state['hourly_usd'] * max(age_hours, 1):.2f} of instance time)")
+
+
+def delete_vlans(api: "Api", run_id: str, attempts: int = 12, pause: float = 10.0) -> list[str]:
+    """Delete the run's VLANs (`ntsm-<run id>-<region>`, made with its
+    instances): Linode keeps a VLAN after its last instance is deleted. A
+    VLAN that an instance still detaches from refuses the delete for a few
+    seconds, so each is tried again. The VLANs of an optional site that was
+    left out are found too: they are listed, not taken from the state.
+    Returns the labels that could not be deleted."""
+    prefix = f"ntsm-{run_id}-"
+    pending = {(item["region"], item["label"]) for item in api.list_all("/networking/vlans")
+               if str(item.get("label", "")).startswith(prefix)}
+    for attempt in range(attempts):
+        for region, label in sorted(pending):
+            try:
+                api.call("DELETE", f"/networking/vlans/{region}/{label}", allow_404=True)
+                pending.discard((region, label))
+            except RuntimeError:
+                pass
+        if not pending:
+            break
+        if attempt + 1 < attempts:
+            time.sleep(pause)
+    return sorted(label for _region, label in pending)
 
 
 def command_watchdog(args: argparse.Namespace) -> None:
@@ -703,6 +740,9 @@ def main() -> None:
     up.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
     up.add_argument("--without-sites", default="",
                     help="comma-separated sites whose nodes are not created")
+    up.add_argument("--watchdog-hours", type=float, default=None,
+                    help="arm the watchdog (delete the lab after this many hours) before the "
+                         "first instance is created")
     up.add_argument("--optional-sites", default="",
                     help="comma-separated sites created first and left out when one of "
                          "their nodes cannot be created (no capacity)")

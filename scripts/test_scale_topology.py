@@ -428,6 +428,80 @@ class LabTool(unittest.TestCase):
         self.assertEqual(sorted(node["name"] for node in added),
                          [f"lon-edge-{index}" for index in range(5, 9)])
 
+    def test_down_deletes_the_runs_vlans_once_they_are_empty(self):
+        calls = []
+
+        class FakeApi:
+            attached = {"ntsm-r1-gb-lon": 1}
+
+            def list_all(self, endpoint, tag=None):
+                self.endpoint = endpoint
+                return [{"label": "ntsm-r1-gb-lon", "region": "gb-lon"},
+                        {"label": "ntsm-r1-ap-southeast", "region": "ap-southeast"},
+                        {"label": "ntsm-r10-gb-lon", "region": "gb-lon"},
+                        {"label": "cmpd1-gb-lon", "region": "gb-lon"}]
+
+            def call(self, method, path, body=None, allow_404=False):
+                calls.append((method, path))
+                label = path.rsplit("/", 1)[-1]
+                if self.attached.get(label, 0) > 0:
+                    self.attached[label] -= 1
+                    raise RuntimeError("HTTP 400: VLAN is attached")
+                return {}
+
+        with mock.patch.object(lab_tool.time, "sleep", lambda seconds: None):
+            left = lab_tool.delete_vlans(FakeApi(), "r1")
+        self.assertEqual(left, [])
+        # Only this run's VLANs (an optional site's too); the second try
+        # after the attached one detached.
+        self.assertEqual(sorted(set(calls)), [
+            ("DELETE", "/networking/vlans/ap-southeast/ntsm-r1-ap-southeast"),
+            ("DELETE", "/networking/vlans/gb-lon/ntsm-r1-gb-lon")])
+        self.assertEqual(calls.count(("DELETE", "/networking/vlans/gb-lon/ntsm-r1-gb-lon")), 2)
+        FakeApi.attached = {"ntsm-r1-gb-lon": 99}
+        with mock.patch.object(lab_tool.time, "sleep", lambda seconds: None):
+            self.assertEqual(lab_tool.delete_vlans(FakeApi(), "r1", attempts=3),
+                             ["ntsm-r1-gb-lon"])
+
+    def test_up_arms_the_watchdog_before_it_creates_an_instance(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        key = tmp / "key.pub"
+        key.write_text("ssh-ed25519 AAAA test")
+        events = []
+
+        class FakeApi:
+            def list_all(self, endpoint, tag=None):
+                return list((LabTool.TYPES if "types" in endpoint else LabTool.REGIONS).values())
+
+        def watchdog(args):
+            events.append(("watchdog", args.hours, args.foreground))
+            state = json.loads(pathlib.Path(args.state).read_text())
+            state["watchdog_deadline_unix"] = 123
+            pathlib.Path(args.state).write_text(json.dumps(state))
+
+        def create(api, run_id, tag, image, key, node):
+            events.append(("create", node["name"]))
+            raise RuntimeError("no capacity")
+
+        args = lab_tool.argparse.Namespace(
+            state=str(tmp / "state.json"), topology=str(SCALE), run_id="t1",
+            ssh_public_key=str(key), without_sites="", optional_sites="", watchdog_hours=5.5)
+        with mock.patch.object(lab_tool, "Api", FakeApi), \
+                mock.patch.object(lab_tool, "MAX_NODES", 100), \
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 10.0), \
+                mock.patch.object(lab_tool, "command_watchdog", watchdog), \
+                mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_down", lambda args: events.append(("down",))), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit):
+            lab_tool.command_up(args)
+        self.assertEqual(events[0], ("watchdog", 5.5, False))
+        self.assertEqual(events[1][0], "create")
+        self.assertEqual(events[-1], ("down",))
+        self.assertEqual(json.loads((tmp / "state.json").read_text())["watchdog_deadline_unix"],
+                         123)
+
 
 if __name__ == "__main__":
     unittest.main()
