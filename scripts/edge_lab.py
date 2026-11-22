@@ -167,6 +167,9 @@ READER_HOSTS = [
     ("lon-readers", "london", "10.90.0.101"),
     ("lon-readers-2", "london", "10.90.0.102"),
     ("new-readers", "newyork", "10.90.2.101"),
+    # The New York load host (latency-bench --load-sites newyork): a crowd
+    # off the measuring clients' link, as lon-readers-2 is in London.
+    ("new-readers-2", "newyork", "10.90.2.102"),
 ]
 SITE_VLAN = {"london": "10.77.1", "newyork": "10.77.2"}
 SITE_PUBLIC = {"london": "10.90.0", "amsterdam": "10.90.1", "newyork": "10.90.2"}

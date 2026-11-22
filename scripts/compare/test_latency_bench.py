@@ -646,7 +646,7 @@ class EdgeLoad(unittest.TestCase):
         edges = {"london": ["lon-edge-1", "lon-edge-2"], "newyork": ["new-edge-1"]}
         with mock.patch.object(bench.lab, "edges", side_effect=lambda site: edges[site]):
             items = bench.load_commands(args, pathlib.Path("/x"))
-        self.assertEqual([item["host"] for item in items], ["lon-readers-2", "new-readers"])
+        self.assertEqual([item["host"] for item in items], ["lon-readers-2", "new-readers-2"])
         london = items[0]["command"]
         self.assertEqual(london[london.index("--listeners") + 1], "128")
         self.assertEqual(london[london.index("--ramp") + 1], "128@0")

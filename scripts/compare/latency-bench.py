@@ -195,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--load-listeners", type=int, default=0, metavar="N",
                         help="needletail-load UDP listeners of the run's audio stream for each "
                              "serving edge of each --load-sites site, from that site's load host "
-                             "(lon-readers-2, new-readers): the many listeners an edge carries "
+                             "(lon-readers-2, new-readers-2): the many listeners an edge carries "
                              "(wave 8: the 1 ms edge stalls appear with 64+ a edge); they "
                              "subscribe all at once with the UDP clients, a subscribe spike")
     parser.add_argument("--load-ramp", default="", metavar="SPEC",
@@ -787,7 +787,7 @@ def audio_udp_commands(args, out: pathlib.Path) -> list[dict]:
 # ------------------------------------------------------------------ edge load (wave 8)
 
 # needletail-load's host in each site: a reader namespace with no CPU limit.
-LOAD_HOSTS = {"london": "lon-readers-2", "newyork": "new-readers"}
+LOAD_HOSTS = {"london": "lon-readers-2", "newyork": "new-readers-2"}
 CLIENT_UDP_PORT = 19446
 LOAD_BIN = pathlib.Path(os.environ.get(
     "NEEDLETAIL_LOAD_BIN", str(lab.MESH_ROOT / "target" / "release" / "needletail-load")))
