@@ -90,12 +90,35 @@ SAMPLER = (
     "(setsid nohup sh /var/tmp/compare-sampler.sh >/var/tmp/compare-sampler.log 2>&1 </dev/null &)")
 
 
+# Once a second on the contributor and the distributors: the node's own
+# /api/stats (its lanes and repair) and the kernel's UDP buffer errors, to show
+# what triggers a change of load (wave 6's contributor output multiplied mid-step).
+STATS_SAMPLER = (
+    "[ -f /var/tmp/compare-stats.pid ] && kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
+    "cat >/var/tmp/compare-stats.sh <<'EOS'\n"
+    "echo $$ >/var/tmp/compare-stats.pid\n"
+    "while true; do\n"
+    "  udp=\"$(nstat -az UdpRcvbufErrors UdpSndbufErrors UdpInErrors 2>/dev/null | awk 'NR>1{printf \"%%s=%%s \", $1, $2}')\"\n"
+    "  stats=\"$(curl -sk --max-time 0.8 '%(url)s' | tr -d '\\n')\"\n"
+    "  echo \"$(date +%%s.%%N) | $udp| $stats\"; sleep 1\n"
+    "done\n"
+    "EOS\n"
+    "(setsid nohup sh /var/tmp/compare-stats.sh >/var/tmp/compare-stats.log 2>&1 </dev/null &)")
+
+
+def stats_url(item: dict) -> str:
+    port = 19443 if item["role"] == "contributor" else 19444
+    return f"https://{item['public_ipv4']}:{port}/api/stats"
+
+
 def start_samplers(session: "Session") -> list[dict]:
     """Record the processor time of the services on every Needletail and
     LiveKit node, every five seconds, for the length of a session."""
     sampled = [item for item in session.nodes.values()
                if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit")]
     common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
+    common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor")],
+                    lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item)}, check=False))
     return sampled
 
 
@@ -107,6 +130,10 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                      "cat /var/tmp/compare-sampler.log", check=False)
         # One file for each invocation: a session can be run in several parts.
         (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
+        if item["role"] in ("contributor", "distributor"):
+            stats = common.ssh_text(item, "kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
+                                          "cat /var/tmp/compare-stats.log", check=False)
+            (session.dir / "samplers" / f"{item['name']}.stats.{int(time.time())}.log").write_text(stats + "\n")
 
     common.parallel(sampled, collect)
 

@@ -121,6 +121,8 @@ UDP_LANE = "nt-udp"
 UC_LANE = "nt-uc"
 SFU_PCM_MS = 2.5
 UDP_CLIENT = "/usr/local/bin/needletail-udp-client"
+# Extra flags of the UDP client lane, for an A/B of client behaviour (recorded in each step's meta).
+UC_EXTRA = (__import__("os").environ.get("COMPARE_UC_EXTRA", "").strip() + " ").lstrip()
 # The renditions the contributor publishes. On its own g6-dedicated-4 it
 # publishes all three at once (--nt-formats); give one format to publish one
 # rendition at a time, as the first pass on a 1 vCPU Nanode had to.
@@ -350,7 +352,7 @@ class Audio:
             name = UC_LANE if count == 1 else f"{UC_LANE}-{i:03d}"
             report = f"{UC_LANE}.probe" if count == 1 else f"{UC_LANE}.probe-{i:03d}"
             out.append(
-                f"( date +%s.%N >{name}.launch; {UDP_CLIENT} --entry {entry} --stream {stream} "
+                f"( date +%s.%N >{name}.launch; {UDP_CLIENT} --entry {entry} --stream {stream} {UC_EXTRA}"
                 f"--tls-ca {run.CA} --server-name {run.SERVER_NAME} --duration-seconds {seconds} "
                 f"--session {tag}-uc-{i} --arrivals {name}.arrivals.csv --write-parts {name}.parts.bin "
                 f">{name}.uc.json 2>{name}.uc.err; "
@@ -435,7 +437,7 @@ class Audio:
                 "sfu_pcm_ms": SFU_PCM_MS if self.pcm else None,
                 "nt_daw": {**NT_DAW, "opus_lookahead_samples":
                            run.lab.opus_lookahead_samples(int(NT_DAW["opus_frame_samples"]))},
-                "nt_popus_samples": NT_EPOCH_SAMPLES["nt-popus"],
+                "nt_popus_samples": NT_EPOCH_SAMPLES["nt-popus"], "uc_extra_flags": UC_EXTRA.strip() or None,
                 "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
                                     for base, frame in self.nt_frame_ms().items()
                                     for lane in lanes if lane.startswith(base)

@@ -264,22 +264,27 @@ def livekit(_: argparse.Namespace) -> None:
 
 
 def push_secrets(_: argparse.Namespace) -> None:
-    cloudflare = json.loads((COMPARE / "cloudflare-state.json").read_text())
+    # The Cloudflare objects exist only in runs that measure Cloudflare; a run
+    # of Needletail with self-hosted LiveKit as its control needs only LiveKit's keys.
+    state_file = COMPARE / "cloudflare-state.json"
     keys = livekit_state()
-    inputs = cloudflare["live_inputs"]
-    viewer = {
-        "CF_REALTIME_APP_ID": cloudflare["realtime"]["app_id"],
-        "CF_REALTIME_APP_SECRET": cloudflare["realtime"]["secret"],
-        "CF_WHEP_URL": inputs["needletail-compare-webrtc"]["whep_url"],
-        "CF_HLS_UID": inputs["needletail-compare-hls"]["uid"],
-        "LK_SELF_KEY": keys["api_key"], "LK_SELF_SECRET": keys["api_secret"],
-    }
+    viewer = {"LK_SELF_KEY": keys["api_key"], "LK_SELF_SECRET": keys["api_secret"]}
     source = dict(viewer)
-    source.update({
-        "CF_WHIP_URL": inputs["needletail-compare-webrtc"]["whip_url"],
-        "CF_RTMPS_URL": inputs["needletail-compare-hls"]["rtmps_url"],
-        "CF_RTMPS_KEY": inputs["needletail-compare-hls"]["rtmps_key"],
-    })
+    if state_file.is_file():
+        cloudflare = json.loads(state_file.read_text())
+        inputs = cloudflare["live_inputs"]
+        viewer.update({
+            "CF_REALTIME_APP_ID": cloudflare["realtime"]["app_id"],
+            "CF_REALTIME_APP_SECRET": cloudflare["realtime"]["secret"],
+            "CF_WHEP_URL": inputs["needletail-compare-webrtc"]["whep_url"],
+            "CF_HLS_UID": inputs["needletail-compare-hls"]["uid"],
+        })
+        source = dict(viewer)
+        source.update({
+            "CF_WHIP_URL": inputs["needletail-compare-webrtc"]["whip_url"],
+            "CF_RTMPS_URL": inputs["needletail-compare-hls"]["rtmps_url"],
+            "CF_RTMPS_KEY": inputs["needletail-compare-hls"]["rtmps_key"],
+        })
 
     def write(item: dict, values: dict) -> None:
         text = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in values.items())

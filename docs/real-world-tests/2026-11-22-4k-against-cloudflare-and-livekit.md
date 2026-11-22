@@ -9,8 +9,8 @@ from the same host in London to the same viewers in London, New York, Tokyo
 and Sydney, on a lab of dedicated-CPU instances only. The same lab measured
 the mesh itself hop by hop and the three tiers of Needletail's design.
 
-Needletail was measured on five builds of `low-latency`; the latest, wave 5,
-is first below. The earlier four: wave 1 (21 November,
+Needletail was measured on six builds of `low-latency`; the latest two,
+waves 6 and 5, are first below. The earlier four: wave 1 (21 November,
 evening), wave 2 (night, the smallest-frame defaults), wave 3 (a new relay
 receive loop and class-isolated lanes, measured on 22 November at 02:38) and
 wave 4 (edge and forwarder changes and UDP GSO for 4K, measured at 03:18, with
@@ -20,7 +20,20 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Latest: wave 5 (22 November, morning)
+## Latest: wave 6 (22 November, afternoon)
+
+**Wave 6 regressed on 4K.** With GSO on (its default) and the same
+three-region lab, it carried 25 Mbit/s whole to New York only; at 25 Mbit/s
+London had 92% to 94% of frames on time, and at 40 and 81 Mbit/s no region
+was whole (London 61% to 88%, New York 22% to 72%, Tokyo 72% to 99%). The medians of what arrived stayed near wave 5's (London 8 to 32 ms, New
+York 40 to 101, one HLS viewer 557 at 81 Mbit/s).
+Its contributor used 72% of one vCPU at 25 Mbit/s and its London distributor
+108% (wave 5: 12% and 14%), with no other source running and the audio-only
+load unchanged from wave 5. Sweep `video-w6`, 15:10 UTC, Needletail alone;
+the clips were encoded again from the same source with the same script. The
+cause is with the product session.
+
+## Wave 5 (22 November, morning)
 
 **On wave 5, with its UDP GSO on (the deploy default), Needletail carried
 247 Mbit/s of 4K whole to London, New York and Tokyo, more than any other
