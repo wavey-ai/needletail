@@ -59,6 +59,18 @@ times: it is whole when it misses no part and its latency tail (max - p50)
 is within the deadline.
 e.g. latency-bench.py --name 4k-200 --video-mbps 200 --seconds 40
 
+The UDP client lane (wave 6, the headline lane): --udp-clients N (default 1)
+needletail-udp-client listeners of the audio stream on each reader host, each
+recording every part's arrival (--arrivals). summary.txt and hops.json
+("udp_clients") report per reader host the unit latency (the part's last
+sample spoken -> the part at the client) p50/p95/p99/max, publish -> arrival,
+the parts that came on the edge's fast lane and on its cache-fed lane, wire
+bytes per part and the parts missed, and the hop table of the UDP clients'
+parts (edge udp_sent -> client). --client-loss SPEC puts a netem impairment
+("loss 5%", "loss gemodel 1% 20%") on the reader hosts' links, in and out,
+over their access delay, as the referee does on its listener hosts.
+e.g. latency-bench.py --name uc-burst --payload opus --client-loss "loss gemodel 1% 20%"
+
 --dry-run prints the plan (every command) and touches nothing.
 """
 
@@ -173,6 +185,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="random loss in percent on the reader hosts' links, both directions")
     parser.add_argument("--reader-netem", default="",
                         help="a netem spec for the reader hosts' links instead (edge_lab net)")
+    parser.add_argument("--client-loss", default="", metavar="SPEC",
+                        help="netem impairment of the reader hosts' links, in and out, on top of "
+                             "their access delay, as the referee puts it on its listener hosts "
+                             "(e.g. \"loss 5%%\", \"loss gemodel 1%% 20%%\")")
+    parser.add_argument("--udp-clients", type=int, default=1, metavar="N",
+                        help="needletail-udp-client listeners of the run's audio stream on each "
+                             "reader host (default %(default)s; 0: none): the headline lane")
+    parser.add_argument("--sample-nodes", action="store_true",
+                        help="sample every node's CPU, throttling and UDP drops each second "
+                             "(always on with 4K)")
+    parser.add_argument("--udp-client-args", default="", metavar="ARGS",
+                        help="extra arguments of every audio UDP client (e.g. \"--fast-lane false\")")
     parser.add_argument("--no-up", action="store_true",
                         help="use the lab that is running (its flags are not changed)")
     parser.add_argument("--keep-up", action="store_true", help="leave the lab running afterwards")
@@ -631,9 +655,272 @@ def node_summary_lines(nodes: dict | None) -> list[str]:
 def reader_netem(args) -> str | None:
     if args.reader_netem:
         return args.reader_netem
+    if args.client_loss:
+        return client_loss_spec(args.client_loss)
     if args.reader_loss:
         return lab.netem_spec(loss=args.reader_loss)
     return None
+
+
+def client_loss_spec(impairment: str) -> str:
+    """The netem of a reader host's link with `impairment` (netem words:
+    "loss 5%", "loss gemodel 1% 20%") on top of the link's own access delay,
+    so that only the impairment changes."""
+    words = impairment.split()
+    if not words:
+        raise SystemExit("--client-loss is a netem impairment, e.g. \"loss 5%\"")
+    if "delay" in words or "limit" in words:
+        raise SystemExit("--client-loss names the impairment only; the link keeps its delay "
+                         "(give a whole spec with --reader-netem)")
+    return f"{lab.netem_spec(delay_ms=lab.ACCESS_DELAY_MS)} {' '.join(words)}"
+
+
+# ------------------------------------------------------------------ the UDP client lane
+
+def audio_udp_commands(args, out: pathlib.Path) -> list[dict]:
+    """--udp-clients needletail-udp-client listeners of the run's audio
+    stream on each reader host, through the first distributor of the host's
+    site (which assigns them an edge), each with its record of every part's
+    arrival (--arrivals) and its JSON report on standard output."""
+    stream = PAYLOAD_STREAM[args.payload]
+    items = []
+    for host in [item for item in args.hosts.split(",") if item]:
+        site = lab.node(host)["site"]
+        entry = lab.distributors(site)[0]
+        for index in range(args.udp_clients):
+            stem = out / f"{host}.uc{index}"
+            items.append({"host": host, "site": site, "kind": "udp", "entry": entry,
+                          "report": f"{stem}.uc.json", "arrivals": f"{stem}.arrivals.csv",
+                          "command": [
+                              args.udp_client, "--entry", lab.base_url(entry),
+                              "--stream", str(stream), "--tls-ca", lab.ca_file(),
+                              "--server-name", lab.SERVER_NAME,
+                              "--duration-seconds", str(args.seconds),
+                              "--session", f"bench-{args.name}-{host}-uc-{index}",
+                              "--arrivals", f"{stem}.arrivals.csv",
+                              *split(args.udp_client_args)]})
+    return items
+
+
+def read_arrivals(path: pathlib.Path, since_us: int | None = None,
+                  until_us: int | None = None) -> dict[int, dict]:
+    """{part: {"arrival_us", "bytes", "published_us", "available_us"}} of a
+    UDP client's --arrivals record, the parts that arrived in the window."""
+    parts: dict[int, dict] = {}
+    try:
+        handle = path.open()
+    except OSError:
+        return parts
+    with handle:
+        for row in csv.DictReader(handle):
+            try:
+                part = int(row["part"])
+                arrival = int(row["arrival_unix_us"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (since_us is not None and arrival < since_us) or \
+                    (until_us is not None and arrival > until_us):
+                continue
+
+            def field(name: str) -> int | None:
+                try:
+                    value = int(row.get(name) or 0)
+                except ValueError:
+                    return None
+                return value if value > 0 else None
+
+            parts[part] = {"arrival_us": arrival, "bytes": field("bytes") or 0,
+                           "published_us": field("published_unix_us"),
+                           "available_us": field("available_unix_us")}
+    return parts
+
+
+def arrivals_probe(item: dict, parts: dict[int, dict], report: dict | None) -> dict:
+    """A UDP client's parts as hops.analyse reads a listener's record: the
+    part complete at its arrival, at the edge it was served by (the one
+    cache of its report; a client that moved is placed by the journal)."""
+    caches = sorted(set((report or {}).get("caches") or []))
+    host_ip = None
+    if len(caches) == 1:
+        try:
+            host_ip = lab.node(caches[0])["public_ipv4"]
+        except lab.LabError:
+            host_ip = None
+    rows = {part: {"complete_us": row["arrival_us"], "spoken_us": None,
+                   "published_us": row["published_us"],
+                   "cache_available_us": row["available_us"], "edge_committed_us": None,
+                   "reply_us": None}
+            for part, row in parts.items()}
+    return {"path": item["arrivals"], "site": item["site"], "host_ip": host_ip, "rows": rows}
+
+
+def source_clock(nodes: dict, events: list[dict], stream: int, source_start_us: int | None,
+                 epoch_us: float, since_us: int | None, until_us: int | None):
+    """seq -> the instant its last sample was spoken (hops.py's rule: the
+    epoch of the contributor's src_last; a part the journal does not hold
+    takes its own number as its epoch when the journal shows seq = epoch)."""
+    if source_start_us is None:
+        return lambda seq: None
+    journal = hops.Journal(nodes, events, stream, since_us, until_us)
+    offsets: dict[int, int] = {}
+    for (_stream, seq), slot in journal.epochs.items():
+        first = slot.get("src_first", min(slot.values()))
+        offsets[seq - first] = offsets.get(seq - first, 0) + 1
+    checked = sum(offsets.values())
+    equal = checked == 0 or offsets.get(0, 0) >= 0.99 * checked
+
+    def source_of(seq: int) -> int | None:
+        epoch = journal.last_epoch(stream, seq)
+        if epoch is None and equal:
+            epoch = seq
+        if epoch is None:
+            return None
+        return source_start_us + round((epoch + 1) * epoch_us)
+    return source_of
+
+
+def udp_client_verdict(item: dict, report: dict | None, parts: dict[int, dict],
+                       source_of) -> dict:
+    """One audio UDP client: its unit latency (source spoken -> part
+    arrived), publish -> arrival, the lane of its parts, its wire bytes per
+    part and the parts it missed."""
+    out: dict = {"host": item["host"], "site": item["site"],
+                 "report": pathlib.Path(item["report"]).name}
+    if not report:
+        out["error"] = "no report"
+    report = report or {}
+    unit, published = [], []
+    for part, row in parts.items():
+        source = source_of(part)
+        if source is not None:
+            unit.append((row["arrival_us"] - source) / 1000)
+        if row["published_us"]:
+            published.append((row["arrival_us"] - row["published_us"]) / 1000)
+    received = report.get("received_parts") or 0
+    compact = report.get("compact") or {}
+    out.update({
+        "caches": report.get("caches"), "moves": len(report.get("moves") or []),
+        "expected": report.get("expected_parts"), "received": report.get("received_parts"),
+        "missing": report.get("missing_parts"), "gaps": report.get("gap_parts"),
+        "fast_lane_asked": report.get("fast_lane_asked"),
+        "fast_lane_parts": report.get("fast_lane_parts"),
+        "cache_lane_parts": report.get("cache_lane_parts"),
+        "compact_plan": report.get("final_compact_plan"),
+        "nack_parts": compact.get("nack_parts_sent"), "retransmits": compact.get("retransmits"),
+        "recovered_by_window": compact.get("recovered_by_window"),
+        "wire_bytes_per_part": round(report["wire_bytes"] / received, 1)
+        if received and report.get("wire_bytes") is not None else None,
+        "wire_per_payload": None if report.get("wire_per_payload") is None
+        else round(report["wire_per_payload"], 3),
+        "wire_kbps": None if report.get("wire_bits_per_second") is None
+        else round(report["wire_bits_per_second"] / 1000, 1),
+        "window_parts": len(parts),
+        # Kernel receive -> the client read the datagram: the listener
+        # host's own delay (clients from before wave 6 do not report it).
+        "host_delay_ms": report.get("kernel_to_arrival_ms"),
+        "unit_latency_ms": hops.distribution(unit),
+        "publish_to_arrival_ms": hops.distribution(published)})
+    return out
+
+
+def merge_counts(clients: list[dict], key: str) -> int | None:
+    values = [item.get(key) for item in clients if item.get(key) is not None]
+    return sum(values) if values else None
+
+
+def udp_lane_report(items: list[dict], nodes: dict, events: list[dict], stream: int,
+                    source_start_us: int | None, epoch_us: float, since_us: int | None,
+                    until_us: int | None) -> tuple[dict, list[dict]]:
+    """Per reader host: every audio UDP client's verdict and the host's
+    distributions over all its clients' parts; and the clients' records as
+    hops.analyse listener probes."""
+    source_of = source_clock(nodes, events, stream, source_start_us, epoch_us, since_us,
+                             until_us)
+    hosts: dict[str, dict] = {}
+    probes = []
+    for item in items:
+        try:
+            report = json.loads(pathlib.Path(item["report"]).read_text())
+        except (OSError, ValueError):
+            report = None
+        parts = read_arrivals(pathlib.Path(item["arrivals"]), since_us, until_us)
+        verdict = udp_client_verdict(item, report, parts, source_of)
+        host = hosts.setdefault(item["host"], {"site": item["site"], "clients": [],
+                                                "_unit": [], "_published": []})
+        host["clients"].append(verdict)
+        for part, row in parts.items():
+            source = source_of(part)
+            if source is not None:
+                host["_unit"].append((row["arrival_us"] - source) / 1000)
+            if row["published_us"]:
+                host["_published"].append((row["arrival_us"] - row["published_us"]) / 1000)
+        if parts:
+            probes.append(arrivals_probe(item, parts, report))
+    for host in hosts.values():
+        clients = host["clients"]
+        received = merge_counts(clients, "received") or 0
+        wire = sum((item.get("wire_bytes_per_part") or 0) * (item.get("received") or 0)
+                   for item in clients)
+        host.update({
+            "unit_latency_ms": hops.distribution(host.pop("_unit")),
+            "publish_to_arrival_ms": hops.distribution(host.pop("_published")),
+            "expected": merge_counts(clients, "expected"), "received": received,
+            "missing": merge_counts(clients, "missing"),
+            "fast_lane_parts": merge_counts(clients, "fast_lane_parts"),
+            "cache_lane_parts": merge_counts(clients, "cache_lane_parts"),
+            "wire_bytes_per_part": round(wire / received, 1) if received else None})
+    return hosts, probes
+
+
+def udp_hop_lines(regions: dict) -> list[str]:
+    """The hop table of the UDP clients' parts in each region (as hops.py
+    prints a region's listener parts)."""
+    lines = []
+    for region, kinds in sorted(regions.items()):
+        report = kinds["listener_parts"]
+        planes = report.get("planes") or {}
+        lines.append(f"{region} / udp clients: {report['parts']} parts ({planes.get('fast', 0)} "
+                     f"on the fast plane, {planes.get('mesh', 0)} over the cache mesh)"
+                     "   (ms: n p50 p95 p99 max)")
+        for item in report["hops"]:
+            lines.append(f"  {item['hop']:<48} {item['count']:>7} {item['p50']:>8.3f} "
+                         f"{item['p95']:>8.3f} {item['p99']:>8.3f} {item['max']:>9.3f}")
+        for item in report["from_source"]:
+            if item["stage"] in ("listener.complete", hops.UDP_SENT):
+                lines.append(f"  source -> {item['stage']:<38} {item['count']:>7} "
+                             f"{item['p50']:>8.3f} {item['p95']:>8.3f} {item['p99']:>8.3f} "
+                             f"{item['max']:>9.3f}")
+    return lines
+
+
+def udp_summary_lines(hosts: dict) -> list[str]:
+    if not hosts:
+        return []
+
+    def dist(value: dict | None) -> str:
+        if not value:
+            return "-"
+        return "/".join(f"{value.get(key)}" for key in ("p50", "p95", "p99", "max"))
+
+    lines = ["", "UDP client lane (the headline lane; ms p50/p95/p99/max)"]
+    for name, host in sorted(hosts.items()):
+        lines.append(f"  {name} ({host['site']}): unit latency {dist(host['unit_latency_ms'])}  "
+                     f"publish->arrival {dist(host['publish_to_arrival_ms'])}  "
+                     f"fast lane {host['fast_lane_parts']} cache lane {host['cache_lane_parts']}  "
+                     f"wire {host['wire_bytes_per_part']} B/part  missing {host['missing']} "
+                     f"of {host['expected']}")
+        for item in host["clients"]:
+            lines.append(f"    {item['report']:<28} {item.get('received')}/{item.get('expected')} "
+                         f"missing {item.get('missing')} gaps {item.get('gaps')} "
+                         f"caches {','.join(item.get('caches') or []) or '-'} "
+                         f"moves {item.get('moves')} plan {item.get('compact_plan')} "
+                         f"nack {item.get('nack_parts')} wire {item.get('wire_bytes_per_part')} "
+                         f"B/part ({item.get('wire_per_payload')}x, {item.get('wire_kbps')} kbit/s)"
+                         + (f" host delay p99/max {(item.get('host_delay_ms') or {}).get('p99')}/"
+                            f"{(item.get('host_delay_ms') or {}).get('max')}"
+                            if item.get("host_delay_ms") else "")
+                         + (f" ({item['error']})" if item.get("error") else ""))
+    return lines
 
 
 def index_media(args, loop_file: str) -> tuple[str, list[str]]:
@@ -668,9 +955,10 @@ def plan(args) -> dict:
         "loop_start_unix": start,
         "sender": {"namespace": "contrib-lon", "command": sender_command(args, start, loop_file)},
         "readers": reader_commands(args, out, index),
+        "udp_clients": audio_udp_commands(args, out),
         "video": {"source": video_source(args), "viewers": video_commands(args, out),
                   "frame_deadline_ms": args.frame_deadline_ms,
-                  "sample_nodes": video_measured(args)},
+                  "sample_nodes": video_measured(args) or args.sample_nodes},
         "reader_netem": reader_netem(args),
         "hops": {"stream": PAYLOAD_STREAM[args.payload], "source_start_ns": start * 1_000_000_000,
                  "skip_seconds": SKIP_SECONDS,
@@ -719,7 +1007,8 @@ def journal_full(events: list[dict], capacity: int | None) -> list[str]:
 def run(args, steps: dict) -> int:
     out = pathlib.Path(steps["out"])
     out.mkdir(parents=True, exist_ok=True)
-    for old in [*out.glob("*.probe*"), *out.glob("*.4k.*"), out / "nodes.ndjson"]:
+    for old in [*out.glob("*.probe*"), *out.glob("*.4k.*"), *out.glob("*.uc*"),
+                out / "nodes.ndjson"]:
         old.unlink(missing_ok=True)
     # The sender's summary of this run is read from its log.
     (out / "sender.log").unlink(missing_ok=True)
@@ -729,10 +1018,10 @@ def run(args, steps: dict) -> int:
     prepare_media(steps["media"])
     video = steps["video"]
     video["source"] = prepare_video(video["source"])
-    if (any(item["kind"] == "udp" for item in video["viewers"])
+    if (any(item["kind"] == "udp" for item in video["viewers"] + steps["udp_clients"])
             and not pathlib.Path(args.udp_client).is_file()):
         raise SystemExit(f"{args.udp_client} is missing: build av-mesh's needletail-udp-client "
-                         "or give --video-udp-clients 0")
+                         "or give --udp-clients 0 --video-udp-clients 0")
     (out / "plan.json").write_text(json.dumps(steps, indent=1) + "\n")
     if steps["lab_up"] is None and not lab.load("services.json"):
         raise SystemExit("--no-up: the lab is not running")
@@ -761,6 +1050,19 @@ def run(args, steps: dict) -> int:
     summaries = [reader_summary(path) for path in sorted(out.glob("*.probe*.json"))]
     capacity = steps["hops"]["journal_capacity"]
     full = journal_full(events, capacity)
+    udp_hosts, udp_probes = udp_lane_report(
+        steps["udp_clients"], nodes, events, steps["hops"]["stream"],
+        steps["hops"]["source_start_ns"] // 1000, epoch["epoch_us"], since_us, ended_us)
+    if steps["udp_clients"]:
+        # The hops of the UDP clients' parts, apart from the HTTP readers'.
+        udp_hops = hops.analyse(nodes, events, udp_probes, steps["hops"]["stream"],
+                                steps["hops"]["source_start_ns"] // 1000, epoch["epoch_us"],
+                                since_us=since_us, until_us=ended_us)
+        result["udp_clients"] = {"hosts": udp_hosts,
+                                 "listeners": udp_hops["listeners"],
+                                 "regions": {region: {"listener_parts": kinds["listener_parts"]}
+                                             for region, kinds in udp_hops["regions"].items()
+                                             if "listener_parts" in kinds}}
     result["bench"] = {**{key: value for key, value in steps.items() if key != "readers"},
                        "reader_commands": [item["command"] for item in steps["readers"]],
                        "readers": summaries, "window_us": [since_us, ended_us],
@@ -797,10 +1099,14 @@ def run(args, steps: dict) -> int:
                      f"latency p50 {latency.get('p50')} p95 {latency.get('p95')} "
                      f"p99 {latency.get('p99')} max {latency.get('max')}"
                      + (f" error {item['error']}" if item.get("error") else ""))
+    lines += udp_summary_lines(udp_hosts)
     lines += video_summary_lines(video["source"] if regions else None, regions,
                                  video["frame_deadline_ms"])
     lines += node_summary_lines(measured.get("nodes"))
     text = "\n".join(lines) + "\n\n" + hops.format_summary(result)
+    if result.get("udp_clients", {}).get("regions"):
+        text += "\nUDP client hops (the UDP clients' parts):\n" + "\n".join(
+            udp_hop_lines(result["udp_clients"]["regions"])) + "\n"
     if "video" in result:
         text += "\n4K hops (stream 1):\n" + hops.format_summary(result["video"]["hops"])
     (out / "summary.txt").write_text(text)
@@ -873,6 +1179,7 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     sources["bench-sender"] = sender.pid
     lab.save("sources.json", sources)
     readers, shaped, handles = [], [], [sender_log]
+    per_packet = False
     sampler = None
     try:
         log(f"sender starts at {start} ({start - time.time():.1f} s)")
@@ -883,7 +1190,12 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             for site in sorted({item["site"] for item in video["viewers"]}):
                 lab.wait_live(VIDEO_STREAM, site, timeout=60)
         if steps["reader_netem"]:
-            for host in sorted({item["host"] for item in steps["readers"] + video["viewers"]}):
+            # netem then loses TCP packets, not 64 KB segments, as a real
+            # link does (edge_lab.set_tcp_per_packet), for the HTTP readers.
+            lab.set_tcp_per_packet(True)
+            per_packet = True
+            for host in sorted({item["host"] for item in
+                                steps["readers"] + steps["udp_clients"] + video["viewers"]}):
                 shaped.append(host)
                 lab.set_net(host, "pub", "both", steps["reader_netem"])
         if video["sample_nodes"]:
@@ -895,7 +1207,7 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=handle,
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
-        for item in video["viewers"]:
+        for item in steps["udp_clients"] + video["viewers"]:
             # A UDP client's report is its standard output; ntcmp's go to files.
             log_path = pathlib.Path(item["report"]).with_suffix(".log")
             handle = open(log_path, "ab")
@@ -924,6 +1236,8 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             sampler.stop()
         for host in shaped:
             lab.set_net(host, "pub", "both", None)
+        if per_packet:
+            lab.set_tcp_per_packet(False)
         for process in readers:
             if process.poll() is None:
                 process.kill()
@@ -975,6 +1289,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--video-fps, --video-clip-seconds and --frame-deadline-ms are more than 0")
     if any(count < 0 for count in video_viewers(args).values()):
         raise SystemExit("--video-readers and --video-udp-clients are 0 or more")
+    if args.udp_clients < 0:
+        raise SystemExit("--udp-clients is 0 or more")
+    if sum(bool(item) for item in (args.reader_netem, args.client_loss, args.reader_loss)) > 1:
+        raise SystemExit("give one of --client-loss, --reader-netem and --reader-loss")
+    if args.client_loss:
+        client_loss_spec(args.client_loss)
     steps = plan(args)
     source = steps["video"]["source"]
     if source and not source["synthetic"] and not pathlib.Path(source["path"]).is_file():

@@ -620,6 +620,13 @@ def merge_settings(saved: dict, given: dict) -> tuple[dict, dict]:
     return settings, dropped
 
 
+def settings_off_default(settings: dict) -> dict:
+    """The settings whose value is not today's default, in key order (the
+    version marker excepted)."""
+    return {key: value for key, value in sorted(settings.items())
+            if key != "settings_version" and DEFAULT_SETTINGS.get(key, None) != value}
+
+
 def load_settings(overrides: list[str]) -> dict:
     saved = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
     settings, dropped = merge_settings(saved, parse_overrides(overrides))
@@ -634,6 +641,14 @@ def load_settings(overrides: list[str]) -> dict:
     note = gap_hold_tradeoff(settings)
     if note:
         print(f"settings: {note}", file=sys.stderr)
+    # Values saved by an earlier run's --set persist; name every one that
+    # differs from today's defaults, so a run never measures old tuning
+    # without saying so (KEY=null clears one).
+    changed = settings_off_default(settings)
+    if changed:
+        print("settings: not the defaults: "
+              + ", ".join(f"{key}={json.dumps(value)} (default {json.dumps(DEFAULT_SETTINGS.get(key))})"
+                          for key, value in changed.items()), file=sys.stderr)
     common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
     return settings

@@ -224,6 +224,10 @@ def hop_pairs(times: dict) -> list[tuple[str, str]]:
     # The fast lane's own work at the edge, after its thread woke.
     if UDP_SENT in times and FAST_PLANE in times and "edge.relay_woken" in times:
         pairs.append(("edge.relay_woken", UDP_SENT))
+    # A UDP listener's part (no HTTP reply): from the edge's send to its
+    # arrival at the listener.
+    if UDP_SENT in times and "listener.complete" in times and "edge.reply" not in times:
+        pairs.append((UDP_SENT, "listener.complete"))
     return pairs
 
 
