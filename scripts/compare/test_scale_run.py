@@ -289,6 +289,25 @@ class LoadFiles(unittest.TestCase):
         self.assertAlmostEqual(merged["missing_percent"], 100 * 100 / 1900, places=3)
         self.assertEqual(merged["ttfp_ms"]["p50"], 40.0)
 
+    def test_needletail_load_summary_blocks(self):
+        # As av_mesh::load writes them: percentiles in ms, bucket lows in µs.
+        a = {"up": 5, "parts": 100, "missing": 0,
+             "latency_ms": {"count": 100, "p50": 1.016, "p99": 2.032, "max": 2.05,
+                            "buckets_us": [[100, 1], [1008, 98], [2016, 1]]},
+             "ttfp_ms": {"count": 5, "p50": 30.0, "p99": 31.0, "max": 31.0,
+                         "buckets_us": [[29696, 5]]}}
+        view = scale.block_view(a)
+        self.assertEqual(view["latency_ms"]["p50"], 1.016)
+        # 1008 is in [512, 1024): buckets 8 µs wide, middle 1011; 100 is exact.
+        self.assertEqual(view["histogram"], {100.0: 1, 1011.0: 98, 2023.0: 1})
+        self.assertEqual(scale.load_bucket_middle(127), 127.0)
+        self.assertEqual(scale.load_bucket_middle(128), 128.0)
+        self.assertEqual(scale.load_bucket_middle(256), 257.0)
+        merged = scale.merge_views([view, scale.block_view(a)])
+        self.assertEqual(merged["latency_ms"]["p50"], 1.011)
+        self.assertEqual(merged["latency_ms"]["count"], 200)
+        self.assertEqual(merged["ttfp_ms"]["merge"], "histogram")
+
     def test_without_histograms_the_worst_host_bounds_the_tail(self):
         views = [scale.block_view({"up": 10, "parts": 10, "missing": 0,
                                    "latency_ms": {"p50": 1.0, "p99": 2.0, "max": 3.0}}),
@@ -316,6 +335,18 @@ class LoadFiles(unittest.TestCase):
         self.assertEqual(rows[2]["edge"], None)
         self.assertEqual(rows[0]["host_cpu"], 55.0)
         self.assertTrue(rows[0]["saturated"])
+        # The tool's shape now: edges by name, the host under "load_host".
+        now = scale.interval_rows([{
+            "schema": "needletail.load.interval.v1", "t": 4.0, "unix_ms": 1_763_800_004_000,
+            "load_host_saturated": True, "total": {"up": 7, "parts": 70},
+            "edges": {"10.80.1.21:19446": {"up": 7, "active": 7, "parts": 70, "missing": 1}},
+            "load_host": {"host_cpu_busy": 0.93, "udp_rcvbuf_errors": 0,
+                          "saturation": ["worker lag p99 8 ms"]}}])
+        self.assertEqual([(row["edge"], row["listeners"]) for row in now],
+                         [("10.80.1.21:19446", 7), (None, 7)])
+        self.assertEqual(now[0]["t"], 1_763_800_004.0)
+        self.assertEqual(now[0]["host_cpu"], 0.93)
+        self.assertEqual(now[0]["reasons"], ["worker lag p99 8 ms"])
         # An earlier draft's shape: edges by name, counters under other names.
         old = scale.interval_rows([{"t": 5, "edges": {"e": {"listeners_up": 3,
                                                              "parts_received": 7}}}])

@@ -52,7 +52,8 @@ steps/STEP/HOST/..., scale.json, summary.md).
 The UDP listeners are av-mesh's needletail-load (branch scale-load):
 --edges --stream --listeners --ramp --duration --sample --out DIR, which
 writes DIR/intervals.jsonl (needletail.load.interval.v1: a line a second,
-"total", "edges" [{"edge", ...}], "host", "load_host_saturated"),
+"unix_ms", "total", "edges" {edge: {...}}, "load_host",
+"load_host_saturated"),
 DIR/summary.json (needletail.load.summary.v1: "total", "per_edge", "host",
 latency and time-to-first-part histograms whose buckets merge across
 hosts) and DIR/arrivals/listener-<i>.csv for the --sample listeners. The
@@ -710,17 +711,20 @@ def interval_rows(rows: list[dict]) -> list[dict]:
             groups.append((pick(row, "edge"), row))
         if isinstance(row.get("total"), dict):
             groups.append((None, row["total"]))
-        host = row.get("host") if isinstance(row.get("host"), dict) else row
+        host = next((row[key] for key in ("load_host", "host")
+                     if isinstance(row.get(key), dict)), row)
         for edge, item in groups:
             out.append({"t": t, "edge": edge,
                         **{key: pick(item, *names, default=0) or 0
                            for key, names in COUNT_FIELDS.items()},
                         "phase": row.get("phase"),
-                        "host_cpu": pick(host, "cpu_host_busy_percent", "host_cpu", "cpu"),
+                        "host_cpu": pick(host, "host_cpu_busy", "cpu_host_busy_percent",
+                                         "host_cpu", "cpu"),
                         "rcvbuf_drops": pick(host, "udp_rcvbuf_errors", "rcvbuf_errors"),
                         "saturated": bool(pick(row, "load_host_saturated", "saturated",
                                                default=False)),
-                        "reasons": pick(row, "load_host_reasons", default=[])})
+                        "reasons": pick(row, "load_host_reasons",
+                                        default=pick(host, "saturation", default=[]))})
     return out
 
 
@@ -799,18 +803,40 @@ def stats_ms(item, unit: str = "ms") -> dict | None:
     return out or None
 
 
+# needletail-load's histogram: values below 2 x 64 exactly, then 64 buckets
+# for each power of two; "buckets_us" gives each bucket's lowest value.
+LOAD_SUB_BITS = 6
+
+
+def load_bucket_middle(low: float) -> float:
+    """The value that needletail-load reports for the bucket whose lowest
+    value is `low` (its middle, as av_mesh::load::Histogram::value_of)."""
+    low = int(low)
+    if low < 2 << LOAD_SUB_BITS:
+        return float(low)
+    shift = low.bit_length() - 1 - LOAD_SUB_BITS
+    return float(low + ((1 << shift) - 1) // 2)
+
+
 def timing(block: dict, *names: str) -> tuple[dict | None, dict | None]:
     """(percentiles in ms, histogram in µs) of the first of `names` (each
-    tried as NAME_us, NAME_ms and NAME) that a block has. A plain NAME
-    block that carries "buckets" is in µs."""
+    tried as NAME_ms, NAME_us and NAME) that a block has. needletail-load's
+    summary blocks are NAME_ms with "buckets_us" (each bucket's lowest
+    value, read as its middle); a plain NAME block that carries "buckets"
+    is in µs."""
     for name in names:
-        for key, unit in ((f"{name}_us", "us"), (f"{name}_ms", "ms"), (name, None)):
+        for key, unit in ((f"{name}_ms", "ms"), (f"{name}_us", "us"), (name, None)):
             item = block.get(key) if isinstance(block, dict) else None
             if not isinstance(item, dict):
                 continue
             if unit is None:
                 unit = "us" if "buckets" in item else "ms"
-            return stats_ms(item, unit), histogram_of(item.get("buckets"))
+            histogram = histogram_of(item.get("buckets"))
+            lows = histogram_of(item.get("buckets_us"))
+            if lows:
+                histogram = merge_histograms([{load_bucket_middle(low): count}
+                                              for low, count in lows.items()])
+            return stats_ms(item, unit), histogram
     return None, None
 
 
