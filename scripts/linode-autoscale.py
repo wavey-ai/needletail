@@ -597,7 +597,8 @@ class LinodeBackend(Backend):
 
 class EdgeLabBackend(Backend):
     """The local namespace lab (scripts/edge_lab.py) as a backend: its slot
-    nodes (edge_lab.SLOT_NODES: lon-edge-4 and lon-dist-c) stand for slots
+    nodes (edge_lab.slot_nodes(): lon-dist-c, and lon-edge-4 with `up
+    slots=lon-edge-4`) stand for slots
     that are not created until the controller "creates" one (a marker in the
     lab's state directory; nothing to buy), `push` and `start` start the
     node's service in its namespace, `stop` ends it, `delete` ends it and
@@ -619,7 +620,8 @@ class EdgeLabBackend(Backend):
 
     def roster(self):
         lab = self.edge_lab
-        slots = set(getattr(lab, "SLOT_NODES", ()))
+        slots = set(lab.slot_nodes() if hasattr(lab, "slot_nodes")
+                    else getattr(lab, "SLOT_NODES", ()))
         made = self.created()
         out: dict[str, list[dict]] = {}
         firsts: dict[str, list[str]] = {}

@@ -292,9 +292,10 @@ def restore() -> None:
         lab.heal_all()
         # Only the nodes that the topology runs: the merged topology (the
         # default) has no backbone relay to start or to limit.
-        services = lab.service_names()
-        if not services:
+        # A slot that is not in service stays down (edge_lab.held_slots).
+        if not lab.service_names():
             raise lab.LabError("the lab has no rendered topology")
+        services = lab.standing_services()
         for name in services:
             lab.freeze_service(name, False)
             if lab.service_pid(name) is None:

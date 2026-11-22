@@ -92,9 +92,15 @@ class Feed(Base):
             "new-edge-2": ("new-dist-b", "new-dist-a", 1)})
         forwarders = {name: (item["primary_children"], item["children"])
                       for name, item in feed["forwarders"].items()}
+        # lon-dist-c, the lab's forwarder slot, is a lease child of the two
+        # first forwarders (primary lon-dist-a) after the edges, rank 4.
         self.assertEqual(forwarders["lon-dist-a"],
-                         (["10.77.1.21", "10.77.1.23"],
-                          ["lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4"]))
+                         (["10.77.1.21", "10.77.1.23", "10.77.1.13"],
+                          ["lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4",
+                           "lon-dist-c"]))
+        slot = feed["slot_forwarders"]["lon-dist-c"]
+        self.assertEqual((slot["primary"]["name"], slot["secondary"]["name"], slot["rank"]),
+                         ("lon-dist-a", "lon-dist-b", 4))
         self.assertEqual(forwarders["lon-dist-b"][0], ["10.77.1.22", "10.77.1.24"])
         self.assertEqual(forwarders["new-dist-a"][0], ["10.77.2.21"])
         # The backbone relays feed no edge.
@@ -167,7 +173,7 @@ class Render(Base):
 
     def test_every_distributor_feeds_its_lease_children(self):
         args = self.render()
-        for name, primaries in (("lon-dist-a", "10.77.1.21,10.77.1.23"),
+        for name, primaries in (("lon-dist-a", "10.77.1.21,10.77.1.23,10.77.1.13"),
                                 ("lon-dist-b", "10.77.1.22,10.77.1.24"),
                                 ("new-dist-a", "10.77.2.21"), ("new-dist-b", "10.77.2.22")):
             node_args = args[name]
@@ -353,7 +359,7 @@ class Start(Base):
         log = self.start("lon-dist-a")
         self.assertIn("exit=124", log, log[-2000:])
         self.assertIn("fast-plane lease children ready bind=10.77.1.11:22901", log)
-        self.assertIn("primary_children=[10.77.1.21, 10.77.1.23]", log)
+        self.assertIn("primary_children=[10.77.1.21, 10.77.1.23, 10.77.1.13]", log)
         self.assertIn("lease children's failover listener ready bind=10.77.1.11:22902", log)
 
 

@@ -2276,6 +2276,300 @@ def endurance_churn(ctx):
         ctx.note(f"largest growth: {worst[0]} at {worst[1]['anon_mb_per_hour']} MB an hour")
 
 
+# ============================================================ scale operations
+# Failover, redistribution and autoscaling with UDP listeners
+# (low-latency ops item 7): needletail-load crowds (the real client session
+# per listener; av-mesh branch scale-load) on a reader host, over the London
+# edges' public addresses. Local proofs of the deploy's slots (a join
+# restarts nothing), of the scale run's faults, and of the autoscaler's
+# edge_lab backend through a ramp up and down.
+
+CLIENT_UDP_PORT = 19446
+
+
+class UdpJob:
+    """One needletail-load process: `count` UDP listeners of a stream over
+    a list of edges, its interval and summary files in `out`."""
+
+    def __init__(self, key, host, out, process, started_at, seconds):
+        self.key, self.host, self.out = key, host, out
+        self.process, self.started_at, self.seconds = process, started_at, seconds
+
+    def wait(self, grace: float = 30.0) -> None:
+        try:
+            self.process.wait(timeout=max(1.0, self.started_at + self.seconds + grace
+                                          - time.time()))
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+    def summary(self) -> dict:
+        try:
+            return json.loads((self.out / "summary.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def intervals(self) -> list[dict]:
+        rows = []
+        try:
+            for line in (self.out / "intervals.jsonl").read_text().splitlines():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+        except OSError:
+            pass
+        return rows
+
+
+def udp_edges(site: str = "london") -> list[str]:
+    return [f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}" for name in lab.edges(site)]
+
+
+def udp_command(host: str, edges: list[str], stream: int, count: int, seconds: int,
+                out: pathlib.Path, label: str, ramp: str | None = None) -> list[str]:
+    """needletail-load in a reader host's namespace, as scale-run starts it
+    on a listener host."""
+    return lab.enter(host) + [
+        lab.binary("needletail-load"), "--edges", ",".join(edges), "--stream", str(stream),
+        "--listeners", str(count), "--ramp", ramp or f"{count}@0", "--duration", str(seconds),
+        "--sample", str(min(5, count)), "--out", str(out), "--label", label, "--quiet"]
+
+
+def udp_listeners(ctx, key: str, count: int, seconds: int, host: str = LON_READERS,
+                  stream: int = AUDIO, edges: list[str] | None = None,
+                  ramp: str | None = None) -> UdpJob:
+    if not pathlib.Path(lab.binary("needletail-load")).is_file():
+        raise lab.LabError("needletail-load is not built (av-mesh branch scale-load: "
+                           "cargo build --release --bin needletail-load)")
+    out = ctx.directory / f"{key}.udp"
+    command = udp_command(host, edges or udp_edges(), stream, count, seconds, out,
+                          f"{ctx.scenario.name}-{key}", ramp)
+    log = open(ctx.directory / f"{key}.udp.log", "ab")
+    process = subprocess.Popen(command, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                               start_new_session=True)
+    ctx.event(f"{count} UDP listeners of stream {stream} start on {host} ({key})")
+    return UdpJob(key, host, out, process, time.time(), seconds)
+
+
+def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None) -> dict:
+    """What a UDP crowd saw: parts and missing parts, moves per edge (as
+    needletail-load counts them, on the edge moved to), and listeners that
+    exist but are not subscribed at the end (stranded, until needletail-load
+    has its own gauge, Phase AM item 10)."""
+    summary = job.summary()
+    total = summary.get("total") or summary
+    per_edge = summary.get("per_edge") or summary.get("edges") or {}
+    if isinstance(per_edge, list):
+        per_edge = {item.get("edge"): item for item in per_edge if isinstance(item, dict)}
+    names = edge_names or {f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}": name
+                           for name, *_ in lab.NODES}
+    moves = {names.get(edge, edge): (block or {}).get("moves", 0)
+             for edge, block in per_edge.items()}
+    rows = [row for row in job.intervals() if row.get("phase") != "final"]
+    last = (rows[-1].get("total") or {}) if rows else {}
+    stranded = None
+    if last.get("active") is not None:
+        stranded = max(0, last["active"] - (last.get("up") or 0))
+    if last.get("stranded") is not None:
+        stranded = last["stranded"]
+    report = {"parts": total.get("parts"), "missing": total.get("missing"),
+              "moves_by_edge": moves, "moves": sum(moves.values()),
+              "never_first": total.get("never_first"), "stranded_at_end": stranded}
+    ctx.measure(f"{job.key}_udp", report)
+    return report
+
+
+def move_spread(moves: dict[str, int], edges: list[str]) -> float | None:
+    counts = [moves.get(edge, 0) for edge in edges]
+    if not counts or not sum(counts):
+        return None
+    return round(max(counts) / (sum(counts) / len(counts)), 3)
+
+
+def service_pids() -> dict[str, int | None]:
+    return {name: lab.service_pid(name) for name in lab.standing_services()}
+
+
+def udp_fault(ctx, fault, label: str, target: str, seconds: int = 60, fault_at: int = 20,
+              heal=None, heal_at: int = 45):
+    udp = udp_listeners(ctx, "udp", 200, seconds)
+    hls = ctx.readers("audio", AUDIO, 4, seconds, steering=True)
+    ctx.at(fault_at)
+    fault(target)
+    ctx.event(f"{label}: {target}")
+    if heal:
+        ctx.at(heal_at)
+        heal(target)
+        ctx.event(f"healed: {target}")
+    udp.wait()
+    ctx.wait_readers()
+    report = udp_report(ctx, udp)
+    others = [edge for edge in lab.edges() if edge != target]
+    spread = move_spread(report["moves_by_edge"], others)
+    ctx.measure("moves_spread_max_over_mean", spread)
+    ctx.check("UDP listeners: none stranded at the end",
+              report["stranded_at_end"] in (0, None), report["stranded_at_end"])
+    ctx.check("UDP listeners moved off the faulted edge", report["moves"] > 0, report["moves"])
+    ctx.expect_served(hls)
+    if spread is not None and spread > 1.3:
+        ctx.gap = ("needletail-load moves to the next edge of its static list: the moved "
+                   "listeners pile onto one edge (Phase AM item 10: moves and arrivals through "
+                   "/api/assignment with a skip set)")
+        ctx.check("moves spread over the other edges (max/mean <= 1.3)", False, spread)
+    return report
+
+
+def drain(name: str) -> None:
+    status, _ = lab.http_json(name, "/api/control/drain-node", "POST", {"node_id": name})
+    if status != 200:
+        raise lab.LabError(f"drain {name}: HTTP {status}")
+
+
+def resume(name: str) -> None:
+    lab.http_json(name, "/api/control/resume-node", "POST", {"node_id": name})
+
+
+@scenario("udp-edge-drain", "scale-ops",
+          "An edge with 200 UDP listeners and steered LL-HLS readers is drained. Where do its "
+          "listeners go, and does anyone stay behind?",
+          "No listener is stranded; the drained edge's listeners move; the moves spread over "
+          "the other edges (max/mean <= 1.3; a GAP until needletail-load moves through "
+          "/api/assignment).")
+def udp_edge_drain(ctx):
+    udp_fault(ctx, drain, "drained", "lon-edge-1", heal=resume)
+
+
+@scenario("udp-edge-kill", "scale-ops",
+          "An edge with 200 UDP listeners is killed (SIGKILL; nothing restarts it: node loss). "
+          "Where do its listeners go?",
+          "No listener is stranded; its listeners move within the client's silence detection; "
+          "the moves spread over the other edges (a GAP until AM item 10).")
+def udp_edge_kill(ctx):
+    udp_fault(ctx, lab.kill_service, "killed", "lon-edge-2", heal=lab.start_service)
+
+
+@scenario("slot-edge-join", "scale-ops",
+          "A slot edge (lon-edge-4, rendered into every peer list but not started) is taken "
+          "into service under load. Does anything else restart, and does it serve?",
+          "No other service restarts (every pid the same); the new edge is advertised fresh "
+          "within 20 s and serves readers that arrive after it.",
+          needs=["slots=lon-edge-4"])
+def slot_edge_join(ctx):
+    slot = "lon-edge-4"
+    ctx.defer(lambda: (lab.terminate_service(slot), lab.set_slot_in_service(slot, False)))
+    ctx.check("the slot is not in service before the join", lab.service_pid(slot) is None)
+    udp = udp_listeners(ctx, "udp", 150, 60)
+    jobs = play(ctx, 60, video=2, audio=4, steering=True)
+    ctx.at(15)
+    before = service_pids()
+    lab.set_slot_in_service(slot, True)
+    lab.start_service(slot)
+    joined = time.time()
+    ctx.event(f"{slot} started")
+
+    def fresh():
+        status, body = lab.http_json("lon-dist-a", f"/api/assignment?stream={AUDIO}")
+        return status == 200 and any(cache.get("node_id") == slot and cache.get("fresh")
+                                     for cache in (body or {}).get("caches") or [])
+
+    try:
+        lab.wait_for(f"{slot} advertised", fresh, 30, 0.5)
+        ctx.measure("join_to_fresh_s", round(time.time() - joined, 2))
+    except lab.LabError:
+        ctx.measure("join_to_fresh_s", None)
+    ctx.check("the joined edge is advertised fresh within 20 s",
+              (ctx.measurements.get("join_to_fresh_s") or 99) <= 20,
+              ctx.measurements.get("join_to_fresh_s"))
+    late = ctx.readers("after-join", AUDIO, 6, 25, steering=True)
+    ctx.at(50)
+    after = service_pids()
+    changed = {name: (before.get(name), after.get(name)) for name in before
+               if before.get(name) != after.get(name)}
+    ctx.check("no other service restarted (the join changed no other node's arguments)",
+              not changed, changed)
+    late.wait()
+    udp.wait()
+    ctx.wait_readers()
+    on_slot = sum(1 for reader in late.readers if reader.get("final_cache") == slot)
+    ctx.measure("late_readers_on_the_joined_edge", on_slot)
+    for job in jobs + [late]:
+        ctx.expect_served(job)
+    report = udp_report(ctx, udp)
+    ctx.note(f"UDP listeners on the joined edge: {report['moves_by_edge'].get(slot, 0)} moved "
+             "there; new UDP arrivals reach it only once needletail-load subscribes through "
+             "/api/assignment (Phase AM item 10)")
+
+
+@scenario("autoscale-edge-lab", "scale-ops",
+          "Does the autoscaler, with the edge_lab backend and nothing but the mesh's own "
+          "advertised load, take a slot edge in as readers ramp up, and drain it out "
+          "without a stranded listener as they leave?",
+          "The controller alone joins lon-edge-4 when the mean load passes 700 permille, it "
+          "serves within 20 s, and no other service restarts; on the way down it drains the "
+          "edge only once its live gauges read 0, else resumes it (a GAP until the edges "
+          "advertise UDP subscribers and HLS sessions as live gauges, Phase AM item 8).",
+          needs=["slots=lon-edge-4"], slow=True)
+def autoscale_edge_lab(ctx):
+    slot = "lon-edge-4"
+    events = ctx.directory / "autoscale-events.jsonl"
+    state = ctx.directory / "autoscale-state.json"
+    ctx.defer(lambda: (lab.terminate_service(slot), lab.set_slot_in_service(slot, False)))
+    controller = subprocess.Popen(
+        [sys.executable, str(pathlib.Path(__file__).resolve().parent / "linode-autoscale.py"),
+         "run", "--backend", "edge_lab", "--stream", str(VIDEO), "--sites", "london",
+         "--events", str(events), "--controller-state", str(state), "--duration", "260",
+         "--poll-s", "1", "--up-samples", "2", "--cooldown-s", "20", "--down-hold-s", "45",
+         "--no-flap-s", "60", "--join-timeout-s", "60", "--drain-timeout-s", "40",
+         "--min-edges", "2"],
+        stdout=open(ctx.directory / "autoscale.log", "ab"), stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL, start_new_session=True)
+    ctx.defer(lambda: controller.poll() is None and controller.terminate())
+    before = service_pids()
+    # 4K readers: each about 17 Mbit/s of an edge's 100 Mbit/s. Up over
+    # three waves, held, then gone.
+    waves = [ctx.readers("video-1", VIDEO, 6, 150, steering=True)]
+    ctx.at(30)
+    waves.append(ctx.readers("video-2", VIDEO, 6, 120, steering=True))
+    ctx.at(60)
+    waves.append(ctx.readers("video-3", VIDEO, 6, 90, steering=True))
+    ctx.wait_readers()
+    ctx.at(255)
+    controller.wait(timeout=60)
+    lines = [json.loads(line) for line in events.read_text().splitlines()] \
+        if events.is_file() else []
+    joins = [line for line in lines if line.get("kind") == "decision"
+             and line.get("action") == "join"]
+    serving = [line for line in lines if line.get("kind") == "serving"]
+    drains = [line for line in lines if line.get("kind") == "drain_start"]
+    ctx.measure("controller_decisions", [{key: line.get(key) for key in
+                                          ("unix_us", "action", "reason", "targets", "inputs")}
+                                         for line in lines if line.get("kind") == "decision"
+                                         and line.get("action") != "hold"][:20])
+    ctx.check("the controller alone joined the slot edge",
+              any(["lon-edge-4", "create"] in line.get("targets", []) for line in joins),
+              [line.get("targets") for line in joins])
+    ctx.check("the joined edge served within 20 s of the trigger",
+              any(line.get("trigger_to_fresh_s", 99) <= 20 for line in serving),
+              [line.get("trigger_to_fresh_s") for line in serving])
+    after = {name: lab.service_pid(name) for name in before}
+    ctx.check("no other service restarted", all(before[name] == after[name] for name in before),
+              {name: (before[name], after[name]) for name in before
+               if before[name] != after[name]})
+    for job in waves:
+        ctx.expect_served(job)
+    gauges = [line for line in lines if line.get("kind") == "decision"
+              and "Phase AM item 8" in (line.get("reason") or "")]
+    if not drains and gauges:
+        ctx.gap = ("scale-down needs live UDP-subscriber and HLS-session gauges on the edges "
+                   "(Phase AM item 8): the controller never drains an edge whose listeners it "
+                   "cannot count")
+        ctx.check("the controller drained the joined edge on the way down", False,
+                  "held: no live gauges")
+    else:
+        ctx.check("the controller drained an edge on the way down", bool(drains),
+                  [line.get("node") for line in drains])
+
+
 # =================================================================== driver
 
 def select(arguments: list[str], slow: bool) -> list[core.Scenario]:
