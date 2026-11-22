@@ -28,7 +28,11 @@ def main() -> None:
         for record in (RUNS / session).glob("*/*/*.json"):
             name = record.name
             lane = name.split(".")[0]
-            if lane not in LANES or (".probe" not in name and ".player" not in name):
+            if name.startswith(("probe", "player", "join", "play")):
+                lane = record.parent.parent.name.split(".")[0]      # 4K steps: LANE.phase.detail/HOST/probe.json
+                name = lane + "." + name
+            if lane not in LANES or (".probe" not in name and ".player" not in name
+                                     and ".join" not in name and ".play" not in name):
                 continue
             try:
                 data = json.loads(record.read_text())
@@ -37,6 +41,8 @@ def main() -> None:
             entry = totals[LANES[lane]]
             count = int(data.get("count") or 1)
             seconds = float(data.get("duration_seconds") or data.get("duration") or 0) * count
+            if "all" in data and isinstance(data["all"], dict):
+                count = int(data["all"].get("viewers") or count)
             received = (data.get("video_bytes") or 0) + (data.get("audio_bytes") or 0)
             if not received and ".player" in name:
                 received = 0      # Chrome reports no byte count; its minutes still count

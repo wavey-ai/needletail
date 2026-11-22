@@ -18,14 +18,13 @@ The 4K video comparison is a separate record.
 
 ## Answer
 
-**For lossless audio Needletail's UDP client mode, with 1 ms parts, had the
-lowest median in every region: 0.4 to 0.5 ms ahead of self-hosted LiveKit's
-best setup in London, New York and Sydney and 3.2 ms ahead in Tokyo. LiveKit
-carried its PCM on a data channel in 2.5 ms blocks; with 1 ms blocks it would
-gain up to 0.75 ms, which may close the 0.4 to 0.5 ms (see
-[Lossless](#lossless)). LiveKit cannot carry lossless audio as audio at all.
-For Opus, self-hosted LiveKit is still ahead in London, New York and Sydney, by
-0.5 to 0.8 ms; Needletail is ahead in Tokyo. Against LiveKit Cloud, the
+**Self-hosted LiveKit with an SFU in each region is still ahead, by half a
+millisecond or so, in London, New York and Sydney, for Opus and for lossless
+audio alike; Needletail's UDP client mode is ahead in Tokyo. With the SFUs'
+PCM data channels in their default 2.5 ms blocks Needletail's 1 ms PCM had
+the lowest median in every region; given the same 1 ms blocks, LiveKit's SFU
+was 0.5 to 0.8 ms ahead in London, New York and Sydney and 2.2 ms behind in
+Tokyo (one session). LiveKit cannot carry lossless audio as audio at all. Against LiveKit Cloud, the
 like-for-like mesh, Needletail is 12 to 25 ms ahead everywhere. Under 1% and
 5% random loss Needletail's UDP mode lost nothing and its 99th percentile
 stayed within 2 ms of the clean run; every WebRTC system lost what the
@@ -44,6 +43,8 @@ arrival would play it. Median of three sessions, in milliseconds:
 | PCM | LiveKit, self-hosted, SFU in each region, data channel | 2.5 ms | 3.1 | 38.7 | 111.7 | 128.9 |
 | PCM | LiveKit, self-hosted, multi-region set, data channel | 2.5 ms | 3.2 | 33.8 | 112.0 | 129.9 |
 | PCM | Cloudflare Realtime, data channel | 2.5 ms | 5.6 | 40.2 | 115.8 | 3,239 |
+| PCM, one session | LiveKit, SFU in each region, data channel, 1 ms blocks | 1 ms | 2.1 | 32.7 | 110.9 | 127.5 |
+| PCM, the same session | Needletail mesh, RaptorQ FEC over UDP | 1 ms | 2.6 | 33.4 | 108.7 | 128.3 |
 | PCM | **LiveKit Cloud mesh**, data channel | 2.5 ms | 17.0 | 58.6 | 133.8 | 142.1 |
 | Opus | **Needletail mesh, RaptorQ FEC over UDP** | 2.5 ms | 5.7 | 36.3 | **111.5** | 131.6 |
 | Opus | Needletail mesh, LL-HLS, pipelined HTTP/3 reader (harness) | 2.5 ms | 6.3 | 36.8 | 112.0 | 132.1 |
@@ -80,6 +81,10 @@ uploads to all four SFUs, and every listener is one SFU hop from the source.
 
 Where Needletail loses:
 
+- **Lossless with the same frame.** Given 1 ms data-channel blocks (one
+  session), self-hosted LiveKit's SFU was 0.5 to 0.8 ms ahead of Needletail's
+  1 ms PCM in London, New York and Sydney (2.1, 32.7 and 127.5 ms against
+  2.6, 33.4 and 128.3); Needletail was 2.2 ms ahead in Tokyo.
 - **Opus, against self-hosted LiveKit.** 0.5 ms behind in London, 0.7 ms in
   New York (against the multi-region set; 4.6 ms ahead of the SFU in New
   York), 0.8 ms in Sydney. Its jitter (99th percentile less median of the
@@ -118,9 +123,9 @@ Where Needletail loses:
 
 Where Needletail wins:
 
-- **Lossless audio, at the lowest median.** 2.7, 33.3, 108.5 and 128.5 ms,
-  bit for bit, 0.4 to 3.2 ms ahead of LiveKit's best setup with its 2.5 ms
-  blocks. Cloudflare Realtime, Cloudflare Stream and LiveKit (self-hosted
+- **Lossless audio as audio.** 2.7, 33.3, 108.5 and 128.5 ms, bit for bit,
+  ahead of every SFU with its default 2.5 ms data-channel blocks (and of
+  LiveKit's 1 ms blocks in Tokyo). Cloudflare Realtime, Cloudflare Stream and LiveKit (self-hosted
   and Cloud) refused an uncompressed audio track (`L16`, `L24`); Stream has
   no data channel, and the others' data channels carry PCM only to a client
   written for it and lose what the network loses.
@@ -389,6 +394,7 @@ both directions, for IPv4 and IPv6, with SSH left out:
 | PCM curve | 22:49 and 22:54 | 0.5 ms and 0.25 ms PCM, clean and impaired |
 | Wave 2, 2 | 23:00 | the same as session 1, live rule |
 | Wave 2, 3 | 23:31 | the same as session 2 |
+| SFU PCM in 1 ms blocks | 22 Nov 02:08 | PCM only; the SFUs' data channels carry 1 ms blocks (`--sfu-pcm-ms 1`) |
 | Wave 1, 1 to 3 | 19:44, 20:25, 20:56 | 5 ms parts (see [The earlier build](#the-earlier-build-wave-1)) |
 
 Before each session `steal-check.py` found no instance with steal time above
@@ -456,12 +462,25 @@ of `audio/L16` and `audio/L24`, 48 kHz, stereo:
 | LiveKit 1.13.11, self-hosted | The track is published in signalling, then no codec is negotiated |
 | LiveKit Cloud | The same as self-hosted |
 
-So the SFUs' lossless lane is a data channel: 2.5 ms blocks of PCM, sent
-once, to a client written for it. Needletail carries PCM as an audio
-rendition, bit for bit, in 1 ms parts. Half a frame is the median cost of a
-frame, so LiveKit with 1 ms blocks would gain up to 0.75 ms on these figures
-if its data channel carried 1,000 messages a second as well as 400; that was
-not measured in these sessions.
+So the SFUs' lossless lane is a data channel: blocks of PCM, sent once, to a
+client written for it. Needletail carries PCM as an audio rendition, bit for
+bit, in 1 ms parts. The three sessions gave the SFUs 2.5 ms blocks; a fourth
+session (`wsfu1ms`, 22 November 02:08) gave them Needletail's 1 ms blocks.
+Mouth to ear, median (ms):
+
+| System, 1 ms blocks | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP | 2.6 | 33.4 | 108.7 | 128.3 |
+| LiveKit, SFU in each region | **2.1** | **32.7** | 110.9 | **127.5** |
+| LiveKit, multi-region set | 2.4 | 33.1 | 111.4 | 127.9 |
+| Cloudflare Realtime | 4.2 | 38.5 | 113.5 | 163.2 |
+| LiveKit Cloud | 15.6 | 57.9 | 133.5 | 136.4 |
+
+Every data channel carried 1,000 blocks a second. With the same frame,
+self-hosted LiveKit's SFU is 0.5 to 0.8 ms ahead of Needletail outside Tokyo,
+as for Opus. Under 1% and 5% loss the SFUs lost about 1% and 5% of the blocks
+and Needletail's UDP mode none; LiveKit Cloud's data channel lost 83% with 5%
+loss in Sydney and 90% with 100 ms of delay.
 
 The PCM curve, one session each, mouth to ear median / 99th percentile (ms)
 and parts lost, Needletail UDP mode:
@@ -590,11 +609,12 @@ Its evidence is kept as
 - **Needletail in a browser.** The Opus parts are SoundKit frames and the PCM
   parts are raw samples. A browser needs a player written for them; the UDP
   mode needs WebTransport to carry its datagrams.
-- **Needletail's FLAC and DAW-source Opus in wave 2.** The lab tool copied
-  the default checkout's `daw-test-source` over the wave 2 build, and that
-  older binary refused the wave 2 flags, so no DAW source ran: the FLAC
-  column of wave 2 is empty. Fixed (`NEEDLETAIL_DAW_NEXUS_ROOT`); FLAC is
-  measured in wave 1 only.
+- **Needletail's FLAC in wave 2.** In the three sessions the lab tool had
+  copied an older `daw-test-source` over the wave 2 build, and it refused the
+  wave 2 flags, so no DAW source ran (fixed: `NEEDLETAIL_DAW_NEXUS_ROOT`). A
+  later FLAC session (`wflac`) ran the right binary, but wave 2's DAW source
+  sends its lossless audio as PCM unless `AUDIO_LOSSLESS_PAYLOAD=flac` is
+  set, so no FLAC stream existed. FLAC is measured in wave 1 only.
 - **Opus frames shorter than 2.5 ms.** Custom CELT frames of 1 to 1.5 ms are
   on another session's branch (`opus-custom-1ms`), not yet pushed and
   proven; standard 2.5 ms Opus is the default measured here.
