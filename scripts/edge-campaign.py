@@ -2492,6 +2492,7 @@ def slot_edge_join(ctx):
     ctx.wait_readers()
     on_slot = sum(1 for reader in late.readers if reader.get("final_cache") == slot)
     ctx.measure("late_readers_on_the_joined_edge", on_slot)
+    ctx.check("the joined edge serves readers that arrive after it", on_slot > 0, on_slot)
     for job in jobs + [late]:
         ctx.expect_served(job)
     report = udp_report(ctx, udp)

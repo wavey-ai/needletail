@@ -127,6 +127,70 @@ class Campaign(Base):
         join = next(item for item in campaign.select(["slot-edge-join"], True))
         self.assertEqual(join.needs, ["slots=lon-edge-4"])
 
+    def test_slot_edge_join_fails_when_the_joined_edge_serves_no_one(self):
+        """The pass text says the new edge serves readers that arrive
+        after it: checked, not only measured."""
+
+        class Job:
+            readers: list = []
+
+            def wait(self):
+                pass
+
+        class Ctx:
+            def __init__(self, finals):
+                self.finals = finals
+                self.checks = {}
+                self.measurements = {}
+
+            def defer(self, function):
+                pass
+
+            def check(self, what, ok, value=None):
+                self.checks[what] = ok
+
+            def measure(self, key, value):
+                self.measurements[key] = value
+
+            def at(self, seconds):
+                pass
+
+            def event(self, text):
+                pass
+
+            def readers(self, *args, **kwargs):
+                job = Job()
+                job.readers = [{"final_cache": final} for final in self.finals]
+                return job
+
+            def wait_readers(self):
+                pass
+
+            def expect_served(self, job):
+                pass
+
+            def note(self, text):
+                pass
+
+        fresh = {"caches": [{"node_id": "lon-edge-4", "fresh": True}]}
+        results = {}
+        for finals in (["lon-edge-1", "lon-edge-2"], ["lon-edge-1", "lon-edge-4"]):
+            ctx = Ctx(finals)
+            with mock.patch.object(lab, "service_pid", lambda name: None), \
+                    mock.patch.object(lab, "set_slot_in_service", lambda name, on: None), \
+                    mock.patch.object(lab, "start_service", lambda name: None), \
+                    mock.patch.object(lab, "http_json", lambda name, path: (200, fresh)), \
+                    mock.patch.object(lab, "wait_for", lambda what, test, *a: test()), \
+                    mock.patch.object(campaign, "udp_listeners", lambda *a, **k: Job()), \
+                    mock.patch.object(campaign, "play", lambda *a, **k: []), \
+                    mock.patch.object(campaign, "service_pids", lambda: {"lon-edge-1": 7}), \
+                    mock.patch.object(campaign, "udp_report",
+                                      lambda ctx, job: {"moves_by_edge": {}}):
+                campaign.slot_edge_join(ctx)
+            results[tuple(finals)] = ctx.checks["the joined edge serves readers that arrive "
+                                                "after it"]
+        self.assertEqual(list(results.values()), [False, True])
+
     def test_the_udp_command_reads_the_edges_public_addresses(self):
         with mock.patch.object(lab, "enter", lambda host: ["nsenter", host]), \
                 mock.patch.object(lab, "binary", lambda label: f"/bin/{label}"):
