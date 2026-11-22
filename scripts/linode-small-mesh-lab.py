@@ -14,7 +14,14 @@ Cost controls are part of the tool, not an operator convention:
 * `watchdog` starts a detached process that deletes the lab at a deadline
   even when the operator session has ended (`up --watchdog-hours` arms it
   before the first instance is created);
-* `down` deletes the run's VLANs too, which Linode keeps once empty.
+* `down` deletes the run's VLANs too, which Linode keeps once empty;
+* autoscale slots (topology nodes marked "slot") are never created by `up`
+  or `grow`: `add <slot>` creates one under the same checks (dedicated plan,
+  node and hourly ceilings, an armed watchdog, an optional budget), and
+  `remove <name>` deletes one by its recorded id, only when the live
+  instance still carries the run's tag and label;
+* `billed` is what the lab has cost: every instance a whole hour at least
+  (ceil(hours) x its price), instances removed before `down` included.
 
 The Linode token is read from LINODE_TOKEN, LINODE_PAT, or the token file. It
 is never written to state, logs, or generated output.
@@ -26,6 +33,7 @@ import argparse
 import concurrent.futures
 import datetime as dt
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -160,7 +168,9 @@ def slot_specs(topology: dict) -> dict[str, dict]:
                          "address can be an autoscale slot")
             out[node["name"]] = {**{key: node[key] for key in (
                 "name", "role", "site", "region", "type") if key in node},
-                "vlan_ipv4": node["vlan_ipv4"].split("/")[0], "slot": True}
+                "vlan_ipv4": node["vlan_ipv4"].split("/")[0],
+                "vlan_cidr": node["vlan_ipv4"] if "/" in node["vlan_ipv4"]
+                else node["vlan_ipv4"] + "/24", "slot": True}
     missing = named - set(out) - {node["name"] for node in topology["nodes"]}
     if missing:
         sys.exit(f"autoscale_slots names nodes that are not in the topology: {sorted(missing)}")
@@ -375,6 +385,10 @@ def create_node(api: Api, run_id: str, tag: str, image: str, key: str,
         "public_ipv4": response["ipv4"][0],
         "vlan_ipv4": (node.get("vlan_ipv4") or "").split("/")[0] or None,
         "created": response["created"],
+        # When this tool saw it created: billing counts from the API's
+        # `created` and falls back to this.
+        "created_unix": int(time.time()),
+        **({"slot": True} if node.get("slot") else {}),
     }
 
 
@@ -624,6 +638,7 @@ def command_replace(args: argparse.Namespace) -> None:
         api.call("DELETE", f"/linode/instances/{old['id']}", allow_404=True)
         state.setdefault("replaced", []).append(
             {"name": name, "id": old["id"], "unix": int(time.time())})
+        state.setdefault("removed", []).append(removed_record(state, old, time.time()))
         replacements.append(by_name[name])
         print(f"  deleted {name} ({old['public_ipv4']})")
     write_state(pathlib.Path(args.state), state)
@@ -631,6 +646,273 @@ def command_replace(args: argparse.Namespace) -> None:
     for node in replacements:
         node["name_suffix"] = f"r{len(state['replaced'])}"
     add_nodes(args, api, state, replacements)
+
+
+# ------------------------------------------------------------------ billing
+
+def created_unix(node: dict, fallback: float | None = None) -> float | None:
+    """When an instance was created: the API's `created` (UTC, no zone),
+    else the time this tool recorded, else `fallback`."""
+    text = node.get("created")
+    if text:
+        try:
+            parsed = dt.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+    if node.get("created_unix") is not None:
+        return float(node["created_unix"])
+    return fallback
+
+
+def billed_hours(start: float, end: float) -> int:
+    """Hours that Linode bills an instance that lived from `start` to `end`:
+    every started hour, and one at least, however short its life."""
+    return max(1, math.ceil(max(0.0, end - start) / 3600 - 1e-9))
+
+
+def removed_record(state: dict, node: dict, deleted: float) -> dict:
+    """What billing keeps of an instance deleted before `down`."""
+    return {"name": node["name"], "id": node["id"], "label": node.get("label"),
+            "role": node.get("role"), "site": node.get("site"), "type": node.get("type"),
+            "hourly_usd": node.get("hourly_usd", 0.0),
+            "created_unix": created_unix(node, state.get("created_unix")),
+            "deleted_unix": int(deleted)}
+
+
+def billed(state: dict, now: float | None = None, until: float | None = None,
+           extra: list[dict] = ()) -> dict:
+    """What the lab has cost by `now` (default: this moment), or would cost
+    were every live instance kept to `until` (the watchdog's deadline, for
+    a projection) and each of `extra` ({"hourly_usd"}) created now and kept
+    as long: every instance ceil(hours) x its price, a whole hour at least,
+    the instances that `remove` and `replace` deleted included."""
+    now = time.time() if now is None else now
+    end = now if until is None else max(now, until)
+    rows = []
+    for name, node in sorted(state.get("nodes", {}).items()):
+        start = created_unix(node, state.get("created_unix"))
+        hours = billed_hours(now if start is None else start, end)
+        rows.append({"name": name, "hours": hours, "usd": hours * node.get("hourly_usd", 0.0),
+                     "live": True})
+    for item in state.get("removed", []):
+        deleted = item.get("deleted_unix")
+        deleted = now if deleted is None else deleted
+        start = item.get("created_unix")
+        hours = billed_hours(deleted if start is None else start, deleted)
+        rows.append({"name": item["name"], "hours": hours,
+                     "usd": hours * item.get("hourly_usd", 0.0), "live": False})
+    for item in extra:
+        hours = billed_hours(now, end)
+        rows.append({"name": item.get("name", "new"), "hours": hours,
+                     "usd": hours * item.get("hourly_usd", 0.0), "live": True})
+    return {"usd": round(sum(row["usd"] for row in rows), 4),
+            "instance_hours": sum(row["hours"] for row in rows),
+            "live": sum(1 for row in rows if row["live"]),
+            "removed": len(state.get("removed", [])),
+            "hourly_usd": round(sum(node.get("hourly_usd", 0.0)
+                                    for node in state.get("nodes", {}).values()), 4),
+            "until_unix": int(end), "rows": rows}
+
+
+def account_billed(api: "Api", run_tag: str | None, now: float | None = None) -> dict:
+    """What the account's other Needletail labs bill now: every live
+    instance tagged needletail-qualification but not `run_tag`, ceil(hours)
+    x its plan's price (the dev box has no tag and is never counted, never
+    touched). Labs already deleted are not listed by the API: give what
+    they cost as --spent-before-usd."""
+    now = time.time() if now is None else now
+    prices = {item["id"]: item["price"]["hourly"] for item in api.list_all("/linode/types")}
+    rows = []
+    for item in api.list_all("/linode/instances", "needletail-qualification"):
+        if run_tag and run_tag in item.get("tags", []):
+            continue
+        start = created_unix({"created": item.get("created")}, now)
+        hours = billed_hours(start, now)
+        rows.append({"label": item.get("label"), "type": item.get("type"), "hours": hours,
+                     "usd": hours * prices.get(item.get("type"), 0.0)})
+    return {"usd": round(sum(row["usd"] for row in rows), 4), "instances": rows}
+
+
+def budget_check(state: dict, new: list[dict], budget_usd: float, spent_before_usd: float = 0.0,
+                 other_labs_usd: float = 0.0, now: float | None = None) -> tuple[bool, dict]:
+    """Whether creating `new` keeps the work within `budget_usd`: this lab
+    projected to its watchdog's deadline with the new instances (each a
+    whole hour at least), plus what other labs bill now and what earlier
+    labs spent. (ok, the figures)."""
+    now = time.time() if now is None else now
+    deadline = state.get("watchdog_deadline_unix")
+    if not deadline:
+        return False, {"why": "no watchdog deadline in the lab state"}
+    projection = billed(state, now, deadline, new)
+    total = projection["usd"] + spent_before_usd + other_labs_usd
+    figures = {"lab_projected_usd": projection["usd"], "spent_before_usd": spent_before_usd,
+               "other_labs_usd": other_labs_usd, "total_usd": round(total, 4),
+               "budget_usd": budget_usd, "until_unix": int(deadline)}
+    return total <= budget_usd + 1e-9, figures
+
+
+# ------------------------------------------------------------- slots
+
+def lab_slots(state: dict) -> dict[str, dict]:
+    """The autoscale slots of a lab: those `up` recorded, or the topology
+    file's (a state from before slots existed)."""
+    if state.get("slots"):
+        return state["slots"]
+    path = pathlib.Path(state.get("topology_file") or "")
+    if path.is_file():
+        return slot_specs(json.loads(path.read_text()))
+    return {}
+
+
+def add_slots(args: argparse.Namespace, api: "Api", state: dict, names: list[str],
+              budget_usd: float | None = None, spent_before_usd: float = 0.0,
+              other_labs_usd: float = 0.0) -> list[str]:
+    """Create autoscale slots of the lab, with every check that `up` makes
+    and more: each name is a slot of this lab that it does not have, at a
+    site that it does not leave out; every plan is dedicated and its region
+    up (from the API); the lab stays within MAX_NODES and MAX_HOURLY_USD;
+    the watchdog is armed and its deadline ahead; and with `budget_usd`
+    the projection to that deadline (budget_check) stays within it. Exits
+    on any refusal before anything is created. Returns the names created."""
+    slots = lab_slots(state)
+    if not names:
+        sys.exit("add: name the slots to create")
+    problems = []
+    for name in names:
+        if name not in slots:
+            problems.append(f"{name} is not an autoscale slot of this lab "
+                            f"(slots: {', '.join(sorted(slots)) or 'none'})")
+        elif name in state["nodes"]:
+            problems.append(f"{name} exists already")
+        elif slots[name]["site"] in state.get("sites_left_out", []):
+            problems.append(f"{name}: the lab does without site {slots[name]['site']}")
+    if len(set(names)) != len(names):
+        problems.append("a slot is named twice")
+    deadline = state.get("watchdog_deadline_unix")
+    if not deadline or deadline <= time.time():
+        problems.append("the lab's watchdog is not armed (or its deadline has passed): "
+                        "no instance is created outside it")
+    if problems:
+        sys.exit("add refused: " + "; ".join(problems))
+    nodes = [{**slots[name], "vlan_ipv4": slots[name].get("vlan_cidr")
+              or slots[name]["vlan_ipv4"] + "/24"} for name in names]
+    for node in nodes:
+        # A deleted label can stay reserved for a while: a slot made again
+        # after `remove` gets a label of its own.
+        again = sum(1 for item in state.get("removed", []) if item["name"] == node["name"])
+        if again:
+            node["name_suffix"] = f"a{again}"
+    types = {item["id"]: item for item in api.list_all("/linode/types")}
+    regions = {item["id"]: item for item in api.list_all("/regions")}
+    hourly, problems = topology_cost({"nodes": nodes}, types, regions)
+    if problems:
+        sys.exit("add refused: " + "; ".join(problems))
+    count = len(state["nodes"]) + len(nodes)
+    if count > MAX_NODES:
+        sys.exit(f"add refused: the lab would have {count} nodes; the ceiling is {MAX_NODES} "
+                 "(NEEDLETAIL_LINODE_MAX_NODES)")
+    total = sum(node.get("hourly_usd", 0.0) for node in state["nodes"].values()) + hourly
+    if total > MAX_HOURLY_USD + 1e-9:
+        sys.exit(f"add refused: the lab would cost ${total:.4f}/hour; the ceiling is "
+                 f"${MAX_HOURLY_USD:.2f} (NEEDLETAIL_LINODE_MAX_HOURLY_USD)")
+    if budget_usd is not None:
+        ok, figures = budget_check(state, [{"name": node["name"], "hourly_usd": node["_hourly"]}
+                                           for node in nodes],
+                                   budget_usd, spent_before_usd, other_labs_usd)
+        if not ok:
+            sys.exit(f"add refused: over the budget: {json.dumps(figures)}")
+    print(f"Adding {len(nodes)} slot(s) {', '.join(names)}: the lab will cost "
+          f"${total:.4f}/hour")
+    add_nodes(args, api, state, nodes)
+    return names
+
+
+def remove_nodes(api: "Api", state_path: pathlib.Path, state: dict, names: list[str],
+                 slots_only: bool = True) -> list[str]:
+    """Delete lab nodes by their recorded instance ids. Every name must be a
+    node of the lab state (an autoscale slot, unless `slots_only` is
+    False), and its live instance must still carry the run's tag and the
+    label this tool gave it: an id that now names anything else is never
+    deleted. Checks every name before it deletes any. Billing keeps each
+    one (state["removed"]); the firewall's rules lose its address."""
+    slots = lab_slots(state)
+    if not names:
+        sys.exit("remove: name the nodes to delete")
+    plan = []
+    for name in names:
+        node = state["nodes"].get(name)
+        if node is None:
+            sys.exit(f"remove refused: {name} is not a node of this lab")
+        if slots_only and name not in slots:
+            sys.exit(f"remove refused: {name} is not an autoscale slot (--any-lab-node to "
+                     "delete another node of this lab)")
+        if not node.get("id"):
+            sys.exit(f"remove refused: {name} has no recorded instance id")
+        live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
+        if live:
+            if state["tag"] not in live.get("tags", []):
+                sys.exit(f"remove refused: instance {node['id']} ({live.get('label')}) does not "
+                         f"carry the run's tag {state['tag']}")
+            if node.get("label") and live.get("label") != node["label"]:
+                sys.exit(f"remove refused: instance {node['id']} is labelled "
+                         f"{live.get('label')}, not {node['label']}")
+        plan.append((name, node, bool(live)))
+    for name, node, exists in plan:
+        if exists:
+            api.call("DELETE", f"/linode/instances/{node['id']}", allow_404=True)
+        state["nodes"].pop(name)
+        state.setdefault("removed", []).append(removed_record(state, node, time.time()))
+        write_state(state_path, state)
+        print(f"  deleted {name} ({node.get('public_ipv4')})")
+    state["hourly_usd"] = round(
+        sum(node.get("hourly_usd", 0.0) for node in state["nodes"].values()), 4)
+    write_state(state_path, state)
+    if state.get("firewall_id") and state.get("operator_ipv4"):
+        api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
+                 firewall_rules(state))
+    return [name for name, _node, _exists in plan]
+
+
+def command_add(args: argparse.Namespace) -> None:
+    state = read_state(pathlib.Path(args.state))
+    if state is None:
+        sys.exit("No active Needletail small-mesh lab")
+    api = Api()
+    other = account_billed(api, state["tag"])["usd"] if args.budget_usd is not None else 0.0
+    add_slots(args, api, state, args.names, args.budget_usd, args.spent_before_usd, other)
+    command_status(args)
+
+
+def command_remove(args: argparse.Namespace) -> None:
+    state_path = pathlib.Path(args.state)
+    state = read_state(state_path)
+    if state is None:
+        sys.exit("No active Needletail small-mesh lab")
+    remove_nodes(Api(), state_path, state, args.names, not args.any_lab_node)
+    print_billed(state)
+
+
+def print_billed(state: dict) -> None:
+    now = billed(state)
+    line = (f"billed so far ${now['usd']:.2f} ({now['instance_hours']} instance-hours, "
+            f"{now['live']} live, {now['removed']} removed); ${now['hourly_usd']:.4f}/hour now")
+    deadline = state.get("watchdog_deadline_unix")
+    if deadline:
+        line += f"; ${billed(state, until=deadline)['usd']:.2f} if kept to the watchdog"
+    print(line)
+
+
+def command_billed(args: argparse.Namespace) -> None:
+    state = read_state(pathlib.Path(args.state))
+    if state is None:
+        sys.exit("No active Needletail small-mesh lab")
+    if args.json:
+        print(json.dumps(billed(state), indent=1))
+        return
+    print_billed(state)
 
 
 def command_hosts(args: argparse.Namespace) -> None:
@@ -676,7 +958,7 @@ def command_status(args: argparse.Namespace) -> None:
     age_hours = (time.time() - state["created_unix"]) / 3600
     print(f"run {state['run_id']}  nodes {len(state['nodes'])}  "
           f"${state['hourly_usd']:.4f}/hour  age {age_hours:.2f} h  "
-          f"accrued about ${state['hourly_usd'] * max(age_hours, 1):.2f}")
+          f"billed ${billed(state)['usd']:.2f} (whole hours, removed nodes included)")
     deadline = state.get("watchdog_deadline_unix")
     if deadline:
         print(f"watchdog deletes the lab in {(deadline - time.time()) / 60:.0f} min")
@@ -718,11 +1000,13 @@ def command_down(args: argparse.Namespace) -> None:
     age_hours = (time.time() - state["created_unix"]) / 3600
     archive = state_path.with_name(f"small-mesh-lab-{state['run_id']}.removed.json")
     state["removed_unix"] = int(time.time())
+    total = billed(state)
+    state["billed_usd"] = total["usd"]
     write_state(archive, state)
     state_path.unlink()
     print(f"Removed {len(instance_ids)} Linodes and {len(firewall_ids)} firewalls "
-          f"after {age_hours:.2f} h (about "
-          f"${state['hourly_usd'] * max(age_hours, 1):.2f} of instance time)")
+          f"after {age_hours:.2f} h (${total['usd']:.2f} of instance time billed in whole "
+          f"hours, {total['instance_hours']} instance-hours)")
 
 
 def delete_vlans(api: "Api", run_id: str, attempts: int = 12, pause: float = 10.0) -> list[str]:
@@ -819,6 +1103,23 @@ def main() -> None:
     replace.add_argument("names", nargs="+")
     replace.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
     replace.set_defaults(handler=command_replace)
+    add = sub.add_parser("add", help="create autoscale slots of the lab (never anything else)")
+    add.add_argument("names", nargs="+")
+    add.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
+    add.add_argument("--budget-usd", type=float, default=None,
+                     help="refuse when this lab to its watchdog's deadline, the new slots, the "
+                          "other labs' live instances and --spent-before-usd pass it")
+    add.add_argument("--spent-before-usd", type=float, default=0.0,
+                     help="what earlier, deleted labs of the work cost")
+    add.set_defaults(handler=command_add)
+    remove = sub.add_parser("remove", help="delete autoscale slots of the lab by recorded id")
+    remove.add_argument("names", nargs="+")
+    remove.add_argument("--any-lab-node", action="store_true",
+                        help="allow a lab node that is not an autoscale slot")
+    remove.set_defaults(handler=command_remove)
+    billed_parser = sub.add_parser("billed", help="what the lab has cost, in whole hours")
+    billed_parser.add_argument("--json", action="store_true")
+    billed_parser.set_defaults(handler=command_billed)
     sub.add_parser("status").set_defaults(handler=command_status)
     sub.add_parser("hosts").set_defaults(handler=command_hosts)
     sub.add_parser("down").set_defaults(handler=command_down)
