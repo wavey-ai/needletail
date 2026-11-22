@@ -6,7 +6,11 @@ referee's plan: eight London edges, four on standby for the first curve) in
 the merged topology (every edge fed by its
 site's two forwarders on the fast plane and the cache mesh, the cache mesh's
 children raised to the site's edges, no class port collision, distinct
-fast-lane ranks); standby edges are left out of the render and stopped;
+fast-lane ranks); standby edges have no service but, with the autoscale
+slots (created or not), stay in every peer list, telemetry peer list and
+fast-plane feed, so that starting one (or a slot forwarder, a lease child
+that is never a compiled relay child) changes no other node's arguments;
+push, start and stop --nodes touch the named nodes only;
 listener load hosts get needletail-load, ntcmp and their kernel settings; the
 port plan's limit on relay children is enforced; the lab tool leaves a site
 out of `up` and `grow` and prices a topology from the API's plans.
@@ -40,6 +44,7 @@ def load_module(name: str, file: str):
 
 deploy = load_module("deploy_scale", "linode-small-mesh-deploy.py")
 lab_tool = load_module("lab_scale", "linode-small-mesh-lab.py")
+REAL_COMPILE = deploy.compile_plan
 COMPILER = deploy.common.ROOT / "target" / "release" / "needletail-compile"
 ROUTES = {"best_direct_rtt_us": 250000, "primary_rtt_us": 250000, "primary_jitter_us": 1000,
           "secondary_rtt_us": 260000, "secondary_jitter_us": 1000}
@@ -210,23 +215,32 @@ class Render(Base):
         settings = self.settings(overrides)
         full = state or topology_state(json.loads(path.read_text()))
         active = deploy.active_state(full, settings)
+        self.active = active
         program = deploy.build_program(active, settings, ROUTES)
         plan = deploy.compile_plan(program)
         rendered = deploy.render(active, settings, plan)
         return full, plan, {name: item["args"] for name, item in rendered.items()}
 
     def check_site(self, state: dict, args: dict, site: str, edges: list[str]) -> None:
-        nodes = state["nodes"]
-        dists = sorted(name for name, node in nodes.items()
-                       if node["role"] == "distributor" and node["site"] == site)
+        """The site as rendered: `edges` are the edges in service. Every peer
+        list names the roster (the edges held out and the autoscale slots,
+        created or not, included: low-latency ops D3), so that starting one
+        of them changes no other node's arguments."""
+        nodes = self.active["roster"]
+        slots = set(self.active["slot_names"])
+        roster_edges = sorted(name for name, node in nodes.items()
+                              if node["role"] == "edge" and node["site"] == site)
+        all_dists = sorted(name for name, node in nodes.items()
+                           if node["role"] == "distributor" and node["site"] == site)
+        dists = [name for name in all_dists if name not in slots]
         for dist in dists:
             peers = flag_values(args[dist], "--peer")
             self.assertEqual(peers, [f"{nodes[edge]['vlan_ipv4']}:{deploy.MESH_PORT}"
-                                     for edge in sorted(edges)], dist)
+                                     for edge in roster_edges], dist)
             children = int(deploy.flag_value(args[dist], "--cache-mesh-max-children"))
-            self.assertGreaterEqual(children, len(edges), dist)
+            self.assertGreaterEqual(children, len(roster_edges), dist)
             lease = int(deploy.flag_value(args[dist], "--relay-max-lease-children"))
-            self.assertGreaterEqual(lease, len(edges), dist)
+            self.assertGreaterEqual(lease, len(roster_edges) + len(all_dists) - len(dists), dist)
         ranks = []
         for edge in edges:
             parents = {deploy.flag_value(args[edge], "--relay-primary-id"),
@@ -235,12 +249,15 @@ class Render(Base):
             ranks.append(deploy.flag_value(args[edge], "--client-udp-edge-rank"))
             self.assertEqual(sorted(flag_values(args[edge], "--peer")),
                              sorted(f"{nodes[dist]['vlan_ipv4']}:{deploy.MESH_PORT}"
-                                    for dist in dists), edge)
-        self.assertEqual(sorted(ranks, key=int), [str(rank) for rank in range(len(edges))])
-        # Each forwarder is the primary of half of the edges.
-        primaries = [deploy.flag_value(args[edge], "--relay-primary-id") for edge in edges]
+                                    for dist in all_dists), edge)
+        # Distinct ranks, from the roster's places.
+        self.assertEqual(len(set(ranks)), len(ranks))
+        self.assertTrue(all(0 <= int(rank) < len(roster_edges) for rank in ranks))
+        # Each forwarder is the primary of half of the roster's edges.
+        feed = deploy.fast_plane_feed(self.active, deploy.class_plan(self.settings()))
+        primaries = [feed["edges"][edge]["primary"]["name"] for edge in roster_edges]
         self.assertEqual(sorted(primaries.count(dist) for dist in dists),
-                         [len(edges) // 2, len(edges) - len(edges) // 2])
+                         [len(roster_edges) // 2, len(roster_edges) - len(roster_edges) // 2])
 
     def test_the_scale_topology_renders_in_the_merged_shape(self):
         state, plan, args = self.render(SCALE, FIRST_CURVE)
@@ -283,18 +300,39 @@ class Render(Base):
         self.assertGreater(12, deploy.DEFAULT_SETTINGS["cache_mesh_max_children"])
         self.check_site(state, args, "london", [f"lon-edge-{index}" for index in range(1, 13)])
 
-    def test_standby_edges_are_left_out_and_stopped(self):
+    def test_standby_edges_have_no_service_and_stay_in_every_peer_list(self):
         standby = STANDBY
         state, _plan, args = self.render(SCALE, FIRST_CURVE)
         for name in standby:
             self.assertNotIn(name, args)
         self.check_site(state, args, "london", [f"lon-edge-{index}" for index in range(1, 6)])
-        # Their mates render as on a file of five edges a region.
-        five = scale_topology.scale_topology(edges={site: 5 for site in scale_topology.SITES},
-                                             standby={})
-        _s, _p, fewer = self.render(SCALE, state=topology_state(five))
-        for name in ("lon-dist-a", "lon-dist-b", "lon-edge-1", "lon-edge-5", "tok-dist-b"):
-            self.assertEqual(flag_values(args[name], "--peer"), flag_values(fewer[name], "--peer"))
+        # Every peer list names the standby edges and the slots (a peer that
+        # is down): the distributors' cache-mesh peers, the edges'
+        # telemetry peers, the forwarders' fast-plane children.
+        roster = self.active["roster"]
+        london_edges = sorted(name for name, node in roster.items()
+                              if node["role"] == "edge" and node["site"] == "london")
+        self.assertEqual(len(london_edges), 12)
+        for name in ("lon-edge-6", "lon-edge-10", "lon-edge-11", "lon-edge-12"):
+            address = roster[name]["vlan_ipv4"]
+            self.assertIn(f"{address}:{deploy.MESH_PORT}", flag_values(args["lon-dist-a"], "--peer"))
+            self.assertIn(f"{address}:{deploy.TELEMETRY_PORT}",
+                          flag_values(args["lon-edge-1"], "--telemetry-peer"))
+            self.assertIn(f"{address}:{deploy.TELEMETRY_PORT}",
+                          flag_values(args["lon-dist-b"], "--telemetry-peer"))
+        for name in ("lon-dist-c",):
+            address = roster[name]["vlan_ipv4"]
+            self.assertIn(f"{address}:{deploy.MESH_PORT}", flag_values(args["lon-edge-1"], "--peer"))
+            self.assertIn(f"{address}:{deploy.TELEMETRY_PORT}",
+                          flag_values(args["lon-edge-2"], "--telemetry-peer"))
+        primaries = (deploy.flag_value(args["lon-dist-a"], "--relay-lease-primary-children")
+                     + "," + deploy.flag_value(args["lon-dist-b"],
+                                               "--relay-lease-primary-children")).split(",")
+        for name in ("lon-edge-6", "lon-edge-11", "lon-dist-c"):
+            self.assertIn(roster[name]["vlan_ipv4"], primaries)
+        # The forwarders' lease children fit under the cap of 16 (lease.rs).
+        self.assertLessEqual(int(deploy.flag_value(args["lon-dist-a"],
+                                                   "--relay-max-lease-children")), 16)
         sent = []
         with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
                 mock.patch.object(deploy.common, "ssh_text",
@@ -303,6 +341,69 @@ class Render(Base):
         self.assertIn("systemctl disable --now needletail-mesh.service", sent[-1])
         with self.assertRaises(SystemExit):
             deploy.active_state(state, self.settings(['standby_edges=["lon-dist-a"]']))
+
+    def test_starting_a_held_out_node_changes_no_other_nodes_arguments(self):
+        """The join restarts nothing: a standby edge, an edge slot and both
+        forwarder slots, created and taken into service, leave the
+        arguments of every other node as they were."""
+        # The compiled plan stamps its route observations with the time.
+        frozen = mock.patch.object(deploy.time, "time", lambda: 1_790_000_000.0)
+        frozen.start()
+        self.addCleanup(frozen.stop)
+        _state, plan, before = self.render(SCALE, FIRST_CURVE)
+        created = ("lon-edge-11", "lon-dist-c", "new-dist-c")
+        full = topology_state(json.loads(SCALE.read_text()), created=created)
+        held = [name for name in STANDBY if name != "lon-edge-6"]
+        _state, plan_after, after = self.render(
+            SCALE, [f"standby_edges={json.dumps(held)}"], state=full)
+        started = {"lon-edge-6", *created}
+        self.assertEqual(set(after) - set(before), started)
+        for name in before:
+            self.assertEqual(before[name], after[name], name)
+        # The compiled relay DAG is the same: no slot is a relay child, so
+        # no other forwarder's ports moved.
+        self.assertEqual(sorted((item["service"], item["node_id"]) for item in plan["services"]),
+                         sorted((item["service"], item["node_id"])
+                                for item in plan_after["services"]))
+        self.assertNotIn("lon-dist-c", {item["node_id"] for item in plan_after["services"]})
+
+    def test_a_forwarder_slot_is_a_lease_child_and_a_cache_mesh_parent(self):
+        full = topology_state(json.loads(SCALE.read_text()), created=("lon-dist-c", "new-dist-c"))
+        _state, _plan, args = self.render(SCALE, FIRST_CURVE, state=full)
+        roster = self.active["roster"]
+        for name, site, short in (("lon-dist-c", "london", "lon"), ("new-dist-c", "newyork", "new")):
+            dist_c = args[name]
+            self.assertEqual(deploy.flag_value(dist_c, "--cache-mesh-role"), "distributor")
+            self.assertEqual(flag_values(dist_c, "--peer"), [
+                f"{roster[edge]['vlan_ipv4']}:{deploy.MESH_PORT}" for edge in sorted(
+                    item for item, node in roster.items()
+                    if node["role"] == "edge" and node["site"] == site)])
+            self.assertEqual(deploy.flag_value(dist_c, "--relay-primary-id"), f"{short}-dist-a")
+            self.assertEqual(deploy.flag_value(dist_c, "--relay-secondary-id"), f"{short}-dist-b")
+            self.assertEqual(deploy.flag_value(dist_c, "--relay-primary-peer"),
+                             f"{roster[short + '-dist-a']['vlan_ipv4']}:{deploy.LEASE_PORT}")
+            self.assertEqual(deploy.flag_value(dist_c, "--relay-lease-children"), "false")
+            self.assertNotIn("--relay-forward", dist_c)
+            self.assertIn(roster[name]["vlan_ipv4"], deploy.flag_value(
+                args[f"{short}-dist-a"], "--relay-lease-primary-children").split(","))
+        # The contributor's fan-out is the same two.
+        self.assertEqual({deploy.flag_value(args["contrib-lon"], "--relay-primary-id"),
+                          deploy.flag_value(args["contrib-lon"], "--relay-secondary-id")},
+                         {"lon-dist-a", "lon-dist-b"})
+
+    def test_warm_up_in_milliseconds(self):
+        _state, _plan, args = self.render(SCALE, FIRST_CURVE + ["cache_mesh_warm_ms=4500"])
+        # 4.5 s of the shortest audio part (1 ms at the defaults).
+        self.assertEqual(deploy.flag_value(args["lon-edge-1"], "--cache-mesh-warm-parts"), "4500")
+        self.assertEqual(deploy.flag_value(args["lon-dist-a"], "--cache-mesh-warm-parts"), "4500")
+        _state, _plan, args = self.render(SCALE, FIRST_CURVE + ["cache_mesh_warm_ms=4500",
+                                                                "pcm_epoch_samples=120",
+                                                                "opus_epoch_samples=120"])
+        # The DAW source's 1 ms lossless epoch is still the shortest part.
+        self.assertEqual(deploy.flag_value(args["lon-edge-1"], "--cache-mesh-warm-parts"), "4500")
+        _state, _plan, args = self.render(SCALE, FIRST_CURVE + ["cache_mesh_warm_parts=300"])
+        self.assertEqual(deploy.flag_value(args["lon-edge-1"], "--cache-mesh-warm-parts"), "300")
+
 
     def test_without_sydney(self):
         topology = json.loads(SCALE.read_text())
@@ -323,6 +424,92 @@ class Render(Base):
                          "20000")
         _state, _plan, args = self.render(SCALE)
         self.assertNotIn("--client-udp-max-subscribers", args["lon-edge-1"])
+
+
+class NodesByName(Base):
+    """push, start and stop --nodes act on the named nodes and on nothing
+    else: no ssh or rsync reaches another node."""
+
+    def setUp(self):
+        super().setUp()
+        self.state_file = self.dir / "lab.json"
+        full = topology_state(json.loads(SCALE.read_text()), created=("lon-edge-11",))
+        self.state_file.write_text(json.dumps(full))
+        patcher = mock.patch.dict("os.environ", {"NEEDLETAIL_LINODE_LAB_STATE":
+                                                 str(self.state_file)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.touched: list[str] = []
+        self.scripts: dict[str, list[str]] = {}
+
+        def ssh_text(node, script, **kwargs):
+            self.touched.append(node["name"])
+            self.scripts.setdefault(node["name"], []).append(script)
+            if script == deploy.BOOTSTRAP:
+                return f"eth1={node.get('vlan_ipv4')}/24"
+            return ""
+
+        for target, name, value in (
+                (deploy.common, "ssh_text", ssh_text),
+                (deploy.common, "rsync_to",
+                 lambda node, *a, **k: self.touched.append(node["name"])),
+                (deploy, "ensure_tls", lambda: None),
+                (deploy, "apply_host_qdisc", lambda node, settings, clear=(): ""),
+                (deploy, "measure_routes", lambda state, settings=None: dict(ROUTES)),
+                (deploy, "compile_plan", self.fake_compile)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.settings(FIRST_CURVE)  # saved, as the first curve deploys
+        # The whole lab was pushed once: its routes are measured.
+        (self.dir / "routes.json").write_text(json.dumps({**ROUTES, "topology": "merged"}))
+
+    @staticmethod
+    def fake_compile(program):
+        if not COMPILER.is_file():
+            raise unittest.SkipTest("needs target/release/needletail-compile")
+        return REAL_COMPILE(program)
+
+    def namespace(self, **kwargs):
+        base = {"set": [], "remeasure": False, "skip_bootstrap": False,
+                "skip_binaries": True, "nodes": None}
+        return argparse.Namespace(**{**base, **kwargs})
+
+    def saved_standby(self) -> list[str]:
+        return json.loads((self.dir / "settings.json").read_text())["standby_edges"]
+
+    def test_push_nodes_touches_only_the_named_node(self):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            deploy.command_push(self.namespace(nodes="lon-edge-11"))
+        self.assertEqual(set(self.touched), {"lon-edge-11"})
+        self.assertIn("systemctl restart needletail-mesh.service",
+                      self.scripts["lon-edge-11"][-1])
+
+    def test_start_takes_a_standby_edge_in_and_touches_nothing_else(self):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            deploy.command_start(self.namespace(nodes="lon-edge-6"))
+        self.assertEqual(set(self.touched), {"lon-edge-6"})
+        self.assertIn("systemctl restart needletail-mesh.service", self.scripts["lon-edge-6"][-1])
+        self.assertNotIn("lon-edge-6", self.saved_standby())
+        self.assertIn("lon-edge-7", self.saved_standby())
+
+    def test_stop_holds_a_node_out_and_touches_nothing_else(self):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            deploy.command_stop(self.namespace(nodes="lon-edge-11"))
+        self.assertEqual(set(self.touched), {"lon-edge-11"})
+        self.assertIn("systemctl disable --now", self.scripts["lon-edge-11"][-1])
+        self.assertIn("lon-edge-11", self.saved_standby())
+
+    def test_start_and_stop_refuse_what_they_must_not_touch(self):
+        for verb, nodes in ((deploy.command_stop, "lon-dist-a"),
+                            (deploy.command_stop, "contrib-lon"),
+                            (deploy.command_start, "lon-edge-12"),   # a slot not created
+                            (deploy.command_start, "arch-us-east"),
+                            (deploy.command_stop, "lon-load-1")):
+            with self.assertRaises(SystemExit, msg=nodes), redirect_stdout(io.StringIO()), \
+                    redirect_stderr(io.StringIO()):
+                verb(self.namespace(nodes=nodes))
+        self.assertEqual(self.touched, [])
 
 
 class Limits(Base):

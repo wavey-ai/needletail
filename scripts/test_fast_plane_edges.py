@@ -106,7 +106,7 @@ class Feed(Base):
             plan = deploy.class_plan(self.settings(overrides))
             self.assertFalse(plan["edge_fast_plane"], overrides)
             self.assertEqual(deploy.fast_plane_feed(lab.lab_state(), plan),
-                             {"edges": {}, "forwarders": {}}, overrides)
+                             {"edges": {}, "forwarders": {}, "slot_forwarders": {}}, overrides)
 
     def test_a_site_of_one_distributor_feeds_its_edges_alone(self):
         state = lab.lab_state()

@@ -153,6 +153,16 @@ MISSING_GAVE_OUT = 0.01
 # Seconds a step spends outside its ramp and hold: start, the monitor's
 # margin, the tools' drain, collection and the settle before the next step.
 STEP_OVERHEAD_S = 75
+# The warm-up of a copy that a listener moves onto (deploy cache_mesh_warm_ms;
+# low-latency ops D6): a moved listener resumes from the part after its last,
+# which is the client's silence detection (1 s, client_session.rs) plus the
+# move behind the head; the failover criteria bound a move at 3 s (F2's
+# max), and half a second of margin. 4,500 parts of the shortest (1 ms)
+# part, every codec at least that long; Opus of 2.5 ms gets 11.25 s.
+SILENCE_MS = 1000
+MOVE_BOUND_MS = 3000
+WARM_MARGIN_MS = 500
+WARM_MS = SILENCE_MS + MOVE_BOUND_MS + WARM_MARGIN_MS
 LOAD_PROCESS = "needletail-load"
 # Where needletail-load --out writes, under a step's directory on the host.
 LOAD_DIR = "udp"
@@ -1309,10 +1319,10 @@ def scale_settings(standby: list[str]) -> dict:
     subscription cap and egress capacity above what a g6-dedicated-2 can send
     (4 Gbit/s), so that what gives out is the edge and not a setting, and
     the London edges of the second curve on standby (none with
-    --second-curve)."""
+    --second-curve), and a new copy's warm-up sized in time (WARM_MS)."""
     return {"playback_address": "vlan", "daw_hls_formats": "flac,opus,pcm",
             "client_udp_max_subscribers": 65536, "edge_egress_capacity_bps": 4_000_000_000,
-            "edge_session_limit": 0, "standby_edges": standby}
+            "edge_session_limit": 0, "cache_mesh_warm_ms": WARM_MS, "standby_edges": standby}
 
 
 def topology_state(path: pathlib.Path, without: list[str] = ()) -> dict:

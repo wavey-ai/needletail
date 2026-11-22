@@ -149,6 +149,10 @@ class Commands(unittest.TestCase):
         self.assertEqual(first["standby_edges"], STANDBY)
         self.assertEqual(first["playback_address"], "vlan")
         self.assertIn("pcm", first["daw_hls_formats"])
+        # A copy that a listener moves onto is warmed for a time, not a
+        # count of parts: silence detection + the move bound + margin.
+        self.assertEqual(first["cache_mesh_warm_ms"], 4500)
+        self.assertGreaterEqual(first["cache_mesh_warm_ms"], 1000 + 3000)
         with redirect_stdout(io.StringIO()) as out:
             scale.command_settings(argparse.Namespace(topology=str(TOPOLOGY),
                                                       second_curve=True, edges_per_region=None))
