@@ -11,6 +11,7 @@ import pathlib
 import re
 import sys
 import unittest
+import unittest.mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -113,6 +114,33 @@ class Parts(unittest.TestCase):
         self.assertEqual((run.DAW_OPUS_FRAME_SAMPLES, run.DAW_OPUS_BITRATE), (48, 320000))
         self.assertEqual(run.daw_epoch_args(48, 48, 256000).split()[-2:],
                          ["--opus-bitrate", "256000"])
+
+
+
+class AudioEpochReaders(unittest.TestCase):
+    """Wave 7 review: without the legacy AEP1 lane (the default) nothing
+    feeds the distributors' native UDP and WebTransport readers, so the soak
+    and the run do not start them; a settings file saved before the setting
+    existed rendered the lane."""
+
+    def test_the_soak_starts_aep1_readers_only_with_the_lane(self):
+        streams = soak_streams(defaults())
+        distributor = {"name": "lon-dist-a", "vlan_ipv4": "10.0.0.11/24",
+                       "role": "distributor", "relay_port": 22001}
+        edge = {"name": "lon-edge-1", "vlan_ipv4": "10.0.0.21/24", "role": "edge"}
+        for lane, expected in ((False, False), (True, True)):
+            plan = {**soak_plan(streams), "remote": "/tmp/run", "windows": 1,
+                    "load_edges": 0, "settings": defaults(audio_epoch_lane=lane)}
+            with unittest.mock.patch.object(soak.mesh_run, "relay_port", return_value=22001):
+                script = soak.site_driver({}, plan, [distributor], [edge])
+            self.assertEqual("receive-udp" in script, expected, lane)
+            self.assertEqual("receive-webtransport" in script, expected, lane)
+            self.assertIn("receive-hls", script)
+
+    def test_a_settings_file_without_the_setting_had_the_lane(self):
+        self.assertTrue(run.aep1_lane({}))
+        self.assertFalse(run.aep1_lane(defaults()))
+        self.assertTrue(run.aep1_lane(defaults(audio_epoch_lane=True)))
 
 
 if __name__ == "__main__":

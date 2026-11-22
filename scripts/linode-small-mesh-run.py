@@ -58,6 +58,15 @@ def daw_epoch_args(lossless_samples: int, opus_samples: int,
             + (f"--opus-bitrate {opus_bitrate} " if opus_bitrate else ""))
 
 
+def aep1_lane(settings: dict) -> bool:
+    """Whether the deploy rendered the contributor's legacy AEP1 lane, which
+    alone feeds the distributors' native UDP (`receive-udp --relay`) and
+    WebTransport (WAVEY-AUDIO-EPOCH) readers. The setting audio_epoch_lane
+    (wave 7 item 1, default false); a settings file saved before it existed
+    rendered the lane."""
+    return bool(settings.get("audio_epoch_lane", True))
+
+
 def assign_part_ms(settings: dict, streams: list[dict]) -> None:
     """Give each stream (with its source `epoch_samples`) the whole-ms part
     that its checkers are told; SystemExit naming every stream whose part is
@@ -352,6 +361,13 @@ def run(args: argparse.Namespace) -> None:
         clock_ns = int(common.ssh_text(contributor, "date +%s%N"))
         session_id = clock_ns + args.start_delay * 1_000_000_000
 
+        # Without the AEP1 lane nothing feeds the distributors' native UDP
+        # and WebTransport readers: they are not started.
+        with_aep1 = aep1_lane(settings)
+        if not with_aep1:
+            print("audio_epoch_lane is off: no native UDP or WebTransport reader "
+                  "at the distributors (their LL-HLS readers run)")
+
         def remote_probe_script(node: dict) -> str:
             """Every reader for the site's distributors and edges, on the load host."""
             script = ""
@@ -359,7 +375,7 @@ def run(args: argparse.Namespace) -> None:
             for index, target in enumerate(targets):
                 address = target["vlan_ipv4"]
                 prefix = f"T@{target['name']}@"
-                if target["role"] == "distributor":
+                if target["role"] == "distributor" and with_aep1:
                     formats = "flac" if args.source != "daw" else args.udp_formats
                     script += background(prefix + "udp", (
                         f"{PROBE} receive-udp --relay {address}:{relay_port(target)} "
@@ -390,7 +406,7 @@ def run(args: argparse.Namespace) -> None:
                 if node["role"] != "load":
                     return
                 script += remote_probe_script(node)
-            if node["role"] == "distributor":
+            if node["role"] == "distributor" and with_aep1:
                 formats = "flac" if args.source != "daw" else args.udp_formats
                 script += background("udp", (
                     f"{PROBE} receive-udp --relay 127.0.0.1:{relay_port(node)} "

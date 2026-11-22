@@ -197,7 +197,9 @@ def site_driver(load: dict, plan: dict, distributors: list[dict], edges: list[di
     session_s = plan["session_id"] // 1_000_000_000
     flac = plan["streams"][0]
     script = f"#!/bin/bash\ncd {plan['remote']}\n"
-    for index, node in enumerate(distributors):
+    # The native UDP and WebTransport readers take the AEP1 lane only.
+    aep1 = mesh_run.aep1_lane(plan["settings"])
+    for index, node in enumerate(distributors if aep1 else []):
         address = node["vlan_ipv4"].split("/")[0]
         script += launch(f"c@{node['name']}@udp", (
             f"{PROBE} receive-udp --relay {address}:{mesh_run.relay_port(node)} "
@@ -213,7 +215,7 @@ def site_driver(load: dict, plan: dict, distributors: list[dict], edges: list[di
     # A WebTransport session that receives no datagram reaches the QUIC idle
     # timeout, so these readers connect shortly before the source epoch.
     script += f"while [ $(date +%s) -lt {session_s - 12} ]; do sleep 1; done\n"
-    for node in distributors:
+    for node in distributors if aep1 else []:
         address = node["vlan_ipv4"].split("/")[0]
         script += launch(f"c@{node['name']}@webtransport", (
             f"{PROBE} receive-webtransport --edge {address}:{HTTP_PORT} {TLS} "
