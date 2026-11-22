@@ -118,8 +118,8 @@ def carried(probes: list[dict]) -> bool | None:
 
 def ceilings(e: Evidence) -> None:
     print("### Highest bit rate carried whole\n")
-    print("Mbit/s of 4K video: the highest rung that was carried with every rung below it. "
-          "Each session is one sweep.\n")
+    print("Mbit/s of 4K video: the highest rung that was carried; in brackets, when lower, the highest "
+          "with every rung below it carried too. Each session is one sweep.\n")
     rows = []
     for lane, name in SYSTEMS:
         row = [name]
@@ -127,19 +127,26 @@ def ceilings(e: Evidence) -> None:
         for site, _ in SITES:
             cells = []
             for session in e.sessions:
-                best = None
+                best = highest = None
                 tried = False
+                broken = False
                 for rung in RUNGS:
                     step = e.step(session, lane, "throughput", rung)
                     if step is None:
                         continue
                     tried = True
-                    # The ceiling: this rung and every rung below it were carried.
-                    if step.get("source_failed") or not carried(e.probes(step, site)):
-                        break
-                    best = rung
+                    ok = not step.get("source_failed") and carried(e.probes(step, site))
+                    if ok:
+                        highest = rung
+                        if not broken:
+                            best = rung          # this rung and every rung below it
+                    else:
+                        broken = True
                 if tried:
-                    cells.append(e.rate(best) if best else "none")
+                    cell = e.rate(highest) if highest else "none"
+                    if highest != best:
+                        cell += f" ({e.rate(best) if best else 'none'})"
+                    cells.append(cell)
                     any_value = True
             row.append(" / ".join(cells) if cells else "–")
         if any_value:
