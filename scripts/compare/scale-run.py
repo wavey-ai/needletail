@@ -311,8 +311,31 @@ def split(total: int, weights: list[float]) -> list[int]:
     return parts
 
 
+def idle_regions(state: dict, standby: list[str] = ()) -> dict[str, int]:
+    """{site: edges in service} of the regions that have edges but no
+    listener host (the account refused them all): their share of a step is
+    planned, but nobody runs it (allocate's `idle`)."""
+    edges: dict[str, int] = {}
+    listeners: set[str] = set()
+    for node in state["nodes"].values():
+        if node["role"] == "edge" and node["name"] not in standby:
+            edges[node["site"]] = edges.get(node["site"], 0) + 1
+        elif node["role"] == "load" and common.load_purpose(node) == "listeners":
+            listeners.add(node["site"])
+    return {site: count for site, count in sorted(edges.items()) if site not in listeners}
+
+
+def region_shares(total: int, regions: dict, idle: dict[str, int] | None = None) -> dict:
+    """{site: listeners} of a step over the regions in proportion to their
+    edges, the idle regions' (idle_regions) included."""
+    weights = {**{site: len(regions[site]["edges"]) for site in regions},
+               **{site: edges for site, edges in (idle or {}).items() if site not in regions}}
+    return dict(zip(sorted(weights), split(total, [weights[site] for site in sorted(weights)])))
+
+
 def allocate(total: int, regions: dict, hls_share: float = 0.5,
-             hls_cap_per_host: int | None = None, caps: dict[str, int] | None = None) -> dict:
+             hls_cap_per_host: int | None = None, caps: dict[str, int] | None = None,
+             idle: dict[str, int] | None = None) -> dict:
     """{site: {host: {"udp": n, "hls": n, "hls_by_edge": {edge: n}}}} for a
     step of `total` listeners: over the regions in proportion to their
     edges, in a region over its listener hosts in proportion to their vCPUs,
@@ -321,11 +344,14 @@ def allocate(total: int, regions: dict, hls_share: float = 0.5,
     that the region's readers spread evenly). With `hls_cap_per_host` a host
     runs at most that many readers and the rest of its share is UDP. With
     `caps` ({site: n}) a region takes at most n listeners (what its listener
-    hosts drive, fit_caps) and the others keep their share."""
+    hosts drive, fit_caps) and the others keep their share. `idle` ({site:
+    edges}, idle_regions): regions with edges and no listener host, whose
+    share is split off and run by nobody, never given to the others."""
     if not 0.0 <= hls_share <= 1.0:
         raise ValueError("hls_share is a fraction")
+    shares = region_shares(total, regions, idle)
     sites = sorted(regions)
-    per_site = split(total, [len(regions[site]["edges"]) for site in sites])
+    per_site = [shares[site] for site in sites]
     if caps:
         per_site = [min(count, caps.get(site, count)) for site, count in zip(sites, per_site)]
     out: dict[str, dict] = {}
@@ -510,10 +536,14 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
     out["livekit_per_sfu"] = lk_per_sfu
     out["joins"] = {"per_lane": joins, "from": joins_from,
                     "hold_s": joins_seconds(joins) if joins else 0.0}
+    # A region whose listener hosts were all refused keeps its share of
+    # every step, run by nobody: the others' mix stays the one planned.
+    idle = idle_regions(state, standby)
+    out["idle_regions"] = idle
 
-    def allocate_with(total: int, chosen: dict, region_caps=None) -> dict:
-        return add_livekit(allocate(total, chosen, hls_share, hls_cap_per_host, region_caps),
-                           chosen, lk_per_sfu)
+    def allocate_with(total: int, chosen: dict, region_caps=None, idle_sites=None) -> dict:
+        return add_livekit(allocate(total, chosen, hls_share, hls_cap_per_host, region_caps,
+                                    idle_sites), chosen, lk_per_sfu)
 
     caps = None
     if fit:
@@ -522,7 +552,9 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
         out["fit"] = {"caps": headroom_caps, "dropped": [], "over_headroom": over_headroom,
                       "listeners_missing": [item.get("name") for item in
                                             state.get("listeners_missing") or []]}
-        whole = regions_of(with_missing_hosts(state), standby)
+        whole_state = with_missing_hosts(state)
+        whole = regions_of(whole_state, standby)
+        whole_idle = idle_regions(whole_state, standby)
         whole_capacity = {node["name"]: host_capacity(node, config, costs, udp_mbps, inbound_gbps)
                           for site in whole.values() for node in site["listeners"]}
         cap_memo: dict[tuple[str, float], int] = {}
@@ -531,7 +563,7 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
             """The step's caps and the load limit of each region's hosts."""
             limits = {site: 1.0 for site in regions}
             if over_headroom:
-                planned = allocate_with(requested, whole)
+                planned = allocate_with(requested, whole, None, whole_idle)
                 for site in regions:
                     loads = [host_load(item, whole_capacity[name])
                              for name, item in planned.get(site, {}).items()]
@@ -551,8 +583,9 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
         limits = None
         if fit:
             caps, limits = step_caps(requested)
-        alloc = allocate_with(requested, regions, caps)
-        uncapped = allocate(requested, regions, hls_share, None, caps)
+        alloc = allocate_with(requested, regions, caps, idle)
+        uncapped = allocate(requested, regions, hls_share, None, caps, idle)
+        shares = region_shares(requested, regions, idle)
         total = sum(item["udp"] + item["hls"] for by_host in alloc.values()
                     for item in by_host.values())
         if fit and total <= previous:
@@ -589,10 +622,9 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
             "livekit": sum(item.get("lk", 0) for by_host in alloc.values()
                            for item in by_host.values()),
             "joins": step_joins,
-            **({"clipped_regions": {site: caps[site] for site, count in zip(
-                sorted(regions), split(requested, [len(regions[site]["edges"])
-                                                   for site in sorted(regions)]))
-                if count > caps[site]},
+            **({"idle_regions": {site: shares[site] for site in idle}} if idle else {}),
+            **({"clipped_regions": {site: caps[site] for site in sorted(regions)
+                                    if shares[site] > caps[site]},
                 "fit_load_limit": {site: round(value, 3) for site, value in sorted(limits.items())
                                    if value > 1.0}} if fit else {}),
             "hls_clipped": hls < sum(item["hls"] for by_host in uncapped.values()
@@ -3054,6 +3086,24 @@ def fit_line(plan: dict) -> str | None:
                if fit["dropped"] else ""))
 
 
+def idle_line(plan: dict) -> str | None:
+    """The regions that have edges and no listener host, for the operator
+    and the events (None when there is none)."""
+    idle = plan.get("idle_regions")
+    if not idle:
+        return None
+    unrun = {site: [step.get("idle_regions", {}).get(site, 0) for step in plan["steps"]]
+             for site in idle}
+    return ("no listener host in " + ", ".join(sorted(idle)) + " (the account refused them "
+            "all): each step's share of " + ", ".join(
+                f"{site} ({max(counts, default=0)} listeners at most)"
+                for site, counts in sorted(unrun.items()))
+            + " runs nowhere, and no other region takes it (the planned mix of regions); its "
+            "edges, SFU and view host are idle, its joins are not run, and it is billed. "
+            "`linode-small-mesh-lab.py grow` creates its listener hosts once the account allows; "
+            "or bring the lab down and up again without it (--without-sites)")
+
+
 def command_plan(args: argparse.Namespace) -> dict:
     phases = phase_setup(args)
     resolve_defaults(args)
@@ -3091,6 +3141,8 @@ def command_plan(args: argparse.Namespace) -> dict:
               f"network {cap['udp_by_network']}) or LL-HLS {cap['hls']}")
     if fit_line(plan):
         print(fit_line(plan))
+    if idle_line(plan):
+        print(idle_line(plan))
     for step in plan["steps"]:
         worst = max(step["host_load"].values()) if step["host_load"] else 0
         edges = "; ".join(f"{site[:3]} {item['listeners_per_edge']:g}/edge "
@@ -3714,6 +3766,8 @@ def command_run(args: argparse.Namespace) -> None:
     if plan.get("fit"):
         log({"fit": plan["fit"], "steps": [step["listeners"] for step in plan["steps"]],
              "note": fit_line(plan)})
+    if plan.get("idle_regions"):
+        log({"idle_regions": plan["idle_regions"], "note": idle_line(plan)})
     if phases:
         phases["events"] = events_path
         (directory / "phases.json").write_text(json.dumps(

@@ -905,6 +905,23 @@ class StagedUp(unittest.TestCase):
                               if item["name"].startswith("syd-")]), 14)
         self.assertIn("left out", err)
 
+    def test_a_region_left_without_listener_hosts_is_named(self):
+        # Tokyo's g6-dedicated-8 refused in batch 1: batch 2 does not try
+        # Tokyo's plan, and Tokyo (not optional) keeps its core.
+        def refuse(node, made):
+            if node["region"] == "ap-northeast" and "-load-" in node["name"]:
+                return CAPACITY
+            return None
+        code, err, state = self.run_up(refuse, optional=())
+        self.assertIsNone(code)
+        self.assertEqual(sorted(item["name"] for item in state["listeners_missing"]),
+                         sorted(f"tok-load-{index}" for index in range(1, 9)))
+        self.assertEqual(sum(1 for item in state["listeners_missing"]
+                             if item["kind"] == "not attempted"), 7)
+        self.assertIn("tok-edge-1", state["nodes"])
+        self.assertIn("no listener host in tokyo", err)
+        self.assertIn("--without-sites tokyo", err)
+
     def test_a_refusal_in_the_core_deletes_the_lab_and_says_what_it_cost(self):
         code, err, state = self.run_up(
             lambda node, made: ACCOUNT if made >= 20 else None, optional=())

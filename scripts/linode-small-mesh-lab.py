@@ -674,6 +674,13 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
               + ", ".join(f"{item['name']}: {item['kind']}" for item in missing)
               + "); the lab is kept. scale-run.py fits its steps to the hosts that exist; "
               "`grow` creates the missing ones once the account allows", file=sys.stderr)
+    idle = sorted({item["site"] for item in missing} - {
+        node["site"] for node in state["nodes"].values() if is_listener_host(node)})
+    if idle:
+        print(f"no listener host in {', '.join(idle)}: its edges, SFU and view host are kept "
+              "and billed but carry no listener (scale-run.py gives its share to nobody and "
+              "runs no joins there). `grow` once the account allows, or `down` and `up` "
+              f"--without-sites {','.join(idle)}", file=sys.stderr)
 
 
 def command_up(args: argparse.Namespace) -> None:

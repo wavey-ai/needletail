@@ -235,8 +235,15 @@ most what its hosts drive within the plan's headroom (`fit_caps`, from the
 per-host capacity and the step's LL-HLS share), the other regions keep
 their share, a step is named by the listeners it runs
 (`requested` is what was asked), and a step that would add no listener is
-dropped. The fit is printed, logged (`fit` in events.jsonl) and kept in
-plan.json. `--force` does not turn it off, so every command below,
+dropped. A region left with no listener host at all (a capacity
+refusal of Tokyo's g6-dedicated-8 in the first batch blocks its plan in
+the second too) keeps its share of every step, run by nobody: the other
+regions are never given it, so their edges carry what they carry on the
+whole lab (`idle_regions` in plan.json and each step, printed and logged).
+Its edges, SFU and view host are idle and billed, and it runs no joins;
+`up` names it, and `grow` creates its hosts once the account allows (or
+`down` and `up --without-sites` it). The fit is printed, logged (`fit` in
+events.jsonl) and kept in plan.json. `--force` does not turn it off, so every command below,
 `--force` or not, is fitted on a short lab: `--force` lets a step over the
 headroom run, and the fit then fills each region's hosts as far over the
 headroom as the whole lab would (the 106% step stays at 106%, not twice

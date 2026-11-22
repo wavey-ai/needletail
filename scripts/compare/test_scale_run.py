@@ -199,6 +199,36 @@ class Steps(unittest.TestCase):
             self.assertTrue(scale.drivable(scale.allocate(cap, one, 0), plan["capacity"]))
             self.assertFalse(scale.drivable(scale.allocate(cap + 1, one, 0), plan["capacity"]))
 
+    def test_a_region_without_listener_hosts_keeps_its_share_and_gives_it_to_nobody(self):
+        # A capacity refusal of Tokyo's g6-dedicated-8 in batch 1 blocks its
+        # plan in batch 2 too: Tokyo keeps its core and has no listener host.
+        state = lab(["sydney"])
+        state["listeners_missing"] = [
+            missing_entry(state["nodes"].pop(f"tok-load-{index}"), "capacity")
+            for index in range(1, 9)]
+        self.assertEqual(scale.idle_regions(state, STANDBY), {"tokyo": 5})
+        self.assertNotIn("tokyo", scale.regions_of(state, STANDBY))
+        whole = scale.plan_steps(lab(["sydney"]), [6000], "pcm-1", standby=STANDBY,
+                                 lk_per_sfu=450)
+        for fit in (True, False):
+            plan = scale.plan_steps(state, [6000], "pcm-1", standby=STANDBY, fit=fit,
+                                    lk_per_sfu=450)
+            step = plan["steps"][0]
+            # London and New York carry what they carry on the whole lab,
+            # not Tokyo's share on top (2,305 each before).
+            self.assertEqual({site: item["udp"] + item["hls"] for site, item in step["sites"].items()},
+                             {"london": 2000, "newyork": 2000})
+            self.assertEqual({site: item["udp"] + item["hls"]
+                              for site, item in step["sites"].items()},
+                             {site: item["udp"] + item["hls"]
+                              for site, item in whole["steps"][0]["sites"].items()
+                              if site != "tokyo"})
+            self.assertEqual(step["listeners"], 4000)
+            self.assertEqual(step["idle_regions"], {"tokyo": 2000})
+            self.assertEqual(plan["idle_regions"], {"tokyo": 5})
+            self.assertIn("no listener host in tokyo", scale.idle_line(plan))
+        self.assertIsNone(scale.idle_line(whole))
+
     def test_the_documented_forced_ramp_is_fitted_and_as_far_over_as_on_the_whole_lab(self):
         # Curve 2's pcm-1 UDP-only ramp, run with --force as SCALE.md says,
         # on a lab whose second listener batch the account refused (half of
