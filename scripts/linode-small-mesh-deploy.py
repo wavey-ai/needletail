@@ -253,10 +253,12 @@ DEFAULT_SETTINGS = {
     "audio_part": "epoch",
     "video_part": "frame",
     # Epoch of the lab's AEP1 sender (aep1-48k-probe send --epoch-samples) and
-    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, 120
-    # (2.5 ms) for Opus. Only the lab tools read these.
+    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, and
+    # 48 (1 ms Opus Custom, the low-latency Opus lane's default) for Opus.
+    # 120 (2.5 ms) is standard Opus, for anything that must interoperate
+    # (fMP4, WebRTC). Only the lab tools read these.
     "pcm_epoch_samples": 48,
-    "opus_epoch_samples": 120,
+    "opus_epoch_samples": 48,
     # Version 1: `fmp4_part_ms` maps to `audio_part` "<N*1000>us" (and to
     # `video_part` "<N>ms" when `fmp4_video_part_ms` is not given),
     # `fmp4_video_part_ms` to `video_part` "<N>ms". None: not used.
@@ -541,7 +543,9 @@ def load_settings(overrides: list[str]) -> dict:
 
 AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
 VIDEO_PART = re.compile(r"^(frame|[1-9][0-9]*ms)$")
-OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+# Opus frames: Opus Custom (48, 64, 72 samples: 1, 1.33, 1.5 ms; SoundKit Opus
+# on the opus-custom-1ms branch) and standard Opus (120 to 960).
+OPUS_EPOCH_SAMPLES = (48, 64, 72, 120, 240, 480, 960)
 SAMPLE_RATE = 48_000
 # The lossless epoch of the DAW source (daw-test-source: 1 ms, 48 samples,
 # unless it is given --lossless-epoch-samples). With audio_part "epoch" its

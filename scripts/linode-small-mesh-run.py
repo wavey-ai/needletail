@@ -675,9 +675,11 @@ def main() -> None:
                         help="the DAW source's lossless epoch (daw-test-source "
                              "--lossless-epoch-samples)")
     parser.add_argument("--daw-opus-frame-samples", type=int, default=DAW_OPUS_FRAME_SAMPLES,
-                        choices=(120, 240, 480, 960),
+                        choices=(48, 64, 72, 120, 240, 480, 960),
                         help="the DAW source's Opus frame (--opus-frame-samples); 120 (2.5 ms) "
-                             "parts are not a whole ms, which the checkers need")
+                             "parts are not a whole ms, which the checkers need. 48 (1 ms) is "
+                             "the lane's Opus Custom default (whole ms; needs the opus-custom-1ms "
+                             "builds of daw-nexus and av-contrib, and opaque packaging)")
     parser.add_argument("--duration", type=int, default=30)
     parser.add_argument("--tail", type=int, default=4)
     parser.add_argument("--start-delay", type=int, default=14)
