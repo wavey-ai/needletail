@@ -96,6 +96,9 @@ ACCOUNT_MARKERS = ("account limit", "limit reached", "limit exceeded", "exceeds 
 CAPACITY_MARKERS = ("capacity", "not available in this region", "unavailable in this region",
                     "not available in the selected region", "out of stock", "sold out",
                     "no resources available", "not accepting new")
+# A transient refusal (create_node's own retries spent) is tried once more,
+# after this pause, at the end of its stage, rather than ending the stage.
+TRANSIENT_RETRY_PAUSE_S = 30.0
 TRANSIENT_MARKERS = ("http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
                      "try again", "busy", "timed out", "timeout", "did not succeed after retries",
                      "connection reset", "temporarily")
@@ -391,7 +394,8 @@ def create_batch(api: "Api", state: dict, state_path: pathlib.Path, nodes: list[
                  workers: int | None = None) -> dict:
     """Create `nodes` (CREATE_WORKERS at a time), recording each in the
     state as it lands, and stop at the first refusal: no create starts
-    after it (the ones under way finish and are recorded). With
+    after it (the ones under way finish and are recorded). A transient
+    refusal stops nothing (the stage retries it: create_staged). With
     `capacity_blocks_plan_only`, a capacity refusal stops only the nodes of
     the same region and plan; any other refusal stops all. Returns
     {"created": [names], "refused": [{"name", "region", "type", "kind",
@@ -417,7 +421,9 @@ def create_batch(api: "Api", state: dict, state_path: pathlib.Path, nodes: list[
                        "error": str(error)[-400:]}
             with lock:
                 out["refused"].append(refusal)
-                if refusal["kind"] == "capacity" and capacity_blocks_plan_only:
+                if refusal["kind"] == "transient":
+                    pass
+                elif refusal["kind"] == "capacity" and capacity_blocks_plan_only:
                     blocked.setdefault((node["region"], node["type"]), refusal)
                 elif not stop:
                     stop.append(refusal)
@@ -579,13 +585,16 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
        the core once more;
     3. the listener hosts, in `--listener-batches` batches (LISTENER_BATCHES),
        each with a share of every site's: a refusal keeps what exists. An
-       account refusal, or one that is neither capacity nor account, stops
-       every later create; a capacity refusal stops only that region's plan.
-       The hosts not created are recorded in `listeners_missing` with why,
-       and scale-run.py fits its ramp to the hosts that exist. An optional
-       site left with no listener host is deleted (its edges would carry no
-       listener).
-    Every refusal is kept in `refusals`."""
+       account refusal, or one of no known kind, stops every later create;
+       a capacity refusal stops only that region's plan; a transient one
+       only that host. The hosts not created are recorded in
+       `listeners_missing` with why, and scale-run.py fits its ramp to the
+       hosts that exist. An optional site left with no listener host is
+       deleted (its edges would carry no listener).
+    A transient refusal (create_node's and Api.call's retries spent) stops
+    nothing: the stage tries its node once more at its end (attempt), and
+    only a second refusal counts (in the core, it deletes the lab). Every
+    refusal is kept in `refusals`."""
     batches = getattr(args, "listener_batches", None) or LISTENER_BATCHES
     first, rest = split_optional(nodes, optional)
     core = [node for node in rest if not is_listener_host(node)]
@@ -596,16 +605,46 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
         state["refusals"] += [{**item, "stage": stage} for item in result["refused"]]
         write_state(state_path, state)
 
+    def attempt(todo: list[dict], stage: str, plan_only: bool = False) -> dict:
+        """create_batch, then once more for the nodes refused by a transient
+        error, unless the stage was stopped by another refusal (or, with
+        `plan_only`, the node's plan was refused for capacity). The first
+        transient refusals are kept in `refusals` ("retried")."""
+        result = create_batch(api, state, state_path, todo, key,
+                              capacity_blocks_plan_only=plan_only)
+        transient = [item for item in result["refused"] if item["kind"] == "transient"]
+        others = [item for item in result["refused"] if item["kind"] != "transient"]
+        if not transient or any(not (plan_only and item["kind"] == "capacity")
+                                for item in others):
+            return result
+        blocked = {(item["region"], item["type"]) for item in others}
+        again = [node for node in todo if node["name"] in {item["name"] for item in transient}
+                 and (node["region"], node["type"]) not in blocked]
+        state["refusals"] += [{**item, "stage": stage, "retried": True} for item in transient
+                              if item["name"] in {node["name"] for node in again}]
+        write_state(state_path, state)
+        print(f"{stage}: {len(again)} transient refusal(s) ("
+              + ", ".join(node["name"] for node in again)
+              + f"); trying them once more in {TRANSIENT_RETRY_PAUSE_S:.0f} s", file=sys.stderr)
+        time.sleep(TRANSIENT_RETRY_PAUSE_S)
+        retried = create_batch(api, state, state_path, again, key,
+                               capacity_blocks_plan_only=plan_only)
+        names = {node["name"] for node in again}
+        return {"created": result["created"] + retried["created"],
+                "refused": [item for item in result["refused"] if item["name"] not in names]
+                + retried["refused"],
+                "skipped": result["skipped"] + retried["skipped"]}
+
     for site, site_nodes in first.items():
-        result = create_batch(api, state, state_path,
-                              [node for node in site_nodes if not is_listener_host(node)], key)
+        result = attempt([node for node in site_nodes if not is_listener_host(node)],
+                         f"core of optional site {site}")
         if result["refused"]:
             note(result, f"core of optional site {site}")
             refused = result["refused"][0]
             drop_site(api, state, state_path, site,
                       f"{refused['kind']} refusal of {refused['name']}")
     print(f"Core: {len(core)} nodes")
-    result = create_batch(api, state, state_path, core, key)
+    result = attempt(core, "core")
     kept_optional = [site for site in first if site not in state.get("sites_left_out", [])]
     if result["refused"] and kept_optional and any(
             item["kind"] == "account" for item in result["refused"]):
@@ -614,8 +653,7 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
             drop_site(api, state, state_path, site,
                       "the account refused the core: the optional site's instances are given "
                       "back to its limit")
-        result = create_batch(api, state, state_path,
-                              [node for node in core if node["name"] not in state["nodes"]], key)
+        result = attempt([node for node in core if node["name"] not in state["nodes"]], "core")
     if result["refused"]:
         note(result, "core")
         refused = result["refused"][0]
@@ -644,13 +682,16 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
         if not todo:
             continue
         print(f"Listener hosts, batch {index}: {len(todo)} nodes")
-        result = create_batch(api, state, state_path, todo, key, capacity_blocks_plan_only=True)
+        result = attempt(todo, f"listener batch {index}", plan_only=True)
         note(result, f"listener batch {index}")
         for item in result["refused"]:
             missing.append({**{key_: item[key_] for key_ in ("name", "site", "region", "type",
                                                                "kind")},
                             "why": item["error"][-300:]})
             cause = f"{item['kind']} refusal of {item['name']}"
+            if item["kind"] == "transient":
+                # Refused twice: that host only is missing.
+                continue
             if item["kind"] == "capacity":
                 blocked.setdefault((item["region"], item["type"]), cause)
             elif not stopped:

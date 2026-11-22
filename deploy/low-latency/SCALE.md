@@ -221,7 +221,7 @@ creates already under way, at most three, finish and are recorded).
    with half of every region's (the first batch: lon-, new-, tok-load-1 to
    4 and syd-load-1 to 8). A refusal here keeps the lab. An account
    refusal stops every later create; a capacity refusal stops only that
-   region's plan. The hosts not created are in the lab state's
+   region's plan; a transient one only that host. The hosts not created are in the lab state's
    `listeners_missing`, with the refusal; `status` lists them, and `grow`
    creates them once the account allows. A Sydney left with no listener
    host is deleted (its edges would carry no one).
@@ -231,7 +231,9 @@ tool): an account limit ("Account Limit reached. Please open a support
 ticket ...", "maximum number of", "quota", "cpu limit", ...), no capacity
 ("capacity", "not available in this region", "out of stock", ...) or a
 transient error (HTTP 408, 429, 5xx, busy, timed out, once `create_node`'s
-retries are spent). The exact text Linode returns at this account's limit
+retries are spent). A transient refusal stops nothing: its node is tried
+once more at the end of its stage (after 30 s), and only a second refusal
+counts, so one flaky create does not roll back a core that costs $2.70. The exact text Linode returns at this account's limit
 has not been seen: a refusal of no known kind stops creation as an account
 refusal does, and is recorded as "other". Every refusal is kept in the
 lab state's `refusals`.

@@ -766,6 +766,7 @@ class LabTool(unittest.TestCase):
 ACCOUNT = ("POST /linode/instances failed with HTTP 400: {\"errors\": [{\"reason\": \"Account "
            "Limit reached. Please open a support ticket with our support team to request an "
            "increase.\"}]}")
+TRANSIENT = "POST /linode/instances failed with HTTP 503: service busy, try again"
 CAPACITY = ("POST /linode/instances failed with HTTP 400: {\"errors\": [{\"reason\": \"No "
             "capacity available in this region for the requested plan.\"}]}")
 
@@ -818,6 +819,7 @@ class StagedUp(unittest.TestCase):
         args = argparse.Namespace(state=str(self.path), listener_batches=batches)
         with mock.patch.object(lab_tool, "create_node", create), \
                 mock.patch.object(lab_tool, "CREATE_WORKERS", 1), \
+                mock.patch.object(lab_tool, "TRANSIENT_RETRY_PAUSE_S", 0.0), \
                 mock.patch.object(lab_tool, "command_down", down), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             try:
@@ -904,6 +906,42 @@ class StagedUp(unittest.TestCase):
         self.assertEqual(len([item for item in state["removed"]
                               if item["name"].startswith("syd-")]), 14)
         self.assertIn("left out", err)
+
+    def test_a_transient_refusal_in_the_core_is_tried_again_not_rolled_back(self):
+        tried: list[str] = []
+
+        def refuse(node, made):
+            tried.append(node["name"])
+            return TRANSIENT if node["name"] == "lon-edge-3" and tried.count("lon-edge-3") == 1 \
+                else None
+        code, err, state = self.run_up(refuse)
+        self.assertIsNone(code)
+        self.assertEqual(self.downs, 0)
+        self.assertEqual(len(state["nodes"]), 99)
+        self.assertEqual(tried.count("lon-edge-3"), 2)
+        # The rest of the core went on meanwhile; the retry came at its end.
+        self.assertEqual([name for name in tried if "-load-" not in name][-1], "lon-edge-3")
+        self.assertEqual([(item["name"], item["kind"], item.get("retried"))
+                          for item in state["refusals"]], [("lon-edge-3", "transient", True)])
+        self.assertIn("trying them once more", err)
+
+    def test_a_transient_refusal_twice_in_the_core_deletes_the_lab(self):
+        code, err, state = self.run_up(
+            lambda node, made: TRANSIENT if node["name"] == "lon-edge-3" else None, optional=())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.downs, 1)
+        self.assertEqual(self.created.count("lon-edge-3"), 0)
+        self.assertEqual(len(self.created), 58)  # every other node of the core
+        self.assertEqual([item["kind"] for item in state["refusals"]], ["transient", "transient"])
+        self.assertIn("the core was refused at lon-edge-3 (transient", err)
+
+    def test_a_transient_refusal_among_the_listener_hosts_misses_that_host_only(self):
+        code, _err, state = self.run_up(
+            lambda node, made: TRANSIENT if node["name"] == "tok-load-2" else None)
+        self.assertIsNone(code)
+        self.assertEqual(sum(1 for name in state["nodes"] if "-load-" in name), 39)
+        self.assertEqual([(item["name"], item["kind"]) for item in state["listeners_missing"]],
+                         [("tok-load-2", "transient")])
 
     def test_a_region_left_without_listener_hosts_is_named(self):
         # Tokyo's g6-dedicated-8 refused in batch 1: batch 2 does not try
