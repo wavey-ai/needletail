@@ -171,6 +171,22 @@ def ns_run(command: list[str], check: bool = True, timeout: float = 120) -> str:
     return result.stdout.decode(errors="replace")
 
 
+_DEPLOY_CODE = []
+
+
+def deploy_code():
+    """The deploy tool's module, for its pure functions: deploy_module()
+    also points it at this lab's artifact directory."""
+    if not _DEPLOY_CODE:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        spec = importlib.util.spec_from_file_location(
+            "deploy_code", ROOT / "scripts" / "linode-small-mesh-deploy.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _DEPLOY_CODE.append(module)
+    return _DEPLOY_CODE[0]
+
+
 def deploy_module():
     sys.path.insert(0, str(ROOT / "scripts"))
     import small_mesh_common as common
@@ -283,22 +299,41 @@ def restart_service(name: str) -> None:
     save_pids(pids)
 
 
-def netem(enable: bool) -> None:
+def netem_filters(settings: dict | None) -> list[str]:
+    """The tc filters that steer the cache mesh (band 3, the private network
+    of a region) and the relay lanes between regions (band 4) into their
+    netem. With the class split of the rendered `settings` (each piece as the
+    deploy decides it, class_plan) their video twins go the same way; with
+    None (before the render) the audio ports alone."""
+    deploy = deploy_code()
+    mesh = (deploy.class_split_ports(29101, settings, "mesh") if settings is not None
+            else [29101])
+    relay = (deploy.class_split_ports(22200, settings, "relay") if settings is not None
+             else [22200])
+    return ([
+        "tc filter add dev lo parent 1: protocol ip prio 1 u32 "
+        f"match ip protocol 17 0xff match ip dport {port} 0xffff flowid 1:3"
+        for port in mesh
+    ] + [
+        "tc filter add dev lo parent 1: protocol ip prio 2 u32 "
+        "match ip protocol 17 0xff match ip dst 10.90.0.0/16 "
+        f"match ip dport {port} 0xff00 flowid 1:4"
+        for port in relay
+    ])
+
+
+def netem(enable: bool, settings: dict | None = None) -> None:
+    """tc netem on the namespace's loopback for the cache mesh and the relay
+    lanes, steered by the ports of the services rendered with `settings`."""
     ns_run(["tc", "qdisc", "del", "dev", "lo", "root"], check=False)
     if not enable:
         return
-    # Band 3 carries the cache mesh (the private network of a region). Band 4
-    # carries the relay lanes between regions.
     script = " && ".join([
         "tc qdisc add dev lo root handle 1: prio bands 4 "
         "priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
         f"tc qdisc add dev lo parent 1:3 handle 30: netem {NETEM_CACHE_MESH}",
         f"tc qdisc add dev lo parent 1:4 handle 40: netem {NETEM_RELAY}",
-        "tc filter add dev lo parent 1: protocol ip prio 1 u32 "
-        "match ip protocol 17 0xff match ip dport 29101 0xffff flowid 1:3",
-        "tc filter add dev lo parent 1: protocol ip prio 2 u32 "
-        "match ip protocol 17 0xff match ip dst 10.90.0.0/16 "
-        "match ip dport 22200 0xff00 flowid 1:4",
+        *netem_filters(settings),
     ])
     ns_run(["bash", "-c", script])
 
@@ -344,6 +379,10 @@ def up(overrides: list[str]) -> None:
          "netem_cache_mesh": NETEM_CACHE_MESH if use_netem else None,
          "netem_relay": NETEM_RELAY if use_netem else None}))
     rendered = render(overrides)
+    if use_netem:
+        # Again with the ports of this run's settings, just rendered: the
+        # first pass only showed that the kernel takes netem.
+        netem(True, json.loads((WORK / "artifacts" / "settings.json").read_text()))
     pids = {}
     roles = {name: role for name, role, *_ in NODES}
     for role in ("backbone", "distributor", "edge", "contributor"):

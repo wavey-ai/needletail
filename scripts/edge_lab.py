@@ -7,8 +7,10 @@ network (VLAN) of its region. The links are veth pairs into bridges. The
 public networks of the sites meet in a router namespace, the wide-area
 network, and each site reaches it over a link with the delay of its distance.
 Every link takes `tc netem` in each direction: delay, jitter, random and burst
-loss, reordering, duplication and a rate cap. Every service runs in its own
-cgroup with the limits of a Nanode: one CPU and 1 GB, no swap.
+loss, reordering, duplication and a rate cap. What a node sends also passes
+the deploy tool's host qdisc where the kernel allows it (`host_qdisc`: a prio
+child of the netem, audio first). Every service runs in its own cgroup with
+the limits of a g6-dedicated-2: two CPUs and 4 GB, no swap.
 
 Nothing needs root. The namespaces belong to a rootless user namespace, and
 the cgroups are scopes of the user's systemd manager.
@@ -344,6 +346,25 @@ def base_spec(name: str, network: str) -> str:
     return netem_spec(delay_ms=ACCESS_DELAY_MS)
 
 
+def host_qdisc() -> str:
+    """The host qdisc of the running lab (the deploy setting `host_qdisc`)."""
+    return load("settings.json").get("host_qdisc") or "none"
+
+
+# The deploy tool's host qdisc inside a node, where the root of each of its
+# interfaces is the netem of the link: a prio child of the netem, with the
+# deploy's priomap, so that what leaves the netem at one time leaves audio
+# (SO_PRIORITY 6, band 0) first. Band 1 is a pfifo, not the deploy's fq: fq
+# under netem stalls a paced flow on this kernel (the packets it holds back
+# are never sent), and the lab does not pace.
+LAB_HOST_QDISC = [
+    "qdisc add dev {device} parent 1:1 handle 10: prio bands 3 priomap {priomap}",
+    "qdisc add dev {device} parent 10:1 handle 11: pfifo limit 10000",
+    "qdisc add dev {device} parent 10:2 handle 12: pfifo limit 50000",
+]
+PRIOMAP = "1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1"
+
+
 def apply_netem(namespace: str | None, device: str, spec: str) -> None:
     words = spec.split()
     ordered = "ordered" in words
@@ -354,7 +375,13 @@ def apply_netem(namespace: str | None, device: str, spec: str) -> None:
     # one batch, so that the link carries exactly this specification.
     batch = [f"qdisc del dev {device} root",
              f"qdisc add dev {device} root handle 1: netem {' '.join(words)}"]
-    if ordered:
+    # The host qdisc goes on what a node sends; a reader host is no node.
+    host = namespace in names() and host_qdisc() == "prio"
+    if host:
+        # Its bands are FIFOs, so the child keeps the order that `ordered`
+        # asks for as the pfifo did.
+        batch += [line.format(device=device, priomap=PRIOMAP) for line in LAB_HOST_QDISC]
+    elif ordered:
         batch.append(f"qdisc add dev {device} parent 1:1 pfifo limit 50000")
     run_in(namespace, ["tc", "-force", "-batch", "-"], check=False,
            text_input="\n".join(batch) + "\n")
@@ -365,6 +392,13 @@ def apply_netem(namespace: str | None, device: str, spec: str) -> None:
         if (word in shown.split()) != (word in words):
             raise LabError(f"{namespace or 'lab'}: {device} carries '{shown.strip()[:200]}', "
                            f"asked for '{' '.join(words)}'")
+    if host:
+        # Where possible: a node whose kernel refuses the child keeps the
+        # netem alone, and the lab records it.
+        record = load("qdisc.json")
+        record[f"{namespace}/{device}"] = ("prio" if "qdisc prio 10: parent 1:1" in shown
+                                           else f"refused: {shown.strip()[:200]}")
+        save("qdisc.json", record)
 
 
 def set_net(name: str, network: str, direction: str, spec: str | None) -> None:
@@ -825,6 +859,14 @@ def up(overrides: list[str], start: bool = True) -> dict:
         script = "; ".join(f"sysctl -qw {key}={value}" for key, value in sysctls.items())
         for name in rendered:
             sh_in(name, script, check=False)
+    # The host qdisc of this run's settings (the links were built before
+    # they were rendered).
+    save("qdisc.json", {})
+    for name in rendered:
+        for network in ("pub", "vlan"):
+            if network == "vlan" and node(name)["vlan_ipv4"] is None:
+                continue
+            apply_netem(name, link_names(name)[network][0], base_spec(name, network))
     if not start:
         return rendered
     for role in ("backbone", "distributor", "edge", "contributor"):
@@ -854,7 +896,7 @@ def down(quiet: bool = False) -> None:
         except OSError:
             pass
     for path in ("services.json", "namespaces.json", "sources.json", "links.json",
-                 "shaped.json"):
+                 "shaped.json", "qdisc.json"):
         (WORK / path).unlink(missing_ok=True)
     if not quiet:
         print("down")

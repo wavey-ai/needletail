@@ -149,19 +149,27 @@ def stream_plan(args: argparse.Namespace, settings: dict, group_id: int) -> dict
          "codec": "opaque-flac" if opaque else "flac", "epoch_samples": args.epoch_samples}]}
 
 
-def loss_commands(port: int, percent: float, chain: str) -> tuple[str, str]:
+# A port and its video twin when the deploy splits that kind of endpoint by
+# class: a fault on the audio port alone would leave 4K untouched.
+class_split_ports = deploy.class_split_ports
+
+
+def loss_commands(ports: int | list[int], percent: float, chain: str) -> tuple[str, str]:
+    """Random loss of `percent` on the UDP ports, and the command that takes
+    it away and prints how many datagrams it dropped."""
+    ports = [ports] if isinstance(ports, int) else list(ports)
     probability = percent / 100.0
     apply = (f"iptables -N {chain} 2>/dev/null || iptables -F {chain}; "
              f"iptables -A {chain} -m statistic --mode random "
-             f"--probability {probability} -j DROP; "
-             f"iptables -C INPUT ! -i lo -p udp --dport {port} -j {chain} 2>/dev/null "
-             f"|| iptables -I INPUT 1 ! -i lo -p udp --dport {port} -j {chain}")
+             f"--probability {probability} -j DROP")
     remove = (f"dropped=$(iptables -L {chain} -nvx 2>/dev/null | "
-              "awk '$3 == \"DROP\" {print $1; exit}'); "
-              f"while iptables -C INPUT ! -i lo -p udp --dport {port} -j {chain} 2>/dev/null; "
-              f"do iptables -D INPUT ! -i lo -p udp --dport {port} -j {chain}; done; "
-              f"iptables -F {chain} 2>/dev/null; iptables -X {chain} 2>/dev/null; "
-              "echo ${dropped:-0}")
+              "awk '$3 == \"DROP\" {print $1; exit}'); ")
+    for port in ports:
+        rule = f"INPUT ! -i lo -p udp --dport {port} -j {chain}"
+        apply += f"; iptables -C {rule} 2>/dev/null || iptables -I {rule.replace('INPUT', 'INPUT 1', 1)}"
+        remove += f"while iptables -C {rule} 2>/dev/null; do iptables -D {rule}; done; "
+    remove += (f"iptables -F {chain} 2>/dev/null; iptables -X {chain} 2>/dev/null; "
+               "echo ${dropped:-0}")
     return apply, remove
 
 
@@ -322,12 +330,16 @@ def run(args: argparse.Namespace) -> None:
     loss_removals: list[tuple[dict, str]] = []
     if args.loss_relay:
         for node in distributors:
-            apply, remove = loss_commands(relay_port(node), args.loss_relay, "NTSMRELAY")
+            apply, remove = loss_commands(
+                class_split_ports(relay_port(node), settings, "relay"), args.loss_relay,
+                "NTSMRELAY")
             common.ssh(node, apply)
             loss_removals.append((node, remove))
     if args.loss_mesh:
         for node in edges:
-            apply, remove = loss_commands(29101, args.loss_mesh, "NTSMMESH")
+            apply, remove = loss_commands(
+                class_split_ports(deploy.MESH_PORT, settings, "mesh"), args.loss_mesh,
+                "NTSMMESH")
             common.ssh(node, apply)
             loss_removals.append((node, remove))
 
@@ -443,11 +455,13 @@ def run(args: argparse.Namespace) -> None:
             start_ns = session_id + args.blackout_at * 1_000_000_000
 
             def schedule_blackout(node: dict) -> None:
-                port = relay_port(node)
-                rule = f"INPUT ! -i lo -p udp --dport {port} -j DROP"
+                rules = [f"INPUT ! -i lo -p udp --dport {port} -j DROP"
+                         for port in class_split_ports(relay_port(node), settings, "relay")]
+                insert = "; ".join(f"iptables -I {rule}" for rule in rules)
+                delete = "; ".join(f"iptables -D {rule}" for rule in rules)
                 common.ssh(node, (
                     f"nohup sh -c 'while [ $(date +%s%N) -lt {start_ns} ]; do sleep 0.01; done; "
-                    f"iptables -I {rule}; sleep {args.blackout_ms / 1000}; iptables -D {rule}; "
+                    f"{insert}; sleep {args.blackout_ms / 1000}; {delete}; "
                     f"date +%s%N >{remote}/blackout-end' >/dev/null 2>&1 </dev/null &"))
 
             targets = [node for node in distributors

@@ -108,6 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seconds", type=int, default=60, help="D: how long the readers listen")
     parser.add_argument("--readers", type=int, default=1, help="N: readers of each kind on each host")
     parser.add_argument("--hosts", default=",".join(READER_HOSTS), help="reader namespaces")
+    parser.add_argument("--video", action="store_true",
+                        help="also run the lab's 4K source (SRT into the contributor), so the "
+                             "audio crosses a mesh that carries 4K")
     parser.add_argument("--payload", choices=sorted(PAYLOAD_STREAM), default="pcm",
                         help="what the AEP1 sender sends (opus: CELT frames encoded by the probe "
                              "from the same loop); the stream follows (pcm 4001, flac 2001, opus 3001)")
@@ -421,6 +424,7 @@ def run(args, steps: dict) -> int:
              "reader windows (parts in flight): " + ", ".join(
                  f"{lane} {window}" for lane, window in (steps.get("reader_windows") or {}).items()),
              *([f"WARNING: {epoch_note}"] if epoch_note else []),
+             qdisc_note(),
              f"hop journal: {capacity if capacity is not None else 'as running'} events per node"
              + (f"; WARNING: full on {', '.join(full)}: the start of the window was overwritten"
                 if full else ""), ""]
@@ -434,6 +438,20 @@ def run(args, steps: dict) -> int:
     (out / "summary.txt").write_text(text)
     print(text, end="")
     return 0
+
+
+def qdisc_note() -> str:
+    """What the host qdisc did in this bench: in the namespace lab the prio
+    is a child of each link's netem, which has no rate and so never holds a
+    queue. The prio classifies but never reorders, and a --video gate run
+    here measures the sockets, threads and ports of the class split, not the
+    qdisc (scripts/test_class_isolation.py shows audio overtaking a queued
+    burst; only the Linode lab measures it under load)."""
+    qdisc = (lab.load("settings.json") or {}).get("host_qdisc") or "none"
+    if qdisc == "none":
+        return "host qdisc: none"
+    return (f"host qdisc: {qdisc} under each link's netem, which holds no queue: this bench "
+            "does not exercise it (audio first in a NIC queue is measured on Linode only)")
 
 
 def run_epoch(steps: dict, summary: dict | None) -> dict:
@@ -474,6 +492,8 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     steps["hops"]["source_start_ns"] = start * 1_000_000_000
     steps["sender"]["command"] = sender_command(args, start, steps["media"]["loop"])
     sender_log = open(out / "sender.log", "ab")
+    if args.video:
+        lab.start_sources(args.seconds + 120, video=True, audio=None)
     sender = subprocess.Popen(lab.enter("contrib-lon") + steps["sender"]["command"], stdout=sender_log,
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")

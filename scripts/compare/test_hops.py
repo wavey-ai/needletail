@@ -193,6 +193,36 @@ class Join(unittest.TestCase):
         self.assertEqual(stage(newyork, "edge.edge_committed")["p50"], 41.5)
         self.assertEqual(result["regions"]["all"]["edge_parts"]["parts"], 200)
         self.assertIn("edge.mesh_decoded", result["stages_seen"])
+        # A journal from before the audio hot path has no sent_first: the
+        # contributor's hop is packaged -> sent, as it was.
+        self.assertNotIn("contrib.packaged -> contrib.sent_first",
+                         [item["hop"] for item in london["hops"]])
+
+    def test_sent_first_splits_the_contributors_send(self):
+        """The hot path's sent_first separates its scheduling (packaged ->
+        sent_first) from the time spent sending the lanes (sent_first ->
+        sent). A part without it is still packaged -> sent."""
+        events = journal()
+        for seq in SEQS:
+            if seq != SPIKE:
+                events.append(event("contrib-lon", "sent_first", seq, spoken(seq) + 350))
+        result = analyse(NODES, events, [], STREAM, START_US)
+        london = result["regions"]["london"]["edge_parts"]
+        names = [item["hop"] for item in london["hops"]]
+        self.assertEqual(hop(london, "contrib.packaged -> contrib.sent_first")["p50"], 0.05)
+        self.assertEqual(hop(london, "contrib.packaged -> contrib.sent_first")["count"], 99)
+        self.assertEqual(hop(london, "contrib.sent_first -> contrib.sent")["p50"], 0.15)
+        self.assertEqual(hop(london, "contrib.packaged -> contrib.sent")["count"], 1)
+        # In the order of the path.
+        self.assertLess(names.index("contrib.packaged -> contrib.sent_first"),
+                        names.index("contrib.sent_first -> contrib.sent"))
+        self.assertLess(names.index("contrib.sent_first -> contrib.sent"),
+                        names.index("contrib.sent -> primary.relay_first"))
+        self.assertEqual(stage(london, "contrib.sent_first")["p50"], 0.35)
+        self.assertIn("contributor.sent_first", result["stages_seen"])
+        # Only an optional stage is gone around: a missing relay stage still
+        # leaves its two hops out.
+        self.assertEqual(hops.hop_pairs({"contrib.sent": 1, "primary.relay_forward": 2}), [])
 
     def test_listener_parts_join_the_probe(self):
         probe = hops.read_probe(str(write_probe(self.directory, "nt-pcm.probe.csv")))
