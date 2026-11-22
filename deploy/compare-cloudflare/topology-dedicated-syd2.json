@@ -1,0 +1,256 @@
+{
+ "description": "The network comparison on dedicated CPU only (owner, 21 November 2026: no shared instances). Needletail: a contributor alone on a g6-dedicated-4 in London, two backbone relays, and in each of London, New York, Tokyo and Sydney two distributors and two edges on a private VLAN, all g6-dedicated-2. LiveKit: one g6-dedicated-2 in each region, and one for the Redis of the multi-region set. Measurement hosts: in each region one g6-dedicated-2 listener (named -nano for continuity with the harness) and one g6-dedicated-4 viewer host for headless Chrome and crowds; lon-src (g6-dedicated-4) sends the same media into every system. Variant of 22 Nov: syd-view is a g6-dedicated-2, because Linode had no larger dedicated plan in ap-southeast.",
+ "image": "linode/debian13",
+ "nodes": [
+  {
+   "name": "syd-dist-a",
+   "role": "distributor",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.4.11/24"
+  },
+  {
+   "name": "syd-dist-b",
+   "role": "distributor",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.4.12/24"
+  },
+  {
+   "name": "syd-edge-1",
+   "role": "edge",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.4.21/24"
+  },
+  {
+   "name": "syd-edge-2",
+   "role": "edge",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.4.22/24"
+  },
+  {
+   "name": "syd-view",
+   "role": "load",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "syd-nano",
+   "role": "load",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "syd-lk",
+   "role": "livekit",
+   "site": "sydney",
+   "region": "ap-southeast",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "contrib-lon",
+   "role": "contributor",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-4",
+   "vlan_ipv4": "10.79.1.5/24"
+  },
+  {
+   "name": "relay-primary",
+   "role": "backbone",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.1.6/24"
+  },
+  {
+   "name": "relay-secondary",
+   "role": "backbone",
+   "site": "amsterdam",
+   "region": "nl-ams",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "lon-src",
+   "role": "load",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-4",
+   "vlan_ipv4": "10.79.1.30/24"
+  },
+  {
+   "name": "lk-redis",
+   "role": "livekit",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "lon-dist-a",
+   "role": "distributor",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.1.11/24"
+  },
+  {
+   "name": "lon-dist-b",
+   "role": "distributor",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.1.12/24"
+  },
+  {
+   "name": "lon-edge-1",
+   "role": "edge",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.1.21/24"
+  },
+  {
+   "name": "lon-edge-2",
+   "role": "edge",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.1.22/24"
+  },
+  {
+   "name": "lon-view",
+   "role": "load",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-4"
+  },
+  {
+   "name": "lon-nano",
+   "role": "load",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "lon-lk",
+   "role": "livekit",
+   "site": "london",
+   "region": "gb-lon",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "new-dist-a",
+   "role": "distributor",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.2.11/24"
+  },
+  {
+   "name": "new-dist-b",
+   "role": "distributor",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.2.12/24"
+  },
+  {
+   "name": "new-edge-1",
+   "role": "edge",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.2.21/24"
+  },
+  {
+   "name": "new-edge-2",
+   "role": "edge",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.2.22/24"
+  },
+  {
+   "name": "new-view",
+   "role": "load",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-4"
+  },
+  {
+   "name": "new-nano",
+   "role": "load",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "new-lk",
+   "role": "livekit",
+   "site": "newyork",
+   "region": "us-east",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "tok-dist-a",
+   "role": "distributor",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.3.11/24"
+  },
+  {
+   "name": "tok-dist-b",
+   "role": "distributor",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.3.12/24"
+  },
+  {
+   "name": "tok-edge-1",
+   "role": "edge",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.3.21/24"
+  },
+  {
+   "name": "tok-edge-2",
+   "role": "edge",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-2",
+   "vlan_ipv4": "10.79.3.22/24"
+  },
+  {
+   "name": "tok-view",
+   "role": "load",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-4"
+  },
+  {
+   "name": "tok-nano",
+   "role": "load",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-2"
+  },
+  {
+   "name": "tok-lk",
+   "role": "livekit",
+   "site": "tokyo",
+   "region": "ap-northeast",
+   "type": "g6-dedicated-2"
+  }
+ ]
+}

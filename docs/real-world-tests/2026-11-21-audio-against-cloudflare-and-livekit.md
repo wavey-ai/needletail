@@ -7,7 +7,8 @@ the same audio from the same host in London to the same listeners in London,
 New York, Tokyo and Sydney, at the same time, on a lab of dedicated-CPU
 instances only.
 
-The headline is Needletail's `low-latency` build of 21 November, evening
+The latest results are wave 5 (22 November, morning), first below. The
+fullest set is Needletail's `low-latency` build of 21 November, evening
 ("wave 2"): the smallest frames by default (Opus in 2.5 ms parts, lossless
 PCM in 1 ms parts) and both of its client modes, RaptorQ FEC over UDP from
 the edge and LL-HLS over HTTP. The same lab measured an earlier build with
@@ -16,7 +17,110 @@ A first pass on shared Nanodes is superseded; it is a side note at the end.
 
 The 4K video comparison is a separate record.
 
-## Answer
+## Latest: wave 5 (22 November, morning)
+
+**On wave 5 Needletail is ahead of every other system in every region
+measured, for Opus and for lossless audio, at the median. At the 99th
+percentile on a clean network it is ahead for lossless audio everywhere and
+for Opus in Tokyo, and 0.5 and 1.5 ms behind LiveKit's SFU for Opus in London
+and New York.** Its UDP client mode delivered 1 ms Opus Custom 2.0 to 4.2 ms before self-hosted LiveKit's
+best 2.5 ms Opus, and 1 ms PCM 1.2 to 5.2 ms before LiveKit's PCM data
+channel, in London, New York and Tokyo. It was 15 to 27 ms ahead of LiveKit
+Cloud. Under 1%, 5% and burst loss it lost nothing, where every WebRTC system
+lost what the network lost; its 99th percentile in London rose by up to 5 ms under bursts while LiveKit's stayed within 1 ms of clean.
+Sydney was not measured in this round: Linode had no dedicated capacity
+there that morning.
+
+Build: `av-mesh` `05780d0` (+ the arrivals option, `ae77591`), `av-contrib`
+`bbedb01`, `playlists` `c14d921`, `daw-nexus` `c14fd8e`, the deploy tool of
+`needletail` `a35ce1b`, all of `low-latency`, deployed with its defaults:
+the merged topology (the contributor feeds the London distributors, which
+feed the others; no backbone relays), the edges' fast plane, the compact UDP
+client lane. Only two settings were given: `daw_hls_formats=flac,opus,pcm`
+and `relay_video_gso=false` (video only). Earlier waves ran with settings
+persisted from older tuning rounds (a 900-byte mesh symbol with 16 kB
+maxima, a 2 ms sync interval, shorter cache-mesh leases, among others), which
+were found and set aside for wave 5; wave 5 is the first clean run of the
+defaults. The lab was 26 dedicated instances in London, Amsterdam (an unused
+relay), New York and Tokyo, as before without Sydney; the Sydney listener
+hosts and nodes could not be created (`g6-dedicated-4` and larger were
+unavailable, and `g6-dedicated-2` was refused part-way on four attempts).
+
+Three sessions (`waudio5-1` to `-3`, 07:44 to 08:31 UTC), each with every
+system at once: Needletail's AEP1 sender in 1 ms Opus Custom (48 samples, 320
+kbit/s, the look-ahead the frame itself) and 1 ms PCM, the WebRTC systems in
+2.5 ms Opus and 2.5 ms PCM blocks on a data channel. The figures are from the
+4-vCPU listener host of each region; on the 2-vCPU hosts, with eight 1 ms
+lanes at once, every system's 99th percentile reached 0.3 to 4.7 s in some
+steps alike (Cloudflare and LiveKit Cloud included), which is the listener
+host, not the systems.
+
+Mouth to ear, median / 99th percentile (ms), median of three sessions:
+
+| System | Frame | London | New York | Tokyo |
+| --- | --- | ---: | ---: | ---: |
+| **Needletail, RaptorQ FEC over UDP** | Opus Custom 1 ms | **2.1 / 7.5** | **33.5 / 38.8** | **109.1 / 113.3** |
+| LiveKit, SFU in each region | Opus 2.5 ms | 4.6 / 7.0 | 35.5 / 37.3 | 113.3 / 115.7 |
+| LiveKit, multi-region set | Opus 2.5 ms | 4.6 / 6.8 | 40.9 / 42.6 | 113.6 / 115.5 |
+| LiveKit Cloud | Opus 2.5 ms | 17.8 / 21.3 | 60.5 / 63.8 | 135.8 / 139.1 |
+| Cloudflare Realtime | Opus 2.5 ms | 7.0 / 12.4 | 42.9 / 45.0 | 117.3 / 120.1 |
+| **Needletail, RaptorQ FEC over UDP** | PCM 1 ms | **1.1 / 3.1** | **32.6 / 37.4** | **108.2 / 112.4** |
+| LiveKit, SFU in each region | PCM 2.5 ms, data channel | 2.3 / 4.6 | 37.8 / 39.8 | 111.4 / 113.3 |
+| LiveKit, multi-region set | PCM 2.5 ms, data channel | 2.4 / 4.6 | 38.6 / 41.0 | 110.8 / 113.0 |
+| LiveKit Cloud | PCM 2.5 ms, data channel | 16.2 / 19.0 | 58.5 / 61.8 | 131.3 / 134.6 |
+| Cloudflare Realtime | PCM 2.5 ms, data channel | 5.6 / 8.0 | 39.5 / 41.8 | 113.6 / 115.6 |
+
+With loss on the listener's link, units missing (%) in London, New York,
+Tokyo (median / p99 in ms beside, London):
+
+| System | 1% loss | 5% loss | bursts | London p99 at 1% / 5% / bursts |
+| --- | --- | --- | --- | ---: |
+| Needletail UDP, Opus 1 ms | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0.01 / 0 | 5.2 / 7.4 / 12.2 |
+| LiveKit SFU, Opus 2.5 ms | 1.0 / 1.1 / 1.0 | 5.2 / 5.1 / 5.2 | 5.0 / 4.9 / 4.9 | 7.0 / 7.2 / 7.8 |
+| Needletail UDP, PCM 1 ms | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 3.5 / 5.4 / 7.3 |
+| LiveKit SFU, PCM 2.5 ms | 1.0 / 1.1 / 1.0 | 5.0 / 5.2 / 4.9 | 4.9 / 4.9 / 4.9 | 4.8 / 4.6 / 4.7 |
+
+LiveKit Cloud and Cloudflare also lost about 1% and 5%; with 100 ms of added
+delay every system rose by about 100 ms and none lost audio, except LiveKit
+Cloud's PCM data channel, which lost 88%.
+
+**Standard 2.5 ms Opus** (one session, `waudio5-std`): Needletail UDP 4.7 /
+6.0, 36.0 / 37.8 and 111.3 / 113.2 ms against LiveKit's SFU 4.5 / 6.2, 35.4 /
+36.9 and 113.2 / 114.7: level in London and New York, 1.9 ms ahead in Tokyo.
+At 5% loss Needletail lost 0.01% but its 99th percentile was 1.1 to 1.2 s in
+every region: one hole of about 1.3 s, 563 parts held and then delivered
+together (behind the edge's in-order watermark of its cache-fed lane, as the
+latency session read the files). The 1 ms Custom lanes did not show it in
+three sessions.
+
+**The legacy topology** (contributor, backbone relays, distributors; one
+session, `waudio5-legacy`, Needletail only): Opus 1 ms over UDP 2.3, 37.6 and
+111.4 ms, PCM 1.2, 36.7 and 110.3: level in London, 2 to 4 ms slower than the
+merged topology in New York and Tokyo.
+
+**What the UDP mode costs the edges** (the tier test's cost steps,
+`tiers-w5`, edge bytes out from 1 to 20 London listeners): about 0.63 Mbit/s
+per listener for 2.5 ms Opus (13 Mbit/s on wave 2), about 1.0 Mbit/s for 1 ms
+Opus Custom and about 2.9 Mbit/s for 1 ms PCM (the PCM itself is 2.3 Mbit/s).
+The same steps show the merged topology's London distributors at 116% to
+158% of one vCPU and 180 to 246 Mbit/s out each, and the contributor at 63%
+to 125%, carrying the DAW source's audio alone.
+
+**Open on wave 5.** Every UDP client asked for the edge's fast lane and got
+every part from the cache-fed lane instead (`fast_lane_parts` 0), while the
+4K clients of the same build got 97% to 99.9% of theirs from it; the audio
+figures above are without the fast lane. The 2.5 ms Opus tail at 5% loss. The load of
+audio on the London forwarders. Sydney.
+
+LiveKit Cloud is not measured after wave 5: the owner, 22 November, "we
+already know the livekit numbers for now so lets just keep improving
+needletail we dont need to test with their cloud". Its wave 5 figures stand
+as its record; self-hosted LiveKit stays as one control in each headline run
+of a new Needletail build.
+
+The answer below is that of waves 1 to 4.
+
+## Answer for waves 1 to 4
 
 **Self-hosted LiveKit with an SFU in each region is still ahead, by half a
 millisecond or so, in London, New York and Sydney, for Opus and for lossless

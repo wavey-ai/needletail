@@ -101,6 +101,14 @@ def set_nt_popus(samples: int) -> None:
     NEEDLETAIL["nt-popus"] = (3001, f"nt-popus-{samples}s-la")
 
 
+def refuse_livekit_cloud(lanes: list[str]) -> None:
+    """LiveKit Cloud is no longer measured (owner, 22 November: "we dont need
+    to test with their cloud"); its wave 5 figures stand as its record."""
+    if "lkcloud" in lanes:
+        raise SystemExit("lkcloud: LiveKit Cloud is no longer measured (owner, 22 Nov); "
+                         "self-hosted LiveKit (lkregion, lkmulti) is the control")
+
+
 def daw_command(target: str) -> str:
     """The DAW source of the Needletail DAW lanes, with its epochs and host
     buffer given (not left to the defaults of the build that is installed)."""
@@ -479,7 +487,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--session", required=True)
     parser.add_argument("--configs", default=",".join(CONFIGS))
-    parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL) + [UC_LANE]))
+    parser.add_argument("--lanes", default=",".join([lane for lane in WEBRTC if lane != "lkcloud"]
+                                                    + list(NEEDLETAIL) + [UC_LANE]))
     parser.add_argument("--nt-pcm-samples", type=int, default=NT_EPOCH_SAMPLES["nt-pcm"],
                         choices=NT_PCM_SAMPLES, help="samples of one Needletail PCM part (one epoch)")
     parser.add_argument("--nt-opus-samples", type=int, default=120, choices=(48, 120),
@@ -501,6 +510,7 @@ def main() -> None:
     parser.add_argument("--product-reader", action="store_true",
                         help="also run needletail-reader itself with 25 readers in each region")
     args = parser.parse_args()
+    refuse_livekit_cloud(args.lanes.split(","))
     globals()["NT_FORMATS"] = args.nt_formats
     globals()["SFU_PCM_MS"] = args.sfu_pcm_ms
     NT_READERS["-w"] = f"--window {args.window}"

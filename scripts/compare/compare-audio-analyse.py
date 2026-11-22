@@ -266,6 +266,23 @@ def quantile_points(bucket: dict) -> list[float]:
     return out
 
 
+def fast_lane(client_report: pathlib.Path) -> dict:
+    """How the edge served a UDP client (needletail-udp-client's own report):
+    parts from the edge's fast lane (symbols forwarded as they arrive) and
+    from its cache-fed lane. Wave 5's clients asked for the fast lane and got
+    none of it; this makes that visible in every step."""
+    try:
+        report = json.loads(client_report.read_text())
+    except (OSError, ValueError):
+        return {}
+    fast, cache = report.get("fast_lane_parts"), report.get("cache_lane_parts")
+    if fast is None and cache is None:
+        return {}
+    total = (fast or 0) + (cache or 0)
+    return {"fast_lane_parts": fast, "cache_lane_parts": cache,
+            "fast_lane_percent": round(100.0 * (fast or 0) / total, 2) if total else None}
+
+
 def analyse_udp_probe(report: dict, launch: float | None) -> dict:
     """A receive-udp report, cut to the seconds inside the step."""
     buckets = report.get("latency_time_series") or []
@@ -391,7 +408,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 10
+ANALYSIS_VERSION = 12
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -424,8 +441,10 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
     hosts = {}
     for host_dir in sorted(p for p in path.iterdir() if p.is_dir()):
         records = {file.name[:-5]: load(file) for file in sorted(host_dir.glob("*.json"))}
+        # The listeners' common end; a probe that failed (never connected,
+        # ended early) does not shorten the others' window.
         ends = [r["started_unix_ms"] + r["duration_seconds"] * 1000.0 for name, r in records.items()
-                if r and name.endswith(".probe") and "duration_seconds" in r]
+                if r and name.endswith(".probe") and "duration_seconds" in r and not r.get("error")]
         end_ms = min(ends) if ends else None
         lanes: dict = {}
         many: dict = {}
@@ -444,6 +463,8 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
                      else float(meta.get("sfu_pcm_ms") or FRAME_MS[config]) if config == "pcm" else FRAME_MS[config])
             analysed = analyse_probe(record, host_dir / f"{lane}.probe.csv", measured, frame, end_ms,
                                      daw_source(meta, measured))
+            if lane == "nt-uc":
+                analysed.update(fast_lane(host_dir / f"{lane}.uc.json"))
             if lane in WEBRTC and meta.get("webrtc_opus_send") != "live":
                 shift(analysed, WEBRTC_OPUS_EARLY.get(config, 0.0))
             if name.endswith(".probe"):
@@ -575,7 +596,8 @@ PROBE_KEEP = ("error", "frame_ms", "first_audio_ms", "units", "units_in_window",
               "lane_kind", "format", "repair_datagrams", "raptorq_shards_recovered", "deadline_misses",
               "erasure_epochs", "seconds_with_loss", "includes_daw_buffer", "note", "units_missing", "missing_percent",
               "gaps", "longest_gap_ms", "bit_exact_percent", "kbit_per_second", "jitter_p99_minus_p50_ms",
-              "rfc3550_jitter_ms", "longest_silence_between_arrivals_ms", "livekit_server")
+              "rfc3550_jitter_ms", "longest_silence_between_arrivals_ms", "livekit_server",
+              "fast_lane_parts", "cache_lane_parts", "fast_lane_percent")
 CHROME_KEEP = ("error", "codec", "jitter_buffer_ms", "rfc3550_jitter_ms", "packets_lost", "concealed_percent",
                "concealment_events", "inserted_samples", "removed_samples", "seconds_received", "markers")
 

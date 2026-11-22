@@ -54,7 +54,9 @@ RUNS = ROOT / "target" / "compare" / "runs"
 REMOTE = "/var/lib/compare"
 CA = "/usr/local/share/ca-certificates/needletail-qualification.crt"
 SERVER_NAME = common.TLS_SERVER_NAME
-SITES = ["lon", "new", "tok", "syd"]
+# COMPARE_SITES drops a site whose lab nodes could not be created (22 Nov: no
+# dedicated capacity in Sydney).
+SITES = os.environ.get("COMPARE_SITES", "lon,new,tok,syd").split(",")
 BASE_RUNG = "2160p5"     # the rung that every system carries whole
 RAMP = ["1080p6", "2160p16", "2160p25", "2160p40", "2160p80"]
 # Raw throughput: 4K at a rising bit rate until the system no longer carries it.
@@ -112,6 +114,14 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
 def log(text: str) -> None:
     print(f"[{time.strftime('%H:%M:%S', time.gmtime())}] {text}", flush=True)
 
+
+
+def refuse_livekit_cloud(lanes: list[str]) -> None:
+    """LiveKit Cloud is no longer measured (owner, 22 November: "we dont need
+    to test with their cloud"); its wave 5 figures stand as its record."""
+    if "lkcloud" in lanes:
+        raise SystemExit("lkcloud: LiveKit Cloud is no longer measured (owner, 22 Nov); "
+                         "self-hosted LiveKit (lkregion, lkmulti) is the control")
 
 class Session:
     def __init__(self, name: str):
@@ -640,13 +650,14 @@ def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> No
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--session", required=True, help="name of the session, e.g. a1")
-    parser.add_argument("--lanes", default=",".join(LANES))
+    parser.add_argument("--lanes", default=",".join(lane for lane in LANES if lane != "lkcloud"))
     parser.add_argument("--phases", default="baseline,ttff,impair,fanout,ramp")
     parser.add_argument("--seconds", type=int, default=60, help="length of the baseline")
     parser.add_argument("--rungs", default="", help="rungs of the throughput sweep (default all)")
     parser.add_argument("--pace", type=float, default=2.5,
                         help="a WebRTC sender spreads a frame at this multiple of the clip bit rate")
     args = parser.parse_args()
+    refuse_livekit_cloud(args.lanes.split(","))
     session = Session(args.session)
     session.rungs = args.rungs.split(",") if args.rungs else None
     session.pace = args.pace

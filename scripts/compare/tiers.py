@@ -181,6 +181,31 @@ class Tiers:
             self.step(f"audience-udp-{count}", scripts, SECONDS, {
                 "listeners": count, "mode": "udp-client-at-edge", "spread": shares})
 
+    def cost(self) -> None:
+        """What the UDP mode costs the edges for each listener: 1 and 20
+        listeners in London of the DAW source's Opus as 1 ms Opus Custom and
+        as 2.5 ms standard Opus (stream 3001), and of 1 ms PCM from the AEP1
+        sender (stream 4001); the samplers give each edge's bytes out."""
+        for frame in (48, 120):
+            run.lab.NT_DAW["opus_frame_samples"] = frame
+            self.sources(0, daw=True)
+            for count in (1, 20):
+                shares = split(count, self.hosts, self.weights)
+                scripts = {host: self.udp(n, 3001, f"{self.session.name}-co{frame}-{count}-{host}", SECONDS)
+                           for host, n in shares.items()}
+                self.step(f"cost-opus{frame}-udp-{count}", scripts, SECONDS, {
+                    "listeners": count, "mode": "udp-client-at-edge", "spread": shares,
+                    "stream": 3001, "opus_frame_samples": frame})
+        run.lab.NT_DAW["opus_frame_samples"] = 120
+        self.sources(1)
+        for count in (1, 20):
+            shares = split(count, self.hosts, self.weights)
+            scripts = {host: self.udp(n, 4001, f"{self.session.name}-cp-{count}-{host}", SECONDS)
+                       for host, n in shares.items()}
+            self.step(f"cost-pcm48-udp-{count}", scripts, SECONDS, {
+                "listeners": count, "mode": "udp-client-at-edge", "spread": shares,
+                "stream": 4001, "pcm_epoch_samples": 48})
+
     def edges(self, counts: list[int], listeners: int) -> None:
         """Low-latency readers over the London edges that are deployed now. The
         deploy should have a small assignment spread target, so that readers
@@ -269,6 +294,8 @@ def main() -> None:
         for phase in args.phases.split(","):
             if phase == "audience":
                 tiers.audience()
+            elif phase == "cost":
+                tiers.cost()
             elif phase == "streams":
                 tiers.streams()
             elif phase == "sfu":

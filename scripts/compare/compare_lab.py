@@ -35,7 +35,7 @@ import small_mesh_common as common  # noqa: E402
 ROOT = common.ROOT
 COMPARE = ROOT / "target" / "compare"
 MEDIA = pathlib.Path(__import__("os").environ.get("COMPARE_MEDIA", str(ROOT / "target" / "compare-media")))
-CLIPS = MEDIA / "clips2"       # the encodes whose video is close to the nominal rate
+CLIPS = MEDIA / __import__("os").environ.get("COMPARE_CLIPS", "clips2")  # the encodes whose video is close to the nominal rate
 LIVEKIT_VERSION = "1.13.11"
 LK_CLI_VERSION = "2.20.1"
 REMOTE = "/var/lib/compare"

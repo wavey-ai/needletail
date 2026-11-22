@@ -77,6 +77,23 @@ def probe_frames(path: pathlib.Path) -> tuple[list, list]:
     return video, audio
 
 
+def fast_lane(client_report: pathlib.Path) -> dict:
+    """How the edge served a UDP client (needletail-udp-client's own report):
+    parts from the edge's fast lane (symbols forwarded as they arrive) and
+    from its cache-fed lane. Wave 5's clients asked for the fast lane and got
+    none of it; this makes that visible in every step."""
+    try:
+        report = json.loads(client_report.read_text())
+    except (OSError, ValueError):
+        return {}
+    fast, cache = report.get("fast_lane_parts"), report.get("cache_lane_parts")
+    if fast is None and cache is None:
+        return {}
+    total = (fast or 0) + (cache or 0)
+    return {"fast_lane_parts": fast, "cache_lane_parts": cache,
+            "fast_lane_percent": round(100.0 * (fast or 0) / total, 2) if total else None}
+
+
 def analyse_probe(summary: dict, csv_path: pathlib.Path, end_ms: float | None) -> dict:
     out = {
         "error": summary.get("error") or None,
@@ -273,7 +290,7 @@ def analyse_reader(record: dict) -> dict:
     return {key: summary.get(key) for key in keep}
 
 
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -314,7 +331,7 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             records[file.stem] = record
             if "frames" in record and "callbacks" in record and record["frames"]:
                 ends.append(record["frames"][-1][1])
-            elif "started_unix_ms" in record and "duration_seconds" in record:
+            elif "started_unix_ms" in record and "duration_seconds" in record and not record.get("error"):
                 ends.append(record["started_unix_ms"] + record["duration_seconds"] * 1000.0)
         end_ms = min(ends) if ends else None
         for name, record in records.items():
@@ -323,6 +340,8 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             elif "video_frames" in record:
                 host.setdefault("probes", {})[name] = analyse_probe(
                     record, host_dir / f"{name}.csv", end_ms)
+                if name.endswith(".uc"):
+                    host["probes"][name].update(fast_lane(host_dir / f"{name}.uc.json"))
             elif "summary" in record:
                 host.setdefault("readers", {})[name] = analyse_reader(record)
         cpu = host_dir / "cpu.txt"
@@ -380,7 +399,8 @@ PROBE_KEEP = ("error", "connect_ms", "first_byte_ms", "first_key_frame_ms", "fra
               "frames_missing", "frames_late", "frames_undecodable", "frames_from_recovery_encode",
               "on_time_percent", "delivered_percent", "stalls", "stall_ms", "longest_stall_ms",
               "stalls_per_minute", "stall_ms_per_minute", "kbps", "window_s", "audio_packets_missing",
-              "audio_kbps", "counts", "livekit_server", "frames_incomplete", "frames")
+              "audio_kbps", "counts", "livekit_server", "frames_incomplete", "frames",
+              "fast_lane_parts", "cache_lane_parts", "fast_lane_percent")
 
 
 def slim(step: dict) -> dict:

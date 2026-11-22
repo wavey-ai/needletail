@@ -9,7 +9,8 @@ from the same host in London to the same viewers in London, New York, Tokyo
 and Sydney, on a lab of dedicated-CPU instances only. The same lab measured
 the mesh itself hop by hop and the three tiers of Needletail's design.
 
-Needletail was measured on four builds of `low-latency`: wave 1 (21 November,
+Needletail was measured on five builds of `low-latency`; the latest, wave 5,
+is first below. The earlier four: wave 1 (21 November,
 evening), wave 2 (night, the smallest-frame defaults), wave 3 (a new relay
 receive loop and class-isolated lanes, measured on 22 November at 02:38) and
 wave 4 (edge and forwarder changes and UDP GSO for 4K, measured at 03:18, with
@@ -19,7 +20,84 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Answer
+## Latest: wave 5 (22 November, morning)
+
+**On wave 5, with its UDP GSO on (the deploy default), Needletail carried
+247 Mbit/s of 4K whole to London, New York and Tokyo, more than any other
+system has carried in this comparison: LiveKit Cloud carried 81 Mbit/s that
+morning (164 in sweep 2), self-hosted LiveKit with an SFU in each region 40
+to 81, Cloudflare 10 to 16. Its frames arrived earlier than LiveKit's SFU's at 40 Mbit/s and within
+3 ms of them at 81: at 40 Mbit/s 12, 48 and 122 ms after they were due against 17,
+53 and 122; at 81 Mbit/s 20, 55 and 131 against 19, 53 and 128; at 122
+Mbit/s Needletail had every frame on time at 29, 65 and 140 ms where
+LiveKit's SFU had 68%, 92% and 22% on time and LiveKit Cloud about 90%.
+With its GSO off, the same build carried only 16 to 81 Mbit/s and failed
+intermittently in London; Sydney was not measured.**
+
+Build and lab as in the audio record's wave 5 section: `av-mesh` `05780d0`
+(+ `ae77591`), `av-contrib` `33da3c1` on the contributor (paced GSO sends,
+pushed during the round), `playlists` `c14d921`, deploy tool `a35ce1b` with
+its defaults (merged topology, fast-plane edges); 26 dedicated instances,
+London, New York, Tokyo. The 4K clips were encoded again from the same source
+with the same script (the workbench holding the first encode was gone), so
+their frame sizes differ slightly from sweeps 1 to 4.
+
+| Sweep | Time (UTC) | Systems | Needletail settings |
+| --- | --- | --- | --- |
+| 6 (`video-w5`) | 08:42 | Needletail, Cloudflare Realtime and Stream, LiveKit SFU per region and multi-region | `relay_video_gso=false` |
+| 6c (`video-w5c`) | 09:15 | LiveKit Cloud, to 160 Mbit/s | – |
+| 7 (`video-w5-gso`) | 09:28 | Needletail alone, from 25 Mbit/s | `relay_video_gso=true` (the default) |
+| 8 (`video-w5-legacy`) | 09:38 | Needletail alone | legacy topology, GSO off |
+| 9 (`video-w5-nofast`) | 09:59 | Needletail alone, from 16 Mbit/s | `edge_fast_plane=false`, GSO off |
+
+Highest bit rate carried whole (Mbit/s), UDP / LL-HLS; in brackets the
+highest of an unbroken run from the bottom where it is lower:
+
+| System | London | New York | Tokyo |
+| --- | ---: | ---: | ---: |
+| **Needletail wave 5, GSO on** (sweep 7) | **333 (164) / 247** | **247 / 247** | **247 / 164** |
+| Needletail wave 5, GSO off, fast plane off (sweep 9) | 122 / 164 | 81 / 164 | 122 / 122 |
+| Needletail wave 5, GSO off (sweep 6) | 16 / 81 (16) | 81 / 81 | 81 / 81 |
+| Needletail wave 5, legacy topology, GSO off (sweep 8) | 81 / 40 | 40 / 40 (10) | 10 (none) / 10 (none) |
+| LiveKit Cloud (sweep 6c) | 81 | 81 | 81 |
+| LiveKit, SFU in each region (sweep 6) | 81 | 81 | 40 |
+| LiveKit, multi-region set (sweep 6) | 40 | 25 | 25 |
+| Cloudflare Realtime (sweep 6) | 16 | 10 | 16 |
+
+Frames on time and median delivery after their due time (ms), the better of
+each region's two viewers:
+
+| System | 40 Mbit/s | 81 Mbit/s | 122 Mbit/s |
+| --- | --- | --- | --- |
+| **Needletail UDP, GSO on** | 100%: 12 / 48 / 122 | 100%: 20 / 55 / 131 | 100%: 29 / 65 / 140 |
+| Needletail UDP, GSO off, fast plane off | 100%: 19 / 62 / 131 | 100%: 36 / 85 / 150 | 100% / 21% / 100%: 53 / 244 / 172 |
+| LiveKit, SFU in each region | 100%: 17 / 53 / 122 | 100% / 100% / 87%: 19 / 53 / 128 | 68% / 92% / 22%: 23 / 49 / 135 |
+| LiveKit Cloud | 91%: 30 / 73 / 146 | 100%: 32 / 74 / 143 | 90% / 91% / 91%: 31 / 74 / 149 |
+
+The GSO-on sweep ran alone, 46 minutes after LiveKit's in the same lab; the
+two were not in one sweep. Processor at 40, 81 and 122 Mbit/s with GSO on:
+contributor 76%, 96% and 107% of one vCPU, London distributor 110%, 126% and
+141%; with GSO off 21%, 50%, 86% and 26%, 71%, 152%. With GSO off and the
+fast plane on, London failed at 16, 25 and 81 Mbit/s (87% to 96% of frames on
+time) though its nodes were not busy, and a later 25 Mbit/s run (sweep
+`video-w5-ev`, with the nodes' journals and sockets captured for the latency
+session) carried it whole.
+
+**Open on wave 5.** The 4K UDP clients received 97% to 99.9% of their parts
+from the edges' fast lane (0% with the fast plane off, as set), but the audio
+clients of the same build received none from it (see the audio record); with GSO off the fast-plane wiring cost London its low rates (with the fast
+plane off it carried 122 to 164 Mbit/s); 247 Mbit/s, not 333, in New York
+and Tokyo; Sydney, latency phases, crowds and loss for 4K on wave 5.
+
+LiveKit Cloud is not measured after wave 5: the owner, 22 November, "we
+already know the livekit numbers for now so lets just keep improving
+needletail we dont need to test with their cloud". Its wave 5 figures stand
+as its record; self-hosted LiveKit stays as one control in each headline run
+of a new Needletail build.
+
+The answer below is that of waves 1 to 4.
+
+## Answer for waves 1 to 4
 
 **On raw throughput LiveKit Cloud, LiveKit's own SFU mesh, leads: it
 carried 164 Mbit/s of 4K to every region in sweep 2 (to all but Tokyo, 122,
@@ -542,10 +620,10 @@ only the instances. The tier test below gives the audience one edge carries.
 
 | Account | Used | List price |
 | --- | --- | ---: |
-| Linode | the dedicated lab ($2.11 an hour), a build host, a first lab of shared instances (superseded) and a workbench | see the final report |
-| Cloudflare Realtime | about 27 GB of egress in all sessions | $0 (inside 1,000 GB a month) |
-| Cloudflare Stream | about 1,600 viewer-minutes of WHEP | about $1.60 |
-| LiveKit Cloud | about 69 GB of egress (33 GB of it in the superseded first pass) and about 2,700 viewer connection-minutes | above the free plan's 50 GB a month: about $2.30 at $0.12 a GB if the overage is billed |
+| Linode | the dedicated labs (about $2.11 an hour with Sydney, $1.65 without), build and encode hosts, a first lab of shared instances (superseded), a workbench, and about $10 to $12 of lab creations refused part-way on 22 November (each instance created is billed an hour) | about $45 in all |
+| Cloudflare Realtime | about 30 GB of egress in all sessions | $0 (inside 1,000 GB a month) |
+| Cloudflare Stream | about 1,630 viewer-minutes of WHEP | about $1.63 |
+| LiveKit Cloud | about 75 GB of egress (33 GB of it in the superseded first pass) and about 2,900 viewer connection-minutes | above the free plan's 50 GB a month: about $3 at $0.12 a GB if the overage is billed |
 
 The usage is estimated from the listeners' own records
 (`scripts/compare/usage.py`), not read from the providers' bills.
@@ -638,7 +716,620 @@ not by picture, and that is in the on-time and stall figures.
 
 ## Tables
 
-Each cell of the first sweep tables holds sweep 1 / sweep 2.
+### Sweep 7: Needletail wave 5, GSO on, alone
+
+Mbit/s of 4K video: the highest rung that was carried; in brackets, when lower, the highest with every rung below it carried too. Each session is one sweep.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 333 (164) | 247 | 247 | none |
+| Needletail, LL-HLS | 247 | 247 | 164 | none |
+
+#### Every rung
+
+Frames on time (%) at the better of the two listeners of each region, and in brackets the bit rate that listener received (Mbit/s).
+
+Needletail, RaptorQ FEC over UDP from the edge:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 25 | 100.0 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 100.0 (40) | 100.0 (40) | – |
+| 80 | 100.0 (82) | 100.0 (82) | 100.0 (82) | – |
+| 122 | 100.0 (124) | 100.0 (124) | 100.0 (124) | – |
+| 164 | 100.0 (164) | 100.0 (164) | 100.0 (164) | – |
+| 247 | 78.5 (243) | 100.0 (247) | 100.0 (246) | – |
+| 333 | 100.0 (340) | 98.3 (335) | 0 (338) | – |
+
+Needletail, LL-HLS:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 25 | 100.0 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 100.0 (40) | 100.0 (40) | – |
+| 80 | 100.0 (82) | 100.0 (82) | 100.0 (81) | – |
+| 122 | 100.0 (124) | 100.0 (123) | 100.0 (124) | – |
+| 164 | 100.0 (163) | 100.0 (162) | 100.0 (163) | – |
+| 247 | 100.0 (248) | 100.0 (247) | 98.7 (244) | – |
+| 333 | 19.3 (0) | 71.3 (273) | 0 (0) | – |
+
+#### Latency of what was carried
+
+Delivery latency at the listener's socket, median (ms): from the moment a frame is due at the source to its last byte at the listener:
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 9 | 46 | 119 | – |
+| Needletail, LL-HLS | 9 | 45 | 120 | – |
+
+Glass to glass in headless Chrome, median (ms):
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 2162 | 2202 | 2233 | – |
+
+Chrome: time frozen (ms in each minute):
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 0 | 0 | – |
+
+#### Time to the first frame
+
+At 5 Mbit/s, from the listener's start to its first complete key frame (ms). The clip has a key frame every two seconds; a WebRTC sender answers a request for one within a third of a second.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | – | – | – | – |
+| Needletail, LL-HLS | – | – | – | – |
+| Cloudflare Realtime | – | – | – | – |
+| Cloudflare Stream WHIP/WHEP | – | – | – | – |
+| LiveKit, SFU in each region | – | – | – | – |
+| LiveKit, multi-region set | – | – | – | – |
+| LiveKit Cloud | – | – | – | – |
+
+#### Processor of the nodes
+
+Percent of one vCPU used by the service at each bit rate (the highest session).
+
+Needletail, LL-HLS:
+
+| Node | 25 | 40 | 80 | 122 | 164 | 247 | 333 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Needletail contributor | 12 | 76 | 96 | 107 | 67 | 140 | 179 |
+| Needletail primary relay | – | – | – | – | – | – | – |
+| Needletail secondary relay | – | – | – | – | – | – | – |
+| Needletail distributor, London | 14 | 110 | 126 | 141 | 67 | -385 | 189 |
+| Needletail edge 1, London | 22 | 26 | 43 | 63 | 83 | 87 | -320 |
+| Needletail distributor, Sydney | – | – | – | – | – | – | – |
+
+### Sweep 6: wave 5 (GSO off) beside the other systems
+
+Mbit/s of 4K video: the highest rung that was carried; in brackets, when lower, the highest with every rung below it carried too. Each session is one sweep.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 16 | 80 | 80 | none |
+| Needletail, LL-HLS | 80 (16) | 80 | 80 | none |
+| Cloudflare Realtime | 16 | 10 | 16 | none |
+| Cloudflare Stream WHIP/WHEP | 16 (5) | none | 16 (5) | none |
+| LiveKit, SFU in each region | 80 | 80 | 40 | none |
+| LiveKit, multi-region set | 40 | 25 | 25 | none |
+
+#### Every rung
+
+Frames on time (%) at the better of the two listeners of each region, and in brackets the bit rate that listener received (Mbit/s).
+
+Needletail, RaptorQ FEC over UDP from the edge:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (6) | 100.0 (6) | 100.0 (6) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 100.0 (10) | – |
+| 16 | 100.0 (16) | 100.0 (16) | 100.0 (16) | – |
+| 25 | 94.4 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 96.6 (40) | 100.0 (40) | 100.0 (40) | – |
+| 80 | 90.5 (81) | 100.0 (81) | 100.0 (81) | – |
+| 122 | 50.8 (106) | 75.8 (124) | 22.4 (73) | – |
+| 164 | 17.0 (106) | 76.1 (168) | 25.3 (156) | – |
+
+Needletail, LL-HLS:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (6) | 100.0 (6) | 100.0 (6) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 100.0 (10) | – |
+| 16 | 100.0 (16) | 100.0 (16) | 100.0 (16) | – |
+| 25 | 96.3 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 100.0 (40) | 100.0 (41) | – |
+| 80 | 100.0 (81) | 100.0 (81) | 100.0 (81) | – |
+| 122 | 42.7 (25) | 40.6 (0) | 39.3 (0) | – |
+| 164 | 22.9 (0) | 31.9 (0) | 18.3 (0) | – |
+
+Cloudflare Realtime:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (5) | 100.0 (5) | 100.0 (5) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 100.0 (10) | – |
+| 16 | 100.0 (17) | 93.5 (17) | 100.0 (16) | – |
+| 25 | 0.4 (2) | 0.0 (2) | 0.8 (2) | – |
+| 40 | 62.7 (5) | 0 (3) | 0 (3) | – |
+
+Cloudflare Stream WHIP/WHEP:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (6) | 98.7 (6) | 100.0 (6) | – |
+| 10 | 0 (0) | 0 (0) | 0 (0) | – |
+| 16 | 100.0 (16) | 98.8 (16) | 100.0 (16) | – |
+| 25 | 0 (1) | 0 (1) | 0 (1) | – |
+| 40 | 0 (3) | 0 (3) | 0 (3) | – |
+
+LiveKit, SFU in each region:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (6) | 100.0 (6) | 100.0 (6) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 100.0 (10) | – |
+| 16 | 100.0 (16) | 100.0 (16) | 100.0 (16) | – |
+| 25 | 100.0 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 100.0 (41) | 100.0 (41) | – |
+| 80 | 100.0 (81) | 100.0 (81) | 87.3 (81) | – |
+| 122 | 67.9 (122) | 91.8 (122) | 21.9 (121) | – |
+| 164 | 1.2 (159) | 33.6 (163) | 0.8 (160) | – |
+| 247 | 0.2 (187) | 0.1 (225) | 0 (168) | – |
+
+LiveKit, multi-region set:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (5) | 100.0 (5) | 100.0 (4) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 100.0 (10) | – |
+| 16 | 100.0 (16) | 100.0 (16) | 100.0 (16) | – |
+| 25 | 100.0 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 89.0 (40) | 88.0 (40) | – |
+| 80 | 36.2 (80) | 22.9 (80) | 23.0 (80) | – |
+| 122 | 0.4 (99) | 0.3 (98) | 0.3 (98) | – |
+
+#### Latency of what was carried
+
+Delivery latency at the listener's socket, median (ms): from the moment a frame is due at the source to its last byte at the listener:
+
+5 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 6 | 42 | 114 | – |
+| Needletail, LL-HLS | 5 | 41 | 113 | – |
+| Cloudflare Realtime | 20 | 55 | 130 | – |
+| Cloudflare Stream WHIP/WHEP | 22 | – | 136 | – |
+| LiveKit, SFU in each region | 19 | 50 | 124 | – |
+| LiveKit, multi-region set | 13 | 47 | 120 | – |
+
+10 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 7 | 43 | 115 | – |
+| Needletail, LL-HLS | 6 | 42 | 114 | – |
+| Cloudflare Realtime | 21 | 56 | 129 | – |
+| LiveKit, SFU in each region | 17 | 48 | 122 | – |
+| LiveKit, multi-region set | 18 | 51 | 126 | – |
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 9 | 44 | 117 | – |
+| Needletail, LL-HLS | 8 | 43 | 116 | – |
+| Cloudflare Realtime | 22 | – | 132 | – |
+| Cloudflare Stream WHIP/WHEP | 24 | – | 136 | – |
+| LiveKit, SFU in each region | 17 | 48 | 124 | – |
+| LiveKit, multi-region set | 18 | 49 | 126 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | – | 47 | 120 | – |
+| Needletail, LL-HLS | – | 46 | 120 | – |
+| LiveKit, SFU in each region | 17 | 48 | 123 | – |
+| LiveKit, multi-region set | 23 | 60 | 130 | – |
+
+Glass to glass in headless Chrome, median (ms):
+
+5 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 2331 | 2578 | 2525 | – |
+| Cloudflare Realtime | 84 | 123 | 195 | – |
+| Cloudflare Stream WHIP/WHEP | 97 | 128 | 210 | – |
+| LiveKit, SFU in each region | 62 | 126 | 190 | – |
+| LiveKit, multi-region set | 102 | 140 | 205 | – |
+
+10 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 811 | 668 | 923 | – |
+| Cloudflare Realtime | 98 | 137 | 210 | – |
+| LiveKit, SFU in each region | 86 | 116 | 197 | – |
+| LiveKit, multi-region set | 99 | 138 | 203 | – |
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 967 | 715 | 979 | – |
+| Cloudflare Realtime | 121 | 152 | 225 | – |
+| Cloudflare Stream WHIP/WHEP | 127 | 174 | 238 | – |
+| LiveKit, SFU in each region | 99 | 130 | 211 | – |
+| LiveKit, multi-region set | 106 | 145 | 226 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 1532 | 2204 | 1702 | – |
+| LiveKit, SFU in each region | 106 | 136 | 209 | – |
+| LiveKit, multi-region set | 137 | 201 | 241 | – |
+
+Chrome: time frozen (ms in each minute):
+
+5 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 35486 | 45153 | 44110 | – |
+| Cloudflare Realtime | 0 | 0 | 0 | – |
+| Cloudflare Stream WHIP/WHEP | 1427 | 0 | 3536 | – |
+| LiveKit, SFU in each region | 0 | 0 | 0 | – |
+| LiveKit, multi-region set | 0 | 0 | 0 | – |
+
+10 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 0 | 0 | – |
+| Cloudflare Realtime | 2207 | 0 | 859 | – |
+| LiveKit, SFU in each region | 0 | 0 | 0 | – |
+| LiveKit, multi-region set | 0 | 0 | 0 | – |
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 2592 | 311 | 1830 | – |
+| Cloudflare Realtime | 2613 | 0 | 391 | – |
+| Cloudflare Stream WHIP/WHEP | 2835 | 10187 | 1432 | – |
+| LiveKit, SFU in each region | 0 | 0 | 0 | – |
+| LiveKit, multi-region set | 0 | 0 | 0 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 6666 | 3596 | 1462 | – |
+| LiveKit, SFU in each region | 0 | 0 | 0 | – |
+| LiveKit, multi-region set | 0 | 0 | 0 | – |
+
+#### Time to the first frame
+
+At 5 Mbit/s, from the listener's start to its first complete key frame (ms). The clip has a key frame every two seconds; a WebRTC sender answers a request for one within a third of a second.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 2069 (2059–2080) | 2256 (2252–2260) | 1962 (1961–1963) | – |
+| Needletail, LL-HLS | 459 | 408 (404–412) | 508 (490–526) | – |
+| Cloudflare Realtime | 1953 (1951–1956) | 2152 (2151–2154) | 4867 (3870–5864) | – |
+| Cloudflare Stream WHIP/WHEP | 2191 (2190–2191) | 2879 (2391–3368) | 6088 (6084–6092) | – |
+| LiveKit, SFU in each region | 308 (305–311) | 510 (505–515) | 560 (558–562) | – |
+| LiveKit, multi-region set | 438 (435–440) | 1472 (1311–1633) | 4178 (4009–4346) | – |
+| LiveKit Cloud | – | – | – | – |
+
+#### Processor of the nodes
+
+Percent of one vCPU used by the service at each bit rate (the highest session).
+
+Needletail, LL-HLS:
+
+| Node | 5 | 10 | 16 | 25 | 40 | 80 | 122 | 164 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Needletail contributor | 8 | 7 | 9 | 14 | 21 | 50 | 86 | 107 |
+| Needletail primary relay | – | – | – | – | – | – | – | – |
+| Needletail secondary relay | – | – | – | – | – | – | – | – |
+| Needletail distributor, London | 8 | 9 | 12 | 18 | 26 | 71 | 152 | 190 |
+| Needletail edge 1, London | 9 | 13 | 17 | 29 | 35 | 44 | 66 | 70 |
+| Needletail distributor, Sydney | – | – | – | – | – | – | – | – |
+
+LiveKit, SFU in each region:
+
+| Node | 5 | 10 | 16 | 25 | 40 | 80 | 122 | 164 | 247 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| LiveKit node, London | 11 | 17 | 23 | 35 | 33 | 58 | 72 | 82 | 104 |
+| LiveKit node, Sydney | – | – | – | – | – | – | – | – | – |
+
+LiveKit, multi-region set:
+
+| Node | 5 | 10 | 16 | 25 | 40 | 80 | 122 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| LiveKit node, London (serves every region) | 20 | 33 | 49 | 69 | 66 | 113 | 121 |
+
+### Sweep 9: wave 5, GSO off, the edges' fast plane off
+
+Mbit/s of 4K video: the highest rung that was carried; in brackets, when lower, the highest with every rung below it carried too. Each session is one sweep.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 122 | 80 | 122 | none |
+| Needletail, LL-HLS | 164 | 164 | 122 | none |
+
+#### Every rung
+
+Frames on time (%) at the better of the two listeners of each region, and in brackets the bit rate that listener received (Mbit/s).
+
+Needletail, RaptorQ FEC over UDP from the edge:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 100.0 (16) | 100.0 (16) | 100.0 (16) | – |
+| 25 | 100.0 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 100.0 (40) | 100.0 (40) | – |
+| 80 | 100.0 (81) | 100.0 (81) | 100.0 (81) | – |
+| 122 | 100.0 (123) | 21.4 (84) | 100.0 (121) | – |
+| 164 | 95.6 (162) | 12.4 (70) | 4.3 (104) | – |
+
+Needletail, LL-HLS:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 100.0 (16) | 100.0 (16) | 100.0 (16) | – |
+| 25 | 100.0 (25) | 100.0 (25) | 100.0 (25) | – |
+| 40 | 100.0 (40) | 100.0 (40) | 100.0 (40) | – |
+| 80 | 100.0 (79) | 100.0 (81) | 100.0 (80) | – |
+| 122 | 100.0 (123) | 100.0 (122) | 100.0 (122) | – |
+| 164 | 100.0 (161) | 100.0 (164) | 4.9 (0) | – |
+
+#### Latency of what was carried
+
+Delivery latency at the listener's socket, median (ms): from the moment a frame is due at the source to its last byte at the listener:
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 10 | 48 | 119 | – |
+| Needletail, LL-HLS | 12 | 47 | 121 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 13 | 53 | 123 | – |
+| Needletail, LL-HLS | 15 | 51 | 126 | – |
+
+Glass to glass in headless Chrome, median (ms):
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 296 | 1210 | 466 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 1743 | 1690 | 447 | – |
+
+Chrome: time frozen (ms in each minute):
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 0 | 0 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 0 | 0 | – |
+
+#### Time to the first frame
+
+At 5 Mbit/s, from the listener's start to its first complete key frame (ms). The clip has a key frame every two seconds; a WebRTC sender answers a request for one within a third of a second.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | – | – | – | – |
+| Needletail, LL-HLS | – | – | – | – |
+| Cloudflare Realtime | – | – | – | – |
+| Cloudflare Stream WHIP/WHEP | – | – | – | – |
+| LiveKit, SFU in each region | – | – | – | – |
+| LiveKit, multi-region set | – | – | – | – |
+| LiveKit Cloud | – | – | – | – |
+
+#### Processor of the nodes
+
+Percent of one vCPU used by the service at each bit rate (the highest session).
+
+Needletail, LL-HLS:
+
+| Node | 16 | 25 | 40 | 80 | 122 | 164 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Needletail contributor | 21 | 14 | 18 | 32 | 42 | 62 |
+| Needletail primary relay | – | – | – | – | – | – |
+| Needletail secondary relay | – | – | – | – | – | – |
+| Needletail distributor, London | 22 | 18 | 23 | 42 | 63 | 85 |
+| Needletail edge 1, London | 16 | 24 | 35 | 62 | 98 | 118 |
+| Needletail distributor, Sydney | – | – | – | – | – | – |
+
+### Sweep 8: wave 5, legacy topology, GSO off
+
+Mbit/s of 4K video: the highest rung that was carried; in brackets, when lower, the highest with every rung below it carried too. Each session is one sweep.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 80 | 40 | 10 (none) | none |
+| Needletail, LL-HLS | 40 | 40 (10) | 10 (none) | none |
+
+#### Every rung
+
+Frames on time (%) at the better of the two listeners of each region, and in brackets the bit rate that listener received (Mbit/s).
+
+Needletail, RaptorQ FEC over UDP from the edge:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (5) | 100.0 (5) | 99.5 (5) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 99.7 (10) | – |
+| 16 | 100.0 (16) | 99.7 (16) | 99.5 (16) | – |
+| 25 | 100.0 (25) | 100.0 (25) | 99.5 (25) | – |
+| 40 | 100.0 (40) | 99.9 (40) | 99.5 (40) | – |
+| 80 | 99.9 (80) | 99.4 (81) | 97.7 (81) | – |
+| 122 | 99.2 (122) | 98.0 (122) | 97.5 (121) | – |
+| 164 | 22.2 (141) | 21.8 (142) | 22.3 (142) | – |
+| 247 | 0.7 (94) | 2.0 (97) | 2.8 (94) | – |
+
+Needletail, LL-HLS:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| 5 | 100.0 (5) | 100.0 (5) | 81.3 (3) | – |
+| 10 | 100.0 (10) | 100.0 (10) | 99.7 (10) | – |
+| 16 | 100.0 (16) | 98.6 (16) | 81.2 (16) | – |
+| 25 | 100.0 (25) | 100.0 (25) | 99.1 (25) | – |
+| 40 | 100.0 (40) | 99.6 (40) | 99.5 (40) | – |
+| 80 | 98.2 (79) | 97.7 (81) | 90.2 (80) | – |
+| 122 | 95.5 (122) | 77.9 (118) | 74.2 (113) | – |
+| 164 | 12.7 (0) | 13.6 (0) | 11.6 (0) | – |
+| 247 | 0 (0) | 0 (0) | 0 (0) | – |
+
+#### Latency of what was carried
+
+Delivery latency at the listener's socket, median (ms): from the moment a frame is due at the source to its last byte at the listener:
+
+5 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 4 | 36 | – | – |
+| Needletail, LL-HLS | 4 | 34 | – | – |
+
+10 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 7 | 38 | 117 | – |
+| Needletail, LL-HLS | 6 | 36 | 117 | – |
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 8 | 43 | – | – |
+| Needletail, LL-HLS | 9 | – | – | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 11 | 46 | – | – |
+| Needletail, LL-HLS | 13 | 42 | – | – |
+
+Glass to glass in headless Chrome, median (ms):
+
+5 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 2238 | 2244 | 7825 | – |
+
+10 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 968 | 1184 | 1082 | – |
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 1024 | 1198 | 1279 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 1889 | 1928 | 2051 | – |
+
+Chrome: time frozen (ms in each minute):
+
+5 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 55822 | 51378 | 8908 | – |
+
+10 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 361 | 0 | – |
+
+16 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 16545 | 25731 | – |
+
+25 Mbit/s:
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, LL-HLS | 0 | 0 | 0 | – |
+
+#### Time to the first frame
+
+At 5 Mbit/s, from the listener's start to its first complete key frame (ms). The clip has a key frame every two seconds; a WebRTC sender answers a request for one within a third of a second.
+
+| System | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP from the edge | 1216 (1214–1218) | 1413 (1412–1415) | 1119 (1118–1121) | – |
+| Needletail, LL-HLS | 719 (717–720) | 696 (692–700) | 756 (740–773) | – |
+| Cloudflare Realtime | – | – | – | – |
+| Cloudflare Stream WHIP/WHEP | – | – | – | – |
+| LiveKit, SFU in each region | – | – | – | – |
+| LiveKit, multi-region set | – | – | – | – |
+| LiveKit Cloud | – | – | – | – |
+
+#### Processor of the nodes
+
+Percent of one vCPU used by the service at each bit rate (the highest session).
+
+Needletail, LL-HLS:
+
+| Node | 5 | 10 | 16 | 25 | 40 | 80 | 122 | 164 | 247 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Needletail contributor | 76 | 64 | 61 | 45 | 37 | 44 | 45 | 62 | 86 |
+| Needletail primary relay | 86 | 72 | 58 | 68 | 68 | 114 | 150 | 188 | 151 |
+| Needletail secondary relay | 114 | 101 | 78 | 60 | 46 | 54 | 64 | 62 | 87 |
+| Needletail distributor, London | 46 | 44 | 40 | 37 | 37 | 55 | 80 | 110 | 76 |
+| Needletail edge 1, London | 11 | 16 | 22 | 31 | 43 | 89 | 130 | 156 | 104 |
+| Needletail distributor, Sydney | – | – | – | – | – | – | – | – | – |
+
+### Sweeps 1 and 2
+
+Each cell of these tables holds sweep 1 / sweep 2.
 
 ### Highest bit rate carried whole
 

@@ -204,6 +204,10 @@ def create_node(api: Api, run_id: str, tag: str, image: str, key: str,
             response = api.call("POST", "/linode/instances", body)
             break
         except RuntimeError as error:
+            # A refusal (no capacity for the plan, a restricted region) is
+            # final: raise at once, so that the nodes not yet created are not.
+            if any(code in str(error) for code in ("HTTP 403", "HTTP 400")):
+                raise
             # A timed-out create may still have succeeded: adopt it by label
             # rather than creating a duplicate or abandoning the lab.
             time.sleep(10 + 5 * attempt)
@@ -256,22 +260,49 @@ def command_up(args: argparse.Namespace) -> None:
           f"(run {run_id})")
     key = key_path.read_text().strip()
     failures: list[str] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            pool.submit(create_node, api, run_id, tag, image, key, node): node
-            for node in topology["nodes"]
-        }
-        for future in concurrent.futures.as_completed(futures):
-            node = futures[future]
+
+    def create_unless_failed(node: dict) -> dict:
+        # Stop at the first refusal (a region without capacity answers at
+        # once): every instance created is billed a whole hour, so the nodes
+        # not yet created must not be.
+        if failures:
+            raise RuntimeError("not created: an earlier node failed")
+        return create_node(api, run_id, tag, image, key, node)
+
+    def create_retrying(node: dict) -> dict:
+        # The first region's nodes: a plan without capacity there is retried
+        # for a few minutes (capacity comes and goes), before any other node
+        # is created.
+        for attempt in range(8):
             try:
-                created = future.result()
+                return create_node(api, run_id, tag, image, key, node)
             except RuntimeError as error:
-                failures.append(f"{node['name']}: {error}")
-                continue
-            state["nodes"][created["name"]] = created
-            write_state(state_path, state)
-            print(f"  created {created['name']:<18} {created['region']:<13} "
-                  f"{created['type']:<14} {created['public_ipv4']}")
+                if "not currently available" not in str(error) or attempt == 7:
+                    raise
+                time.sleep(30)
+        raise RuntimeError("unreachable")
+
+    # The topology's first region is created first (put a region short of
+    # capacity first); the rest only once all of it exists.
+    first_region = topology["nodes"][0]["region"]
+    waves = [([n for n in topology["nodes"] if n["region"] == first_region], create_retrying),
+             ([n for n in topology["nodes"] if n["region"] != first_region], create_unless_failed)]
+    for nodes, create in waves:
+        if failures:
+            break
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(create, node): node for node in nodes}
+            for future in concurrent.futures.as_completed(futures):
+                node = futures[future]
+                try:
+                    created = future.result()
+                except RuntimeError as error:
+                    failures.append(f"{node['name']}: {error}")
+                    continue
+                state["nodes"][created["name"]] = created
+                write_state(state_path, state)
+                print(f"  created {created['name']:<18} {created['region']:<13} "
+                      f"{created['type']:<14} {created['public_ipv4']}")
     if failures:
         print("\n".join(failures), file=sys.stderr)
         print("creation failed; removing the partial lab", file=sys.stderr)
