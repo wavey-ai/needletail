@@ -60,7 +60,7 @@ class Limits(unittest.TestCase):
                                  set_limits=set_limits), \
                 mock.patch.object(core, "idle_edges"):
             core.restore()
-        self.assertEqual(set(calls), set(lab.names()))
+        self.assertEqual(set(calls), set(lab.names()) - set(lab.DEFAULT_SLOTS))
         self.assertEqual(calls[CONTRIBUTOR], (lab.CONTRIBUTOR_LIMITS["cpu_percent"],
                                               lab.CONTRIBUTOR_LIMITS["memory_mb"]))
         self.assertEqual(calls[EDGE], (lab.NANODE["cpu_percent"], 512))

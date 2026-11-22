@@ -31,6 +31,22 @@ the cgroups are scopes of the user's systemd manager.
   edge_lab.py net <node> <pub|vlan> <out|in|both> <netem spec | clear>
   edge_lab.py wan <site> <out|in|both> <netem spec | clear>
   edge_lab.py sources <seconds>         start the 4K video and the audio sources
+  edge_lab.py start <node>              start a node's service (a slot: take it into
+                                        service)
+  edge_lab.py stop <node>               stop a node's service (SIGTERM; a slot: out of
+                                        service again)
+  edge_lab.py drain <node>              POST /api/control/drain-node for that node
+  edge_lab.py resume <node>             POST /api/control/resume-node for that node
+
+Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
+peer list naming them, but does not start, as the large mesh's autoscale
+slots: lon-dist-c always (a third London forwarder, a fast-plane lease child
+of lon-dist-a and lon-dist-b and a cache-mesh parent of the edges, never a
+compiled relay child), and lon-edge-4 with `up slots=lon-edge-4`. A slot is
+in service once `start` (or the autoscaler's edge_lab backend) takes it in;
+until then edges() and distributors() leave it out, and restore() does not
+start it. Starting one restarts no other service: their arguments already
+name it.
 
 The fault campaign (`edge-campaign.py`) drives this module.
 
@@ -61,6 +77,10 @@ AV_MESH = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_MESH_BIN", str(MESH_ROOT / "target" / "release" / "av-mesh")))
 READER = pathlib.Path(os.environ.get(
     "NEEDLETAIL_READER_BIN", str(MESH_ROOT / "target" / "release" / "needletail-reader")))
+# The UDP listener crowds of the scale scenarios (av-mesh branch scale-load).
+# Optional: a lab without it runs every scenario but those.
+LOAD_BIN = pathlib.Path(os.environ.get(
+    "NEEDLETAIL_LOAD_BIN", str(MESH_ROOT / "target" / "release" / "needletail-load")))
 CONTRIB_ROOT = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_CONTRIB_ROOT", str(WORKSPACE / "av-contrib-features")))
 AV_CONTRIB = pathlib.Path(os.environ.get(
@@ -133,6 +153,8 @@ NODES = [
     ("lon-edge-2", "edge", "london", "gb-lon", "10.90.0.22", "10.77.1.22"),
     ("lon-edge-3", "edge", "london", "gb-lon", "10.90.0.23", "10.77.1.23"),
     ("lon-edge-4", "edge", "london", "gb-lon", "10.90.0.24", "10.77.1.24"),
+    # A slot (SLOT_CANDIDATES): rendered, never started by `up`.
+    ("lon-dist-c", "distributor", "london", "gb-lon", "10.90.0.13", "10.77.1.13"),
     ("new-dist-a", "distributor", "newyork", "us-east", "10.90.2.11", "10.77.2.11"),
     ("new-dist-b", "distributor", "newyork", "us-east", "10.90.2.12", "10.77.2.12"),
     ("new-edge-1", "edge", "newyork", "us-east", "10.90.2.21", "10.77.2.21"),
@@ -244,12 +266,52 @@ def service_names(role: str | None = None, site: str | None = None) -> list[str]
     return [name for name in names(role, site) if name in rendered]
 
 
+# The nodes that can be slots, and those that are slots unless `up slots=`
+# names more: lon-dist-c is new and has no service unless taken in.
+SLOT_CANDIDATES = ("lon-edge-4", "lon-dist-c")
+DEFAULT_SLOTS = ("lon-dist-c",)
+
+
+def slot_nodes() -> list[str]:
+    """The slots of this lab (`up slots=`), lon-dist-c always."""
+    saved = load("slots.json", list(DEFAULT_SLOTS))
+    return sorted(set(saved if isinstance(saved, list) else DEFAULT_SLOTS) | set(DEFAULT_SLOTS))
+
+
+def slots_in_service() -> set[str]:
+    """Slots taken into service (`start`, or the autoscaler's create)."""
+    saved = load("slots-created.json", [])
+    return set(saved) if isinstance(saved, list) else set()
+
+
+def held_slots() -> set[str]:
+    return set(slot_nodes()) - slots_in_service()
+
+
+def set_slot_in_service(name: str, in_service: bool) -> None:
+    if name not in SLOT_CANDIDATES:
+        raise LabError(f"{name} is not a slot of this lab")
+    made = slots_in_service()
+    made = made | {name} if in_service else made - {name}
+    save("slots-created.json", sorted(made))
+
+
 def edges(site: str = "london") -> list[str]:
-    return names("edge", site)
+    """The edges of a site in service: a slot only once it is taken in."""
+    held = held_slots()
+    return [name for name in names("edge", site) if name not in held]
 
 
 def distributors(site: str = "london") -> list[str]:
-    return names("distributor", site)
+    held = held_slots()
+    return [name for name in names("distributor", site) if name not in held]
+
+
+def standing_services(role: str | None = None, site: str | None = None) -> list[str]:
+    """service_names without the slots that are not in service: what `up`
+    starts and restore() brings back."""
+    held = held_slots()
+    return [name for name in service_names(role, site) if name not in held]
 
 
 def base_url(name: str) -> str:
@@ -664,8 +726,13 @@ def deploy_module():
 
 
 def lab_state() -> dict:
+    """The lab as the deploy tool's state. Its "slots" are the slot
+    candidates: the deploy renders them into every peer list, and a
+    distributor slot is a lease child, never a compiled relay child."""
     return {"run_id": "edge-lab", "hourly_usd": 0.0,
-            "nodes": {name: {**node(name), "type": "local"} for name, *_ in NODES}}
+            "nodes": {name: {**node(name), "type": "local"} for name, *_ in NODES},
+            "slots": {name: {**node(name), "type": "local", "slot": True}
+                      for name in SLOT_CANDIDATES}}
 
 
 def snapshot_binaries() -> dict:
@@ -676,7 +743,10 @@ def snapshot_binaries() -> dict:
     directory.mkdir(parents=True, exist_ok=True)
     out = {}
     for label, source in (("av-mesh", AV_MESH), ("needletail-reader", READER),
-                          ("av-contrib", AV_CONTRIB), ("aep1-48k-probe", PROBE)):
+                          ("av-contrib", AV_CONTRIB), ("aep1-48k-probe", PROBE),
+                          ("needletail-load", LOAD_BIN)):
+        if label == "needletail-load" and not source.is_file():
+            continue
         target = directory / label
         temporary = directory / (label + ".new")
         shutil.copy2(source, temporary)
@@ -692,7 +762,7 @@ def binary(label: str) -> str:
     if label in paths:
         return paths[label]
     return str({"av-mesh": AV_MESH, "needletail-reader": READER, "av-contrib": AV_CONTRIB,
-                "aep1-48k-probe": PROBE}[label])
+                "aep1-48k-probe": PROBE, "needletail-load": LOAD_BIN}[label])
 
 
 def render(overrides: list[str]) -> dict:
@@ -869,8 +939,17 @@ def up(overrides: list[str], start: bool = True) -> dict:
             log.unlink()
     limits = {}
     plain = []
+    slots = set(DEFAULT_SLOTS)
     for item in overrides:
         key, _, value = item.partition("=")
+        if key == "slots":
+            given = {name for name in value.split(",") if name}
+            unknown = sorted(given - set(SLOT_CANDIDATES))
+            if unknown:
+                raise LabError(f"slots: {unknown} are not slot candidates "
+                               f"({', '.join(SLOT_CANDIDATES)})")
+            slots |= given
+            continue
         if key.startswith("limit."):
             # limit.<node>.cpu_percent=50, limit.<node>.memory_mb=512
             _, name, field = key.split(".", 2)
@@ -878,6 +957,8 @@ def up(overrides: list[str], start: bool = True) -> dict:
         else:
             plain.append(item)
     save("limits.json", limits)
+    save("slots.json", sorted(slots))
+    save("slots-created.json", [])
     build_networks()
     snapshot_binaries()
     build_clock_shim()
@@ -899,12 +980,13 @@ def up(overrides: list[str], start: bool = True) -> dict:
     if not start:
         return rendered
     for role in ("backbone", "distributor", "edge", "contributor"):
-        # The merged topology renders no backbone relay.
-        for name in service_names(role):
+        # The merged topology renders no backbone relay; a slot stays down.
+        for name in standing_services(role):
             start_service(name)
         time.sleep(1.0)
     time.sleep(1.0)
-    dead = [name for name in rendered if service_pid(name) is None]
+    held = held_slots()
+    dead = [name for name in rendered if service_pid(name) is None and name not in held]
     if dead:
         tails = "\n".join(f"--- {name}\n" + (WORK / "logs" / f"{name}.log").read_text()[-1200:]
                           for name in dead)
@@ -1369,11 +1451,13 @@ class Sampler:
 # ------------------------------------------------------------------ CLI
 
 def status() -> None:
+    held = held_slots()
     for name, role, site, *_ in NODES:
         pid = service_pid(name)
         if pid is None:
             unused = role == "backbone" and name not in load("rendered.json")
             print(f"{name:16} {role:12} " + ("not used by the topology" if unused
+                                             else "slot, not in service" if name in held
                                              else "not running"))
             continue
         directory = cgroup_dir(name)
@@ -1413,6 +1497,27 @@ def main() -> None:
             set_wan(arguments[0], arguments[1], " ".join(arguments[2:]) or None)
         elif command == "sources":
             start_sources(int(arguments[0]) if arguments else 600)
+        elif command == "start":
+            name = arguments[0]
+            if name in SLOT_CANDIDATES:
+                set_slot_in_service(name, True)
+            pid = service_pid(name) or start_service(name)
+            print(f"{name} runs (pid {pid}); no other service was restarted")
+        elif command == "stop":
+            name = arguments[0]
+            terminate_service(name)
+            if name in slot_nodes():
+                set_slot_in_service(name, False)
+            print(f"{name} stopped")
+        elif command in ("drain", "resume"):
+            name = arguments[0]
+            # Always naming the node: av-mesh takes a request without one
+            # as global.
+            status, body = http_json(name, f"/api/control/{command}-node", "POST",
+                                     {"node_id": name})
+            print(f"{command} {name}: HTTP {status} {json.dumps(body)[:200]}")
+            if status != 200:
+                sys.exit(1)
         else:
             sys.exit(__doc__)
     except LabError as error:

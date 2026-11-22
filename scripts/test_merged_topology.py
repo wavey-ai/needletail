@@ -213,9 +213,11 @@ class Render(Base):
             self.assertEqual(args[name].count("--relay-primary-promoted"), 1, name)
         # distributor -> edge: the cache mesh of the site, and the fast plane
         # from the same two distributors (edge_fast_plane).
+        # The edges also peer the forwarder slot lon-dist-c (a peer that is
+        # down until it is taken into service).
         for edge in lab.edges("london"):
             self.assertEqual(values_of(args[edge], "--peer"),
-                             ["10.77.1.11:29101", "10.77.1.12:29101"], edge)
+                             ["10.77.1.11:29101", "10.77.1.12:29101", "10.77.1.13:29101"], edge)
             self.assertEqual({value_of(args[edge], "--relay-primary-id"),
                               value_of(args[edge], "--relay-secondary-id")},
                              {"lon-dist-a", "lon-dist-b"}, edge)
@@ -399,7 +401,10 @@ class Render(Base):
         edges = sorted(binds[edge] for edge in lab.edges("london"))
         distributors = sorted({peer for edge in lab.edges("london")
                                for peer in values_of(args[edge], "--peer")})
-        self.assertEqual(distributors, ["10.77.1.11:29101", "10.77.1.12:29101"])
+        # lon-dist-a, lon-dist-b and the forwarder slot lon-dist-c (the
+        # scale work: a slot is in every peer list from the first push).
+        self.assertEqual(distributors,
+                         ["10.77.1.11:29101", "10.77.1.12:29101", "10.77.1.13:29101"])
         for name, bind in binds.items():
             if bind in distributors:
                 self.assertEqual(sorted(values_of(args[name], "--peer")), edges, name)
