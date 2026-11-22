@@ -420,7 +420,11 @@ def audio(_: argparse.Namespace) -> None:
     common.parallel(viewers() + [source], push)
     common.ssh(source, f"mkdir -p {REMOTE}/audio {REMOTE}/daw-fixture")
     common.rsync_to(source, [str(path) for path in files], f"{REMOTE}/audio/")
-    common.rsync_to(source, [str(common.WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu"
+    # The DAW source of the build under test (NEEDLETAIL_DAW_NEXUS_ROOT, as the
+    # deploy tool), never silently the default checkout's.
+    daw_root = pathlib.Path(__import__("os").environ.get(
+        "NEEDLETAIL_DAW_NEXUS_ROOT", str(common.WORKSPACE / "daw-nexus")))
+    common.rsync_to(source, [str(daw_root / "target" / "x86_64-unknown-linux-gnu"
                                  / "release" / "daw-test-source")], "/usr/local/bin/")
     print(common.ssh_text(source, f"cd {REMOTE}/daw-fixture && python3 -", stdin=FIXTURE.encode(),
                           timeout=600))
