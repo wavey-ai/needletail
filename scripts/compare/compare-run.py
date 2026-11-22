@@ -100,7 +100,10 @@ STATS_SAMPLER = (
     "while true; do\n"
     "  udp=\"$(nstat -az UdpRcvbufErrors UdpSndbufErrors UdpInErrors 2>/dev/null | awk 'NR>1{printf \"%%s=%%s \", $1, $2}')\"\n"
     "  stats=\"$(curl -sk --max-time 0.8 '%(url)s' | tr -d '\\n')\"\n"
-    "  echo \"$(date +%%s.%%N) | $udp| $stats\"; sleep 1\n"
+    # Each UDP socket's own drop counter (skmem d), cumulative: address=drops.
+    "  drops=\"$(ss -uamn 2>/dev/null | awk 'NR>1{a=$4; getline; if (match($0,/,d[0-9]+\\)/)) "
+    "printf \"%%s=%%s \", a, substr($0,RSTART+2,RLENGTH-3)}')\"\n"
+    "  echo \"$(date +%%s.%%N) | $udp| sockdrops $drops| $stats\"; sleep 1\n"
     "done\n"
     "EOS\n"
     "(setsid nohup sh /var/tmp/compare-stats.sh >/var/tmp/compare-stats.log 2>&1 </dev/null &)")
@@ -117,7 +120,7 @@ def start_samplers(session: "Session") -> list[dict]:
     sampled = [item for item in session.nodes.values()
                if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit")]
     common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
-    common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor")],
+    common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor", "edge")],
                     lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item)}, check=False))
     return sampled
 
@@ -130,7 +133,7 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                      "cat /var/tmp/compare-sampler.log", check=False)
         # One file for each invocation: a session can be run in several parts.
         (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
-        if item["role"] in ("contributor", "distributor"):
+        if item["role"] in ("contributor", "distributor", "edge"):
             stats = common.ssh_text(item, "kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
                                           "cat /var/tmp/compare-stats.log", check=False)
             (session.dir / "samplers" / f"{item['name']}.stats.{int(time.time())}.log").write_text(stats + "\n")

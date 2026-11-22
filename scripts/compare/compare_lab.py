@@ -142,14 +142,22 @@ def prepare(_: argparse.Namespace) -> None:
 
 
 def clips(args: argparse.Namespace) -> None:
-    """Copy the clips from the host that made them to lon-src, through this host."""
+    """Copy the clips to lon-src: from the host that made them, through this host, or from
+    a directory of this host (--from-local)."""
     source = node("lon-src")
     base = ["ssh", *common.ssh_base()]
     wanted = " ".join(RUNGS) + " audio.opus audio.aac audio.s24le media.json"
     common.ssh(source, f"rm -rf {REMOTE}/clips")
-    send = subprocess.Popen(
-        base + [f"root@{args.from_host}", f"cd {args.from_dir} && tar cf - {wanted}"],
-        stdout=subprocess.PIPE)
+    if args.from_local:
+        # Clips kept on this host from an earlier round (target/compare-media/clipsN-full).
+        send = subprocess.Popen(["tar", "cf", "-", "-C", args.from_local, *wanted.split()],
+                                stdout=subprocess.PIPE)
+    else:
+        if not args.from_host:
+            sys.exit("give --from-host or --from-local")
+        send = subprocess.Popen(
+            base + [f"root@{args.from_host}", f"cd {args.from_dir} && tar cf - {wanted}"],
+            stdout=subprocess.PIPE)
     receive = subprocess.run(
         base + [f"root@{source['public_ipv4']}", f"mkdir -p {REMOTE}/clips && tar xf - -C {REMOTE}/clips"],
         stdin=send.stdout)
@@ -469,7 +477,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("prepare").set_defaults(handler=prepare)
     copy = sub.add_parser("clips")
-    copy.add_argument("--from-host", required=True)
+    copy.add_argument("--from-host")
+    copy.add_argument("--from-local", help="a directory on this host holding the clips")
     copy.add_argument("--from-dir", default="/root/media/clips2")
     copy.set_defaults(handler=clips)
     sub.add_parser("livekit").set_defaults(handler=livekit)
