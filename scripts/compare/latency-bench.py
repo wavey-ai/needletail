@@ -881,6 +881,11 @@ def udp_client_verdict(item: dict, report: dict | None, parts: dict[int, dict],
         # Kernel receive -> the client read the datagram: the listener
         # host's own delay (clients from before wave 6 do not report it).
         "host_delay_ms": report.get("kernel_to_arrival_ms"),
+        # Time to first audio (wave 7 item 8): from the client's start, and
+        # each step of the start (clients from before item 8 give the total
+        # alone).
+        "time_to_first_part_ms": report.get("time_to_first_part_ms"),
+        "startup": report.get("startup"),
         "unit_latency_ms": hops.distribution(unit),
         "publish_to_arrival_ms": hops.distribution(published)})
     return out
@@ -931,6 +936,9 @@ def udp_lane_report(items: list[dict], nodes: dict, events: list[dict], stream: 
             "missing": merge_counts(clients, "missing"),
             "fast_lane_parts": merge_counts(clients, "fast_lane_parts"),
             "cache_lane_parts": merge_counts(clients, "cache_lane_parts"),
+            "time_to_first_part_ms": hops.distribution(
+                [item["time_to_first_part_ms"] for item in clients
+                 if item.get("time_to_first_part_ms") is not None]),
             "wire_bytes_per_part": round(wire / received, 1) if received else None})
     return hosts, probes
 
@@ -956,6 +964,25 @@ def udp_hop_lines(regions: dict) -> list[str]:
     return lines
 
 
+def startup_text(item: dict) -> str:
+    """A client's time to first audio and its steps (ms from its start):
+    assignment, playlist read, first request, token, OK, first part."""
+    first = item.get("time_to_first_part_ms")
+    if first is None:
+        return ""
+    steps = item.get("startup") or {}
+    keys = ("assignment_ms", "playlist_ms", "first_request_ms", "token_ms", "subscribed_ms")
+    if not any(steps.get(key) is not None for key in keys):
+        return f" first part {first:.1f} ms"
+
+    def ms(key: str) -> str:
+        value = steps.get(key)
+        return "-" if value is None else f"{value:.1f}"
+    return (f" first part {first:.1f} ms (assignment {ms('assignment_ms')}, playlist "
+            f"{ms('playlist_ms')}, request {ms('first_request_ms')}, token {ms('token_ms')}, "
+            f"OK {ms('subscribed_ms')})")
+
+
 def udp_summary_lines(hosts: dict) -> list[str]:
     if not hosts:
         return []
@@ -971,7 +998,7 @@ def udp_summary_lines(hosts: dict) -> list[str]:
                      f"publish->arrival {dist(host['publish_to_arrival_ms'])}  "
                      f"fast lane {host['fast_lane_parts']} cache lane {host['cache_lane_parts']}  "
                      f"wire {host['wire_bytes_per_part']} B/part  missing {host['missing']} "
-                     f"of {host['expected']}")
+                     f"of {host['expected']}  first part {dist(host.get('time_to_first_part_ms'))} ms")
         for item in host["clients"]:
             lines.append(f"    {item['report']:<28} {item.get('received')}/{item.get('expected')} "
                          f"missing {item.get('missing')} gaps {item.get('gaps')} "
@@ -982,6 +1009,7 @@ def udp_summary_lines(hosts: dict) -> list[str]:
                          + (f" host delay p99/max {(item.get('host_delay_ms') or {}).get('p99')}/"
                             f"{(item.get('host_delay_ms') or {}).get('max')}"
                             if item.get("host_delay_ms") else "")
+                         + startup_text(item)
                          + (f" ({item['error']})" if item.get("error") else ""))
     return lines
 

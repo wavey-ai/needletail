@@ -477,6 +477,34 @@ class Video(unittest.TestCase):
         hop_text = "\n".join(bench.udp_hop_lines({"london": {"listener_parts": listener}}))
         self.assertIn("edge.udp_sent -> listener.complete", hop_text)
 
+    def test_time_to_first_audio_in_the_udp_report(self):
+        """Wave 7 item 8: each client's time to first part and its steps,
+        and the host's spread of it; a client before item 8 gives the
+        total alone."""
+        clients = []
+        for index, startup in enumerate([
+                {"assignment_ms": 3.25, "playlist_ms": 9.5, "first_request_ms": 3.3,
+                 "token_ms": 3.9, "subscribed_ms": 4.6, "first_part_ms": 4.8,
+                 "first_part_after_named": 0},
+                None]):
+            report = self.dir / f"lon-readers.uc{index}.uc.json"
+            report.write_text(json.dumps({
+                "caches": ["lon-edge-1"], "moves": [], "expected_parts": 0,
+                "received_parts": 0, "missing_parts": 0,
+                "time_to_first_part_ms": 4.8 if startup else 300.0,
+                **({"startup": startup} if startup else {})}))
+            clients.append({"host": "lon-readers", "site": "london", "kind": "udp",
+                            "report": str(report),
+                            "arrivals": str(self.dir / f"none{index}.csv")})
+        hosts, _ = bench.udp_lane_report(clients, {}, [], 4001, None, 1000.0, None, None)
+        london = hosts["lon-readers"]
+        self.assertEqual(london["time_to_first_part_ms"]["count"], 2)
+        self.assertEqual(london["time_to_first_part_ms"]["max"], 300.0)
+        text = "\n".join(bench.udp_summary_lines(hosts))
+        self.assertIn("first part 4.8 ms (assignment 3.2, playlist 9.5, request 3.3, token 3.9, "
+                      "OK 4.6)", text)
+        self.assertIn("first part 300.0 ms", text)
+
     def test_the_clip_rate_from_ffprobe(self):
         # 50 frames a second of 500,000 bytes: 200 Mbit/s.
         text = "\n".join(f"{index / 50:.6f},500000," for index in range(100)) + "\nbad\n"
