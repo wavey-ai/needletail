@@ -175,6 +175,14 @@ DEFAULT_SETTINGS = {
     "failover_heartbeat_ms": 25,
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
+    # --canonical-gap-hold-ms of a distributor outside the contributor's
+    # region, fed over a long-haul path (low-latency A5). A hole that it
+    # holds stops the contiguous watermark of the whole region behind it:
+    # held for the 1 s default, a part late on the long-haul path took
+    # every edge of the region past its lost-parents limit. 400 ms is above
+    # a long-haul round trip; the contributor's region keeps the default.
+    # None or 0 renders nothing (the av-mesh default everywhere).
+    "canonical_gap_hold_long_haul_ms": 400,
     # Class isolation (low-latency item 2): at no node does an audio datagram
     # share a socket, a thread or a qdisc band with 4K. Video streams travel
     # on the relay and cache-mesh ports plus `class_port_offset` (22001 ->
@@ -1628,6 +1636,18 @@ def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str
     return contrib_args, mesh_args
 
 
+def gap_hold_args(node: dict, settings: dict, state: dict) -> list[str]:
+    """--canonical-gap-hold-ms for a distributor outside the contributor's
+    region (canonical_gap_hold_long_haul_ms); nothing for any other node."""
+    hold = settings.get("canonical_gap_hold_long_haul_ms")
+    if not hold or node["role"] != "distributor":
+        return []
+    contributors = common.nodes_by_role(state, "contributor")
+    if not contributors or contributors[0]["region"] == node["region"]:
+        return []
+    return ["--canonical-gap-hold-ms", str(int(hold))]
+
+
 def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     """Return {node name: {service, args, env}} for every service node."""
     services = {
@@ -1672,6 +1692,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             args += cache_mesh_args(node, settings, state)
             args += ["--edge-webtransport"]
             extra = list(settings["extra_distributor_args"])
+            args += yield_to(extra, gap_hold_args(node, settings, state))
         else:
             args += cache_mesh_args(node, settings, state)
             args += ["--edge-http3"]
