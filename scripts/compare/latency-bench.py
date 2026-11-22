@@ -197,6 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "(always on with 4K)")
     parser.add_argument("--udp-client-args", default="", metavar="ARGS",
                         help="extra arguments of every audio UDP client (e.g. \"--fast-lane false\")")
+    parser.add_argument("--unread-payloads", default="", metavar="LIST",
+                        help="more renditions that nobody reads (e.g. \"pcm,flac\"): each has a "
+                             "sender of its own and is published beside --payload (wave 7 item 5: "
+                             "a rendition with no reader should not travel)")
     parser.add_argument("--no-up", action="store_true",
                         help="use the lab that is running (its flags are not changed)")
     parser.add_argument("--keep-up", action="store_true", help="leave the lab running afterwards")
@@ -298,7 +302,7 @@ def lab_overrides(args) -> list[str]:
     """The `key=value` settings of edge_lab.up for this run."""
     capacity = journal_capacity(args)
     samples = epoch_samples(args)
-    settings: dict[str, object] = {"daw_hls_formats": args.payload}
+    settings: dict[str, object] = {"daw_hls_formats": ",".join([args.payload, *unread_payloads(args)])}
     # The lab records the epoch that its sender sends (the parts follow it:
     # audio_part is "epoch").
     settings["opus_epoch_samples" if args.payload == "opus" else "pcm_epoch_samples"] = samples
@@ -326,6 +330,36 @@ def loop_start(now: float) -> int:
     if start - now < 8:
         start += LOOP_SECONDS
     return start
+
+
+def unread_payloads(args) -> list[str]:
+    """--unread-payloads: payloads besides --payload, in order, once each."""
+    out = []
+    for item in (args.unread_payloads or "").split(","):
+        item = item.strip()
+        if not item or item == args.payload or item in out:
+            continue
+        if item not in PAYLOAD_STREAM:
+            raise SystemExit(f"--unread-payloads: unknown payload {item!r}")
+        out.append(item)
+    return out
+
+
+def unread_sender_commands(args, start: int, loop_file: str) -> list[list[str]]:
+    """A sender for each --unread-payloads rendition: a session and group of
+    its own, the loop's own epochs (48 samples; 32 for FLAC)."""
+    out = []
+    for index, payload in enumerate(unread_payloads(args), start=1):
+        samples = max(32, DEFAULT_EPOCH_SAMPLES[payload]) if payload == "flac" else DEFAULT_EPOCH_SAMPLES[payload]
+        session_id = start * 1_000_000_000 + epoch_ns(samples) + index
+        out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+                    "--session-id", str(session_id), "--group-id", str(index),
+                    "--duration-seconds", str(args.seconds + max(0, start - int(time.time())) + 300),
+                    "--payload", payload, "--epoch-samples", str(samples),
+                    "--channels", "2", "--group-channels", "8",
+                    "--pcm-s24le-file", loop_file, "--repair-percent", "12",
+                    "--min-repair-symbols", "1"])
+    return out
 
 
 def sender_command(args, start: int, loop_file: str) -> list[str]:
@@ -649,6 +683,32 @@ def node_summary_lines(nodes: dict | None) -> list[str]:
         lines.append(f"  {name:<16} {item['cpu_percent_mean']:>6} {item['cpu_percent_p95']:>6} "
                      f"{item['cpu_percent_max']:>6}  throttled {item.get('throttled_ms')}  "
                      f"rcvbuf drops {item.get('udp_rcvbuf_errors')}")
+    return lines
+
+
+def node_traffic_lines(nodes: dict | None, parts_per_second: float) -> list[str]:
+    """What each node sent and received on its public (eth0) and private
+    (eth1) interface: datagrams a second, datagrams per part of the run's
+    audio stream (at `parts_per_second`) and Mbit/s (Ethernet bytes, as the
+    referee's samplers count them). Every packet counts: the readers' HTTP,
+    the cache mesh, telemetry."""
+    if not nodes or not any("eth0_tx_pps" in item for item in nodes.values()):
+        return []
+    lines = ["", f"node traffic (datagrams/s, datagrams per part at {parts_per_second:g} parts/s, "
+                 "Mbit/s; eth0 public / long haul, eth1 VLAN)"]
+    for name, item in sorted(nodes.items()):
+        if "eth0_tx_pps" not in item:
+            continue
+        cells = []
+        for device in ("eth0", "eth1"):
+            for direction in ("tx", "rx"):
+                pps = item.get(f"{device}_{direction}_pps")
+                if pps is None:
+                    continue
+                per_part = pps / parts_per_second if parts_per_second else 0.0
+                cells.append(f"{device} {direction} {pps:>8.0f} {per_part:>6.2f}/part "
+                             f"{item.get(f'{device}_{direction}_mbps'):>7.2f}")
+        lines.append(f"  {name:<16} " + " | ".join(cells))
     return lines
 
 
@@ -1103,6 +1163,7 @@ def run(args, steps: dict) -> int:
     lines += video_summary_lines(video["source"] if regions else None, regions,
                                  video["frame_deadline_ms"])
     lines += node_summary_lines(measured.get("nodes"))
+    lines += node_traffic_lines(measured.get("nodes"), 1e6 / epoch["epoch_us"])
     text = "\n".join(lines) + "\n\n" + hops.format_summary(result)
     if result.get("udp_clients", {}).get("regions"):
         text += "\nUDP client hops (the UDP clients' parts):\n" + "\n".join(
@@ -1177,6 +1238,15 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")
     sources["bench-sender"] = sender.pid
+    unread_senders = []
+    for index, command in enumerate(unread_sender_commands(args, start, steps["media"]["loop"])):
+        unread_log = open(out / f"sender-unread-{index}.log", "ab")
+        unread = subprocess.Popen(lab.enter("contrib-lon") + command, stdout=unread_log,
+                                  stderr=unread_log, stdin=subprocess.DEVNULL,
+                                  start_new_session=True)
+        unread_log.close()
+        unread_senders.append(unread)
+        sources[f"bench-sender-unread-{index}"] = unread.pid
     lab.save("sources.json", sources)
     readers, shaped, handles = [], [], [sender_log]
     per_packet = False
@@ -1242,10 +1312,14 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             if process.poll() is None:
                 process.kill()
         stop_sender(sender)
+        for unread in unread_senders:
+            stop_sender(unread)
         for handle in handles:
             handle.close()
         sources = lab.load("sources.json")
         sources.pop("bench-sender", None)
+        for index in range(len(unread_senders)):
+            sources.pop(f"bench-sender-unread-{index}", None)
         lab.save("sources.json", sources)
     return nodes, events, since_us, ended_us, measured
 

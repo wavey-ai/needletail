@@ -603,5 +603,57 @@ class Video(unittest.TestCase):
         self.assertIn("audio", streams)
 
 
+class UnreadPayloads(unittest.TestCase):
+    """Renditions nobody reads, for wave 7 item 5."""
+
+    def test_each_unread_payload_is_published_and_sent_once(self):
+        plan = dry_run("--payload", "opus", "--unread-payloads", "pcm, flac,opus,pcm")
+        self.assertIn("daw_hls_formats=opus,pcm,flac", plan["lab_up"])
+        args = parse("--payload", "opus", "--unread-payloads", "pcm,flac")
+        commands = bench.unread_sender_commands(args, 1_000, "/loop.s24le")
+        self.assertEqual(len(commands), 2)
+        self.assertEqual([command[command.index("--payload") + 1] for command in commands],
+                         ["pcm", "flac"])
+        groups = [command[command.index("--group-id") + 1] for command in commands]
+        self.assertEqual(groups, ["1", "2"])
+        with self.assertRaises(SystemExit):
+            bench.unread_payloads(parse("--unread-payloads", "mp3"))
+
+
+class NodeTraffic(unittest.TestCase):
+    """Datagrams and bytes per node from /proc/PID/net/dev (wave 7)."""
+
+    NETDEV = (
+        "Inter-|   Receive                                                |  Transmit\n"
+        " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets "
+        "errs drop fifo colls carrier compressed\n"
+        "    lo:       0       0    0    0    0     0          0         0        0       0"
+        "    0    0    0     0       0          0\n"
+        "  eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n"
+        "  eth1: 3000 30 0 0 0 0 0 0 4000 40 0 0 0 0 0 0\n")
+
+    def test_the_counters_of_each_interface_are_read(self):
+        with mock.patch.object(bench.lab.pathlib.Path, "read_text", return_value=self.NETDEV):
+            counters = bench.lab.read_netdev(1)
+        self.assertEqual(counters, {
+            "eth0_rx_bytes": 1000, "eth0_rx_packets": 10, "eth0_tx_bytes": 2000,
+            "eth0_tx_packets": 20, "eth1_rx_bytes": 3000, "eth1_rx_packets": 30,
+            "eth1_tx_bytes": 4000, "eth1_tx_packets": 40})
+
+    def test_rates_and_datagrams_per_part(self):
+        samples = [{"at": 100.0, "eth0_tx_packets": 0, "eth0_tx_bytes": 0,
+                    "eth1_tx_packets": 0, "eth1_tx_bytes": 0},
+                   {"at": 110.0, "eth0_tx_packets": 20_000, "eth0_tx_bytes": 25_000_000,
+                    "eth1_tx_packets": 160_000, "eth1_tx_bytes": 100_000_000}]
+        rates = bench.lab.netdev_rates(samples)
+        self.assertEqual(rates["eth0_tx_pps"], 2000.0)
+        self.assertEqual(rates["eth0_tx_mbps"], 20.0)
+        self.assertEqual(rates["eth1_tx_pps"], 16000.0)
+        lines = bench.node_traffic_lines({"contrib-lon": rates}, 1000.0)
+        self.assertIn("16.00/part", lines[-1])
+        self.assertIn("2.00/part", lines[-1])
+        self.assertEqual(bench.node_traffic_lines({"x": {"cpu_percent_mean": 1}}, 1000.0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

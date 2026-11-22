@@ -1177,6 +1177,58 @@ def read_process(pid: int) -> dict:
     return out
 
 
+NETDEV_INTERFACES = ("eth0", "eth1")
+
+
+def read_netdev(pid: int) -> dict:
+    """Packets and bytes that each interface of the namespace of `pid` sent
+    and received (/proc/PID/net/dev: bytes include the 14-byte Ethernet
+    header, as the referee's samplers count them): `eth0_tx_packets`,
+    `eth0_tx_bytes`, `eth0_rx_packets`, `eth0_rx_bytes`, the same for eth1."""
+    out = {}
+    try:
+        text = pathlib.Path(f"/proc/{pid}/net/dev").read_text()
+    except OSError:
+        return out
+    for line in text.splitlines()[2:]:
+        device, _, counters = line.partition(":")
+        device = device.strip()
+        if device not in NETDEV_INTERFACES:
+            continue
+        fields = counters.split()
+        if len(fields) < 10:
+            continue
+        out[f"{device}_rx_bytes"] = int(fields[0])
+        out[f"{device}_rx_packets"] = int(fields[1])
+        out[f"{device}_tx_bytes"] = int(fields[8])
+        out[f"{device}_tx_packets"] = int(fields[9])
+    return out
+
+
+def netdev_rates(running: list[dict]) -> dict:
+    """Per-second packets and Mbit/s of each interface over the samples
+    that have the counters: `eth0_tx_pps`, `eth0_tx_mbps`, `eth0_rx_pps`,
+    ... (None where a node has no such interface)."""
+    have = [item for item in running if "eth0_tx_packets" in item]
+    if len(have) < 2:
+        return {}
+    first, last = have[0], have[-1]
+    elapsed = last["at"] - first["at"]
+    if elapsed <= 0:
+        return {}
+    out = {"netdev_seconds": round(elapsed, 2)}
+    for device in NETDEV_INTERFACES:
+        for direction in ("tx", "rx"):
+            packets = f"{device}_{direction}_packets"
+            octets = f"{device}_{direction}_bytes"
+            if packets not in first or packets not in last:
+                continue
+            out[f"{device}_{direction}_pps"] = round((last[packets] - first[packets]) / elapsed, 1)
+            out[f"{device}_{direction}_mbps"] = round(
+                (last[octets] - first[octets]) * 8 / elapsed / 1e6, 3)
+    return out
+
+
 def read_netstat(name: str) -> dict:
     """UDP and TCP counters of the namespace of a node."""
     out = {}
@@ -1242,7 +1294,7 @@ class Sampler:
                 continue
             directory = cgroup_dir(name)
             item = {"at": now, "running": True, **(read_cgroup(directory) if directory else {}),
-                    **read_process(pid)}
+                    **read_process(pid), **read_netdev(pid)}
             if tick % 5 == 0:
                 item.update(read_netstat(name))
             out[name] = item
@@ -1304,6 +1356,9 @@ class Sampler:
                 "udp_rcvbuf_errors": delta("udp_rcvbuf_errors"),
                 "tcp_retrans": delta("tcp_retrans"),
                 "tcp_out_segs": delta("tcp_out_segs"),
+                "udp_out": delta("udp_out"),
+                "udp_in": delta("udp_in"),
+                **netdev_rates(running),
             }
         return out
 
