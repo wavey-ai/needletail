@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::relay_topology::{
     FailureDiversityRequirement, NodeRole, ParentRole, PolicyViolation, RelayTopology,
+    TopologyPolicy, DEFAULT_MAX_EDGES_PER_FORWARDER,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,8 +171,45 @@ pub struct RelayProgram {
     pub failover_policy: Option<FailoverPolicy>,
     #[serde(default)]
     pub failover_control_links: Vec<FailoverControlLink>,
+    /// Legacy: contributor -> backbone relays -> distributors. Merged
+    /// (low-latency item 4): the distributors of the contributor's region
+    /// are the first forwarders, fed by the contributor directly, and every
+    /// other forwarder has two of them, or two forwarders of the level
+    /// above, as parents (see `TopologyPolicy::merged_forwarders`).
+    #[serde(default, skip_serializing_if = "ForwardingShape::is_legacy")]
+    pub forwarding: ForwardingShape,
+    /// Nodes whose two parents share a failure domain by design, as the
+    /// children of the merged topology's two first forwarders do. Each is a
+    /// production-readiness gap of the compiled plan; production refuses
+    /// any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_domain_parents: Vec<String>,
+    /// Playback edges per forwarder of a merged topology (default 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_edges_per_forwarder: Option<usize>,
     pub topology: RelayTopology,
     pub carrier_links: Vec<CarrierLink>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardingShape {
+    #[default]
+    Legacy,
+    Merged,
+}
+
+impl ForwardingShape {
+    #[must_use]
+    pub fn is_legacy(&self) -> bool {
+        *self == Self::Legacy
+    }
+}
+
+/// The production-readiness gap of a node whose two parents share a
+/// failure domain by declaration.
+fn shared_domain_parent_gap(node_id: &str) -> String {
+    format!("shared_parent_failure_domain:{node_id}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,11 +491,28 @@ impl std::error::Error for ServicePlanError {}
 
 impl RelayProgram {
     pub fn compile(&self) -> Result<CompiledServicePlan, ServicePlanError> {
+        let policy = TopologyPolicy {
+            diversity: self.purpose.diversity(),
+            shared_domain_parents: self.shared_domain_parents.clone(),
+            merged_forwarders: self.forwarding == ForwardingShape::Merged,
+            max_edges_per_forwarder: self
+                .max_edges_per_forwarder
+                .unwrap_or(DEFAULT_MAX_EDGES_PER_FORWARDER),
+        };
         self.topology
-            .validate_with_diversity(self.purpose.diversity())
+            .validate_with_policy(&policy)
             .map_err(ServicePlanError::Topology)?;
 
         let mut violations = Vec::new();
+        if self.purpose == DeploymentPurpose::Production && !self.shared_domain_parents.is_empty() {
+            violations.push(
+                "production refuses declared parent failure-domain gaps (shared_domain_parents)"
+                    .to_owned(),
+            );
+        }
+        if self.max_edges_per_forwarder == Some(0) {
+            violations.push("max_edges_per_forwarder must be positive".to_owned());
+        }
         if self.subscription_id == 0 {
             violations.push("subscription_id must be positive".to_owned());
         }
@@ -872,12 +927,21 @@ impl RelayProgram {
         // The validated topology catalog is authoritative. This assertion also
         // prevents future compilation paths from silently omitting a node.
         debug_assert_eq!(services.len(), nodes.len());
+        let mut production_readiness_gaps = self.purpose.readiness_gaps();
+        let mut shared = self
+            .shared_domain_parents
+            .iter()
+            .map(|node_id| shared_domain_parent_gap(node_id))
+            .collect::<Vec<_>>();
+        shared.sort();
+        shared.dedup();
+        production_readiness_gaps.extend(shared);
         Ok(CompiledServicePlan {
             purpose: self.purpose,
             carrier: self.carrier,
             topology_generation: self.topology.generation,
             subscription_id: self.subscription_id,
-            production_readiness_gaps: self.purpose.readiness_gaps(),
+            production_readiness_gaps,
             services,
         })
     }
@@ -1034,6 +1098,9 @@ mod tests {
                 listener_bind: address(22_502),
                 listener_target: address(22_502),
             }],
+            forwarding: ForwardingShape::Legacy,
+            shared_domain_parents: Vec::new(),
+            max_edges_per_forwarder: None,
             topology: RelayTopology {
                 generation: 7,
                 nodes: vec![
@@ -1459,5 +1526,233 @@ mod tests {
         assert!(violations
             .iter()
             .any(|violation| violation.contains("secondary_path_observation.loss_ppm")));
+    }
+
+    /// The merged topology (low-latency item 4) as the deploy compiles it:
+    /// the contributor feeds the two London forwarders, which feed the two
+    /// Sydney forwarders crossed, a source lane from one and a repair lane
+    /// with failover control from the other.
+    fn merged_program() -> RelayProgram {
+        let mut program = qualification_program();
+        program.forwarding = ForwardingShape::Merged;
+        program.shared_domain_parents = vec!["f3".to_owned(), "f4".to_owned()];
+        let parent = |parent: &str, child: &str, role| ParentLink {
+            parent_node_id: parent.to_owned(),
+            child_node_id: child.to_owned(),
+            role,
+        };
+        program.topology = RelayTopology {
+            generation: 1,
+            nodes: vec![
+                node("contrib", 0, NodeRole::Origin, "gb-lon", "gb-lon"),
+                node("f1", 1, NodeRole::Backbone, "gb-lon", "gb-lon"),
+                node("f2", 1, NodeRole::Backbone, "gb-lon", "gb-lon"),
+                node(
+                    "f3",
+                    2,
+                    NodeRole::RegionalRelay,
+                    "ap-southeast",
+                    "ap-southeast",
+                ),
+                node(
+                    "f4",
+                    2,
+                    NodeRole::RegionalRelay,
+                    "ap-southeast",
+                    "ap-southeast",
+                ),
+            ],
+            parent_links: vec![
+                parent("contrib", "f1", ParentRole::Primary),
+                parent("contrib", "f2", ParentRole::Primary),
+                parent("f1", "f3", ParentRole::Primary),
+                parent("f2", "f3", ParentRole::Secondary),
+                parent("f2", "f4", ParentRole::Primary),
+                parent("f1", "f4", ParentRole::Secondary),
+            ],
+            limits: TopologyLimits {
+                max_origin_children: 2,
+                max_downstream_children: 4,
+            },
+        };
+        program.carrier_links = vec![
+            link(
+                "contrib",
+                "f1",
+                ParentRole::Primary,
+                RelaySymbolLane::Source,
+                22_301,
+                22_001,
+            ),
+            link(
+                "contrib",
+                "f2",
+                ParentRole::Primary,
+                RelaySymbolLane::SourceAndRepair,
+                22_302,
+                22_002,
+            ),
+            link(
+                "f1",
+                "f3",
+                ParentRole::Primary,
+                RelaySymbolLane::Source,
+                22_401,
+                22_200,
+            ),
+            link(
+                "f2",
+                "f3",
+                ParentRole::Secondary,
+                RelaySymbolLane::Repair,
+                22_402,
+                22_201,
+            ),
+            link(
+                "f2",
+                "f4",
+                ParentRole::Primary,
+                RelaySymbolLane::Source,
+                22_411,
+                22_210,
+            ),
+            link(
+                "f1",
+                "f4",
+                ParentRole::Secondary,
+                RelaySymbolLane::Repair,
+                22_412,
+                22_211,
+            ),
+        ];
+        let control = |forwarder: &str, controller: &str, port: u16| FailoverControlLink {
+            forwarder_node_id: forwarder.to_owned(),
+            controller_node_id: controller.to_owned(),
+            controller_bind: address(port),
+            controller_peer: address(port),
+            listener_bind: address(port + 1),
+            listener_target: address(port + 1),
+        };
+        program.failover_control_links =
+            vec![control("f2", "f3", 22_501), control("f1", "f4", 22_511)];
+        program
+    }
+
+    fn mesh_service<'a>(plan: &'a CompiledServicePlan, node_id: &str) -> &'a MeshRelayService {
+        plan.services
+            .iter()
+            .find_map(|service| match service {
+                CompiledService::AvMesh(mesh) if mesh.node_id == node_id => Some(mesh),
+                _ => None,
+            })
+            .expect("mesh service")
+    }
+
+    #[test]
+    fn compiles_the_merged_topology_with_its_gaps_recorded() {
+        let plan = merged_program().compile().expect("compile merged plan");
+        assert_eq!(plan.services.len(), 5);
+        assert_eq!(
+            plan.production_readiness_gaps,
+            vec![
+                "provider_asn_diversity_pending",
+                "authenticated_public_carrier_pending",
+                "shared_parent_failure_domain:f3",
+                "shared_parent_failure_domain:f4",
+            ]
+        );
+        let contrib = plan
+            .services
+            .iter()
+            .find_map(|service| match service {
+                CompiledService::AvContrib(contrib) => Some(contrib),
+                CompiledService::AvMesh(_) => None,
+            })
+            .expect("contrib");
+        // The contributor's two lanes end at the first forwarders.
+        assert_eq!(contrib.primary.child_node_id, "f1");
+        assert_eq!(contrib.warm_secondary.child_node_id, "f2");
+        let f1 = mesh_service(&plan, "f1");
+        assert_eq!(f1.primary_parent.parent_node_id, "contrib");
+        assert!(f1.secondary_parent.is_none());
+        assert_eq!(
+            f1.forwards
+                .iter()
+                .map(|forward| (forward.child_node_id.as_str(), forward.lane))
+                .collect::<Vec<_>>(),
+            [
+                ("f3", RelaySymbolLane::Source),
+                ("f4", RelaySymbolLane::Repair)
+            ]
+        );
+        assert_eq!(f1.failover_listeners.len(), 1);
+        assert_eq!(f1.failover_listeners[0].forward_target, address(22_211));
+        let f3 = mesh_service(&plan, "f3");
+        assert_eq!(f3.primary_parent.parent_node_id, "f1");
+        assert_eq!(f3.secondary_parent.as_ref().unwrap().parent_node_id, "f2");
+        let args = f3.relay_arguments();
+        assert!(args.contains(&"--relay-secondary-promoted".to_owned()));
+        assert!(args.contains(&"127.0.0.1:22501=127.0.0.1:22502".to_owned()));
+        let f4 = mesh_service(&plan, "f4");
+        assert_eq!(f4.primary_parent.parent_node_id, "f2");
+        assert_eq!(f4.secondary_parent.as_ref().unwrap().parent_node_id, "f1");
+    }
+
+    #[test]
+    fn the_merged_topology_never_passes_its_shared_parent_domains_silently() {
+        let mut program = merged_program();
+        program.shared_domain_parents.clear();
+        let Err(ServicePlanError::Topology(violations)) = program.compile() else {
+            panic!("two London parents passed under RegionAndZone");
+        };
+        assert_eq!(violations.len(), 2, "{violations:?}");
+        assert!(violations
+            .iter()
+            .all(|violation| violation.code == "parent_failure_domain_overlap"));
+
+        let mut program = merged_program();
+        program.purpose = DeploymentPurpose::MultiProviderQualification;
+        program.carrier = CarrierProfile::ControlledPublicUdp;
+        // Provider and ASN overlap too; gaps make distinct nodes enough.
+        program
+            .compile()
+            .expect("declared gaps under multi-provider");
+        program.purpose = DeploymentPurpose::Production;
+        let Err(ServicePlanError::InvalidProgram(violations)) = program.compile() else {
+            panic!("production accepted a declared gap");
+        };
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("shared_domain_parents")));
+    }
+
+    #[test]
+    fn the_merged_contributor_feeds_only_its_regions_first_forwarders() {
+        let mut program = merged_program();
+        // The contributor's warm lane to a Sydney forwarder instead.
+        program.topology.parent_links[1].child_node_id = "f3".to_owned();
+        program.carrier_links[1].child_node_id = "f3".to_owned();
+        let Err(ServicePlanError::Topology(violations)) = program.compile() else {
+            panic!("a direct lane to another region compiled");
+        };
+        assert!(violations
+            .iter()
+            .any(|violation| violation.code == "origin_child_not_region_first_forwarder"));
+    }
+
+    #[test]
+    fn a_legacy_program_serialises_without_the_merged_fields() {
+        let json = serde_json::to_value(qualification_program()).unwrap();
+        for field in [
+            "forwarding",
+            "shared_domain_parents",
+            "max_edges_per_forwarder",
+        ] {
+            assert!(json.get(field).is_none(), "{field}");
+        }
+        let merged = serde_json::to_value(merged_program()).unwrap();
+        assert_eq!(merged["forwarding"], "merged");
+        let back: RelayProgram = serde_json::from_value(merged).unwrap();
+        assert_eq!(back, merged_program());
     }
 }

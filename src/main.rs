@@ -5,7 +5,7 @@ use needletail::relay_topology::{
 };
 use needletail::service_plan::{
     CarrierLink, CarrierProfile, CompiledService, CompiledServicePlan, DeploymentPurpose,
-    FailoverControlLink, FailoverPolicy, RelayProgram, RelaySymbolLane,
+    FailoverControlLink, FailoverPolicy, ForwardingShape, RelayProgram, RelaySymbolLane,
 };
 use std::ffi::OsStr;
 use std::net::SocketAddr;
@@ -651,6 +651,9 @@ fn local_relay_program(args: &Args) -> RelayProgram {
             listener_bind: SocketAddr::from(([127, 0, 0, 1], 22_502)),
             listener_target: SocketAddr::from(([127, 0, 0, 1], 22_502)),
         }],
+        forwarding: ForwardingShape::Legacy,
+        shared_domain_parents: Vec::new(),
+        max_edges_per_forwarder: None,
         topology: RelayTopology {
             generation: args.relay_topology_generation,
             nodes: vec![
