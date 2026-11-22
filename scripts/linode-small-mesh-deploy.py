@@ -88,6 +88,10 @@ DEFAULT_SETTINGS = {
     "mesh_symbol_size": 1316,
     "mesh_max_symbol_size": 0,
     "cache_mesh_max_parents": 2,
+    # Edges that one distributor serves in a sync tick (av-mesh
+    # --cache-mesh-max-children truncates its peers to this many). A
+    # distributor is rendered with at least the number of edges of its site,
+    # so a site of more edges is never silently cut short.
     "cache_mesh_max_children": 8,
     # Regional cache features: a distributor pushes a playlist to an edge only
     # while the edge has readers for it ("demand"), or always ("all").
@@ -100,6 +104,16 @@ DEFAULT_SETTINGS = {
     # Limits of one edge. They are what admission and assignment enforce.
     "edge_egress_capacity_bps": None,
     "edge_session_limit": 0,
+    # Client UDP subscriptions that a node takes at most
+    # (--client-udp-max-subscribers; None: the binary's default, 4096). The
+    # scale run raises it so that what gives out is the edge, not its cap.
+    "client_udp_max_subscribers": None,
+    # Edges that are created but held out of the mesh: no service (push and
+    # restart stop one that runs), no distributor peers them, no fast-plane
+    # feed, no steering. The scale plan's second curve adds edges to a
+    # region by emptying this list and restarting (`restart --set
+    # standby_edges=[]`), without creating instances in the middle of a run.
+    "standby_edges": [],
     # RaptorQ FEC UDP to clients, on every distributor and edge (0: off).
     # The assignment API of a node names this port.
     "client_udp_port": 19446,
@@ -395,6 +409,24 @@ LEASE_PORT = 22901
 LEASE_FAILOVER_PORT = 22902
 EDGE_FAILOVER_PORT = 22903
 EDGE_RELAY_PORTS = (22001, 22002)
+# Relay children (the distributors of the other sites, merged; every
+# distributor, legacy) that the port plan holds: child i takes 22200/22201 +
+# 10i, its parents send from 22401/22402 + 10i and listen for its failover
+# controller on 22502 + 10i, so child 40 would take LEASE_FAILOVER_PORT
+# (22902 = 22502 + 400) on its secondary parent and child 50 LEASE_PORT.
+MAX_RELAY_CHILDREN = 40
+# Kernel settings of a host of simulated listeners (a load node whose
+# purpose is "listeners"): thousands of UDP sockets and TCP connections of
+# their own, each with a port of its own (a socket per listener), and the
+# bootstrap's 8 MB default receive buffer would let them hold gigabytes.
+LISTENER_SYSCTLS = {
+    "net.ipv4.ip_local_port_range": "1024 65000",
+    "net.core.rmem_default": "1048576",
+    "net.core.netdev_max_backlog": "65536",
+    "net.ipv4.tcp_tw_reuse": "1",
+    "fs.file-max": "4194304",
+    "fs.nr_open": "4194304",
+}
 
 
 TOPOLOGIES = ("legacy", "merged")
@@ -422,11 +454,38 @@ def edges_per_forwarder(settings: dict) -> int:
     return edges
 
 
+def standby_edges(settings: dict) -> list[str]:
+    """The `standby_edges` setting, checked: a list of names."""
+    value = settings.get("standby_edges") or []
+    if isinstance(value, str):
+        value = [name for name in value.split(",") if name]
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        raise ValueError("standby_edges is not a list of edge names")
+    return sorted(set(value))
+
+
+def active_state(state: dict, settings: dict) -> dict:
+    """The lab state that the services are planned for: every node but the
+    standby edges. Exits when a standby name is not an edge of the lab."""
+    standby = standby_edges(settings)
+    for name in standby:
+        node = state["nodes"].get(name)
+        if node is None or node["role"] != "edge":
+            sys.exit(f"standby_edges: {name} is not an edge of the lab")
+    if not standby:
+        return state
+    return {**state, "nodes": {name: node for name, node in state["nodes"].items()
+                               if name not in standby}}
+
+
 def check_settings(settings: dict) -> None:
     """Raise ValueError for settings the services cannot run with: the part
     settings (part_plan), the topology, contributor_direct_region and the
     class isolation settings (class_plan)."""
     part_plan(settings)
+    standby_edges(settings)
+    if settings.get("client_udp_max_subscribers") is not None:
+        whole(settings["client_udp_max_subscribers"], "client_udp_max_subscribers")
     mode = topology_mode(settings)
     if mode == "merged" and settings.get("contributor_direct_region"):
         raise ValueError("contributor_direct_region is the legacy topology's direct lane; the "
@@ -907,6 +966,10 @@ def check_edge_fanout(state: dict, settings: dict) -> None:
 def build_program(state: dict, settings: dict, routes: dict) -> dict:
     tree = relay_tree(state, settings)
     merged = tree["mode"] == "merged"
+    if len(tree["children"]) > MAX_RELAY_CHILDREN:
+        sys.exit(f"{len(tree['children'])} relay children; the port plan holds "
+                 f"{MAX_RELAY_CHILDREN} (22200 + 10 x index, 22502 + 10 x index below the "
+                 "lease ports)")
     if merged:
         check_edge_fanout(state, settings)
     contrib = tree["contrib"]
@@ -1342,6 +1405,10 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     args += ["--egress-capacity-bps", str(capacity)]
     if node["role"] in ("distributor", "edge") and settings.get("client_udp_port"):
         args += ["--client-udp-bind", f"0.0.0.0:{settings['client_udp_port']}"]
+        if settings.get("client_udp_max_subscribers") is not None:
+            args += ["--client-udp-max-subscribers",
+                     str(whole(settings["client_udp_max_subscribers"],
+                               "client_udp_max_subscribers"))]
     if node["role"] in ("distributor", "edge"):
         # Every node of a region can be an entry point for its readers.
         args += [
@@ -1373,12 +1440,19 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     """Regional cache plane: distributors push to edges over the site VLAN."""
     if not node.get("vlan_ipv4"):
         return ["--mesh-bind", f"0.0.0.0:{MESH_PORT}"]
+    peer_role = "edge" if node["role"] == "distributor" else "distributor"
+    peers = [peer for peer in sorted(state["nodes"].values(), key=lambda item: item["name"])
+             if peer["site"] == node["site"] and peer["role"] == peer_role
+             and peer.get("vlan_ipv4")]
+    children = int(settings["cache_mesh_max_children"])
+    if node["role"] == "distributor":
+        children = max(children, len(peers))
     args = [
         "--mesh-bind", f"{node['vlan_ipv4']}:{MESH_PORT}",
         "--cache-mesh-role", node["role"],
         "--cache-mesh-region", f"{node['region']}-cache",
         "--cache-mesh-max-parents", str(settings["cache_mesh_max_parents"]),
-        "--cache-mesh-max-children", str(settings["cache_mesh_max_children"]),
+        "--cache-mesh-max-children", str(children),
         "--mesh-sync-interval-ms", str(settings["mesh_sync_interval_ms"]),
         "--mesh-repair-ratio", str(settings["mesh_repair_ratio"]),
         "--mesh-repair-symbols", str(settings["mesh_repair_symbols"]),
@@ -1393,11 +1467,8 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--cache-mesh-socket-buffer-bytes",
         str(settings["cache_mesh_socket_buffer_bytes"]),
     ]
-    peer_role = "edge" if node["role"] == "distributor" else "distributor"
-    for peer in sorted(state["nodes"].values(), key=lambda item: item["name"]):
-        if (peer["site"] == node["site"] and peer["role"] == peer_role
-                and peer.get("vlan_ipv4")):
-            args += ["--peer", f"{peer['vlan_ipv4']}:{MESH_PORT}"]
+    for peer in peers:
+        args += ["--peer", f"{peer['vlan_ipv4']}:{MESH_PORT}"]
     return args
 
 
@@ -2179,7 +2250,7 @@ WantedBy=multi-user.target
 """
 
 
-def binaries_for(role: str) -> list[pathlib.Path]:
+def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
     target = "target/x86_64-unknown-linux-gnu/release"
     # NEEDLETAIL_AV_MESH_ROOT selects another av-mesh checkout, such as a worktree
     # that carries a candidate patch.
@@ -2193,11 +2264,16 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
-        return [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
-                common.WORKSPACE / "daw-nexus" / target / "daw-test-source",
-                common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
-                common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
-                / target / "soundkit-part-check"]
+        tools = [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
+                 common.WORKSPACE / "daw-nexus" / target / "daw-test-source",
+                 common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
+                 common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
+                 / target / "soundkit-part-check"]
+        if node is not None and common.load_purpose(node) == "listeners":
+            # The simulated listeners of the scale run: needletail-load (UDP,
+            # from av-mesh) and ntcmp (LL-HLS crowds, scripts/compare/gobuild.sh).
+            tools += [mesh / "needletail-load", common.ROOT / "target" / "ntcmp"]
+        return tools
     checker = (common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                / target / "soundkit-part-check")
     return [mesh / "av-mesh", probe, checker]
@@ -2311,7 +2387,7 @@ def apply_host_qdisc(node: dict, settings: dict, clear: tuple[str, ...] = ()) ->
 
 def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
     if binaries:
-        sources = [str(path) for path in binaries_for(node["role"])]
+        sources = [str(path) for path in binaries_for(node["role"], node)]
         for source in sources:
             if not pathlib.Path(source).is_file():
                 raise RuntimeError(f"binary is missing: {source}")
@@ -2335,10 +2411,17 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
             f"cat >/etc/sysctl.d/90-needletail.conf <<'SYSCTL'\n{lines}\nSYSCTL",
             "sysctl -q -p /etc/sysctl.d/90-needletail.conf",
         ]
+    if common.load_purpose(node) == "listeners":
+        lines = "\n".join(f"{key} = {value}" for key, value in LISTENER_SYSCTLS.items())
+        commands += [
+            f"cat >/etc/sysctl.d/91-needletail-listeners.conf <<'SYSCTL'\n{lines}\nSYSCTL",
+            "sysctl -q -p /etc/sysctl.d/91-needletail-listeners.conf",
+        ]
     item = rendered.get(node["name"])
-    if not item and node["role"] == "backbone":
+    if not item and node["role"] in ("backbone", "edge"):
         # The merged topology uses no backbone relay: one left running from
-        # a legacy deploy would still send to the distributors.
+        # a legacy deploy would still send to the distributors. A standby
+        # edge (standby_edges) is out of the mesh until it is restarted in.
         commands.append("systemctl disable --now needletail-mesh.service >/dev/null 2>&1 || true")
     if item:
         apply_host_qdisc(node, settings)
@@ -2359,8 +2442,12 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
 
 
 def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
-    state = common.load_state()
+    """Plan and render the services of every node but the standby edges;
+    returns the whole lab state (push installs the tools on every node and
+    stops the service of a standby edge), the settings and the render."""
+    full = common.load_state()
     settings = load_settings(args.set)
+    state = active_state(full, settings)
     routes_path = common.ARTIFACT_DIR / "routes.json"
     routes = json.loads(routes_path.read_text()) if routes_path.is_file() else None
     # Routes measured over the other topology's relays seed the controller
@@ -2377,8 +2464,10 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
           f"topology); rendered {len(rendered)} service argument files; primary route "
           f"{routes['primary_rtt_us']} us, secondary {routes['secondary_rtt_us']} us"
           + (f"; backbone relays not used (stopped by push and restart): "
-             f"{', '.join(node['name'] for node in unused)}" if unused else ""))
-    return state, settings, rendered
+             f"{', '.join(node['name'] for node in unused)}" if unused else "")
+          + (f"; standby edges (stopped): {', '.join(standby_edges(settings))}"
+             if standby_edges(settings) else ""))
+    return full, settings, rendered
 
 
 def command_push(args: argparse.Namespace) -> None:

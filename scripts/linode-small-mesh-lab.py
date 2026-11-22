@@ -65,8 +65,10 @@ def load_token() -> str:
 
 
 class Api:
-    def __init__(self) -> None:
-        self.token = load_token()
+    def __init__(self, public: bool = False) -> None:
+        # `public`: only the endpoints that need no token (plans, regions,
+        # availability), so a check never reads the token.
+        self.token = None if public else load_token()
 
     def call(self, method: str, path: str, body: dict | None = None,
              allow_404: bool = False) -> dict:
@@ -75,7 +77,7 @@ class Api:
             request = urllib.request.Request(
                 API_BASE + path, data=data, method=method,
                 headers={
-                    "Authorization": f"Bearer {self.token}",
+                    **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
                     "Content-Type": "application/json",
                     "User-Agent": "needletail-small-mesh-lab",
                 },
@@ -135,43 +137,140 @@ def operator_ipv4() -> str:
     return address
 
 
-def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
-    nodes = topology["nodes"]
-    if not nodes or len(nodes) > MAX_NODES:
-        sys.exit(f"topology has {len(nodes)} nodes; the ceiling is {MAX_NODES}")
-    names = [node["name"] for node in nodes]
-    if len(set(names)) != len(names):
-        sys.exit("topology node names must be unique")
-    types = {item["id"]: item for item in api.list_all("/linode/types")}
-    regions = {item["id"]: item for item in api.list_all("/regions")}
+def without_sites(topology: dict, sites: list[str]) -> dict:
+    """The topology without the nodes of `sites` (a region that has no
+    dedicated capacity today: Sydney in the scale plan). Refuses a site that
+    holds the contributor or names no node."""
+    sites = [site for site in sites if site]
+    if not sites:
+        return topology
+    known = {node["site"] for node in topology["nodes"]}
+    for site in sites:
+        if site not in known:
+            sys.exit(f"no node of the topology is at site {site}")
+    for node in topology["nodes"]:
+        if node["site"] in sites and node["role"] == "contributor":
+            sys.exit(f"site {node['site']} holds the contributor; it cannot be left out")
+    return {**topology, "nodes": [node for node in topology["nodes"] if node["site"] not in sites]}
+
+
+def topology_cost(topology: dict, types: dict, regions: dict,
+                  availability: dict | None = None) -> tuple[float, list[str]]:
+    """The hourly price of a topology from the API's plans (region prices
+    included; each node gets `_hourly`), and what the API says against it:
+    a plan that is not dedicated, a region that is down or has no VLANs for
+    a node that needs one, a duplicate VLAN address, and (with
+    `availability`, {(region, plan): bool}) a plan that the region has no
+    capacity for today."""
+    problems = []
     hourly = 0.0
     addresses: set[tuple[str, str]] = set()
-    for node in nodes:
+    for node in topology["nodes"]:
         plan = types.get(node["type"])
         if plan is None or plan["class"] not in ALLOWED_CLASSES:
-            sys.exit(f"{node['name']}: {node['type']} is not a dedicated-CPU plan; "
-                     "shared instances are not used")
+            problems.append(f"{node['name']}: {node['type']} is not a dedicated-CPU plan; "
+                            "shared instances are not used")
+            continue
         region = regions.get(node["region"])
         if region is None or region["status"] != "ok":
-            sys.exit(f"{node['name']}: region {node['region']} is unavailable")
+            problems.append(f"{node['name']}: region {node['region']} is unavailable")
+            continue
         if node.get("vlan_ipv4") and "Vlans" not in region["capabilities"]:
-            sys.exit(f"{node['name']}: region {node['region']} has no VLAN support")
+            problems.append(f"{node['name']}: region {node['region']} has no VLAN support")
         if node.get("vlan_ipv4"):
             key = (node["region"], node["vlan_ipv4"])
             if key in addresses:
-                sys.exit(f"{node['name']}: duplicate VLAN address {key}")
+                problems.append(f"{node['name']}: duplicate VLAN address {key}")
             addresses.add(key)
+        if availability is not None and availability.get((node["region"], node["type"])) is False:
+            problems.append(f"{node['name']}: {node['region']} has no {node['type']} "
+                            "capacity today (/regions/<id>/availability)")
         price = plan["price"]["hourly"]
         for override in plan.get("region_prices", []):
             if override["id"] == node["region"]:
                 price = override["hourly"]
         node["_hourly"] = price
         hourly += price
+    return hourly, problems
+
+
+def region_availability(api: "Api", regions: set[str]) -> dict:
+    """{(region, plan): available} from GET /regions/<id>/availability."""
+    out = {}
+    for region in sorted(regions):
+        response = api.call("GET", f"/regions/{region}/availability")
+        rows = response if isinstance(response, list) else response.get("data", [])
+        for row in rows:
+            out[(row["region"], row["plan"])] = bool(row["available"])
+    return out
+
+
+def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
+    nodes = topology["nodes"]
+    if not nodes or len(nodes) > MAX_NODES:
+        sys.exit(f"topology has {len(nodes)} nodes; the ceiling is {MAX_NODES} "
+                 "(NEEDLETAIL_LINODE_MAX_NODES)")
+    names = [node["name"] for node in nodes]
+    if len(set(names)) != len(names):
+        sys.exit("topology node names must be unique")
+    types = {item["id"]: item for item in api.list_all("/linode/types")}
+    regions = {item["id"]: item for item in api.list_all("/regions")}
+    hourly, problems = topology_cost(topology, types, regions)
+    if problems:
+        sys.exit("\n".join(problems))
     if hourly > MAX_HOURLY_USD:
         sys.exit(
-            f"topology costs ${hourly:.4f}/hour; the ceiling is ${MAX_HOURLY_USD:.2f}"
+            f"topology costs ${hourly:.4f}/hour; the ceiling is ${MAX_HOURLY_USD:.2f} "
+            "(NEEDLETAIL_LINODE_MAX_HOURLY_USD)"
         )
     return topology, hourly
+
+
+def split_optional(nodes: list[dict], sites: list[str]) -> tuple[dict, list[dict]]:
+    """({optional site: its nodes}, every other node). A site that holds the
+    contributor is never optional."""
+    first: dict[str, list[dict]] = {}
+    rest = []
+    for node in nodes:
+        if node["site"] in sites:
+            if node["role"] == "contributor":
+                sys.exit(f"site {node['site']} holds the contributor; it cannot be optional")
+            first.setdefault(node["site"], []).append(node)
+        else:
+            rest.append(node)
+    return first, rest
+
+
+def command_check(args: argparse.Namespace) -> None:
+    """Price a topology and check it against today's plans, regions and
+    capacity, from the API's public endpoints (no token, nothing created).
+    Exits 1 when `up` would refuse it or a region has no capacity for one of
+    its plans."""
+    api = Api(public=True)
+    topology = json.loads(pathlib.Path(args.topology).read_text())
+    topology = without_sites(topology, (args.without_sites or "").split(","))
+    types = {item["id"]: item for item in api.list_all("/linode/types")}
+    regions = {item["id"]: item for item in api.list_all("/regions")}
+    availability = region_availability(api, {node["region"] for node in topology["nodes"]})
+    hourly, problems = topology_cost(topology, types, regions, availability)
+    by_type: dict[tuple[str, str], list[dict]] = {}
+    for node in topology["nodes"]:
+        by_type.setdefault((node["region"], node["type"]), []).append(node)
+    print(f"{'REGION':<14} {'PLAN':<16} {'COUNT':>5} {'$/H EACH':>9} {'$/H':>8}  AVAILABLE")
+    for (region, plan), nodes in sorted(by_type.items()):
+        each = nodes[0].get("_hourly", 0.0)
+        print(f"{region:<14} {plan:<16} {len(nodes):>5} {each:>9.3f} {each * len(nodes):>8.3f}  "
+              f"{availability.get((region, plan), 'unknown')}")
+    print(f"{len(topology['nodes'])} nodes, ${hourly:.3f}/hour; ceilings {MAX_NODES} nodes, "
+          f"${MAX_HOURLY_USD:.2f}/hour (NEEDLETAIL_LINODE_MAX_NODES, "
+          "NEEDLETAIL_LINODE_MAX_HOURLY_USD)")
+    if len(topology["nodes"]) > MAX_NODES:
+        problems.append(f"{len(topology['nodes'])} nodes is above the ceiling of {MAX_NODES}")
+    if hourly > MAX_HOURLY_USD:
+        problems.append(f"${hourly:.3f}/hour is above the ceiling of ${MAX_HOURLY_USD:.2f}")
+    if problems:
+        print("\n".join(problems))
+        sys.exit(1)
 
 
 def create_node(api: Api, run_id: str, tag: str, image: str, key: str,
@@ -225,6 +324,7 @@ def create_node(api: Api, run_id: str, tag: str, image: str, key: str,
         "region": node["region"],
         "type": node["type"],
         "hourly_usd": node["_hourly"],
+        **({"purpose": node["purpose"]} if node.get("purpose") else {}),
         "public_ipv4": response["ipv4"][0],
         "vlan_ipv4": (node.get("vlan_ipv4") or "").split("/")[0] or None,
         "created": response["created"],
@@ -240,7 +340,9 @@ def command_up(args: argparse.Namespace) -> None:
         sys.exit("SSH public key is missing")
     api = Api()
     topology = json.loads(pathlib.Path(args.topology).read_text())
+    topology = without_sites(topology, (args.without_sites or "").split(","))
     topology, hourly = validate_topology(api, topology)
+    optional = [site for site in (args.optional_sites or "").split(",") if site]
     run_id = args.run_id or dt.datetime.now(dt.timezone.utc).strftime("%m%d%H%M")
     tag = f"needletail-small-mesh-{run_id}"
     image = topology.get("image", "linode/debian13")
@@ -250,28 +352,54 @@ def command_up(args: argparse.Namespace) -> None:
         "topology_file": str(pathlib.Path(args.topology).resolve()),
         "created_unix": int(time.time()), "hourly_usd": round(hourly, 4),
         "nodes": {}, "firewall_id": None,
+        # Sites that this lab does without (--without-sites, and an optional
+        # site that could not be created): `grow` leaves them out too.
+        "sites_left_out": [site for site in (args.without_sites or "").split(",") if site],
     }
     write_state(state_path, state)
     print(f"Creating {len(topology['nodes'])} Linodes at ${hourly:.4f}/hour "
           f"(run {run_id})")
     key = key_path.read_text().strip()
-    failures: list[str] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            pool.submit(create_node, api, run_id, tag, image, key, node): node
-            for node in topology["nodes"]
-        }
-        for future in concurrent.futures.as_completed(futures):
-            node = futures[future]
-            try:
-                created = future.result()
-            except RuntimeError as error:
-                failures.append(f"{node['name']}: {error}")
-                continue
-            state["nodes"][created["name"]] = created
+
+    def create(nodes: list[dict]) -> list[str]:
+        failures: list[str] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(create_node, api, run_id, tag, image, key, node): node
+                for node in nodes
+            }
+            for future in concurrent.futures.as_completed(futures):
+                node = futures[future]
+                try:
+                    created = future.result()
+                except RuntimeError as error:
+                    failures.append(f"{node['name']}: {error}")
+                    continue
+                state["nodes"][created["name"]] = created
+                write_state(state_path, state)
+                print(f"  created {created['name']:<18} {created['region']:<13} "
+                      f"{created['type']:<14} {created['public_ipv4']}")
+        return failures
+
+    # The nodes of an optional site first (a region whose dedicated capacity
+    # runs out, such as Sydney): when one of them cannot be created, the
+    # site's nodes are deleted and the lab goes on without it.
+    first, rest = split_optional(topology["nodes"], optional)
+    for site, nodes in first.items():
+        failures = create(nodes)
+        if failures:
+            print("\n".join(failures), file=sys.stderr)
+            dropped = [state["nodes"].pop(node["name"]) for node in nodes
+                       if node["name"] in state["nodes"]]
+            for item in dropped:
+                api.call("DELETE", f"/linode/instances/{item['id']}", allow_404=True)
+            state.setdefault("sites_left_out", []).append(site)
+            state["hourly_usd"] = round(state["hourly_usd"] - sum(
+                node.get("_hourly", 0.0) for node in nodes), 4)
             write_state(state_path, state)
-            print(f"  created {created['name']:<18} {created['region']:<13} "
-                  f"{created['type']:<14} {created['public_ipv4']}")
+            print(f"site {site} left out: {len(failures)} of its {len(nodes)} nodes could not "
+                  f"be created; deleted the {len(dropped)} that were", file=sys.stderr)
+    failures = create(rest)
     if failures:
         print("\n".join(failures), file=sys.stderr)
         print("creation failed; removing the partial lab", file=sys.stderr)
@@ -397,6 +525,12 @@ def command_grow(args: argparse.Namespace) -> None:
         sys.exit("No active Needletail small-mesh lab")
     api = Api()
     topology = json.loads(pathlib.Path(args.topology).read_text())
+    # A site that the lab does without stays out: growing London's edges
+    # must not create the Sydney that `up` left out.
+    left_out = sorted(set(state.get("sites_left_out", []))
+                      | {site for site in (args.without_sites or "").split(",") if site})
+    known = {node["site"] for node in topology["nodes"]}
+    topology = without_sites(topology, [site for site in left_out if site in known])
     topology, hourly = validate_topology(api, topology)
     missing = [node for node in topology["nodes"] if node["name"] not in state["nodes"]]
     if not missing:
@@ -567,10 +701,22 @@ def main() -> None:
     up.add_argument("--topology", default=str(DEFAULT_TOPOLOGY))
     up.add_argument("--run-id", default=None)
     up.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
+    up.add_argument("--without-sites", default="",
+                    help="comma-separated sites whose nodes are not created")
+    up.add_argument("--optional-sites", default="",
+                    help="comma-separated sites created first and left out when one of "
+                         "their nodes cannot be created (no capacity)")
     up.set_defaults(handler=command_up)
+    check = sub.add_parser("check", help="price a topology against today's plans and "
+                                         "capacity; creates nothing, needs no token")
+    check.add_argument("--topology", default=str(DEFAULT_TOPOLOGY))
+    check.add_argument("--without-sites", default="")
+    check.set_defaults(handler=command_check)
     grow = sub.add_parser("grow")
     grow.add_argument("--topology", required=True)
     grow.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
+    grow.add_argument("--without-sites", default="",
+                      help="sites not to create, besides those the lab already does without")
     grow.set_defaults(handler=command_grow)
     replace = sub.add_parser("replace")
     replace.add_argument("names", nargs="+")
