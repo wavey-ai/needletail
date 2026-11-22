@@ -1836,7 +1836,11 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
         return out
     if "--relay-controlled-local" in node_args and renditions is not None:
         out += ["--relay-demand-renditions", renditions]
-    if ("--relay-lease-bind" in node_args
+    # Every forwarder (a distributor of the cache mesh), the slots that feed
+    # no lease child yet included: inert where there is none (wave 7 review
+    # C5: a slot renders the wave 7 settings exactly like the others).
+    if ((flag_value(node_args, "--cache-mesh-role") == "distributor"
+         or "--relay-lease-bind" in node_args)
             and settings.get("cache_mesh_fast_plane_push") is not None):
         out += ["--cache-mesh-fast-plane-push", str(settings["cache_mesh_fast_plane_push"])]
     if ("--client-udp-bind" in node_args
@@ -2414,6 +2418,16 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         if role == "distributor" and service is None and not slot_forwarder:
             raise ValueError(f"{node['name']}: the compiled plan has no relay service for it")
         args = common_mesh_args(node, settings, state)
+        if role in ("backbone", "distributor") and not slot_forwarder:
+            args += relay_args(service)
+            # The contributor sends repair on its primary lane too: the
+            # backbone at the end of that lane admits it.
+            if (classes["relay_repair_both_lanes"]
+                    and service["primary_parent"]["parent_node_id"] == "contrib"
+                    and "--relay-primary-promoted" not in flag_names(
+                        args + list(settings[f"extra_{role}_args"]))):
+                args.append("--relay-primary-promoted")
+            args += direct_mesh.get(node["name"], [])
         if slot_forwarder:
             # dist-c: a cache-mesh parent of its site's edges, fed as a
             # fast-plane lease child of its site's first two distributors;
@@ -2432,25 +2446,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
                 args += yield_to(extra, pairs)
             if classes["relay_class_split"]:
                 args += yield_to(extra, fast_forwarder_args(None, settings))
-            if "--client-udp-bind" in args:
-                args += yield_to(extra, ["--client-udp-fast-lane",
-                                         flag(classes["client_udp_fast_lane"])])
-            args += yield_to(extra, mesh_class_args(node, args, classes)) + extra
-            rendered[node["name"]] = {
-                "service": "needletail-mesh", "args": args,
-                "rust_log": settings["rust_log_mesh"]}
-            continue
-        if role in ("backbone", "distributor"):
-            args += relay_args(service)
-            # The contributor sends repair on its primary lane too: the
-            # backbone at the end of that lane admits it.
-            if (classes["relay_repair_both_lanes"]
-                    and service["primary_parent"]["parent_node_id"] == "contrib"
-                    and "--relay-primary-promoted" not in flag_names(
-                        args + list(settings[f"extra_{role}_args"]))):
-                args.append("--relay-primary-promoted")
-            args += direct_mesh.get(node["name"], [])
-        if role == "backbone":
+        elif role == "backbone":
             args += ["--mesh-bind", f"0.0.0.0:{MESH_PORT}", "--edge-webtransport"]
             extra = list(settings["extra_backbone_args"])
         elif role == "distributor":
@@ -2470,6 +2466,9 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
                 given = flag_names(extra)
                 args += [switch for switch in switches if switch not in given]
                 args += yield_to(extra, pairs)
+        # The tail of every av-mesh service, slot forwarders included (wave 7
+        # review C5: a slot rendered without the wave 7 flags would run the
+        # binaries' defaults while the other forwarders run the settings).
         if "--client-udp-bind" in args:
             args += yield_to(extra, ["--client-udp-fast-lane",
                                      flag(classes["client_udp_fast_lane"])])

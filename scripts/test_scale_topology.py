@@ -396,7 +396,8 @@ class Render(Base):
         back (low-latency check_cache_mesh_peers). A standby edge or a slot
         not in service is not rendered: a distributor of its site that lists
         it passes (it lists the distributor when it starts); an edge that
-        lists another edge would not be listed back, and is refused."""
+        lists another edge would not be listed back, and is refused. The slot
+        forwarders render the wave 7 settings like the other forwarders."""
         full, _plan, args = self.render(SCALE, FIRST_CURVE + [
             'cache_mesh_fast_plane_push="secondary"', "client_udp_compact_short_header=false"])
         roster = self.active["roster"]
@@ -406,6 +407,14 @@ class Render(Base):
         with self.assertRaises(ValueError) as caught:
             self.render(SCALE, FIRST_CURVE + [f'extra_edge_args=["--peer","{held}"]'])
         self.assertIn("would not list", str(caught.exception))
+        full = topology_state(json.loads(SCALE.read_text()), created=("lon-dist-c",))
+        _state, _plan, args = self.render(SCALE, FIRST_CURVE + [
+            'cache_mesh_fast_plane_push="secondary"', "client_udp_compact_short_header=false",
+            'relay_demand_renditions="auto"'], state=full)
+        for flag in ("--cache-mesh-fast-plane-push", "--client-udp-compact-short-header",
+                     "--relay-demand-renditions"):
+            self.assertEqual(deploy.flag_value(args["lon-dist-c"], flag),
+                             deploy.flag_value(args["lon-dist-a"], flag), flag)
 
     def test_warm_up_in_milliseconds(self):
         _state, _plan, args = self.render(SCALE, FIRST_CURVE + ["cache_mesh_warm_ms=4500"])

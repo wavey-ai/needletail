@@ -293,6 +293,33 @@ class Render(Base):
         self.assertEqual(value_of(args["new-dist-a"], "--relay-demand-renditions"),
                          "5001,6001,7001")
 
+    def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
+        """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
+        lon-dist-a/b, rendered on its own path) takes every wave 7 setting
+        that the other forwarders take, with the same value, and none when
+        none is given."""
+        wave7 = ("--relay-audio-copies", "--cache-mesh-fast-plane-push",
+                 "--relay-demand-renditions", "--relay-compact-audio",
+                 "--client-udp-compact-short-header")
+        _program, _plan, args = self.render()
+        self.assertIn("lon-dist-c", args)
+        for flag in wave7:
+            self.assertNotIn(flag, args["lon-dist-c"], flag)
+        _program, _plan, args = self.render([
+            'relay_audio_copies="policy"', 'cache_mesh_fast_plane_push="secondary"',
+            'relay_demand_renditions="auto"', "relay_compact_audio=false",
+            "client_udp_compact_short_header=false"])
+        given = {flag: value_of(args["lon-dist-a"], flag) for flag in wave7
+                 if flag in args["lon-dist-a"]}
+        self.assertEqual(sorted(given), ["--cache-mesh-fast-plane-push",
+                                         "--client-udp-compact-short-header",
+                                         "--relay-demand-renditions"])
+        for name in ("lon-dist-b", "lon-dist-c", "new-dist-a"):
+            self.assertEqual({flag: value_of(args[name], flag) for flag in wave7
+                              if flag in args[name]}, given, name)
+            for flag in given:
+                self.assertEqual(args[name].count(flag), 1, (name, flag))
+
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
         program, plan, _args = self.render()
         self.assertEqual(program["forwarding"], "merged")
