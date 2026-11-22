@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Tests of the large audio mesh's deploy plan (spec-scale part M): the
 topology files are what scripts/scale_topology.py generates, dedicated plans
-only, Sydney first; the deploy tool renders topology-scale.json and its
-eight-edge London variant in the merged topology (every edge fed by its
+only, Sydney first; the deploy tool renders topology-scale.json (the
+referee's plan: eight London edges, four on standby for the first curve) in
+the merged topology (every edge fed by its
 site's two forwarders on the fast plane and the cache mesh, the cache mesh's
 children raised to the site's edges, no class port collision, distinct
 fast-lane ranks); standby edges are left out of the render and stopped;
@@ -44,7 +45,9 @@ ROUTES = {"best_direct_rtt_us": 250000, "primary_rtt_us": 250000, "primary_jitte
           "secondary_rtt_us": 260000, "secondary_jitter_us": 1000}
 FILES = scale_topology.OUT
 SCALE = FILES / "topology-scale.json"
-SCALE_LON8 = FILES / "topology-scale-lon8.json"
+LONDON_EDGES = [f"lon-edge-{index}" for index in range(1, 9)]
+STANDBY = [f"lon-edge-{index}" for index in range(5, 9)]
+FIRST_CURVE = [f"standby_edges={json.dumps(STANDBY)}"]
 
 
 def topology_state(topology: dict) -> dict:
@@ -85,15 +88,21 @@ class Files(unittest.TestCase):
         for node in nodes:
             by_site.setdefault(node["site"], {}).setdefault(node["role"], []).append(node)
         self.assertEqual(sorted(by_site), ["london", "newyork", "sydney", "tokyo"])
+        # The referee's plan: 20 edges, eight in London; four of them on
+        # standby for the first curve.
+        self.assertEqual(topology["standby_edges"], STANDBY)
+        self.assertEqual(sum(1 for node in nodes if node["role"] == "edge"), 20)
         for site, roles in by_site.items():
             self.assertEqual(len(roles["distributor"]), 2, site)
-            self.assertEqual(len(roles["edge"]), 4, site)
+            self.assertEqual(len(roles["edge"]), 8 if site == "london" else 4, site)
             self.assertTrue(all(node["type"] == "g6-dedicated-2"
                                 for node in roles["distributor"] + roles["edge"]), site)
             listeners = [node for node in roles["load"] if node.get("purpose") == "listeners"]
             vcpus = sum(deploy.node_vcpus(node) for node in listeners)
             self.assertEqual(vcpus, 16, site)
-            self.assertTrue(all(not node.get("vlan_ipv4") for node in listeners), site)
+            # Listener and view hosts read the edges over the VLAN (not
+            # billed); every one has an address there.
+            self.assertTrue(all(node.get("vlan_ipv4") for node in roles["load"]), site)
             self.assertEqual([node["name"] for node in roles["load"]
                               if node.get("purpose") == "view"], [f"{site[:3]}-view"
                                                                   if site != "newyork"
@@ -107,11 +116,23 @@ class Files(unittest.TestCase):
         self.assertEqual([node["purpose"] for node in nodes if node["name"] == "lon-src"],
                          ["source"])
 
+    def test_the_referees_plan_and_its_price(self):
+        topology = json.loads(SCALE.read_text())
+        price = {"g6-dedicated-2": 0.054, "g6-dedicated-4": 0.108, "g6-dedicated-8": 0.216}
+        counts: dict[str, int] = {}
+        for node in topology["nodes"]:
+            counts[node["type"]] = counts.get(node["type"], 0) + 1
+        # 47 nodes in the referee's plan; Sydney's two g6-dedicated-8 are four
+        # g6-dedicated-4 here (no capacity on 22 Nov): 49 nodes, same price.
+        self.assertEqual(counts, {"g6-dedicated-2": 33, "g6-dedicated-4": 10,
+                                  "g6-dedicated-8": 6})
+        self.assertAlmostEqual(sum(price[node["type"]] for node in topology["nodes"]), 4.158)
+
     def test_variants_and_refusals(self):
-        lon8 = json.loads(SCALE_LON8.read_text())
+        lon8 = json.loads(SCALE.read_text())
         edges = [node["name"] for node in lon8["nodes"]
                  if node["role"] == "edge" and node["site"] == "london"]
-        self.assertEqual(edges, [f"lon-edge-{index}" for index in range(1, 9)])
+        self.assertEqual(edges, LONDON_EDGES)
         # The edge addresses skip the source host's .30.
         addresses = [node["vlan_ipv4"] for node in lon8["nodes"] if node["name"] in edges]
         self.assertNotIn("10.80.1.30/24", addresses)
@@ -121,8 +142,11 @@ class Files(unittest.TestCase):
         self.assertEqual(len(hosts), len(set(hosts)))
         three = scale_topology.scale_topology(sites=("london", "newyork", "tokyo"))
         self.assertNotIn("sydney", {node["site"] for node in three["nodes"]})
+        four = scale_topology.scale_topology(edges={})
+        self.assertEqual(four["standby_edges"], [])
         for bad in ({"sites": ("newyork", "tokyo")}, {"edges": {"mars": 2}},
-                    {"edges": {"london": 0}}, {"load_type": "g6-standard-8"}):
+                    {"edges": {"london": 0}}, {"load_type": "g6-standard-8"},
+                    {"standby": {"london": 8}}):
             with self.assertRaises(ValueError, msg=bad):
                 scale_topology.scale_topology(**bad)
 
@@ -183,7 +207,7 @@ class Render(Base):
                          [len(edges) // 2, len(edges) - len(edges) // 2])
 
     def test_the_scale_topology_renders_in_the_merged_shape(self):
-        state, plan, args = self.render(SCALE)
+        state, plan, args = self.render(SCALE, FIRST_CURVE)
         nodes = state["nodes"]
         self.assertEqual(deploy.flag_value(args["contrib-lon"], "--relay-primary-id"), "lon-dist-a")
         self.assertEqual(deploy.flag_value(args["contrib-lon"], "--relay-secondary-id"),
@@ -198,6 +222,7 @@ class Render(Base):
         for site in ("london", "newyork", "tokyo", "sydney"):
             edges = sorted(name for name, node in nodes.items()
                            if node["role"] == "edge" and node["site"] == site)
+            edges = [name for name in edges if name not in STANDBY]
             self.assertEqual(len(edges), 4)
             self.check_site(state, args, site, edges)
         # Only the mesh services are rendered: load hosts and LiveKit are not.
@@ -210,7 +235,8 @@ class Render(Base):
             self.assertEqual(len({port for _, port in sockets}), len(sockets), name)
 
     def test_eight_london_edges(self):
-        state, _plan, args = self.render(SCALE_LON8)
+        # The second curve: no standby edge.
+        state, _plan, args = self.render(SCALE)
         edges = [f"lon-edge-{index}" for index in range(1, 9)]
         self.check_site(state, args, "london", edges)
 
@@ -221,14 +247,14 @@ class Render(Base):
         self.check_site(state, args, "london", [f"lon-edge-{index}" for index in range(1, 13)])
 
     def test_standby_edges_are_left_out_and_stopped(self):
-        standby = [f"lon-edge-{index}" for index in range(5, 9)]
-        state, _plan, args = self.render(
-            SCALE_LON8, [f"standby_edges={json.dumps(standby)}"])
+        standby = STANDBY
+        state, _plan, args = self.render(SCALE, FIRST_CURVE)
         for name in standby:
             self.assertNotIn(name, args)
         self.check_site(state, args, "london", [f"lon-edge-{index}" for index in range(1, 5)])
         # Their London mates render as on the four-edge file.
-        _s, _p, four = self.render(SCALE)
+        _s, _p, four = self.render(SCALE, state=topology_state(
+            scale_topology.scale_topology(edges={})))
         for name in ("lon-dist-a", "lon-dist-b", "lon-edge-1", "lon-edge-4"):
             self.assertEqual(flag_values(args[name], "--peer"), flag_values(four[name], "--peer"))
         sent = []
@@ -321,13 +347,10 @@ class LabTool(unittest.TestCase):
         hourly, problems = lab_tool.topology_cost(json.loads(SCALE.read_text()), self.TYPES,
                                                   self.REGIONS)
         self.assertEqual(problems, [])
-        self.assertAlmostEqual(hourly, 3.942, places=3)
-        hourly, _ = lab_tool.topology_cost(json.loads(SCALE_LON8.read_text()), self.TYPES,
-                                           self.REGIONS)
         self.assertAlmostEqual(hourly, 4.158, places=3)
         topology = lab_tool.without_sites(json.loads(SCALE.read_text()), ["sydney"])
         hourly, _ = lab_tool.topology_cost(topology, self.TYPES, self.REGIONS)
-        self.assertAlmostEqual(hourly, 3.942 - 0.918, places=3)
+        self.assertAlmostEqual(hourly, 4.158 - 0.918, places=3)
 
     def test_capacity_and_shared_plans_are_named(self):
         topology = json.loads(SCALE.read_text())
@@ -354,6 +377,7 @@ class LabTool(unittest.TestCase):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         base = lab_tool.without_sites(json.loads(SCALE.read_text()), ["sydney"])
+        base["nodes"] = [node for node in base["nodes"] if node["name"] not in STANDBY]
         state = {"run_id": "t", "tag": "t", "image": "linode/debian13", "hourly_usd": 0,
                  "firewall_id": 1, "sites_left_out": ["sydney"],
                  "nodes": {node["name"]: {**node, "hourly_usd": 0.054}
@@ -366,7 +390,7 @@ class LabTool(unittest.TestCase):
             def list_all(self, endpoint, tag=None):
                 return list((LabTool.TYPES if "types" in endpoint else LabTool.REGIONS).values())
 
-        args = argparse.Namespace(state=str(path), topology=str(SCALE_LON8), without_sites="",
+        args = argparse.Namespace(state=str(path), topology=str(SCALE), without_sites="",
                                   ssh_public_key="unused")
         with mock.patch.object(lab_tool, "Api", FakeApi), \
                 mock.patch.object(lab_tool, "MAX_NODES", 100), \

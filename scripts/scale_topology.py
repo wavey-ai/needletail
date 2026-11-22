@@ -6,16 +6,27 @@ The merged topology (relay and distributor are one forwarder), audio only, in
 London, New York, Tokyo and Sydney:
 
   per region   two forwarders (`<site>-dist-a`, `-b`, g6-dedicated-2), N edges
-               (`<site>-edge-1`..N, g6-dedicated-2), M listener load hosts
-               (`<site>-load-1`..M: needletail-load and ntcmp, no VLAN; the
-               listeners come over the public network as real ones do), one
-               view host for the full probes (`<site>-view`, g6-dedicated-4,
-               as the comparison's) and one self-hosted LiveKit SFU
-               (`<site>-lk`, g6-dedicated-2)
+               (`<site>-edge-1`..N, g6-dedicated-2; eight in London, four
+               elsewhere), M listener load hosts (`<site>-load-1`..M:
+               needletail-load and ntcmp), one view host for the full probes
+               (`<site>-view`, g6-dedicated-4, as the comparison's) and one
+               self-hosted LiveKit SFU (`<site>-lk`, g6-dedicated-2). The
+               listener and view hosts are on the region's VLAN (.100 up)
+               and read the edges there: Linode does not bill VLAN traffic,
+               and 5,000 UDP listeners of 1 ms PCM over the public network
+               would be about 28 Gbit/s, 12 TB an hour of billed transfer
   London       the contributor alone on a g6-dedicated-4 (`contrib-lon`), the
                source host (`lon-src`, g6-dedicated-4) and the Redis of the
                LiveKit multi-region set (`lk-redis`, g6-dedicated-2), which the
                comparison's LiveKit installer needs
+
+This is the referee's plan (needletail-compare target/compare/scale-plan.md)
+node for node, but for Sydney's listener hosts: four g6-dedicated-4 in place
+of two g6-dedicated-8, which Sydney had no capacity for on 22 November (lab
+`check`), the same vCPUs at the same price. London's edges 5 to 8 are the
+second curve's: the document names them in `standby_edges`, which the
+first curve deploys with (scale-run.py settings), and the second restarts
+them in (scale-run.py settings --second-curve).
 
 Sydney's nodes come first: the comparison's lab tool creates the first
 region of a topology before any other and stops at the first refusal, and
@@ -59,6 +70,14 @@ LOAD_TYPE = "g6-dedicated-8"
 LOAD_HOSTS = 2
 LOAD_BY_SITE = {"sydney": (4, "g6-dedicated-4")}
 EDGES = 4
+# Edges of a site other than EDGES, and the edges of each site that the first
+# curve holds out (deploy setting standby_edges): twice the edges in London
+# for the second curve.
+EDGES_BY_SITE = {"london": 8}
+STANDBY_BY_SITE = {"london": 4}
+# VLAN host numbers of the view host and the listener hosts (above the edges).
+VIEW_HOST = 100
+LOAD_HOST_BASE = 101
 # VLAN host numbers: forwarders .11/.12, edges .21 up (at most 40 edges),
 # contributor .5, source .30 (as in topology-merged.json; the edges stop
 # short of it below 9 edges and skip it above).
@@ -77,17 +96,28 @@ def edge_host(index: int) -> int:
 def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int] | None = None,
                    load_hosts: int = LOAD_HOSTS, load_type: str = LOAD_TYPE,
                    load_by_site: dict[str, tuple[int, str]] | None = None,
-                   view_hosts: bool = True, livekit: bool = True) -> dict:
+                   view_hosts: bool = True, livekit: bool = True,
+                   standby: dict[str, int] | None = None) -> dict:
     """The topology document for `sites` (London must be one: the contributor
     is there), `edges` per site (default EDGES), `load_hosts` listener hosts
     of `load_type` per site, or (count, type) of a site in `load_by_site`
-    (default LOAD_BY_SITE)."""
+    (default LOAD_BY_SITE). `edges` None is EDGES_BY_SITE; `standby` (None:
+    STANDBY_BY_SITE) is how many of a site's last edges the document names in
+    `standby_edges`, held out of the first curve."""
     if "london" not in sites:
         raise ValueError("the contributor's site, london, must be in the topology")
     unknown = [site for site in sites if site not in SITES]
     if unknown:
         raise ValueError(f"unknown sites {unknown}; known: {', '.join(SITES)}")
-    edges = dict(edges or {})
+    if edges is None:
+        edges = {site: count for site, count in EDGES_BY_SITE.items() if site in sites}
+    edges = dict(edges)
+    if standby is None:
+        standby = {site: count for site, count in STANDBY_BY_SITE.items()
+                   if site in sites and edges.get(site, EDGES) > count}
+    for site, count in standby.items():
+        if site not in sites or not 0 <= count < edges.get(site, EDGES):
+            raise ValueError(f"{site}: {count} standby edges; it must keep one in service")
     for site, count in edges.items():
         if site not in sites:
             raise ValueError(f"edges given for {site}, which is not in the topology")
@@ -127,30 +157,42 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
             add(f"{short}-edge-{index}", "edge", MESH_TYPE, edge_host(index))
         count, kind = load[site]
         for index in range(1, count + 1):
-            add(f"{short}-load-{index}", "load", kind, purpose="listeners")
+            add(f"{short}-load-{index}", "load", kind, LOAD_HOST_BASE + index - 1,
+                purpose="listeners")
         if view_hosts:
-            add(f"{short}-view", "load", VIEW_TYPE, purpose="view")
+            add(f"{short}-view", "load", VIEW_TYPE, VIEW_HOST, purpose="view")
         if livekit:
             add(f"{short}-lk", "livekit", LIVEKIT_TYPE)
             if site == "london":
                 add("lk-redis", "livekit", LIVEKIT_TYPE)
     counts = {site: edges.get(site, EDGES) for site in ordered}
+    held = [f"{SITES[site][1]}-edge-{index}" for site in ordered
+            for index in range(counts[site] - standby.get(site, 0) + 1, counts[site] + 1)]
     description = (
         "The large audio mesh of the scale run (owner, 22 November 2026: \"test on a larger "
         "deployed mesh\", \"with simulated users too\", audio only), merged topology: in each "
         f"region two forwarders and {', '.join(f'{n} edges in {s}' for s, n in counts.items())}, "
         "all g6-dedicated-2; listener load hosts "
         + ", ".join(f"{load[s][0]} x {load[s][1]} in {s}" for s in ordered) + " "
-        "(needletail-load for the UDP listeners, ntcmp for the LL-HLS ones; no VLAN: listeners "
-        "come over the public network), a g6-dedicated-4 view host for the full probes and a "
-        "self-hosted LiveKit SFU (g6-dedicated-2) per region; the contributor alone on a "
+        "(needletail-load for the UDP listeners, ntcmp for the LL-HLS ones) and a g6-dedicated-4 "
+        "view host for the full probes, on the region's VLAN (Linode does not bill VLAN traffic; "
+        "5,000 UDP listeners of 1 ms PCM over the public network would be about 12 TB an hour "
+        "of billed transfer), and a self-hosted LiveKit SFU (g6-dedicated-2) per region; the "
+        "contributor alone on a "
         "g6-dedicated-4 in London with its source host lon-src. Dedicated plans only. Sydney "
         "first: the region short of capacity is created first; the run works without it "
-        "(lab up --optional-sites sydney, or --without-sites sydney). Generated by scripts/scale_topology.py; the plan, the cost and "
+        "(lab up --optional-sites sydney, or --without-sites sydney). "
+        + (f"Standby edges ({', '.join(held)}): created, held out of the first curve by the "
+           "deploy setting standby_edges, restarted in for the second. " if held else "")
+        + "The referee's plan (needletail-compare target/compare/scale-plan.md) node for node, "
+        "but for Sydney's listener hosts: four g6-dedicated-4 for two g6-dedicated-8, which "
+        "Sydney had no capacity for on 22 November; same vCPUs, same price. Generated by "
+        "scripts/scale_topology.py; the plan, the cost and "
         "the steps are in deploy/low-latency/SCALE.md.")
     return {
         "description": description,
         "image": "linode/debian13",
+        "standby_edges": held,
         "scale": {"sites": ordered, "edges": counts,
                   "load_hosts": {site: {"count": load[site][0], "type": load[site][1]}
                                  for site in ordered}},
@@ -161,8 +203,6 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
 # The committed files: (file name, arguments of scale_topology).
 VARIANTS = {
     "topology-scale.json": {},
-    # The second curve: twice the edges in London (`lab grow`, then push).
-    "topology-scale-lon8.json": {"edges": {"london": 8}},
 }
 
 
@@ -196,7 +236,7 @@ def main() -> None:
             print(f"wrote {OUT / name}")
         return
     try:
-        document = scale_topology(tuple(args.sites.split(",")), parse_edges(args.edges_in),
+        document = scale_topology(tuple(args.sites.split(",")), parse_edges(args.edges_in) or None,
                                   args.load_hosts, args.load_type)
     except ValueError as error:
         sys.exit(str(error))
