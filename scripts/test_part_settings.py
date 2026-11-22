@@ -178,8 +178,13 @@ class Settings(unittest.TestCase):
         # av-mesh has no --relay-direct-peer / --relay-direct-id: a
         # distributor rendered with them would not start.
         with self.assertRaises(SystemExit) as caught:
-            self.load(["contributor_direct_region=true"])
+            self.load(["topology=legacy", "contributor_direct_region=true"])
         self.assertIn("relay-direct-peer", str(caught.exception))
+        # The merged topology (the default) feeds the contributor's site
+        # directly already.
+        with self.assertRaises(SystemExit) as caught:
+            self.load(["topology=merged", "contributor_direct_region=true"])
+        self.assertIn("merged topology", str(caught.exception))
         settings, _ = self.load()
         self.assertFalse(settings["contributor_direct_region"])
         with self.assertRaises(ValueError):

@@ -12,6 +12,12 @@ the deploy tool's host qdisc where the kernel allows it (`host_qdisc`: a prio
 child of the netem, audio first). Every service runs in its own cgroup with
 the limits of a g6-dedicated-2: two CPUs and 4 GB, no swap.
 
+The relay DAG is the deploy tool's `topology` setting. "merged" (the
+default, low-latency item 4): the contributor feeds lon-dist-a and
+lon-dist-b, which feed new-dist-a and new-dist-b crossed; the two backbone
+namespaces stay empty (no service). `up topology=legacy` puts the backbone
+relays relay-primary and relay-secondary between them again.
+
 Nothing needs root. The namespaces belong to a rootless user namespace, and
 the cgroups are scopes of the user's systemd manager.
 
@@ -724,7 +730,11 @@ def unit_name(name: str) -> str:
 def start_service(name: str, limits: dict | None = None, env: dict | None = None,
                   extra_args: list[str] | None = None) -> int:
     """Start the service of a node in its namespace and in its own cgroup."""
-    item = load("rendered.json")[name]
+    item = load("rendered.json").get(name)
+    if item is None:
+        raise LabError(f"{name} has no service in this lab's topology"
+                       + (" (merged: no backbone relay; up topology=legacy)"
+                          if node(name)["role"] == "backbone" else ""))
     limits = {**default_limits(name), **(limits or load("limits.json").get(name, {}))}
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     log = open(WORK / "logs" / f"{name}.log", "ab")
@@ -870,7 +880,8 @@ def up(overrides: list[str], start: bool = True) -> dict:
     if not start:
         return rendered
     for role in ("backbone", "distributor", "edge", "contributor"):
-        for name in names(role):
+        # The merged topology renders no backbone relay.
+        for name in [name for name in names(role) if name in rendered]:
             start_service(name)
         time.sleep(1.0)
     time.sleep(1.0)
@@ -1277,7 +1288,9 @@ def status() -> None:
     for name, role, site, *_ in NODES:
         pid = service_pid(name)
         if pid is None:
-            print(f"{name:16} {role:12} not running")
+            unused = role == "backbone" and name not in load("rendered.json")
+            print(f"{name:16} {role:12} " + ("not used by the topology" if unused
+                                             else "not running"))
             continue
         directory = cgroup_dir(name)
         stats = read_cgroup(directory) if directory else {}

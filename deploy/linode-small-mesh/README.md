@@ -31,6 +31,41 @@ Each distributor is a relay-DAG leaf with two parents. It packages LL-HLS
 locally and pushes cache objects to the edges of its region over the VLAN.
 Edges are not DAG members and send no media to another node.
 
+### Merged topology (the default)
+
+The diagram above is `--set topology=legacy`. By default (`topology` `merged`,
+low-latency item 4) relay and distributor are one forwarder:
+
+```text
+contributor --(VLAN, source lane)--------------> lon-dist-a --+--(cache mesh)--> London edges
+     +------(VLAN, source-and-repair lane)-----> lon-dist-b --+
+lon-dist-a --(public, source)--> new-dist-a <--(public, repair + failover)-- lon-dist-b
+lon-dist-b --(public, source)--> new-dist-b <--(public, repair + failover)-- lon-dist-a
+```
+
+- The two distributors of the contributor's site (by name) are the first
+  forwarders. The contributor's two compiled lanes end there and nowhere else.
+  No `--relay-direct-target` is rendered, and `contributor_direct_region` is
+  refused.
+- Every other distributor is a regional relay fed by both first forwarders,
+  crossed: the first of a site has `lon-dist-a` as primary and `lon-dist-b` as
+  secondary (repair lane, failover control), and the next has the mirror.
+- London has three links: contributor, distributor, edge, reader.
+- No backbone relay is used. `plan` names any in the lab, and `push` and
+  `restart` stop their service. `deploy/low-latency/topology-merged.json` is
+  the dedicated lab without them.
+- Edges stay on the regional cache mesh in both topologies.
+- Both parents of a remote forwarder are in London, so the program declares
+  each such node in `shared_domain_parents`. The compiled plan records it as
+  the production-readiness gap `shared_parent_failure_domain:<node>`, and
+  production refuses it. The compiler's merged rules are
+  `origin_child_not_region_first_forwarder`, `dual_parent_required` and
+  `forwarder_edge_fanout_exceeded`. `plan` refuses a site with more edges than
+  `max_edges_per_forwarder` (16), because the extra level of regional relays
+  is not built yet.
+- Routes are measured again when `routes.json` was measured over the other
+  topology. `hunt` probes the links from the first forwarders.
+
 | File | Nodes | Regions |
 | --- | ---: | --- |
 | `topology-core.json` | 13 | London, New York |

@@ -577,7 +577,11 @@ def edge_restart_no_drain(ctx):
 
 def one_node_fault(name, target, kind, question, criterion, host=LON_READERS,
                    entries=None, hold=14, heal_after=12, seconds=55, expect="clean"):
-    @scenario(name, "node", question, criterion)
+    # The backbone relays run only in the legacy topology (the merged one,
+    # the default, has none).
+    needs = ["topology=legacy"] if lab.node(target)["role"] == "backbone" else None
+
+    @scenario(name, "node", question, criterion, needs=needs)
     def run(ctx):
         jobs = play(ctx, seconds, host=host, entries=entries)
         ctx.at(hold)
@@ -1553,6 +1557,9 @@ def many_streams(ctx, tracks: int) -> None:
     time.sleep(10)
     roles = {"contributor": "contrib-lon", "relay": "relay-primary",
              "distributor": "lon-dist-a", "edge": "lon-edge-1"}
+    if lab.service_pid("relay-primary") is None:
+        # The merged topology: lon-dist-a is the first relay.
+        roles.pop("relay")
     before = {role: cpu_seconds(name) for role, name in roles.items()}
     began = time.time()
     jobs = album_readers(ctx, 40, album_of(tracks), cache="lon-edge-1")

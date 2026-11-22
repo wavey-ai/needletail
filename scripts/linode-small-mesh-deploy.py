@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Deploy the Needletail mesh onto the small-instance Linode lab.
 
-The relay DAG (contributor -> two backbone relays -> regional distributors) is
-described by a generated relay program and compiled by `needletail-compile`,
-exactly as the larger qualification labs do. Regional playback edges are not
-DAG members: they join their region's LL-HLS cache mesh over the private VLAN
-and receive cache objects from the two regional distributors.
+The relay DAG is described by a generated relay program and compiled by
+`needletail-compile`, exactly as the larger qualification labs do. Its shape
+is the `topology` setting: "merged" (the default; low-latency item 4) makes
+relay and distributor one forwarder: contributor -> the two distributors of
+its site -> every other distributor, fed by both of them; "legacy" is
+contributor -> two backbone relays -> every distributor. Regional playback
+edges are not DAG members: they join their region's LL-HLS cache mesh over
+the private VLAN and receive cache objects from the two regional
+distributors.
 
 Subcommands:
   plan      measure routes, generate the relay program, compile it, and render
@@ -148,6 +152,23 @@ DEFAULT_SETTINGS = {
     # them would not start), and it rejects and logs every datagram from an
     # address that is not a backbone parent. See AV_MESH_DIRECT_PARENT.
     "contributor_direct_region": False,
+    # The relay DAG (low-latency item 4). "merged": relay and distributor are
+    # one forwarder. The two distributors of the contributor's site (by
+    # name) are the first forwarders, fed by the contributor directly on its
+    # two lanes, and every other distributor is a regional relay fed by both
+    # of them, crossed (the first of a site: primary the first forwarder,
+    # secondary the second; the next the mirror), with a repair lane and
+    # failover control from its secondary. Three links in the contributor's
+    # region: contributor -> distributor -> edge -> reader. Backbone relays
+    # are not used: a node of role backbone gets no service, and push and
+    # restart stop the one that runs. "legacy": contributor -> the
+    # *-primary and *-secondary backbone relays -> every distributor.
+    # Edges stay on the regional cache mesh in both.
+    "topology": "merged",
+    # Edges of a site that its distributors feed in the merged topology;
+    # past it the site would need a level of regional relays, which the
+    # deploy does not build yet, so plan refuses.
+    "max_edges_per_forwarder": 16,
     "failover_primary_silence_ms": 100,
     "failover_primary_recovery_ms": 500,
     "failover_secondary_warm_ms": 300,
@@ -287,11 +308,41 @@ CONTRIB_DIRECT_PORT = 22303
 AV_MESH_DIRECT_PARENT = False
 
 
+TOPOLOGIES = ("legacy", "merged")
+
+
+def topology_mode(settings: dict) -> str:
+    """The `topology` setting, checked; a settings file saved before it
+    existed is merged, the default."""
+    mode = settings.get("topology") or DEFAULT_SETTINGS["topology"]
+    if mode not in TOPOLOGIES:
+        raise ValueError(f"topology {mode!r} is not one of {', '.join(TOPOLOGIES)}")
+    edges_per_forwarder(settings)
+    return mode
+
+
+def edges_per_forwarder(settings: dict) -> int:
+    """The `max_edges_per_forwarder` setting, checked (absent: the default)."""
+    value = settings.get("max_edges_per_forwarder")
+    try:
+        edges = int(DEFAULT_SETTINGS["max_edges_per_forwarder"] if value is None else value)
+    except (TypeError, ValueError):
+        raise ValueError("max_edges_per_forwarder is not a whole number") from None
+    if edges < 1:
+        raise ValueError("max_edges_per_forwarder must be positive")
+    return edges
+
+
 def check_settings(settings: dict) -> None:
     """Raise ValueError for settings the services cannot run with: the part
-    settings (part_plan), contributor_direct_region and the class isolation
-    settings (class_plan)."""
+    settings (part_plan), the topology, contributor_direct_region and the
+    class isolation settings (class_plan)."""
     part_plan(settings)
+    mode = topology_mode(settings)
+    if mode == "merged" and settings.get("contributor_direct_region"):
+        raise ValueError("contributor_direct_region is the legacy topology's direct lane; the "
+                         "merged topology feeds the distributors of the contributor's site "
+                         "directly already. Leave it false")
     if settings.get("contributor_direct_region") and not AV_MESH_DIRECT_PARENT:
         raise ValueError("contributor_direct_region needs av-mesh --relay-direct-peer and "
                          "--relay-direct-id, which av-mesh does not have yet; a distributor "
@@ -657,15 +708,73 @@ def backbone(state: dict) -> tuple[dict, dict]:
     return primary[0], secondary[0]
 
 
-def build_program(state: dict, settings: dict, routes: dict) -> dict:
+def relay_tree(state: dict, settings: dict) -> dict:
+    """Who feeds whom in the relay DAG of the `topology` setting:
+    - "first": the contributor's two children, the source lane's and the
+      source-and-repair lane's (legacy: the *-primary and *-secondary
+      backbones; merged: the two distributors of the contributor's site, by
+      name), at level 1;
+    - "children": every other relaying node at level 2, each with its
+      "primary" and "secondary" parent and its "index" (its ports: receiver
+      22200/22201 + 10 x index, the parents' senders 22401/22402 + 10 x
+      index, failover 22501/22502 + 10 x index);
+    - "unused": the backbone relays that the topology does not use.
+    Exits when the state cannot carry the topology."""
+    mode = topology_mode(settings)
     contributors = common.nodes_by_role(state, "contributor")
     if len(contributors) != 1:
         sys.exit("the lab needs exactly one contributor")
     contrib = contributors[0]
-    primary, secondary = backbone(state)
     distributors = common.nodes_by_role(state, "distributor")
     if not distributors:
         sys.exit("the lab needs at least one distributor")
+    if mode == "legacy":
+        primary, secondary = backbone(state)
+        children = [{"node": node, "primary": primary, "secondary": secondary, "index": index}
+                    for index, node in enumerate(distributors)]
+        return {"mode": mode, "contrib": contrib, "first": [primary, secondary],
+                "children": children, "unused": []}
+    local = [node for node in distributors if node["site"] == contrib["site"]]
+    if len(local) < 2:
+        sys.exit(f"the merged topology needs two distributors at the contributor's site "
+                 f"{contrib['site']} (its first forwarders); found {len(local)}. "
+                 "Use --set topology=legacy")
+    first = local[:2]
+    others = [node for node in distributors if node not in first]
+    children = []
+    by_site: dict[str, int] = {}
+    for index, node in enumerate(sorted(others, key=lambda item: (item["site"], item["name"]))):
+        rank = by_site.get(node["site"], 0)
+        by_site[node["site"]] = rank + 1
+        primary, secondary = first if rank % 2 == 0 else first[::-1]
+        children.append({"node": node, "primary": primary, "secondary": secondary,
+                         "index": index})
+    return {"mode": mode, "contrib": contrib, "first": first, "children": children,
+            "unused": common.nodes_by_role(state, "backbone")}
+
+
+def check_edge_fanout(state: dict, settings: dict) -> None:
+    """Exit when a site of the merged topology has more edges than one
+    forwarder may feed (max_edges_per_forwarder): each distributor of a
+    site feeds every edge of it, and the level of regional relays that
+    would split them is not built yet."""
+    limit = edges_per_forwarder(settings)
+    for site in sorted({node["site"] for node in common.nodes_by_role(state, "distributor")}):
+        edges = [node for node in common.nodes_by_role(state, "edge") if node["site"] == site]
+        if len(edges) > limit:
+            sys.exit(f"site {site} has {len(edges)} edges; a forwarder of the merged topology "
+                     f"feeds at most max_edges_per_forwarder={limit}, and the level of "
+                     "regional relays that would split them is not built yet")
+
+
+def build_program(state: dict, settings: dict, routes: dict) -> dict:
+    tree = relay_tree(state, settings)
+    merged = tree["mode"] == "merged"
+    if merged:
+        check_edge_fanout(state, settings)
+    contrib = tree["contrib"]
+    primary, secondary = tree["first"]
+    distributors = common.nodes_by_role(state, "distributor")
 
     def domain(node: dict) -> dict:
         return {"provider": "linode", "region": node["region"], "asn": 63949,
@@ -708,12 +817,21 @@ def build_program(state: dict, settings: dict, routes: dict) -> dict:
         entry = hunted.get(f"{relay_node_id(parent)}->{relay_node_id(node)}")
         return entry["port"] if entry else default
 
-    for index, node in enumerate(distributors):
+    shared_domain_parents = []
+    for child in tree["children"]:
+        node, primary, secondary = child["node"], child["primary"], child["secondary"]
         node_id = relay_node_id(node)
-        offset = index * 10
+        offset = child["index"] * 10
+        # Legacy: a distributor is a leaf of the DAG. Merged: a regional
+        # relay, which a later level (or the lease children of item 5) can
+        # forward from.
         topology_nodes.append({"node_id": node_id, "level": 2,
-                               "role": "playback_edge",
+                               "role": "regional_relay" if merged else "playback_edge",
                                "failure_domain": domain(node)})
+        if domain(primary) == domain(secondary):
+            # Both first forwarders share the contributor's region: a
+            # declared gap of the compiled plan, never a silent pass.
+            shared_domain_parents.append(node_id)
         parent_links.append({"parent_node_id": relay_node_id(primary),
                              "child_node_id": node_id, "role": "primary"})
         parent_links.append({"parent_node_id": relay_node_id(secondary),
@@ -751,7 +869,12 @@ def build_program(state: dict, settings: dict, routes: dict) -> dict:
             "loss_ppm": loss_ppm, "queue_delay_us": 0,
         }
 
+    shape = ({"forwarding": "merged", "shared_domain_parents": shared_domain_parents,
+              "max_edges_per_forwarder": edges_per_forwarder(settings)}
+             if merged else
+             {"shared_domain_parents": shared_domain_parents} if shared_domain_parents else {})
     return {
+        **shape,
         "purpose": "single_provider_qualification",
         "carrier": "controlled_public_udp",
         "subscription_id": 1,
@@ -873,15 +996,12 @@ def command_hunt(args: argparse.Namespace) -> None:
     """
     settings = load_settings(getattr(args, "set", None) or [])
     state = common.load_state()
-    primary, secondary = backbone(state)
-    distributors = common.nodes_by_role(state, "distributor")
-    for node in distributors + [primary, secondary]:
-        script = HUNT_RECEIVER if node["role"] == "distributor" else HUNT_SENDER
-        common.ssh(node, f"cat >/tmp/needletail-hunt.py <<'PY'\n{script}\nPY")
+    tree = relay_tree(state, settings)
     links = []
-    for index, node in enumerate(distributors):
+    for child in tree["children"]:
+        node, index = child["node"], child["index"]
         for lane, (parent, receiver_port) in enumerate((
-                (primary, 22200 + index * 10), (secondary, 22201 + index * 10))):
+                (child["primary"], 22200 + index * 10), (child["secondary"], 22201 + index * 10))):
             pair = link_addresses(parent, node)
             if pair[0] == parent.get("vlan_ipv4"):
                 continue  # same-site VLAN link: one L2 path, nothing to hunt
@@ -893,6 +1013,14 @@ def command_hunt(args: argparse.Namespace) -> None:
                 "first": 24000 + (index * 2 + lane) * 64,
                 "default": (22401 if lane == 0 else 22402) + index * 10,
             })
+    # A node sends or receives probes, never both (a first forwarder of the
+    # merged topology is a parent only): one script each.
+    receivers = {link["node"]["name"]: link["node"] for link in links}
+    senders = {link["parent"]["name"]: link["parent"] for link in links}
+    for name, node in sorted({**senders, **receivers}.items()):
+        script = HUNT_RECEIVER if name in receivers else HUNT_SENDER
+        common.ssh(node, f"cat >/tmp/needletail-hunt.py <<'PY'\n{script}\nPY")
+    distributors = [child["node"] for child in tree["children"]]
 
     def hunt_distributor(node: dict) -> dict:
         mine = [link for link in links if link["node"]["name"] == node["name"]]
@@ -941,43 +1069,62 @@ def command_hunt(args: argparse.Namespace) -> None:
     print("run `restart` to apply the selected source ports")
 
 
-def measure_routes(state: dict) -> dict:
-    """Route seeds for the adaptive RaptorQ controller: the farthest distributor."""
-    contrib = common.nodes_by_role(state, "contributor")[0]
-    primary, secondary = backbone(state)
-    distributors = common.nodes_by_role(state, "distributor")
+def measure_routes(state: dict, settings: dict | None = None) -> dict:
+    """Route seeds for the adaptive RaptorQ controller: the farthest
+    distributor, over the relay DAG of the `topology` setting (merged: a
+    first forwarder is a route of one leg)."""
+    tree = relay_tree(state, settings or DEFAULT_SETTINGS)
+    contrib = tree["contrib"]
+    first = tree["first"]
+    to_first = {}
+    for parent in first:
+        to_first[parent["name"]] = measure_rtt_us(contrib, link_addresses(contrib, parent)[1])
 
-    def route(node: dict) -> dict:
+    def route(child: dict) -> dict:
+        node = child["node"]
         direct, _ = measure_rtt_us(contrib, node["public_ipv4"])
         primary_leg, primary_jitter = measure_rtt_us(
-            primary, link_addresses(primary, node)[1])
+            child["primary"], link_addresses(child["primary"], node)[1])
         secondary_leg, secondary_jitter = measure_rtt_us(
-            secondary, link_addresses(secondary, node)[1])
+            child["secondary"], link_addresses(child["secondary"], node)[1])
+        primary_rtt, primary_first_jitter = to_first[child["primary"]["name"]]
+        secondary_rtt, secondary_first_jitter = to_first[child["secondary"]["name"]]
         return {"direct_rtt_us": direct, "primary_leg_rtt_us": primary_leg,
                 "primary_leg_jitter_us": primary_jitter,
                 "secondary_leg_rtt_us": secondary_leg,
-                "secondary_leg_jitter_us": secondary_jitter}
+                "secondary_leg_jitter_us": secondary_jitter,
+                "primary_route_rtt_us": primary_rtt + primary_leg,
+                "primary_route_jitter_us": primary_first_jitter + primary_jitter,
+                "secondary_route_rtt_us": secondary_rtt + secondary_leg,
+                "secondary_route_jitter_us": secondary_first_jitter + secondary_jitter}
 
-    per_distributor = common.parallel(distributors, route)
-    contrib_primary, contrib_primary_jitter = measure_rtt_us(
-        contrib, link_addresses(contrib, primary)[1])
-    contrib_secondary, contrib_secondary_jitter = measure_rtt_us(
-        contrib, link_addresses(contrib, secondary)[1])
-    for name, values in per_distributor.items():
-        values["primary_route_rtt_us"] = contrib_primary + values["primary_leg_rtt_us"]
-        values["secondary_route_rtt_us"] = (
-            contrib_secondary + values["secondary_leg_rtt_us"])
+    children = {child["node"]["name"]: child for child in tree["children"]}
+    per_distributor = common.parallel(
+        [child["node"] for child in tree["children"]],
+        lambda node: route(children[node["name"]])) if children else {}
+    for index, parent in enumerate(first):
+        # A first forwarder is its own route (merged), or a backbone
+        # (legacy, not a distributor: no entry).
+        if parent["role"] != "distributor":
+            continue
+        rtt, jitter = to_first[parent["name"]]
+        direct, _ = measure_rtt_us(contrib, parent["public_ipv4"])
+        per_distributor[parent["name"]] = {
+            "direct_rtt_us": direct, "primary_route_rtt_us": rtt,
+            "primary_route_jitter_us": jitter,
+            "secondary_route_rtt_us": to_first[first[1 - index]["name"]][0],
+            "secondary_route_jitter_us": to_first[first[1 - index]["name"]][1]}
     farthest = max(per_distributor.values(), key=lambda v: v["primary_route_rtt_us"])
     return {
         "measured_unix": int(time.time()),
-        "contrib_primary_rtt_us": contrib_primary,
-        "contrib_secondary_rtt_us": contrib_secondary,
+        "topology": tree["mode"],
+        "contrib_primary_rtt_us": to_first[first[0]["name"]][0],
+        "contrib_secondary_rtt_us": to_first[first[1]["name"]][0],
         "best_direct_rtt_us": farthest["direct_rtt_us"],
         "primary_rtt_us": farthest["primary_route_rtt_us"],
-        "primary_jitter_us": contrib_primary_jitter + farthest["primary_leg_jitter_us"],
+        "primary_jitter_us": farthest["primary_route_jitter_us"],
         "secondary_rtt_us": farthest["secondary_route_rtt_us"],
-        "secondary_jitter_us": (
-            contrib_secondary_jitter + farthest["secondary_leg_jitter_us"]),
+        "secondary_jitter_us": farthest["secondary_route_jitter_us"],
         "distributors": per_distributor,
     }
 
@@ -1416,6 +1563,45 @@ def check_class_ports(rendered: dict[str, dict], plan: dict) -> None:
                          f"{plan['class_port_offset']}): " + "; ".join(problems))
 
 
+def check_merged(state: dict, rendered: dict[str, dict]) -> None:
+    """Raise ValueError when a render of the merged topology is not its
+    shape: the contributor's two lanes end at two distributors of its own
+    site and it has no direct lane (--relay-direct-target) to anything; no
+    backbone relay runs; every other distributor takes its two parents
+    among those first forwarders; no edge takes a relay parent (edges stay
+    on the cache mesh). An extra argument of a role can break it."""
+    problems = []
+    contrib = common.nodes_by_role(state, "contributor")[0]
+    by_id = {relay_node_id(node): node for node in state["nodes"].values()}
+    contrib_args = rendered[contrib["name"]]["args"]
+    if "--relay-direct-target" in flag_names(contrib_args):
+        problems.append("the contributor has a --relay-direct-target")
+    first = [flag_value(contrib_args, "--relay-primary-id"),
+             flag_value(contrib_args, "--relay-secondary-id")]
+    for node_id in first:
+        node = by_id.get(node_id or "")
+        if not node or node["role"] != "distributor" or node["site"] != contrib["site"]:
+            problems.append(f"the contributor feeds {node_id}, not a distributor of "
+                            f"its site {contrib['site']}")
+    if len(set(first)) != 2:
+        problems.append(f"the contributor's two lanes end at {first}")
+    for name, item in sorted(rendered.items()):
+        node = state["nodes"][name]
+        args = item["args"]
+        if node["role"] == "backbone":
+            problems.append(f"{name}: a backbone relay is rendered")
+        elif node["role"] == "edge" and "--relay-controlled-local" in args:
+            problems.append(f"{name}: an edge takes a relay parent")
+        elif node["role"] == "distributor" and relay_node_id(node) not in first:
+            parents = [flag_value(args, "--relay-primary-id"),
+                       flag_value(args, "--relay-secondary-id")]
+            if None in parents or set(parents) != set(first):
+                problems.append(f"{name}: parents {parents}, not the first forwarders {first}")
+    if problems:
+        raise ValueError("the merged topology is not rendered as it is compiled: "
+                         + "; ".join(problems))
+
+
 def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str, list[str]]]:
     """contributor_direct_region: the contributor's --relay-direct-* arguments
     for the distributors of its site, and for each of those distributors the
@@ -1463,9 +1649,13 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             continue
         if role not in ("backbone", "distributor", "edge"):
             continue
+        service = services.get(("av_mesh", relay_node_id(node)))
+        if role == "backbone" and service is None:
+            continue  # the merged topology uses no backbone relay
+        if role == "distributor" and service is None:
+            raise ValueError(f"{node['name']}: the compiled plan has no relay service for it")
         args = common_mesh_args(node, settings, state)
         if role in ("backbone", "distributor"):
-            service = services[("av_mesh", relay_node_id(node))]
             args += relay_args(service)
             # The contributor sends repair on its primary lane too: the
             # backbone at the end of that lane admits it.
@@ -1492,6 +1682,8 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
     check_class_ports(rendered, classes)
+    if topology_mode(settings) == "merged":
+        check_merged(state, rendered)
     out = common.ARTIFACT_DIR / "nodes"
     out.mkdir(parents=True, exist_ok=True)
     for name, item in rendered.items():
@@ -1769,6 +1961,10 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
             "sysctl -q -p /etc/sysctl.d/90-needletail.conf",
         ]
     item = rendered.get(node["name"])
+    if not item and node["role"] == "backbone":
+        # The merged topology uses no backbone relay: one left running from
+        # a legacy deploy would still send to the distributors.
+        commands.append("systemctl disable --now needletail-mesh.service >/dev/null 2>&1 || true")
     if item:
         apply_host_qdisc(node, settings)
         service = item["service"]
@@ -1791,17 +1987,22 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     state = common.load_state()
     settings = load_settings(args.set)
     routes_path = common.ARTIFACT_DIR / "routes.json"
-    if args.remeasure or not routes_path.is_file():
-        routes = measure_routes(state)
+    routes = json.loads(routes_path.read_text()) if routes_path.is_file() else None
+    # Routes measured over the other topology's relays seed the controller
+    # with the wrong paths (a file without "topology" is legacy).
+    if (args.remeasure or routes is None
+            or routes.get("topology", "legacy") != topology_mode(settings)):
+        routes = measure_routes(state, settings)
         routes_path.write_text(json.dumps(routes, indent=2) + "\n")
-    else:
-        routes = json.loads(routes_path.read_text())
     program = build_program(state, settings, routes)
     plan = compile_plan(program)
     rendered = render(state, settings, plan)
-    print(f"compiled {len(plan['services'])} relay services; rendered "
-          f"{len(rendered)} service argument files; primary route "
-          f"{routes['primary_rtt_us']} us, secondary {routes['secondary_rtt_us']} us")
+    unused = relay_tree(state, settings)["unused"]
+    print(f"compiled {len(plan['services'])} relay services ({topology_mode(settings)} "
+          f"topology); rendered {len(rendered)} service argument files; primary route "
+          f"{routes['primary_rtt_us']} us, secondary {routes['secondary_rtt_us']} us"
+          + (f"; backbone relays not used (stopped by push and restart): "
+             f"{', '.join(node['name'] for node in unused)}" if unused else ""))
     return state, settings, rendered
 
 

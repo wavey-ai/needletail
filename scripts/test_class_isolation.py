@@ -67,7 +67,9 @@ class Render(unittest.TestCase):
     def render(self, overrides=(), types: dict | None = None) -> dict[str, list[str]]:
         (self.dir / "settings.json").unlink(missing_ok=True)
         with redirect_stderr(io.StringIO()):
-            settings = deploy.load_settings(list(overrides))
+            # The legacy topology, whose backbone relays these tests name
+            # (test_merged_topology.py renders the merged one).
+            settings = deploy.load_settings(["topology=legacy", *overrides])
         state = lab.lab_state()
         for name, kind in (types or {}).items():
             state["nodes"][name]["type"] = kind
