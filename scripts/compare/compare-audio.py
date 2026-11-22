@@ -96,6 +96,7 @@ def daw_command(target: str) -> str:
             f"--prepared-pcm {target} 1900 {REMOTE}/daw-fixture")
 UDP_LANE = "nt-udp"
 UC_LANE = "nt-uc"
+SFU_PCM_MS = 2.5
 UDP_CLIENT = "/usr/local/bin/needletail-udp-client"
 # The renditions the contributor publishes. On its own g6-dedicated-4 it
 # publishes all three at once (--nt-formats); give one format to publish one
@@ -176,14 +177,18 @@ class Audio:
             self.nt.append(UC_LANE)
         self.room = f"needletail-compare-{session.name}-{config.replace('.', '')}"
         self.cf_session = ""
-        self.index = f"{INDEX}/pcm-2.5ms.index.json" if self.pcm else f"{INDEX}/{config}.index.json"
+        # The SFUs' PCM blocks (--sfu-pcm-ms): 2.5 ms by default, 1 ms to match
+        # Needletail's smallest parts (the 1 ms index is Needletail's PCM one).
+        sfu_index = "pcm-2.5ms" if SFU_PCM_MS == 2.5 else f"nt-pcm-{round(SFU_PCM_MS * 48)}s"
+        self.index = f"{INDEX}/{sfu_index}.index.json" if self.pcm else f"{INDEX}/{config}.index.json"
 
     # ---- sources ----
     def start(self) -> None:
         s = self.session
         run.stop_sources(s)
         run.src(s, "pkill -x daw-test-source; pkill -x aep1-48k-probe; true", check=False)
-        media = f"--audio {AUDIO}/audio.s24le --data" if self.pcm else f"--audio {AUDIO}/{self.config}.opus"
+        media = (f"--audio {AUDIO}/audio.s24le --data --pcm-ms {SFU_PCM_MS:g}" if self.pcm
+                 else f"--audio {AUDIO}/{self.config}.opus")
         if self.nt:
             contributor = s.node("contrib-lon")
             wanted = NT_FORMATS if "," in NT_FORMATS else NT_FORMAT[self.nt_base[0]]
@@ -404,6 +409,7 @@ class Audio:
                 # input sample (tools/ntcmp/audio.go, the live rule).
                 "webrtc_opus_send": "live",
                 "nt_pcm_epoch_samples": self.pcm_samples, "nt_formats": NT_FORMATS,
+                "sfu_pcm_ms": SFU_PCM_MS if self.pcm else None,
                 "nt_daw": {**NT_DAW, "opus_lookahead_samples": run.lab.OPUS_LOOKAHEAD_SAMPLES},
                 "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
                                     for base, frame in self.nt_frame_ms().items()
@@ -466,10 +472,13 @@ def main() -> None:
                         help="renditions the contributor publishes; one format publishes one at a time")
     parser.add_argument("--window", type=int, default=40,
                         help="part requests that the pipelined readers of Needletail keep in flight")
+    parser.add_argument("--sfu-pcm-ms", type=float, default=2.5, choices=(2.5, 1.0),
+                        help="PCM block length on the SFUs' data channels")
     parser.add_argument("--product-reader", action="store_true",
                         help="also run needletail-reader itself with 25 readers in each region")
     args = parser.parse_args()
     globals()["NT_FORMATS"] = args.nt_formats
+    globals()["SFU_PCM_MS"] = args.sfu_pcm_ms
     NT_READERS["-w"] = f"--window {args.window}"
     NT_READERS["-h3"] = f"--window {args.window} --http3"
     session = run.Session(args.session)
