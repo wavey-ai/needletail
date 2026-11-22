@@ -11,13 +11,17 @@ Cost controls are part of the tool, not an operator convention:
 * `up` refuses a topology above the node and hourly-price ceilings;
 * state records exact instance and firewall identifiers, and `down` also
   sweeps by the unique run tag, so only this lab is ever deleted;
-* `watchdog` starts a detached process that deletes the lab at a deadline
+* `watchdog` starts a detached process that deletes the lab by a deadline
   even when the operator session has ended (`up --watchdog-hours` arms it
-  before the first instance is created);
+  before the first instance is created, counted from the lab's creation):
+  it starts `down` WATCHDOG_LEAD_S before the deadline and deletes in
+  parallel, so no instance lives past the deadline and none bills an hour
+  that the deadline does not;
 * `down` deletes the run's VLANs too, which Linode keeps once empty;
 * autoscale slots (topology nodes marked "slot") are never created by `up`
   or `grow`: `add <slot>` creates one under the same checks (dedicated plan,
-  node and hourly ceilings, an armed watchdog, an optional budget), and
+  node and hourly ceilings, an armed watchdog at most MAX_LIFE_HOURS into
+  the lab's life and at least ADD_CUTOFF_S ahead, an optional budget), and
   `remove <name>` deletes one by its recorded id, only when the live
   instance still carries the run's tag and label;
 * `billed` is what the lab has cost: every instance a whole hour at least
@@ -52,6 +56,18 @@ MAX_HOURLY_USD = float(os.environ.get("NEEDLETAIL_LINODE_MAX_HOURLY_USD", "1.00"
 # The owner, 21 November 2026: "do not use shared instances". Every node of a
 # lab is a dedicated-CPU plan. A shared plan (nanode, standard) is refused.
 ALLOWED_CLASSES = {"dedicated"}
+# The watchdog's deadline is when the lab must be gone, not when deleting
+# starts: Linode bills every started hour, so the watchdog starts `down`
+# this long before it (deleting in parallel), polling this often.
+WATCHDOG_LEAD_S = 300
+WATCHDOG_POLL_S = 5
+# `add` creates nothing this close to the deadline: a create that retries
+# for minutes must never land after `down` has listed the lab.
+ADD_CUTOFF_S = 900
+# `add` refuses a lab whose watchdog is armed for more than this many hours
+# of its life (a deadline moved later mid-run would bill more hours).
+MAX_LIFE_HOURS = float(os.environ.get("NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS", "6.0"))
+DELETE_WORKERS = 8
 
 
 def load_token() -> str:
@@ -428,8 +444,11 @@ def command_up(args: argparse.Namespace) -> None:
     if getattr(args, "watchdog_hours", None):
         # Armed before the first instance exists: a creation that hangs, or
         # an operator session that ends during it, still ends in `down`.
-        command_watchdog(argparse.Namespace(state=str(state_path), hours=args.watchdog_hours,
-                                            foreground=False))
+        # Counted from the lab's creation, so the lab's life is the hours
+        # given, never a little more.
+        command_watchdog(argparse.Namespace(
+            state=str(state_path), hours=args.watchdog_hours, foreground=False,
+            deadline_unix=int(state["created_unix"] + args.watchdog_hours * 3600)))
         state["watchdog_deadline_unix"] = read_state(state_path)["watchdog_deadline_unix"]
     topology = created_part(topology)
     print(f"Creating {len(topology['nodes'])} Linodes at ${hourly:.4f}/hour "
@@ -566,31 +585,112 @@ def wait_running(api: Api, state: dict, names: list[str]) -> None:
         sys.exit(f"Linodes did not become ready: {sorted(pending)}")
 
 
+def lab_going_down(state_path: pathlib.Path, run_id: str) -> str | None:
+    """Why the lab on disk is no longer one to add to: its state is gone
+    (`down` finished), is another run's, or `down` has begun. None when it
+    is still up."""
+    current = read_state(state_path)
+    if current is None:
+        return "the lab state is gone (down has run)"
+    if current.get("run_id") != run_id:
+        return f"the lab state is now run {current.get('run_id')}'s"
+    if current.get("down_started_unix"):
+        return "down has begun"
+    return None
+
+
 def add_nodes(args: argparse.Namespace, api: Api, state: dict,
               nodes: list[dict]) -> None:
-    """Create nodes, then refresh the lab firewall so the new addresses are peers."""
+    """Create nodes, then refresh the lab firewall so the new addresses are
+    peers and attach it to them.
+
+    Two things never leave a node behind. `down` racing the create: before
+    each new node is recorded the state on disk is read again, and if
+    `down` has begun (or finished) nothing is written back and every node
+    this call made is deleted at once. A firewall that cannot be set: the
+    new nodes are deleted (never pushed or served with every port open)."""
     state_path = pathlib.Path(args.state)
     key = pathlib.Path(args.ssh_public_key).expanduser().read_text().strip()
+    made: list[dict] = []
+    gone: str | None = None
+    failures: list[str] = []
+
+    def record() -> bool:
+        """Write the state unless `down` has begun or finished (never
+        recreate a state file that `down` removed, never erase its mark)."""
+        nonlocal gone
+        gone = gone or lab_going_down(state_path, state["run_id"])
+        if gone:
+            return False
+        write_state(state_path, state)
+        return True
+
+    def give_up() -> None:
+        for created in made:
+            api.call("DELETE", f"/linode/instances/{created['id']}", allow_404=True)
+        sys.exit(f"add: {gone}; deleted the {len(made)} instance(s) this call created "
+                 f"({', '.join(item['label'] for item in made) or 'none'})")
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
             pool.submit(create_node, api, state["run_id"], state["tag"],
                         state["image"], key, node): node for node in nodes
         }
         for future in concurrent.futures.as_completed(futures):
-            created = future.result()
+            try:
+                created = future.result()
+            except Exception as error:  # noqa: BLE001 - the others are still recorded
+                failures.append(f"{futures[future]['name']}: {error}")
+                continue
+            made.append(created)
+            if gone:
+                continue
             state["nodes"][created["name"]] = created
-            write_state(state_path, state)
-            print(f"  created {created['name']:<18} {created['region']:<13} "
-                  f"{created['type']:<14} {created['public_ipv4']}")
+            if record():
+                print(f"  created {created['name']:<18} {created['region']:<13} "
+                      f"{created['type']:<14} {created['public_ipv4']}")
     state["hourly_usd"] = round(
         sum(node["hourly_usd"] for node in state["nodes"].values()), 4)
-    write_state(state_path, state)
-    api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
-             firewall_rules(state))
-    for node in nodes:
-        api.call("POST", f"/networking/firewalls/{state['firewall_id']}/devices",
-                 {"id": state["nodes"][node["name"]]["id"], "type": "linode"})
-    wait_running(api, state, [node["name"] for node in nodes])
+    if not record():
+        give_up()
+    # Every node this call made gets the firewall, even when another
+    # failed to create (that failure is raised after).
+    names = [created["name"] for created in made]
+    try:
+        api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
+                 firewall_rules(state))
+        for name in names:
+            api.call("POST", f"/networking/firewalls/{state['firewall_id']}/devices",
+                     {"id": state["nodes"][name]["id"], "type": "linode"})
+    except Exception as error:  # noqa: BLE001 - no node serves without the firewall
+        print(f"the lab firewall could not be set for {', '.join(names)}: {error}; "
+              "deleting them", file=sys.stderr)
+        gone = lab_going_down(state_path, state["run_id"])
+        if gone:
+            give_up()
+        try:
+            remove_nodes(api, state_path, state, names, slots_only=False,
+                         refresh_firewall=False)
+        except (Exception, SystemExit) as again:  # noqa: BLE001
+            sys.exit(f"add: {', '.join(names)} have no lab firewall and could not be "
+                     f"deleted ({again}): run down")
+        sys.exit(f"add: the lab firewall could not be set for {', '.join(names)}; "
+                 "deleted them")
+    if failures:
+        raise RuntimeError("\n".join(failures))
+    wait_running(api, state, names)
+
+
+def firewall_attached(api: Api, state: dict, name: str) -> bool:
+    """Whether the lab's Cloud Firewall is attached to node `name`'s
+    instance (checked before a slot is pushed and started)."""
+    node = state["nodes"].get(name)
+    if not node or not state.get("firewall_id"):
+        return False
+    devices = api.list_all(f"/networking/firewalls/{state['firewall_id']}/devices")
+    return any((item.get("entity") or {}).get("id") == node["id"]
+               and (item.get("entity") or {}).get("type", "linode") == "linode"
+               for item in devices)
 
 
 def command_grow(args: argparse.Namespace) -> None:
@@ -741,7 +841,9 @@ def budget_check(state: dict, new: list[dict], budget_usd: float, spent_before_u
     """Whether creating `new` keeps the work within `budget_usd`: this lab
     projected to its watchdog's deadline with the new instances (each a
     whole hour at least), plus what other labs bill now and what earlier
-    labs spent. (ok, the figures)."""
+    labs spent. (ok, the figures). The deadline is when the lab is gone:
+    the watchdog starts `down` WATCHDOG_LEAD_S before it, so no instance
+    bills an hour past it."""
     now = time.time() if now is None else now
     deadline = state.get("watchdog_deadline_unix")
     if not deadline:
@@ -767,16 +869,43 @@ def lab_slots(state: dict) -> dict[str, dict]:
     return {}
 
 
+def watchdog_problems(state: dict, now: float, max_life_hours: float | None = None) -> list[str]:
+    """Why no instance may be created in the lab now, from its watchdog:
+    not armed; its deadline less than ADD_CUTOFF_S ahead (a create that
+    retries must never land after `down` has listed the lab); or armed for
+    more than `max_life_hours` of the lab's life (a deadline moved later,
+    by `watchdog --hours` mid-run, would bill hours that no budget
+    counted). Empty when a create may go ahead."""
+    deadline = state.get("watchdog_deadline_unix")
+    if not deadline or deadline <= now:
+        return ["the lab's watchdog is not armed (or its deadline has passed): "
+                "no instance is created outside it"]
+    problems = []
+    if deadline - now < ADD_CUTOFF_S:
+        problems.append(f"the watchdog deletes the lab in {(deadline - now) / 60:.1f} min: "
+                        f"nothing is created within {ADD_CUTOFF_S // 60} min of its deadline")
+    if max_life_hours is not None and state.get("created_unix"):
+        life = (deadline - state["created_unix"]) / 3600
+        if life > max_life_hours + 1e-9:
+            problems.append(f"the watchdog is armed for {life:.3f} h of the lab's life; at most "
+                            f"{max_life_hours:g} h (NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS)")
+    return problems
+
+
 def add_slots(args: argparse.Namespace, api: "Api", state: dict, names: list[str],
               budget_usd: float | None = None, spent_before_usd: float = 0.0,
-              other_labs_usd: float = 0.0) -> list[str]:
+              other_labs_usd: float = 0.0,
+              max_life_hours: float | None = None) -> list[str]:
     """Create autoscale slots of the lab, with every check that `up` makes
     and more: each name is a slot of this lab that it does not have, at a
     site that it does not leave out; every plan is dedicated and its region
     up (from the API); the lab stays within MAX_NODES and MAX_HOURLY_USD;
-    the watchdog is armed and its deadline ahead; and with `budget_usd`
-    the projection to that deadline (budget_check) stays within it. Exits
-    on any refusal before anything is created. Returns the names created."""
+    the watchdog is armed, its deadline at least ADD_CUTOFF_S ahead and at
+    most `max_life_hours` (default MAX_LIFE_HOURS) into the lab's life
+    (watchdog_problems); and with `budget_usd` the projection to that
+    deadline (budget_check) stays within it. Exits on any refusal before
+    anything is created. Returns the names created."""
+    max_life_hours = MAX_LIFE_HOURS if max_life_hours is None else max_life_hours
     slots = lab_slots(state)
     if not names:
         sys.exit("add: name the slots to create")
@@ -791,10 +920,7 @@ def add_slots(args: argparse.Namespace, api: "Api", state: dict, names: list[str
             problems.append(f"{name}: the lab does without site {slots[name]['site']}")
     if len(set(names)) != len(names):
         problems.append("a slot is named twice")
-    deadline = state.get("watchdog_deadline_unix")
-    if not deadline or deadline <= time.time():
-        problems.append("the lab's watchdog is not armed (or its deadline has passed): "
-                        "no instance is created outside it")
+    problems += watchdog_problems(state, time.time(), max_life_hours)
     if problems:
         sys.exit("add refused: " + "; ".join(problems))
     nodes = [{**slots[name], "vlan_ipv4": slots[name].get("vlan_cidr")
@@ -831,7 +957,7 @@ def add_slots(args: argparse.Namespace, api: "Api", state: dict, names: list[str
 
 
 def remove_nodes(api: "Api", state_path: pathlib.Path, state: dict, names: list[str],
-                 slots_only: bool = True) -> list[str]:
+                 slots_only: bool = True, refresh_firewall: bool = True) -> list[str]:
     """Delete lab nodes by their recorded instance ids. Every name must be a
     node of the lab state (an autoscale slot, unless `slots_only` is
     False), and its live instance must still carry the run's tag and the
@@ -870,7 +996,7 @@ def remove_nodes(api: "Api", state_path: pathlib.Path, state: dict, names: list[
     state["hourly_usd"] = round(
         sum(node.get("hourly_usd", 0.0) for node in state["nodes"].values()), 4)
     write_state(state_path, state)
-    if state.get("firewall_id") and state.get("operator_ipv4"):
+    if refresh_firewall and state.get("firewall_id") and state.get("operator_ipv4"):
         api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
                  firewall_rules(state))
     return [name for name, _node, _exists in plan]
@@ -882,7 +1008,8 @@ def command_add(args: argparse.Namespace) -> None:
         sys.exit("No active Needletail small-mesh lab")
     api = Api()
     other = account_billed(api, state["tag"])["usd"] if args.budget_usd is not None else 0.0
-    add_slots(args, api, state, args.names, args.budget_usd, args.spent_before_usd, other)
+    add_slots(args, api, state, args.names, args.budget_usd, args.spent_before_usd, other,
+              args.max_watchdog_hours)
     command_status(args)
 
 
@@ -961,7 +1088,8 @@ def command_status(args: argparse.Namespace) -> None:
           f"billed ${billed(state)['usd']:.2f} (whole hours, removed nodes included)")
     deadline = state.get("watchdog_deadline_unix")
     if deadline:
-        print(f"watchdog deletes the lab in {(deadline - time.time()) / 60:.0f} min")
+        print(f"watchdog: the lab is gone in {(deadline - time.time()) / 60:.0f} min "
+              f"(down starts {WATCHDOG_LEAD_S // 60} min before)")
     print(f"{'NAME':<18} {'ROLE':<12} {'REGION':<13} {'TYPE':<14} "
           f"{'PUBLIC':<16} {'VLAN':<13} STATUS")
     for name in sorted(state["nodes"]):
@@ -980,10 +1108,13 @@ def command_down(args: argparse.Namespace) -> None:
         return
     api = Api()
     tag = state["tag"]
+    # Marked first: an `add` whose create lands from here on deletes what
+    # it made rather than writing the state back (add_nodes).
+    state.setdefault("down_started_unix", int(time.time()))
+    write_state(state_path, state)
     instance_ids = {node["id"] for node in state["nodes"].values()}
     instance_ids |= {item["id"] for item in api.list_all("/linode/instances", tag)}
-    for instance_id in sorted(instance_ids):
-        api.call("DELETE", f"/linode/instances/{instance_id}", allow_404=True)
+    delete_instances(api, instance_ids)
     firewall_ids = {item["id"] for item in api.list_all("/networking/firewalls", tag)}
     if state.get("firewall_id"):
         firewall_ids.add(state["firewall_id"])
@@ -997,6 +1128,17 @@ def command_down(args: argparse.Namespace) -> None:
         print(f"VLANs still attached, not deleted (delete them with DELETE "
               f"/networking/vlans/<region>/<label> once empty): {', '.join(left)}",
               file=sys.stderr)
+    # A second sweep by the run tag: a create that was in flight when the
+    # lab was first listed has landed by now.
+    late = {item["id"] for item in api.list_all("/linode/instances", tag)}
+    if late:
+        print(f"{len(late)} tagged Linodes appeared during down; deleting them",
+              file=sys.stderr)
+        delete_instances(api, late)
+        instance_ids |= late
+        remaining = api.list_all("/linode/instances", tag)
+        if remaining:
+            sys.exit(f"{len(remaining)} tagged Linodes remain; rerun down")
     age_hours = (time.time() - state["created_unix"]) / 3600
     archive = state_path.with_name(f"small-mesh-lab-{state['run_id']}.removed.json")
     state["removed_unix"] = int(time.time())
@@ -1007,6 +1149,23 @@ def command_down(args: argparse.Namespace) -> None:
     print(f"Removed {len(instance_ids)} Linodes and {len(firewall_ids)} firewalls "
           f"after {age_hours:.2f} h (${total['usd']:.2f} of instance time billed in whole "
           f"hours, {total['instance_hours']} instance-hours)")
+
+
+def delete_instances(api: "Api", instance_ids, workers: int = DELETE_WORKERS) -> None:
+    """Delete instances by id, several at a time (the watchdog's `down` must
+    be done before its deadline). Raises when any delete failed, after
+    trying every one."""
+    failures = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(api.call, "DELETE", f"/linode/instances/{ident}",
+                               None, True): ident for ident in sorted(instance_ids)}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except Exception as error:  # noqa: BLE001 - try every one, then report
+                failures.append(f"{futures[future]}: {error}")
+    if failures:
+        raise RuntimeError("deleting instances failed: " + "; ".join(sorted(failures)))
 
 
 def delete_vlans(api: "Api", run_id: str, attempts: int = 12, pause: float = 10.0) -> list[str]:
@@ -1038,18 +1197,15 @@ def command_watchdog(args: argparse.Namespace) -> None:
     state = read_state(state_path)
     if state is None:
         sys.exit("No active Needletail small-mesh lab")
-    deadline = int(time.time() + args.hours * 3600)
-    state["watchdog_deadline_unix"] = deadline
+    # The deadline is when the lab must be gone. Given (by `up`, from the
+    # lab's creation; by the detached process, as its parent set it) or
+    # `--hours` from now.
+    deadline = getattr(args, "deadline_unix", None) or int(time.time() + args.hours * 3600)
+    state["watchdog_deadline_unix"] = int(deadline)
     write_state(state_path, state)
     if args.foreground:
-        while True:
-            current = read_state(state_path)
-            if current is None or current.get("run_id") != state["run_id"]:
-                return
-            if time.time() >= current.get("watchdog_deadline_unix", deadline):
-                command_down(args)
-                return
-            time.sleep(30)
+        watch_until_down(args, state_path, state["run_id"], int(deadline))
+        return
     log = state_path.with_name(f"small-mesh-watchdog-{state['run_id']}.log")
     marker = state_path.with_name(f"small-mesh-watchdog-{state['run_id']}.pid")
     if marker.is_file():
@@ -1062,12 +1218,37 @@ def command_watchdog(args: argparse.Namespace) -> None:
     with open(log, "ab") as handle:
         process = subprocess.Popen(
             [sys.executable, __file__, "--state", str(state_path), "watchdog",
-             "--hours", str(args.hours), "--foreground"],
+             "--hours", str(args.hours), "--deadline-unix", str(int(deadline)),
+             "--foreground"],
             stdin=subprocess.DEVNULL, stdout=handle, stderr=handle,
             start_new_session=True,
         )
     marker.write_text(str(process.pid))
-    print(f"watchdog pid {process.pid} deletes the lab {args.hours} h from now")
+    print(f"watchdog pid {process.pid}: the lab is gone by "
+          f"{(deadline - time.time()) / 3600:.2f} h from now (down starts "
+          f"{WATCHDOG_LEAD_S // 60} min before)")
+
+
+def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id: str,
+                     deadline: int, clock=time.time, sleep=time.sleep,
+                     down=None) -> None:
+    """The detached watchdog's loop: every WATCHDOG_POLL_S, read the
+    deadline from the state (a later `watchdog` call moves it), and from
+    WATCHDOG_LEAD_S before it run `down` until the state is gone; a `down`
+    that fails is run again at the next poll."""
+    down = down or command_down
+    while True:
+        current = read_state(state_path)
+        if current is None or current.get("run_id") != run_id:
+            return
+        due = current.get("watchdog_deadline_unix", deadline) - WATCHDOG_LEAD_S
+        if clock() >= due:
+            try:
+                down(args)
+            except (Exception, SystemExit) as error:  # noqa: BLE001 - try again
+                print(f"watchdog: down failed ({error}); trying again", file=sys.stderr,
+                      flush=True)
+        sleep(WATCHDOG_POLL_S)
 
 
 def main() -> None:
@@ -1111,6 +1292,9 @@ def main() -> None:
                           "other labs' live instances and --spent-before-usd pass it")
     add.add_argument("--spent-before-usd", type=float, default=0.0,
                      help="what earlier, deleted labs of the work cost")
+    add.add_argument("--max-watchdog-hours", type=float, default=None,
+                     help="refuse when the watchdog is armed for more of the lab's life than "
+                          "this (default NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS or 6.0)")
     add.set_defaults(handler=command_add)
     remove = sub.add_parser("remove", help="delete autoscale slots of the lab by recorded id")
     remove.add_argument("names", nargs="+")
@@ -1126,6 +1310,8 @@ def main() -> None:
     watchdog = sub.add_parser("watchdog")
     watchdog.add_argument("--hours", type=float, default=6.0)
     watchdog.add_argument("--foreground", action="store_true")
+    watchdog.add_argument("--deadline-unix", type=int, default=None,
+                          help="when the lab must be gone (default --hours from now)")
     watchdog.set_defaults(handler=command_watchdog)
     args = parser.parse_args()
     args.handler(args)

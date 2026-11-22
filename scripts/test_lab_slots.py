@@ -258,6 +258,164 @@ class Add(Base):
         self.assertTrue(state["nodes"]["lon-edge-11"]["label"].endswith("lon-edge-11a1"))
 
 
+class Watchdog(Base):
+    """The watchdog's deadline is when the lab is gone: no instance bills a
+    seventh hour of a 6 h lab, and nothing is created that `down` misses."""
+
+    def test_add_refuses_near_the_deadline_and_past_the_lab_life(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api, watchdog=10 * 60)
+        self.assertIn("within 15 min", self.refused(self.add, api, state, ["lon-edge-11"]))
+        # A deadline moved later mid-run (`watchdog --hours 6` at 1.5 h):
+        # 7.5 h of the lab's life.
+        state["watchdog_deadline_unix"] = int(time.time() + 6 * 3600)
+        self.assertIn("7.500 h of the lab's life",
+                      self.refused(self.add, api, state, ["lon-edge-11"]))
+        self.assertNotIn(("POST", "/linode/instances"), api.calls)
+        # Exactly 6.0 h of life passes; a looser limit given passes 7.5 h.
+        state["watchdog_deadline_unix"] = state["created_unix"] + 6 * 3600
+        self.add(api, state, ["lon-edge-11"])
+        state["watchdog_deadline_unix"] = int(time.time() + 6 * 3600)
+        self.add(api, state, ["lon-edge-12"], max_life_hours=8.0)
+
+    def test_up_counts_the_deadline_from_the_lab_creation(self):
+        state = {"run_id": "t1", "created_unix": 1_000_000, "nodes": {}}
+        path = self.tmp / "state.json"
+        path.write_text(json.dumps(state))
+        spawned = []
+
+        class Process:
+            pid = 4242
+
+        def popen(command, **kwargs):
+            spawned.append(command)
+            return Process()
+
+        with mock.patch.object(lab_tool.subprocess, "Popen", popen), \
+                redirect_stdout(io.StringIO()):
+            lab_tool.command_watchdog(argparse.Namespace(
+                state=str(path), hours=6.0, foreground=False,
+                deadline_unix=1_000_000 + 6 * 3600))
+        self.assertEqual(json.loads(path.read_text())["watchdog_deadline_unix"],
+                         1_000_000 + 6 * 3600)
+        # The detached process keeps that deadline (it does not count 6 h
+        # again from when it starts).
+        command = spawned[0]
+        self.assertEqual(command[command.index("--deadline-unix") + 1], str(1_000_000 + 21600))
+
+    def test_down_starts_before_the_deadline_and_is_retried(self):
+        path = self.tmp / "state.json"
+        deadline = 1_000_000 + 6 * 3600
+        path.write_text(json.dumps({"run_id": "t1", "watchdog_deadline_unix": deadline}))
+        now = [deadline - lab_tool.WATCHDOG_LEAD_S - 12.0]
+        downs = []
+
+        def down(args):
+            downs.append(now[0])
+            if len(downs) == 1:
+                raise RuntimeError("HTTP 500")
+            path.unlink()
+
+        def sleep(seconds):
+            self.assertLessEqual(seconds, 5)
+            now[0] += seconds
+
+        with redirect_stderr(io.StringIO()):
+            lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1",
+                                      deadline, clock=lambda: now[0], sleep=sleep, down=down)
+        self.assertEqual(len(downs), 2)
+        self.assertGreaterEqual(downs[0], deadline - lab_tool.WATCHDOG_LEAD_S)
+        self.assertLess(downs[-1], deadline - lab_tool.WATCHDOG_LEAD_S + 15)
+        # The first instances, created 1 to 3 s after the lab, are gone by
+        # the deadline: 6 billed hours, not 7.
+        self.assertEqual(lab_tool.billed_hours(1_000_003, downs[-1] + 60), 6)
+
+    def test_add_racing_down_leaves_no_instance_and_no_state(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        real = lab_tool.create_node
+
+        def create_during_down(*args):
+            created = real(*args)
+            # `down` listed the lab, deleted it and removed the state while
+            # this create was in flight.
+            path.unlink()
+            return created
+
+        with mock.patch.object(lab_tool, "create_node", create_during_down):
+            message = self.refused(self.add, api, state, ["lon-edge-11"])
+        self.assertIn("down has run", message)
+        self.assertFalse(path.exists())
+        self.assertFalse([item for item in api.instances.values()
+                          if "lon-edge-11" in item.get("label", "")])
+        # `down` marked as begun: the same.
+        state = lab_state(self.tmp, api)
+        on_disk = json.loads(path.read_text())
+
+        def create_marked(*args):
+            created = real(*args)
+            path.write_text(json.dumps({**on_disk, "down_started_unix": int(time.time())}))
+            return created
+
+        with mock.patch.object(lab_tool, "create_node", create_marked):
+            self.assertIn("down has begun", self.refused(self.add, api, state, ["lon-edge-12"]))
+        self.assertNotIn("lon-edge-12", json.loads(path.read_text())["nodes"])
+        self.assertTrue(json.loads(path.read_text())["down_started_unix"])
+        self.assertFalse([item for item in api.instances.values()
+                          if "lon-edge-12" in item.get("label", "")])
+
+    def test_a_slot_whose_firewall_fails_is_deleted_not_served(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        real = api.call
+
+        def call(method, path, body=None, allow_404=False):
+            if path.startswith("/networking/firewalls/9/devices") and method == "POST":
+                raise RuntimeError("POST devices failed with HTTP 400")
+            return real(method, path, body, allow_404)
+
+        api.call = call
+        message = self.refused(self.add, api, state, ["lon-edge-11"])
+        self.assertIn("firewall could not be set", message)
+        self.assertNotIn("lon-edge-11", state["nodes"])
+        self.assertEqual([item["name"] for item in state["removed"]], ["lon-edge-11"])
+        self.assertFalse([item for item in api.instances.values()
+                          if "lon-edge-11" in item.get("label", "")])
+
+    def test_firewall_attached(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        ident = state["nodes"]["lon-edge-1"]["id"]
+        api.list_all = lambda path, tag=None: [{"id": 3, "entity": {"id": ident,
+                                                                    "type": "linode"}}]
+        self.assertTrue(lab_tool.firewall_attached(api, state, "lon-edge-1"))
+        self.assertFalse(lab_tool.firewall_attached(api, state, "lon-edge-2"))
+        self.assertFalse(lab_tool.firewall_attached(api, {**state, "firewall_id": None},
+                                                    "lon-edge-1"))
+
+    def test_down_deletes_in_parallel_and_sweeps_the_tag_again(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        late = {}
+
+        def vlans(api_, run_id):
+            # A create that was in flight lands while the VLANs go.
+            late["id"] = 9999
+            api.instances[9999] = {"id": 9999, "label": "ntsm-t1-lon-edge-11",
+                                   "tags": ["needletail-qualification", api.tag]}
+            return []
+
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", vlans), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.command_down(argparse.Namespace(state=str(path)))
+        self.assertFalse(path.exists())
+        self.assertEqual(list(api.instances), [1])  # only the dev box is left
+        self.assertIn(("DELETE", "/linode/instances/9999"), api.calls)
+
+
 class Remove(Base):
     def test_remove_deletes_by_recorded_id_and_billing_keeps_it(self):
         api = FakeApi()
