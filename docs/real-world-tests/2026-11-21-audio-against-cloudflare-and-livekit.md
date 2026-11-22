@@ -106,10 +106,14 @@ The same steps show the merged topology's London distributors at 116% to
 158% of one vCPU and 180 to 246 Mbit/s out each, and the contributor at 63%
 to 125%, carrying the DAW source's audio alone.
 
-**Open on wave 5.** Every UDP client asked for the edge's fast lane and got
-every part from the cache-fed lane instead (`fast_lane_parts` 0), while the
-4K clients of the same build got 97% to 99.9% of theirs from it; the audio
-figures above are without the fast lane. The 2.5 ms Opus tail at 5% loss. The load of
+**Open on wave 5.** Whether the audio UDP clients were served from the
+edge's fast lane is not known from their reports: the wave 5 client counts a
+part as fast-lane only when it carries the RaptorQ fast-lane envelope, and
+audio comes on the compact lane, so it reported 0 for every audio client
+(the 4K clients, on the RaptorQ lane, 97% to 99.9%). The edge's own journal,
+captured during a later run (lon-edge-1, stream 3001), shows 13,374 audio
+parts first reaching the edge from the fast plane and 1,641 from the cache
+mesh. A fix to the count is in `av-mesh` `76b5fad`, for wave 6. The 2.5 ms Opus tail at 5% loss. The load of
 audio on the London forwarders. Sydney.
 
 LiveKit Cloud is not measured after wave 5: the owner, 22 November, "we

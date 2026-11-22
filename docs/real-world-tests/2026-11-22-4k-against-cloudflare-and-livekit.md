@@ -84,8 +84,8 @@ time) though its nodes were not busy, and a later 25 Mbit/s run (sweep
 session) carried it whole.
 
 **Open on wave 5.** The 4K UDP clients received 97% to 99.9% of their parts
-from the edges' fast lane (0% with the fast plane off, as set), but the audio
-clients of the same build received none from it (see the audio record); with GSO off the fast-plane wiring cost London its low rates (with the fast
+from the edges' fast lane (0% with the fast plane off, as set), (the audio clients' count of it is not reliable on wave 5; see the audio
+record); with GSO off the fast-plane wiring cost London its low rates (with the fast
 plane off it carried 122 to 164 Mbit/s); 247 Mbit/s, not 333, in New York
 and Tokyo; Sydney, latency phases, crowds and loss for 4K on wave 5.
 
