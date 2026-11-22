@@ -214,6 +214,9 @@ def render(overrides: list[str]) -> dict:
               "secondary_jitter_us": 1000}
     lab = state()
     plan = deploy.compile_plan(deploy.build_program(lab, settings, routes))
+    # The render looks at the flags of the binaries that the lab runs.
+    deploy.RENDER_BINARIES.clear()
+    deploy.RENDER_BINARIES.update({"av-mesh": AV_MESH, "av-contrib": AV_CONTRIB})
     rendered = deploy.render(lab, settings, plan)
     tls = WORK / "artifacts" / "tls"
     out = {}

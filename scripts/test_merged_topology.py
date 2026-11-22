@@ -191,9 +191,10 @@ class Render(Base):
         self.assertEqual(value_of(contrib, "--relay-primary-target"), "10.77.1.11:22001")
         self.assertEqual(value_of(contrib, "--relay-secondary-id"), "lon-dist-b")
         self.assertEqual(value_of(contrib, "--relay-secondary-target"), "10.77.1.12:22002")
-        # No legacy AEP1 lane by default (wave 7 item 1); with
-        # audio_epoch_lane the two first forwarders are its targets.
-        self.assertEqual(value_of(contrib, "--audio-epoch-mesh-lane"), "off")
+        # No legacy AEP1 lane by default (wave 7 item 1): no target, and no
+        # --audio-epoch-mesh-lane (an older av-contrib must still start);
+        # with audio_epoch_lane the two first forwarders are its targets.
+        self.assertNotIn("--audio-epoch-mesh-lane", contrib)
         self.assertNotIn("--audio-epoch-ingress-target", contrib)
         self.assertNotIn("--audio-epoch-redundant-ingress-target", contrib)
         _program, _plan, lane = self.render(["audio_epoch_lane=true"])
@@ -221,6 +222,43 @@ class Render(Base):
         _program, _plan, args = self.render(["edge_fast_plane=false"])
         for edge in lab.edges("london"):
             self.assertNotIn("--relay-controlled-local", args[edge])
+
+    def test_the_render_looks_at_the_flags_of_the_binaries_it_deploys(self):
+        """Wave 7 review: an av-contrib older than --audio-epoch-mesh-lane
+        keeps its AEP1 targets; a contributor that sends RLC1 in front of an
+        av-mesh that cannot read it is rendered --relay-compact-audio false."""
+        with tempfile.TemporaryDirectory() as tmp:
+            def binary(name: str, flags: list[str]) -> pathlib.Path:
+                path = pathlib.Path(tmp) / name
+                path.write_text("#!/bin/sh\ncat <<'EOF'\nOptions:\n"
+                                + "".join(f"      {flag} <X>\n" for flag in flags)
+                                + "EOF\n")
+                path.chmod(0o755)
+                return path
+            old_contrib = binary("old-contrib", ["--relay-exclusive"])
+            new_contrib = binary("new-contrib", ["--relay-exclusive", "--audio-epoch-mesh-lane",
+                                                 "--relay-compact-audio"])
+            old_mesh = binary("old-mesh", ["--client-udp-bind"])
+            new_mesh = binary("new-mesh", ["--client-udp-bind",
+                                           "--client-udp-compact-short-header"])
+            try:
+                deploy.RENDER_BINARIES.update({"av-contrib": old_contrib, "av-mesh": old_mesh})
+                contrib = self.render()[2]["contrib-lon"]
+                self.assertEqual(value_of(contrib, "--audio-epoch-ingress-target"),
+                                 "10.77.1.11:22001")
+                self.assertNotIn("--relay-compact-audio", contrib)
+                deploy.RENDER_BINARIES.update({"av-contrib": new_contrib})
+                contrib = self.render()[2]["contrib-lon"]
+                self.assertNotIn("--audio-epoch-ingress-target", contrib)
+                self.assertEqual(value_of(contrib, "--relay-compact-audio"), "false")
+                contrib = self.render(["relay_compact_audio=true"])[2]["contrib-lon"]
+                self.assertEqual(value_of(contrib, "--relay-compact-audio"), "true")
+                deploy.RENDER_BINARIES.update({"av-mesh": new_mesh})
+                contrib = self.render()[2]["contrib-lon"]
+                self.assertNotIn("--relay-compact-audio", contrib)
+                self.assertNotIn("--audio-epoch-ingress-target", contrib)
+            finally:
+                deploy.RENDER_BINARIES.clear()
 
     def test_wave7_settings_render_only_when_given(self):
         _program, _plan, args = self.render()

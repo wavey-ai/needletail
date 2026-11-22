@@ -709,6 +709,9 @@ def render(overrides: list[str]) -> dict:
               "secondary_jitter_us": 1000}
     state = lab_state()
     plan = deploy.compile_plan(deploy.build_program(state, settings, routes))
+    # The render looks at the flags of the binaries that the lab runs.
+    deploy.RENDER_BINARIES.clear()
+    deploy.RENDER_BINARIES.update({"av-mesh": AV_MESH, "av-contrib": AV_CONTRIB})
     rendered = deploy.render(state, settings, plan)
     save("sysctls.json", deploy.node_sysctls(settings))
     save("settings.json", settings)
