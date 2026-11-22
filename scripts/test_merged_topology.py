@@ -202,10 +202,16 @@ class Render(Base):
             self.assertNotIn("--relay-secondary-id", args[name])
             # Repair on both contributor lanes is admitted on both.
             self.assertEqual(args[name].count("--relay-primary-promoted"), 1, name)
-        # distributor -> edge: the cache mesh of the site.
+        # distributor -> edge: the cache mesh of the site, and the fast plane
+        # from the same two distributors (edge_fast_plane).
         for edge in lab.edges("london"):
             self.assertEqual(values_of(args[edge], "--peer"),
                              ["10.77.1.11:29101", "10.77.1.12:29101"], edge)
+            self.assertEqual({value_of(args[edge], "--relay-primary-id"),
+                              value_of(args[edge], "--relay-secondary-id")},
+                             {"lon-dist-a", "lon-dist-b"}, edge)
+        _program, _plan, args = self.render(["edge_fast_plane=false"])
+        for edge in lab.edges("london"):
             self.assertNotIn("--relay-controlled-local", args[edge])
 
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
@@ -351,6 +357,31 @@ class Lifecycle(Base):
                 lab.start_service("relay-primary")
         self.assertIn("topology=legacy", str(caught.exception))
 
+
+
+class CompilerAge(unittest.TestCase):
+    """A compiler binary older than its sources is refused by name, not
+    left to reject today's program by old rules."""
+
+    def test_a_compiler_older_than_a_source_is_named(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = root / "src" / "relay_topology.rs"
+            source.write_text("// rules\n")
+            compiler = root / "needletail-compile"
+            compiler.write_text("")
+            os.utime(compiler, (1_000, 1_000))
+            os.utime(source, (2_000, 2_000))
+            saved = deploy.common.ROOT
+            deploy.common.ROOT = root
+            try:
+                self.assertEqual(deploy.compiler_stale_by(compiler), "src/relay_topology.rs")
+                os.utime(compiler, (3_000, 3_000))
+                self.assertIsNone(deploy.compiler_stale_by(compiler))
+            finally:
+                deploy.common.ROOT = saved
 
 if __name__ == "__main__":
     unittest.main()

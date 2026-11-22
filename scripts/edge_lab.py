@@ -16,7 +16,10 @@ The relay DAG is the deploy tool's `topology` setting. "merged" (the
 default, low-latency item 4): the contributor feeds lon-dist-a and
 lon-dist-b, which feed new-dist-a and new-dist-b crossed; the two backbone
 namespaces stay empty (no service). `up topology=legacy` puts the backbone
-relays relay-primary and relay-secondary between them again.
+relays relay-primary and relay-secondary between them again. Edges are fed
+by the fast plane from the two distributors of their site, beside the cache
+mesh (the deploy tool's `edge_fast_plane`; `up edge_fast_plane=false` leaves
+them to the cache mesh alone, for an A/B).
 
 Nothing needs root. The namespaces belong to a rootless user namespace, and
 the cgroups are scopes of the user's systemd manager.
@@ -176,8 +179,10 @@ def service_limits(name: str) -> dict:
     return {**default_limits(name), **load("limits.json").get(name, {})}
 
 # One node configuration carries the smallest parts of every stream: one AEP1
-# epoch per audio part (48 samples, 1 ms, for PCM and FLAC; 120 samples,
-# 2.5 ms, for Opus) and one frame per video part. The caches' nominal part is
+# epoch per audio part (48 samples, 1 ms, for PCM and FLAC; 48 samples, 1 ms
+# Opus Custom, for Opus: `opus_epoch_samples`, which the probe sender and the
+# DAW source both take; 120 is 2.5 ms standard Opus) and one frame per video
+# part. The caches' nominal part is
 # 2.5 ms. Segments are 1 s whatever the part. The window is 12 s of the
 # shortest part: av-mesh counts a window in nominal parts and holds no stream
 # to more, so the deploy tool renders --window-parts for the shortest part
@@ -192,7 +197,7 @@ DEFAULT_OVERRIDES = {
     "audio_part": "epoch",
     "video_part": "frame",
     "pcm_epoch_samples": 48,
-    "opus_epoch_samples": 120,
+    "opus_epoch_samples": 48,
     # Video segments of one group of pictures.
     "fmp4_video_segment_ms": 2000,
     "mesh_sync_interval_ms": 2,
@@ -725,7 +730,9 @@ def render(overrides: list[str]) -> dict:
                 index += 1
         if contributor:
             fixed += ["--srt-bind", "0.0.0.0:27001", "--srt-stream-id", str(VIDEO_STREAM)]
-        elif node(name)["role"] == "edge":
+        elif node(name)["role"] == "edge" and "--fec-bind" not in fixed:
+            # An edge on the cache mesh alone; one fed by the fast plane
+            # (edge_fast_plane) has its relay parents' --fec-bind already.
             fixed += ["--fec-bind", "0.0.0.0:12001"]
         out[name] = {"args": fixed, "rust_log": item["rust_log"]}
     save("rendered.json", out)
@@ -930,9 +937,15 @@ def probe_epoch_samples(payload: str) -> int:
     FLAC frames are at least 32 samples."""
     settings = load("settings.json")
     if payload == "opus":
-        return int(settings.get("opus_epoch_samples") or 120)
+        return int(settings.get("opus_epoch_samples") or 48)
     samples = int(settings.get("pcm_epoch_samples") or 48)
     return max(32, samples) if payload == "flac" else samples
+
+
+def opus_bitrate() -> int:
+    """Opus bitrate (CBR) of the lab's Opus sources, from the settings of the
+    running lab (`opus_bitrate`): the lane's 320 kb/s by default."""
+    return int(load("settings.json").get("opus_bitrate") or 320000)
 
 
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
@@ -972,6 +985,10 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         process = subprocess.Popen(
             enter("contrib-lon") + [
                 str(DAW_SOURCE), "--direct-contributor", "--loop-prepared-pcm",
+                # The DAW lane's Opus frame and rate: 1 ms Opus Custom at
+                # 320 kb/s by default.
+                "--opus-frame-samples", str(probe_epoch_samples("opus")),
+                "--opus-bitrate", str(opus_bitrate()),
                 "127.0.0.1:27100", str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),

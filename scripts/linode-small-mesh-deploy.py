@@ -7,9 +7,12 @@ is the `topology` setting: "merged" (the default; low-latency item 4) makes
 relay and distributor one forwarder: contributor -> the two distributors of
 its site -> every other distributor, fed by both of them; "legacy" is
 contributor -> two backbone relays -> every distributor. Regional playback
-edges are not DAG members: they join their region's LL-HLS cache mesh over
-the private VLAN and receive cache objects from the two regional
-distributors.
+edges are not compiled DAG members: they join their region's LL-HLS cache
+mesh over the private VLAN and receive cache objects from the two regional
+distributors, and (`edge_fast_plane`, the default) take the same two
+distributors as fast-plane relay parents: each cache-mesh lease that a
+distributor serves to an edge makes the edge a lease child of the stream,
+fed the contributor's RaptorQ symbols as they arrive.
 
 Subcommands:
   plan      measure routes, generate the relay program, compile it, and render
@@ -169,6 +172,29 @@ DEFAULT_SETTINGS = {
     # past it the site would need a level of regional relays, which the
     # deploy does not build yet, so plan refuses.
     "max_edges_per_forwarder": 16,
+    # Edges fed by the fast plane (low-latency B5/B6/B9; wave 5 W0): each
+    # distributor of a site is a forwarder of the site's edges as well. A
+    # cache-mesh lease that it serves to an edge makes the edge a lease
+    # child of the stream on its class threads (--relay-lease-bind on the
+    # VLAN, port 22901), which hands it the contributor's RLS1 symbols as
+    # they arrive. Each edge binds its site's two distributors as relay
+    # parents (--relay-controlled-local, primary on 22001, secondary on
+    # 22002, video on both plus class_port_offset, audio in full from both),
+    # alternating which is primary so that each is primary for half of the
+    # edges; the primary sends video in full and the secondary its repair,
+    # until the edge's failover controller (22903) promotes it on its lease
+    # failover listener (22902). The edge's class threads send each symbol
+    # on to its fast-lane UDP clients (--client-udp-edge-rank: its place
+    # among the edges of its site), and its tee commits the part for LL-HLS.
+    # The cache mesh stays beside it. Needs the relay class split (the class
+    # threads); off with it. False: edges are fed by the cache mesh alone,
+    # as before.
+    "edge_fast_plane": True,
+    # --client-udp-fast-lane of every node that serves UDP clients: a node
+    # with class threads sends the RLS1 symbols of a part on to the clients
+    # that asked for the fast lane as they arrive. False keeps the
+    # cut-through and the cache-fed lane alone.
+    "client_udp_fast_lane": True,
     "failover_primary_silence_ms": 100,
     "failover_primary_recovery_ms": 500,
     "failover_secondary_warm_ms": 300,
@@ -193,6 +219,24 @@ DEFAULT_SETTINGS = {
     # contributor's region keeps the default. None or 0 renders nothing (the
     # av-mesh default everywhere).
     "canonical_gap_hold_long_haul_ms": 400,
+    # The repair horizon of the live path (wave 5 W2, av-mesh
+    # --canonical-repair-horizon on every mesh node): a hole holds the
+    # parts behind it (the LL-HLS playlist, the cache-mesh push, the
+    # cache-fed UDP lane) only this long after the first part beyond it
+    # came, then they are published and the hole is listed as a gap
+    # (EXT-X-PART GAP=YES, the UDP gap object); a repair that comes later
+    # still fills the cache. "auto": twice the repair delay that the node
+    # measures (10-250 ms, 60 ms before it has measured one); a number of
+    # milliseconds; "off": the gap hold above alone, as before. Never longer
+    # than the gap hold.
+    "canonical_repair_horizon": "auto",
+    # Burst copies on the long-haul lanes (wave 5 W2, av-mesh
+    # --relay-burst-copy-ms on the nodes with class threads): each audio
+    # source symbol forwarded to a compiled child goes again this many ms
+    # later, so a loss burst shorter than that cannot take a part at the
+    # next forwarder. Costs the audio sources once more on those lanes. 0:
+    # no copies.
+    "relay_burst_copy_ms": 20,
     # Class isolation (low-latency item 2): at no node does an audio datagram
     # share a socket, a thread or a qdisc band with 4K. Video streams travel
     # on the relay and cache-mesh ports plus `class_port_offset` (22001 ->
@@ -263,10 +307,17 @@ DEFAULT_SETTINGS = {
     "audio_part": "epoch",
     "video_part": "frame",
     # Epoch of the lab's AEP1 sender (aep1-48k-probe send --epoch-samples) and
-    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, 120
-    # (2.5 ms) for Opus. Only the lab tools read these.
+    # of the DAW source's Opus frames: 48 samples (1 ms) for PCM and FLAC, and
+    # 48 (1 ms Opus Custom, the low-latency Opus lane's default) for Opus.
+    # 120 (2.5 ms) is standard Opus, for anything that must interoperate
+    # (fMP4, WebRTC). Only the lab tools read these.
     "pcm_epoch_samples": 48,
-    "opus_epoch_samples": 120,
+    "opus_epoch_samples": 48,
+    # Opus bitrate (CBR) of the lab's Opus sources (daw-test-source and
+    # aep1-48k-probe send --opus-bitrate): 320 kb/s, the lane's default, the
+    # smallest rate at which 1 ms frames are at least as good as standard
+    # 5 ms at 192 kb/s; 256000 is the lower-bandwidth option. Lab tools only.
+    "opus_bitrate": 320000,
     # Version 1: `fmp4_part_ms` maps to `audio_part` "<N*1000>us" (and to
     # `video_part` "<N>ms" when `fmp4_video_part_ms` is not given),
     # `fmp4_video_part_ms` to `video_part` "<N>ms". None: not used.
@@ -331,6 +382,19 @@ CONTRIB_DIRECT_PORT = 22303
 # rather than rendered into arguments that stop every distributor of the
 # contributor's site from starting.
 AV_MESH_DIRECT_PARENT = False
+# The fast-plane feed of the edges (`edge_fast_plane`). A forwarder sends its
+# lease children's symbols from LEASE_PORT on its VLAN address (audio and
+# video from one address: the video socket is its twin on the same port) and
+# takes their failover controllers' promotions on LEASE_FAILOVER_PORT. An
+# edge takes its primary forwarder on EDGE_RELAY_PORTS[0] and its secondary
+# on EDGE_RELAY_PORTS[1] (av-mesh --relay-lease-child-ports), video on each
+# plus class_port_offset, and runs its failover controller on
+# EDGE_FAILOVER_PORT. None of them meets 22001/22002 on a forwarder (its
+# contributor lanes), 22200+, 22301+, 22401+ or 22501+ (10 per relay child).
+LEASE_PORT = 22901
+LEASE_FAILOVER_PORT = 22902
+EDGE_FAILOVER_PORT = 22903
+EDGE_RELAY_PORTS = (22001, 22002)
 
 
 TOPOLOGIES = ("legacy", "merged")
@@ -411,7 +475,11 @@ def class_plan(settings: dict) -> dict:
         "relay_class_realtime": bool(settings.get("relay_class_realtime", True)),
         "relay_video_gso": switch("relay_video_gso"),
         "service_capabilities": switch("service_capabilities"),
+        "client_udp_fast_lane": switch("client_udp_fast_lane"),
     }
+    # The edges' fast-plane feed runs on the class threads of the
+    # forwarders and the edges: without the relay class split there is none.
+    plan["edge_fast_plane"] = switch("edge_fast_plane") and plan["relay_class_split"]
     try:
         offset = int(settings.get("class_port_offset", 1000))
     except (TypeError, ValueError):
@@ -436,6 +504,25 @@ def class_plan(settings: dict) -> dict:
         plan["relay_video_pacing_mbps"] = int(settings.get("relay_video_pacing_mbps") or 0)
     except (TypeError, ValueError):
         raise ValueError("relay_video_pacing_mbps is not a whole number of Mbit/s") from None
+    horizon = settings.get("canonical_repair_horizon", "auto")
+    if horizon in (None, False, 0, "0", "off", "false"):
+        horizon = "off"
+    elif horizon not in ("auto", True, "true"):
+        try:
+            horizon = str(whole(horizon, "canonical_repair_horizon"))
+        except ValueError:
+            raise ValueError(f"canonical_repair_horizon {horizon!r} is not auto, off or a "
+                             "whole number of milliseconds") from None
+    else:
+        horizon = "auto"
+    plan["canonical_repair_horizon"] = horizon
+    copy_ms = settings.get("relay_burst_copy_ms")
+    try:
+        plan["relay_burst_copy_ms"] = int(copy_ms or 0)
+    except (TypeError, ValueError):
+        raise ValueError("relay_burst_copy_ms is not a whole number of ms") from None
+    if plan["relay_burst_copy_ms"] < 0:
+        raise ValueError("relay_burst_copy_ms is below 0")
     qdisc = settings.get("host_qdisc") or "none"
     if qdisc not in HOST_QDISCS:
         raise ValueError(f"host_qdisc {qdisc!r} is not one of {', '.join(HOST_QDISCS)}")
@@ -554,7 +641,9 @@ def load_settings(overrides: list[str]) -> dict:
 
 AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
 VIDEO_PART = re.compile(r"^(frame|[1-9][0-9]*ms)$")
-OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+# Opus frames: Opus Custom (48, 64, 72 samples: 1, 1.33, 1.5 ms; SoundKit Opus
+# on the opus-custom-1ms branch) and standard Opus (120 to 960).
+OPUS_EPOCH_SAMPLES = (48, 64, 72, 120, 240, 480, 960)
 SAMPLE_RATE = 48_000
 # The lossless epoch of the DAW source (daw-test-source: 1 ms, 48 samples,
 # unless it is given --lossless-epoch-samples). With audio_part "epoch" its
@@ -644,6 +733,9 @@ def part_plan(settings: dict) -> dict:
     opus = whole(settings["opus_epoch_samples"], "opus_epoch_samples")
     if opus not in OPUS_EPOCH_SAMPLES:
         raise ValueError(f"opus_epoch_samples={opus}: Opus frames are {OPUS_EPOCH_SAMPLES} samples")
+    opus_bitrate = whole(settings.get("opus_bitrate", 320000), "opus_bitrate")
+    if not 6000 <= opus_bitrate <= 512000:
+        raise ValueError(f"opus_bitrate={opus_bitrate}: Opus takes 6000 to 512000 b/s")
 
     smallest_us = smallest_audio_part_us(audio, pcm, opus)
     window_ms = whole(settings["window_ms"], "window_ms")
@@ -656,6 +748,7 @@ def part_plan(settings: dict) -> dict:
                  else ["--window-parts", str(window_parts)])
     return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
             "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
+            "opus_bitrate": opus_bitrate,
             "smallest_part_us": smallest_us,
             "window_parts": window_parts if window_parts is not None else -(-window_ms * 1000 // part_us)}
 
@@ -1158,6 +1251,18 @@ def measure_routes(state: dict, settings: dict | None = None) -> dict:
     }
 
 
+def compiler_stale_by(compiler: pathlib.Path) -> str | None:
+    """The newest source of the compiler (src/**/*.rs, Cargo.toml,
+    Cargo.lock) that is newer than the binary, or None."""
+    built = compiler.stat().st_mtime
+    root = common.ROOT
+    sources = [*sorted((root / "src").rglob("*.rs")), root / "Cargo.toml", root / "Cargo.lock"]
+    newer = [path for path in sources if path.is_file() and path.stat().st_mtime > built]
+    if not newer:
+        return None
+    return str(max(newer, key=lambda path: path.stat().st_mtime).relative_to(root))
+
+
 def compile_plan(program: dict) -> dict:
     program_path = common.ARTIFACT_DIR / "relay-program.json"
     plan_path = common.ARTIFACT_DIR / "compiled-plan.json"
@@ -1165,6 +1270,13 @@ def compile_plan(program: dict) -> dict:
     compiler = common.ROOT / "target" / "release" / "needletail-compile"
     if not compiler.is_file():
         sys.exit("build needletail-compile first: cargo build --release --bin needletail-compile")
+    stale = compiler_stale_by(compiler)
+    if stale:
+        # A compiler older than its sources judges today's program by old
+        # rules (an old binary rejected the merged topology's declared
+        # shared-domain parents as parent_failure_domain_overlap).
+        sys.exit(f"needletail-compile is older than {stale}; rebuild it: "
+                 "cargo build --release --bin needletail-compile")
     result = subprocess.run(
         [str(compiler), "--program", str(program_path), "--pretty"],
         capture_output=True, text=True,
@@ -1435,14 +1547,16 @@ def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
     same offset), the forward-first class threads on relays and
     distributors, and the client socket pair where clients are served."""
     out = ["--cache-mesh-class-port-offset",
-           str(plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0)]
+           str(plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0),
+           "--canonical-repair-horizon", plan.get("canonical_repair_horizon", "auto")]
     if "--relay-controlled-local" in args:
         split = plan["relay_class_split"]
         out += ["--relay-class-threads", flag(split),
                 "--relay-class-port-offset", str(plan["class_port_offset"])]
         if split:
             out += ["--relay-class-realtime", flag(plan["relay_class_realtime"]),
-                    "--relay-video-gso", flag(plan.get("relay_video_gso", True))]
+                    "--relay-video-gso", flag(plan.get("relay_video_gso", True)),
+                    "--relay-burst-copy-ms", str(plan.get("relay_burst_copy_ms", 0))]
             cpus = relay_class_cpus(node, plan)
             if cpus:
                 out += ["--relay-class-cpus", cpus]
@@ -1463,6 +1577,8 @@ UDP_BIND_ARGS = {
     "--media-fec-bind": None, "--telemetry-bind": None, "--client-udp-bind": None,
     "--relay-forward": None, "--relay-failover-listener": None,
     "--relay-failover-controller": None, "--relay-direct-bind": None,
+    # The lease children's video socket is a twin on the same address.
+    "--relay-lease-bind": None, "--relay-lease-failover-bind": None,
     "--daw-media-bind": None, "--rist-bind": None, "--srt-bind": None,
     "--http-port": None,
 }
@@ -1599,8 +1715,9 @@ def check_merged(state: dict, rendered: dict[str, dict]) -> None:
     shape: the contributor's two lanes end at two distributors of its own
     site and it has no direct lane (--relay-direct-target) to anything; no
     backbone relay runs; every other distributor takes its two parents
-    among those first forwarders; no edge takes a relay parent (edges stay
-    on the cache mesh). An extra argument of a role can break it."""
+    among those first forwarders. An edge takes relay parents only on the
+    fast plane, from the distributors of its own site (check_fast_plane
+    checks those). An extra argument of a role can break it."""
     problems = []
     contrib = common.nodes_by_role(state, "contributor")[0]
     by_id = {relay_node_id(node): node for node in state["nodes"].values()}
@@ -1622,7 +1739,11 @@ def check_merged(state: dict, rendered: dict[str, dict]) -> None:
         if node["role"] == "backbone":
             problems.append(f"{name}: a backbone relay is rendered")
         elif node["role"] == "edge" and "--relay-controlled-local" in args:
-            problems.append(f"{name}: an edge takes a relay parent")
+            for lane in ("primary", "secondary"):
+                parent = by_id.get(flag_value(args, f"--relay-{lane}-id") or "")
+                if parent is not None and parent["role"] != "distributor":
+                    problems.append(f"{name}: an edge takes the {parent['role']} "
+                                    f"{parent['name']} as its {lane} relay parent")
         elif node["role"] == "distributor" and relay_node_id(node) not in first:
             parents = [flag_value(args, "--relay-primary-id"),
                        flag_value(args, "--relay-secondary-id")]
@@ -1686,6 +1807,173 @@ def gap_hold_tradeoff(settings: dict) -> str | None:
             f"{int(deadline)} (or 0) to keep every late part")
 
 
+def fast_plane_feed(state: dict, plan: dict) -> dict:
+    """Who feeds which edge on the fast plane (`edge_fast_plane`):
+    - "edges": {edge name: {"node", "primary", "secondary" (None on a site
+      of one distributor), "rank"}}. The parents are the first two
+      distributors of the edge's site by name; edge i of the site (by name)
+      takes the first as its primary when i is even, the second when it is
+      odd, so that each is primary for half of the edges. Its rank
+      (--client-udp-edge-rank) is i, distinct within the site.
+    - "forwarders": {distributor name: {"node", "primary_children": [VLAN
+      addresses of the edges it is primary for], "children": [every edge it
+      feeds]}}.
+    Empty when the setting is off (or the relay class split is). An edge
+    or a distributor without a VLAN address takes no part: the lease child
+    is the edge's cache-mesh address, which is its VLAN address."""
+    out: dict = {"edges": {}, "forwarders": {}}
+    if not plan.get("edge_fast_plane"):
+        return out
+    by_name = lambda item: item["name"]  # noqa: E731
+    for site in sorted({node["site"] for node in common.nodes_by_role(state, "edge")}):
+        parents = sorted((node for node in common.nodes_by_role(state, "distributor")
+                          if node["site"] == site and node.get("vlan_ipv4")), key=by_name)[:2]
+        if not parents:
+            continue
+        edges = sorted((node for node in common.nodes_by_role(state, "edge")
+                        if node["site"] == site and node.get("vlan_ipv4")), key=by_name)
+        for rank, edge in enumerate(edges):
+            primary = parents[rank % len(parents)]
+            secondary = parents[(rank + 1) % len(parents)] if len(parents) > 1 else None
+            out["edges"][edge["name"]] = {"node": edge, "primary": primary,
+                                          "secondary": secondary, "rank": rank}
+            for parent in (primary, secondary):
+                if parent is None:
+                    continue
+                entry = out["forwarders"].setdefault(
+                    parent["name"], {"node": parent, "primary_children": [], "children": []})
+                entry["children"].append(edge["name"])
+                if parent is primary:
+                    entry["primary_children"].append(edge["vlan_ipv4"])
+    return out
+
+
+def lease_bind(node: dict) -> str:
+    """--relay-lease-bind of a forwarder: an explicit VLAN address, because
+    an edge binds it as its parent's source address."""
+    return f"{node['vlan_ipv4']}:{LEASE_PORT}"
+
+
+def fast_edge_args(feed: dict, services: dict, settings: dict) -> tuple[list[str], list[str]]:
+    """The arguments of an edge fed by the fast plane: (flags without a
+    value, `--flag value` pairs). Audio comes in full from both forwarders,
+    so both relationships are promoted; video in full from the primary and
+    as repair from the secondary until the edge's failover controller
+    promotes it. The RelaySession identity (generation, subscription) is the
+    contributor's, from the compiled plan of the primary forwarder."""
+    edge, primary, secondary = feed["node"], feed["primary"], feed["secondary"]
+    service = services.get(("av_mesh", relay_node_id(primary))) or {}
+    switches = ["--relay-controlled-local", "--relay-primary-promoted"]
+    pairs = [
+        "--fec-bind", f"0.0.0.0:{EDGE_RELAY_PORTS[0]}",
+        "--relay-primary-bind", f"0.0.0.0:{EDGE_RELAY_PORTS[0]}",
+        "--relay-primary-peer", lease_bind(primary),
+        "--relay-primary-id", relay_node_id(primary),
+    ]
+    if secondary is not None:
+        switches.append("--relay-secondary-promoted")
+        pairs += [
+            "--relay-secondary-bind", f"0.0.0.0:{EDGE_RELAY_PORTS[1]}",
+            "--relay-secondary-peer", lease_bind(secondary),
+            "--relay-secondary-id", relay_node_id(secondary),
+            "--relay-failover-controller",
+            f"{edge['vlan_ipv4']}:{EDGE_FAILOVER_PORT}="
+            f"{secondary['vlan_ipv4']}:{LEASE_FAILOVER_PORT}",
+            "--relay-primary-silence-ms", str(settings["failover_primary_silence_ms"]),
+            "--relay-primary-recovery-ms", str(settings["failover_primary_recovery_ms"]),
+            "--relay-secondary-warm-ms", str(settings["failover_secondary_warm_ms"]),
+            "--relay-failover-heartbeat-ms", str(settings["failover_heartbeat_ms"]),
+            "--relay-failover-lease-ms", str(settings["failover_lease_ms"]),
+        ]
+    pairs += [
+        "--relay-topology-generation", str(service.get("topology_generation", 1)),
+        "--relay-subscription-id", str(service.get("subscription_id", 1)),
+        "--edge-fast-ingest", "true",
+        "--client-udp-edge-rank", str(feed["rank"]),
+    ]
+    return switches, pairs
+
+
+def fast_forwarder_args(forwarder: dict | None, settings: dict) -> list[str]:
+    """`--flag value` pairs of a distributor that feeds edges on the fast
+    plane (`forwarder`, an entry of fast_plane_feed's "forwarders"), or
+    of one that feeds none (None: lease children off)."""
+    if forwarder is None:
+        return ["--relay-lease-children", "false"]
+    node = forwarder["node"]
+    pairs = [
+        "--relay-lease-children", "true",
+        "--relay-lease-bind", lease_bind(node),
+        "--relay-lease-child-ports", f"{EDGE_RELAY_PORTS[0]},{EDGE_RELAY_PORTS[1]}",
+        "--relay-max-lease-children",
+        str(max(edges_per_forwarder(settings), len(forwarder["children"]))),
+        "--relay-lease-failover-bind", f"{node['vlan_ipv4']}:{LEASE_FAILOVER_PORT}",
+    ]
+    if forwarder["primary_children"]:
+        pairs += ["--relay-lease-primary-children", ",".join(forwarder["primary_children"])]
+    return pairs
+
+
+def check_fast_plane(state: dict, rendered: dict[str, dict]) -> None:
+    """Raise ValueError when an edge that takes relay parents would not be
+    fed: each parent is a distributor of its site whose --relay-lease-bind
+    is the peer that the edge binds; its primary sends to its first port and
+    names it a primary child, its secondary sends to its second port and
+    does not, and its failover controller promotes the secondary's lease
+    failover listener; and no two edges of a site share a fast-lane rank.
+    An extra argument of a role can break it."""
+    problems = []
+    by_id = {relay_node_id(node): node for node in state["nodes"].values()}
+    ranks: dict[tuple[str, str], str] = {}
+    for name, item in sorted(rendered.items()):
+        node = state["nodes"][name]
+        args = item["args"]
+        if node["role"] != "edge" or "--relay-controlled-local" not in args:
+            continue
+        address = node.get("vlan_ipv4") or node["public_ipv4"]
+        rank = flag_value(args, "--client-udp-edge-rank") or "0"
+        other = ranks.setdefault((node["site"], rank), name)
+        if other != name:
+            problems.append(f"{name} and {other} share --client-udp-edge-rank {rank}")
+        lanes = (("primary", "--fec-bind", 0), ("secondary", "--relay-secondary-bind", 1))
+        for lane, bind_flag, port_index in lanes:
+            parent_id = flag_value(args, f"--relay-{lane}-id")
+            peer = flag_value(args, f"--relay-{lane}-peer")
+            if peer is None:
+                continue
+            parent = by_id.get(parent_id or "")
+            if (not parent or parent["role"] != "distributor" or parent["site"] != node["site"]
+                    or parent["name"] not in rendered):
+                problems.append(f"{name}: {lane} relay parent {parent_id} is not a distributor "
+                                f"of its site {node['site']}")
+                continue
+            parent_args = rendered[parent["name"]]["args"]
+            if flag_value(parent_args, "--relay-lease-bind") != peer:
+                problems.append(f"{name}: {lane} peer {peer} is not the --relay-lease-bind of "
+                                f"{parent['name']}")
+            ports = (flag_value(parent_args, "--relay-lease-child-ports")
+                     or f"{EDGE_RELAY_PORTS[0]},{EDGE_RELAY_PORTS[1]}").split(",")
+            bind = flag_value(args, bind_flag) or ""
+            if bind.rsplit(":", 1)[-1] != ports[port_index]:
+                problems.append(f"{name}: {bind_flag} {bind}, but {parent['name']} sends its "
+                                f"{lane} children's symbols to port {ports[port_index]}")
+            primaries = (flag_value(parent_args, "--relay-lease-primary-children") or "").split(",")
+            if (address in primaries) != (lane == "primary"):
+                problems.append(f"{name}: {parent['name']} is its {lane} forwarder but "
+                                + ("does not name" if lane == "primary" else "names")
+                                + " it in --relay-lease-primary-children")
+            if lane == "secondary":
+                controller = flag_value(args, "--relay-failover-controller") or ""
+                listener = flag_value(parent_args, "--relay-lease-failover-bind")
+                if not listener or controller.split("=", 1)[-1] != listener:
+                    problems.append(f"{name}: its failover controller {controller or '(none)'} "
+                                    f"does not reach {parent['name']}'s lease failover "
+                                    f"listener {listener}")
+    if problems:
+        raise ValueError("the fast-plane feed of the edges is not rendered as planned: "
+                         + "; ".join(problems))
+
+
 def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     """Return {node name: {service, args, env}} for every service node."""
     services = {
@@ -1693,6 +1981,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     }
     check_settings(settings)
     classes = class_plan(settings)
+    feed = fast_plane_feed(state, classes)
     direct_contrib, direct_mesh = (direct_region_args(state, services)
                                    if settings.get("contributor_direct_region") else ([], {}))
     rendered: dict[str, dict] = {}
@@ -1731,16 +2020,28 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             args += ["--edge-webtransport"]
             extra = list(settings["extra_distributor_args"])
             args += yield_to(extra, gap_hold_args(node, settings, state))
+            if classes["relay_class_split"]:
+                args += yield_to(extra, fast_forwarder_args(
+                    feed["forwarders"].get(node["name"]), settings))
         else:
             args += cache_mesh_args(node, settings, state)
             args += ["--edge-http3"]
             extra = list(settings["extra_edge_args"])
+            if node["name"] in feed["edges"]:
+                switches, pairs = fast_edge_args(feed["edges"][node["name"]], services, settings)
+                given = flag_names(extra)
+                args += [switch for switch in switches if switch not in given]
+                args += yield_to(extra, pairs)
+        if "--client-udp-bind" in args:
+            args += yield_to(extra, ["--client-udp-fast-lane",
+                                     flag(classes["client_udp_fast_lane"])])
         args += yield_to(extra, mesh_class_args(node, args, classes)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
     check_class_ports(rendered, classes)
+    check_fast_plane(state, rendered)
     if topology_mode(settings) == "merged":
         check_merged(state, rendered)
     out = common.ARTIFACT_DIR / "nodes"

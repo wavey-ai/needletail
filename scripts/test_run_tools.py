@@ -109,6 +109,10 @@ class Parts(unittest.TestCase):
     def test_the_daw_source_is_told_its_epochs(self):
         self.assertEqual(run.daw_epoch_args(48, 240).split(),
                          ["--lossless-epoch-samples", "48", "--opus-frame-samples", "240"])
+        # The lane's default: 1 ms Opus Custom at 320 kb/s.
+        self.assertEqual((run.DAW_OPUS_FRAME_SAMPLES, run.DAW_OPUS_BITRATE), (48, 320000))
+        self.assertEqual(run.daw_epoch_args(48, 48, 256000).split()[-2:],
+                         ["--opus-bitrate", "256000"])
 
 
 if __name__ == "__main__":

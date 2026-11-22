@@ -99,9 +99,13 @@ class Render(unittest.TestCase):
             self.assertEqual(value_of(node_args, "--cache-mesh-class-port-offset"), "1000", name)
         for name in ("lon-dist-a", "lon-edge-1", "new-edge-2"):
             self.assertEqual(value_of(args[name], "--client-udp-class-sockets"), "true", name)
-        # A backbone serves no UDP clients; an edge runs no relay ingest.
+        # A backbone serves no UDP clients. An edge fed by the fast plane
+        # (edge_fast_plane) runs the class threads as its relay ingest; one on
+        # the cache mesh alone runs none.
         self.assertNotIn("--client-udp-class-sockets", args["relay-primary"])
-        self.assertNotIn("--relay-class-threads", args["lon-edge-1"])
+        self.assertEqual(value_of(args["lon-edge-1"], "--relay-class-threads"), "true")
+        self.assertNotIn("--relay-class-threads",
+                         self.render(["edge_fast_plane=false"])["lon-edge-1"])
         # Each flag is rendered once: clap refuses a flag given twice.
         for name, node_args in args.items():
             flags = [arg for arg in node_args if arg.startswith("--")]
@@ -210,9 +214,16 @@ class Render(unittest.TestCase):
             ['extra_distributor_args=["--relay-class-threads","false"]'])))
         # Every tier off together is a consistent render, and the ports
         # checked are the ones the services bind.
+        # (The edges' fast-plane feed is the relay class split too: an edge
+        # fed by it would wait for video on its ports plus the offset.)
+        self.assertIn("lon-edge-1", str(self.render_error(
+            ['extra_contributor_args=["--relay-class-lanes=false"]',
+             'extra_backbone_args=["--relay-class-threads","false"]',
+             'extra_distributor_args=["--relay-class-threads","false"]'])))
         args = self.render(['extra_contributor_args=["--relay-class-lanes=false"]',
                             'extra_backbone_args=["--relay-class-threads","false"]',
-                            'extra_distributor_args=["--relay-class-threads","false"]'])
+                            'extra_distributor_args=["--relay-class-threads","false"]',
+                            "edge_fast_plane=false"])
         plan = deploy.class_plan({**deploy.DEFAULT_SETTINGS})
         ports = {port for _s, port, _a in deploy.udp_binds(args["relay-primary"], plan)}
         self.assertNotIn(23001, ports)
@@ -235,8 +246,11 @@ class Render(unittest.TestCase):
         self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "true")
         for name in ("relay-primary", "relay-secondary", "lon-dist-a", "new-dist-b"):
             self.assertEqual(value_of(args[name], "--relay-video-gso"), "true", name)
-        # An edge runs no relay ingest.
-        self.assertNotIn("--relay-video-gso", args["lon-edge-1"])
+        # An edge fed by the fast plane: its video thread's sends to its
+        # fast-lane clients. One on the cache mesh alone runs no relay ingest.
+        self.assertEqual(value_of(args["lon-edge-1"], "--relay-video-gso"), "true")
+        self.assertNotIn("--relay-video-gso",
+                         self.render(["edge_fast_plane=false"])["lon-edge-1"])
         args = self.render(["relay_video_gso=false"])
         self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "false")
         self.assertEqual(value_of(args["relay-primary"], "--relay-video-gso"), "false")
@@ -245,6 +259,35 @@ class Render(unittest.TestCase):
         self.assertNotIn("--relay-video-gso", args["relay-primary"])
         args = self.render(["low_latency_baseline=true"])
         self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "false")
+
+    def test_the_repair_horizon_and_burst_copies_are_rendered(self):
+        # Wave 5 W2: the repair horizon on every mesh node, burst copies on
+        # every node that runs the class threads.
+        args = self.render()
+        for name, node_args in args.items():
+            if name == "contrib-lon":
+                self.assertNotIn("--canonical-repair-horizon", node_args)
+                continue
+            self.assertEqual(value_of(node_args, "--canonical-repair-horizon"), "auto", name)
+        for name in ("relay-primary", "relay-secondary", "lon-dist-a", "new-dist-b",
+                     "lon-edge-1"):
+            self.assertEqual(value_of(args[name], "--relay-burst-copy-ms"), "20", name)
+        args = self.render(["canonical_repair_horizon=off", "relay_burst_copy_ms=0"])
+        self.assertEqual(value_of(args["new-dist-b"], "--canonical-repair-horizon"), "off")
+        self.assertEqual(value_of(args["relay-primary"], "--relay-burst-copy-ms"), "0")
+        args = self.render(["canonical_repair_horizon=45"])
+        self.assertEqual(value_of(args["lon-edge-1"], "--canonical-repair-horizon"), "45")
+        # Without the class threads there is no audio thread to copy.
+        args = self.render(["class_isolation=false"])
+        self.assertNotIn("--relay-burst-copy-ms", args["relay-primary"])
+        # An extra argument wins.
+        args = self.render(['extra_distributor_args=["--canonical-repair-horizon", "30"]'])
+        self.assertEqual(value_of(args["new-dist-b"], "--canonical-repair-horizon"), "30")
+        self.assertEqual(args["new-dist-b"].count("--canonical-repair-horizon"), 1)
+        for bad in ("canonical_repair_horizon=soon", "canonical_repair_horizon=-5",
+                    "relay_burst_copy_ms=-1"):
+            with self.assertRaises(SystemExit, msg=bad):
+                self.render([bad])
 
     def test_the_baseline_turns_every_piece_off(self):
         args = self.render(["low_latency_baseline=true", "relay_class_split=true",

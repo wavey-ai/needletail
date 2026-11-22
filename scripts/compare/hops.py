@@ -34,6 +34,30 @@ Each part is followed along the path that it took to a listener:
   edge.mesh_first / edge.edge_committed / edge.reply
   listener.complete the part complete at a listener (ntcmp probe.csv)
 
+A part that reached its edge on the fast plane (the edge a lease child of
+the distributors of its site: its tee committed the part before the cache
+mesh did) follows another path from the parent on:
+
+  parent.relay_first / parent.relay_forward   the forwarder that sent the
+                    edge the part's first symbol (the edge's relay_first
+                    `peer`, its --relay-lease-bind)
+  edge.relay_first / edge.relay_decoded / edge.committed   the edge's class
+                    threads and tee
+  edge.reply / listener.complete
+
+Wherever a node's class threads took a part (forwarders and edges on the
+fast plane, from av-mesh wave 5), its relay_first is the kernel's receive time
+of the part's first symbol (SO_TIMESTAMPNS) and relay_woken the time the
+thread read it off the socket: relay_first -> relay_woken is the thread's
+wake-up, and the wire ends at relay_first. Both are optional stages (older
+journals have no relay_woken; the hops go around it).
+
+and every part that the edge sent to a mode-2 UDP listener has edge.udp_sent,
+a side stage measured from the part's first arrival at the edge (relay_first
+or mesh_first), from the edge's wake-up (relay_woken, the fast lane's own
+work) and from the source. Each region's report counts the parts of
+each plane.
+
 For every region (the site of the edge) it reports the median, p95, p99 and
 maximum of each hop (the delta between consecutive stages of one part) and
 of every stage counted from the source. Parts are followed twice: once for
@@ -53,7 +77,7 @@ START + (k+1) * E, where E is one epoch: --epoch-samples N at --sample-rate
 (48 kHz), so 48 samples are 1 ms, 120 are 2.5 ms, 12 are 0.25 ms. The epoch
 is the run's: --epoch-samples, --epoch-us, the sender's JSON summary
 (--sender-summary, its `epoch_samples`), or else the default epoch of the
-payload (--payload: pcm and flac 48 samples, opus 120), never a constant.
+payload (--payload: pcm and flac 48 samples, opus 48 = 1 ms Opus Custom), never a constant.
 A collection saved with --raw-out records the epoch, and --journal reads it
 back. A collection without one (saved before 22 November 2026: wave-1 runs
 were 240-sample, 5 ms epochs) falls back to the payload's default, and when a
@@ -97,8 +121,9 @@ SCRIPTS = HERE.parent
 SAMPLE_RATE = 48_000
 # The default AEP1 epoch of each payload of aep1-48k-probe send, in samples:
 # one part each (the contributor's --audio-part epoch). FLAC frames are at
-# least 32 samples; Opus frames are 120, 240, 480 or 960.
-DEFAULT_EPOCH_SAMPLES = {"pcm": 48, "flac": 48, "opus": 120}
+# least 32 samples; Opus frames are 48, 64 or 72 (Opus Custom: 1, 1.33,
+# 1.5 ms; the lane default is 48 at 320 kb/s) or 120, 240, 480, 960.
+DEFAULT_EPOCH_SAMPLES = {"pcm": 48, "flac": 48, "opus": 48}
 # The LL-HLS stream of each payload of AEP1 group 0 at the lab contributor:
 # --daw-hls-base-stream-id 2001, + 1000 for Opus, + 2000 for PCM.
 PAYLOAD_STREAM = {"flac": 2001, "opus": 3001, "pcm": 4001}
@@ -106,7 +131,8 @@ MESH_PORT = 19444
 CONTRIB_PORT = 19443
 QUANTILES = (("p50", 0.5), ("p95", 0.95), ("p99", 0.99))
 
-# The path of a part, in order: (label, where, stage).
+# The path of a part, in order: (label, where, stage). CHAIN is the path of
+# a part that reached its edge over the cache mesh.
 CHAIN = [
     ("source", "source", None),
     ("contrib.src_last", "contrib", "src_last"),
@@ -114,8 +140,10 @@ CHAIN = [
     ("contrib.sent_first", "contrib", "sent_first"),
     ("contrib.sent", "contrib", "sent"),
     ("primary.relay_first", "primary", "relay_first"),
+    ("primary.relay_woken", "primary", "relay_woken"),
     ("primary.relay_forward", "primary", "relay_forward"),
     ("parent.relay_first", "parent", "relay_first"),
+    ("parent.relay_woken", "parent", "relay_woken"),
     ("parent.committed", "parent", "committed"),
     ("parent.watermark", "parent", "watermark"),
     ("parent.mesh_sent", "parent", "mesh_sent"),
@@ -124,32 +152,78 @@ CHAIN = [
     ("edge.reply", "edge", "reply"),
     ("listener.complete", "listener", None),
 ]
+# The path of a part that reached its edge on the fast plane (low-latency
+# B5/B6: the edge is a lease child of the distributors of its site): the
+# parent forwards the contributor's RLS1 symbols as they arrive
+# (relay_forward: its first symbol to its first child, compiled or lease;
+# a forwarder without compiled children journals none), the edge's class
+# threads take them (relay_first, `peer` the parent's --relay-lease-bind),
+# its tee decodes (relay_decoded) and commits the part (committed, the
+# forwarders' own commit; edge_committed is the cache mesh's).
+FAST_CHAIN = CHAIN[:10] + [
+    ("parent.relay_forward", "parent", "relay_forward"),
+    ("edge.relay_first", "edge", "relay_first"),
+    ("edge.relay_woken", "edge", "relay_woken"),
+    ("edge.relay_decoded", "edge", "relay_decoded"),
+    ("edge.committed", "edge", "committed"),
+    ("edge.reply", "edge", "reply"),
+    ("listener.complete", "listener", None),
+]
+# A part sent to a mode-2 UDP listener by the edge (udp_sent, the first such
+# event of the part at the edge): a side stage, measured from the part's
+# first arrival at the edge (relay_first on the fast plane, where the fast
+# client lane sends each symbol on as it arrives; mesh_first on the cache
+# mesh) and from the source.
+UDP_SENT = "edge.udp_sent"
 EPOCH_STAGES = ("src_first", "src_last", "recovered", "packaged")
 # Stages that a journal may lack, because the node's build does not record
 # them: a hop goes around a missing one to the stage before it.
-OPTIONAL = {"contrib.sent_first"}
-LABELS = [label for label, _, _ in CHAIN]
+OPTIONAL = {"contrib.sent_first", "parent.relay_forward", "edge.relay_decoded",
+            "primary.relay_woken", "parent.relay_woken", "edge.relay_woken"}
+MESH_LABELS = [label for label, _, _ in CHAIN]
+FAST_LABELS = [label for label, _, _ in FAST_CHAIN]
+# Every label, in the order of a report.
+LABELS = (MESH_LABELS[:10] + ["parent.relay_forward"] + MESH_LABELS[10:14]
+          + ["edge.relay_first", "edge.relay_woken", "edge.relay_decoded"]
+          + MESH_LABELS[14:15] + ["edge.committed", UDP_SENT] + MESH_LABELS[15:])
 # A part's times carry this key when the edge's parent is a first forwarder
 # itself (the merged topology): its path has no primary relay, and its hops
 # go around the primary stages.
 NO_PRIMARY = "primary.none"
+# A part's times carry this key when it reached its edge on the fast plane
+# (FAST_CHAIN), not over the cache mesh (CHAIN).
+FAST_PLANE = "plane.fast"
 PRIMARY_STAGES = {label for label, where, _ in CHAIN if where == "primary"}
 
 
+def chain_labels(times: dict) -> list[str]:
+    """The labels of the path that a part took to its edge."""
+    return FAST_LABELS if FAST_PLANE in times else MESH_LABELS
+
+
 def hop_pairs(times: dict) -> list[tuple[str, str]]:
-    """The hops of one part: consecutive stages of the CHAIN that it has,
-    going around a missing OPTIONAL stage only (and the primary stages of a
-    part marked NO_PRIMARY)."""
+    """The hops of one part: consecutive stages of its path (CHAIN, or
+    FAST_CHAIN for a part marked FAST_PLANE) that it has, going around a
+    missing OPTIONAL stage only (and the primary stages of a part marked
+    NO_PRIMARY); and the side hop from its first arrival at the edge to
+    UDP_SENT."""
     pairs = []
+    labels = chain_labels(times)
     optional = OPTIONAL | (PRIMARY_STAGES if NO_PRIMARY in times else set())
-    for index, after in enumerate(LABELS[1:], 1):
+    for index, after in enumerate(labels[1:], 1):
         if after not in times:
             continue
         before = index - 1
-        while before > 0 and LABELS[before] in optional and LABELS[before] not in times:
+        while before > 0 and labels[before] in optional and labels[before] not in times:
             before -= 1
-        if LABELS[before] in times:
-            pairs.append((LABELS[before], after))
+        if labels[before] in times:
+            pairs.append((labels[before], after))
+    arrival = "edge.relay_first" if FAST_PLANE in times else "edge.mesh_first"
+    if UDP_SENT in times and arrival in times:
+        pairs.append((arrival, UDP_SENT))
+    # The fast lane's own work at the edge, after its thread woke.
+    if UDP_SENT in times and FAST_PLANE in times and "edge.relay_woken" in times:
+        pairs.append(("edge.relay_woken", UDP_SENT))
     return pairs
 
 
@@ -358,6 +432,7 @@ class Journal:
         self.sent_to: dict[tuple, tuple] = {}      # (stream, seq, peer node) -> (first sender, t)
         self.parts_at: dict[str, set] = {}         # node -> seqs it committed or received
         self.parent: dict[tuple, str] = {}         # (edge, stream, seq) -> parent node
+        self.relay_parent: dict[tuple, str] = {}   # the same, on the fast plane
         self.replies: dict[tuple, list[int]] = {}  # (edge, stream, seq) -> reply times
         self.epochs: dict[tuple, dict] = {}        # (stream, seq) -> {stage: max epoch}
         self.stage_names: set[tuple] = set()       # (role, stage)
@@ -389,10 +464,15 @@ class Journal:
                 to = key_part + (peer,)
                 if to not in self.sent_to or t < self.sent_to[to][1]:
                     self.sent_to[to] = (node, t)
-            if stage in ("edge_committed", "mesh_first") and (stream is None or key_part[0] == stream):
+            at_edge = self.role(node) == "edge"
+            if (stage in ("edge_committed", "mesh_first")
+                    or (at_edge and stage in ("committed", "relay_first"))):
                 self.parts_at.setdefault(node, set()).add(key_part[1])
             if stage == "mesh_first" and peer and self.first[key] == t:
                 self.parent[(node,) + key_part] = peer
+            if stage == "relay_first" and at_edge and peer and self.first[key] == t:
+                # The forwarder whose lease bind sent the first symbol.
+                self.relay_parent[(node,) + key_part] = peer
             if stage == "reply":
                 self.replies.setdefault((node,) + key_part, []).append(t)
             if stage in EPOCH_STAGES and event.get("epoch") is not None \
@@ -423,7 +503,24 @@ class Journal:
             return slot["src_last"]
         return max(slot.values())
 
-    def parent_of(self, edge: str, stream: int, seq: int) -> str | None:
+    def fast_plane(self, edge: str, stream: int, seq: int) -> bool:
+        """Whether a part reached the edge on the fast plane: its tee
+        committed it (committed) before the cache mesh did (edge_committed);
+        without either commit, whether its first symbol (relay_first) came
+        before the mesh's first datagram (mesh_first)."""
+        def at(stage: str) -> int | None:
+            return self.first.get((edge, stage, stream, seq))
+        fast, mesh = at("committed"), at("edge_committed")
+        if fast is None or mesh is None:
+            fast = fast if fast is not None else at("relay_first")
+            mesh = mesh if mesh is not None else at("mesh_first")
+        return fast is not None and (mesh is None or fast <= mesh)
+
+    def parent_of(self, edge: str, stream: int, seq: int, fast: bool = False) -> str | None:
+        if fast:
+            parent = self.relay_parent.get((edge, stream, seq))
+            if parent:
+                return parent
         parent = self.parent.get((edge, stream, seq))
         if parent:
             return parent
@@ -446,8 +543,11 @@ class Journal:
         the same value as the x-needletail-edge-committed-unix-us header) is
         exactly this time. Two edges committing in the same microsecond are
         ambiguous: no match."""
+        # On the fast plane the edge's tee journals `committed`, from the
+        # same slot time that the header reports.
         found = [edge for edge in self.named("edge")
-                 if self.first.get((edge, "edge_committed", stream, seq)) == committed_us]
+                 if committed_us in (self.first.get((edge, "edge_committed", stream, seq)),
+                                     self.first.get((edge, "committed", stream, seq)))]
         return found[0] if len(found) == 1 else None
 
     def edge_of_listener(self, stream: int, seq: int, row: dict,
@@ -485,14 +585,23 @@ def first_relays(journal: Journal, primary: str) -> list[str]:
 
 def follow(journal: Journal, stream: int, seq: int, edge: str | None, primary: list[str],
            source_us: int | None, listener: dict | None) -> dict[str, int]:
-    """The time of every stage of the CHAIN for one part on its way to one
-    edge (and listener)."""
+    """The time of every stage of the path (CHAIN, or FAST_CHAIN when the
+    part reached the edge on the fast plane) for one part on its way to one
+    edge (and listener), and UDP_SENT when the edge sent it to a UDP
+    listener."""
     contrib = journal.named("contributor")
-    parent = journal.parent_of(edge, stream, seq) if edge else None
+    fast = bool(edge) and journal.fast_plane(edge, stream, seq)
+    parent = journal.parent_of(edge, stream, seq, fast) if edge else None
     times: dict[str, int] = {}
+    if fast:
+        times[FAST_PLANE] = 1
     if source_us is not None:
         times["source"] = source_us
-    for label, where, stage in CHAIN:
+    if edge:
+        sent = journal.earliest([edge], "udp_sent", stream, seq)
+        if sent is not None:
+            times[UDP_SENT] = sent
+    for label, where, stage in (FAST_CHAIN if fast else CHAIN):
         t = None
         if where == "contrib":
             t = journal.earliest(contrib, stage, stream, seq)
@@ -516,7 +625,7 @@ def follow(journal: Journal, stream: int, seq: int, edge: str | None, primary: l
                 t = min(replies) if replies else None
             elif edge:
                 t = journal.earliest([edge], stage, stream, seq)
-            if t is None and stage == "edge_committed" and listener:
+            if t is None and stage in ("edge_committed", "committed") and listener:
                 t = listener.get("edge_committed_us")
         elif where == "listener" and listener:
             t = listener["complete_us"]
@@ -530,11 +639,17 @@ class Pool:
 
     def __init__(self):
         self.parts = 0
+        self.planes = {"fast": 0, "mesh": 0, "unknown": 0}
         self.hops: dict[str, list[float]] = {}
         self.from_source: dict[str, list[float]] = {}
 
     def add(self, times: dict[str, int]) -> None:
         self.parts += 1
+        # A part whose edge is not known (a listener's, without a match)
+        # has no edge stage: its plane is not known either.
+        self.planes["fast" if FAST_PLANE in times
+                    else "mesh" if any(label.startswith("edge.") for label in times)
+                    else "unknown"] += 1
         for before, after in hop_pairs(times):
             self.hops.setdefault(f"{before} -> {after}", []).append(
                 (times[after] - times[before]) / 1000)
@@ -547,6 +662,8 @@ class Pool:
     def report(self) -> dict:
         return {
             "parts": self.parts,
+            # How the parts reached their edges: the fast plane or the mesh.
+            "planes": dict(self.planes),
             "hops": [{"hop": name, **distribution(values)}
                      for name, values in sorted(self.hops.items(),
                                                 key=lambda item: hop_order(item[0]))],
@@ -683,12 +800,18 @@ def format_summary(result: dict) -> str:
     for region, kinds in result["regions"].items():
         for kind, report in kinds.items():
             lines.append("")
-            lines.append(f"{region} / {kind}: {report['parts']} parts   (ms: n p50 p95 p99 max)")
+            planes = report.get("planes") or {}
+            lines.append(f"{region} / {kind}: {report['parts']} parts"
+                         + (f" ({planes.get('fast', 0)} on the fast plane, "
+                            f"{planes.get('mesh', 0)} over the cache mesh"
+                            + (f", {planes['unknown']} by an edge not known"
+                               if planes.get("unknown") else "") + ")" if planes else "")
+                         + "   (ms: n p50 p95 p99 max)")
             for item in report["hops"]:
                 lines.append(f"  {item['hop']:<48} {item['count']:>7} {item['p50']:>8.3f} "
                              f"{item['p95']:>8.3f} {item['p99']:>8.3f} {item['max']:>9.3f}")
             for item in report["from_source"]:
-                if item["stage"] in ("listener.complete", "edge.reply"):
+                if item["stage"] in ("listener.complete", "edge.reply", UDP_SENT):
                     lines.append(f"  source -> {item['stage']:<38} {item['count']:>7} {item['p50']:>8.3f} "
                                  f"{item['p95']:>8.3f} {item['p99']:>8.3f} {item['max']:>9.3f}")
     return "\n".join(lines) + "\n"

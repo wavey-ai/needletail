@@ -129,6 +129,29 @@ class Analysis(unittest.TestCase):
         self.assertEqual(audio.run.lab.daw_index("nt-opus", old)[1][1:], ["5.0", "632"])
         self.assertEqual(audio.run.lab.daw_index("nt-flac", old)[1][1:], ["5.0", "512"])
 
+    def test_the_daw_opus_lane_takes_an_opus_custom_frame(self):
+        lanes = list(audio.NEEDLETAIL)
+        try:
+            audio.set_nt_opus_frame(48)
+            opus = audio.Audio(FakeSession(), "opus-5", lanes)
+            self.assertEqual(opus.nt_frame_ms(), {"nt-opus": 1.0})
+            self.assertIn("--opus-frame-samples 48 ", audio.daw_command("10.0.0.2:27100"))
+            self.assertIn("/index/nt-opus-48s-b64.index.json", opus.probe("nt-opus", "lon", 60, 1, "t"))
+            # An Opus Custom mode's look-ahead is its frame (its overlap).
+            self.assertEqual(audio.run.lab.daw_index("nt-opus")[1],
+                             ["numbered:nt-opus-48s-b64", "1.0", str(64 + 48)])
+            self.assertEqual(audio.run.lab.opus_lookahead_samples(72), 72)
+            self.assertEqual(audio.run.lab.opus_lookahead_samples(240), 120)
+        finally:
+            audio.set_nt_opus_frame(120)
+        self.assertEqual(audio.NEEDLETAIL["nt-opus"][1], "nt-opus-120s-b64")
+        # Every frame the flag takes has an index for the media step.
+        names = {name for name, _ in audio.run.lab.NT_INDEXES}
+        for frame in audio.run.lab.NT_OPUS_FRAME_SAMPLES:
+            self.assertIn(f"nt-opus-{frame}s-b64", names)
+        # A lane whose step meta has no frame takes --nt-frame-ms.
+        self.assertEqual(analyse.nt_frame_ms({}, "nt-pcm-w", 1.0), 1.0)
+
     def test_daw_meta_drives_the_analysis(self):
         meta = {"nt_frame_ms": {"nt-opus": 2.5}, "nt_daw": dict(audio.NT_DAW)}
         self.assertEqual(analyse.daw_source(meta, "nt-opus-h3"), (120, 64))

@@ -58,7 +58,7 @@ class Settings(unittest.TestCase):
         settings, _ = self.load()
         for key, value in (("part_us", 2500), ("segment_ms", 1000), ("window_ms", 12000),
                            ("audio_part", "epoch"), ("video_part", "frame"),
-                           ("pcm_epoch_samples", 48), ("opus_epoch_samples", 120),
+                           ("pcm_epoch_samples", 48), ("opus_epoch_samples", 48),
                            ("settings_version", 2)):
             self.assertEqual(settings[key], value, key)
         plan = deploy.part_plan(settings)
@@ -195,7 +195,20 @@ class Settings(unittest.TestCase):
         settings, _ = self.load()
         self.assertEqual(deploy.epoch_samples(settings, "pcm"), 48)
         self.assertEqual(deploy.epoch_samples(settings, "flac"), 48)
-        self.assertEqual(deploy.epoch_samples(settings, "opus"), 120)
+        # 1 ms Opus Custom by default: a whole-ms part for the checkers.
+        self.assertEqual(deploy.epoch_samples(settings, "opus"), 48)
+        self.assertEqual(deploy.whole_part_ms(settings, 48, "Opus parts"), 1)
+        for frame in (64, 72, 120):
+            settings_frame, _ = self.load([f"opus_epoch_samples={frame}"])
+            self.assertEqual(deploy.epoch_samples(settings_frame, "opus"), frame)
+        # The lane's Opus rate: 320 kb/s CBR; 256 kb/s is the cheaper option.
+        self.assertEqual(settings["opus_bitrate"], 320000)
+        self.assertEqual(deploy.part_plan(settings)["opus_bitrate"], 320000)
+        settings_rate, _ = self.load(["opus_bitrate=256000"])
+        self.assertEqual(deploy.part_plan(settings_rate)["opus_bitrate"], 256000)
+        with self.assertRaises(SystemExit) as caught:
+            self.load(["opus_bitrate=1000000"])
+        self.assertIn("opus_bitrate=1000000", str(caught.exception))
         settings, _ = self.load(["pcm_epoch_samples=12"])
         self.assertEqual(deploy.epoch_samples(settings, "pcm"), 12)
         self.assertEqual(deploy.epoch_samples(settings, "flac"), 32)

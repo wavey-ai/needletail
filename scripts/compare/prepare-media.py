@@ -65,6 +65,9 @@ PLI_GOP = 8            # key frame interval of the recovery encode
 # rate without filler: that is the rate every system carries.
 RUNGS = {
     "1080p6": (1920, 1080, 6000, 7560),
+    # The first 8 Mbit/s encode (constant 8,000 kbit/s with filler), whose
+    # video without filler is about 5 Mbit/s: the sweeps' lowest 4K rung.
+    "2160p5": (3840, 2160, 5000, 8000),
     "2160p8": (3840, 2160, 8000, 12600),
     "2160p16": (3840, 2160, 16000, 19700),
     "2160p25": (3840, 2160, 25000, 30400),

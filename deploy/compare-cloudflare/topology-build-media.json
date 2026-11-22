@@ -1,0 +1,8 @@
+{
+  "description": "Two dedicated hosts for the comparison: one builds the Needletail binaries of the branches under test (av-mesh, av-contrib, daw-nexus), one encodes the 4K source clips. They carry no measurement.",
+  "image": "linode/debian13",
+  "nodes": [
+    {"name": "build", "role": "load", "site": "london", "region": "gb-lon", "type": "g6-dedicated-8"},
+    {"name": "media", "role": "load", "site": "london", "region": "gb-lon", "type": "g6-dedicated-8"}
+  ]
+}

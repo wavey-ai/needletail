@@ -492,7 +492,8 @@ def start(args: argparse.Namespace) -> dict:
         f"DAW_TEST_SOURCE_START_UNIX_NS={plan['session_id']} "
         f"DAW_TEST_SOURCE_CAPACITY_OUTPUT={remote}/daw-capacity.ndjson "
         f"/usr/local/bin/daw-test-source --direct-contributor --loop-prepared-pcm "
-        + mesh_run.daw_epoch_args(args.daw_lossless_epoch_samples, args.daw_opus_frame_samples)
+        + mesh_run.daw_epoch_args(args.daw_lossless_epoch_samples, args.daw_opus_frame_samples,
+                                  args.daw_opus_bitrate)
         + f"127.0.0.1:27100 {args.duration} {shlex.quote(args.track_directory)} "
         ">source.log 2>source.err </dev/null &) ; sleep 1; pgrep -x daw-test-source | head -1")
     plan["source_pid"] = common.ssh_text(contributor, source)
@@ -1027,9 +1028,14 @@ def main() -> None:
                         default=mesh_run.DAW_LOSSLESS_EPOCH_SAMPLES,
                         help="the DAW source's lossless epoch (one flac0 part)")
     runner.add_argument("--daw-opus-frame-samples", type=int,
-                        default=mesh_run.DAW_OPUS_FRAME_SAMPLES, choices=(120, 240, 480, 960),
-                        help="the DAW source's Opus frame (one opus0 part); the checkers need "
-                             "whole ms parts, so not 120 (2.5 ms)")
+                        default=mesh_run.DAW_OPUS_FRAME_SAMPLES,
+                        choices=(48, 64, 72, 120, 240, 480, 960),
+                        help="the DAW source's Opus frame (one opus0 part): 48 (1 ms Opus "
+                             "Custom), the lane's default; the checkers need whole ms parts, so "
+                             "not 64, 72 or 120 (2.5 ms)")
+    runner.add_argument("--daw-opus-bitrate", type=int, default=mesh_run.DAW_OPUS_BITRATE,
+                        help="the DAW source's Opus bitrate, CBR: 320000, the lane's default; "
+                             "256000 is the lower-bandwidth option at 1 ms")
     runner.add_argument("--start-delay", type=int, default=50)
     runner.add_argument("--track-directory",
                         default="/var/lib/needletail-test-media/daw-nexus-album-1-track-pcm-600s")
