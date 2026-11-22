@@ -116,17 +116,18 @@ current figures, run `scale-run.py plan --topology-only`.
 | Phase | Minutes |
 | --- | ---: |
 | `up`, bootstrap and `push` of 49 nodes, LiveKit, `prepare` | 60 |
+| Calibration ramp (100, 500, 2,000, mixed), then `plan --cost` | 10 |
 | Two edges per region: pcm-1 UDP-only ramp to the edges' limit | 15 |
 | Four edges per region: pcm-1 UDP-only and mixed, opus-1 and opus-2.5 mixed | 52 |
 | Second curve: restart with eight London edges, opus-2.5 UDP-only and mixed | 31 |
 | Self-hosted LiveKit control | 20 |
 | Reruns of steps that failed for reasons other than load | 30 |
 | `down`, VLAN and leftover check | 10 |
-| **Total** | **about 3.7 h** |
+| **Total** | **about 3.9 h** |
 
-At $4.158 an hour, 3.7 hours is about $15. The watchdog is armed for 5.5
+At $4.158 an hour, 3.9 hours is about $16. The watchdog is armed for 5.5
 hours, which caps the bill at about $23. One full rerun brings it to
-about $38, under the $60 limit. Listener traffic stays on the VLAN and is
+about $39, under the $60 limit. Listener traffic stays on the VLAN and is
 not billed. `scale-run.py plan` prints what it would cost if it were
 public.
 
@@ -150,7 +151,11 @@ public.
   datagram because each listener has its own socket, so the spec's 5,000
   per g6-dedicated-4 at 1 ms is out of reach. Memory is about 0.44 MB per
   listener and does not bind. One measured figure is still missing: what
-  an LL-HLS reader costs. The plan assumes 0.03 vCPU at 1 ms parts.
+  an LL-HLS reader costs. The plan assumes 0.03 vCPU at 1 ms parts, part
+  L's unmeasured estimate for HTTP/2 (0.02 to 0.04), and HTTP/3 may cost
+  more. ntcmp also holds every part's latency for every reader, about 0.5
+  to 2.4 MB per reader per minute at 1 ms parts. The calibration ramp
+  (below) measures both before the large steps.
 - **An edge sends at most 4 Gbit/s,** about 700 PCM listeners at 1 ms or
   about 3,000 at 1 ms Opus. Over 16 edges that is about 11,000 PCM
   listeners, more than the listener hosts drive at 1 ms. To see an edge
@@ -168,9 +173,14 @@ public.
   (+$0.648/h, 52 nodes). Those hosts are not in the topology.
 - **The contributor and forwarder tiers should stay flat:** one stream in,
   and one feed per edge and per remote forwarder.
-- Pass better figures to `plan` and `run` with `--cost FILE`
-  (`{"udp_vcpu": ..., "hls_vcpu": ...}`, vCPU per listener at 1,000 parts
-  a second) and `--udp-mbps` once a step has measured them.
+- **Every step measures what a listener cost its host.** It reports
+  needletail-load's and ntcmp's own CPU, as the sampler reads it per
+  process, and peak memory, both per listener, as the median over the
+  listener hosts. UDP and LL-HLS each get 0.0015 vCPU of NIC softirq
+  added, which a process's own CPU time does not include. The run writes
+  these to `cost.json`, in the shape that `--cost FILE` takes, for
+  `plan` and `run` to use. Pass `--udp-mbps` once a step has measured
+  the wire rate.
 
 ## How the referee runs it
 
@@ -202,12 +212,29 @@ scripts/compare/scale-run.py prepare \
   --audio-file /home/jamieb/wavey.ai/needletail-compare/target/compare-media/audio/audio.s24le
 ```
 
+Calibration. A short mixed ramp, held for 30 s per step, measures what a
+UDP listener and an LL-HLS reader cost a listener host. At 2,000 it runs
+100 readers and 100 UDP listeners on each listener host. The monitor
+stops a step if a host saturates. Every later `plan` and `run` takes the
+measured costs:
+
+```sh
+scripts/compare/scale-run.py run --config pcm-1 --name cal --steps 100,500,2000 \
+  --hold 30 --keep-going --force
+cat target/compare/scale-cal/cost.json        # {"udp_vcpu": ..., "hls_vcpu": ...}
+export COST="--cost target/compare/scale-cal/cost.json"
+scripts/compare/scale-run.py plan $COST
+```
+
+Pass `$COST` to every `run` below, so that the plan's "over the listener
+hosts" check uses the measured figures.
+
 Two edges per region (an edge gives out before the listener hosts):
 
 ```sh
 scripts/linode-small-mesh-deploy.py restart $(scripts/compare/scale-run.py settings --edges-per-region 2)
 scripts/compare/scale-run.py plan                                     # from the lab
-scripts/compare/scale-run.py run --config pcm-1 --name e2-pcm-udp --hls-share 0 \
+scripts/compare/scale-run.py run $COST --config pcm-1 --name e2-pcm-udp --hls-share 0 \
   --steps 100,1000,3000,4000,5000,6000,7000
 ```
 
@@ -215,12 +242,12 @@ Curve 1 (four edges per region):
 
 ```sh
 scripts/linode-small-mesh-deploy.py restart $(scripts/compare/scale-run.py settings)
-scripts/compare/scale-run.py run --config pcm-1 --name c1-pcm-udp --hls-share 0 \
+scripts/compare/scale-run.py run $COST --config pcm-1 --name c1-pcm-udp --hls-share 0 \
   --steps 100,1000,4000,6000,8000
-scripts/compare/scale-run.py run --config pcm-1 --name c1-pcm-mixed --force
-scripts/compare/scale-run.py run --config opus-1 --name c1-opus1-mixed --force
-scripts/compare/scale-run.py run --config opus-2.5 --name c1-opus25-mixed --force
-scripts/compare/scale-run.py run --config opus-2.5 --name c1-opus25-udp --hls-share 0 \
+scripts/compare/scale-run.py run $COST --config pcm-1 --name c1-pcm-mixed --force
+scripts/compare/scale-run.py run $COST --config opus-1 --name c1-opus1-mixed --force
+scripts/compare/scale-run.py run $COST --config opus-2.5 --name c1-opus25-mixed --force
+scripts/compare/scale-run.py run $COST --config opus-2.5 --name c1-opus25-udp --hls-share 0 \
   --steps 100,1000,5000,10000,15000,20000
 ```
 
@@ -232,9 +259,9 @@ Second curve (eight London edges):
 
 ```sh
 scripts/linode-small-mesh-deploy.py restart $(scripts/compare/scale-run.py settings --second-curve)
-scripts/compare/scale-run.py run --config opus-2.5 --name c2-opus25-udp --hls-share 0 \
+scripts/compare/scale-run.py run $COST --config opus-2.5 --name c2-opus25-udp --hls-share 0 \
   --steps 100,1000,5000,10000,15000,20000
-scripts/compare/scale-run.py run --config opus-2.5 --name c2-opus25-mixed --force
+scripts/compare/scale-run.py run $COST --config opus-2.5 --name c2-opus25-mixed --force
 ```
 
 End of the run:
@@ -258,8 +285,10 @@ Each run's results go to `target/compare/scale-<name>/`:
   p99, missing parts, time to first part, the tiers' CPU and Mbit/s out,
   UDP listeners per edge, public transfer, and what gave out first
 
-`scale-run.py analyse <name>` rebuilds `scale.json` and `summary.md` from
-the files.
+- `cost.json`: the measured cost of a listener, for `--cost`
+
+`scale-run.py analyse <name>` rebuilds `scale.json`, `summary.md` and
+`cost.json` from the files.
 
 ## Limits of the tools
 
@@ -270,9 +299,10 @@ the files.
   needletail-load summary carries its histogram buckets. When one does
   not, the worst host bounds the tail, and the report says so (`"merge"`).
 - **ntcmp keeps every reader's latency values in memory**, one float per
-  part per reader. Each step runs a fresh process, which keeps that
-  memory bounded at these step lengths, but an hour-long crowd would not
-  fit.
+  part per reader, and writes one report per reader. Each step runs a
+  fresh process, which bounds that memory at these step lengths (about 3
+  MB per reader for a 90 s step), but an hour-long crowd would not fit.
+  The summary shows ntcmp's peak MB per reader.
 - **UDP latency is publication to arrival**, the part's publish time as
   the client reads it. LL-HLS latency is mouth to ear. The view hosts'
   full probes, run with the referee's tools, give mouth to ear for both

@@ -248,6 +248,7 @@ class Sampler(unittest.TestCase):
         for row in rows:
             self.assertTrue(0.0 <= row["cpu"] <= 1.0)
             self.assertIn("RcvbufErrors", row["udp"])
+            self.assertIn("rss_mb", row)
         summary = scale.summarize_samples(header, rows, node_type="g6-dedicated-2")
         self.assertEqual(summary["samples"], len(rows))
         self.assertIsNone(summary["saturated_at"])
@@ -432,19 +433,25 @@ class Analysis(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         t0 = 1_763_800_000.0
 
-        def sampler(name, cpu, tx=1000):
+        def sampler(name, cpu, tx=1000, procs=None, rss=None):
             directory = tmp / name
             directory.mkdir(exist_ok=True)
             lines = [json.dumps({"public_iface": "eth0", "cpus": 2})]
             lines += [json.dumps({"t": t0 + i, "cpu": cpu, "core_max": cpu,
                                   "rx": {"eth0": 10, "eth1": 10}, "tx": {"eth0": tx, "eth1": tx},
-                                  "udp": {"RcvbufErrors": 0, "SndbufErrors": 0}})
+                                  "udp": {"RcvbufErrors": 0, "SndbufErrors": 0},
+                                  "procs": procs or {}, "rss_mb": rss or {}})
                       for i in range(30)]
             (directory / "sampler.jsonl").write_text("\n".join(lines) + "\n")
 
         for name in state["nodes"]:
             sampler(name, 0.2)
         sampler("tok-edge-3", 0.97)
+        lon1 = step["allocation"]["london"]["lon-load-1"]
+        # 0.05 cores for the UDP listeners, 0.3 for the readers of lon-load-1.
+        sampler("lon-load-1", 0.2, procs={"needletail-load": 0.005 * lon1["udp"],
+                                          "ntcmp": 0.03 * lon1["hls"]},
+                rss={"needletail-load": 0.5 * lon1["udp"], "ntcmp": 2.0 * lon1["hls"]})
         for site, hosts in step["allocation"].items():
             for host in hosts:
                 udp = tmp / host / "udp"
@@ -460,7 +467,12 @@ class Analysis(unittest.TestCase):
                 (udp / "intervals.jsonl").write_text("\n".join(json.dumps({
                     "unix_ms": int((t0 + i) * 1000), "edges": [
                         {"edge": address, "up": 6, "parts": 6000, "missing": 0}],
-                    "load_host_saturated": False}) for i in range(20)) + "\n")
+                    "load_host_saturated": False}) for i in range(20))
+                    # The line after the drain: the holes left at the end are
+                    # not an interval of the edge's.
+                    + "\n" + json.dumps({"unix_ms": int((t0 + 21) * 1000), "phase": "final",
+                                         "edges": [{"edge": address, "up": 6, "parts": 1,
+                                                    "missing": 5}]}) + "\n")
                 (tmp / host / "hls.condensed.json").write_text(json.dumps([
                     {"audio_packets": 1000, "audio_sequence_gaps": 0, "first_audio_ms": 200,
                      "audio_latency_ms": {"count": 1000, "p50": 25.0, "p99": 31.0, "max": 40}}]))
@@ -474,12 +486,24 @@ class Analysis(unittest.TestCase):
         self.assertEqual(result["edge_listeners"]["lon-edge-1"], 12)
         self.assertEqual(result["tiers"]["edge"]["nodes"], 16 + 4)  # standby edges sampled too
         self.assertEqual(result["gave_out_first"]["node"], "tok-edge-3")
+        self.assertNotIn("listeners_missing_parts",
+                         [item["reason"] for item in result["gave_out_first"]["others"]])
+        costs = result["measured_costs"]
+        self.assertAlmostEqual(costs["udp_process_vcpu"], 0.005)
+        self.assertAlmostEqual(costs["udp_vcpu"], 0.005 + scale.SOFTIRQ_VCPU)
+        self.assertAlmostEqual(costs["hls_vcpu"], 0.03 + scale.SOFTIRQ_VCPU)
+        self.assertAlmostEqual(costs["hls_mb"], 2.0)
+        self.assertEqual(list(costs["hosts"]), ["lon-load-1"])
+        self.assertEqual(scale.cost_file({"steps": [result]}),
+                         {"udp_vcpu": costs["udp_vcpu"], "udp_vcpu_step": 100,
+                          "hls_vcpu": costs["hls_vcpu"], "hls_vcpu_step": 100})
         self.assertEqual(result["edge_counters"]["lon-edge-1"]["subscriptions"], 12)
         self.assertGreater(result["public_transfer_gb"], 0)
         text = scale.format_summary({"run": "t", "config": "pcm-1", "hls_share": 0.5,
                                      "steps": [result]})
         self.assertIn("| 100 | london | 1 | 4 |", text)
         self.assertIn("edge (tok-edge-3, cpu)", text)
+        self.assertIn("| 100 | 0.0065 | 0.5 | 0.0315 | 2 |", text)
 
     def test_counter_delta(self):
         self.assertEqual(scale.counter_delta({"e": {"parts": 5, "fast_lane": None}},

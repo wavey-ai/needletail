@@ -510,8 +510,9 @@ def udp():
     lines = [line.split() for line in open("/proc/net/snmp") if line.startswith("Udp:")]
     table = dict(zip(lines[0][1:], (int(v) for v in lines[1][1:])))
     return {key: table.get(key, 0) for key in ("RcvbufErrors", "SndbufErrors", "InErrors")}
+PAGE = os.sysconf("SC_PAGE_SIZE")
 def procs():
-    rows = {}
+    rows, rss = {}, {}
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -520,10 +521,15 @@ def procs():
             if comm not in WATCH:
                 continue
             fields = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+            resident = int(open(f"/proc/{pid}/statm").read().split()[1]) * PAGE
             rows[comm] = rows.get(comm, 0) + int(fields[11]) + int(fields[12])
-        except OSError:
+            rss[comm] = rss.get(comm, 0) + resident
+        except (OSError, IndexError, ValueError):
             continue
+    RSS.clear()
+    RSS.update(rss)
     return rows
+RSS = {}
 addresses = ifaces()
 public_iface = next((name for name, address in addresses.items() if address == public), "eth0")
 handle = open(out, "w")
@@ -551,7 +557,8 @@ while time.time() < deadline:
            "rx": rate(0), "tx": rate(1), "rx_pps": rate(2), "tx_pps": rate(3),
            "udp": {key: now[3][key] - last[3][key] for key in now[3]},
            "procs": {name: round((now[4][name] - last[4].get(name, now[4][name])) / HZ / dt, 3)
-                     for name in now[4]}}
+                     for name in now[4]},
+           "rss_mb": {name: round(value / 1e6, 1) for name, value in RSS.items()}}
     handle.write(json.dumps(row) + "\n")
     handle.flush()
     last = now
@@ -671,6 +678,9 @@ def summarize_samples(header: dict, rows: list[dict], since: float | None = None
         "udp_rcvbuf_drops": sum(row["udp"].get("RcvbufErrors", 0) for row in rows),
         "udp_sndbuf_drops": sum(row["udp"].get("SndbufErrors", 0) for row in rows),
         "procs_cores_mean": {name: mean(values) for name, values in sorted(procs.items())},
+        "procs_rss_mb_max": {name: max(row.get("rss_mb", {}).get(name, 0.0) for row in rows)
+                             for name in sorted({name for row in rows
+                                                 for name in row.get("rss_mb", {})})},
         "saturated_at": first[0] if first else None,
         "saturated_by": first[1] if first else None,
     }
@@ -1034,7 +1044,55 @@ def edge_name_of(address: str | None, state: dict) -> str | None:
     return None
 
 
-def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: tuple) -> dict:
+# Receive softirq of the NIC that a process's own CPU time does not hold,
+# vCPU per listener of a 1,000-part stream (part L: about 1.5 µs a datagram).
+SOFTIRQ_VCPU = 0.0015
+
+
+def median(values: list[float]) -> float | None:
+    values = sorted(values)
+    if not values:
+        return None
+    middle = len(values) // 2
+    return values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+
+
+def measured_costs(nodes: dict[str, dict], allocation: dict, config: str) -> dict:
+    """What a listener cost its listener host in this step, from the
+    sampler: the CPU (in vCPUs, per listener of a 1,000-part stream) and the
+    peak memory (MB per listener) of needletail-load and of ntcmp, the
+    median over the hosts that ran them. `udp_vcpu` and `hls_vcpu` add
+    SOFTIRQ_VCPU and are what `--cost FILE` takes."""
+    scale = parts_per_s(config) / 1000
+    out: dict = {"hosts": {}}
+    gathered: dict[str, list[float]] = {}
+    for by_host in allocation.values():
+        for host, alloc in by_host.items():
+            summary = nodes.get(host) or {}
+            cores = summary.get("procs_cores_mean") or {}
+            rss = summary.get("procs_rss_mb_max") or {}
+            row = {}
+            for lane, process in (("udp", LOAD_PROCESS), ("hls", "ntcmp")):
+                count = alloc.get(lane) or 0
+                if count and process in cores:
+                    row[f"{lane}_process_vcpu"] = round(cores[process] / count / scale, 6)
+                    gathered.setdefault(f"{lane}_process_vcpu", []).append(
+                        row[f"{lane}_process_vcpu"])
+                if count and process in rss:
+                    row[f"{lane}_mb"] = round(rss[process] / count, 3)
+                    gathered.setdefault(f"{lane}_mb", []).append(row[f"{lane}_mb"])
+            if row:
+                out["hosts"][host] = row
+    for key, values in gathered.items():
+        out[key] = round(median(values), 6)
+    for lane in ("udp", "hls"):
+        if f"{lane}_process_vcpu" in out:
+            out[f"{lane}_vcpu"] = round(out[f"{lane}_process_vcpu"] + SOFTIRQ_VCPU, 6)
+    return out
+
+
+def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: tuple,
+                 config: str = "pcm-1") -> dict:
     """Aggregate one step's files: steps/STEP/HOST/{sampler.jsonl,
     udp/intervals.jsonl, udp/summary.json, hls.condensed.json} and
     counters.json. `window`: (end of the ramp, end of the step), unix s."""
@@ -1093,6 +1151,7 @@ def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: t
             parts = sum(row["parts"] for row in group)
             missing = sum(row["missing"] for row in group)
             if (first_bad is None and parts + missing and t >= since
+                    and not any(row["phase"] == "final" for row in group)
                     and missing / (parts + missing) > MISSING_GAVE_OUT):
                 first_bad = float(t)
         edge_listeners[name] = listeners
@@ -1123,6 +1182,7 @@ def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: t
             "edge_counters": counters,
             "public_transfer_gb": round(sum(summary.get("tx_public_bytes", 0)
                                             for summary in nodes.values()) / 1e9, 3),
+            "measured_costs": measured_costs(nodes, plan_step["allocation"], config),
             "gave_out_first": gave_out_first(state, nodes, edges_missing, load_events)}
 
 
@@ -1174,7 +1234,29 @@ def format_summary(result: dict) -> str:
                      + (f"{first['tier']} ({first['node']}, {first['reason']})" if first
                         else "nothing")
                      + f" | {step.get('stopped') or '-'} |")
+    lines += ["", "What a listener cost its listener host (median over hosts; vCPU per listener "
+              "of a 1,000-part stream, process CPU plus NIC softirq; peak MB per listener):", "",
+              "| step | UDP vCPU | UDP MB | LL-HLS vCPU | LL-HLS MB |",
+              "| ---: | ---: | ---: | ---: | ---: |"]
+    for step in result["steps"]:
+        costs = step.get("measured_costs") or {}
+        lines.append(f"| {step['listeners']} | {cell(costs.get('udp_vcpu'))} | "
+                     f"{cell(costs.get('udp_mb'))} | {cell(costs.get('hls_vcpu'))} | "
+                     f"{cell(costs.get('hls_mb'))} |")
     return "\n".join(lines) + "\n"
+
+
+def cost_file(result: dict) -> dict | None:
+    """The `--cost FILE` of a run: the measured costs of its largest step
+    that measured both lanes, else of its largest that measured one."""
+    best: dict = {}
+    for step in result["steps"]:
+        costs = step.get("measured_costs") or {}
+        for key in ("udp_vcpu", "hls_vcpu"):
+            if costs.get(key) is not None:
+                best[key] = costs[key]
+                best[f"{key}_step"] = step["listeners"]
+    return best or None
 
 
 # --------------------------------------------------------------- the lab
@@ -1518,7 +1600,7 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
     (step_dir / "counters.json").write_text(json.dumps(counter_delta(before, after), indent=1)
                                             + "\n")
     result = analyse_step(lab, step_dir, step,
-                          (started + step["ramp_s"], min(ended, started + duration)))
+                          (started + step["ramp_s"], min(ended, started + duration)), args.config)
     result["stopped"] = stopped
     result["ramp_s"], result["hold_s"] = step["ramp_s"], step["hold_s"]
     (step_dir / "step.json").write_text(json.dumps(result, indent=1) + "\n")
@@ -1572,8 +1654,7 @@ def command_run(args: argparse.Namespace) -> None:
         for step in plan["steps"]:
             outcome = run_step(lab, run, plan, step, args, directory, log)
             result["steps"].append(outcome)
-            (directory / "scale.json").write_text(json.dumps(result, indent=1) + "\n")
-            (directory / "summary.md").write_text(format_summary(result))
+            write_results(directory, result)
             first = outcome.get("gave_out_first")
             log({"step": step["listeners"], "gave_out_first": first,
                  "stopped": outcome["stopped"]})
@@ -1592,6 +1673,16 @@ def command_run(args: argparse.Namespace) -> None:
     print(directory / "summary.md")
 
 
+def write_results(directory: pathlib.Path, result: dict) -> None:
+    """scale.json, summary.md and cost.json (the measured costs, for the
+    next run's --cost) of a run."""
+    (directory / "scale.json").write_text(json.dumps(result, indent=1) + "\n")
+    (directory / "summary.md").write_text(format_summary(result))
+    costs = cost_file(result)
+    if costs:
+        (directory / "cost.json").write_text(json.dumps(costs, indent=1) + "\n")
+
+
 def run_directory(name: str) -> pathlib.Path:
     path = pathlib.Path(name)
     return path if path.is_dir() else OUT / f"scale-{name}"
@@ -1605,13 +1696,12 @@ def command_analyse(args: argparse.Namespace) -> None:
     steps = []
     for step, old in zip(plan["steps"], previous["steps"]):
         outcome = analyse_step(lab, directory / "steps" / str(step["listeners"]), step,
-                               tuple(old["window"]))
+                               tuple(old["window"]), plan["config"])
         outcome["stopped"] = old.get("stopped")
         outcome["ramp_s"], outcome["hold_s"] = step["ramp_s"], step["hold_s"]
         steps.append(outcome)
     previous["steps"] = steps
-    (directory / "scale.json").write_text(json.dumps(previous, indent=1) + "\n")
-    (directory / "summary.md").write_text(format_summary(previous))
+    write_results(directory, previous)
     print((directory / "summary.md").read_text())
 
 
