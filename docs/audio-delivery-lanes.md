@@ -59,7 +59,8 @@ Every AEP1 payload kind reaches mandatory LL-HLS. The route chooses one policy:
 - `opaque` publishes the exact recovered bytes. `av-contrib` and `av-mesh` do
   not parse SoundKit, PCM, FLAC, Opus, or any other inner format. By default a
   part contains one producer unit, one AEP1 epoch whatever its sample count:
-  2.5 ms (120 samples) for Opus, 1 ms (48 samples) for PCM and FLAC, and PCM
+  1 ms (48 samples, Opus Custom; see below) for Opus, 1 ms (48 samples) for
+  PCM and FLAC, and PCM
   epochs down to 0.25 ms (12 samples; FLAC at least 32). A larger part
   (`--audio-part <N>samples|<N>us`) may concatenate consecutive units only when
   the producer/client contract makes them self-delimiting.
@@ -69,6 +70,62 @@ Every AEP1 payload kind reaches mandatory LL-HLS. The route chooses one policy:
 - Framed or encrypted Opus is not forced through the fMP4 policy. It uses
   `opaque`; a public Opus fMP4 programme must be supplied as its own compatible
   producer rendition.
+
+## Opus Custom frames in the private Opus lane
+
+The private SoundKit Opus rendition (stream 3001, the low-latency Opus lane)
+defaults to 1 ms Opus Custom CELT frames. Standard Opus (RFC 6716) stops at
+2.5 ms; libopus's Opus Custom API also codes 48, 64 and 72-sample frames at
+48 kHz (1, 1.33 and 1.5 ms), and SoundKit Opus (branch `opus-custom-1ms`)
+codes and decodes them packet for packet and sample for sample as libopus
+does. A custom mode's MDCT overlap equals its frame, so the codec's own delay
+falls with the frame: 2 ms at 1 ms frames, against 5 ms at 2.5 ms.
+
+The contract:
+
+- The producer (daw-nexus) chooses the frame: `--opus-frame-ms
+  1|1.33|1.5|2.5|5` (`NEXUS_OPUS_FRAME_MS`, or `AUDIO_OPUS_FRAME_SAMPLES` in
+  samples) and `--opus-bitrate` (`AUDIO_OPUS_BITRATE`). The default is the
+  placeholder pair `LANE_DEFAULT_OPUS_FRAME_SAMPLES = 48` and
+  `LANE_DEFAULT_OPUS_BITRATE = 256000` in daw-nexus `src/opus_lane.rs`,
+  until the quality measurements choose the size.
+- The SoundKit v2 header keeps `EncodingFlag::Opus`; `frame_count` is the
+  frame size. A 48 kHz count that is not a multiple of 120 (48, 64, 72) is
+  Opus Custom; every multiple of 120 is standard Opus with a TOC byte (each is
+  the duration of some standard packet). Every decoder chooses with
+  `soundkit_opus::custom_frame_size(sample_rate, frame_count)`
+  (`Decoder::new_for_frame_count`).
+- Custom packets carry no libopus signalling byte (`CELT_SET_SIGNALLING(0)`):
+  the header already gives the frame size and the channels. At the same CBR
+  packet size (32 bytes in stereo at 1 ms and 256 kb/s) the byte goes to CELT
+  data instead, 8 kb/s at 1 ms. Every decoder must turn signalling off too
+  (`set_custom_signalling(false)`): daw-nexus's playback decoders and
+  av-contrib's `aep1-48k-probe` do; a browser WASM decoder
+  (`Decoder.newCustom`) must call `set_custom_signalling(false)` as well.
+- Parts: by default one frame per part (`--audio-part epoch`), 1 ms at 48
+  samples. The contributor counts samples; a part of a set size must hold
+  whole frames (64-sample frames fit 4 ms parts, not 5 ms ones) or the
+  rendition is refused with an error that names the frame.
+- Checks: `aep1-48k-probe receive-hls --expected-audio-codec soundkit-opus
+  --decode-soundkit-opus` decodes every part (plain packets with
+  `--soundkit-opus-protection plain`, encrypted ones with
+  `--soundkit-key-file`); `--expected-opus-frame-samples 48` fails any other
+  frame; the report gives `opus_frame_samples` and `opus_mode`.
+  `aep1-48k-probe decode-soundkit-opus` decodes saved parts
+  (`scripts/compare/validate/validate-opus.py` uses it: Opus Custom cannot be
+  put in Ogg for ffmpeg).
+
+The interop rule: Opus Custom is only for the opaque private SoundKit lane
+(AEP1 UDP, WebTransport, cache-mesh UDP to the client and opaque LL-HLS, none
+of which declare a codec to a generic player). It has no OpusHead/dOps and no
+RTP payload format, so everything that must interoperate stays standard Opus,
+with 2.5 ms (120 samples) as its smallest frame: fMP4/CMAF and Ogg boxing
+(`--daw-hls-packaging fmp4` refuses custom frames), `CODECS="opus"`
+playlists and the Needletail player, browsers' WebRTC and RTP (RFC 7587),
+talkback, and the public programme rendition above. A producer that feeds
+one of those sets `--opus-frame-ms 2.5` (or larger); daw-nexus's
+`opus_lane::require_standard_opus_frame` refuses a custom frame for such an
+output with a clear error.
 
 SoundKit v2 is the producer/player framing contract for private Studio media,
 including `PCMSigned`, `PCMFloat`, `FLAC`, and `Opus` frames. That contract does
