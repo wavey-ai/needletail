@@ -33,8 +33,15 @@ network lost. Needletail's largest loss is crowds of lossless listeners at
 region, the UDP listeners ran seconds late and lost parts in London (and in
 some sessions in Tokyo and Sydney).**
 
+**Wave 3**, pushed just before midnight and checked in one session at 02:48
+(with self-hosted LiveKit and Cloudflare Realtime beside it), took another
+1 to 1.5 ms off Needletail in London: 2.5 ms Opus over UDP at 4.2, 35.9,
+111.3 and 131.2 ms against LiveKit's SFU at 3.8, 40.5, 110.5 and 130.6; 1 ms
+PCM at 1.7, 32.9, 108.1 and 128.0 against LiveKit's 2.5 ms blocks at 2.2,
+33.3, 108.4 and 128.5. See [Wave 3](#wave-3-one-session).
+
 Mouth to ear is the age of a sample when a listener that plays audio on
-arrival would play it. Median of three sessions, in milliseconds:
+arrival would play it. Median of three sessions (wave 2), in milliseconds:
 
 | Lane | System | Frame | London | New York | Tokyo | Sydney |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -395,6 +402,7 @@ both directions, for IPv4 and IPv6, with SSH left out:
 | Wave 2, 2 | 23:00 | the same as session 1, live rule |
 | Wave 2, 3 | 23:31 | the same as session 2 |
 | SFU PCM in 1 ms blocks | 22 Nov 02:08 | PCM only; the SFUs' data channels carry 1 ms blocks (`--sfu-pcm-ms 1`) |
+| Wave 3 | 22 Nov 02:48 | 2.5 ms Opus and 1 ms PCM, clean and impaired, beside Cloudflare Realtime and self-hosted LiveKit (see [Wave 3](#wave-3-one-session)) |
 | Wave 1, 1 to 3 | 19:44, 20:25, 20:56 | 5 ms parts (see [The earlier build](#the-earlier-build-wave-1)) |
 
 Before each session `steal-check.py` found no instance with steal time above
@@ -551,6 +559,31 @@ latency of the median listener:
   in one. PCM to Sydney seconds late in two sessions, and to Tokyo in one.
 - **LiveKit Cloud:** 96 of 96 (the free plan allows 100 connections), at the
   latency of one.
+
+### Wave 3 (one session)
+
+Needletail `av-mesh` `8c4196d` (+ the arrivals option, `89ecc5f`), `av-contrib`
+`bbb69dc`, `playlists` `89964dc`, the deploy tool of `ae17535` (class-isolated
+lanes). One session (`waudio-w3`, 22 November 02:48), 2.5 ms Opus and 1 ms PCM,
+clean and impaired, beside Cloudflare Realtime and both self-hosted LiveKit
+setups. Mouth to ear, median (ms):
+
+| System | Lane | London | New York | Tokyo | Sydney |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Needletail, RaptorQ FEC over UDP | Opus 2.5 ms | 4.2 | 35.9 | 111.3 | 131.2 |
+| LiveKit, SFU in each region | Opus 2.5 ms | **3.8** | 40.5 | **110.5** | **130.6** |
+| LiveKit, multi-region set | Opus 2.5 ms | 3.8 | 40.6 | 114.1 | 130.7 |
+| Cloudflare Realtime | Opus 2.5 ms | 8.0 | 43.8 | 117.5 | 152.8 |
+| Needletail, RaptorQ FEC over UDP | PCM 1 ms | **1.7** | **32.9** | 108.1 | **128.0** |
+| LiveKit, SFU in each region | PCM 2.5 ms, data channel | 2.2 | 33.3 | 110.7 | 128.5 |
+| LiveKit, multi-region set | PCM 2.5 ms, data channel | 2.3 | 33.5 | **108.4** | 128.6 |
+| Cloudflare Realtime | PCM 2.5 ms, data channel | 4.9 | 40.0 | 114.5 | 128.8 |
+
+With 1% and 5% loss Needletail's UDP mode lost nothing and its 99th
+percentile moved by at most 6 ms; with bursts it lost 0.6% of the Opus parts
+in Sydney; LiveKit and Cloudflare lost about 1% and 5%. With equal 1 ms
+blocks (the `wsfu1ms` session on wave 2) LiveKit's SFU led PCM by 0.5 to
+0.8 ms outside Tokyo; that was not repeated on wave 3.
 
 ### The contributor and the nodes
 
