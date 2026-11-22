@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -47,9 +48,11 @@ LOAD_PURPOSES = ("source", "view", "listeners")
 def load_purpose(node: dict) -> str | None:
     """What a node of role load is for: "source" (sends the media into the
     systems: lon-src), "view" (the full probes and players of a region:
-    *-view, *-nano) or "listeners" (simulated listeners, needletail-load and
-    ntcmp crowds: *-load-N). The topology names it (`purpose`); a state
-    saved before it did is read from the name. None for any other role."""
+    *-view, *-nano, and the single *-load host of the older labs, such as
+    topology-core.json's lon-load, which is their source and probe host) or
+    "listeners" (simulated listeners, needletail-load and ntcmp crowds:
+    *-load-N). The topology names it (`purpose`); a state saved before it
+    did is read from the name. None for any other role."""
     if node.get("role") != "load":
         return None
     purpose = node.get("purpose")
@@ -61,7 +64,7 @@ def load_purpose(node: dict) -> str | None:
     name = str(node.get("name") or "")
     if name.endswith("-src"):
         return "source"
-    if "-load" in name:
+    if re.search(r"-load-[0-9]+$", name):
         return "listeners"
     return "view"
 

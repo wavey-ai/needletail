@@ -330,6 +330,31 @@ class LoadHosts(Base):
         self.assertIn("91-needletail-listeners.conf", sent[0])
         self.assertNotIn("91-needletail-listeners.conf", sent[1])
 
+    def test_the_older_labs_load_hosts_are_not_listener_hosts(self):
+        # topology-core.json and its kin name their one source and probe
+        # host per region lon-load, new-load: push must not ask for
+        # needletail-load and ntcmp there, nor change its ports.
+        for path in sorted((deploy.common.ROOT / "deploy").glob("*/topology*.json")):
+            topology = json.loads(path.read_text())
+            for node in topology["nodes"]:
+                if node["role"] != "load" or node.get("purpose"):
+                    continue
+                with self.subTest(topology=path.name, node=node["name"]):
+                    self.assertNotEqual(deploy.common.load_purpose(node), "listeners")
+                    names = {item.name for item in deploy.binaries_for("load", node)}
+                    self.assertFalse({"needletail-load", "ntcmp"} & names)
+        self.assertEqual(deploy.common.load_purpose({"name": "lon-load", "role": "load"}),
+                         "view")
+        self.assertEqual(deploy.common.load_purpose({"name": "tok-load-12", "role": "load"}),
+                         "listeners")
+        sent = []
+        with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
+                mock.patch.object(deploy.common, "ssh_text",
+                                  lambda node, script, **k: sent.append(script) or ""):
+            deploy.install_node({"name": "lon-load", "role": "load", "site": "london"}, {},
+                                self.settings(), False)
+        self.assertNotIn("91-needletail-listeners.conf", sent[0])
+
 
 class LabTool(unittest.TestCase):
     TYPES = {"g6-dedicated-2": {"id": "g6-dedicated-2", "class": "dedicated",
