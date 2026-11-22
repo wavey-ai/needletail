@@ -219,6 +219,24 @@ DEFAULT_SETTINGS = {
     # contributor's region keeps the default. None or 0 renders nothing (the
     # av-mesh default everywhere).
     "canonical_gap_hold_long_haul_ms": 400,
+    # The repair horizon of the live path (wave 5 W2, av-mesh
+    # --canonical-repair-horizon on every mesh node): a hole holds the
+    # parts behind it (the LL-HLS playlist, the cache-mesh push, the
+    # cache-fed UDP lane) only this long after the first part beyond it
+    # came, then they are published and the hole is listed as a gap
+    # (EXT-X-PART GAP=YES, the UDP gap object); a repair that comes later
+    # still fills the cache. "auto": twice the repair delay that the node
+    # measures (10-250 ms, 60 ms before it has measured one); a number of
+    # milliseconds; "off": the gap hold above alone, as before. Never longer
+    # than the gap hold.
+    "canonical_repair_horizon": "auto",
+    # Burst copies on the long-haul lanes (wave 5 W2, av-mesh
+    # --relay-burst-copy-ms on the nodes with class threads): each audio
+    # source symbol forwarded to a compiled child goes again this many ms
+    # later, so a loss burst shorter than that cannot take a part at the
+    # next forwarder. Costs the audio sources once more on those lanes. 0:
+    # no copies.
+    "relay_burst_copy_ms": 20,
     # Class isolation (low-latency item 2): at no node does an audio datagram
     # share a socket, a thread or a qdisc band with 4K. Video streams travel
     # on the relay and cache-mesh ports plus `class_port_offset` (22001 ->
@@ -479,6 +497,25 @@ def class_plan(settings: dict) -> dict:
         plan["relay_video_pacing_mbps"] = int(settings.get("relay_video_pacing_mbps") or 0)
     except (TypeError, ValueError):
         raise ValueError("relay_video_pacing_mbps is not a whole number of Mbit/s") from None
+    horizon = settings.get("canonical_repair_horizon", "auto")
+    if horizon in (None, False, 0, "0", "off", "false"):
+        horizon = "off"
+    elif horizon not in ("auto", True, "true"):
+        try:
+            horizon = str(whole(horizon, "canonical_repair_horizon"))
+        except ValueError:
+            raise ValueError(f"canonical_repair_horizon {horizon!r} is not auto, off or a "
+                             "whole number of milliseconds") from None
+    else:
+        horizon = "auto"
+    plan["canonical_repair_horizon"] = horizon
+    copy_ms = settings.get("relay_burst_copy_ms")
+    try:
+        plan["relay_burst_copy_ms"] = int(copy_ms or 0)
+    except (TypeError, ValueError):
+        raise ValueError("relay_burst_copy_ms is not a whole number of ms") from None
+    if plan["relay_burst_copy_ms"] < 0:
+        raise ValueError("relay_burst_copy_ms is below 0")
     qdisc = settings.get("host_qdisc") or "none"
     if qdisc not in HOST_QDISCS:
         raise ValueError(f"host_qdisc {qdisc!r} is not one of {', '.join(HOST_QDISCS)}")
@@ -1478,14 +1515,16 @@ def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
     same offset), the forward-first class threads on relays and
     distributors, and the client socket pair where clients are served."""
     out = ["--cache-mesh-class-port-offset",
-           str(plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0)]
+           str(plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0),
+           "--canonical-repair-horizon", plan.get("canonical_repair_horizon", "auto")]
     if "--relay-controlled-local" in args:
         split = plan["relay_class_split"]
         out += ["--relay-class-threads", flag(split),
                 "--relay-class-port-offset", str(plan["class_port_offset"])]
         if split:
             out += ["--relay-class-realtime", flag(plan["relay_class_realtime"]),
-                    "--relay-video-gso", flag(plan.get("relay_video_gso", True))]
+                    "--relay-video-gso", flag(plan.get("relay_video_gso", True)),
+                    "--relay-burst-copy-ms", str(plan.get("relay_burst_copy_ms", 0))]
             cpus = relay_class_cpus(node, plan)
             if cpus:
                 out += ["--relay-class-cpus", cpus]

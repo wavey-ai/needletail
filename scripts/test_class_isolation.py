@@ -260,6 +260,35 @@ class Render(unittest.TestCase):
         args = self.render(["low_latency_baseline=true"])
         self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "false")
 
+    def test_the_repair_horizon_and_burst_copies_are_rendered(self):
+        # Wave 5 W2: the repair horizon on every mesh node, burst copies on
+        # every node that runs the class threads.
+        args = self.render()
+        for name, node_args in args.items():
+            if name == "contrib-lon":
+                self.assertNotIn("--canonical-repair-horizon", node_args)
+                continue
+            self.assertEqual(value_of(node_args, "--canonical-repair-horizon"), "auto", name)
+        for name in ("relay-primary", "relay-secondary", "lon-dist-a", "new-dist-b",
+                     "lon-edge-1"):
+            self.assertEqual(value_of(args[name], "--relay-burst-copy-ms"), "20", name)
+        args = self.render(["canonical_repair_horizon=off", "relay_burst_copy_ms=0"])
+        self.assertEqual(value_of(args["new-dist-b"], "--canonical-repair-horizon"), "off")
+        self.assertEqual(value_of(args["relay-primary"], "--relay-burst-copy-ms"), "0")
+        args = self.render(["canonical_repair_horizon=45"])
+        self.assertEqual(value_of(args["lon-edge-1"], "--canonical-repair-horizon"), "45")
+        # Without the class threads there is no audio thread to copy.
+        args = self.render(["class_isolation=false"])
+        self.assertNotIn("--relay-burst-copy-ms", args["relay-primary"])
+        # An extra argument wins.
+        args = self.render(['extra_distributor_args=["--canonical-repair-horizon", "30"]'])
+        self.assertEqual(value_of(args["new-dist-b"], "--canonical-repair-horizon"), "30")
+        self.assertEqual(args["new-dist-b"].count("--canonical-repair-horizon"), 1)
+        for bad in ("canonical_repair_horizon=soon", "canonical_repair_horizon=-5",
+                    "relay_burst_copy_ms=-1"):
+            with self.assertRaises(SystemExit, msg=bad):
+                self.render([bad])
+
     def test_the_baseline_turns_every_piece_off(self):
         args = self.render(["low_latency_baseline=true", "relay_class_split=true",
                             "audio_hot_path=true", "host_qdisc=prio"])
