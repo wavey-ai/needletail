@@ -49,6 +49,13 @@ steps/STEP/HOST/..., scale.json, summary.md).
   scale-run.py run --config pcm-1 [--name NAME] [--steps 100,1000,5000,10000]
   scale-run.py analyse NAME|DIR            aggregate a run's files again
   scale-run.py stop                        stop every source, listener, sampler
+  scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A
+                                           failover, redistribution, autoscale:
+                                           one held step, the scenarios' faults
+                                           at their times, each metric before,
+                                           during and after (phases.json,
+                                           events.jsonl with unix_us, the
+                                           "Phases" table of summary.md)
 
 The UDP listeners are av-mesh's needletail-load (branch scale-load):
 --edges --stream --listeners --ramp --duration --sample --out DIR, which
@@ -70,6 +77,7 @@ import pathlib
 import re
 import shlex
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -435,7 +443,8 @@ def ramp_spec(listeners: int, ramp_s: float, stages: int = RAMP_STAGES) -> str:
 
 def load_command(alloc: dict, edges: list[str], config: str, ramp_s: float,
                  duration_s: float, sample: int, remote_dir: str, label: str = "scale",
-                 bind: str | None = None, extra: str = "", threads: int | None = None) -> str:
+                 bind: str | None = None, extra: str = "", threads: int | None = None,
+                 ramp: str | None = None) -> str:
     """needletail-load of one listener host for one step (empty when it runs
     no UDP listener). `edges`: the region's edges' VLAN host:port (a
     listener starts at edge i mod n and follows MOVE as the real client
@@ -445,7 +454,7 @@ def load_command(alloc: dict, edges: list[str], config: str, ramp_s: float,
         return ""
     return (f"ulimit -n 1048576; nohup {LOAD_PROCESS} "
             f"--edges {','.join(edges)} --stream {CONFIGS[config]['stream']} "
-            f"--listeners {alloc['udp']} --ramp {ramp_spec(alloc['udp'], ramp_s)} "
+            f"--listeners {alloc['udp']} --ramp {ramp or ramp_spec(alloc['udp'], ramp_s)} "
             f"--duration {int(round(duration_s))} --sample {min(sample, alloc['udp'])} "
             + (f"--bind {bind} " if bind else "")
             + (f"--threads {threads} " if threads else "")
@@ -718,7 +727,18 @@ COUNT_FIELDS = {
     "duplicates": ("duplicates", "duplicate_parts"),
     "nacks": ("nack_parts", "nacks", "nacks_sent"),
     "bytes": ("bytes_in", "bytes"),
+    "moves": ("moves",),
+    # Listeners that exist (subscribed or not) and needletail-load's own
+    # gauge of listeners with no part for 5 s (Phase AM item 10), when the
+    # tool gives them.
+    "active": ("active", "listeners_active"),
+    "stranded": ("stranded",),
+    "never_resumed": ("never_resumed",),
 }
+
+
+# Fields that are None, not 0, when the load tool does not give them.
+OPTIONAL_FIELDS = ("active", "stranded", "never_resumed")
 
 
 def interval_rows(rows: list[dict]) -> list[dict]:
@@ -746,7 +766,8 @@ def interval_rows(rows: list[dict]) -> list[dict]:
                      if isinstance(row.get(key), dict)), row)
         for edge, item in groups:
             out.append({"t": t, "edge": edge,
-                        **{key: pick(item, *names, default=0) or 0
+                        **{key: (pick(item, *names) if key in OPTIONAL_FIELDS
+                                 else pick(item, *names, default=0) or 0)
                            for key, names in COUNT_FIELDS.items()},
                         "phase": row.get("phase"),
                         "host_cpu": pick(host, "host_cpu_busy", "cpu_host_busy_percent",
@@ -1001,24 +1022,40 @@ def tier_of(node: dict) -> str:
     return TIERS.get(node["role"], node["role"])
 
 
+def excluded(exclude: dict | None, name: str, at: float | None) -> bool:
+    """Whether an event of `name` at `at` falls under a fault (`exclude`:
+    {"nodes": names under fault, "windows": [(start, end)] of the faults and
+    their observation}): a node that a phase killed or drained, or any
+    node while a fault is being observed, did not give out by load."""
+    if not exclude:
+        return False
+    if name in set(exclude.get("nodes") or ()):
+        return True
+    return at is not None and any(start <= at <= end
+                                  for start, end in exclude.get("windows") or ())
+
+
 def gave_out_first(state: dict, nodes: dict[str, dict], edges_missing: dict[str, float | None],
-                   load_events: dict[str, float | None]) -> dict | None:
+                   load_events: dict[str, float | None],
+                   exclude: dict | None = None) -> dict | None:
     """The first tier that gave out in a step: the earliest of a mesh node's
     or a listener host's saturation (`nodes`: summarize_samples of each), an
     edge whose UDP listeners missed more than MISSING_GAVE_OUT of the parts
     of an interval (`edges_missing`: its first such time), and a listener
     host that needletail-load or the monitor saw saturate (`load_events`).
-    None when nothing gave out."""
+    Events under a fault (`exclude`, see excluded) are left out: a phase
+    run's kill is not a tier giving out. None when nothing gave out."""
     events = []
     for name, summary in nodes.items():
         node = state["nodes"].get(name)
         if node is None or summary.get("saturated_at") is None:
             continue
         tier = tier_of(node)
-        if tier in ("contributor", "forwarder", "edge", "load"):
+        if tier in ("contributor", "forwarder", "edge", "load") and not (
+                tier != "load" and excluded(exclude, name, summary["saturated_at"])):
             events.append((summary["saturated_at"], tier, name, summary["saturated_by"]))
     for name, at in edges_missing.items():
-        if at is not None:
+        if at is not None and not excluded(exclude, name, at):
             events.append((at, "edge", name, "listeners_missing_parts"))
     for name, at in load_events.items():
         if at is not None:
@@ -1132,10 +1169,12 @@ def measured_costs(nodes: dict[str, dict], allocation: dict, config: str) -> dic
 
 
 def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: tuple,
-                 config: str = "pcm-1") -> dict:
+                 config: str = "pcm-1", exclude: dict | None = None) -> dict:
     """Aggregate one step's files: steps/STEP/HOST/{sampler.jsonl,
     udp/intervals.jsonl, udp/summary.json, hls.condensed.json} and
-    counters.json. `window`: (end of the ramp, end of the step), unix s."""
+    counters.json. `window`: (end of the ramp, end of the step), unix s.
+    `exclude`: the faults of a phase run (see excluded), which do not
+    count as a tier giving out."""
     since, until = window
     nodes = {}
     for host_dir in sorted(path for path in step_dir.iterdir() if path.is_dir()):
@@ -1195,7 +1234,8 @@ def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: t
             missing = sum(row["missing"] for row in judged)
             if (first_bad is None and parts + missing and since <= t <= until
                     and not any(row["phase"] == "final" for row in group)
-                    and missing / (parts + missing) > MISSING_GAVE_OUT):
+                    and missing / (parts + missing) > MISSING_GAVE_OUT
+                    and not excluded(exclude, name, float(t))):
                 first_bad = float(t)
         edge_listeners[name] = listeners
         edges_missing[name] = first_bad
@@ -1226,7 +1266,7 @@ def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: t
             "public_transfer_gb": round(sum(summary.get("tx_public_bytes", 0)
                                             for summary in nodes.values()) / 1e9, 3),
             "measured_costs": measured_costs(nodes, plan_step["allocation"], config),
-            "gave_out_first": gave_out_first(state, nodes, edges_missing, load_events)}
+            "gave_out_first": gave_out_first(state, nodes, edges_missing, load_events, exclude)}
 
 
 def format_summary(result: dict) -> str:
@@ -1300,6 +1340,880 @@ def cost_file(result: dict) -> dict | None:
                 best[key] = costs[key]
                 best[f"{key}_step"] = step["listeners"]
     return best or None
+
+
+# ------------------------------------------------------------------ phases
+#
+# Failover, redistribution and autoscale phases (low-latency ops, items 4
+# and 5): one held step of listeners, and within it a timed list of
+# scenarios, each a baseline, a fault (or a join, or the controller left to
+# act), an observation and a settle. deploy/low-latency/phases-scale.json
+# is the plan. Every action and what follows it goes to events.jsonl with
+# Unix-µs timestamps (referee R3); the analysis splits every metric into
+# before, during and after each fault.
+
+PHASE_SCHEMA = "needletail.scale.phases.v1"
+PHASES = ROOT / "deploy" / "low-latency" / "phases-scale.json"
+ACTION_KINDS = ("kill", "crash", "drain", "resume", "stop", "start", "join", "leave", "add",
+                "remove", "autoscale")
+# What puts a fault back after its observation, when the scenario names no
+# restore of its own. A crash restarts by itself (Restart=always, 2 s).
+RESTORE_OF = {"kill": "start", "drain": "resume", "stop": "start", "join": "leave",
+              "add": "remove"}
+# The service commands of a node: a kill is SIGKILL and then the unit
+# stopped, or Restart=always would bring the node back in 2 s (D4); a
+# crash is the SIGKILL alone, the 2 s restart.
+NODE_COMMANDS = {
+    "kill": "systemctl kill -s KILL needletail-mesh.service; "
+            "systemctl stop needletail-mesh.service; true",
+    "crash": "systemctl kill -s KILL needletail-mesh.service; true",
+    "stop": "systemctl stop needletail-mesh.service",
+    "start": "systemctl start needletail-mesh.service",
+}
+# A listener with no part for this long, from this long after the fault,
+# is stranded (ops design 2).
+STRANDED_GAP_S = 5
+STRANDED_AFTER_S = 10
+
+
+def unix_us() -> int:
+    return time.time_ns() // 1000
+
+
+def load_phase_plan(path: str | pathlib.Path, group: str | None = None,
+                    names: list[str] | None = None) -> dict:
+    """The phase plan, checked, with the scenarios of `group` (F, R, A or
+    None for every one) or of `names`, in their order."""
+    plan = json.loads(pathlib.Path(path).read_text())
+    if plan.get("schema") != PHASE_SCHEMA:
+        raise ValueError(f"{path}: schema is not {PHASE_SCHEMA}")
+    seen = set()
+    for scenario in plan["scenarios"]:
+        name = scenario["name"]
+        if name in seen:
+            raise ValueError(f"scenario {name} twice")
+        seen.add(name)
+        if not scenario.get("actions"):
+            raise ValueError(f"{name}: no action")
+        for action in scenario["actions"] + scenario.get("restore", []):
+            if action.get("kind") not in ACTION_KINDS:
+                raise ValueError(f"{name}: action {action.get('kind')!r} is not one of "
+                                 f"{', '.join(ACTION_KINDS)}")
+            if action["kind"] != "autoscale" and not (
+                    isinstance(action.get("targets"), list) and action["targets"]
+                    and all(isinstance(item, str) and item for item in action["targets"])):
+                raise ValueError(f"{name}: {action['kind']} needs a list of targets")
+            if float(action.get("at_s", 0)) < 0:
+                raise ValueError(f"{name}: at_s is negative")
+        for point in scenario.get("profile") or []:
+            if len(point) != 2 or float(point[0]) < 0 or not 0 <= float(point[1]) <= 1:
+                raise ValueError(f"{name}: a profile point is [seconds, share of the step]")
+    # A scenario that is not enabled (it waits for Phase AM work) runs only
+    # when it is named.
+    chosen = [scenario for scenario in plan["scenarios"]
+              if (scenario["name"] in (names or ()))
+              or (not names and scenario.get("enabled", True)
+                  and (group is None or scenario.get("group") == group))]
+    unknown = sorted(set(names or ()) - seen)
+    if unknown:
+        raise ValueError(f"no scenario {unknown} in {path}")
+    if not chosen:
+        raise ValueError(f"no scenario of group {group!r} in {path}")
+    return {**plan, "scenarios": chosen}
+
+
+def phase_timeline(plan: dict) -> dict:
+    """When each scenario's parts happen, in seconds from the start of the
+    hold (after the listeners' ramp): "base_start", "fault" (the first
+    action), "observe_end" (the restore), "end" (after the settle), the
+    actions and restores with their "t", and the scenario's fault
+    targets. "hold_s": the whole hold."""
+    defaults = plan.get("defaults") or {}
+    t = 0.0
+    rows = []
+    for scenario in plan["scenarios"]:
+        def value(key, fallback):
+            return float(scenario.get(key, defaults.get(key, fallback)))
+
+        baseline, observe, settle = (value("baseline_s", 60), value("observe_s", 90),
+                                     value("settle_s", 30))
+        fault = t + baseline
+        actions = [{**action, "t": fault + float(action.get("at_s", 0)),
+                    "scenario": scenario["name"]} for action in scenario["actions"]]
+        last = max(action["t"] for action in actions)
+        observe_end = max(fault + observe, last + float(scenario.get("after_last_s", 0)))
+        restore = scenario.get("restore")
+        if restore is None:
+            restore = [{"kind": RESTORE_OF[action["kind"]], "targets": action["targets"]}
+                       for action in scenario["actions"] if action["kind"] in RESTORE_OF]
+        restores = [{**item, "t": observe_end, "scenario": scenario["name"], "restore": True}
+                    for item in restore]
+        end = observe_end + settle
+        targets = sorted({target for action in scenario["actions"]
+                          if action["kind"] in ("kill", "crash", "drain", "stop", "leave",
+                                                "remove")
+                          for target in action.get("targets", [])})
+        profile = [[fault + float(at), float(share)] for at, share in scenario.get("profile") or []]
+        rows.append({"name": scenario["name"], "group": scenario.get("group"),
+                     "profile": profile,
+                     "base_start": t, "fault": fault, "observe_end": observe_end, "end": end,
+                     "actions": actions, "restores": restores, "targets": targets,
+                     "joins": sorted({target for action in scenario["actions"]
+                                      if action["kind"] in ("join", "add", "start")
+                                      for target in action.get("targets", [])})})
+        t = end
+    return {"scenarios": rows, "hold_s": t}
+
+
+def profile_ramp(listeners: int, ramp_s: float, timeline: dict | None,
+                 step: float = 30.0) -> str:
+    """--ramp of needletail-load for a phase run: up to the first profile's
+    share over the step's ramp, then each scenario's profile (shares of
+    `listeners`, linear between its points, a point every `step` seconds),
+    each held until the next. Without a profile, ramp_spec."""
+    points = [point for row in (timeline or {}).get("scenarios", [])
+              for point in row.get("profile") or []]
+    if not points:
+        return ramp_spec(listeners, ramp_s)
+    points.sort()
+    first = points[0][1]
+    spec = [(ramp_s * stage / RAMP_STAGES, int(listeners * first * (stage + 1) / RAMP_STAGES))
+            for stage in range(RAMP_STAGES)]
+    for (t0, a), (t1, b) in zip(points, points[1:]):
+        count = max(1, int((t1 - t0) // step))
+        for index in range(count):
+            at = t0 + (t1 - t0) * index / count
+            spec.append((ramp_s + at, int(round(listeners * (a + (b - a) * index / count)))))
+    spec.append((ramp_s + points[-1][0], int(round(listeners * points[-1][1]))))
+    out, last_t = [], -1.0
+    for at, count in sorted(spec):
+        if at <= last_t:
+            out[-1] = (out[-1][0], count)
+            continue
+        out.append((at, count))
+        last_t = at
+    return ",".join(f"{count}@{at:g}" for at, count in out)
+
+
+def fault_nodes(timeline: dict) -> set[str]:
+    return {name for row in timeline["scenarios"] for name in row["targets"]}
+
+
+def exclusion(timeline: dict, start: float) -> dict:
+    """The faults of a phase run in Unix time, for gave_out_first: the
+    nodes under fault, and each fault's window to the end of its settle."""
+    return {"nodes": sorted(fault_nodes(timeline)),
+            "windows": [(start + row["fault"], start + row["end"])
+                        for row in timeline["scenarios"]]}
+
+
+def entry_nodes(region: dict, avoid: set[str]) -> list[dict]:
+    """The entry points of a region that no phase faults: its distributors,
+    then its edges. LL-HLS readers enter there, and the stream's liveness is
+    read there (critique 9: not the lab's first distributor whatever)."""
+    nodes = [node for node in region["distributors"] + region["edges"]
+             if node["name"] not in avoid and node.get("vlan_ipv4")]
+    if not nodes:
+        raise ValueError("every distributor and edge of a region is under a fault: "
+                         "no entry point is left")
+    return nodes
+
+
+def reader_commands(alloc: dict, entries: list[str], config: str, duration_s: float,
+                    remote_dir: str, label: str) -> list[str]:
+    """LL-HLS readers that follow steering and move when their cache fails
+    or drains (item 5): needletail-reader with the region's entry points
+    that no phase faults (`entries`: VLAN addresses), all of them starting
+    at once (their moves' `at_ms` are from the launch, which the run logs).
+    Its report: per reader the moves, stalls, parts missing."""
+    if not alloc["hls"]:
+        return []
+    stream = CONFIGS[config]["stream"]
+    entry_args = " ".join(f"--entry https://{entry}:{HTTP_PORT}" for entry in entries)
+    return [f"mkdir -p {remote_dir}/hls; nohup needletail-reader {entry_args} "
+            f"--stream {stream} --session {shlex.quote(label)} --readers {alloc['hls']} "
+            f"--duration-seconds {int(round(duration_s))} --tls-ca {CA} "
+            f"--server-name {SERVER_NAME} --steering --report {remote_dir}/hls/steered.json "
+            f">{remote_dir}/hls-steered.out 2>{remote_dir}/hls-steered.err </dev/null &"]
+
+
+# The mesh sampler of every edge and distributor in a phase run: once a
+# second, its own /api/mesh/local, /api/assignment and /metrics, condensed:
+# the client UDP counters (and the live gauges of Phase AM item 8 when the
+# node gives them), the cache replication counters, the warm-up backlog of
+# the copies it serves, hole repair and gap skips, its own advertisement,
+# and the av-mesh counters of /metrics that the analysis reads.
+MESH_SAMPLER = r"""
+import json, re, ssl, sys, time, urllib.request
+out, seconds, stream, name = sys.argv[1], float(sys.argv[2]), sys.argv[3], sys.argv[4]
+context = ssl.create_default_context(); context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+KEEP = re.compile(r"^av_mesh_(edge_hole_repair|canonical|fec_rx_(presumed_lost|expired)|"
+                  r"replica_queue|peer_limit_drops|rx_evicted|warm_|hole_parts|backfill|"
+                  r"client_udp)")
+def get(path):
+    try:
+        with urllib.request.urlopen("https://127.0.0.1:19444" + path, timeout=0.8,
+                                    context=context) as response:
+            return response.read()
+    except Exception:
+        return None
+def numbers(item):
+    return {key: value for key, value in (item or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)}
+handle = open(out, "w")
+deadline = time.time() + seconds
+while time.time() < deadline:
+    time.sleep(1.0 - (time.time() % 1.0))
+    row = {"t": round(time.time(), 3), "node": name}
+    body = get("/api/mesh/local")
+    if body:
+        try:
+            local = json.loads(body)
+        except ValueError:
+            local = {}
+        replication = local.get("cache_replication") or {}
+        row["cache_replication"] = numbers(replication)
+        served = replication.get("served_subscriptions") or []
+        pending = [item.get("warm_parts_pending") for item in served if isinstance(item, dict)]
+        row["served_subscriptions"] = len(served)
+        row["warm_parts_pending"] = (sum(value for value in pending if isinstance(value, int))
+                                     if any(isinstance(value, int) for value in pending)
+                                     else None)
+        for key in ("canonical_gap_skip", "edge_hole_repair_requests", "backfill_parts_pending"):
+            if isinstance(local.get(key), (int, float)):
+                row[key] = local[key]
+        edge = next((item for item in local.get("edge_services") or []
+                     if item.get("node_id") == name), {})
+        row["sessions"] = edge.get("active_playback_sessions")
+        row["load_permille"] = edge.get("load_permille")
+        row["draining"] = edge.get("draining")
+        row["rejected"] = edge.get("egress_rejected_requests")
+    body = get(f"/api/assignment?stream={stream}")
+    if body:
+        try:
+            assignment = json.loads(body)
+        except ValueError:
+            assignment = {}
+        row["client_udp"] = numbers(assignment.get("client_udp"))
+        row["caches_fresh"] = sorted(item.get("node_id") for item in
+                                     assignment.get("caches") or [] if item.get("fresh"))
+    body = get("/metrics")
+    if body:
+        metrics = {}
+        for line in body.decode(errors="replace").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.rpartition(" ")
+            metric = key.split("{", 1)[0]
+            if KEEP.match(metric):
+                try:
+                    metrics[metric] = metrics.get(metric, 0) + float(value)
+                except ValueError:
+                    pass
+        row["metrics"] = metrics
+    handle.write(json.dumps(row) + "\n")
+    handle.flush()
+"""
+
+
+def mesh_sampler_command(node: dict, remote_dir: str, seconds: float, stream: int) -> str:
+    return (f"mkdir -p {remote_dir}; cat >{REMOTE}/mesh-sampler.py <<'PY'\n{MESH_SAMPLER}\nPY\n"
+            f"nohup python3 {REMOTE}/mesh-sampler.py {remote_dir}/mesh.jsonl {int(seconds)} "
+            f"{stream} {node['name']} >/dev/null 2>&1 </dev/null &")
+
+
+# Counters of the mesh sampler whose rise during and after a fault the
+# survivors must not show (ops design 2: no rise in drops, would-block or
+# send-queue drops; no refusals unless the scenario expects them).
+SURVIVOR_COUNTERS = ("client_udp.would_block", "client_udp.send_queue_drops",
+                     "client_udp.refusals", "client_udp.send_errors")
+MESH_COUNTERS = SURVIVOR_COUNTERS + (
+    "client_udp.moves", "client_udp.playout_skipped_parts", "client_udp.region_silence_held",
+    "client_udp.moves_held_down", "client_udp.parts", "canonical_gap_skip",
+    "edge_hole_repair_requests", "cache_replication.subscriptions_opened",
+    "cache_replication.subscriptions_released", "cache_replication.subscriptions_refused",
+    "rejected")
+MESH_GAUGES = ("client_udp.subscribers", "sessions", "warm_parts_pending",
+               "backfill_parts_pending", "load_permille", "served_subscriptions")
+
+
+def dotted(row: dict, key: str):
+    value = row
+    for part in key.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def window_rows(rows: list[dict], start: float, end: float) -> list[dict]:
+    return [row for row in rows if start <= row["t"] < end]
+
+
+def mesh_window(rows: list[dict], start: float, end: float) -> dict:
+    """One node's mesh sampler over a window: each counter's rise (None
+    when the node does not give it), each gauge's maximum, and its last
+    value of the advertised load and draining."""
+    rows = window_rows(rows, start, end)
+    out: dict = {"samples": len(rows)}
+    for key in MESH_COUNTERS:
+        values = [value for value in (dotted(row, key) for row in rows) if value is not None]
+        out[key] = values[-1] - values[0] if len(values) >= 2 else (0 if values else None)
+    for key in MESH_GAUGES:
+        values = [value for value in (dotted(row, key) for row in rows) if value is not None]
+        out[f"{key}.max"] = max(values) if values else None
+    metrics: dict[str, list[float]] = {}
+    for row in rows:
+        for key, value in (row.get("metrics") or {}).items():
+            metrics.setdefault(key, []).append(value)
+    out["metrics"] = {key: values[-1] - values[0] for key, values in sorted(metrics.items())
+                      if len(values) >= 2}
+    return out
+
+
+def gauges_zero_at(rows: list[dict], after: float) -> float | None:
+    """When a drained node's live gauges (UDP subscribers and HLS
+    sessions) first both read 0 after `after`; None when they never do or
+    the node does not give them (Phase AM item 8)."""
+    for row in rows:
+        if row["t"] < after:
+            continue
+        udp, hls = dotted(row, "client_udp.subscribers"), dotted(row, "sessions")
+        if udp == 0 and hls == 0:
+            return row["t"]
+    return None
+
+
+def stranded_listeners(rows: list[dict], fault: float, end: float) -> dict:
+    """Stranded listeners of one listener host's intervals (its "total"
+    rows, edge None): needletail-load's own gauge when it gives one (Phase
+    AM item 10), else listeners that exist but are not subscribed
+    (active - up) for STRANDED_GAP_S intervals in a row from
+    STRANDED_AFTER_S after the fault, and at the end. None when neither
+    figure is in the file."""
+    totals = sorted((row for row in rows if row["edge"] is None
+                     and fault + STRANDED_AFTER_S <= row["t"] <= end and row["phase"] != "final"),
+                    key=lambda row: row["t"])
+    if not totals:
+        return {"stranded": None, "at_end": None, "source": None}
+    if any(row.get("stranded") is not None for row in totals):
+        values = [row.get("stranded") or 0 for row in totals]
+        return {"stranded": max(values), "at_end": values[-1], "source": "needletail-load"}
+    if not any(row.get("active") is not None for row in totals):
+        return {"stranded": None, "at_end": None, "source": None}
+    gaps = [max(0, (row.get("active") or 0) - (row["listeners"] or 0)) for row in totals]
+    held = 0
+    for index in range(len(gaps)):
+        window = gaps[index:index + STRANDED_GAP_S]
+        if len(window) == STRANDED_GAP_S:
+            held = max(held, min(window))
+    return {"stranded": held, "at_end": gaps[-1], "source": "active - up"}
+
+
+def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | None,
+               state: dict) -> dict:
+    """UDP listeners' parts, missing parts and moves over a window, for the
+    edges in `edges` (None: all), from needletail-load's per-edge interval
+    rows; moves by the edge that they were counted on (needletail-load
+    counts a move on the edge the listener moved to)."""
+    parts = missing = moves = 0
+    listeners: dict[float, int] = {}
+    by_edge: dict[str, int] = {}
+    for row in rows:
+        if row["edge"] is None or not start <= row["t"] < end or row["phase"] == "final":
+            continue
+        name = edge_name_of(row["edge"], state) or str(row["edge"])
+        if edges is not None and name not in edges:
+            continue
+        parts += row["parts"]
+        missing += row["missing"]
+        moves += row["moves"]
+        by_edge[name] = by_edge.get(name, 0) + row["moves"]
+        listeners[round(row["t"])] = listeners.get(round(row["t"]), 0) + row["listeners"]
+    return {"parts": parts, "missing": missing, "moves": moves, "moves_by_edge": by_edge,
+            "missing_percent": round(100.0 * missing / (parts + missing), 4)
+            if parts + missing else None,
+            "listeners_max": max(listeners.values()) if listeners else 0}
+
+
+def spread(by_edge: dict[str, int], edges: list[str]) -> float | None:
+    """max/mean of the moves over the edges that took them (F1: at most
+    1.3)."""
+    counts = [by_edge.get(edge, 0) for edge in edges]
+    if not counts or not sum(counts):
+        return None
+    return round(max(counts) / (sum(counts) / len(counts)), 3)
+
+
+def reader_moves(report: dict, launched: float) -> list[dict]:
+    """needletail-reader's moves in Unix time: `at_ms` counts from the
+    reader's start, which is the launch the run logged (the readers start
+    together)."""
+    out = []
+    for reader in report.get("readers") or []:
+        for move in reader.get("moves") or []:
+            out.append({"t": launched + move.get("at_ms", 0) / 1000.0, "from": move.get("from"),
+                        "to": move.get("to"), "reason": move.get("reason"),
+                        "session": reader.get("session")})
+    return sorted(out, key=lambda item: item["t"])
+
+
+def check(name: str, ok, value=None, needs: str | None = None) -> dict:
+    """One pass criterion: ok True or False, or None when it cannot be
+    measured (`needs`: what it waits for)."""
+    return {"criterion": name, "ok": ok, "value": value,
+            **({"needs": needs} if needs else {})}
+
+
+def survivors_window(nodes_summary: dict, state: dict, avoid: set[str]) -> dict:
+    """The busiest survivor (a forwarder or an edge not under fault) of a
+    window: CPU, busiest core, share of its outbound cap, UDP drops."""
+    out = {"cpu_max": 0.0, "core_max": 0.0, "nic_share_max": 0.0, "udp_rcvbuf_drops": 0,
+           "nodes": 0}
+    for name, summary in nodes_summary.items():
+        node = state["nodes"].get(name)
+        if node is None or node["role"] not in ("edge", "distributor") or name in avoid \
+                or not summary.get("samples"):
+            continue
+        out["nodes"] += 1
+        out["cpu_max"] = max(out["cpu_max"], summary["cpu_p95"])
+        out["core_max"] = max(out["core_max"], summary["core_max"])
+        cap = NIC_MBPS.get(node.get("type") or "", 0) * 1e6
+        if cap:
+            out["nic_share_max"] = max(out["nic_share_max"], round(summary["tx_bps_mean"] / cap, 4))
+        out["udp_rcvbuf_drops"] += summary["udp_rcvbuf_drops"]
+    return out
+
+
+def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: float,
+                   plan: dict, events: list[dict] | None = None,
+                   readers_launched: float | None = None) -> list[dict]:
+    """Each scenario of a phase run from the step's files: every metric
+    before (the baseline), during (the fault and its observation) and after
+    (the settle); the listeners stranded; the moves and their spread; the
+    survivors' load; the mesh counters of the survivors and of the nodes
+    under fault; the readers' moves; the events; and the pass criteria,
+    each True, False or None (cannot be measured yet, and why)."""
+    samplers, meshes, intervals_by_host, reports = {}, {}, {}, []
+    for host_dir in sorted(path for path in step_dir.iterdir() if path.is_dir()):
+        sampler = host_dir / "sampler.jsonl"
+        if sampler.is_file():
+            samplers[host_dir.name] = sampler_rows(sampler.read_text())
+        mesh = host_dir / "mesh.jsonl"
+        if mesh.is_file():
+            meshes[host_dir.name] = sorted(read_jsonl(mesh.read_text()), key=lambda row: row["t"])
+        intervals = host_dir / LOAD_DIR / "intervals.jsonl"
+        if intervals.is_file():
+            intervals_by_host[host_dir.name] = interval_rows(read_jsonl(intervals.read_text()))
+        report = host_dir / "hls" / "steered.json"
+        if report.is_file():
+            try:
+                reports.append(json.loads(report.read_text()))
+            except ValueError:
+                pass
+    every_row = [row for rows in intervals_by_host.values() for row in rows]
+    moves = [move for report in reports
+             for move in reader_moves(report, readers_launched or start)]
+    criteria_of = {scenario["name"]: scenario for scenario in plan["scenarios"]}
+    edges_all = sorted((name for name, node in state["nodes"].items() if node["role"] == "edge"),
+                       key=natural)
+    out = []
+    for row in timeline["scenarios"]:
+        spec = criteria_of.get(row["name"], {})
+        windows = {"before": (start + row["base_start"], start + row["fault"]),
+                   "during": (start + row["fault"], start + row["observe_end"]),
+                   "after": (start + row["observe_end"], start + row["end"])}
+        targets = set(row["targets"])
+        unaffected = {name for name in edges_all if name not in targets}
+        result: dict = {"name": row["name"], "group": row["group"],
+                        "title": spec.get("title"), "targets": sorted(targets),
+                        "joins": row["joins"],
+                        "windows": {key: [round(a, 3), round(b, 3)] for key, (a, b)
+                                    in windows.items()},
+                        "needs_am": spec.get("needs_am") or [], "udp": {}, "survivors": {},
+                        "mesh": {}}
+        for key, (a, b) in windows.items():
+            result["udp"][key] = {"unaffected": udp_window(every_row, a, b, unaffected, state),
+                                  "faulted": udp_window(every_row, a, b, targets, state)}
+            summaries = {name: summarize_samples(header, rows, a, b,
+                                                 (state["nodes"].get(name) or {}).get("type"))
+                         for name, (header, rows) in samplers.items()}
+            result["survivors"][key] = survivors_window(summaries, state, targets)
+            per_node = {name: mesh_window(rows, a, b) for name, rows in meshes.items()}
+            survivors = {name: item for name, item in per_node.items() if name not in targets}
+            result["mesh"][key] = {
+                "survivors": {counter: (None if all(item.get(counter) is None
+                                                    for item in survivors.values())
+                                        else sum(item.get(counter) or 0
+                                                 for item in survivors.values()))
+                              for counter in SURVIVOR_COUNTERS + (
+                                  "client_udp.moves", "edge_hole_repair_requests",
+                                  "canonical_gap_skip",
+                                  "cache_replication.subscriptions_released")},
+                "warm_parts_pending_max": max((item.get("warm_parts_pending.max") or 0
+                                               for item in per_node.values()), default=None)
+                if any(item.get("warm_parts_pending.max") is not None
+                       for item in per_node.values()) else None,
+                "nodes": {name: per_node[name] for name in sorted(targets | set(row["joins"]))
+                          if name in per_node}}
+        fault_t, end_t = windows["during"][0], windows["after"][1]
+        stranded_by_host = {host: stranded_listeners(rows, fault_t, end_t)
+                            for host, rows in intervals_by_host.items()}
+        known = [item for item in stranded_by_host.values() if item["stranded"] is not None]
+        result["stranded"] = {"max": sum(item["stranded"] for item in known) if known else None,
+                              "at_end": sum(item["at_end"] for item in known) if known else None,
+                              "source": known[0]["source"] if known else None,
+                              "hosts": len(known)}
+        during = result["udp"]["during"]
+        receiving = [edge for edge in unaffected
+                     if any(state["nodes"].get(edge, {}).get("site")
+                            == state["nodes"].get(target, {}).get("site") for target in targets)]
+        result["moves"] = {"udp": during["unaffected"]["moves"] + during["faulted"]["moves"],
+                           "udp_by_edge": {**during["unaffected"]["moves_by_edge"],
+                                           **during["faulted"]["moves_by_edge"]},
+                           "udp_spread_max_over_mean": spread(
+                               during["unaffected"]["moves_by_edge"], receiving),
+                           "hls": [move for move in moves if fault_t <= move["t"] < end_t]}
+        result["moves"]["hls_by_reason"] = {}
+        for move in result["moves"]["hls"]:
+            reason = move["reason"] or "?"
+            result["moves"]["hls_by_reason"][reason] = \
+                result["moves"]["hls_by_reason"].get(reason, 0) + 1
+        result["moves"]["hls"] = result["moves"]["hls"][:50]
+        result["events"] = [item for item in (events or [])
+                            if windows["before"][0] * 1e6 <= item.get("unix_us", 0)
+                            <= windows["after"][1] * 1e6]
+        result["criteria"] = phase_criteria(result, spec)
+        out.append(result)
+    return out
+
+
+def phase_criteria(result: dict, spec: dict) -> list[dict]:
+    """The pass criteria of a scenario that the run can judge now, and the
+    ones it cannot, with what they wait for (ops design 2, as the critique
+    corrects it)."""
+    needs = spec.get("needs_am") or []
+    expect = spec.get("expect") or {}
+    out = []
+    stranded = result["stranded"]["max"]
+    out.append(check("stranded = 0", None if stranded is None else stranded == 0, stranded,
+                     None if stranded is not None else
+                     "needletail-load's active/stranded gauges (Phase AM item 10)"))
+    lost = [result["udp"][key]["unaffected"]["missing"] for key in ("during", "after")]
+    out.append(check("unaffected listeners: 0 missing", sum(lost) == 0, sum(lost)))
+    before = result["survivors"]["before"]
+    worst = {key: max(result["survivors"][window][key] for window in ("during", "after"))
+             for key in ("cpu_max", "core_max", "nic_share_max")}
+    if before["nodes"]:
+        out.append(check("survivors: busiest core < 90%", worst["core_max"] < 0.90,
+                         worst["core_max"]))
+        out.append(check("survivors: CPU < 80%", worst["cpu_max"] < 0.80, worst["cpu_max"]))
+        out.append(check("survivors: tx < 80% of the cap", worst["nic_share_max"] < 0.80,
+                         worst["nic_share_max"]))
+    rise = {}
+    for counter in SURVIVOR_COUNTERS:
+        values = {key: result["mesh"][key]["survivors"].get(counter)
+                  for key in ("before", "during", "after")}
+        if any(value is None for value in values.values()):
+            continue
+        rate = {key: values[key] / max(1e-9, result["windows"][key][1] - result["windows"][key][0])
+                for key in values}
+        rise[counter] = max(rate["during"], rate["after"]) - rate["before"]
+    for counter, value in sorted(rise.items()):
+        if counter == "client_udp.refusals" and expect.get("refusals"):
+            continue
+        out.append(check(f"survivors: no rise in {counter}", value <= 0, round(value, 3)))
+    if "moves" in expect:
+        moves = result["moves"]["udp"]
+        out.append(check(f"UDP moves = {expect['moves']}", moves == expect["moves"], moves))
+    if "missing" in expect:
+        missing = sum(result["udp"][key][side]["missing"] for key in ("during", "after")
+                      for side in ("unaffected", "faulted"))
+        out.append(check(f"missing = {expect['missing']}", missing == expect["missing"], missing))
+    if "spread_max_over_mean" in expect:
+        value = result["moves"]["udp_spread_max_over_mean"]
+        out.append(check(f"moves spread max/mean <= {expect['spread_max_over_mean']}",
+                         None if value is None else value <= expect["spread_max_over_mean"],
+                         value, None if value is not None else "moves to spread"))
+    for name in ("time_to_move_p99_ms", "time_to_move_max_ms", "warm_parts_pending_zero_s",
+                 "first_part_s", "largest_burst_per_tick", "watermark_stall_ms",
+                 "parent_change_share", "trigger_to_fresh_s"):
+        if name in expect:
+            out.append(check(f"{name} <= {expect[name]}", None, None,
+                             spec.get("needs_for", {}).get(name) or
+                             f"a counter of Phase AM ({', '.join(needs) or 'see SCALE.md'})"))
+    if needs:
+        out.append(check("Phase AM items this scenario needs before it can pass", None,
+                         needs, ", ".join(f"AM item {item}" for item in needs)))
+    return out
+
+
+def format_phases(phases: list[dict]) -> str:
+    lines = ["", "## Phases", "",
+             "| scenario | targets | stranded | unaffected missing (during/after) | "
+             "UDP moves | HLS moves | survivors core max | criteria passed/failed/open |",
+             "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |"]
+    for item in phases:
+        crit = item["criteria"]
+        passed = sum(1 for row in crit if row["ok"] is True)
+        failed = sum(1 for row in crit if row["ok"] is False)
+        open_ = sum(1 for row in crit if row["ok"] is None)
+        worst = max(item["survivors"][key]["core_max"] for key in ("during", "after"))
+        lines.append(
+            f"| {item['name']} | {', '.join(item['targets'] or item['joins']) or '-'} | "
+            f"{item['stranded']['max'] if item['stranded']['max'] is not None else 'n/a'} | "
+            f"{item['udp']['during']['unaffected']['missing']}/"
+            f"{item['udp']['after']['unaffected']['missing']} | {item['moves']['udp']} | "
+            f"{sum(item['moves']['hls_by_reason'].values())} | {worst:.2f} | "
+            f"{passed}/{failed}/{open_} |")
+    lines.append("")
+    for item in phases:
+        failed = [row for row in item["criteria"] if row["ok"] is False]
+        opened = [row for row in item["criteria"] if row["ok"] is None]
+        if failed or opened:
+            lines.append(f"- {item['name']}: "
+                         + "; ".join(f"FAIL {row['criterion']} ({row['value']})"
+                                     for row in failed)
+                         + ("; " if failed and opened else "")
+                         + "; ".join(f"open {row['criterion']}: {row.get('needs')}"
+                                     for row in opened))
+    return "\n".join(lines) + "\n"
+
+
+class PhaseRunner:
+    """Carries out a phase timeline against the lab, in a thread: each
+    action at its time, the watchers that log when a drain ends and when a
+    joining node first serves, and on stop every restore that a fault still
+    owes (a step stopped early leaves no node killed)."""
+
+    def __init__(self, lab: dict, timeline: dict, start: float, log, args,
+                 events_path: pathlib.Path | None = None):
+        self.lab = lab
+        self.timeline = timeline
+        self.start = start
+        self.log = log
+        self.args = args
+        self.events_path = events_path
+        self.stop = threading.Event()
+        self.owed: list[dict] = []
+        self.threads: list[threading.Thread] = []
+        self.processes: list = []
+
+    def schedule(self) -> list[dict]:
+        items = []
+        for row in self.timeline["scenarios"]:
+            items += row["actions"] + row["restores"]
+        return sorted(items, key=lambda item: (item["t"], bool(item.get("restore"))))
+
+    def run(self) -> None:
+        for item in self.schedule():
+            delay = self.start + item["t"] - time.time()
+            if delay > 0 and self.stop.wait(delay):
+                break
+            if item.get("restore"):
+                self.owed = [owed for owed in self.owed if owed["scenario"] != item["scenario"]]
+            self.act(item)
+            if not item.get("restore") and item["kind"] in RESTORE_OF:
+                self.owed.append(item)
+        for process in self.processes:
+            try:
+                process.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def node(self, name: str) -> dict:
+        node = self.lab["nodes"].get(name)
+        if node is None:
+            raise ValueError(f"{name} is not a node of the lab")
+        if node["role"] not in ("edge", "distributor"):
+            raise ValueError(f"{name}: phases act on edges and distributors only")
+        return node
+
+    def act(self, item: dict) -> None:
+        kind = item["kind"]
+        base = {"source": "scale-run", "scenario": item["scenario"], "kind": kind,
+                "restore": bool(item.get("restore"))}
+        if kind == "autoscale":
+            self.autoscale(item, base)
+            return
+        for target in item["targets"]:
+            self.log({**base, "event": "action", "node": target, "unix_us": unix_us()})
+            try:
+                if kind in NODE_COMMANDS:
+                    ssh(self.node(target), NODE_COMMANDS[kind], timeout=60, check=True)
+                elif kind in ("drain", "resume"):
+                    http_post(self.node(target), f"/api/control/{kind}-node")
+                elif kind in ("join", "leave"):
+                    deploy_nodes("start" if kind == "join" else "stop", target)
+                elif kind == "add":
+                    lab_tool_slot("add", target, self.args)
+                    deploy_nodes("push", target)
+                    self.lab = state()
+                elif kind == "remove":
+                    deploy_nodes("stop", target)
+                    lab_tool_slot("remove", target, self.args)
+                self.log({**base, "event": "done", "node": target, "unix_us": unix_us()})
+            except Exception as error:  # noqa: BLE001 - the run records it and goes on
+                self.log({**base, "event": "failed", "node": target, "unix_us": unix_us(),
+                          "error": str(error)[-400:]})
+                continue
+            if kind == "drain" and not item.get("restore"):
+                self.watch(self.watch_drain, target, item)
+            if kind in ("join", "add", "start"):
+                self.watch(self.watch_serving, target, item)
+
+    def watch(self, function, target: str, item: dict) -> None:
+        thread = threading.Thread(target=function, args=(target, item), daemon=True)
+        thread.start()
+        self.threads.append(thread)
+
+    def scenario_end(self, item: dict) -> float:
+        row = next(row for row in self.timeline["scenarios"] if row["name"] == item["scenario"])
+        return self.start + row["observe_end"]
+
+    def watch_drain(self, target: str, item: dict) -> None:
+        """Log drain_end when the drained node's live gauges read 0, or
+        drain_unfinished with the last ones at the end of the observation
+        (None: the node gives no live gauge, Phase AM item 8)."""
+        end = self.scenario_end(item)
+        node = self.lab["nodes"].get(target)
+        last = (None, None)
+        while time.time() < end and not self.stop.is_set():
+            assignment = http_get(node, f"/api/assignment?stream={self.args.stream}")
+            local = http_get(node, "/api/mesh/local")
+            udp = dotted(assignment.get("client_udp") or {}, "subscribers") \
+                if isinstance(assignment, dict) else None
+            edge = next((entry for entry in (local.get("edge_services") or [])
+                         if entry.get("node_id") == target), {}) if isinstance(local, dict) else {}
+            hls = edge.get("active_playback_sessions")
+            last = (udp, hls)
+            if udp == 0 and hls == 0:
+                self.log({"source": "scale-run", "scenario": item["scenario"],
+                          "event": "drain_end", "node": target, "unix_us": unix_us()})
+                return
+            self.stop.wait(0.5)
+        self.log({"source": "scale-run", "scenario": item["scenario"], "event": "drain_unfinished",
+                  "node": target, "unix_us": unix_us(), "udp_subscribers": last[0],
+                  "hls_sessions": last[1]})
+
+    def watch_serving(self, target: str, item: dict) -> None:
+        """Log first_advertised when the region's entry sees the joining
+        node fresh, and first_serving when the node first counts a part sent
+        or a session."""
+        end = self.scenario_end(item)
+        node = self.lab["nodes"].get(target) or state()["nodes"].get(target)
+        if node is None:
+            return
+        entries = [other for other in self.lab["nodes"].values()
+                   if other["site"] == node["site"] and other["role"] == "distributor"
+                   and other["name"] != target]
+        advertised = served = False
+        baseline = None
+        while time.time() < end and not self.stop.is_set() and not (advertised and served):
+            if not advertised:
+                for entry in entries:
+                    found = http_get(entry, f"/api/assignment?stream={self.args.stream}")
+                    caches = found.get("caches") if isinstance(found, dict) else None
+                    if caches and any(cache.get("node_id") == target and cache.get("fresh")
+                                      for cache in caches):
+                        advertised = True
+                        self.log({"source": "scale-run", "scenario": item["scenario"],
+                                  "event": "first_advertised", "node": target,
+                                  "unix_us": unix_us()})
+                        break
+            if not served:
+                own = http_get(node, f"/api/assignment?stream={self.args.stream}")
+                local = http_get(node, "/api/mesh/local")
+                parts = dotted((own.get("client_udp") or {}) if isinstance(own, dict) else {},
+                               "parts")
+                edge = next((entry for entry in (local.get("edge_services") or [])
+                             if entry.get("node_id") == target), {}) \
+                    if isinstance(local, dict) else {}
+                count = (parts or 0) + (edge.get("active_playback_sessions") or 0)
+                if baseline is None and (parts is not None or edge):
+                    baseline = parts or 0
+                elif baseline is not None and count > baseline:
+                    served = True
+                    self.log({"source": "scale-run", "scenario": item["scenario"],
+                              "event": "first_serving", "node": target, "unix_us": unix_us()})
+            self.stop.wait(0.5)
+
+    def autoscale(self, item: dict, base: dict) -> None:
+        """The controller, set loose for the scenario: linode-autoscale.py
+        with the run's events file, until the scenario's observation ends.
+        Every decision it takes is its own."""
+        seconds = max(1.0, self.scenario_end(item) - time.time())
+        command = [sys.executable, str(HERE.parent / "linode-autoscale.py"), "run",
+                   "--backend", "linode", "--stream", str(self.args.stream),
+                   "--duration", str(int(seconds))]
+        if self.events_path:
+            command += ["--events", str(self.events_path)]
+        if getattr(self.args, "budget_usd", None) is not None:
+            command += ["--budget-usd", str(self.args.budget_usd),
+                        "--spent-before-usd", str(self.args.spent_before_usd)]
+        command += [str(value) for value in item.get("controller_args", [])]
+        self.log({**base, "event": "controller_start", "unix_us": unix_us(),
+                  "command": command[2:]})
+        self.processes.append(subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                               stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL))
+
+    def finish(self) -> None:
+        """Stop, and put back every fault still owed its restore."""
+        self.stop.set()
+        for item in list(self.owed):
+            restore = {"kind": RESTORE_OF[item["kind"]], "targets": item["targets"],
+                       "scenario": item["scenario"], "restore": True, "t": 0}
+            self.act(restore)
+        self.owed = []
+        for process in self.processes:
+            if process.poll() is None:
+                process.terminate()
+
+
+def http_post(node: dict, path: str, timeout: float = 5.0) -> int:
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    request = urllib.request.Request(f"https://{node['public_ipv4']}:{HTTP_PORT}{path}",
+                                     data=b"{}", method="POST",
+                                     headers={"content-type": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+        return response.status
+
+
+def deploy_nodes(verb: str, name: str) -> None:
+    """The deploy tool's push/start/stop --nodes for one node."""
+    result = subprocess.run([sys.executable, str(HERE.parent / "linode-small-mesh-deploy.py"),
+                             verb, "--nodes", name], capture_output=True, text=True,
+                            timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"deploy {verb} --nodes {name}: {result.stderr[-800:]}")
+
+
+def lab_tool_slot(verb: str, name: str, args) -> None:
+    """The lab tool's add (with the run's budget) or remove of one slot."""
+    command = [sys.executable, str(HERE.parent / "linode-small-mesh-lab.py"), verb, name]
+    if verb == "add":
+        if getattr(args, "budget_usd", None) is None:
+            raise RuntimeError("an add needs --budget-usd")
+        command += ["--budget-usd", str(args.budget_usd),
+                    "--spent-before-usd", str(args.spent_before_usd)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"lab {verb} {name}: {result.stderr[-800:]}")
+
+
+def phase_cost(timeline: dict, ramp_s: float, hourly: float,
+               overhead_s: float = STEP_OVERHEAD_S) -> dict:
+    """Minutes and pro-rata dollars of a phase group (one held step), and of
+    each scenario; under hourly rounding a scenario costs nothing unless
+    the run's end passes an hour boundary, and then the whole lab's hour."""
+    seconds = ramp_s + timeline["hold_s"] + overhead_s
+    return {"minutes": round(seconds / 60, 1), "pro_rata_usd": round(seconds / 3600 * hourly, 2),
+            "scenarios": {row["name"]: {"minutes": round((row["end"] - row["base_start"]) / 60, 1),
+                                        "pro_rata_usd": round((row["end"] - row["base_start"])
+                                                              / 3600 * hourly, 2)}
+                          for row in timeline["scenarios"]}}
 
 
 # --------------------------------------------------------------- the lab
@@ -1415,8 +2329,18 @@ def counter_delta(before: dict, after: dict) -> dict:
     return out
 
 
-def wait_live(lab: dict, stream: int, timeout: float = 120) -> bool:
-    dist = common.nodes_by_role(lab, "distributor")[0]
+def live_node(lab: dict, avoid: set[str] = frozenset()) -> dict:
+    """The distributor whose playlist says the stream is live: the first
+    that no phase faults (critique 9)."""
+    for dist in common.nodes_by_role(lab, "distributor"):
+        if dist["name"] not in avoid:
+            return dist
+    raise ValueError("every distributor is under a fault")
+
+
+def wait_live(lab: dict, stream: int, timeout: float = 120,
+              avoid: set[str] = frozenset()) -> bool:
+    dist = live_node(lab, avoid)
     deadline = time.time() + timeout
     while time.time() < deadline:
         body = http_get(dist, f"/live/{stream}/stream.m3u8")
@@ -1462,6 +2386,8 @@ def build_plan(args: argparse.Namespace, lab: dict, standby: list[str]) -> dict:
 
 
 def command_plan(args: argparse.Namespace) -> dict:
+    phases = phase_setup(args)
+    resolve_defaults(args)
     if args.topology_only:
         lab = topology_state(pathlib.Path(args.topology),
                              [site for site in args.without_sites.split(",") if site])
@@ -1499,6 +2425,17 @@ def command_plan(args: argparse.Namespace) -> dict:
           f"with an hour of bring-up: ${cost['instances_usd']}; listener traffic "
           f"{cost['listener_traffic_gb']} GB (on the VLAN, not billed; "
           f"${cost['listener_traffic_usd_if_public']} were it public)")
+    if phases:
+        priced = phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"], cost["hourly_usd"])
+        plan["phases"] = {"timeline": phases["timeline"], "cost": priced}
+        print(f"phases: one held step of {plan['steps'][0]['listeners']} listeners, "
+              f"{priced['minutes']} min with its ramp and overhead, ${priced['pro_rata_usd']} "
+              "pro rata (under hourly rounding a phase costs nothing unless the run's end "
+              "passes an hour boundary, and then the whole lab's hour)")
+        for row in phases["timeline"]["scenarios"]:
+            item = priced["scenarios"][row["name"]]
+            print(f"  {row['name']:<4} {item['minutes']:>5} min  fault at "
+                  f"{row['fault']:>6.0f} s  {', '.join(row['targets'] or row['joins']) or '-'}")
     return plan
 
 
@@ -1578,15 +2515,21 @@ def monitor(hosts: list[dict], remote_dir: str, until: float, poll: float,
     return None, None
 
 
-def step_commands(lab: dict, plan: dict, step: dict, run: str, args) -> dict[str, str]:
-    """The shell command of each listener host for one step."""
+def step_commands(lab: dict, plan: dict, step: dict, run: str, args,
+                  avoid: set[str] = frozenset(), readers: bool = False,
+                  timeline: dict | None = None) -> dict[str, str]:
+    """The shell command of each listener host for one step. The LL-HLS
+    entry is the region's first node that no phase faults (`avoid`);
+    `readers`: the LL-HLS listeners are needletail-reader crowds that
+    follow steering and move (a phase run), not ntcmp."""
     regions = regions_of(lab, plan.get("standby") or [])
     remote_dir = remote_step_dir(run, step["listeners"])
     duration = step["ramp_s"] + step["hold_s"]
     commands = {}
     for site, by_host in step["allocation"].items():
         edges = [f"{node['vlan_ipv4']}:{CLIENT_UDP_PORT}" for node in regions[site]["edges"]]
-        entry = regions[site]["distributors"][0]["vlan_ipv4"]
+        entries = [node["vlan_ipv4"] for node in entry_nodes(regions[site], set(avoid))]
+        entry = entries[0]
         for name, alloc in by_host.items():
             label = f"{run}-{step['listeners']}-{name}"
             # One line each: every tool ends in `&`, and `&;` is a syntax
@@ -1595,22 +2538,39 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args) -> dict[str
                 f"mkdir -p {remote_dir}",
                 load_command(alloc, edges, args.config, step["ramp_s"], duration, args.sample,
                              remote_dir, label, lab["nodes"][name].get("vlan_ipv4"),
-                             args.load_args, vcpus(lab["nodes"][name])),
-                *hls_commands(alloc, entry, args.config, step["ramp_s"], duration, remote_dir,
-                              label, args.hls_window, not args.hls_http2, args.hls_steering))
+                             args.load_args, vcpus(lab["nodes"][name]),
+                             profile_ramp(alloc["udp"], step["ramp_s"], timeline)
+                             if timeline else None),
+                *(reader_commands(alloc, entries[:4], args.config, duration, remote_dir, label)
+                  if readers else
+                  hls_commands(alloc, entry, args.config, step["ramp_s"], duration, remote_dir,
+                               label, args.hls_window, not args.hls_http2, args.hls_steering)))
                 if part)
     return commands
 
 
 def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespace,
-             directory: pathlib.Path, log) -> dict:
+             directory: pathlib.Path, log, phases: dict | None = None) -> dict:
+    """One step. With `phases` ({"timeline", "plan", "events"}): the
+    listeners are held for the timeline's scenarios, a PhaseRunner carries
+    out their actions from the end of the ramp, every edge and distributor
+    runs the mesh sampler, the LL-HLS readers are needletail-reader crowds
+    entering at nodes that no phase faults, and the faults are left out of
+    what gave out first."""
     remote_dir = remote_step_dir(run, step["listeners"])
     every = list(lab["nodes"].values())
     duration = step["ramp_s"] + step["hold_s"]
+    stream = CONFIGS[args.config]["stream"]
     common.parallel(every, lambda node: ssh(
         node, sampler_command(node, remote_dir, duration + 60), check=True))
-    before = edge_counters(lab, CONFIGS[args.config]["stream"])
-    commands = step_commands(lab, plan, step, run, args)
+    mesh_nodes = [node for node in every if node["role"] in ("edge", "distributor")]
+    if phases:
+        common.parallel(mesh_nodes, lambda node: ssh(
+            node, mesh_sampler_command(node, remote_dir, duration + 60, stream), check=True))
+    before = edge_counters(lab, stream)
+    avoid = fault_nodes(phases["timeline"]) if phases else set()
+    commands = step_commands(lab, plan, step, run, args, avoid, readers=bool(phases),
+                             timeline=phases["timeline"] if phases else None)
     step_dir = directory / "steps" / str(step["listeners"])
     step_dir.mkdir(parents=True, exist_ok=True)
     (step_dir / "commands.json").write_text(json.dumps(commands, indent=1) + "\n")
@@ -1618,8 +2578,21 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
     started = time.time()
     common.parallel(hosts, lambda node: ssh(node, commands[node["name"]], check=True))
     log({"step": step["listeners"], "started": round(started), "udp": step["udp"],
-         "hls": step["hls"], "seconds": duration})
-    saturated, why = monitor(hosts, remote_dir, started + duration + 5, args.poll, log)
+         "hls": step["hls"], "seconds": duration,
+         **({"readers_launched_us": int(started * 1e6)} if phases else {})})
+    runner = thread = None
+    if phases:
+        args.stream = stream
+        runner = PhaseRunner(lab, phases["timeline"], started + step["ramp_s"], log, args,
+                             phases.get("events"))
+        thread = threading.Thread(target=runner.run, daemon=True)
+        thread.start()
+    try:
+        saturated, why = monitor(hosts, remote_dir, started + duration + 5, args.poll, log)
+    finally:
+        if runner is not None:
+            runner.finish()
+            thread.join(timeout=120)
     stopped = None
     if saturated:
         stopped = f"{saturated}: {why}"
@@ -1645,10 +2618,14 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
         local = step_dir / node["name"]
         local.mkdir(exist_ok=True)
         files = ["sampler.jsonl"]
+        if phases and node["role"] in ("edge", "distributor"):
+            files.append("mesh.jsonl")
         if node["name"] in commands:
             # needletail-load's directory (intervals, summary, the sampled
             # listeners' arrivals), the readers' condensed reports, errors.
             files += [LOAD_DIR, "udp.err", "hls.condensed.json"]
+            if phases:
+                files += ["hls", "hls-steered.err"]
         for name in files:
             try:
                 common.rsync_from(node, f"{remote_dir}/{name}", str(local) + "/", timeout=600)
@@ -1658,18 +2635,63 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
     common.parallel(every, fetch)
     (step_dir / "counters.json").write_text(json.dumps(counter_delta(before, after), indent=1)
                                             + "\n")
+    exclude = exclusion(phases["timeline"], started + step["ramp_s"]) if phases else None
     result = analyse_step(lab, step_dir, step,
-                          (started + step["ramp_s"], min(ended, started + duration)), args.config)
+                          (started + step["ramp_s"], min(ended, started + duration)), args.config,
+                          exclude)
     result["stopped"] = stopped
     result["ramp_s"], result["hold_s"] = step["ramp_s"], step["hold_s"]
+    if phases:
+        result["phase_start"] = started + step["ramp_s"]
+        result["readers_launched"] = started
+        result["exclude"] = exclude
+        events = read_jsonl(phases["events"].read_text()) if phases.get("events") \
+            and phases["events"].is_file() else []
+        result["phases"] = analyse_phases(lab, step_dir, phases["timeline"],
+                                          started + step["ramp_s"], phases["plan"], events,
+                                          started)
     (step_dir / "step.json").write_text(json.dumps(result, indent=1) + "\n")
     return result
+
+
+def phase_setup(args: argparse.Namespace) -> dict | None:
+    """With --phase-plan: the chosen scenarios, their timeline, and the
+    step's listeners, share and hold from the plan's defaults where the
+    command line gives none. None without --phase-plan."""
+    if not getattr(args, "phase_plan", None):
+        return None
+    names = [name for name in (args.scenarios or "").split(",") if name]
+    plan = load_phase_plan(args.phase_plan, args.group, names or None)
+    timeline = phase_timeline(plan)
+    defaults = {**(plan.get("defaults") or {}),
+                **((plan.get("groups") or {}).get(args.group or "") or {})}
+    if args.steps is None:
+        args.steps = str(defaults.get("listeners", 8000))
+    if len(parse_steps(args.steps)) != 1:
+        raise ValueError("a phase run holds one step of listeners: give one --steps value")
+    if args.hls_share is None:
+        args.hls_share = float(defaults.get("hls_share", 0.05))
+    if getattr(args, "config", None) is None:
+        args.config = defaults.get("config", "pcm-1")
+    args.hold = timeline["hold_s"]
+    return {"plan": plan, "timeline": timeline}
+
+
+def resolve_defaults(args: argparse.Namespace) -> None:
+    if args.steps is None:
+        args.steps = DEFAULT_STEPS
+    if args.hls_share is None:
+        args.hls_share = 0.5
+    if getattr(args, "config", None) is None:
+        args.config = "pcm-1"
 
 
 def command_run(args: argparse.Namespace) -> None:
     lab = state()
     settings = deploy_settings()
     standby = list(settings.get("standby_edges") or [])
+    phases = phase_setup(args)
+    resolve_defaults(args)
     plan = build_plan(args, lab, standby)
     regions = regions_of(lab, standby)
     check_vlan(lab, regions, args.allow_public_transfer)
@@ -1685,12 +2707,25 @@ def command_run(args: argparse.Namespace) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     plan["cost"] = cost_estimate(lab, plan)
     (directory / "plan.json").write_text(json.dumps(plan, indent=1) + "\n")
-    events = open(directory / "events.jsonl", "a")
+    events_path = directory / "events.jsonl"
+    events = open(events_path, "a")
+    lock = threading.Lock()
 
     def log(item: dict) -> None:
-        events.write(json.dumps(item) + "\n")
-        events.flush()
+        # Every line with its Unix time in µs (referee R3), to line up with
+        # the samplers, the listeners' arrivals and the controller's lines.
+        item = {"unix_us": unix_us(), "source": "scale-run", **item}
+        with lock:
+            events.write(json.dumps(item) + "\n")
+            events.flush()
         print(json.dumps(item), flush=True)
+
+    if phases:
+        phases["events"] = events_path
+        (directory / "phases.json").write_text(json.dumps(
+            {"plan": phases["plan"], "timeline": phases["timeline"],
+             "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
+                                plan["cost"]["hourly_usd"])}, indent=1) + "\n")
 
     source = common.nodes_for(lab, "source")[0]
     contributor = common.nodes_by_role(lab, "contributor")[0]
@@ -1699,19 +2734,22 @@ def command_run(args: argparse.Namespace) -> None:
                                  or contributor["public_ipv4"], int(plan["seconds"] + 900),
                                  f"{REMOTE_MEDIA}/audio/audio.s24le"), check=True)
     stream = CONFIGS[args.config]["stream"]
+    avoid = fault_nodes(phases["timeline"]) if phases else set()
     # The loop starts at the next 64 s boundary at least 8 s away.
     start = ssh(source, f"cat {REMOTE}/source.start").strip()
     time.sleep(max(0.0, (int(start) if start.isdigit() else time.time()) - time.time() + 3))
-    if not wait_live(lab, stream):
-        sys.exit(f"stream {stream} is not live at "
-                 f"{common.nodes_by_role(lab, 'distributor')[0]['name']}")
+    if not wait_live(lab, stream, avoid=avoid):
+        sys.exit(f"stream {stream} is not live at {live_node(lab, avoid)['name']}")
     result = {"run": run, "config": args.config, "hls_share": args.hls_share,
               "standby_edges": standby, "steps": [],
               "lab": {name: {key: node.get(key) for key in ("role", "site", "type", "purpose")}
                       for name, node in lab["nodes"].items()}}
+    if phases:
+        result["phase_plan"] = str(args.phase_plan)
+        result["phase_scenarios"] = [row["name"] for row in phases["timeline"]["scenarios"]]
     try:
         for step in plan["steps"]:
-            outcome = run_step(lab, run, plan, step, args, directory, log)
+            outcome = run_step(lab, run, plan, step, args, directory, log, phases)
             result["steps"].append(outcome)
             write_results(directory, result)
             first = outcome.get("gave_out_first")
@@ -1736,7 +2774,11 @@ def write_results(directory: pathlib.Path, result: dict) -> None:
     """scale.json, summary.md and cost.json (the measured costs, for the
     next run's --cost) of a run."""
     (directory / "scale.json").write_text(json.dumps(result, indent=1) + "\n")
-    (directory / "summary.md").write_text(format_summary(result))
+    text = format_summary(result)
+    for step in result["steps"]:
+        if step.get("phases"):
+            text += format_phases(step["phases"])
+    (directory / "summary.md").write_text(text)
     costs = cost_file(result)
     if costs:
         (directory / "cost.json").write_text(json.dumps(costs, indent=1) + "\n")
@@ -1752,12 +2794,26 @@ def command_analyse(args: argparse.Namespace) -> None:
     plan = json.loads((directory / "plan.json").read_text())
     previous = json.loads((directory / "scale.json").read_text())
     lab = (topology_state(pathlib.Path(args.topology)) if args.topology_only else state())
+    phases_file = directory / "phases.json"
+    phases = json.loads(phases_file.read_text()) if phases_file.is_file() else None
+    events_file = directory / "events.jsonl"
+    events = read_jsonl(events_file.read_text()) if events_file.is_file() else []
     steps = []
     for step, old in zip(plan["steps"], previous["steps"]):
-        outcome = analyse_step(lab, directory / "steps" / str(step["listeners"]), step,
-                               tuple(old["window"]), plan["config"])
+        step_dir = directory / "steps" / str(step["listeners"])
+        exclude = old.get("exclude")
+        if exclude:
+            exclude = {"nodes": exclude["nodes"],
+                       "windows": [tuple(window) for window in exclude["windows"]]}
+        outcome = analyse_step(lab, step_dir, step, tuple(old["window"]), plan["config"], exclude)
         outcome["stopped"] = old.get("stopped")
         outcome["ramp_s"], outcome["hold_s"] = step["ramp_s"], step["hold_s"]
+        if phases and old.get("phase_start") is not None:
+            for key in ("phase_start", "readers_launched", "exclude"):
+                outcome[key] = old.get(key)
+            outcome["phases"] = analyse_phases(lab, step_dir, phases["timeline"],
+                                               old["phase_start"], phases["plan"], events,
+                                               old.get("readers_launched"))
         steps.append(outcome)
     previous["steps"] = steps
     write_results(directory, previous)
@@ -1769,10 +2825,19 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def planning(item):
-        item.add_argument("--config", choices=sorted(CONFIGS), default="pcm-1")
-        item.add_argument("--steps", default=DEFAULT_STEPS)
-        item.add_argument("--hls-share", type=float, default=0.5,
-                          help="share of each step's listeners that are LL-HLS readers")
+        item.add_argument("--config", choices=sorted(CONFIGS), default=None,
+                          help="the audio lane (default pcm-1, or the phase plan's)")
+        item.add_argument("--steps", default=None, help=f"default {DEFAULT_STEPS}, or the phase "
+                                                        "plan's listeners")
+        item.add_argument("--hls-share", type=float, default=None,
+                          help="share of each step's listeners that are LL-HLS readers "
+                               "(default 0.5, or the phase plan's)")
+        item.add_argument("--phase-plan", default=None,
+                          help=f"failover, redistribution and autoscale phases in one held "
+                               f"step ({PHASES.relative_to(ROOT)})")
+        item.add_argument("--group", choices=("F", "R", "A"), default=None,
+                          help="the phase plan's scenarios of one group")
+        item.add_argument("--scenarios", default="", help="comma-separated scenario names")
         item.add_argument("--hls-cap-per-host", type=int, default=None,
                           help="LL-HLS readers on one listener host at most; the rest UDP")
         item.add_argument("--hold", type=float, default=60.0, help="seconds each step holds")
@@ -1824,6 +2889,10 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--force", action="store_true",
                      help="run steps that the plan says the listener hosts cannot drive")
     run.add_argument("--allow-public-transfer", action="store_true")
+    run.add_argument("--budget-usd", type=float, default=None,
+                     help="the shared budget, for a phase's add or the autoscaler's creates")
+    run.add_argument("--spent-before-usd", type=float, default=0.0,
+                     help="what earlier labs of the work cost")
     run.set_defaults(handler=command_run)
     analyse = sub.add_parser("analyse", help="aggregate a run's files again")
     analyse.add_argument("run", help="the run's name or directory")
