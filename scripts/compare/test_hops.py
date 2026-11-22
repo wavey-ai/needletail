@@ -561,6 +561,13 @@ class FastPlane(unittest.TestCase):
         self.assertEqual(hops.hop_pairs({hops.FAST_PLANE: 1, "edge.relay_first": 1,
                                          hops.UDP_SENT: 2}),
                          [("edge.relay_first", hops.UDP_SENT)])
+        # A UDP listener's part: the edge's send to its arrival.
+        self.assertIn((hops.UDP_SENT, "listener.complete"),
+                      hops.hop_pairs({hops.FAST_PLANE: 1, "edge.relay_first": 1,
+                                      hops.UDP_SENT: 2, "listener.complete": 3}))
+        self.assertNotIn((hops.UDP_SENT, "listener.complete"),
+                         hops.hop_pairs({"edge.mesh_first": 1, hops.UDP_SENT: 2,
+                                         "edge.reply": 2, "listener.complete": 3}))
 
 
 class Epochs(unittest.TestCase):
@@ -581,7 +588,7 @@ class Epochs(unittest.TestCase):
 
     def test_resolve_prefers_what_was_given_then_the_sender(self):
         self.assertEqual(hops.resolve_epoch()["epoch_us"], 1000.0)          # pcm: 48 samples
-        self.assertEqual(hops.resolve_epoch(payload="opus")["epoch_us"], 2500.0)
+        self.assertEqual(hops.resolve_epoch(payload="opus")["epoch_us"], 1000.0)   # 1 ms Opus Custom
         self.assertEqual(hops.resolve_epoch(payload="flac")["epoch_samples"], 48)
         summary = {"epochs": 10, "epoch_samples": 24, "sample_rate": 48000}
         got = hops.resolve_epoch(payload="pcm", summary=summary)
@@ -699,7 +706,8 @@ class Epochs(unittest.TestCase):
         hops.save_raw(raw, NODES, events)
         out = self.directory / "hops.json"
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            hops.main(["--journal", str(raw), "--payload", "opus", "--source-start-ns",
+            hops.main(["--journal", str(raw), "--payload", "opus", "--epoch-samples", "120",
+                       "--source-start-ns",
                        str(START_US * 1000), "--out", str(out)])
         result = json.loads(out.read_text())
         self.assertEqual(result["stream"], 3001)

@@ -60,7 +60,7 @@ class Arguments(unittest.TestCase):
                          + [f"extra_{role}_args={journal}" for role in
                             ("backbone", "distributor", "edge", "contributor")])
         self.assertEqual(bench.lab_overrides(parse("--payload", "opus"))[:2],
-                         ["daw_hls_formats=opus", "opus_epoch_samples=120"])
+                         ["daw_hls_formats=opus", "opus_epoch_samples=48"])
 
     def test_the_caches_keep_12_s_of_the_run_parts(self):
         # The lab renders through the deploy tool, which counts the window in
@@ -84,11 +84,11 @@ class Arguments(unittest.TestCase):
         self.assertEqual(bench.journal_capacity(parse("--seconds", "10")), 700_000)
         self.assertEqual(bench.journal_capacity(parse("--seconds", "600")), 6_600_000)
         self.assertEqual(bench.journal_capacity(parse("--seconds", "600", "--journal-capacity", "7")), 7)
-        # 12-sample parts: 4,000 a second; Opus 120 samples: 400.
+        # 12-sample parts: 4,000 a second; Opus (1 ms Opus Custom by default): 1,000.
         self.assertEqual(bench.journal_capacity(parse("--seconds", "60", "--epoch-samples", "12")),
                          4_800_000)
         self.assertEqual(bench.journal_capacity(parse("--seconds", "60", "--payload", "opus")),
-                         480_000)
+                         1_200_000)
         self.assertEqual(bench.journal_capacity(parse("--seconds", "1", "--payload", "opus",
                                                       "--epoch-samples", "960")), 262_144)
         # The busiest node writes about 9 events of each part.
@@ -159,13 +159,13 @@ class Arguments(unittest.TestCase):
         start = plan["loop_start_unix"]
         sender = plan["sender"]["command"]
         self.assertEqual(sender[sender.index("--payload") + 1], "opus")
-        self.assertEqual(sender[sender.index("--epoch-samples") + 1], "120")
-        self.assertEqual(sender[sender.index("--session-id") + 1], str(start * 10**9 + 2_500_000))
+        self.assertEqual(sender[sender.index("--epoch-samples") + 1], "48")
+        self.assertEqual(sender[sender.index("--session-id") + 1], str(start * 10**9 + 1_000_000))
         self.assertEqual(plan["hops"]["stream"], 3001)
-        self.assertEqual(plan["epoch_us"], 2500.0)
+        self.assertEqual(plan["epoch_us"], 1000.0)
         # Opus parts are recognised by number: part N is epoch N of the loop.
-        self.assertEqual(plan["media"]["index_command"][2:], ["numbered:nt-opus-120s",
-                                                              plan["media"]["index"], "2.5", "0"])
+        self.assertEqual(plan["media"]["index_command"][2:], ["numbered:nt-opus-48s",
+                                                              plan["media"]["index"], "1.0", "0"])
         h3 = next(item["command"] for item in plan["readers"] if item["lane"] == "h3")
         self.assertIn("/live/3001/master.m3u8", h3[h3.index("--url") + 1])
         self.assertEqual(h3[h3.index("--lane") + 1], "nt-opus-h3")
@@ -227,7 +227,8 @@ class Arguments(unittest.TestCase):
             read_per_second = window * 1000 / round_trip_ms
             self.assertGreaterEqual(read_per_second, 2.4 * bench.parts_per_second(samples), samples)
         self.assertEqual(bench.reader_windows(parse("--epoch-samples", "12"))["h2"], 20)
-        self.assertEqual(bench.reader_windows(parse("--payload", "opus"))["h2"], 2)
+        self.assertEqual(bench.reader_windows(parse("--payload", "opus"))["h2"], 5)
+        self.assertEqual(bench.reader_windows(parse("--payload", "opus", "--epoch-samples", "120"))["h2"], 2)
         # An explicit count wins; window 1 is still there to measure.
         self.assertEqual(bench.reader_windows(parse("--h2-window", "1"))["h2"], 1)
         self.assertEqual(bench.reader_windows(parse("--h2-window-ms", "20"))["h2"], 20)
@@ -393,6 +394,89 @@ class Video(unittest.TestCase):
         self.assertIn("lon-edge-1", lines[2])
         self.assertIn("rcvbuf drops 3", lines[2])
 
+    def test_the_client_loss_goes_on_the_access_link(self):
+        self.assertEqual(bench.client_loss_spec("loss 5%"), "limit 50000 delay 0.50ms loss 5%")
+        self.assertEqual(bench.client_loss_spec("loss gemodel 1% 20%"),
+                         "limit 50000 delay 0.50ms loss gemodel 1% 20%")
+        plan = dry_run("--client-loss", "loss 5%")
+        self.assertEqual(plan["reader_netem"], "limit 50000 delay 0.50ms loss 5%")
+        for bad in (["--client-loss", "delay 3ms loss 1%"], ["--client-loss", " "],
+                    ["--client-loss", "loss 1%", "--reader-loss", "2"]):
+            with self.assertRaises(SystemExit, msg=bad):
+                bench.main(["--name", "t", "--dry-run", *bad])
+
+    def test_audio_udp_clients_on_every_reader_host(self):
+        plan = dry_run("--payload", "opus", "--udp-clients", "2", "--udp-client-args",
+                       "--fast-lane false")
+        clients = plan["udp_clients"]
+        self.assertEqual([(item["host"], item["site"]) for item in clients],
+                         [("lon-readers", "london")] * 2 + [("new-readers", "newyork")] * 2)
+        command = clients[1]["command"]
+        self.assertEqual(command[command.index("--stream") + 1], "3001")
+        self.assertEqual(command[command.index("--arrivals") + 1], clients[1]["arrivals"])
+        self.assertTrue(clients[1]["arrivals"].endswith("lon-readers.uc1.arrivals.csv"))
+        self.assertEqual(command[-2:], ["--fast-lane", "false"])
+        self.assertEqual(dry_run("--udp-clients", "0")["udp_clients"], [])
+        with self.assertRaises(SystemExit):
+            bench.main(["--name", "t", "--dry-run", "--udp-clients", "-1"])
+
+    def test_the_udp_lane_report(self):
+        """Unit latency from the source clock of the journal (seq = epoch),
+        publish -> arrival, the lanes, the wire per part and the hop of the
+        UDP clients' parts at their edge."""
+        start_us, epoch_us = 1_000_000_000, 1000.0
+        arrivals = self.dir / "lon-readers.uc0.arrivals.csv"
+        lines = ["part,arrival_unix_us,bytes,published_unix_us,available_unix_us"]
+        for part in range(100):
+            spoken = start_us + round((part + 1) * epoch_us)
+            lines.append(f"{part},{spoken + (2_000 if part != 7 else 9_000)},304,{spoken + 1_000},0")
+        arrivals.write_text("\n".join(lines) + "\n")
+        report = self.dir / "lon-readers.uc0.uc.json"
+        report.write_text(json.dumps({
+            "caches": ["lon-edge-1"], "moves": [], "expected_parts": 100, "received_parts": 100,
+            "missing_parts": 0, "gap_parts": 0, "fast_lane_asked": True, "fast_lane_parts": 90,
+            "cache_lane_parts": 10, "wire_bytes": 35_400, "wire_per_payload": 1.1644,
+            "wire_bits_per_second": 2_832_000.0, "final_compact_plan": "C0.32.1",
+            "compact": {"nack_parts_sent": 1, "retransmits": 1, "recovered_by_window": 0}}))
+        items = [{"host": "lon-readers", "site": "london", "kind": "udp",
+                  "report": str(report), "arrivals": str(arrivals)},
+                 {"host": "new-readers", "site": "newyork", "kind": "udp",
+                  "report": str(self.dir / "none.uc.json"),
+                  "arrivals": str(self.dir / "none.arrivals.csv")}]
+        events = [{"node": "contrib-lon", "stage": "src_last", "stream": 4001, "seq": part,
+                   "t_us": start_us + part * 1000 + 500, "epoch": part} for part in range(100)]
+        events += [{"node": "lon-edge-1", "stage": "udp_sent", "stream": 4001, "seq": part,
+                    "t_us": start_us + (part + 1) * 1000 + 1_500, "peer": "10.90.0.101:4000"}
+                   for part in range(100)]
+        nodes = {"contrib-lon": {"role": "contributor", "site": "london", "addrs": ["10.90.0.5"]},
+                 "lon-edge-1": {"role": "edge", "site": "london", "addrs": ["10.90.0.21"]}}
+        hosts, probes = bench.udp_lane_report(items, nodes, events, 4001, start_us, epoch_us,
+                                              None, None)
+        london = hosts["lon-readers"]
+        self.assertEqual(london["unit_latency_ms"]["p50"], 2.0)
+        self.assertEqual(london["unit_latency_ms"]["max"], 9.0)
+        self.assertEqual(london["publish_to_arrival_ms"]["p50"], 1.0)
+        self.assertEqual((london["fast_lane_parts"], london["cache_lane_parts"]), (90, 10))
+        self.assertEqual(london["wire_bytes_per_part"], 354.0)
+        self.assertEqual(london["missing"], 0)
+        self.assertEqual(london["clients"][0]["compact_plan"], "C0.32.1")
+        self.assertEqual(hosts["new-readers"]["clients"][0]["error"], "no report")
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0]["host_ip"], "10.90.0.21")
+        # A part the journal does not hold takes seq = epoch.
+        source = bench.source_clock(nodes, events[:10], 4001, start_us, epoch_us, None, None)
+        self.assertEqual(source(50), start_us + 51_000)
+        result = bench.hops.analyse(nodes, events, probes, 4001, start_us, epoch_us)
+        listener = result["regions"]["london"]["listener_parts"]
+        sent = next(item for item in listener["hops"]
+                    if item["hop"] == "edge.udp_sent -> listener.complete")
+        self.assertEqual(sent["p50"], 0.5)
+        text = "\n".join(bench.udp_summary_lines(hosts))
+        self.assertIn("lon-readers (london): unit latency 2.0/2.0/2.0/9.0", text)
+        self.assertIn("fast lane 90 cache lane 10", text)
+        hop_text = "\n".join(bench.udp_hop_lines({"london": {"listener_parts": listener}}))
+        self.assertIn("edge.udp_sent -> listener.complete", hop_text)
+
     def test_the_clip_rate_from_ffprobe(self):
         # 50 frames a second of 500,000 bytes: 200 Mbit/s.
         text = "\n".join(f"{index / 50:.6f},500000," for index in range(100)) + "\nbad\n"
@@ -497,6 +581,9 @@ class Video(unittest.TestCase):
         self.assertIn("london: frames expected 50 received 50 missing 0 late 0 on time 100.00%", text)
         self.assertIn("lon-dist-a", text)
         self.assertIn("4K hops (stream 1)", text)
+        # The audio UDP client of each reader host ran beside the 4K viewers.
+        self.assertEqual(sorted(result["udp_clients"]["hosts"]), ["lon-readers", "new-readers"])
+        self.assertIn("UDP client lane", text)
         self.assertTrue(printed.getvalue().endswith(text))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
