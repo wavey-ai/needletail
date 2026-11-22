@@ -97,7 +97,9 @@ class Sim(auto.Backend):
                          "load_permille": node["load"] if serving else None,
                          "udp_subscribers": node["udp"] if serving else None,
                          "hls_sessions": node["hls"] if serving else None,
-                         "refusals": node["refusals"], "lease_children": None}
+                         "refusals": node["refusals"],
+                         "lease_children": node.get("lease") if serving else None,
+                         "cache_children": node.get("cache") if serving else None}
         return out
 
     def record(self, verb, name):
@@ -411,6 +413,73 @@ class Drain(Base):
                                            ("delete", "lon-edge-11")])
 
 
+class Forwarders(Base):
+    def drain_forwarder(self, controller):
+        self.sim.nodes["lon-dist-c"].update(created=True, running=True, udp=0, hls=0)
+        controller.state["actions"]["lon-dist-c"] = {
+            "kind": "drain", "site": "london", "phase": "drain", "drain_sent": False,
+            "role": "distributor", "started_unix": self.clock(),
+            "deadline_unix": self.clock() + 60, "reason": "test"}
+
+    def test_a_forwarder_that_still_feeds_edges_is_never_stopped_or_deleted(self):
+        controller = self.controller(config=auto.Config(warm_pool=False))
+        self.drain_forwarder(controller)
+        # No listener of its own (0 and 0, a forwarder's normal state), and
+        # its children unknown (no gauge until AM item 12): not drained.
+        self.ticks(controller, 35)
+        self.assertEqual(self.mutating(), [("drain", "lon-dist-c"), ("resume", "lon-dist-c")])
+        failures = [item for item in self.events() if item["kind"] == "failure"]
+        self.assertIn("lease children None", failures[0]["detail"])
+        # Children known but one still fed: the same.
+        self.sim.calls.clear()
+        self.sim.nodes["lon-dist-c"].update(lease=0, cache=3)
+        self.drain_forwarder(controller)
+        self.ticks(controller, 35)
+        self.assertNotIn("stop", [verb for verb, _ in self.mutating()])
+        self.assertNotIn("delete", [verb for verb, _ in self.mutating()])
+        # Both 0: stopped, then deleted.
+        self.sim.calls.clear()
+        self.sim.nodes["lon-dist-c"].update(lease=0, cache=0)
+        self.drain_forwarder(controller)
+        self.ticks(controller, 3)
+        self.assertEqual(self.mutating(), [("drain", "lon-dist-c"), ("stop", "lon-dist-c"),
+                                           ("delete", "lon-dist-c")])
+
+
+class Stopping(Base):
+    def test_stopped_from_outside_it_resumes_the_drain_in_flight(self):
+        self.sim.nodes["lon-edge-11"].update(created=True, running=True)
+        controller = self.controller()
+        controller.state["actions"]["lon-edge-11"] = {
+            "kind": "drain", "site": "london", "phase": "drain", "drain_sent": False,
+            "started_unix": self.clock(), "deadline_unix": self.clock() + 60, "reason": "test"}
+        ticks = []
+
+        def tick():
+            ticks.append(1)
+            if len(ticks) == 2:
+                raise KeyboardInterrupt  # SIGINT (or SIGTERM, which main makes one)
+            return auto.Controller.tick(controller)
+
+        controller.tick = tick
+        with self.assertRaises(KeyboardInterrupt):
+            controller.run(duration=600, sleep=lambda seconds: self.clock.advance(seconds))
+        self.assertEqual(self.mutating(), [("drain", "lon-edge-11"), ("resume", "lon-edge-11")])
+        saved = json.loads(self.state_path.read_text())
+        self.assertEqual(saved["actions"], {})
+        kinds = [item["kind"] for item in self.events()]
+        self.assertIn("wound_down", kinds)
+        self.assertEqual(kinds[-1], "controller_stop")
+
+    def test_one_controller_per_state_file(self):
+        first = auto.hold_lock(self.state_path)
+        self.addCleanup(first.close)
+        with self.assertRaises(auto.Refused):
+            auto.hold_lock(self.state_path)
+        first.close()
+        auto.hold_lock(self.state_path).close()
+
+
 class Restart(Base):
     def test_a_create_that_was_under_way_is_adopted_not_repeated(self):
         for index in range(6, 11):
@@ -594,16 +663,39 @@ class LinodeBackendTests(unittest.TestCase):
         self.assertAlmostEqual(figures["lab_projected_usd"], 99 * 0.054 * 3 + 0.054 * 2,
                                places=3)
         self.assertTrue(ok)
-        self.state["watchdog_deadline_unix"] = self.state["created_unix"] + 6.2 * 3600
+        # No tolerance past 6.0 h of the lab's life (a seventh billed hour).
+        for life in (6.2, 6.0 + 30 / 3600):
+            self.state["watchdog_deadline_unix"] = self.state["created_unix"] + life * 3600
+            self.path.write_text(json.dumps(self.state))
+            ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
+            self.assertFalse(ok)
+            self.assertIn("at most 6 h", figures["why"])
+        # Nothing created within 15 min of the deadline.
+        self.state["watchdog_deadline_unix"] = time.time() + 600
         self.path.write_text(json.dumps(self.state))
         ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
         self.assertFalse(ok)
-        self.assertIn("at most 6.0 h", figures["why"])
+        self.assertIn("within 15 min", figures["why"])
         del self.state["watchdog_deadline_unix"]
         self.path.write_text(json.dumps(self.state))
         self.assertFalse(self.backend.budget(["lon-edge-11"], offline=True)[0])
         self.backend.config.budget_usd = None
         self.assertFalse(self.backend.budget(["lon-edge-11"], offline=True)[0])
+
+    def test_nothing_is_pushed_to_a_slot_without_the_lab_firewall(self):
+        deployed = []
+        self.backend.deploy = lambda verb, name: deployed.append((verb, name))
+        with mock.patch.object(self.backend, "api", lambda: object()), \
+                mock.patch.object(self.backend.lab, "firewall_attached",
+                                  lambda api, state, name: False):
+            with self.assertRaises(auto.Refused):
+                self.backend.push("lon-edge-1")
+        self.assertEqual(deployed, [])
+        with mock.patch.object(self.backend, "api", lambda: object()), \
+                mock.patch.object(self.backend.lab, "firewall_attached",
+                                  lambda api, state, name: True):
+            self.backend.push("lon-edge-1")
+        self.assertEqual(deployed, [("push", "lon-edge-1")])
 
     def test_a_state_without_a_run_tag_is_refused(self):
         self.state["tag"] = ""

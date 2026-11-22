@@ -29,13 +29,20 @@ Safety, before anything else:
   deadline in whole billed hours, the new slots included, plus the other
   labs' live needletail instances and what earlier labs spent, within
   --budget-usd (required with the linode backend). It refuses when the
-  watchdog is not armed or is set past --max-watchdog-hours (6.0) of the
-  lab's life.
+  watchdog is not armed, is less than 15 min ahead, or is set past
+  --max-watchdog-hours (6.0) of the lab's life (the lab tool's
+  watchdog_problems; `add` applies the same rule).
 * Drain before delete: drain-node, wait until the node's UDP subscribers
-  and HLS sessions are 0 (live gauges; an unknown gauge is not 0), stop its
-  service, then delete. A drain that does not reach 0 within
-  --drain-timeout (60 s) is resumed (resume-node), recorded as a failure,
-  and nothing is deleted.
+  and HLS sessions are 0 (live gauges; an unknown gauge is not 0), and for
+  a forwarder its lease children and cache-mesh children too (Phase AM
+  item 12), stop its service, then delete. A drain that does not reach 0
+  within --drain-timeout (60 s) is resumed (resume-node), recorded as a
+  failure, and nothing is deleted.
+* Stopped from outside (SIGINT or SIGTERM), it resumes every drain in
+  flight before it exits. One controller per state file (a lock beside
+  it); a second is refused.
+* Nothing is pushed to a slot that the lab's Cloud Firewall does not
+  cover (the lab tool deletes a slot whose firewall cannot be set).
 * Hysteresis (scale up at a mean of 700 permille for 3 samples, or
   refusals in 2 samples; down only when the load with one edge fewer stays
   at or under 450 permille for 300 s), a cooldown per region (60 s), no
@@ -71,12 +78,14 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fcntl
 import importlib.util
 import json
 import math
 import os
 import pathlib
 import re
+import signal
 import ssl
 import subprocess
 import sys
@@ -381,6 +390,11 @@ def node_view(name: str, assignment: dict | None, local: dict | None) -> dict:
             "hls_sessions": hls, "refusals": refusals,
             "lease_children": gauge(local or {}, "fast_plane.lease_children", "lease_children",
                                     "relay.lease_children"),
+            # The edges that fetch from this node over the cache mesh (a
+            # forwarder's children): a live gauge once Phase AM item 12
+            # lands; None (unknown, never 0) until then.
+            "cache_children": gauge(local or {}, "cache_mesh.children", "cache_children",
+                                    "relay.cache_children"),
             "answered": assignment is not None or local is not None}
 
 
@@ -404,6 +418,7 @@ def merge_views(roster: dict[str, list[dict]], entries: dict[str, dict | None],
                 "hls_sessions": view.get("hls_sessions"),
                 "refusals": view.get("refusals"),
                 "lease_children": view.get("lease_children"),
+                "cache_children": view.get("cache_children"),
                 "answered": view.get("answered", False)}
     return out
 
@@ -538,11 +553,16 @@ class LinodeBackend(Backend):
         other = self.lab.account_billed(self.api(), state["tag"])["usd"]
         try:
             self.lab.add_slots(args, self.api(), state, [name], self.config.budget_usd,
-                               self.config.spent_before_usd, other)
+                               self.config.spent_before_usd, other,
+                               self.config.max_watchdog_hours)
         except SystemExit as error:
             raise Refused(str(error)) from None
 
     def push(self, name: str) -> None:
+        # Never push (and so start) a node that the lab's Cloud Firewall
+        # does not cover: it would serve with every port open.
+        if not self.lab.firewall_attached(self.api(), self.state(), name):
+            raise Refused(f"{name} is not attached to the lab's Cloud Firewall: not pushed")
         self.deploy("push", name)
 
     def start(self, name: str) -> None:
@@ -572,13 +592,11 @@ class LinodeBackend(Backend):
         state = self.state()
         if self.config.budget_usd is None:
             return False, {"why": "no --budget-usd"}
-        deadline = state.get("watchdog_deadline_unix")
-        if not deadline:
-            return False, {"why": "the watchdog is not armed"}
-        life = (deadline - state["created_unix"]) / 3600
-        if life > self.config.max_watchdog_hours + 1 / 60:
-            return False, {"why": f"the watchdog is armed for {life:.2f} h of the lab's life; "
-                                  f"at most {self.config.max_watchdog_hours} h"}
+        # The lab tool's own rule (add_slots applies it again): armed, at
+        # least 15 min ahead, at most max_watchdog_hours into the lab's life.
+        problems = self.lab.watchdog_problems(state, time.time(), self.config.max_watchdog_hours)
+        if problems:
+            return False, {"why": "; ".join(problems)}
         slots = self.lab.lab_slots(state)
         extra = []
         for name in new:
@@ -932,7 +950,7 @@ class Controller:
             if decision["action"] == "join":
                 self.join(site, decision, now, by_name)
             elif decision["action"] == "drain":
-                self.start_drain(site, decision, now)
+                self.start_drain(site, decision, now, by_name)
         self.save()
         return decisions
 
@@ -972,12 +990,16 @@ class Controller:
             self.events("join", node=name, region=site, how=how, reason=decision["reason"])
             self.advance(name, now, {}, by_name)
 
-    def start_drain(self, site: str, decision: dict, now: float) -> None:
+    def start_drain(self, site: str, decision: dict, now: float,
+                    by_name: dict | None = None) -> None:
         region = self.region(site)
         region["last_action_unix"] = now
         for name, _how in decision["targets"]:
+            role = (by_name or {}).get(name, {}).get("role") or (
+                "distributor" if decision.get("tier") == "forwarder" else "edge")
             self.state["actions"][name] = {
                 "kind": "drain", "site": site, "phase": "drain", "drain_sent": False,
+                "role": role,
                 "started_unix": now, "deadline_unix": now + self.config.drain_timeout_s,
                 "reason": decision["reason"]}
             self.save()
@@ -1063,16 +1085,26 @@ class Controller:
                 self.save()
                 return
             udp, hls = view.get("udp_subscribers"), view.get("hls_sessions")
-            if udp == 0 and hls == 0:
+            role = node.get("role") or action.get("role")
+            # A forwarder feeds edges, not listeners: drained only when it
+            # also has no lease child and no cache-mesh child left (live
+            # gauges, Phase AM item 12; unknown is not 0).
+            children = {"lease_children": view.get("lease_children"),
+                        "cache_children": view.get("cache_children")}
+            fed = role == "distributor" and any(value != 0 for value in children.values())
+            if udp == 0 and hls == 0 and not fed:
                 action["phase"] = "stop"
                 action["zero_unix"] = now
                 self.events("drain_end", node=name, region=action["site"],
                             seconds=round(now - action["started_unix"], 3))
                 self.save()
             elif now > action["deadline_unix"]:
-                self.fail(name, "drain-timeout",
-                          f"UDP subscribers {udp}, HLS sessions {hls} after "
-                          f"{self.config.drain_timeout_s:.0f} s: resumed, not deleted")
+                detail = (f"UDP subscribers {udp}, HLS sessions {hls}"
+                          + (f", lease children {children['lease_children']}, cache-mesh "
+                             f"children {children['cache_children']}"
+                             if role == "distributor" else "")
+                          + f" after {self.config.drain_timeout_s:.0f} s: resumed, not deleted")
+                self.fail(name, "drain-timeout", detail)
                 self.resume_after_failure(name)
                 self.state["actions"].pop(name, None)
                 return
@@ -1117,6 +1149,29 @@ class Controller:
             self.fail(name, "park stop", str(error))
         self.state["warm"][name] = {"since_unix": self.clock(), "proof": "never-served"}
         self.events("parked", node=name, why="its join failed; held out in the warm pool")
+
+    def wind_down(self) -> None:
+        """The controller is being stopped (a scale run's step ends early):
+        every drain it has sent and not finished with a stop is resumed, so
+        no edge stays draining with nobody to finish it. A join is left in
+        the state as it is (a controller started again adopts it; `down`
+        deletes the lab's slots in any case), and named in the event."""
+        for name in sorted(self.state["actions"]):
+            action = self.state["actions"][name]
+            if action["kind"] != "drain":
+                continue
+            if action.get("drain_sent") and action["phase"] in ("drain", "stop"):
+                self.fail(name, "drain interrupted", "the controller was stopped: resumed")
+                self.resume_after_failure(name)
+            elif action["phase"] == "delete":
+                # Stopped already: kept stopped, released by the warm pool.
+                self.state["warm"][name] = {"since_unix": self.clock(),
+                                            "proof": "drained-to-zero"}
+            self.state["actions"].pop(name, None)
+        joins = sorted(self.state["actions"])
+        self.events("wound_down", joins_left=joins, warm=sorted(self.state["warm"]),
+                    why="stopped from outside; drains in flight resumed")
+        self.save()
 
     def resume_after_failure(self, name: str) -> None:
         try:
@@ -1175,6 +1230,11 @@ class Controller:
                 if once or (end is not None and self.clock() >= end):
                     break
                 sleep(max(0.0, self.config.poll_s - (self.clock() - began)))
+        except KeyboardInterrupt:
+            # SIGINT, or SIGTERM (main turns it into this): stopped from
+            # outside, perhaps mid-action. Leave no node draining.
+            self.wind_down()
+            raise
         finally:
             self.events("controller_stop", actions=sorted(self.state["actions"]),
                         warm=sorted(self.state["warm"]), dry_run=self.backend.dry_run)
@@ -1242,14 +1302,41 @@ def main(argv: list[str] | None = None) -> None:
         inner = EdgeLabBackend(args.stream, sites)
     backend = Guarded(inner, config, args.dry_run)
     events = Events(args.events)
+    state_path = pathlib.Path(args.controller_state or default_state_path(args.backend))
+    # SIGTERM stops the controller as SIGINT does: drains in flight resumed.
+    signal.signal(signal.SIGTERM, interrupt)
+    lock = None
     try:
-        controller = Controller(backend, config, pathlib.Path(
-            args.controller_state or default_state_path(args.backend)), events)
+        # One controller per state file: two would each act on and save it.
+        lock = None if args.dry_run else hold_lock(state_path)
+        controller = Controller(backend, config, state_path, events)
         controller.run(args.duration, args.once)
     except Refused as error:
         sys.exit(f"refused: {error}")
     except KeyboardInterrupt:
-        pass
+        sys.exit(130)
+    finally:
+        if lock is not None:
+            lock.close()
+
+
+def interrupt(_signum, _frame) -> None:
+    raise KeyboardInterrupt
+
+
+def hold_lock(state_path: pathlib.Path):
+    """An exclusive lock beside the controller's state file, held for the
+    controller's life (the open file is returned; closing it releases the
+    lock). Refused when another controller holds it."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(state_path.with_name(state_path.name + ".lock"), "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise Refused(f"another controller holds {state_path}: one controller per state "
+                      "file") from None
+    return handle
 
 
 if __name__ == "__main__":
