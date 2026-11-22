@@ -2405,6 +2405,10 @@ def command_plan(args: argparse.Namespace) -> dict:
         standby = list(deploy_settings().get("standby_edges") or [])
     plan = build_plan(args, lab, standby)
     plan["cost"] = cost_estimate(lab, plan)
+    if phases:
+        plan["phases"] = {"timeline": phases["timeline"],
+                          "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
+                                             plan["cost"]["hourly_usd"])}
     if args.json:
         print(json.dumps(plan, indent=1))
         return plan
@@ -2432,8 +2436,7 @@ def command_plan(args: argparse.Namespace) -> dict:
           f"{cost['listener_traffic_gb']} GB (on the VLAN, not billed; "
           f"${cost['listener_traffic_usd_if_public']} were it public)")
     if phases:
-        priced = phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"], cost["hourly_usd"])
-        plan["phases"] = {"timeline": phases["timeline"], "cost": priced}
+        priced = plan["phases"]["cost"]
         print(f"phases: one held step of {plan['steps'][0]['listeners']} listeners, "
               f"{priced['minutes']} min with its ramp and overhead, ${priced['pro_rata_usd']} "
               "pro rata (under hourly rounding a phase costs nothing unless the run's end "
