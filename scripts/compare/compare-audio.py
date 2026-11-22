@@ -44,6 +44,8 @@ opus-max510, PCM with pcm.
 Phases
   baseline  60 s of probes on both listener hosts of each region, and
             headless Chrome on the viewer host for each WebRTC system in turn
+  joins     time to first audio: 20 new listeners of each lane, one after
+            another, on each view host, while the stream runs (--joins)
   impair    the same netem on every listener host, for each impairment
   fanout    1, 10 and 100 listeners
   attempts  ask each WebRTC system for an L16 and an L24 audio track
@@ -394,6 +396,49 @@ class Audio:
                     + base + "--kind livekit --url \"$LK_CLOUD_URL\" --token \"$TOKEN\"")
         raise ValueError(lane)
 
+    def joins(self, count: int, seconds: int = 5) -> None:
+        """Time to first audio for a new listener on a stream that is already
+        running: on each view host, `count` fresh listeners of every lane, one
+        after another (the lanes side by side), each a new process timed from
+        its start to its first audio unit (ntcmp's first_audio_ms: connect,
+        signalling or entry assignment, then the first unit). Records are
+        LANE.join-NN.json beside the step's probes."""
+        s = self.session
+        # nt-udp writes only the client's own report (no probe): not a join lane.
+        lanes = [lane for lane in self.lanes + self.nt if lane != UDP_LANE]
+        scripts = {}
+        for site in SITES:
+            host = f"{site}-view"
+            loops = []
+            for lane in lanes:
+                # Unrolled, so that every join has its own session id and
+                # identity (the URLs are single-quoted: no shell variables).
+                steps = []
+                for j in range(1, count + 1):
+                    command = self.probe(lane, site, seconds, 1, f"{s.name}-{site}-join{j:02d}")
+                    command = (command.replace("--skip-seconds 5 ", "--skip-seconds 1 ")
+                               .replace(f" --frames {lane}.probe.csv", ""))
+                    moves = f"mv -f {lane}.probe.json {lane}.join-{j:02d}.json 2>/dev/null"
+                    if lane == UC_LANE:
+                        moves += f"; mv -f {UC_LANE}.uc.json {UC_LANE}.join-{j:02d}.uc.json 2>/dev/null"
+                    steps.append(f"{command}; {moves}; sleep 0.5")
+                loops.append("( " + "\n".join(steps) + "\n) >/dev/null 2>>errors.log &")
+            scripts[host] = "\n".join(loops) + "\nwait"
+        name = f"audio.{self.config}.joins.{count}"
+        total = count * (seconds + 3) + 30
+        run.log(f"{name}: {len(scripts)} hosts, about {total} s, lanes {' '.join(lanes)}")
+        result = run.run_hosts(s, name, scripts, total)
+        meta = {"step": name, "config": self.config, "phase": "joins", "detail": str(count), "netem": None,
+                "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(),
+                "nt_uc_base": self.nt_base[0] if self.nt_base else None, "webrtc_opus_send": "live",
+                "nt_popus_samples": NT_EPOCH_SAMPLES["nt-popus"], "uc_extra_flags": UC_EXTRA.strip() or None,
+                "join_seconds": seconds, "joins_per_lane": count,
+                "session": s.name, "source": self.status(), **result}
+        (s.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+        s.steps.append({"step": name, "seconds": result["seconds"]})
+        if result["host_errors"]:
+            run.log(f"  host errors: {json.dumps(result['host_errors'])[:400]}")
+
     # ---- steps ----
     def step(self, phase: str, detail: str, seconds: int, chrome: int, netem: str | None,
              fan: dict | None = None, token_line: int = 1, only: list[str] | None = None) -> None:
@@ -500,7 +545,9 @@ def main() -> None:
                         choices=run.lab.NT_OPUS_FRAME_SAMPLES,
                         help="the DAW source's Opus frame (one nt-opus part): 120 (2.5 ms, "
                              "standard Opus) by default, 48 or 72 for 1 or 1.5 ms Opus Custom")
-    parser.add_argument("--phases", default="baseline,impair,fanout,attempts")
+    parser.add_argument("--phases", default="baseline,joins,impair,fanout,attempts")
+    parser.add_argument("--joins", type=int, default=20,
+                        help="new listeners of each lane, one after another, in the joins phase")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--chrome-seconds", type=int, default=25)
     parser.add_argument("--nt-formats", default=NT_FORMATS,
@@ -534,6 +581,8 @@ def main() -> None:
                 chrome = 0 if audio.pcm else args.chrome_seconds
                 if "baseline" in phases:
                     audio.step("baseline", "clean", args.seconds, chrome, None)
+                if "joins" in phases and full:
+                    audio.joins(args.joins)
                 if "impair" in phases and full:
                     for label, spec in run.IMPAIRMENTS.items():
                         audio.step("impair", label, 35, 20 if chrome else 0, spec, token_line=2)

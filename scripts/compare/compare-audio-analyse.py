@@ -408,7 +408,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 12
+ANALYSIS_VERSION = 14
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:
@@ -431,7 +431,8 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
         return None
     config = meta["config"]
     step = {key: meta.get(key) for key in ("step", "config", "phase", "detail", "netem", "lanes",
-                                            "listeners", "started_unix", "seconds")}
+                                            "listeners", "started_unix", "seconds", "nt_popus_samples",
+                                            "nt_pcm_epoch_samples", "sfu_pcm_ms", "nt_frame_ms")}
     source = meta.get("source") or {}
     step["source"] = {name.replace(".status", ""): {
         key: value.get(key) for key in ("audio_packets", "audio_worst_late_ms", "write_errors")}
@@ -499,6 +500,18 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
             if errors:
                 summary["errors"] = errors[:4]
             lanes.setdefault(lane, {})["listeners"] = summary
+        # The joins phase: LANE.join-NN, one new listener each, on a running stream.
+        joins: dict = {}
+        for name, record in records.items():
+            if ".join-" in name and not name.endswith(".uc"):
+                joins.setdefault(name.split(".join-")[0], []).append(record or {})
+        for lane, items in joins.items():
+            ok = [r for r in items if not r.get("error") and (r.get("first_audio_ms") or -1) >= 0]
+            lanes.setdefault(lane, {})["joins"] = {
+                "joins": len(items), "with_audio": len(ok),
+                "first_audio_ms": dist([r["first_audio_ms"] for r in ok]),
+                "connect_ms": dist([r["connect_ms"] for r in ok if (r.get("connect_ms") or -1) >= 0]),
+                "errors": sorted({(r.get("error") or "")[:120] for r in items if r.get("error")})[:4]}
         for name, record in records.items():
             if record is not None and name.endswith(".reader") and "summary" in record:
                 summary = record["summary"]
@@ -610,8 +623,9 @@ def short(distribution: dict | None, keys=("p50", "p95", "p99", "max")) -> dict 
 
 def slim(step: dict) -> dict:
     """The versioned form of a step: the figures that the tables and the
-    text use. Single probes are kept for the Nanode listener of each region;
-    the viewer host keeps Chrome and the crowds."""
+    text use. Single probes are kept for both listener hosts of each region
+    (the view host's are the p99 of record); the view host also keeps Chrome,
+    the crowds and the joins."""
     out = {key: value for key, value in step.items() if key not in ("hosts", "source", "analysis_version")}
     hosts = {}
     for name, host in step["hosts"].items():
@@ -619,7 +633,9 @@ def slim(step: dict) -> dict:
         for lane, entry in host["lanes"].items():
             kept = {}
             probe = entry.get("probe")
-            if probe and (name.endswith("-nano") or step["phase"].startswith("fanout")):
+            # The 4-vCPU view hosts' probes are the p99 of record (the Nanodes
+            # stall with many 1 ms lanes); both are kept.
+            if probe and (name.endswith(("-nano", "-view")) or step["phase"].startswith("fanout")):
                 item = {key: probe[key] for key in PROBE_KEEP if probe.get(key) is not None}
                 item["unit_latency_ms"] = short(probe.get("unit_latency_ms"))
                 item["mouth_to_ear_ms"] = short(probe.get("mouth_to_ear_ms"), ("p50", "p95", "p99"))
@@ -633,6 +649,8 @@ def slim(step: dict) -> dict:
                 kept["listeners"] = entry["listeners"]
             if entry.get("reader"):
                 kept["reader"] = entry["reader"]
+            if entry.get("joins"):
+                kept["joins"] = entry["joins"]
             chrome = entry.get("chrome")
             if chrome:
                 item = {key: chrome[key] for key in CHROME_KEEP if chrome.get(key) is not None}

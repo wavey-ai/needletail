@@ -203,6 +203,91 @@ class Analysis(unittest.TestCase):
         result = analyse.analyse_step_now(step)
         self.assertEqual(result["hosts"]["lon-view"]["lanes"]["nt-udp"]["udp"]["received_parts"], 5)
 
+    def test_joins_are_summarised_per_lane(self):
+        step = self.dir / "audio.opus-2.5.joins.3"
+        host = step / "lon-view"
+        host.mkdir(parents=True)
+        (step / "meta.json").write_text(json.dumps({"step": step.name, "config": "opus-2.5", "phase": "joins",
+                                                    "lanes": ["lkregion", "nt-uc"]}))
+        for j, ms in enumerate((40.0, 60.0, 50.0), 1):
+            (host / f"lkregion.join-{j:02d}.json").write_text(json.dumps({"first_audio_ms": ms + 100,
+                                                                          "connect_ms": ms}))
+            (host / f"nt-uc.join-{j:02d}.json").write_text(json.dumps({"first_audio_ms": ms}))
+            (host / f"nt-uc.join-{j:02d}.uc.json").write_text(json.dumps({"fast_lane_parts": 1}))
+        (host / "nt-uc.join-04.json").write_text(json.dumps({"first_audio_ms": -1, "error": "no entry"}))
+        lanes = analyse.analyse_step_now(step)["hosts"]["lon-view"]["lanes"]
+        self.assertEqual(lanes["lkregion"]["joins"]["first_audio_ms"]["p50"], 150.0)
+        self.assertEqual(lanes["lkregion"]["joins"]["connect_ms"]["max"], 60.0)
+        self.assertEqual((lanes["nt-uc"]["joins"]["joins"], lanes["nt-uc"]["joins"]["with_audio"]), (4, 3))
+        self.assertEqual(lanes["nt-uc"]["joins"]["errors"], ["no entry"])
+        self.assertNotIn("probe", lanes["nt-uc"])
+        self.assertIn("joins", analyse.slim({"phase": "joins", "hosts": {"lon-view": {"lanes": lanes}}})
+                      ["hosts"]["lon-view"]["lanes"]["nt-uc"])
+
+
+class Scoreboard(unittest.TestCase):
+    def test_view_host_first_and_each_metric_judged(self):
+        board = load("scoreboard", "scoreboard.py")
+        probe = lambda p50, p99, miss=0.0: {"probe": {"mouth_to_ear_ms": {"p50": p50, "p99": p99},
+                                                      "missing_percent": miss}}
+        steps = {
+            "audio.opus-2.5.baseline.clean": {"nt_popus_samples": 48, "hosts": {
+                "lon-view": {"lanes": {"nt-uc": probe(2.1, 3.0), "lkregion": probe(4.5, 6.2)}},
+                "lon-nano": {"lanes": {"nt-uc": probe(9.0, 90.0), "lkregion": probe(1.0, 1.0)}}}},
+            "audio.opus-2.5.impair.loss5": {"hosts": {
+                "lon-view": {"lanes": {"nt-uc": probe(2.0, 9.0, -0.01), "lkregion": probe(4.0, 6.0, 4.9)}}}},
+            "audio.opus-2.5.joins.20": {"hosts": {"lon-view": {"lanes": {
+                "nt-uc": {"joins": {"first_audio_ms": {"p50": 60.0}}},
+                "lkregion": {"joins": {"first_audio_ms": {"p50": 60.4}}}}}}},
+        }
+        rows = board.board({"sessions": {"s": {"steps": steps}}}, ["s"])
+        got = {(r["metric"], r["region"]): (r["needletail"], r["result"]) for r in rows}
+        self.assertEqual(got[("m2e_p50", "London")], (2.1, "win"))          # the view host, not the Nanode
+        self.assertEqual(got[("m2e_p99_loss5", "London")], (9.0, "loss"))
+        self.assertEqual(got[("missing_loss5", "London")], (-0.01, "win"))   # negative counts as 0
+        self.assertNotIn(("missing_loss1", "London"), got)                   # no step: no row
+        self.assertEqual(got[("first_audio", "London")], (60.0, "tie"))       # 60 against 60 at 0 digits
+        self.assertTrue(all(r["rendition"].startswith("Opus, smallest frame") for r in rows))
+
+
+class Joins(unittest.TestCase):
+    def test_every_join_is_a_new_listener_with_its_own_session(self):
+        class Session(FakeSession):
+            dir = pathlib.Path(tempfile.mkdtemp())
+            steps: list = []
+
+            def ip(self, name):
+                return "10.0.0.1"
+        captured = {}
+
+        def run_hosts(session, name, scripts, total):
+            captured.update(scripts=scripts, total=total)
+            (session.dir / name).mkdir(parents=True, exist_ok=True)
+            return {"seconds": total, "host_errors": {}}
+        saved = (audio.run.run_hosts, audio.SITES)
+        audio.run.run_hosts, audio.SITES = run_hosts, ["lon"]
+        try:
+            a = audio.Audio(Session(), "opus-2.5", ["lkregion", "nt-popus", "nt-udp", "nt-uc"])
+            a.status = lambda: {}
+            a.joins(3)
+        finally:
+            audio.run.run_hosts, audio.SITES = saved
+        script = captured["scripts"]["lon-view"]
+        self.assertEqual(list(captured["scripts"]), ["lon-view"])
+        self.assertNotIn("nt-udp", script)
+        self.assertNotIn("$J", script)
+        self.assertNotIn("--frames", script)
+        for j in ("01", "02", "03"):
+            self.assertIn(f"mv -f lkregion.probe.json lkregion.join-{j}.json", script)
+            self.assertIn(f"--identity t-lon-join{j}-lkregion", script)
+            self.assertIn(f"sid=t-lon-join{j}-nt-popus-h3-", script)
+            self.assertIn(f"--session t-lon-join{j}-uc-0 ", script)
+            self.assertIn(f"mv -f nt-uc.uc.json nt-uc.join-{j}.uc.json", script)
+        self.assertEqual(script.count("--skip-seconds 1 "), 3 * 5)
+        self.assertNotIn("--skip-seconds 5", script)
+        meta = json.loads((Session.dir / "audio.opus-2.5.joins.3" / "meta.json").read_text())
+        self.assertEqual((meta["phase"], meta["joins_per_lane"]), ("joins", 3))
+
 
 ROOT = HERE.parent.parent
 NTCMP = ROOT / "target" / "ntcmp"

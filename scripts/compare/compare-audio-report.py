@@ -256,6 +256,39 @@ def fanout(e: Evidence, config: str) -> None:
         table(["System"] + [name for _, _, name in columns], rows)
 
 
+def joins(e: Evidence, config: str) -> None:
+    """Time to first audio of a new listener on a running stream (the joins
+    phase): median / p95 over the joins of each session, per region."""
+    sites = [("lon", "London"), ("new", "New York"), ("tok", "Tokyo"), ("syd", "Sydney")]
+    rows = []
+    for system, name in SYSTEMS:
+        lane = e.lane(system, config)
+        row = [name + (f" ({lane.split('-')[1]})" if system.startswith("nt") else "")]
+        empty = True
+        for site, _ in sites:
+            cells = []
+            for session in e.sessions:
+                steps = e.data["sessions"][session]["steps"]
+                step = next((v for k, v in steps.items() if k.startswith(f"audio.{config}.joins.")), {})
+                entry = ((step.get("hosts", {}).get(f"{site}-view", {}).get("lanes", {}) or {})
+                         .get(lane, {}).get("joins"))
+                if not entry or not entry.get("first_audio_ms"):
+                    continue
+                first = entry["first_audio_ms"]
+                cells.append(f"{fmt(first['p50'], 0)} / {fmt(first['p95'], 0)}"
+                             + (f" ({entry['with_audio']}/{entry['joins']})"
+                                if entry["with_audio"] < entry["joins"] else ""))
+            empty = empty and not cells
+            row.append(", ".join(cells) or "–")
+        if not empty:
+            rows.append(row)
+    if rows:
+        print(f"### Time to first audio, new listener, {config}\n")
+        print("From the listener's start to its first unit, on a stream already running; "
+              "median / p95 of the joins (ms), and joins with audio where any failed:\n")
+        table(["System"] + [name for _, name in sites], rows)
+
+
 def nodes(e: Evidence, config: str) -> None:
     print(f"### Processor of the nodes, {config}\n")
     print("Percent of one vCPU used by the service, during the step:\n")
@@ -296,6 +329,8 @@ def main() -> None:
     sweep(e)
     baseline(e, "pcm", "Lossless (PCM; SFUs by data channel)")
     baseline(e, "opus-20", "Needletail FLAC (beside 20 ms Opus on the SFUs)")
+    joins(e, "opus-2.5")
+    joins(e, "pcm")
     impair(e, "opus-2.5")
     impair(e, "pcm")
     fanout(e, "opus-2.5")
