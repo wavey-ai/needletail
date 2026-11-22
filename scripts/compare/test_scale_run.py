@@ -270,11 +270,25 @@ class Sampler(unittest.TestCase):
         self.assertEqual(scale.summarize_samples({}, nic, node_type="g6-dedicated-2")
                          ["saturated_by"], "nic_out")
         self.assertIsNone(scale.summarize_samples({}, nic)["saturated_at"])
-        # The tool's own verdict.
-        intervals = [{"saturated": True, "reasons": ["recv lag p99 9 ms"]}]
-        self.assertEqual(scale.load_saturated([row(1, 0.1)], intervals),
-                         "needletail-load: recv lag p99 9 ms")
-        self.assertIsNone(scale.load_saturated([row(1, 0.1)], [{"saturated": False}]))
+        # The tool's own verdict, held for three intervals (its rows of one
+        # interval, per edge and in total, are one verdict).
+        def line(t, saturated, edge=None):
+            return {"t": t, "edge": edge, "saturated": saturated,
+                    "reasons": ["receive-lag"] if saturated else []}
+        held = [line(t, True, edge) for t in (1, 2, 3) for edge in ("a", None)]
+        self.assertEqual(scale.load_saturated([row(1, 0.1)], held),
+                         "needletail-load: receive-lag for 3 intervals")
+        self.assertIsNone(scale.load_saturated([row(1, 0.1)], [line(1, False)]))
+        # One interval's verdict (listeners joining, a few drops) is not.
+        once = [line(1, False), line(2, True), line(2, True, "a"), line(3, False)]
+        self.assertIsNone(scale.load_saturated([row(1, 0.1)], once))
+        self.assertIsNone(scale.load_saturated_at(once))
+        # In the step's window only, the final line after the drain aside.
+        late = [line(t, t >= 20) for t in range(10, 30)]
+        self.assertEqual(scale.load_saturated_at(late, 10, 30), 20)
+        self.assertIsNone(scale.load_saturated_at(late, 10, 21))
+        self.assertIsNone(scale.load_saturated_at(
+            [line(1, True), line(2, True), {**line(3, True), "phase": "final"}]))
 
 
 def block(listeners, parts, missing, buckets, ttfp_buckets, p50, p99):
@@ -504,6 +518,66 @@ class Analysis(unittest.TestCase):
         self.assertIn("| 100 | london | 1 | 4 |", text)
         self.assertIn("edge (tok-edge-3, cpu)", text)
         self.assertIn("| 100 | 0.0065 | 0.5 | 0.0315 | 2 |", text)
+
+    def test_a_saturated_load_host_is_not_an_edge_that_gave_out(self):
+        state = lab()
+        step = scale.plan_steps(state, [100], "pcm-1", standby=STANDBY)["steps"][0]
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        t0 = 1_763_800_000.0
+        edge = scale.regions_of(state, STANDBY)["london"]["edges"][0]
+        address = f"{edge['vlan_ipv4']}:19446"
+
+        def write(host, saturated_from, missing):
+            udp = tmp / host / "udp"
+            udp.mkdir(parents=True)
+            lines = []
+            for i in range(30):
+                saturated = saturated_from is not None and i >= saturated_from
+                lines.append(json.dumps({
+                    "schema": "needletail.load.interval.v1", "phase": "run", "t": i + 1.0,
+                    "unix_ms": int((t0 + i) * 1000), "load_host_saturated": saturated,
+                    "total": {"up": 10, "active": 10, "parts": 10_000,
+                              "missing": missing if saturated else 0},
+                    "edges": {address: {"up": 10, "active": 10, "parts": 10_000,
+                                        "missing": missing if saturated else 0}},
+                    "load_host": {"saturation": ["nic-drops"] if saturated else []}}))
+            (udp / "intervals.jsonl").write_text("\n".join(lines) + "\n")
+            # needletail-load's summary as it writes it.
+            (udp / "summary.json").write_text(json.dumps({
+                "schema": "needletail.load.v1", "peak_listeners": 10, "peak_subscribed": 10,
+                "total": {"listeners_started": 10, "parts": 300_000, "missing": 0},
+                "per_edge": {address: {"listeners_started": 10, "parts": 300_000,
+                                       "missing": 0}}}))
+
+        # lon-load-1 drops a fifth of its parts from t0 + 12 on (its NIC);
+        # lon-load-2, on the same edge, misses nothing.
+        write("lon-load-1", 12, 2_000)
+        write("lon-load-2", None, 0)
+        result = scale.analyse_step(state, tmp, step, (t0 + 5, t0 + 28))
+        first = result["gave_out_first"]
+        self.assertEqual((first["tier"], first["node"], first["reason"]),
+                         ("load", "lon-load-1", "load_tool_saturated"))
+        self.assertEqual(first["t"], t0 + 12)
+        self.assertNotIn("listeners_missing_parts",
+                         [item["reason"] for item in first["others"]])
+        # The listeners of the region and of the edge, from the summaries.
+        self.assertEqual(result["regions"]["london"]["udp"]["listeners"], 20)
+        self.assertEqual(result["regions"]["london"]["edges"][edge["name"]]["listeners"], 20)
+        # The same misses from a host that kept up are the edge's.
+        shutil.rmtree(tmp / "lon-load-1")
+        shutil.rmtree(tmp / "lon-load-2")
+        write("lon-load-1", None, 0)
+        write("lon-load-2", None, 0)
+        rows = (tmp / "lon-load-2" / "udp" / "intervals.jsonl").read_text().splitlines()
+        rows = [json.loads(line) for line in rows]
+        for line in rows[12:]:
+            line["edges"][address]["missing"] = 2_000
+        (tmp / "lon-load-2" / "udp" / "intervals.jsonl").write_text(
+            "\n".join(json.dumps(line) for line in rows) + "\n")
+        first = scale.analyse_step(state, tmp, step, (t0 + 5, t0 + 28))["gave_out_first"]
+        self.assertEqual((first["tier"], first["node"], first["reason"]),
+                         ("edge", edge["name"], "listeners_missing_parts"))
 
     def test_counter_delta(self):
         self.assertEqual(scale.counter_delta({"e": {"parts": 5, "fast_lane": None}},

@@ -859,8 +859,9 @@ def timing(block: dict, *names: str) -> tuple[dict | None, dict | None]:
 def summary_blocks(summary: dict) -> tuple[dict, dict]:
     """(total, {edge: block}) of the load tool's summary JSON."""
     total = dict(pick(summary, "total", "all", default=summary) or {})
-    if "listeners_peak" in summary and not any(key in total for key in ("listeners", "up")):
-        total["listeners"] = summary["listeners_peak"]
+    peak = pick(summary, "listeners_peak", "peak_subscribed")
+    if peak is not None and not any(key in total for key in ("listeners", "up")):
+        total["listeners"] = peak
     edges = pick(summary, "per_edge", "edges", default={}) or {}
     if isinstance(edges, list):
         edges = {pick(item, "edge", "addr"): item for item in edges if isinstance(item, dict)}
@@ -879,7 +880,7 @@ def block_view(block: dict) -> dict:
     if missing_pct is None and parts + missing:
         missing_pct = 100.0 * missing / (parts + missing)
     return {"listeners": pick(block, "listeners", "up", "listeners_up", "listeners_peak",
-                              "listeners_max", "active"),
+                              "listeners_max", "active", "listeners_started"),
             "latency_ms": latency, "histogram": histogram,
             "ttfp_ms": ttfp, "ttfp_histogram": ttfp_histogram,
             "parts": parts, "missing": missing,
@@ -1026,11 +1027,35 @@ def load_saturated(rows: list[dict], intervals: list[dict],
                                  for row in tail):
         return (f"{sum(row['udp'].get('RcvbufErrors', 0) for row in tail)} UDP receive-buffer "
                 f"drops in {hold} s")
-    flagged = [row for row in intervals if row.get("saturated")]
-    if flagged:
-        reasons = flagged[-1].get("reasons") or []
-        return "needletail-load: " + (", ".join(map(str, reasons)) or "saturated")
+    lines = interval_lines(intervals)[-hold:]
+    if len(lines) >= hold and all(line["saturated"] for line in lines):
+        reasons = lines[-1].get("reasons") or []
+        return (f"needletail-load: {', '.join(map(str, reasons)) or 'saturated'} "
+                f"for {hold} intervals")
     return None
+
+
+def interval_lines(rows: list[dict], since: float | None = None,
+                   until: float | None = None) -> list[dict]:
+    """One row per interval of the load tool (its rows share the interval's
+    verdict), in time order, the final line after the drain left out."""
+    by_t: dict[float, dict] = {}
+    for row in rows:
+        if row.get("phase") == "final":
+            continue
+        if (since is not None and row["t"] < since) or (until is not None and row["t"] > until):
+            continue
+        by_t.setdefault(row["t"], row)
+    return [by_t[t] for t in sorted(by_t)]
+
+
+def load_saturated_at(rows: list[dict], since: float | None = None, until: float | None = None,
+                      hold: int = SATURATION_HOLD) -> float | None:
+    """When needletail-load first said its host was saturated for `hold`
+    intervals in a row within the step's window: one interval's verdict (a
+    few drops, a late timer while listeners join) is not the host giving
+    out."""
+    return first_held(interval_lines(rows, since, until), lambda line: line["saturated"], hold)
 
 
 def edge_name_of(address: str | None, state: dict) -> str | None:
@@ -1125,7 +1150,7 @@ def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: t
             intervals_path = host_dir / LOAD_DIR / "intervals.jsonl"
             if intervals_path.is_file():
                 rows = interval_rows(read_jsonl(intervals_path.read_text()))
-                load_events[host] = next((row["t"] for row in rows if row["saturated"]), None)
+                load_events[host] = load_saturated_at(rows, since, until)
                 for row in rows:
                     if row["edge"] is not None:
                         name = edge_name_of(row["edge"], state) or str(row["edge"])
@@ -1148,9 +1173,12 @@ def analyse_step(state: dict, step_dir: pathlib.Path, plan_step: dict, window: t
         for t in sorted(by_t):
             group = by_t[t]
             listeners = max(listeners, sum(row["listeners"] for row in group))
-            parts = sum(row["parts"] for row in group)
-            missing = sum(row["missing"] for row in group)
-            if (first_bad is None and parts + missing and t >= since
+            # The parts that a saturated load host missed are its own, not
+            # the edge's: only the hosts that kept up judge the edge.
+            judged = [row for row in group if not row["saturated"]]
+            parts = sum(row["parts"] for row in judged)
+            missing = sum(row["missing"] for row in judged)
+            if (first_bad is None and parts + missing and since <= t <= until
                     and not any(row["phase"] == "final" for row in group)
                     and missing / (parts + missing) > MISSING_GAVE_OUT):
                 first_bad = float(t)
