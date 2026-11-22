@@ -37,14 +37,38 @@ started with --hop-journal-capacity sized to the run and its part rate
 (--journal-capacity overrides); summary.txt warns when a node's ring was
 full or its journal starts late in the window.
 
+4K at a chosen rate (wave 5 W3: how far past 164 Mbit/s a 4K stream crosses
+contributor -> forwarder -> remote forwarder -> edge -> viewer with no frame
+late). --video runs the lab's clip (16.5 Mbit/s) under the audio, as before.
+  --video-clip NAME|PATH    a clip of ~/media/4k-encodes by name (bbb60-25m,
+                            crowd50-25m, crowd50-40m, ...) or a path
+  --video-mbps R            a synthetic 4K source at R Mbit/s (3840x2160 at
+                            --video-fps, noise so that the encoder spends the
+                            rate), encoded once into target/latency-bench/media
+                            (--video-clip-seconds long, looped)
+With either, each reader host also runs --video-readers ntcmp HLS readers of
+the 4K stream (HTTP/3, --video-window parts in flight) and --video-udp-clients
+needletail-udp-client viewers, every node's CPU, throttling and UDP drops are
+sampled each second, and summary.txt and hops.json ("video") report per
+region: frames expected (part numbers: one frame per part), received,
+missing, late and on time, the publish-to-viewer latency, and the 4K hop
+journal (stream 1). A frame is late when it completes more than
+--frame-deadline-ms after its reader's fastest frame (a player's jitter
+buffer of that much over the path). The UDP client reports no per-part
+times: it is whole when it misses no part and its latency tail (max - p50)
+is within the deadline.
+e.g. latency-bench.py --name 4k-200 --video-mbps 200 --seconds 40
+
 --dry-run prints the plan (every command) and touches nothing.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
+import os
 import pathlib
 import shlex
 import signal
@@ -94,6 +118,17 @@ JOURNAL_EVENTS_PER_PART = 10
 JOURNAL_MARGIN_SECONDS = 60
 JOURNAL_FLAG = "--hop-journal-capacity"
 SENDER_STOP_SECONDS = 5
+# 4K (wave 5 W3).
+VIDEO_STREAM = lab.VIDEO_STREAM
+CLIPS = lab.VIDEO_CLIP.parent
+UDP_CLIENT = pathlib.Path(os.environ.get(
+    "NEEDLETAIL_UDP_CLIENT_BIN", str(lab.MESH_ROOT / "target" / "release" / "needletail-udp-client")))
+VIDEO_FPS = 50
+VIDEO_CLIP_SECONDS = 10
+VIDEO_WINDOW = 40
+FRAME_DEADLINE_MS = 100.0
+# The clip's rate and frame rate are measured on its first seconds.
+PROBE_SECONDS = 10
 
 
 def log(text: str) -> None:
@@ -145,6 +180,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pcm", default=str(lab.AUDIO_PCM),
                         help="stereo s24le PCM; its first 64 s are the loop")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; run nothing")
+    video = parser.add_argument_group("4K at a chosen rate (implies --video)")
+    source = video.add_mutually_exclusive_group()
+    source.add_argument("--video-clip", metavar="NAME|PATH",
+                        help=f"a clip of {CLIPS} by name (bbb60-25m, crowd50-40m, ...) or a path")
+    source.add_argument("--video-mbps", type=float, metavar="R",
+                        help="a synthetic 4K source at R Mbit/s, encoded once with ffmpeg")
+    video.add_argument("--video-fps", type=int, default=VIDEO_FPS,
+                       help="frame rate of the synthetic source (default %(default)s)")
+    video.add_argument("--video-clip-seconds", type=int, default=VIDEO_CLIP_SECONDS,
+                       help="length of the synthetic clip, looped (default %(default)s)")
+    video.add_argument("--video-readers", type=int, default=None, metavar="N",
+                       help="4K HLS readers (ntcmp, HTTP/3) on each reader host (default 1 with "
+                            "--video-clip or --video-mbps, else 0)")
+    video.add_argument("--video-udp-clients", type=int, default=None, metavar="N",
+                       help="4K needletail-udp-client viewers on each reader host (default as "
+                            "--video-readers)")
+    video.add_argument("--video-window", type=int, default=VIDEO_WINDOW,
+                       help="parts in flight of the 4K readers (default %(default)s)")
+    video.add_argument("--frame-deadline-ms", type=float, default=FRAME_DEADLINE_MS,
+                       help="a frame is late when it completes more than this after its "
+                            "reader's fastest frame (default %(default)g)")
+    video.add_argument("--udp-client", default=str(UDP_CLIENT), help="needletail-udp-client")
     return parser
 
 
@@ -198,7 +255,11 @@ def journal_capacity(args) -> int:
     """Events that every node's hop journal keeps in this run."""
     if args.journal_capacity is not None:
         return args.journal_capacity
-    rate = JOURNAL_EVENTS_PER_PART * parts_per_second(epoch_samples(args))
+    parts = parts_per_second(epoch_samples(args))
+    if video_measured(args):
+        # The 4K stream's parts (one a frame) share the ring.
+        parts += args.video_fps if args.video_mbps else 60
+    rate = JOURNAL_EVENTS_PER_PART * parts
     return max(JOURNAL_DEFAULT, int(rate * (args.seconds + JOURNAL_MARGIN_SECONDS)))
 
 
@@ -285,6 +346,288 @@ def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
     return readers
 
 
+# ------------------------------------------------------------------ 4K
+
+def video_measured(args) -> bool:
+    """Whether this run measures 4K (a clip or a rate was chosen)."""
+    return bool(args.video_clip or args.video_mbps)
+
+
+def video_viewers(args) -> dict[str, int]:
+    """4K viewers of each kind on each reader host."""
+    default = 1 if video_measured(args) else 0
+    readers = default if args.video_readers is None else args.video_readers
+    clients = default if args.video_udp_clients is None else args.video_udp_clients
+    return {"readers": readers, "udp_clients": clients}
+
+
+def synthetic_clip(mbps: float, fps: int, seconds: int) -> pathlib.Path:
+    return MEDIA / f"synthetic-4k-{mbps:g}m-{fps}fps-{seconds}s.ts"
+
+
+def synthetic_command(path: pathlib.Path, mbps: float, fps: int, seconds: int) -> list[str]:
+    """ffmpeg that encodes the synthetic 4K clip: a test pattern under
+    temporal noise, so that H.264 needs the whole rate (constrained to it:
+    VBV of one second), a two-second closed GOP of P frames as the lab
+    encodes have, and the AAC track that the lab's source maps."""
+    rate = f"{mbps:g}M"
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-f", "lavfi", "-i", f"testsrc2=size=3840x2160:rate={fps}",
+            "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+            "-t", str(seconds), "-vf", "noise=alls=40:allf=t+u",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0",
+            "-g", str(2 * fps), "-keyint_min", str(2 * fps), "-sc_threshold", "0",
+            "-b:v", rate, "-maxrate", rate, "-bufsize", rate, "-x264-params", "nal-hrd=vbr",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+            "-f", "mpegts", str(path) + ".part"]
+
+
+def video_source(args) -> dict | None:
+    """The 4K source of the run: the lab's clip (--video), a named clip, or
+    a synthetic one; None without video."""
+    if args.video_mbps is not None:
+        if args.video_mbps <= 0:
+            raise SystemExit("--video-mbps is more than 0")
+        path = synthetic_clip(args.video_mbps, args.video_fps, args.video_clip_seconds)
+        return {"label": f"synthetic {args.video_mbps:g} Mbit/s {args.video_fps} fps",
+                "path": str(path), "synthetic": True, "nominal_mbps": args.video_mbps,
+                "fps": args.video_fps,
+                "prepare": synthetic_command(path, args.video_mbps, args.video_fps,
+                                             args.video_clip_seconds)}
+    if args.video_clip:
+        given = pathlib.Path(args.video_clip).expanduser()
+        path = given if given.suffix or given.is_file() else CLIPS / f"{args.video_clip}.ts"
+        return {"label": path.stem, "path": str(path), "synthetic": False}
+    if args.video:
+        return {"label": lab.VIDEO_CLIP.stem, "path": str(lab.VIDEO_CLIP), "synthetic": False}
+    return None
+
+
+def prepare_video(item: dict | None) -> dict | None:
+    """Encode the synthetic clip if it is not there, check that the clip
+    exists, and measure its video rate and frame rate (ffprobe, the first
+    PROBE_SECONDS)."""
+    if item is None:
+        return None
+    path = pathlib.Path(item["path"])
+    if item.get("synthetic") and not path.is_file():
+        MEDIA.mkdir(parents=True, exist_ok=True)
+        log(f"encoding the synthetic 4K clip {path.name}")
+        subprocess.run(["nice", "-n", "10", *item["prepare"]], check=True)
+        pathlib.Path(str(path) + ".part").replace(path)
+    if not path.is_file():
+        raise SystemExit(f"no 4K clip at {path} (clips: {', '.join(sorted(p.stem for p in CLIPS.glob('*.ts')))})")
+    item.update(probe_clip(path))
+    return item
+
+
+def probe_clip(path: pathlib.Path) -> dict:
+    """Video Mbit/s and frames a second of a clip's first PROBE_SECONDS."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals",
+             f"%+{PROBE_SECONDS}", "-show_entries", "packet=pts_time,size", "-of", "csv=p=0",
+             str(path)], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return clip_rate(result.stdout)
+
+
+def clip_rate(text: str) -> dict:
+    """{"video_mbps", "fps"} from ffprobe's packet lines, `pts_time,size,`
+    (ffprobe writes a packet's fields in its own order: time, then size)."""
+    sizes, times = [], []
+    for line in text.splitlines():
+        fields = line.strip().split(",")
+        try:
+            time_s, size = float(fields[0]), int(fields[1])
+        except (IndexError, ValueError):
+            continue
+        times.append(time_s)
+        sizes.append(size)
+    if len(times) < 2 or max(times) <= min(times):
+        return {}
+    span = (max(times) - min(times)) * len(times) / (len(times) - 1)
+    return {"video_mbps": round(sum(sizes) * 8 / span / 1e6, 2), "fps": round(len(times) / span, 2)}
+
+
+def video_commands(args, out: pathlib.Path) -> list[dict]:
+    """The 4K viewers on each reader host, through the first distributor of
+    the host's site: ntcmp HLS readers (HTTP/3, chase, --video-window parts
+    in flight, every frame's record with the server timing headers) and
+    needletail-udp-client viewers (its JSON report on standard output)."""
+    viewers = video_viewers(args)
+    items = []
+    for host in [item for item in args.hosts.split(",") if item]:
+        site = lab.node(host)["site"]
+        entry = lab.distributors(site)[0]
+        if viewers["readers"]:
+            stem = out / f"{host}.4k.h3"
+            items.append({"host": host, "site": site, "kind": "hls", "entry": entry,
+                          "frames": f"{stem}.frames.csv", "report": f"{stem}.report.json",
+                          "command": [
+                              args.ntcmp, "hls", "--lane", "nt-4k-h3", "--mode", "chase",
+                              "--window", str(args.video_window), "--http3",
+                              "--url", f"{lab.base_url(entry)}/live/{VIDEO_STREAM}/master.m3u8"
+                                       f"?sid=bench-{args.name}-{host}-4k-{{i}}",
+                              "--ca", lab.ca_file(), "--server-name", lab.SERVER_NAME,
+                              "--duration", str(args.seconds), "--skip-seconds", str(SKIP_SECONDS),
+                              "--label", f"{args.name}-{host}-4k", "--count", str(viewers["readers"]),
+                              "--report", f"{stem}.report.json", "--frames", f"{stem}.frames.csv"]})
+        for index in range(viewers["udp_clients"]):
+            items.append({"host": host, "site": site, "kind": "udp", "entry": entry,
+                          "report": str(out / f"{host}.4k.udp{index}.json"),
+                          "command": [
+                              args.udp_client, "--entry", lab.base_url(entry),
+                              "--stream", str(VIDEO_STREAM), "--tls-ca", lab.ca_file(),
+                              "--server-name", lab.SERVER_NAME,
+                              "--duration-seconds", str(args.seconds),
+                              "--session", f"bench-{args.name}-{host}-udp-{index}"]})
+    return items
+
+
+def read_frames(path: pathlib.Path, since_us: int | None = None,
+                until_us: int | None = None) -> dict[int, tuple[int, int]]:
+    """{part: (complete_us, published_us)} of the video rows of an ntcmp
+    record (the earliest completion of each part), inside the window."""
+    parts: dict[int, tuple[int, int]] = {}
+    try:
+        handle = path.open()
+    except OSError:
+        return parts
+    with handle:
+        for row in csv.DictReader(handle):
+            if row.get("kind") != "v":
+                continue
+            try:
+                part = int((row.get("part") or "").strip())
+                complete = int(row["complete_unix_us"])
+                published = int((row.get("published_unix_us") or "0").strip() or 0)
+            except (KeyError, ValueError):
+                continue
+            if published <= 0:
+                continue
+            if (since_us is not None and complete < since_us) or \
+                    (until_us is not None and complete > until_us):
+                continue
+            if part not in parts or complete < parts[part][0]:
+                parts[part] = (complete, published)
+    return parts
+
+
+def frame_verdict(parts: dict[int, tuple[int, int]], deadline_ms: float) -> dict:
+    """Frames of one 4K reader (one frame per part): expected from the part
+    numbers it saw, received, missing, late (more than deadline_ms after
+    its fastest frame's publish-to-viewer time) and on time."""
+    if not parts:
+        return {"expected": 0, "received": 0, "missing": 0, "late": 0, "on_time": 0,
+                "on_time_fraction": None, "latency_ms": None}
+    latency = {part: (complete - published) / 1000 for part, (complete, published) in parts.items()}
+    floor = min(latency.values())
+    expected = max(parts) - min(parts) + 1
+    late = sum(1 for value in latency.values() if value > floor + deadline_ms)
+    on_time = len(parts) - late
+    return {"expected": expected, "received": len(parts), "missing": expected - len(parts),
+            "late": late, "on_time": on_time, "on_time_fraction": round(on_time / expected, 4),
+            "floor_ms": round(floor, 3), "latency_ms": hops.distribution(list(latency.values()))}
+
+
+def udp_verdict(report: dict | None, deadline_ms: float) -> dict:
+    """What a needletail-udp-client report says of its 4K parts: whole when
+    it missed none and its publish-to-arrival tail (max - p50) is within
+    deadline_ms. It records no per-part times, so late frames are not
+    counted one by one."""
+    if not report:
+        return {"error": "no report"}
+    latency = report.get("publish_to_arrival_ms") or {}
+    tail = (latency.get("max", 0) - latency.get("p50", 0)) if latency.get("count") else None
+    missing = report.get("missing_parts")
+    return {"expected": report.get("expected_parts"), "received": report.get("received_parts"),
+            "missing": missing, "fast_lane_parts": report.get("fast_lane_parts"),
+            "cache_lane_parts": report.get("cache_lane_parts"),
+            "moves": len(report.get("moves") or []),
+            "latency_ms": {key: latency.get(key) for key in ("count", "p50", "p95", "p99", "max")},
+            "tail_ms": None if tail is None else round(tail, 3),
+            "whole": bool(missing == 0 and tail is not None and tail <= deadline_ms)}
+
+
+def video_report(items: list[dict], deadline_ms: float, since_us: int | None,
+                 until_us: int | None) -> dict:
+    """Per region: every 4K viewer's verdict and the region's frames."""
+    regions: dict[str, dict] = {}
+    for item in items:
+        region = regions.setdefault(item["site"], {"readers": [], "udp_clients": []})
+        if item["kind"] == "hls":
+            base = pathlib.Path(item["frames"])
+            files = sorted(base.parent.glob(base.stem + "*" + base.suffix))
+            for path in files:
+                verdict = frame_verdict(read_frames(path, since_us, until_us), deadline_ms)
+                region["readers"].append({"host": item["host"], "record": path.name, **verdict})
+        else:
+            try:
+                report = json.loads(pathlib.Path(item["report"]).read_text())
+            except (OSError, ValueError):
+                report = None
+            region["udp_clients"].append({"host": item["host"],
+                                          "report": pathlib.Path(item["report"]).name,
+                                          **udp_verdict(report, deadline_ms)})
+    for region in regions.values():
+        readers = region["readers"]
+        expected = sum(item["expected"] for item in readers)
+        on_time = sum(item["on_time"] for item in readers)
+        region["frames"] = {
+            "expected": expected, "received": sum(item["received"] for item in readers),
+            "missing": sum(item["missing"] for item in readers),
+            "late": sum(item["late"] for item in readers), "on_time": on_time,
+            "on_time_fraction": round(on_time / expected, 4) if expected else None}
+        region["all_on_time"] = bool(readers or region["udp_clients"]) and all(
+            item["expected"] and item["on_time"] == item["expected"] for item in readers) and all(
+            item.get("whole") for item in region["udp_clients"])
+    return regions
+
+
+def video_summary_lines(source: dict | None, regions: dict, deadline_ms: float) -> list[str]:
+    if source is None:
+        return []
+    rate = (f"{source['video_mbps']:g} Mbit/s, {source['fps']:g} fps measured"
+            if source.get("video_mbps") else "rate not measured")
+    lines = ["", f"4K: {source['label']} ({rate}); late = more than {deadline_ms:g} ms after the "
+                 "reader's fastest frame"]
+    for site, region in sorted(regions.items()):
+        frames = region["frames"]
+        share = frames["on_time_fraction"]
+        lines.append(f"  {site}: frames expected {frames['expected']} received {frames['received']} "
+                     f"missing {frames['missing']} late {frames['late']} on time "
+                     f"{'-' if share is None else f'{share * 100:.2f}%'}; all on time: "
+                     f"{'yes' if region['all_on_time'] else 'NO'}")
+        for item in region["readers"]:
+            latency = item.get("latency_ms") or {}
+            lines.append(f"    hls {item['record']:<34} {item['received']}/{item['expected']} "
+                         f"late {item['late']}  publish->viewer p50 {latency.get('p50')} "
+                         f"p99 {latency.get('p99')} max {latency.get('max')} ms")
+        for item in region["udp_clients"]:
+            latency = item.get("latency_ms") or {}
+            lines.append(f"    udp {item['report']:<34} {item.get('received')}/{item.get('expected')} "
+                         f"missing {item.get('missing')} fast-lane {item.get('fast_lane_parts')}  "
+                         f"publish->arrival p50 {latency.get('p50')} p99 {latency.get('p99')} "
+                         f"max {latency.get('max')} ms; whole: {'yes' if item.get('whole') else 'NO'}"
+                         + (f" ({item['error']})" if item.get("error") else ""))
+    return lines
+
+
+def node_summary_lines(nodes: dict | None) -> list[str]:
+    if not nodes:
+        return []
+    lines = ["", "nodes (CPU % of one CPU: mean p95 max; throttled ms; UDP receive-buffer drops)"]
+    for name, item in sorted(nodes.items()):
+        if item.get("cpu_percent_mean") is None:
+            continue
+        lines.append(f"  {name:<16} {item['cpu_percent_mean']:>6} {item['cpu_percent_p95']:>6} "
+                     f"{item['cpu_percent_max']:>6}  throttled {item.get('throttled_ms')}  "
+                     f"rcvbuf drops {item.get('udp_rcvbuf_errors')}")
+    return lines
+
+
 def reader_netem(args) -> str | None:
     if args.reader_netem:
         return args.reader_netem
@@ -325,6 +668,9 @@ def plan(args) -> dict:
         "loop_start_unix": start,
         "sender": {"namespace": "contrib-lon", "command": sender_command(args, start, loop_file)},
         "readers": reader_commands(args, out, index),
+        "video": {"source": video_source(args), "viewers": video_commands(args, out),
+                  "frame_deadline_ms": args.frame_deadline_ms,
+                  "sample_nodes": video_measured(args)},
         "reader_netem": reader_netem(args),
         "hops": {"stream": PAYLOAD_STREAM[args.payload], "source_start_ns": start * 1_000_000_000,
                  "skip_seconds": SKIP_SECONDS,
@@ -373,21 +719,28 @@ def journal_full(events: list[dict], capacity: int | None) -> list[str]:
 def run(args, steps: dict) -> int:
     out = pathlib.Path(steps["out"])
     out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("*.probe*"):
-        old.unlink()
+    for old in [*out.glob("*.probe*"), *out.glob("*.4k.*"), out / "nodes.ndjson"]:
+        old.unlink(missing_ok=True)
     # The sender's summary of this run is read from its log.
     (out / "sender.log").unlink(missing_ok=True)
     (out / "plan.json").write_text(json.dumps(steps, indent=1) + "\n")
     if not pathlib.Path(args.ntcmp).is_file():
         raise SystemExit(f"{args.ntcmp} is missing: build it with scripts/compare/gobuild.sh")
     prepare_media(steps["media"])
+    video = steps["video"]
+    video["source"] = prepare_video(video["source"])
+    if (any(item["kind"] == "udp" for item in video["viewers"])
+            and not pathlib.Path(args.udp_client).is_file()):
+        raise SystemExit(f"{args.udp_client} is missing: build av-mesh's needletail-udp-client "
+                         "or give --video-udp-clients 0")
+    (out / "plan.json").write_text(json.dumps(steps, indent=1) + "\n")
     if steps["lab_up"] is None and not lab.load("services.json"):
         raise SystemExit("--no-up: the lab is not running")
     try:
         if steps["lab_up"] is not None:
             log(f"lab up: {' '.join(steps['lab_up'])}")
             lab.up(steps["lab_up"])
-        nodes, events, since_us, ended_us = measure(args, steps, out)
+        nodes, events, since_us, ended_us, measured = measure(args, steps, out)
     finally:
         if not args.keep_up and steps["lab_up"] is not None:
             lab.down(quiet=True)
@@ -412,7 +765,17 @@ def run(args, steps: dict) -> int:
                        "reader_commands": [item["command"] for item in steps["readers"]],
                        "readers": summaries, "window_us": [since_us, ended_us],
                        "journal_full": full, "sender": sender_digest(summary),
-                       "epoch_note": epoch_note}
+                       "epoch_note": epoch_note, "nodes": measured.get("nodes")}
+    regions = {}
+    if video["source"] is not None and video["viewers"]:
+        regions = video_report(video["viewers"], video["frame_deadline_ms"], since_us, ended_us)
+        video_nodes, video_events = measured.get("video_journal") or ({}, [])
+        result["video"] = {
+            "source": video["source"], "frame_deadline_ms": video["frame_deadline_ms"],
+            "regions": regions,
+            # The 4K stream's hops (no source clock: from the contributor on).
+            "hops": hops.analyse(video_nodes, video_events, [], VIDEO_STREAM, None,
+                                 since_us=since_us, until_us=ended_us)}
     (out / "hops.json").write_text(json.dumps(result, indent=1) + "\n")
     lines = [f"latency bench {args.name}: {args.seconds} s, {args.readers} reader(s) of each kind "
              f"on {args.hosts}",
@@ -434,7 +797,12 @@ def run(args, steps: dict) -> int:
                      f"latency p50 {latency.get('p50')} p95 {latency.get('p95')} "
                      f"p99 {latency.get('p99')} max {latency.get('max')}"
                      + (f" error {item['error']}" if item.get("error") else ""))
+    lines += video_summary_lines(video["source"] if regions else None, regions,
+                                 video["frame_deadline_ms"])
+    lines += node_summary_lines(measured.get("nodes"))
     text = "\n".join(lines) + "\n\n" + hops.format_summary(result)
+    if "video" in result:
+        text += "\n4K hops (stream 1):\n" + hops.format_summary(result["video"]["hops"])
     (out / "summary.txt").write_text(text)
     print(text, end="")
     return 0
@@ -483,36 +851,57 @@ def sender_mismatch(steps: dict, summary: dict | None) -> str | None:
     return None
 
 
-def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int, int]:
+def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int, int, dict]:
     """Send, listen and collect the journals. Returns the nodes, their
-    events and the window of the readers' steady state."""
+    events, the window of the readers' steady state, and what the 4K run
+    measured besides ({"nodes": the sampler's summary, "video_journal":
+    (nodes, events) of the 4K stream})."""
     # The loop start is fixed now that the lab is up.
     start = loop_start(time.time())
     steps["loop_start_unix"] = start
     steps["hops"]["source_start_ns"] = start * 1_000_000_000
     steps["sender"]["command"] = sender_command(args, start, steps["media"]["loop"])
     sender_log = open(out / "sender.log", "ab")
-    if args.video:
-        lab.start_sources(args.seconds + 120, video=True, audio=None)
+    video = steps["video"]
+    measured: dict = {}
+    if video["source"] is not None:
+        lab.start_sources(args.seconds + 120, video=True, audio=None,
+                          clip=pathlib.Path(video["source"]["path"]))
     sender = subprocess.Popen(lab.enter("contrib-lon") + steps["sender"]["command"], stdout=sender_log,
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")
     sources["bench-sender"] = sender.pid
     lab.save("sources.json", sources)
-    readers, shaped = [], []
+    readers, shaped, handles = [], [], [sender_log]
+    sampler = None
     try:
         log(f"sender starts at {start} ({start - time.time():.1f} s)")
         time.sleep(max(0.0, start - time.time()))
         for site in sorted({item["site"] for item in steps["readers"]}):
             lab.wait_live(steps["hops"]["stream"], site, timeout=60)
+        if video["viewers"]:
+            for site in sorted({item["site"] for item in video["viewers"]}):
+                lab.wait_live(VIDEO_STREAM, site, timeout=60)
         if steps["reader_netem"]:
-            for host in sorted({item["host"] for item in steps["readers"]}):
+            for host in sorted({item["host"] for item in steps["readers"] + video["viewers"]}):
                 shaped.append(host)
                 lab.set_net(host, "pub", "both", steps["reader_netem"])
+        if video["sample_nodes"]:
+            sampler = lab.Sampler(out / "nodes.ndjson").start()
         began_us = time.time_ns() // 1000
         for item in steps["readers"]:
             handle = open(out / f"{item['host']}.{item['lane']}.log", "ab")
+            handles.append(handle)
             readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=handle,
+                                            stderr=handle, stdin=subprocess.DEVNULL,
+                                            start_new_session=True))
+        for item in video["viewers"]:
+            # A UDP client's report is its standard output; ntcmp's go to files.
+            log_path = pathlib.Path(item["report"]).with_suffix(".log")
+            handle = open(log_path, "ab")
+            stdout = open(item["report"], "wb") if item["kind"] == "udp" else handle
+            handles += [handle, stdout]
+            readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=stdout,
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
         log(f"{len(readers)} reader processes for {args.seconds} s")
@@ -523,19 +912,28 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
                 process.kill()
         ended_us = time.time_ns() // 1000
         since_us = began_us + SKIP_SECONDS * 1_000_000
+        if sampler is not None:
+            measured["nodes"] = sampler.stop()
+            sampler = None
         log("collecting the hop journals")
         nodes, events = hops.collect_edge_lab(since_us, steps["hops"]["stream"])
+        if video["viewers"]:
+            measured["video_journal"] = hops.collect_edge_lab(since_us, VIDEO_STREAM)
     finally:
+        if sampler is not None:
+            sampler.stop()
         for host in shaped:
             lab.set_net(host, "pub", "both", None)
         for process in readers:
             if process.poll() is None:
                 process.kill()
         stop_sender(sender)
+        for handle in handles:
+            handle.close()
         sources = lab.load("sources.json")
         sources.pop("bench-sender", None)
         lab.save("sources.json", sources)
-    return nodes, events, since_us, ended_us
+    return nodes, events, since_us, ended_us, measured
 
 
 def stop_sender(process: subprocess.Popen) -> None:
@@ -571,7 +969,17 @@ def main(argv: list[str] | None = None) -> int:
     for window in reader_windows(args).values():
         if not 1 <= window <= MAX_WINDOW:
             raise SystemExit("a reader window is 1 to 400 parts")
+    if not 1 <= args.video_window <= MAX_WINDOW:
+        raise SystemExit("--video-window is 1 to 400 parts")
+    if args.video_fps <= 0 or args.video_clip_seconds <= 0 or args.frame_deadline_ms <= 0:
+        raise SystemExit("--video-fps, --video-clip-seconds and --frame-deadline-ms are more than 0")
+    if any(count < 0 for count in video_viewers(args).values()):
+        raise SystemExit("--video-readers and --video-udp-clients are 0 or more")
     steps = plan(args)
+    source = steps["video"]["source"]
+    if source and not source["synthetic"] and not pathlib.Path(source["path"]).is_file():
+        raise SystemExit(f"no 4K clip at {source['path']} (clips in {CLIPS}: "
+                         f"{', '.join(sorted(path.stem for path in CLIPS.glob('*.ts'))) or 'none'})")
     if args.dry_run:
         print(json.dumps(steps, indent=1))
         return 0

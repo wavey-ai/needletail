@@ -9,8 +9,13 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("latency_bench", HERE / "latency-bench.py")
@@ -226,6 +231,289 @@ class Arguments(unittest.TestCase):
         # An explicit count wins; window 1 is still there to measure.
         self.assertEqual(bench.reader_windows(parse("--h2-window", "1"))["h2"], 1)
         self.assertEqual(bench.reader_windows(parse("--h2-window-ms", "20"))["h2"], 20)
+
+
+def frames_csv(path: pathlib.Path, rows: list[tuple[int, int, int]], audio: int = 0) -> None:
+    """An ntcmp record: video rows (part, complete_us, published_us), and
+    some audio rows that must be left out."""
+    lines = ["kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets,"
+             "published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part"]
+    for part, complete, published in rows:
+        lines.append(f"v,-1,0,{complete},{complete - 500},520000,0,1,{published},,,,{part}")
+    for index in range(audio):
+        lines.append(f"a,{index},1000,{2_000_000 + index},{index},1440,0,1,1,,,,{index}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+class Video(unittest.TestCase):
+    """4K at a chosen rate (wave 5 W3)."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def test_a_rate_or_a_clip_measures_4k_in_every_region(self):
+        plan = dry_run("--video-mbps", "200", "--seconds", "30")
+        source = plan["video"]["source"]
+        self.assertTrue(source["synthetic"])
+        self.assertTrue(source["path"].endswith("media/synthetic-4k-200m-50fps-10s.ts"))
+        prepare = source["prepare"]
+        self.assertEqual(prepare[prepare.index("-b:v") + 1], "200M")
+        self.assertEqual(prepare[prepare.index("-maxrate") + 1], "200M")
+        self.assertIn("testsrc2=size=3840x2160:rate=50", prepare)
+        self.assertTrue(plan["video"]["sample_nodes"])
+        kinds = sorted((item["host"], item["kind"]) for item in plan["video"]["viewers"])
+        self.assertEqual(kinds, [("lon-readers", "hls"), ("lon-readers", "udp"),
+                                 ("new-readers", "hls"), ("new-readers", "udp")])
+        hls = next(item for item in plan["video"]["viewers"]
+                   if item["kind"] == "hls" and item["host"] == "new-readers")["command"]
+        self.assertIn("https://10.90.2.11:19444/live/1/master.m3u8", hls[hls.index("--url") + 1])
+        self.assertIn("--http3", hls)
+        self.assertEqual(hls[hls.index("--window") + 1], "40")
+        self.assertEqual(hls[hls.index("--duration") + 1], "30")
+        self.assertNotIn("--audio-index", hls)
+        udp = next(item for item in plan["video"]["viewers"] if item["kind"] == "udp")["command"]
+        self.assertEqual(udp[udp.index("--stream") + 1], "1")
+        self.assertEqual(udp[udp.index("--entry") + 1], "https://10.90.0.11:19444")
+        # The 4K stream's parts share the journal: 50 a second more.
+        self.assertEqual(plan["hops"]["journal_capacity"], 10 * 1050 * 90)
+        # A named clip of ~/media/4k-encodes, and counts of each viewer.
+        (self.dir / "crowd50-40m.ts").write_bytes(b"")
+        with mock.patch.object(bench, "CLIPS", self.dir):
+            plan = dry_run("--video-clip", "crowd50-40m", "--video-readers", "2",
+                           "--video-udp-clients", "0", "--hosts", "lon-readers")
+        self.assertEqual(plan["video"]["source"]["path"], str(self.dir / "crowd50-40m.ts"))
+        self.assertEqual([item["kind"] for item in plan["video"]["viewers"]], ["hls"])
+        hls = plan["video"]["viewers"][0]["command"]
+        self.assertEqual(hls[hls.index("--count") + 1], "2")
+
+    def test_plain_video_keeps_the_audio_gate_as_it_was(self):
+        plan = dry_run("--video")
+        self.assertEqual(plan["video"]["source"]["path"], str(bench.lab.VIDEO_CLIP))
+        self.assertEqual(plan["video"]["viewers"], [])
+        self.assertFalse(plan["video"]["sample_nodes"])
+        self.assertEqual(plan["hops"]["journal_capacity"], 1_200_000)
+        self.assertIsNone(dry_run()["video"]["source"])
+
+    def test_bad_4k_arguments_are_refused(self):
+        for argv in (["--video-clip", "no-such-clip"], ["--video-mbps", "0"],
+                     ["--video-mbps", "80", "--video-window", "0"],
+                     ["--video-mbps", "80", "--video-readers", "-1"],
+                     ["--video-mbps", "80", "--frame-deadline-ms", "0"]):
+            with self.assertRaises(SystemExit, msg=argv), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                bench.main(["--name", "t", "--dry-run", *argv])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            parse("--video-mbps", "80", "--video-clip", "bbb60-25m")
+
+    def test_frames_on_time(self):
+        # 100 frames, 20 ms apart, 30 ms from publish to viewer; part 150
+        # is lost; part 160 takes 150 ms (late at a 100 ms deadline, on time
+        # at 200), part 170 completes before the window.
+        rows = []
+        for part in range(100, 200):
+            published = 1_000_000 + part * 20_000
+            if part == 150:
+                continue
+            latency = 150_000 if part == 160 else 30_000
+            rows.append((part, published + latency, published))
+        rows.append((120, 1_000_000 + 120 * 20_000 + 90_000, 1_000_000 + 120 * 20_000))  # a repeat
+        path = self.dir / "lon-readers.4k.h3.frames.csv"
+        frames_csv(path, rows, audio=5)
+        parts = bench.read_frames(path)
+        self.assertEqual(len(parts), 99)
+        self.assertEqual(parts[120][0] - parts[120][1], 30_000)    # the earliest completion
+        verdict = bench.frame_verdict(parts, 100.0)
+        self.assertEqual((verdict["expected"], verdict["received"], verdict["missing"]), (100, 99, 1))
+        self.assertEqual((verdict["late"], verdict["on_time"]), (1, 98))
+        self.assertEqual(verdict["on_time_fraction"], 0.98)
+        self.assertEqual(verdict["floor_ms"], 30.0)
+        self.assertEqual(verdict["latency_ms"]["max"], 150.0)
+        self.assertEqual(bench.frame_verdict(parts, 200.0)["late"], 0)
+        # The window: only parts that completed inside it.
+        since = 1_000_000 + 170 * 20_000 + 29_000
+        self.assertEqual(min(bench.read_frames(path, since_us=since)), 170)
+        self.assertEqual(bench.frame_verdict({}, 100.0)["on_time_fraction"], None)
+
+    def test_udp_viewers(self):
+        report = {"expected_parts": 500, "received_parts": 500, "missing_parts": 0,
+                  "fast_lane_parts": 498, "cache_lane_parts": 2, "moves": [],
+                  "publish_to_arrival_ms": {"count": 500, "p50": 3.1, "p95": 4.0, "p99": 6.0,
+                                            "max": 40.0}}
+        verdict = bench.udp_verdict(report, 100.0)
+        self.assertTrue(verdict["whole"])
+        self.assertEqual(verdict["tail_ms"], 36.9)
+        self.assertFalse(bench.udp_verdict({**report, "missing_parts": 1}, 100.0)["whole"])
+        self.assertFalse(bench.udp_verdict(report, 30.0)["whole"])
+        self.assertEqual(bench.udp_verdict(None, 100.0), {"error": "no report"})
+
+    def test_the_report_of_every_region(self):
+        published = [1_000_000 + part * 20_000 for part in range(10)]
+        frames_csv(self.dir / "lon-readers.4k.h3.frames.csv",
+                   [(part, published[part] + 30_000, published[part]) for part in range(10)])
+        # Two readers on one host (ntcmp numbers their records); one late frame.
+        frames_csv(self.dir / "new-readers.4k.h3.frames-000.csv",
+                   [(part, published[part] + 70_000, published[part]) for part in range(10)])
+        frames_csv(self.dir / "new-readers.4k.h3.frames-001.csv",
+                   [(part, published[part] + (300_000 if part == 4 else 70_000), published[part])
+                    for part in range(10)])
+        (self.dir / "lon-readers.4k.udp0.json").write_text(json.dumps(
+            {"expected_parts": 10, "received_parts": 10, "missing_parts": 0,
+             "publish_to_arrival_ms": {"count": 10, "p50": 2.0, "max": 3.0}}))
+        items = [
+            {"host": "lon-readers", "site": "london", "kind": "hls",
+             "frames": str(self.dir / "lon-readers.4k.h3.frames.csv")},
+            {"host": "lon-readers", "site": "london", "kind": "udp",
+             "report": str(self.dir / "lon-readers.4k.udp0.json")},
+            {"host": "new-readers", "site": "newyork", "kind": "hls",
+             "frames": str(self.dir / "new-readers.4k.h3.frames.csv")},
+            {"host": "new-readers", "site": "newyork", "kind": "udp",
+             "report": str(self.dir / "new-readers.4k.udp0.json")}]
+        regions = bench.video_report(items, 100.0, None, None)
+        self.assertTrue(regions["london"]["all_on_time"])
+        self.assertEqual(regions["london"]["frames"]["on_time_fraction"], 1.0)
+        newyork = regions["newyork"]
+        self.assertEqual(len(newyork["readers"]), 2)
+        self.assertEqual(newyork["frames"], {"expected": 20, "received": 20, "missing": 0,
+                                             "late": 1, "on_time": 19, "on_time_fraction": 0.95})
+        self.assertFalse(newyork["all_on_time"])
+        self.assertEqual(newyork["udp_clients"][0]["error"], "no report")
+        source = {"label": "crowd50-40m", "video_mbps": 41.6, "fps": 50.0}
+        text = "\n".join(bench.video_summary_lines(source, regions, 100.0))
+        self.assertIn("4K: crowd50-40m (41.6 Mbit/s, 50 fps measured)", text)
+        self.assertIn("newyork: frames expected 20 received 20 missing 0 late 1 on time 95.00%; "
+                      "all on time: NO", text)
+        self.assertIn("london: frames expected 10 received 10 missing 0 late 0 on time 100.00%; "
+                      "all on time: yes", text)
+        nodes = {"lon-edge-1": {"cpu_percent_mean": 41.2, "cpu_percent_p95": 60.0,
+                                "cpu_percent_max": 80.5, "throttled_ms": 0, "udp_rcvbuf_errors": 3},
+                 "relay-primary": {"samples": 3, "running_samples": 0}}
+        lines = bench.node_summary_lines(nodes)
+        self.assertEqual(len(lines), 3)
+        self.assertIn("lon-edge-1", lines[2])
+        self.assertIn("rcvbuf drops 3", lines[2])
+
+    def test_the_clip_rate_from_ffprobe(self):
+        # 50 frames a second of 500,000 bytes: 200 Mbit/s.
+        text = "\n".join(f"{index / 50:.6f},500000," for index in range(100)) + "\nbad\n"
+        self.assertEqual(bench.clip_rate(text), {"video_mbps": 200.0, "fps": 50.0})
+        self.assertEqual(bench.clip_rate(""), {})
+
+    def test_a_4k_run_end_to_end_with_the_lab_faked(self):
+        """run() with the lab, the viewers and the journals faked: the 4K
+        source is started with the chosen clip, the viewers' records are read
+        back into the per-region report, the nodes are sampled, and the
+        summary names it all."""
+        tools = self.dir / "tools"
+        tools.mkdir()
+        for name in ("ntcmp", "needletail-udp-client"):
+            (tools / name).write_text("")
+        started: dict = {"sources": [], "commands": []}
+        source = {"label": "synthetic 200 Mbit/s 50 fps", "path": str(self.dir / "s.ts"),
+                  "synthetic": True, "nominal_mbps": 200.0, "fps": 50}
+
+        class Process:
+            pid = 1
+
+            def __init__(self, command, stdout=None, **_kwargs):
+                started["commands"].append(command)
+                if "--frames" in command:
+                    # Inside the run's window: the readers "end" 0.3 s later.
+                    now = time.time_ns() // 1000
+                    rows = [(part, now + part * 2_000 + 35_000, now + part * 2_000)
+                            for part in range(50)]
+                    frames_csv(pathlib.Path(command[command.index("--frames") + 1]), rows)
+                elif "--stream" in command and stdout is not None:
+                    stdout.write(json.dumps({"expected_parts": 50, "received_parts": 50,
+                                             "missing_parts": 0, "fast_lane_parts": 50,
+                                             "publish_to_arrival_ms": {"count": 50, "p50": 3.0,
+                                                                       "max": 9.0}}).encode())
+                    stdout.flush()
+
+            def wait(self, timeout=None):
+                time.sleep(0.3)
+                return 0
+
+            def poll(self):
+                return 0
+
+        class Sampler:
+            def __init__(self, path, *_a, **_k):
+                pass
+
+            def start(self):
+                return self
+
+            def stop(self):
+                return {"lon-dist-a": {"cpu_percent_mean": 90.0, "cpu_percent_p95": 120.0,
+                                       "cpu_percent_max": 150.0, "throttled_ms": 12,
+                                       "udp_rcvbuf_errors": 0}}
+
+        lab = bench.lab
+        patches = [
+            mock.patch.object(bench, "OUT_ROOT", self.dir / "out"),
+            mock.patch.object(bench, "SKIP_SECONDS", 0),
+            mock.patch.object(bench, "prepare_media", lambda item: None),
+            mock.patch.object(bench, "prepare_video",
+                              lambda item: {**item, "video_mbps": 208.0, "fps": 50.0}),
+            mock.patch.object(bench, "loop_start", lambda now: int(now)),
+            mock.patch.object(bench, "stop_sender", lambda process: None),
+            mock.patch.object(bench.subprocess, "Popen", Process),
+            mock.patch.object(bench.hops, "collect_edge_lab", lambda since, stream: ({}, [])),
+            mock.patch.object(lab, "up", lambda overrides: {}),
+            mock.patch.object(lab, "down", lambda quiet=False: None),
+            mock.patch.object(lab, "wait_live", lambda *a, **k: None),
+            mock.patch.object(lab, "enter", lambda name: []),
+            mock.patch.object(lab, "load", lambda name, default=None: {}),
+            mock.patch.object(lab, "save", lambda name, value: None),
+            mock.patch.object(lab, "Sampler", Sampler),
+            mock.patch.object(lab, "start_sources",
+                              lambda seconds, video=True, audio=None, clip=None:
+                              started["sources"].append(str(clip))),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            code = bench.main(["--name", "4k", "--video-mbps", "200", "--seconds", "1",
+                               "--ntcmp", str(tools / "ntcmp"),
+                               "--udp-client", str(tools / "needletail-udp-client")])
+        self.assertEqual(code, 0)
+        self.assertEqual(started["sources"], [source["path"].replace(
+            str(self.dir / "s.ts"), str(bench.synthetic_clip(200, 50, 10)))])
+        out = self.dir / "out" / "4k"
+        result = json.loads((out / "hops.json").read_text())
+        video = result["video"]
+        self.assertEqual(video["source"]["video_mbps"], 208.0)
+        for site in ("london", "newyork"):
+            region = video["regions"][site]
+            self.assertEqual(region["frames"]["expected"], 50, site)
+            self.assertEqual(region["frames"]["on_time"], 50, site)
+            self.assertTrue(region["all_on_time"], site)
+            self.assertTrue(region["udp_clients"][0]["whole"], site)
+        self.assertEqual(result["bench"]["nodes"]["lon-dist-a"]["cpu_percent_max"], 150.0)
+        text = (out / "summary.txt").read_text()
+        self.assertIn("4K: synthetic 200 Mbit/s 50 fps (208 Mbit/s, 50 fps measured)", text)
+        self.assertIn("london: frames expected 50 received 50 missing 0 late 0 on time 100.00%", text)
+        self.assertIn("lon-dist-a", text)
+        self.assertIn("4K hops (stream 1)", text)
+        self.assertTrue(printed.getvalue().endswith(text))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
+    def test_the_synthetic_source_has_the_rate_it_was_asked_for(self):
+        path = self.dir / "synthetic.ts"
+        command = bench.synthetic_command(path, 40, 50, 2)
+        subprocess.run(command, check=True, capture_output=True, timeout=300)
+        pathlib.Path(str(path) + ".part").replace(path)
+        measured = bench.probe_clip(path)
+        self.assertEqual(round(measured["fps"]), 50)
+        # Within 10% of the rate asked for (VBV of one second).
+        self.assertLess(abs(measured["video_mbps"] - 40) / 40, 0.10, measured)
+        streams = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                  "stream=codec_type,width,height", "-of", "csv=p=0", str(path)],
+                                 capture_output=True, text=True).stdout
+        self.assertIn("video,3840,2160", streams)
+        self.assertIn("audio", streams)
 
 
 if __name__ == "__main__":
