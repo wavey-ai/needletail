@@ -192,6 +192,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--udp-clients", type=int, default=1, metavar="N",
                         help="needletail-udp-client listeners of the run's audio stream on each "
                              "reader host (default %(default)s; 0: none): the headline lane")
+    parser.add_argument("--sample-nodes", action="store_true",
+                        help="sample every node's CPU, throttling and UDP drops each second "
+                             "(always on with 4K)")
     parser.add_argument("--udp-client-args", default="", metavar="ARGS",
                         help="extra arguments of every audio UDP client (e.g. \"--fast-lane false\")")
     parser.add_argument("--no-up", action="store_true",
@@ -949,7 +952,7 @@ def plan(args) -> dict:
         "udp_clients": audio_udp_commands(args, out),
         "video": {"source": video_source(args), "viewers": video_commands(args, out),
                   "frame_deadline_ms": args.frame_deadline_ms,
-                  "sample_nodes": video_measured(args)},
+                  "sample_nodes": video_measured(args) or args.sample_nodes},
         "reader_netem": reader_netem(args),
         "hops": {"stream": PAYLOAD_STREAM[args.payload], "source_start_ns": start * 1_000_000_000,
                  "skip_seconds": SKIP_SECONDS,
@@ -1170,6 +1173,7 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     sources["bench-sender"] = sender.pid
     lab.save("sources.json", sources)
     readers, shaped, handles = [], [], [sender_log]
+    per_packet = False
     sampler = None
     try:
         log(f"sender starts at {start} ({start - time.time():.1f} s)")
@@ -1180,6 +1184,10 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             for site in sorted({item["site"] for item in video["viewers"]}):
                 lab.wait_live(VIDEO_STREAM, site, timeout=60)
         if steps["reader_netem"]:
+            # netem then loses TCP packets, not 64 KB segments, as a real
+            # link does (edge_lab.set_tcp_per_packet), for the HTTP readers.
+            lab.set_tcp_per_packet(True)
+            per_packet = True
             for host in sorted({item["host"] for item in
                                 steps["readers"] + steps["udp_clients"] + video["viewers"]}):
                 shaped.append(host)
@@ -1222,6 +1230,8 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             sampler.stop()
         for host in shaped:
             lab.set_net(host, "pub", "both", None)
+        if per_packet:
+            lab.set_tcp_per_packet(False)
         for process in readers:
             if process.poll() is None:
                 process.kill()
