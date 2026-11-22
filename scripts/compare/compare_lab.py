@@ -334,6 +334,18 @@ print("DAW fixture of", frames // 48000, "s")
 # behind 512-sample buffers.
 NT_DAW = {"buffer_frames": 64, "opus_frame_samples": 120, "lossless_epoch_samples": 48}
 OPUS_LOOKAHEAD_SAMPLES = 120
+# DAW Opus frames compare-audio.py --nt-opus-frame-samples takes: 1 and 1.5 ms
+# Opus Custom (48, 72 samples), and standard 2.5 and 5 ms. ntcmp names a
+# frame in ms, so 1.33 ms (64 samples) cannot be indexed.
+NT_OPUS_FRAME_SAMPLES = (48, 72, 120, 240)
+
+
+def opus_lookahead_samples(frame_samples: int) -> int:
+    """The encoder's look-ahead (its MDCT overlap) for a frame: 120 samples
+    (2.5 ms) for standard Opus; an Opus Custom mode's overlap is its short
+    block, the frame itself for the 48, 64 and 72-sample modes (a frame that
+    is not a multiple of 120 is Opus Custom)."""
+    return 120 if frame_samples % 120 == 0 else frame_samples
 
 
 def daw_index(base: str, daw: dict | None = None) -> tuple[str, list[str]]:
@@ -342,7 +354,8 @@ def daw_index(base: str, daw: dict | None = None) -> tuple[str, list[str]]:
     daw = daw or NT_DAW
     buffer = int(daw["buffer_frames"])
     if base == "nt-opus":
-        samples, offset = int(daw["opus_frame_samples"]), buffer + OPUS_LOOKAHEAD_SAMPLES
+        samples = int(daw["opus_frame_samples"])
+        offset = buffer + opus_lookahead_samples(samples)
     elif base == "nt-flac":
         samples, offset = int(daw["lossless_epoch_samples"]), buffer
     else:
@@ -359,7 +372,8 @@ NT_INDEXES = [
     ("nt-pcm-24s", ["audio.s24le", "0.5"]),
     ("nt-pcm-12s", ["audio.s24le", "0.25"]),
     ("nt-popus-120s", ["numbered:nt-popus-120s", "2.5", "0"]),
-    daw_index("nt-opus"),
+    *(daw_index("nt-opus", {**NT_DAW, "opus_frame_samples": frame})
+      for frame in NT_OPUS_FRAME_SAMPLES),
     daw_index("nt-flac"),
 ]
 

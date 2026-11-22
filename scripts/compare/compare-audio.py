@@ -18,7 +18,8 @@ Lanes
   nt-popus  Needletail, Opus in 2.5 ms parts (120 samples, CELT) that its AEP1
             sender encodes from the same loop (stream 3001)
   nt-opus   Needletail, SoundKit Opus from its DAW source (stream 3001), one
-            120-sample (2.5 ms) frame per part
+            120-sample (2.5 ms) frame per part; --nt-opus-frame-samples 48
+            (or 72) gives 1 ms (1.5 ms) Opus Custom frames instead
   nt-flac   Needletail, FLAC from its DAW source (stream 2001), one 48-sample
             (1 ms) epoch per part; the DAW source runs with 64-frame host
             buffers (NT_DAW, recorded in each step's meta)
@@ -82,6 +83,13 @@ NT_PCM_SAMPLES = (48, 24, 12)
 # are one Opus frame (nt-opus) or one lossless epoch (nt-flac).
 NT_DAW = run.lab.NT_DAW
 NT_DAW_SAMPLES = {"nt-opus": "opus_frame_samples", "nt-flac": "lossless_epoch_samples"}
+
+
+def set_nt_opus_frame(samples: int) -> None:
+    """Give the DAW source's Opus lane frames of `samples`: its command line,
+    its index and the frame recorded in each step's meta follow."""
+    NT_DAW["opus_frame_samples"] = samples
+    NEEDLETAIL["nt-opus"] = (3001, run.lab.daw_index("nt-opus")[0])
 
 
 def daw_command(target: str) -> str:
@@ -367,7 +375,8 @@ class Audio:
         result = run.run_hosts(s, name, scripts, total)
         meta = {"step": name, "config": self.config, "phase": phase, "detail": detail, "netem": netem,
                 "lanes": lanes, "nt_frame_ms": self.nt_frame_ms(),
-                "nt_daw": {**NT_DAW, "opus_lookahead_samples": run.lab.OPUS_LOOKAHEAD_SAMPLES},
+                "nt_daw": {**NT_DAW, "opus_lookahead_samples":
+                           run.lab.opus_lookahead_samples(int(NT_DAW["opus_frame_samples"]))},
                 "nt_reader_flags": {lane: reader_flags(lane[len(base):], frame)
                                     for base, frame in self.nt_frame_ms().items()
                                     for lane in lanes if lane.startswith(base)
@@ -422,10 +431,15 @@ def main() -> None:
     parser.add_argument("--lanes", default=",".join(WEBRTC + list(NEEDLETAIL) + [UDP_LANE]))
     parser.add_argument("--nt-pcm-samples", type=int, default=NT_EPOCH_SAMPLES["nt-pcm"],
                         choices=NT_PCM_SAMPLES, help="samples of one Needletail PCM part (one epoch)")
+    parser.add_argument("--nt-opus-frame-samples", type=int, default=NT_DAW["opus_frame_samples"],
+                        choices=run.lab.NT_OPUS_FRAME_SAMPLES,
+                        help="the DAW source's Opus frame (one nt-opus part): 120 (2.5 ms, "
+                             "standard Opus) by default, 48 or 72 for 1 or 1.5 ms Opus Custom")
     parser.add_argument("--phases", default="baseline,impair,fanout,attempts")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--chrome-seconds", type=int, default=25)
     args = parser.parse_args()
+    set_nt_opus_frame(args.nt_opus_frame_samples)
     session = run.Session(args.session)
     phases = args.phases.split(",")
     started = time.time()
