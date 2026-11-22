@@ -38,7 +38,9 @@ some sessions in Tokyo and Sydney).**
 1 to 1.5 ms off Needletail in London: 2.5 ms Opus over UDP at 4.2, 35.9,
 111.3 and 131.2 ms against LiveKit's SFU at 3.8, 40.5, 110.5 and 130.6; 1 ms
 PCM at 1.7, 32.9, 108.1 and 128.0 against LiveKit's 2.5 ms blocks at 2.2,
-33.3, 108.4 and 128.5. See [Wave 3](#wave-3-one-session).
+33.3, 108.4 and 128.5. See [Wave 3](#wave-3-one-session). Wave 4, checked at 03:29, was level with
+wave 3 against LiveKit: Opus over UDP 5.6, 36.2, 112.0 and 131.8 ms against
+LiveKit's best 5.0, 35.6, 114.1 and 131.2.
 
 Mouth to ear is the age of a sample when a listener that plays audio on
 arrival would play it. Median of three sessions (wave 2), in milliseconds:
@@ -403,6 +405,7 @@ both directions, for IPv4 and IPv6, with SSH left out:
 | Wave 2, 3 | 23:31 | the same as session 2 |
 | SFU PCM in 1 ms blocks | 22 Nov 02:08 | PCM only; the SFUs' data channels carry 1 ms blocks (`--sfu-pcm-ms 1`) |
 | Wave 3 | 22 Nov 02:48 | 2.5 ms Opus and 1 ms PCM, clean and impaired, beside Cloudflare Realtime and self-hosted LiveKit (see [Wave 3](#wave-3-one-session)) |
+| Wave 4 | 22 Nov 03:29 | 2.5 ms Opus and 1 ms PCM, clean and impaired, beside Cloudflare Realtime and self-hosted LiveKit |
 | Wave 1, 1 to 3 | 19:44, 20:25, 20:56 | 5 ms parts (see [The earlier build](#the-earlier-build-wave-1)) |
 
 Before each session `steal-check.py` found no instance with steal time above

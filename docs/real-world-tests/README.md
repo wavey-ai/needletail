@@ -70,7 +70,7 @@ Self-hosted LiveKit leads by about half a millisecond in London, New York and Sy
 
 Current comparison with other networks, 4K video:
 [2026-11-22 4K against Cloudflare and LiveKit](2026-11-22-4k-against-cloudflare-and-livekit.md).
-Raw throughput first: LiveKit Cloud carried 164 Mbit/s of 4K to every region; Needletail's wave 3 build 81 (earlier builds 16 to 25), level with or above self-hosted LiveKit's 40 to 81, though 14 to 47 ms later at 40 and 81 Mbit/s; Cloudflare 5. Also the latency, first frame, loss and crowds of what each carries, the Needletail mesh hop by hop under long-haul loss, and its three tiers.
+Raw throughput first: LiveKit Cloud carried 164 Mbit/s of 4K to every region; Needletail's wave 4 build 122 (wave 3 81, earlier builds 16 to 25), above self-hosted LiveKit's 40 to 81, though 24 to 56 ms later at 81 Mbit/s; Cloudflare 5. Also the latency, first frame, loss and crowds of what each carries, the Needletail mesh hop by hop under long-haul loss, and its three tiers.
 
 Current response-duration record: [2026-07-21 matched Opus H3 response duration](2026-07-21-opus-h3-response-duration.md).
 Authoritative edge-cache record: [2026-07-22 GCP edge capacity and HLS failover](2026-07-22-gcp-edge-capacity-failover.md).
