@@ -1661,6 +1661,51 @@ def check_class_agreement(rendered: dict[str, dict]) -> None:
                          + " | ".join(problems))
 
 
+# av-mesh flags that went with the merged playlists line (playlists f592da0):
+# av-mesh refuses them at start.
+REMOVED_MESH_FLAGS = {
+    "--mesh-sync-on-publish": "the cache mesh always sends on publish",
+    "--mesh-liveness-on-receipt": "a peer is always heard on the receipt of any datagram",
+}
+
+
+def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
+    """Raise ValueError when an av-mesh service would not start or its cache
+    mesh would refuse a peer: a flag that av-mesh no longer has
+    (REMOVED_MESH_FLAGS), or a --peer that does not list its node back. The
+    merged playlists mesh takes datagrams only from authorized peers (--peer,
+    or discovery's add_peer) and learns no child from its hello, so a
+    distributor must list its edges and an edge its distributors. A peer's
+    class socket (its --mesh-bind port plus --cache-mesh-class-port-offset)
+    is authorized with its main address, so a --peer covers both sockets."""
+    problems = []
+    for name, item in sorted(rendered.items()):
+        if item["service"] != "needletail-mesh":
+            continue
+        for gone in sorted(flag_names(item["args"]) & set(REMOVED_MESH_FLAGS)):
+            problems.append(f"{name}: av-mesh has no {gone} ({REMOVED_MESH_FLAGS[gone]})")
+    peers = {name: [item["args"][index + 1] for index, arg in enumerate(item["args"][:-1])
+                    if arg == "--peer"]
+             for name, item in rendered.items() if item["service"] == "needletail-mesh"}
+    address = {}
+    for node in state["nodes"].values():
+        bind = flag_value(rendered.get(node["name"], {}).get("args", []), "--mesh-bind")
+        if node["name"] in peers and bind and not bind.startswith("0.0.0.0:"):
+            address[bind] = node["name"]
+    own = {name: bind for bind, name in address.items()}
+    for name, listed in sorted(peers.items()):
+        for peer in listed:
+            other = address.get(peer)
+            if other is None:
+                problems.append(f"{name}: --peer {peer} is no node's cache-mesh address")
+            elif own.get(name) not in peers.get(other, []):
+                problems.append(f"{name} lists {other} ({peer}) but {other} does not list "
+                                f"{name}: its mesh refuses {name}'s datagrams")
+    if problems:
+        raise ValueError("the cache mesh would refuse a peer or a flag, check extra_*_args: "
+                         + " | ".join(problems))
+
+
 def udp_binds(args: list[str], plan: dict) -> list[tuple[str, int, str]]:
     """(socket, port, argument) of every UDP socket that a service rendered
     with `args` binds, the video twins of the class split included (from the
@@ -2055,6 +2100,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
+    check_cache_mesh_peers(state, rendered)
     check_class_ports(rendered, classes)
     check_fast_plane(state, rendered)
     if topology_mode(settings) == "merged":

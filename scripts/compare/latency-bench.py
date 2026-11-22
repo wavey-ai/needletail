@@ -28,9 +28,9 @@ Flags reach the services through the lab's settings:
   --set key=value            any setting of linode-small-mesh-deploy.py
 Write a single flag with `=`: --mesh-args=--some-flag (argparse reads a
 lone "--some-flag" as an option of its own).
-e.g. the A/B of the event-driven cache-mesh sender:
+e.g. the A/B of the non-blocking relay forward:
   latency-bench.py --name p1-on
-  latency-bench.py --name p1-off --mesh-args "--mesh-sync-on-publish false"
+  latency-bench.py --name p1-off --mesh-args "--relay-forward-nonblocking false"
 
 The journals are read only after the readers finish, so every service is
 started with --hop-journal-capacity sized to the run and its part rate

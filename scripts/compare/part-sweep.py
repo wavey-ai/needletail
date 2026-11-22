@@ -31,7 +31,7 @@ region. The lowest p50 and p99 of each column among the lossless sizes are
 marked with *.
 
   part-sweep.py --name s1 [--seconds 60] [--readers 1] [--sizes pcm:48,pcm:24]
-                [--bench-args '--mesh-args="--mesh-sync-on-publish false"']
+                [--bench-args '--mesh-args="--relay-forward-nonblocking false"']
   part-sweep.py --name s1 --report-only    tabulate the runs already made
   part-sweep.py --name s1 --dry-run        print every command; run nothing
 """

@@ -37,18 +37,18 @@ def dry_run(*argv: str) -> dict:
 
 class Arguments(unittest.TestCase):
     def test_flags_reach_every_role(self):
-        args = parse("--mesh-args", "--mesh-sync-on-publish false", "--edge-args", "--x 1",
+        args = parse("--mesh-args", "--relay-forward-nonblocking false", "--edge-args", "--x 1",
                      "--contrib-args", "--publication-shard-mix false",
                      "--set", "extra_distributor_args=[\"--y\"]", "--set", "mesh_sync_interval_ms=20")
         settings = dict(item.split("=", 1) for item in bench.lab_overrides(args))
         journal = ["--hop-journal-capacity", "1200000"]
         self.assertEqual(settings["daw_hls_formats"], "pcm")
         self.assertEqual(settings["pcm_epoch_samples"], "48")
-        self.assertEqual(json.loads(settings["extra_backbone_args"]), ["--mesh-sync-on-publish", "false"] + journal)
+        self.assertEqual(json.loads(settings["extra_backbone_args"]), ["--relay-forward-nonblocking", "false"] + journal)
         self.assertEqual(json.loads(settings["extra_distributor_args"]),
-                         ["--y", "--mesh-sync-on-publish", "false"] + journal)
+                         ["--y", "--relay-forward-nonblocking", "false"] + journal)
         self.assertEqual(json.loads(settings["extra_edge_args"]),
-                         ["--mesh-sync-on-publish", "false", "--x", "1"] + journal)
+                         ["--relay-forward-nonblocking", "false", "--x", "1"] + journal)
         self.assertEqual(json.loads(settings["extra_contributor_args"]),
                          ["--publication-shard-mix", "false"] + journal)
         self.assertEqual(settings["mesh_sync_interval_ms"], "20")

@@ -307,6 +307,33 @@ class Render(Base):
             self.render(['extra_contributor_args=["--relay-direct-target","10.77.1.21:22001"]'])
         self.assertIn("--relay-direct-target", str(caught.exception))
 
+    def test_every_cache_mesh_peer_is_listed_back_and_no_removed_flag_renders(self):
+        # The merged playlists mesh takes datagrams only from a listed peer,
+        # class socket included: every distributor lists its site's edges
+        # and every edge its site's distributors.
+        _program, _plan, args = self.render()
+        binds = {name: value_of(item, "--mesh-bind") for name, item in args.items()}
+        for name, item in args.items():
+            self.assertFalse({"--mesh-sync-on-publish", "--mesh-liveness-on-receipt"}
+                             & deploy.flag_names(item), name)
+            for peer in values_of(item, "--peer"):
+                other = next(other for other, bind in binds.items() if bind == peer)
+                self.assertIn(binds[name], values_of(args[other], "--peer"), (name, other))
+        edges = sorted(binds[edge] for edge in lab.edges("london"))
+        distributors = sorted({peer for edge in lab.edges("london")
+                               for peer in values_of(args[edge], "--peer")})
+        self.assertEqual(distributors, ["10.77.1.11:29101", "10.77.1.12:29101"])
+        for name, bind in binds.items():
+            if bind in distributors:
+                self.assertEqual(sorted(values_of(args[name], "--peer")), edges, name)
+        with self.assertRaises(ValueError) as caught:
+            self.render(['extra_edge_args=["--mesh-sync-on-publish","false"]'])
+        self.assertIn("--mesh-sync-on-publish", str(caught.exception))
+        stranger = binds[lab.edges("newyork")[0]]
+        with self.assertRaises(ValueError) as caught:
+            self.render([f'extra_edge_args=["--peer","{stranger}"]'])
+        self.assertIn("does not list", str(caught.exception))
+
     def test_the_merged_lab_topology_file(self):
         topology = json.loads(MERGED_TOPOLOGY.read_text())
         # Dedicated plans only, no backbone relay, two London distributors.
