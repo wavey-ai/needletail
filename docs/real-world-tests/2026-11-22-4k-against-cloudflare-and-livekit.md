@@ -9,8 +9,8 @@ from the same host in London to the same viewers in London, New York, Tokyo
 and Sydney, on a lab of dedicated-CPU instances only. The same lab measured
 the mesh itself hop by hop and the three tiers of Needletail's design.
 
-Needletail was measured on six builds of `low-latency`; the latest two,
-waves 6 and 5, are first below. The earlier four: wave 1 (21 November,
+Needletail was measured on seven builds of `low-latency`; the latest three,
+waves 7, 6 and 5, are first below. The earlier four: wave 1 (21 November,
 evening), wave 2 (night, the smallest-frame defaults), wave 3 (a new relay
 receive loop and class-isolated lanes, measured on 22 November at 02:38) and
 wave 4 (edge and forwarder changes and UDP GSO for 4K, measured at 03:18, with
@@ -20,7 +20,39 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Latest: wave 6 (22 November, afternoon)
+## Latest: wave 7 (22 November, evening)
+
+**Wave 7 recovered part of wave 6's 4K regression, but stays far below wave
+5.**
+- With GSO on (the default), sweep `video-w7` at 21:28 UTC, on the same
+  lab as the wave 7 audio, carried 25 Mbit/s whole to all four regions over
+  UDP (Sydney 99.6% of frames on time).
+- At 40 Mbit/s 86% to 99% of frames were on time; at 80 Mbit/s 81% to 91%;
+  at 120 Mbit/s 40% to 70%, and the sweep ended.
+- Wave 5 carried 247 Mbit/s whole to every region on the same plans
+  (g6-dedicated-2 forwarders and edges).
+- The median of what arrived at 25 Mbit/s: 11 ms London, 41 New York, 119
+  Tokyo, 140 Sydney.
+
+What changed, and where the loss is:
+- **The contributor is no longer the problem.** Its output held steady at
+  about 2.7 times the media rate through each step (69 Mbit/s at 25, 300 at
+  120), with none of wave 6's mid-step surge.
+- **The forwarders and edges drop at their sockets.** Their receive queues
+  (16 MB each; the system allows 64 MB) overflowed. Each socket's own drop
+  counter, cumulative since the deploy, read just after the sweep:
+  - the second distributor's relay socket in London, Sydney and Tokyo:
+    210,000 to 244,000 dropped datagrams;
+  - New York's second distributor: 15,000;
+  - the first distributors: 1,700 to 34,000 (their relay sockets summed);
+  - the edges' mesh feed: 14,000 to 440,000.
+
+  At the second distributors the drops grew from about 900 per step at
+  25 Mbit/s to 127,000 to 152,000 at 120.
+- So the 2-vCPU nodes can no longer read 4K as fast as it arrives. The
+  latency session is bisecting the receive path between waves 5, 6 and 8.
+
+## Wave 6 (22 November, afternoon)
 
 **Wave 6 regressed on 4K.** With GSO on (its default) and the same
 three-region lab, it carried 25 Mbit/s whole to New York only; at 25 Mbit/s

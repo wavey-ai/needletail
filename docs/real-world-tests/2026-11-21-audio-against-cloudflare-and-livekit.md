@@ -7,7 +7,7 @@ the same audio from the same host in London to the same listeners in London,
 New York, Tokyo and Sydney, at the same time, on a lab of dedicated-CPU
 instances only.
 
-The latest results are waves 6 and 5 (22 November), first below. The
+The latest results are waves 7, 6 and 5 (22 November), first below. The
 fullest set is Needletail's `low-latency` build of 21 November, evening
 ("wave 2"): the smallest frames by default (Opus in 2.5 ms parts, lossless
 PCM in 1 ms parts) and both of its client modes, RaptorQ FEC over UDP from
@@ -17,7 +17,97 @@ A first pass on shared Nanodes is superseded; it is a side note at the end.
 
 The 4K video comparison is a separate record.
 
-## Latest: wave 6 (22 November, afternoon)
+## Latest: wave 7 (22 November, evening)
+
+**Wave 7 won 49 of the 56 audio metrics against self-hosted LiveKit with
+1 ms Opus Custom and 1 ms PCM, in four regions (Sydney had dedicated
+capacity for the first time).** With standard 2.5 ms Opus it won 22, tied 2
+and lost 4, each of the four by 0.1 to 0.5 ms. A new listener heard its
+first audio in 10 to 24 ms, against about 160 ms on LiveKit. The 1 ms lanes
+still had stalls in London in the first session after the deploy.
+
+Sessions and build:
+- `waudio7` at 21:07 UTC, `waudio7-std` at 21:21, both on lab `cmpd4`:
+  London, New York, Tokyo and Sydney, 33 dedicated nodes.
+- Self-hosted LiveKit (an SFU in each region) in every session, as the only
+  control.
+- Build: `av-mesh` `07a9aea`, `av-contrib` `219c6b5`, `playlists`
+  `4023d2e`, deploy tool `3e7f766`; `daw-nexus` unchanged from wave 6.
+- Defaults (merged topology, fast-plane edges, GSO on), with only the
+  harness's three renditions set.
+- Figures are from the 4-vCPU listener hosts, except Sydney: it had no
+  4-vCPU dedicated plan, so its view host is a 2-vCPU node.
+
+Median / 99th percentile (ms):
+
+| System | Frame | London | New York | Tokyo | Sydney |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **Needletail UDP** | Opus Custom 1 ms | **2.5** / 658.1 | **33.1 / 37.4** | 111.0 / 114.0 | **127.8** / 191.1 |
+| LiveKit, SFU in each region | Opus 2.5 ms | 5.0 / 1457.2 | 35.6 / 39.1 | 110.3 / 112.1 | 130.6 / 134.1 |
+| **Needletail UDP** | PCM 1 ms | **1.5 / 3.8** | **32.0 / 34.1** | **106.0 / 109.4** | **129.0 / 133.7** |
+| LiveKit, SFU in each region | PCM 2.5 ms, data channel | 2.7 / 4.8 | 38.5 / 41.0 | 110.3 / 986.6 | 17,775.9 / 27,524.8 |
+| Needletail UDP (`waudio7-std`) | Opus 2.5 ms | 5.4 / **6.5** | **35.6 / 40.5** | 109.6 / **111.1** | 132.3 / **134.6** |
+| LiveKit (`waudio7-std`) | Opus 2.5 ms | 5.3 / 6.9 | 40.8 / 44.9 | 109.6 / 111.2 | 132.2 / 134.7 |
+
+The scoreboard, metric by metric and region by region, is
+[evidence/20261122-scoreboard-wave7.json](evidence/20261122-scoreboard-wave7.json).
+
+- **Time to first audio, a new measurement.** Each view host started 20 new
+  listeners per lane, one after another, on a stream already running. Each
+  was timed from its process start to its first audio unit, LiveKit's
+  signalling and connection included. Median (ms), London / New York /
+  Tokyo / Sydney:
+  - 1 ms Opus: Needletail UDP 13 / 11 / 12 / 24; LiveKit 159 / 160 / 160 /
+    165.
+  - PCM: Needletail 14 / 14 / 13 / 21; LiveKit 30 / 26 / 26 / 105.
+  - Standard Opus: Needletail 11 / 10 / 10 / 12; LiveKit 159 / 160 / 159 /
+    160.
+  - Needletail's LL-HLS reader over HTTP/3: 26 to 39 ms.
+  - Every one of the 20 joins got audio, in every lane and region.
+- **Loss.**
+  - Opus: Needletail lost nothing at 1%, 5% and burst loss in any region;
+    LiveKit lost 1.0% to 5.2%.
+  - PCM: nothing lost, except 3.4% on London's view host at 5% loss (0% on
+    its 2-vCPU host).
+  - p99 at 5% loss: within about 1 ms of LiveKit in New York and Tokyo,
+    ahead in Sydney, far behind in London (Opus 695 ms against 7.5, PCM
+    587 against 5.3).
+  - Standard Opus lost nothing anywhere, with p99 at 5% loss within 0.5 ms
+    of LiveKit.
+- **The London stalls.** On a clean network, London's 1 ms Opus client had
+  parts late by up to about 0.7 s in bursts at four moments in the minute.
+  - Its UDP and LL-HLS listeners stalled in the same seconds, so the parts
+    left the edge late.
+  - The latency session traced them to one London edge (lon-edge-1), which
+    carried twice the other edge's load: parts reached it up to 568 ms late
+    at the 99th percentile, against 4 ms at the other edge.
+  - LiveKit also had a 1.5 s episode in London that minute, at other
+    seconds, so London's clean p99 counts as a win for neither system.
+- **Not seen again in that build.** Later on the same lab, two more clean
+  1 ms Opus minutes were clean everywhere. In the first, `waudio7-pin`, the
+  edges pinned their audio and video threads as usual. In the second,
+  `waudio7-unpin`, the edges were restarted with no pinning (the latency
+  session's hypothesis of a starved pinned thread).
+  - London p99 was 5.15 and 5.2 ms (LiveKit 7.2 and 7.3), nothing missing.
+  - So the A/B could not decide the pinning question.
+  - As on wave 6, the stalls appeared only in the first 1 ms session after
+    the deploy.
+- **LiveKit's PCM in Sydney.** LiveKit's PCM over its data channel fell
+  behind steadily: 17.8 s on a clean network and 57.5 s at 5% loss, the
+  same on both Sydney hosts. That is LiveKit's own behaviour on the long
+  path, not the listener host.
+- **The tiers got much lighter** (`tiers-w7`, the same cost steps as wave 6):
+  - Contributor output: 6.6 to 9.5 Mbit/s and 2,000 to 4,000 packets a
+    second, against 93 to 157 Mbit/s and 16,000 to 32,000 on wave 6.
+  - London ingress distributor: 45% to 79% of one vCPU, against 118% to
+    162%.
+  - Edge cost per UDP listener: about 0.56 Mbit/s for 2.5 ms Opus, 0.91 for
+    1 ms Opus Custom, 2.8 for 1 ms PCM.
+  - The 20 listeners' delay stayed about 1 ms median and 1.3 to 2.2 ms at
+    the 99th percentile, nothing missing.
+- **Fast lane:** 98% to 99.9% of parts on every UDP client.
+
+## Wave 6 (22 November, afternoon)
 
 **Wave 6 lowered Needletail's medians again and its UDP clients now count
 the edge's fast lane (92% to 100% of parts), but the 1 ms lanes' 99th
