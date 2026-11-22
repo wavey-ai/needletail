@@ -246,6 +246,21 @@ DEFAULT_SETTINGS = {
     # needletail-udp-client asks an older edge with the long form again.
     "relay_compact_audio": None,
     "client_udp_compact_short_header": None,
+    # Wave 8 stage 2, the nodes that serve UDP clients (--client-udp-bind).
+    # None renders nothing (the binaries' defaults); false is the A/B.
+    # - client_udp_repair_thread: the real-time class thread takes no lock
+    #   that ordinary tasks hold (window repair on a repair thread, NACK
+    #   answers sent after the subscriber table is released; S1).
+    # - client_udp_batched_admission: a subscribe spike rebuilds the fast
+    #   lane's client snapshot once a batch (S3).
+    # - client_udp_resume_from_request: a client that moved here resumes at
+    #   the part it names while the cache holds it (S2).
+    # - client_udp_fanout_inline_shard: the class thread sends one shard of
+    #   a handed-off batch itself (B4).
+    "client_udp_repair_thread": None,
+    "client_udp_batched_admission": None,
+    "client_udp_resume_from_request": None,
+    "client_udp_fanout_inline_shard": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1847,7 +1862,17 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
             and settings.get("client_udp_compact_short_header") is not None):
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
+    if "--client-udp-bind" in node_args:
+        for key in WAVE8_CLIENT_UDP:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
     return out
+
+
+# Wave 8 stage 2's settings of the nodes that serve UDP clients: each is the
+# av-mesh flag of the same name.
+WAVE8_CLIENT_UDP = ("client_udp_repair_thread", "client_udp_batched_admission",
+                    "client_udp_resume_from_request", "client_udp_fanout_inline_shard")
 
 
 def is_contributor_args(args: list[str]) -> bool:

@@ -293,6 +293,29 @@ class Render(Base):
         self.assertEqual(value_of(args["new-dist-a"], "--relay-demand-renditions"),
                          "5001,6001,7001")
 
+    def test_the_wave8_client_udp_settings_reach_the_nodes_that_serve_clients(self):
+        """Wave 8 stage 2: each setting renders its av-mesh flag on every node
+        with --client-udp-bind, only when given."""
+        flags = ("--client-udp-repair-thread", "--client-udp-batched-admission",
+                 "--client-udp-resume-from-request", "--client-udp-fanout-inline-shard")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "client_udp_repair_thread=false", "client_udp_batched_admission=false",
+            "client_udp_resume_from_request=false", "client_udp_fanout_inline_shard=true"])
+        for name, node_args in args.items():
+            if "--client-udp-bind" not in node_args:
+                for flag in flags:
+                    self.assertNotIn(flag, node_args, name)
+                continue
+            self.assertEqual(value_of(node_args, "--client-udp-repair-thread"), "false", name)
+            self.assertEqual(value_of(node_args, "--client-udp-batched-admission"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-resume-from-request"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-fanout-inline-shard"), "true")
+        self.assertIn("--client-udp-repair-thread", args["lon-edge-1"])
+
     def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
         """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
         lon-dist-a/b, rendered on its own path) takes every wave 7 setting
