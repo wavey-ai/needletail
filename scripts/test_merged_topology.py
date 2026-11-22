@@ -226,7 +226,8 @@ class Render(Base):
         _program, _plan, args = self.render()
         for name, node_args in args.items():
             for flag in ("--relay-audio-copies", "--cache-mesh-fast-plane-push",
-                         "--relay-demand-renditions"):
+                         "--relay-demand-renditions", "--relay-compact-audio",
+                         "--client-udp-compact-short-header"):
                 self.assertNotIn(flag, node_args, name)
         _program, _plan, args = self.render([
             'relay_audio_copies="policy"', 'cache_mesh_fast_plane_push="all"',
@@ -236,6 +237,15 @@ class Render(Base):
         self.assertEqual(value_of(args["lon-dist-a"], "--cache-mesh-fast-plane-push"), "all")
         self.assertEqual(value_of(args["lon-dist-a"], "--relay-demand-renditions"), "")
         self.assertNotIn("--cache-mesh-fast-plane-push", args["lon-edge-1"])
+        _program, _plan, args = self.render([
+            "relay_compact_audio=false", "client_udp_compact_short_header=false"])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-compact-audio"), "false")
+        self.assertEqual(
+            value_of(args["lon-edge-1"], "--client-udp-compact-short-header"), "false")
+        # Every node that serves UDP clients takes it, distributors too.
+        self.assertEqual(
+            value_of(args["lon-dist-a"], "--client-udp-compact-short-header"), "false")
+        self.assertNotIn("--relay-compact-audio", args["lon-dist-a"])
         _program, _plan, args = self.render(["daw_hls_base_stream_id=5001",
                                              'relay_demand_renditions="auto"'])
         self.assertEqual(value_of(args["contrib-lon"], "--relay-demand-renditions"),

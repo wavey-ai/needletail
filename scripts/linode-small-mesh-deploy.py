@@ -180,6 +180,18 @@ DEFAULT_SETTINGS = {
     "relay_audio_copies": None,
     "cache_mesh_fast_plane_push": None,
     "relay_demand_renditions": None,
+    # Wave 7 items 3 and 9. None renders nothing: the binaries' defaults (on)
+    # hold; false is the A/B against wave 7.
+    # - relay_compact_audio: av-contrib --relay-compact-audio, a 1 ms audio
+    #   part as a compact RLC1 datagram (a slim object against the stream's
+    #   descriptor, about 75 bytes and the part instead of about 850), whole
+    #   every --relay-compact-whole-ms (100).
+    # - client_udp_compact_short_header: the edges' --client-udp-compact-
+    #   short-header, a part on the compact client lane with a 7-byte header
+    #   instead of 11 to the clients that ask for it (needletail-udp-client
+    #   --compact-short-header, on by default).
+    "relay_compact_audio": None,
+    "client_udp_compact_short_header": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1588,13 +1600,15 @@ def demand_renditions(settings: dict) -> str | None:
 
 
 def wave7_args(node_args: list[str], settings: dict) -> list[str]:
-    """The `--flag value` pairs of wave 7 items 2, 4 and 5 for a service
+    """The `--flag value` pairs of wave 7 items 2, 3, 4, 5 and 9 for a service
     rendered with `node_args`: only the settings that are given."""
     out = []
     renditions = demand_renditions(settings)
     if is_contributor_args(node_args):
         if settings.get("relay_audio_copies") is not None:
             out += ["--relay-audio-copies", str(settings["relay_audio_copies"])]
+        if settings.get("relay_compact_audio") is not None:
+            out += ["--relay-compact-audio", flag(bool(settings["relay_compact_audio"]))]
         if renditions is not None:
             out += ["--relay-demand-renditions", renditions]
         return out
@@ -1603,6 +1617,10 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
     if ("--relay-lease-bind" in node_args
             and settings.get("cache_mesh_fast_plane_push") is not None):
         out += ["--cache-mesh-fast-plane-push", str(settings["cache_mesh_fast_plane_push"])]
+    if ("--client-udp-bind" in node_args
+            and settings.get("client_udp_compact_short_header") is not None):
+        out += ["--client-udp-compact-short-header",
+                flag(bool(settings["client_udp_compact_short_header"]))]
     return out
 
 
