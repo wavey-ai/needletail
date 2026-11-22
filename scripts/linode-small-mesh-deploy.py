@@ -30,6 +30,7 @@ Tuning knobs live in the settings file and can be changed with
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import pathlib
@@ -146,6 +147,65 @@ DEFAULT_SETTINGS = {
         "net.ipv4.ipfrag_max_dist": "0",
     },
     "path_loss_ppm": 20000,
+    # The contributor's legacy AEP1 lanes (wave 7 item 1): each AEP1 epoch
+    # re-framed as SoundKit v2 with four repair datagrams and sent to the two
+    # first forwarders (--audio-epoch-ingress-target and -redundant-), which
+    # relay it on their slow path. Nothing on the RelaySession path consumes
+    # it (edges, LL-HLS and UDP clients take RLS1); only WebTransport
+    # WAVEY-AUDIO-EPOCH readers and native relay subscribers at a distributor
+    # would. False renders no AEP1 target, and av-contrib's
+    # --audio-epoch-mesh-lane auto (under --relay-exclusive, with no target)
+    # sends no lane: 10 of the contributor's 16 datagrams per 1 ms part, and
+    # the same 10 on each first forwarder's long haul. True renders the
+    # lane's targets as before, and auto keeps the lane with them. No
+    # --audio-epoch-mesh-lane is rendered, so an av-contrib older than the
+    # flag still starts; one that the render finds without it (see
+    # RENDER_BINARIES) gets the targets as before. linode-small-mesh-run.py
+    # and -soak.py start their AEP1 readers at the distributors only with
+    # the lane.
+    "audio_epoch_lane": False,
+    # Wave 7 items 2, 4 and 5. None renders nothing: the binaries' defaults
+    # (the new behaviour) hold.
+    # - relay_audio_copies: av-contrib --relay-audio-copies, the copies of a
+    #   one-symbol (1 ms) audio part: "measured" (the default: sized to the
+    #   loss that the first forwarders report on each lane, RLR1, none on a
+    #   clean lane), "configured" (path_loss_ppm), "policy" (as before: two
+    #   repair copies at 2 %).
+    # - cache_mesh_fast_plane_push: av-mesh --cache-mesh-fast-plane-push on
+    #   the distributors: "none" (the default: no cache-mesh push of an
+    #   audio part to an edge that the fast plane feeds), "secondary" (only
+    #   the edge's secondary distributor pushes), "all" (as before).
+    # - relay_demand_renditions: --relay-demand-renditions of the
+    #   contributor and every relay node: groups of renditions of one source
+    #   ("2001,3001,4001;..."), of which a lane carries only what its
+    #   subtree reads (or everything while it reads none of the group).
+    #   "auto": the DAW lane's FLAC/Opus/PCM from daw_hls_base_stream_id.
+    #   None (the binaries' default, empty): nothing is held back; the first
+    #   reader of a held rendition does not start cleanly yet (wave 7 item 5
+    #   in the low-latency results).
+    "relay_audio_copies": None,
+    "cache_mesh_fast_plane_push": None,
+    "relay_demand_renditions": None,
+    # Wave 7 items 3 and 9. None renders nothing: the binaries' defaults (on)
+    # hold; false is the A/B against wave 7.
+    # - relay_compact_audio: av-contrib --relay-compact-audio, a 1 ms audio
+    #   part as a compact RLC1 datagram (a slim object against the stream's
+    #   descriptor, about 75 bytes and the part instead of about 850), whole
+    #   every --relay-compact-whole-ms (100).
+    # - client_udp_compact_short_header: the edges' --client-udp-compact-
+    #   short-header, a part on the compact client lane with a 7-byte header
+    #   instead of 11 to the clients that ask for it (needletail-udp-client
+    #   --compact-short-header, on by default).
+    # An av-mesh older than the compact relay datagram (6163c41) reads only
+    # the whole parts that a contributor sends every 100 ms: with
+    # relay_compact_audio None, a render that finds the av-contrib it
+    # deploys with --relay-compact-audio and the av-mesh without RLC1 (no
+    # --client-udp-compact-short-header) renders --relay-compact-audio false
+    # (see RENDER_BINARIES). Restarting a new contributor alone in front of
+    # older forwarders and edges is not caught: set it false then. A new
+    # needletail-udp-client asks an older edge with the long form again.
+    "relay_compact_audio": None,
+    "client_udp_compact_short_header": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1488,7 +1548,6 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
         "--http-port", str(CONTRIB_HTTP_PORT),
         "--mesh-fec-target", service["primary"]["target"],
         "--mesh-media-fec-target", service["primary"]["target"],
-        "--audio-epoch-ingress-target", service["audio_epoch_ingress_target"],
         "--daw-media-bind", f"0.0.0.0:{DAW_MEDIA_PORT}",
         "--daw-hls-queue-capacity", "4096",
         "--daw-hls-packaging", settings["daw_hls_packaging"],
@@ -1515,9 +1574,15 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
         "--relay-deadline-ms", str(service["media_deadline_ms"]),
         "--relay-min-repair-symbols", str(settings["relay_min_repair_symbols"]),
     ]
-    if service.get("audio_epoch_redundant_ingress_target"):
-        args += ["--audio-epoch-redundant-ingress-target",
-                 service["audio_epoch_redundant_ingress_target"]]
+    if (settings.get("audio_epoch_lane")
+            or binary_has("av-contrib", "--audio-epoch-mesh-lane") is False):
+        # As before wave 7 item 1: av-contrib's `auto` keeps the lane when
+        # its targets are given; a binary older than the flag always had
+        # the lane, and keeps these targets.
+        args += ["--audio-epoch-ingress-target", service["audio_epoch_ingress_target"]]
+        if service.get("audio_epoch_redundant_ingress_target"):
+            args += ["--audio-epoch-redundant-ingress-target",
+                     service["audio_epoch_redundant_ingress_target"]]
     for key, prefix in (("source_path_observation", "--relay-path"),
                         ("secondary_path_observation", "--relay-secondary-path")):
         observed = service.get(key)
@@ -1534,7 +1599,90 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
             args += [f"{prefix}-observed-at-unix-ms", str(observed["observed_at_unix_ms"])]
     extra = list(settings["extra_contributor_args"])
     args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
+    args += yield_to(extra, wave7_args(args, settings))
     return args + extra
+
+
+def demand_renditions(settings: dict) -> str | None:
+    """--relay-demand-renditions to render, or None for the binaries'
+    default (nothing held back); "auto" is the DAW lane's renditions."""
+    value = settings.get("relay_demand_renditions")
+    if value != "auto":
+        return None if value is None else str(value)
+    base = int(settings.get("daw_hls_base_stream_id") or 2001)
+    return f"{base},{base + 1000},{base + 2000}"
+
+
+# The binaries whose flags a render looks at ({"av-mesh": path,
+# "av-contrib": path}): `plan`, `push` and `restart` set those they deploy
+# (binaries_for), the local labs those they run. Empty (unit tests, other
+# callers): none, and the render assumes current binaries.
+RENDER_BINARIES: dict = {}
+
+
+@functools.lru_cache(maxsize=None)
+def binary_flags(path: str, mtime_ns: int) -> frozenset | None:
+    """The long flags that `path --help` lists, or None if it does not run."""
+    del mtime_ns  # part of the cache key only
+    try:
+        result = subprocess.run([path, "--help"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return frozenset(re.findall(r"--[a-z0-9][a-z0-9-]*", result.stdout))
+
+
+def binary_has(kind: str, name: str) -> bool | None:
+    """Whether the `kind` binary ("av-mesh", "av-contrib") that the render is
+    for takes flag `name`; None when it cannot tell (no such file, it does
+    not run here)."""
+    path = RENDER_BINARIES.get(kind)
+    if path is None:
+        return None
+    path = pathlib.Path(path)
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    flags = binary_flags(str(path), mtime_ns)
+    return None if flags is None else name in flags
+
+
+def wave7_args(node_args: list[str], settings: dict) -> list[str]:
+    """The `--flag value` pairs of wave 7 items 2, 3, 4, 5 and 9 for a service
+    rendered with `node_args`: only the settings that are given."""
+    out = []
+    renditions = demand_renditions(settings)
+    if is_contributor_args(node_args):
+        if settings.get("relay_audio_copies") is not None:
+            out += ["--relay-audio-copies", str(settings["relay_audio_copies"])]
+        if settings.get("relay_compact_audio") is not None:
+            out += ["--relay-compact-audio", flag(bool(settings["relay_compact_audio"]))]
+        elif (binary_has("av-contrib", "--relay-compact-audio")
+              and binary_has("av-mesh", "--client-udp-compact-short-header") is False):
+            # The forwarders and edges deployed with it read no RLC1.
+            out += ["--relay-compact-audio", "false"]
+        if renditions is not None:
+            out += ["--relay-demand-renditions", renditions]
+        return out
+    if "--relay-controlled-local" in node_args and renditions is not None:
+        out += ["--relay-demand-renditions", renditions]
+    if ("--relay-lease-bind" in node_args
+            and settings.get("cache_mesh_fast_plane_push") is not None):
+        out += ["--cache-mesh-fast-plane-push", str(settings["cache_mesh_fast_plane_push"])]
+    if ("--client-udp-bind" in node_args
+            and settings.get("client_udp_compact_short_header") is not None):
+        out += ["--client-udp-compact-short-header",
+                flag(bool(settings["client_udp_compact_short_header"]))]
+    return out
+
+
+def is_contributor_args(args: list[str]) -> bool:
+    """Whether `args` are av-contrib's: it alone takes the DAW media ingest
+    (and, with audio_epoch_lane, the AEP1 ingress targets)."""
+    return "--daw-media-bind" in args or "--audio-epoch-ingress-target" in args
 
 
 def contributor_class_args(node: dict, plan: dict) -> list[str]:
@@ -1623,7 +1771,7 @@ def class_offsets(args: list[str]) -> dict | None:
         except ValueError:
             raise ValueError(f"{flag} {value(flag)!r} is not a port offset") from None
 
-    if "--audio-epoch-ingress-target" in args:
+    if is_contributor_args(args):
         on = value("--relay-class-lanes") == "true"
         return {"relay": whole("--relay-class-port-offset") if on else 0, "mesh": None}
     given = flag_names(args)
@@ -1661,6 +1809,51 @@ def check_class_agreement(rendered: dict[str, dict]) -> None:
                          + " | ".join(problems))
 
 
+# av-mesh flags that went with the merged playlists line (playlists f592da0):
+# av-mesh refuses them at start.
+REMOVED_MESH_FLAGS = {
+    "--mesh-sync-on-publish": "the cache mesh always sends on publish",
+    "--mesh-liveness-on-receipt": "a peer is always heard on the receipt of any datagram",
+}
+
+
+def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
+    """Raise ValueError when an av-mesh service would not start or its cache
+    mesh would refuse a peer: a flag that av-mesh no longer has
+    (REMOVED_MESH_FLAGS), or a --peer that does not list its node back. The
+    merged playlists mesh takes datagrams only from authorized peers (--peer,
+    or discovery's add_peer) and learns no child from its hello, so a
+    distributor must list its edges and an edge its distributors. A peer's
+    class socket (its --mesh-bind port plus --cache-mesh-class-port-offset)
+    is authorized with its main address, so a --peer covers both sockets."""
+    problems = []
+    for name, item in sorted(rendered.items()):
+        if item["service"] != "needletail-mesh":
+            continue
+        for gone in sorted(flag_names(item["args"]) & set(REMOVED_MESH_FLAGS)):
+            problems.append(f"{name}: av-mesh has no {gone} ({REMOVED_MESH_FLAGS[gone]})")
+    peers = {name: [item["args"][index + 1] for index, arg in enumerate(item["args"][:-1])
+                    if arg == "--peer"]
+             for name, item in rendered.items() if item["service"] == "needletail-mesh"}
+    address = {}
+    for node in state["nodes"].values():
+        bind = flag_value(rendered.get(node["name"], {}).get("args", []), "--mesh-bind")
+        if node["name"] in peers and bind and not bind.startswith("0.0.0.0:"):
+            address[bind] = node["name"]
+    own = {name: bind for bind, name in address.items()}
+    for name, listed in sorted(peers.items()):
+        for peer in listed:
+            other = address.get(peer)
+            if other is None:
+                problems.append(f"{name}: --peer {peer} is no node's cache-mesh address")
+            elif own.get(name) not in peers.get(other, []):
+                problems.append(f"{name} lists {other} ({peer}) but {other} does not list "
+                                f"{name}: its mesh refuses {name}'s datagrams")
+    if problems:
+        raise ValueError("the cache mesh would refuse a peer or a flag, check extra_*_args: "
+                         + " | ".join(problems))
+
+
 def udp_binds(args: list[str], plan: dict) -> list[tuple[str, int, str]]:
     """(socket, port, argument) of every UDP socket that a service rendered
     with `args` binds, the video twins of the class split included (from the
@@ -1668,7 +1861,7 @@ def udp_binds(args: list[str], plan: dict) -> list[tuple[str, int, str]]:
     gives none). Two arguments that name the same address are one socket
     (av-mesh's --fec-bind and --relay-primary-bind). The contributor's lane
     sockets have no twin port: its class pair shares the lane's endpoint."""
-    contributor = "--audio-epoch-ingress-target" in args
+    contributor = is_contributor_args(args)
     relay = "--relay-controlled-local" in args
     offsets = {"relay": plan["class_port_offset"] if plan["relay_class_split"] else 0,
                "mesh": plan["class_port_offset"] if plan["cache_mesh_class_split"] else 0}
@@ -2050,11 +2243,13 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         if "--client-udp-bind" in args:
             args += yield_to(extra, ["--client-udp-fast-lane",
                                      flag(classes["client_udp_fast_lane"])])
-        args += yield_to(extra, mesh_class_args(node, args, classes)) + extra
+        args += yield_to(extra, mesh_class_args(node, args, classes))
+        args += yield_to(extra, wave7_args(args, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
+    check_cache_mesh_peers(state, rendered)
     check_class_ports(rendered, classes)
     check_fast_plane(state, rendered)
     if topology_mode(settings) == "merged":
@@ -2373,6 +2568,10 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
         routes_path.write_text(json.dumps(routes, indent=2) + "\n")
     program = build_program(state, settings, routes)
     plan = compile_plan(program)
+    # The render looks at the flags of the binaries that push deploys.
+    RENDER_BINARIES.clear()
+    RENDER_BINARIES.update({"av-mesh": binaries_for("edge")[0],
+                            "av-contrib": binaries_for("contributor")[0]})
     rendered = render(state, settings, plan)
     unused = relay_tree(state, settings)["unused"]
     print(f"compiled {len(plan['services'])} relay services ({topology_mode(settings)} "

@@ -191,8 +191,17 @@ class Render(Base):
         self.assertEqual(value_of(contrib, "--relay-primary-target"), "10.77.1.11:22001")
         self.assertEqual(value_of(contrib, "--relay-secondary-id"), "lon-dist-b")
         self.assertEqual(value_of(contrib, "--relay-secondary-target"), "10.77.1.12:22002")
-        self.assertEqual(value_of(contrib, "--audio-epoch-ingress-target"), "10.77.1.11:22001")
-        self.assertEqual(value_of(contrib, "--audio-epoch-redundant-ingress-target"),
+        # No legacy AEP1 lane by default (wave 7 item 1): no target, and no
+        # --audio-epoch-mesh-lane (an older av-contrib must still start);
+        # with audio_epoch_lane the two first forwarders are its targets.
+        self.assertNotIn("--audio-epoch-mesh-lane", contrib)
+        self.assertNotIn("--audio-epoch-ingress-target", contrib)
+        self.assertNotIn("--audio-epoch-redundant-ingress-target", contrib)
+        _program, _plan, lane = self.render(["audio_epoch_lane=true"])
+        self.assertNotIn("--audio-epoch-mesh-lane", lane["contrib-lon"])
+        self.assertEqual(value_of(lane["contrib-lon"], "--audio-epoch-ingress-target"),
+                         "10.77.1.11:22001")
+        self.assertEqual(value_of(lane["contrib-lon"], "--audio-epoch-redundant-ingress-target"),
                          "10.77.1.12:22002")
         for name, port, source in (("lon-dist-a", "22001", "10.77.1.5:22301"),
                                    ("lon-dist-b", "22002", "10.77.1.5:22302")):
@@ -213,6 +222,74 @@ class Render(Base):
         _program, _plan, args = self.render(["edge_fast_plane=false"])
         for edge in lab.edges("london"):
             self.assertNotIn("--relay-controlled-local", args[edge])
+
+    def test_the_render_looks_at_the_flags_of_the_binaries_it_deploys(self):
+        """Wave 7 review: an av-contrib older than --audio-epoch-mesh-lane
+        keeps its AEP1 targets; a contributor that sends RLC1 in front of an
+        av-mesh that cannot read it is rendered --relay-compact-audio false."""
+        with tempfile.TemporaryDirectory() as tmp:
+            def binary(name: str, flags: list[str]) -> pathlib.Path:
+                path = pathlib.Path(tmp) / name
+                path.write_text("#!/bin/sh\ncat <<'EOF'\nOptions:\n"
+                                + "".join(f"      {flag} <X>\n" for flag in flags)
+                                + "EOF\n")
+                path.chmod(0o755)
+                return path
+            old_contrib = binary("old-contrib", ["--relay-exclusive"])
+            new_contrib = binary("new-contrib", ["--relay-exclusive", "--audio-epoch-mesh-lane",
+                                                 "--relay-compact-audio"])
+            old_mesh = binary("old-mesh", ["--client-udp-bind"])
+            new_mesh = binary("new-mesh", ["--client-udp-bind",
+                                           "--client-udp-compact-short-header"])
+            try:
+                deploy.RENDER_BINARIES.update({"av-contrib": old_contrib, "av-mesh": old_mesh})
+                contrib = self.render()[2]["contrib-lon"]
+                self.assertEqual(value_of(contrib, "--audio-epoch-ingress-target"),
+                                 "10.77.1.11:22001")
+                self.assertNotIn("--relay-compact-audio", contrib)
+                deploy.RENDER_BINARIES.update({"av-contrib": new_contrib})
+                contrib = self.render()[2]["contrib-lon"]
+                self.assertNotIn("--audio-epoch-ingress-target", contrib)
+                self.assertEqual(value_of(contrib, "--relay-compact-audio"), "false")
+                contrib = self.render(["relay_compact_audio=true"])[2]["contrib-lon"]
+                self.assertEqual(value_of(contrib, "--relay-compact-audio"), "true")
+                deploy.RENDER_BINARIES.update({"av-mesh": new_mesh})
+                contrib = self.render()[2]["contrib-lon"]
+                self.assertNotIn("--relay-compact-audio", contrib)
+                self.assertNotIn("--audio-epoch-ingress-target", contrib)
+            finally:
+                deploy.RENDER_BINARIES.clear()
+
+    def test_wave7_settings_render_only_when_given(self):
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in ("--relay-audio-copies", "--cache-mesh-fast-plane-push",
+                         "--relay-demand-renditions", "--relay-compact-audio",
+                         "--client-udp-compact-short-header"):
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            'relay_audio_copies="policy"', 'cache_mesh_fast_plane_push="all"',
+            'relay_demand_renditions=""'])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-audio-copies"), "policy")
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-demand-renditions"), "")
+        self.assertEqual(value_of(args["lon-dist-a"], "--cache-mesh-fast-plane-push"), "all")
+        self.assertEqual(value_of(args["lon-dist-a"], "--relay-demand-renditions"), "")
+        self.assertNotIn("--cache-mesh-fast-plane-push", args["lon-edge-1"])
+        _program, _plan, args = self.render([
+            "relay_compact_audio=false", "client_udp_compact_short_header=false"])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-compact-audio"), "false")
+        self.assertEqual(
+            value_of(args["lon-edge-1"], "--client-udp-compact-short-header"), "false")
+        # Every node that serves UDP clients takes it, distributors too.
+        self.assertEqual(
+            value_of(args["lon-dist-a"], "--client-udp-compact-short-header"), "false")
+        self.assertNotIn("--relay-compact-audio", args["lon-dist-a"])
+        _program, _plan, args = self.render(["daw_hls_base_stream_id=5001",
+                                             'relay_demand_renditions="auto"'])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-demand-renditions"),
+                         "5001,6001,7001")
+        self.assertEqual(value_of(args["new-dist-a"], "--relay-demand-renditions"),
+                         "5001,6001,7001")
 
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
         program, plan, _args = self.render()
@@ -306,6 +383,33 @@ class Render(Base):
         with self.assertRaises(ValueError) as caught:
             self.render(['extra_contributor_args=["--relay-direct-target","10.77.1.21:22001"]'])
         self.assertIn("--relay-direct-target", str(caught.exception))
+
+    def test_every_cache_mesh_peer_is_listed_back_and_no_removed_flag_renders(self):
+        # The merged playlists mesh takes datagrams only from a listed peer,
+        # class socket included: every distributor lists its site's edges
+        # and every edge its site's distributors.
+        _program, _plan, args = self.render()
+        binds = {name: value_of(item, "--mesh-bind") for name, item in args.items()}
+        for name, item in args.items():
+            self.assertFalse({"--mesh-sync-on-publish", "--mesh-liveness-on-receipt"}
+                             & deploy.flag_names(item), name)
+            for peer in values_of(item, "--peer"):
+                other = next(other for other, bind in binds.items() if bind == peer)
+                self.assertIn(binds[name], values_of(args[other], "--peer"), (name, other))
+        edges = sorted(binds[edge] for edge in lab.edges("london"))
+        distributors = sorted({peer for edge in lab.edges("london")
+                               for peer in values_of(args[edge], "--peer")})
+        self.assertEqual(distributors, ["10.77.1.11:29101", "10.77.1.12:29101"])
+        for name, bind in binds.items():
+            if bind in distributors:
+                self.assertEqual(sorted(values_of(args[name], "--peer")), edges, name)
+        with self.assertRaises(ValueError) as caught:
+            self.render(['extra_edge_args=["--mesh-sync-on-publish","false"]'])
+        self.assertIn("--mesh-sync-on-publish", str(caught.exception))
+        stranger = binds[lab.edges("newyork")[0]]
+        with self.assertRaises(ValueError) as caught:
+            self.render([f'extra_edge_args=["--peer","{stranger}"]'])
+        self.assertIn("does not list", str(caught.exception))
 
     def test_the_merged_lab_topology_file(self):
         topology = json.loads(MERGED_TOPOLOGY.read_text())

@@ -37,18 +37,18 @@ def dry_run(*argv: str) -> dict:
 
 class Arguments(unittest.TestCase):
     def test_flags_reach_every_role(self):
-        args = parse("--mesh-args", "--mesh-sync-on-publish false", "--edge-args", "--x 1",
+        args = parse("--mesh-args", "--relay-forward-nonblocking false", "--edge-args", "--x 1",
                      "--contrib-args", "--publication-shard-mix false",
                      "--set", "extra_distributor_args=[\"--y\"]", "--set", "mesh_sync_interval_ms=20")
         settings = dict(item.split("=", 1) for item in bench.lab_overrides(args))
         journal = ["--hop-journal-capacity", "1200000"]
         self.assertEqual(settings["daw_hls_formats"], "pcm")
         self.assertEqual(settings["pcm_epoch_samples"], "48")
-        self.assertEqual(json.loads(settings["extra_backbone_args"]), ["--mesh-sync-on-publish", "false"] + journal)
+        self.assertEqual(json.loads(settings["extra_backbone_args"]), ["--relay-forward-nonblocking", "false"] + journal)
         self.assertEqual(json.loads(settings["extra_distributor_args"]),
-                         ["--y", "--mesh-sync-on-publish", "false"] + journal)
+                         ["--y", "--relay-forward-nonblocking", "false"] + journal)
         self.assertEqual(json.loads(settings["extra_edge_args"]),
-                         ["--mesh-sync-on-publish", "false", "--x", "1"] + journal)
+                         ["--relay-forward-nonblocking", "false", "--x", "1"] + journal)
         self.assertEqual(json.loads(settings["extra_contributor_args"]),
                          ["--publication-shard-mix", "false"] + journal)
         self.assertEqual(settings["mesh_sync_interval_ms"], "20")
@@ -477,6 +477,34 @@ class Video(unittest.TestCase):
         hop_text = "\n".join(bench.udp_hop_lines({"london": {"listener_parts": listener}}))
         self.assertIn("edge.udp_sent -> listener.complete", hop_text)
 
+    def test_time_to_first_audio_in_the_udp_report(self):
+        """Wave 7 item 8: each client's time to first part and its steps,
+        and the host's spread of it; a client before item 8 gives the
+        total alone."""
+        clients = []
+        for index, startup in enumerate([
+                {"assignment_ms": 3.25, "playlist_ms": 9.5, "first_request_ms": 3.3,
+                 "token_ms": 3.9, "subscribed_ms": 4.6, "first_part_ms": 4.8,
+                 "first_part_after_named": 0},
+                None]):
+            report = self.dir / f"lon-readers.uc{index}.uc.json"
+            report.write_text(json.dumps({
+                "caches": ["lon-edge-1"], "moves": [], "expected_parts": 0,
+                "received_parts": 0, "missing_parts": 0,
+                "time_to_first_part_ms": 4.8 if startup else 300.0,
+                **({"startup": startup} if startup else {})}))
+            clients.append({"host": "lon-readers", "site": "london", "kind": "udp",
+                            "report": str(report),
+                            "arrivals": str(self.dir / f"none{index}.csv")})
+        hosts, _ = bench.udp_lane_report(clients, {}, [], 4001, None, 1000.0, None, None)
+        london = hosts["lon-readers"]
+        self.assertEqual(london["time_to_first_part_ms"]["count"], 2)
+        self.assertEqual(london["time_to_first_part_ms"]["max"], 300.0)
+        text = "\n".join(bench.udp_summary_lines(hosts))
+        self.assertIn("first part 4.8 ms (assignment 3.2, playlist 9.5, request 3.3, token 3.9, "
+                      "OK 4.6)", text)
+        self.assertIn("first part 300.0 ms", text)
+
     def test_the_clip_rate_from_ffprobe(self):
         # 50 frames a second of 500,000 bytes: 200 Mbit/s.
         text = "\n".join(f"{index / 50:.6f},500000," for index in range(100)) + "\nbad\n"
@@ -601,6 +629,60 @@ class Video(unittest.TestCase):
                                  capture_output=True, text=True).stdout
         self.assertIn("video,3840,2160", streams)
         self.assertIn("audio", streams)
+
+
+class UnreadPayloads(unittest.TestCase):
+    """Renditions nobody reads, for wave 7 item 5."""
+
+    def test_each_unread_payload_is_published_and_sent_once(self):
+        plan = dry_run("--payload", "opus", "--unread-payloads", "pcm, flac,opus,pcm")
+        self.assertIn("daw_hls_formats=opus,pcm,flac", plan["lab_up"])
+        args = parse("--payload", "opus", "--unread-payloads", "pcm,flac")
+        commands = bench.unread_sender_commands(args, 1_000, "/loop.s24le")
+        self.assertEqual(len(commands), 2)
+        self.assertEqual([command[command.index("--payload") + 1] for command in commands],
+                         ["pcm", "flac"])
+        groups = [command[command.index("--group-id") + 1] for command in commands]
+        self.assertEqual(groups, ["0", "0"])
+        sessions = [command[command.index("--session-id") + 1] for command in commands]
+        self.assertEqual(len(set(sessions)), 2)
+        with self.assertRaises(SystemExit):
+            bench.unread_payloads(parse("--unread-payloads", "mp3"))
+
+
+class NodeTraffic(unittest.TestCase):
+    """Datagrams and bytes per node from /proc/PID/net/dev (wave 7)."""
+
+    NETDEV = (
+        "Inter-|   Receive                                                |  Transmit\n"
+        " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets "
+        "errs drop fifo colls carrier compressed\n"
+        "    lo:       0       0    0    0    0     0          0         0        0       0"
+        "    0    0    0     0       0          0\n"
+        "  eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n"
+        "  eth1: 3000 30 0 0 0 0 0 0 4000 40 0 0 0 0 0 0\n")
+
+    def test_the_counters_of_each_interface_are_read(self):
+        with mock.patch.object(bench.lab.pathlib.Path, "read_text", return_value=self.NETDEV):
+            counters = bench.lab.read_netdev(1)
+        self.assertEqual(counters, {
+            "eth0_rx_bytes": 1000, "eth0_rx_packets": 10, "eth0_tx_bytes": 2000,
+            "eth0_tx_packets": 20, "eth1_rx_bytes": 3000, "eth1_rx_packets": 30,
+            "eth1_tx_bytes": 4000, "eth1_tx_packets": 40})
+
+    def test_rates_and_datagrams_per_part(self):
+        samples = [{"at": 100.0, "eth0_tx_packets": 0, "eth0_tx_bytes": 0,
+                    "eth1_tx_packets": 0, "eth1_tx_bytes": 0},
+                   {"at": 110.0, "eth0_tx_packets": 20_000, "eth0_tx_bytes": 25_000_000,
+                    "eth1_tx_packets": 160_000, "eth1_tx_bytes": 100_000_000}]
+        rates = bench.lab.netdev_rates(samples)
+        self.assertEqual(rates["eth0_tx_pps"], 2000.0)
+        self.assertEqual(rates["eth0_tx_mbps"], 20.0)
+        self.assertEqual(rates["eth1_tx_pps"], 16000.0)
+        lines = bench.node_traffic_lines({"contrib-lon": rates}, 1000.0)
+        self.assertIn("16.00/part", lines[-1])
+        self.assertIn("2.00/part", lines[-1])
+        self.assertEqual(bench.node_traffic_lines({"x": {"cpu_percent_mean": 1}}, 1000.0), [])
 
 
 if __name__ == "__main__":
