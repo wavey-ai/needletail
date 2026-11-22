@@ -22,14 +22,29 @@ London, New York, Tokyo and Sydney:
                LiveKit multi-region set (`lk-redis`, g6-dedicated-2), which the
                comparison's LiveKit installer needs
 
-Sized for the owner's budget of 22 November (about $60 to $70 in all, the
-watchdog's cap included): as many simulated listeners as it buys, and in
+Sized for the owner's budget of 22 November (first about $60 to $70, then
+the shared $100 of the Needletail work, the failover, redistribution and
+autoscale phases included; the 6 h watchdog caps the lab at $62.53 plus
+whatever slots the autoscaler creates): as many simulated listeners as it
+buys, and in
 each region enough edges that on the second curve the edges, not the
 listener hosts, give out first (deploy/low-latency/SCALE.md has the
 arithmetic). Edges 6 to 10 of each region are the second curve's: the
 document names them in `standby_edges`, which the first curve deploys with
-(scale-run.py settings), and the second restarts them in (scale-run.py
-settings --second-curve).
+(scale-run.py settings), and the second starts them in (deploy start
+--nodes, which restarts nothing else: every peer list names them from the
+first push).
+
+Autoscale slots (`autoscale_slots`, nodes marked `"slot": true`): nodes of
+the topology that `lab up` and `grow` do not create. The deploy renders them
+into every peer list from the first push (a slot not created yet is a peer
+that is down), so the autoscaler (scripts/linode-autoscale.py) creates one
+with `lab add <slot>` and starts it with `deploy start --nodes <slot>`,
+and nothing else restarts. London has two edge slots past its ten edges
+(`lon-edge-11`, `-12`), London and New York a third forwarder each
+(`lon-dist-c`, `new-dist-c`: a fast-plane lease child of its site's dist-a
+and dist-b and a cache-mesh parent of its edges, never a compiled relay
+child, so no other node's relay ports move).
 
 Sydney's nodes come first in the file: it is the region short of dedicated
 capacity. `lab up --optional-sites sydney` creates them before the rest and
@@ -86,6 +101,12 @@ LOAD_HOST_BASE = 101
 # contributor .5, source .30 (as in topology-merged.json; the edges stop
 # short of it below 9 edges and skip it above).
 MAX_EDGES = 40
+# Autoscale slots per site: extra edges past the site's edges (numbered on)
+# and extra forwarders (`<short>-dist-c`). VLAN host of a forwarder slot:
+# FORWARDER_SLOT_HOST + index (.13 up, after dist-a .11 and dist-b .12).
+SLOTS_BY_SITE = {"london": {"edges": 2, "forwarders": 1}, "newyork": {"forwarders": 1}}
+FORWARDER_SLOT_HOST = 13
+FORWARDER_LETTERS = "cdefgh"
 
 
 def edge_host(index: int) -> int:
@@ -101,13 +122,16 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
                    load_hosts: int = LOAD_HOSTS, load_type: str = LOAD_TYPE,
                    load_by_site: dict[str, tuple[int, str]] | None = None,
                    view_hosts: bool = True, livekit: bool = True,
-                   standby: dict[str, int] | None = None) -> dict:
+                   standby: dict[str, int] | None = None,
+                   slots: dict[str, dict[str, int]] | None = None) -> dict:
     """The topology document for `sites` (London must be one: the contributor
     is there), `edges` per site (default EDGES), `load_hosts` listener hosts
     of `load_type` per site, or (count, type) of a site in `load_by_site`
     (default LOAD_BY_SITE). `edges` None is EDGES_BY_SITE; `standby` (None:
     STANDBY_BY_SITE) is how many of a site's last edges the document names in
-    `standby_edges`, held out of the first curve."""
+    `standby_edges`, held out of the first curve. `slots` (None:
+    SLOTS_BY_SITE) is the autoscale slots of a site, {"edges": n,
+    "forwarders": n}: nodes marked "slot" that `lab up` does not create."""
     if "london" not in sites:
         raise ValueError("the contributor's site, london, must be in the topology")
     unknown = [site for site in sites if site not in SITES]
@@ -127,6 +151,18 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
             raise ValueError(f"edges given for {site}, which is not in the topology")
         if not 1 <= count <= MAX_EDGES:
             raise ValueError(f"{site}: {count} edges; 1 to {MAX_EDGES}")
+    if slots is None:
+        slots = {site: dict(value) for site, value in SLOTS_BY_SITE.items() if site in sites}
+    for site, value in slots.items():
+        if site not in sites:
+            raise ValueError(f"slots given for {site}, which is not in the topology")
+        if set(value) - {"edges", "forwarders"} or any(count < 0 for count in value.values()):
+            raise ValueError(f"{site}: slots {value}; {{'edges': n, 'forwarders': n}}")
+        if edges.get(site, EDGES) + value.get("edges", 0) > MAX_EDGES:
+            raise ValueError(f"{site}: {edges.get(site, EDGES)} edges and "
+                             f"{value.get('edges', 0)} edge slots; at most {MAX_EDGES}")
+        if value.get("forwarders", 0) > len(FORWARDER_LETTERS):
+            raise ValueError(f"{site}: at most {len(FORWARDER_LETTERS)} forwarder slots")
     load = {site: (load_hosts, load_type) for site in sites}
     load.update({site: value for site, value in (LOAD_BY_SITE if load_by_site is None
                                                   else load_by_site).items() if site in sites})
@@ -142,8 +178,10 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
         vlan = f"{VLAN_NET}.{net}"
 
         def add(name: str, role: str, kind: str, host: int | None = None,
-                purpose: str | None = None) -> None:
+                purpose: str | None = None, slot: bool = False) -> None:
             node = {"name": name, "role": role, "site": site, "region": region, "type": kind}
+            if slot:
+                node["slot"] = True
             if purpose:
                 # What a load node is for: the source, the full probes
                 # (view) or the simulated listeners.
@@ -159,6 +197,13 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
         add(f"{short}-dist-b", "distributor", MESH_TYPE, 12)
         for index in range(1, edges.get(site, EDGES) + 1):
             add(f"{short}-edge-{index}", "edge", MESH_TYPE, edge_host(index))
+        site_slots = slots.get(site, {})
+        for index in range(site_slots.get("forwarders", 0)):
+            add(f"{short}-dist-{FORWARDER_LETTERS[index]}", "distributor", MESH_TYPE,
+                FORWARDER_SLOT_HOST + index, slot=True)
+        first = edges.get(site, EDGES) + 1
+        for index in range(first, first + site_slots.get("edges", 0)):
+            add(f"{short}-edge-{index}", "edge", MESH_TYPE, edge_host(index), slot=True)
         count, kind = load[site]
         for index in range(1, count + 1):
             add(f"{short}-load-{index}", "load", kind, LOAD_HOST_BASE + index - 1,
@@ -172,6 +217,7 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
     counts = {site: edges.get(site, EDGES) for site in ordered}
     held = [f"{SITES[site][1]}-edge-{index}" for site in ordered
             for index in range(counts[site] - standby.get(site, 0) + 1, counts[site] + 1)]
+    slot_names = [node["name"] for node in nodes if node.get("slot")]
     description = (
         "The large audio mesh of the scale run (owner, 22 November 2026: \"test on a larger "
         "deployed mesh\", \"with simulated users too\", audio only), merged topology: in each "
@@ -187,9 +233,13 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
         "first: the region short of capacity is created first; the run works without it "
         "(lab up --optional-sites sydney, or --without-sites sydney). "
         + (f"Standby edges ({', '.join(held)}): created, held out of the first curve by the "
-           "deploy setting standby_edges, restarted in for the second. " if held else "")
-        + "Sized for the owner's budget of 22 November (about $60 to $70 with the watchdog's "
-        "cap): the referee's plan (needletail-compare target/compare/scale-plan.md) grown to as "
+           "deploy setting standby_edges, started in (deploy start --nodes) for the second. "
+           if held else "")
+        + (f"Autoscale slots ({', '.join(slot_names)}): in every peer list from the first "
+           "push, created only by the autoscaler (lab add), never by up or grow. "
+           if slot_names else "")
+        + "Sized for the owner's budget of 22 November (the shared $100 of the Needletail "
+        "work; the 6 h watchdog caps the created nodes at $62.53): the referee's plan (needletail-compare target/compare/scale-plan.md) grown to as "
         "many listener hosts as it buys, and enough edges a region that on the second curve "
         "the edges give out before the listener hosts; Sydney's listener hosts are "
         "g6-dedicated-4, for it had no g6-dedicated-8 capacity on 22 November (same vCPUs, "
@@ -199,6 +249,7 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
         "description": description,
         "image": "linode/debian13",
         "standby_edges": held,
+        "autoscale_slots": slot_names,
         "scale": {"sites": ordered, "edges": counts,
                   "load_hosts": {site: {"count": load[site][0], "type": load[site][1]}
                                  for site in ordered}},

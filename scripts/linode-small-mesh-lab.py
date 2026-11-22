@@ -139,6 +139,42 @@ def operator_ipv4() -> str:
     return address
 
 
+def is_slot(node: dict) -> bool:
+    """An autoscale slot (`"slot": true`): a node of the topology that `up`
+    and `grow` never create. Only `add <slot>` does (the autoscaler,
+    scripts/linode-autoscale.py, through it)."""
+    return bool(node.get("slot"))
+
+
+def slot_specs(topology: dict) -> dict[str, dict]:
+    """{name: node} of the topology's autoscale slots: the nodes marked
+    "slot", and any that its `autoscale_slots` list names. Each must be a
+    distributor or an edge with a VLAN address (the deploy renders it into
+    the peer lists by that address before it exists)."""
+    named = set(topology.get("autoscale_slots") or [])
+    out = {}
+    for node in topology["nodes"]:
+        if is_slot(node) or node["name"] in named:
+            if node["role"] not in ("edge", "distributor") or not node.get("vlan_ipv4"):
+                sys.exit(f"slot {node['name']}: only an edge or a distributor with a VLAN "
+                         "address can be an autoscale slot")
+            out[node["name"]] = {**{key: node[key] for key in (
+                "name", "role", "site", "region", "type") if key in node},
+                "vlan_ipv4": node["vlan_ipv4"].split("/")[0], "slot": True}
+    missing = named - set(out) - {node["name"] for node in topology["nodes"]}
+    if missing:
+        sys.exit(f"autoscale_slots names nodes that are not in the topology: {sorted(missing)}")
+    return out
+
+
+def created_part(topology: dict) -> dict:
+    """The topology without its autoscale slots: what `up` and `grow`
+    create."""
+    slots = slot_specs(topology)
+    return {**topology, "nodes": [node for node in topology["nodes"]
+                                  if node["name"] not in slots]}
+
+
 def without_sites(topology: dict, sites: list[str]) -> dict:
     """The topology without the nodes of `sites` (a region that has no
     dedicated capacity today: Sydney in the scale plan). Refuses a site that
@@ -208,18 +244,24 @@ def region_availability(api: "Api", regions: set[str]) -> dict:
 
 
 def validate_topology(api: Api, topology: dict) -> tuple[dict, float]:
-    nodes = topology["nodes"]
-    if not nodes or len(nodes) > MAX_NODES:
-        sys.exit(f"topology has {len(nodes)} nodes; the ceiling is {MAX_NODES} "
-                 "(NEEDLETAIL_LINODE_MAX_NODES)")
-    names = [node["name"] for node in nodes]
+    """Exit unless every node of the topology (its autoscale slots too) is a
+    dedicated plan in a region that is up, and the nodes that `up` creates
+    (the slots left out) are within MAX_NODES and MAX_HOURLY_USD. Returns
+    the topology and the hourly price of what `up` creates."""
+    names = [node["name"] for node in topology["nodes"]]
     if len(set(names)) != len(names):
         sys.exit("topology node names must be unique")
+    created = created_part(topology)
+    nodes = created["nodes"]
+    if not nodes or len(nodes) > MAX_NODES:
+        sys.exit(f"topology has {len(nodes)} nodes to create; the ceiling is {MAX_NODES} "
+                 "(NEEDLETAIL_LINODE_MAX_NODES)")
     types = {item["id"]: item for item in api.list_all("/linode/types")}
     regions = {item["id"]: item for item in api.list_all("/regions")}
-    hourly, problems = topology_cost(topology, types, regions)
+    _all, problems = topology_cost(topology, types, regions)
     if problems:
         sys.exit("\n".join(problems))
+    hourly = sum(node["_hourly"] for node in nodes)
     if hourly > MAX_HOURLY_USD:
         sys.exit(
             f"topology costs ${hourly:.4f}/hour; the ceiling is ${MAX_HOURLY_USD:.2f} "
@@ -254,9 +296,12 @@ def command_check(args: argparse.Namespace) -> None:
     types = {item["id"]: item for item in api.list_all("/linode/types")}
     regions = {item["id"]: item for item in api.list_all("/regions")}
     availability = region_availability(api, {node["region"] for node in topology["nodes"]})
-    hourly, problems = topology_cost(topology, types, regions, availability)
+    _all, problems = topology_cost(topology, types, regions, availability)
+    slots = slot_specs(topology)
+    created = [node for node in topology["nodes"] if node["name"] not in slots]
+    hourly = sum(node.get("_hourly", 0.0) for node in created)
     by_type: dict[tuple[str, str], list[dict]] = {}
-    for node in topology["nodes"]:
+    for node in created:
         by_type.setdefault((node["region"], node["type"]), []).append(node)
     print(f"{'REGION':<14} {'PLAN':<16} {'COUNT':>5} {'$/H EACH':>9} {'$/H':>8}  AVAILABLE")
     for (region, plan), nodes in sorted(by_type.items()):
@@ -357,6 +402,13 @@ def command_up(args: argparse.Namespace) -> None:
         # Sites that this lab does without (--without-sites, and an optional
         # site that could not be created): `grow` leaves them out too.
         "sites_left_out": [site for site in (args.without_sites or "").split(",") if site],
+        # The autoscale slots: never created by up or grow; `add` creates
+        # one, `remove` deletes it, and the deploy renders every one into
+        # the peer lists by its VLAN address from the first push.
+        "slots": slot_specs(topology),
+        # Instances deleted before `down` (remove, replace): billing keeps
+        # them, each a whole hour at least.
+        "removed": [],
     }
     write_state(state_path, state)
     if getattr(args, "watchdog_hours", None):
@@ -365,6 +417,7 @@ def command_up(args: argparse.Namespace) -> None:
         command_watchdog(argparse.Namespace(state=str(state_path), hours=args.watchdog_hours,
                                             foreground=False))
         state["watchdog_deadline_unix"] = read_state(state_path)["watchdog_deadline_unix"]
+    topology = created_part(topology)
     print(f"Creating {len(topology['nodes'])} Linodes at ${hourly:.4f}/hour "
           f"(run {run_id})")
     key = key_path.read_text().strip()
@@ -540,9 +593,13 @@ def command_grow(args: argparse.Namespace) -> None:
     known = {node["site"] for node in topology["nodes"]}
     topology = without_sites(topology, [site for site in left_out if site in known])
     topology, hourly = validate_topology(api, topology)
-    missing = [node for node in topology["nodes"] if node["name"] not in state["nodes"]]
+    state["slots"] = slot_specs(topology)
+    write_state(pathlib.Path(args.state), state)
+    # Autoscale slots are never grown: only `add` creates one.
+    missing = [node for node in created_part(topology)["nodes"]
+               if node["name"] not in state["nodes"]]
     if not missing:
-        print("lab already has every topology node")
+        print("lab already has every topology node (autoscale slots are created by add)")
         return
     print(f"Adding {len(missing)} Linodes; the lab will cost ${hourly:.4f}/hour")
     state["topology_file"] = str(pathlib.Path(args.topology).resolve())

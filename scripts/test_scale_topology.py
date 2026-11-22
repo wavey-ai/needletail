@@ -52,18 +52,24 @@ STANDBY = [f"{short}-edge-{index}" for short in SHORT for index in range(6, 11)]
 FIRST_CURVE = [f"standby_edges={json.dumps(STANDBY)}"]
 
 
-def topology_state(topology: dict) -> dict:
+def topology_state(topology: dict, created: tuple[str, ...] = ()) -> dict:
     """A Linode state for a topology document: made-up public addresses, the
-    fields that the lab tool keeps (purpose included)."""
+    fields that the lab tool keeps (purpose included). The autoscale slots
+    are left out, as `up` leaves them, but for those named in `created`
+    (made by `add`); the state lists every slot under "slots", as `up`
+    records them."""
     nodes = {}
+    slots = lab_tool.slot_specs(topology)
     for index, node in enumerate(topology["nodes"], 1):
+        if node["name"] in slots and node["name"] not in created:
+            continue
         nodes[node["name"]] = {
             "name": node["name"], "role": node["role"], "site": node["site"],
             "region": node["region"], "type": node["type"],
             **({"purpose": node["purpose"]} if node.get("purpose") else {}),
             "public_ipv4": f"198.51.{index // 250}.{index % 250 + 1}",
             "vlan_ipv4": (node.get("vlan_ipv4") or "").split("/")[0] or None}
-    return {"run_id": "test", "hourly_usd": 0.0, "nodes": nodes}
+    return {"run_id": "test", "hourly_usd": 0.0, "nodes": nodes, "slots": slots}
 
 
 def flag_values(args: list[str], flag: str) -> list[str]:
@@ -78,12 +84,24 @@ class Files(unittest.TestCase):
 
     def test_shape_of_the_scale_topology(self):
         topology = json.loads(SCALE.read_text())
-        nodes = topology["nodes"]
-        self.assertTrue(all(node["type"].startswith("g6-dedicated-") for node in nodes))
-        names = [node["name"] for node in nodes]
+        every = topology["nodes"]
+        self.assertTrue(all(node["type"].startswith("g6-dedicated-") for node in every))
+        names = [node["name"] for node in every]
         self.assertEqual(len(names), len(set(names)))
-        vlans = [(node["region"], node["vlan_ipv4"]) for node in nodes if node.get("vlan_ipv4")]
+        vlans = [(node["region"], node["vlan_ipv4"]) for node in every if node.get("vlan_ipv4")]
         self.assertEqual(len(vlans), len(set(vlans)))
+        # The autoscale slots: two London edges past its ten, a third
+        # forwarder in London and New York; g6-dedicated-2, on the VLAN.
+        self.assertEqual(topology["autoscale_slots"],
+                         ["lon-dist-c", "lon-edge-11", "lon-edge-12", "new-dist-c"])
+        slots = [node for node in every if node.get("slot")]
+        self.assertEqual([node["name"] for node in slots], topology["autoscale_slots"])
+        self.assertTrue(all(node["type"] == "g6-dedicated-2" and node.get("vlan_ipv4")
+                            for node in slots))
+        self.assertEqual({node["name"]: node["vlan_ipv4"] for node in slots},
+                         {"lon-dist-c": "10.80.1.13/24", "lon-edge-11": "10.80.1.32/24",
+                          "lon-edge-12": "10.80.1.33/24", "new-dist-c": "10.80.2.13/24"})
+        nodes = [node for node in every if not node.get("slot")]
         # The scarce region is created first.
         self.assertEqual(nodes[0]["site"], "sydney")
         by_site: dict[str, dict[str, list[dict]]] = {}
@@ -126,6 +144,8 @@ class Files(unittest.TestCase):
         topology = json.loads(SCALE.read_text())
         price = {"g6-dedicated-2": 0.054, "g6-dedicated-4": 0.108, "g6-dedicated-8": 0.216}
         counts: dict[str, int] = {}
+        # What `up` creates: the autoscale slots are left out.
+        topology = lab_tool.created_part(topology)
         for node in topology["nodes"]:
             counts[node["type"]] = counts.get(node["type"], 0) + 1
         # Sized for the budget of about $60 to $70 with the watchdog's cap:
@@ -142,7 +162,7 @@ class Files(unittest.TestCase):
     def test_variants_and_refusals(self):
         lon8 = json.loads(SCALE.read_text())
         edges = [node["name"] for node in lon8["nodes"]
-                 if node["role"] == "edge" and node["site"] == "london"]
+                 if node["role"] == "edge" and node["site"] == "london" and not node.get("slot")]
         self.assertEqual(edges, LONDON_EDGES)
         # The edge addresses skip the source host's .30.
         addresses = [node["vlan_ipv4"] for node in lon8["nodes"] if node["name"] in edges]
@@ -155,9 +175,14 @@ class Files(unittest.TestCase):
         self.assertNotIn("sydney", {node["site"] for node in three["nodes"]})
         none = scale_topology.scale_topology(standby={})
         self.assertEqual(none["standby_edges"], [])
+        bare = scale_topology.scale_topology(slots={})
+        self.assertEqual(bare["autoscale_slots"], [])
+        self.assertFalse([node for node in bare["nodes"] if node.get("slot")])
         for bad in ({"sites": ("newyork", "tokyo")}, {"edges": {"mars": 2}},
                     {"edges": {"london": 0}}, {"load_type": "g6-standard-8"},
-                    {"standby": {"london": 10}}):
+                    {"standby": {"london": 10}}, {"slots": {"mars": {"edges": 1}}},
+                    {"slots": {"london": {"edges": 31}}},
+                    {"slots": {"london": {"relays": 1}}}):
             with self.assertRaises(ValueError, msg=bad):
                 scale_topology.scale_topology(**bad)
 
@@ -382,16 +407,43 @@ class LabTool(unittest.TestCase):
                for region in ("gb-lon", "us-east", "ap-northeast", "ap-southeast")}
 
     def test_price_of_the_scale_topologies(self):
-        hourly, problems = lab_tool.topology_cost(json.loads(SCALE.read_text()), self.TYPES,
+        every = json.loads(SCALE.read_text())
+        hourly, problems = lab_tool.topology_cost(lab_tool.created_part(every), self.TYPES,
                                                   self.REGIONS)
         self.assertEqual(problems, [])
         self.assertAlmostEqual(hourly, 10.422, places=3)
-        topology = lab_tool.without_sites(json.loads(SCALE.read_text()), ["sydney"])
+        # The four slots are priced and checked too (dedicated only).
+        hourly, problems = lab_tool.topology_cost(every, self.TYPES, self.REGIONS)
+        self.assertEqual(problems, [])
+        self.assertAlmostEqual(hourly, 10.422 + 4 * 0.054, places=3)
+        topology = lab_tool.created_part(lab_tool.without_sites(every, ["sydney"]))
         hourly, _ = lab_tool.topology_cost(topology, self.TYPES, self.REGIONS)
         self.assertAlmostEqual(hourly, 10.422 - 2.538, places=3)
 
+    def test_validate_refuses_a_shared_slot_and_caps_what_up_creates(self):
+        class FakeApi:
+            def list_all(self, endpoint, tag=None):
+                return list((LabTool.TYPES if "types" in endpoint else LabTool.REGIONS).values())
+
+        every = json.loads(SCALE.read_text())
+        with mock.patch.object(lab_tool, "MAX_NODES", 99), \
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 10.5):
+            _topology, hourly = lab_tool.validate_topology(FakeApi(), every)
+            self.assertAlmostEqual(hourly, 10.422, places=3)
+            shared = json.loads(SCALE.read_text())
+            for node in shared["nodes"]:
+                if node["name"] == "lon-edge-11":
+                    node["type"] = "g6-standard-2"
+            with self.assertRaises(SystemExit) as caught, redirect_stdout(io.StringIO()):
+                lab_tool.validate_topology(FakeApi(), shared)
+            self.assertIn("not a dedicated-CPU plan", str(caught.exception))
+        with mock.patch.object(lab_tool, "MAX_NODES", 98), \
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 10.5), \
+                self.assertRaises(SystemExit):
+            lab_tool.validate_topology(FakeApi(), every)
+
     def test_capacity_and_shared_plans_are_named(self):
-        topology = json.loads(SCALE.read_text())
+        topology = lab_tool.created_part(json.loads(SCALE.read_text()))
         availability = {("ap-southeast", "g6-dedicated-4"): False}
         _hourly, problems = lab_tool.topology_cost(topology, self.TYPES, self.REGIONS,
                                                    availability)
@@ -414,7 +466,8 @@ class LabTool(unittest.TestCase):
     def test_grow_leaves_out_the_sites_that_up_left_out(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
-        base = lab_tool.without_sites(json.loads(SCALE.read_text()), ["sydney"])
+        base = lab_tool.created_part(
+            lab_tool.without_sites(json.loads(SCALE.read_text()), ["sydney"]))
         base["nodes"] = [node for node in base["nodes"] if node["name"] not in STANDBY]
         state = {"run_id": "t", "tag": "t", "image": "linode/debian13", "hourly_usd": 0,
                  "firewall_id": 1, "sites_left_out": ["sydney"],
@@ -438,8 +491,11 @@ class LabTool(unittest.TestCase):
                 mock.patch.object(lab_tool, "command_status", lambda args: None), \
                 redirect_stdout(io.StringIO()):
             lab_tool.command_grow(args)
+        # Never an autoscale slot: only `add` creates one.
         self.assertEqual(sorted(node["name"] for node in added),
                          sorted(name for name in STANDBY if not name.startswith("syd-")))
+        self.assertEqual(sorted(json.loads(path.read_text())["slots"]),
+                         ["lon-dist-c", "lon-edge-11", "lon-edge-12", "new-dist-c"])
 
     def test_down_deletes_the_runs_vlans_once_they_are_empty(self):
         calls = []

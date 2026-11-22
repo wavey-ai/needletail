@@ -1317,11 +1317,13 @@ def scale_settings(standby: list[str]) -> dict:
 
 def topology_state(path: pathlib.Path, without: list[str] = ()) -> dict:
     """A lab state for a topology file (made-up public addresses), for
-    `plan --topology-only` and the tests; sites in `without` left out."""
+    `plan --topology-only` and the tests; sites in `without` left out, and
+    the autoscale slots (`"slot": true`), which `lab up` does not create."""
     topology = json.loads(path.read_text())
     nodes = {}
+    slots = set(topology.get("autoscale_slots") or [])
     for index, node in enumerate(topology["nodes"], 1):
-        if node["site"] in without:
+        if node["site"] in without or node.get("slot") or node["name"] in slots:
             continue
         nodes[node["name"]] = {**{key: node.get(key) for key in (
             "name", "role", "site", "region", "type", "purpose")},
@@ -1433,7 +1435,10 @@ def standby_for(nodes: list[dict], standby: list[str], edges_per_region: int | N
 
 def command_settings(args: argparse.Namespace) -> None:
     topology = json.loads(pathlib.Path(args.topology).read_text())
-    standby = standby_for(topology["nodes"],
+    slots = set(topology.get("autoscale_slots") or [])
+    created = [node for node in topology["nodes"]
+               if not node.get("slot") and node["name"] not in slots]
+    standby = standby_for(created,
                           [] if args.second_curve else topology.get("standby_edges", []),
                           args.edges_per_region)
     print(" ".join(f"--set {key}={json.dumps(value, separators=(',', ':'))}"
