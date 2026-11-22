@@ -222,6 +222,27 @@ class Render(Base):
         for edge in lab.edges("london"):
             self.assertNotIn("--relay-controlled-local", args[edge])
 
+    def test_wave7_settings_render_only_when_given(self):
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in ("--relay-audio-copies", "--cache-mesh-fast-plane-push",
+                         "--relay-demand-renditions"):
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            'relay_audio_copies="policy"', 'cache_mesh_fast_plane_push="all"',
+            'relay_demand_renditions=""'])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-audio-copies"), "policy")
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-demand-renditions"), "")
+        self.assertEqual(value_of(args["lon-dist-a"], "--cache-mesh-fast-plane-push"), "all")
+        self.assertEqual(value_of(args["lon-dist-a"], "--relay-demand-renditions"), "")
+        self.assertNotIn("--cache-mesh-fast-plane-push", args["lon-edge-1"])
+        _program, _plan, args = self.render(["daw_hls_base_stream_id=5001",
+                                             'relay_demand_renditions="auto"'])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-demand-renditions"),
+                         "5001,6001,7001")
+        self.assertEqual(value_of(args["new-dist-a"], "--relay-demand-renditions"),
+                         "5001,6001,7001")
+
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
         program, plan, _args = self.render()
         self.assertEqual(program["forwarding"], "merged")

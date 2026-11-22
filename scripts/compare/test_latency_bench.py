@@ -615,7 +615,9 @@ class UnreadPayloads(unittest.TestCase):
         self.assertEqual([command[command.index("--payload") + 1] for command in commands],
                          ["pcm", "flac"])
         groups = [command[command.index("--group-id") + 1] for command in commands]
-        self.assertEqual(groups, ["1", "2"])
+        self.assertEqual(groups, ["0", "0"])
+        sessions = [command[command.index("--session-id") + 1] for command in commands]
+        self.assertEqual(len(set(sessions)), 2)
         with self.assertRaises(SystemExit):
             bench.unread_payloads(parse("--unread-payloads", "mp3"))
 

@@ -158,6 +158,28 @@ DEFAULT_SETTINGS = {
     # before (an av-contrib with --audio-epoch-mesh-lane then needs it `on`
     # under --relay-exclusive: give it in extra_contributor_args).
     "audio_epoch_lane": False,
+    # Wave 7 items 2, 4 and 5. None renders nothing: the binaries' defaults
+    # (the new behaviour) hold.
+    # - relay_audio_copies: av-contrib --relay-audio-copies, the copies of a
+    #   one-symbol (1 ms) audio part: "measured" (the default: sized to the
+    #   loss that the first forwarders report on each lane, RLR1, none on a
+    #   clean lane), "configured" (path_loss_ppm), "policy" (as before: two
+    #   repair copies at 2 %).
+    # - cache_mesh_fast_plane_push: av-mesh --cache-mesh-fast-plane-push on
+    #   the distributors: "none" (the default: no cache-mesh push of an
+    #   audio part to an edge that the fast plane feeds), "secondary" (only
+    #   the edge's secondary distributor pushes), "all" (as before).
+    # - relay_demand_renditions: --relay-demand-renditions of the
+    #   contributor and every relay node: groups of renditions of one source
+    #   ("2001,3001,4001;..."), of which a lane carries only what its
+    #   subtree reads (or everything while it reads none of the group).
+    #   "auto": the DAW lane's FLAC/Opus/PCM from daw_hls_base_stream_id.
+    #   None (the binaries' default, empty): nothing is held back; the first
+    #   reader of a held rendition does not start cleanly yet (wave 7 item 5
+    #   in the low-latency results).
+    "relay_audio_copies": None,
+    "cache_mesh_fast_plane_push": None,
+    "relay_demand_renditions": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1551,7 +1573,37 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
             args += [f"{prefix}-observed-at-unix-ms", str(observed["observed_at_unix_ms"])]
     extra = list(settings["extra_contributor_args"])
     args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
+    args += yield_to(extra, wave7_args(args, settings))
     return args + extra
+
+
+def demand_renditions(settings: dict) -> str | None:
+    """--relay-demand-renditions to render, or None for the binaries'
+    default (nothing held back); "auto" is the DAW lane's renditions."""
+    value = settings.get("relay_demand_renditions")
+    if value != "auto":
+        return None if value is None else str(value)
+    base = int(settings.get("daw_hls_base_stream_id") or 2001)
+    return f"{base},{base + 1000},{base + 2000}"
+
+
+def wave7_args(node_args: list[str], settings: dict) -> list[str]:
+    """The `--flag value` pairs of wave 7 items 2, 4 and 5 for a service
+    rendered with `node_args`: only the settings that are given."""
+    out = []
+    renditions = demand_renditions(settings)
+    if is_contributor_args(node_args):
+        if settings.get("relay_audio_copies") is not None:
+            out += ["--relay-audio-copies", str(settings["relay_audio_copies"])]
+        if renditions is not None:
+            out += ["--relay-demand-renditions", renditions]
+        return out
+    if "--relay-controlled-local" in node_args and renditions is not None:
+        out += ["--relay-demand-renditions", renditions]
+    if ("--relay-lease-bind" in node_args
+            and settings.get("cache_mesh_fast_plane_push") is not None):
+        out += ["--cache-mesh-fast-plane-push", str(settings["cache_mesh_fast_plane_push"])]
+    return out
 
 
 def is_contributor_args(args: list[str]) -> bool:
@@ -2118,7 +2170,8 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         if "--client-udp-bind" in args:
             args += yield_to(extra, ["--client-udp-fast-lane",
                                      flag(classes["client_udp_fast_lane"])])
-        args += yield_to(extra, mesh_class_args(node, args, classes)) + extra
+        args += yield_to(extra, mesh_class_args(node, args, classes))
+        args += yield_to(extra, wave7_args(args, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}

@@ -346,14 +346,17 @@ def unread_payloads(args) -> list[str]:
 
 
 def unread_sender_commands(args, start: int, loop_file: str) -> list[list[str]]:
-    """A sender for each --unread-payloads rendition: a session and group of
-    its own, the loop's own epochs (48 samples; 32 for FLAC)."""
+    """A sender for each --unread-payloads rendition: a session of its own,
+    the loop's own epochs (48 samples; 32 for FLAC)."""
     out = []
     for index, payload in enumerate(unread_payloads(args), start=1):
         samples = max(32, DEFAULT_EPOCH_SAMPLES[payload]) if payload == "flac" else DEFAULT_EPOCH_SAMPLES[payload]
         session_id = start * 1_000_000_000 + epoch_ns(samples) + index
         out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
-                    "--session-id", str(session_id), "--group-id", str(index),
+                    # Group 0, as the main sender: the contributor numbers a
+                    # rendition base + format offset + group, so PCM is 4001
+                    # and FLAC 2001, the DAW lane's renditions of one source.
+                    "--session-id", str(session_id), "--group-id", "0",
                     "--duration-seconds", str(args.seconds + max(0, start - int(time.time())) + 300),
                     "--payload", payload, "--epoch-samples", str(samples),
                     "--channels", "2", "--group-channels", "8",
