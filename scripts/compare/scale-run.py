@@ -1347,6 +1347,16 @@ def ssh(node: dict, command: str, timeout: int = 120, check: bool = False) -> st
     return common.ssh_text(node, command, check=check, timeout=timeout)
 
 
+def ssh_quiet(node: dict, command: str, timeout: int = 30) -> str:
+    """ssh for the watching during a step: an unanswered or failed probe of
+    one host (a saturated host's sshd is slow) reads as no output rather
+    than ending the whole run."""
+    try:
+        return ssh(node, command, timeout=timeout)
+    except Exception:  # noqa: BLE001 - one host's probe; the next poll tries again
+        return ""
+
+
 def http_get(node: dict, path: str, timeout: float = 5.0):
     """GET https://<public ip>:19444<path> of a mesh node (the operator's
     address is open in the lab firewall), certificate not checked: JSON for
@@ -1538,10 +1548,10 @@ def monitor(hosts: list[dict], remote_dir: str, until: float, poll: float,
     saturates, or (None, None)."""
     while time.time() < until:
         time.sleep(min(poll, max(0.0, until - time.time())))
-        tails = common.parallel(hosts, lambda node: ssh(
+        tails = common.parallel(hosts, lambda node: ssh_quiet(
             node, f"tail -n {SATURATION_HOLD + 2} {remote_dir}/sampler.jsonl 2>/dev/null; "
                   f"echo ==; tail -n {SATURATION_HOLD} {remote_dir}/{LOAD_DIR}/intervals.jsonl "
-                  "2>/dev/null", timeout=30))
+                  "2>/dev/null"), workers=64)
         for name, text in sorted(tails.items()):
             sampled, _, intervals = text.partition("==")
             why = load_saturated(sampler_rows(sampled)[1], interval_rows(read_jsonl(intervals)))
@@ -1603,8 +1613,8 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
         # The tools end at their duration and drain; give them time to write.
         deadline = time.time() + 60
         while time.time() < deadline:
-            busy = common.parallel(hosts, lambda node: ssh(
-                node, f"pgrep -c -x {LOAD_PROCESS}; pgrep -c -x ntcmp", timeout=30))
+            busy = common.parallel(hosts, lambda node: ssh_quiet(
+                node, f"pgrep -c -x {LOAD_PROCESS}; pgrep -c -x ntcmp"), workers=64)
             if not any(int(line) for text in busy.values() for line in text.split()
                        if line.strip().isdigit()):
                 break
