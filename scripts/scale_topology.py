@@ -28,10 +28,10 @@ second curve's: the document names them in `standby_edges`, which the
 first curve deploys with (scale-run.py settings), and the second restarts
 them in (scale-run.py settings --second-curve).
 
-Sydney's nodes come first: the comparison's lab tool creates the first
-region of a topology before any other and stops at the first refusal, and
-Sydney is the region that is short of dedicated capacity. Without it, `up
---skip-sites sydney` (or a file made with --sites london,newyork,tokyo).
+Sydney's nodes come first in the file: it is the region short of dedicated
+capacity. `lab up --optional-sites sydney` creates them before the rest and
+goes on without Sydney when one cannot be created; `--without-sites sydney`
+leaves it out (or a file made with --sites london,newyork,tokyo).
 
   scale_topology.py                       print topology-scale.json
   scale_topology.py --edges-in london=8   the second curve: eight London edges
