@@ -187,8 +187,14 @@ public.
 Builds (Linux, x86_64-unknown-linux-gnu, as for the latency labs):
 
 ```sh
-# av-mesh with needletail-load (branch scale-load), av-contrib, daw-nexus:
-#   cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.36
+# av-mesh branch scale-load (c407258: needletail-load, on d6b9728), cross-built
+# for the lab's glibc: the deploy takes target/x86_64-unknown-linux-gnu/release,
+# not a host build (cargo build --release puts needletail-load in target/release,
+# linked against this host's newer glibc).
+(cd /home/jamieb/wavey.ai/av-mesh-scale && cargo zigbuild --release \
+   --target x86_64-unknown-linux-gnu.2.36 --bin av-mesh --bin needletail-load \
+   --bin needletail-reader --bin needletail-udp-client)
+# av-contrib and daw-nexus: as for the latency labs (same zigbuild target).
 export NEEDLETAIL_AV_MESH_ROOT=/home/jamieb/wavey.ai/av-mesh-scale
 export NEEDLETAIL_AV_CONTRIB_ROOT=/home/jamieb/wavey.ai/av-contrib-run   # or the referee's
 cd /home/jamieb/wavey.ai/needletail-scale
