@@ -25,7 +25,17 @@ Cost controls are part of the tool, not an operator convention:
   `remove <name>` deletes one by its recorded id, only when the live
   instance still carries the run's tag and label;
 * `billed` is what the lab has cost: every instance a whole hour at least
-  (ceil(hours) x its price), instances removed before `down` included.
+  (ceil(hours) x its price), instances removed before `down` included;
+* `up` creates in stages: an optional site's core, the core (every node but
+  the listener hosts), then the listener hosts in `--listener-batches`
+  batches. Every stage stops at the first refusal (the creates already
+  under way finish). A refusal in the core deletes the partial lab (and
+  says what it billed); an account refusal there first gives up the
+  optional sites, whose instances count against the same limit. A refusal
+  among the listener hosts keeps what exists and records the hosts that
+  are missing (`listeners_missing`), for scale-run.py to fit its ramp to
+  the hosts that exist. Account limits (instances, vCPUs), capacity and
+  transient errors are told apart from the API's message (refusal_kind).
 
 The Linode token is read from LINODE_TOKEN, LINODE_PAT, or the token file. It
 is never written to state, logs, or generated output.
@@ -40,8 +50,10 @@ import json
 import math
 import os
 import pathlib
+import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -68,6 +80,25 @@ ADD_CUTOFF_S = 900
 # of its life (a deadline moved later mid-run would bill more hours).
 MAX_LIFE_HOURS = float(os.environ.get("NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS", "6.0"))
 DELETE_WORKERS = 8
+CREATE_WORKERS = 4
+# `up` creates the listener hosts in this many batches after the core.
+LISTENER_BATCHES = 2
+# What a refused create says, lower case. The account's own limits (how many
+# instances, how many dedicated vCPUs it may have: Linode support raises them
+# on request) are told apart from a region short of capacity for a plan and
+# from errors that pass (Api.call already retries 429 and 5xx, create_node a
+# timed-out create). The account markers are tried first: Linode's limit
+# message, "Account Limit reached. Please open a support ticket ...", names
+# no capacity, but a capacity message may name support.
+ACCOUNT_MARKERS = ("account limit", "limit reached", "limit exceeded", "exceeds your limit",
+                   "maximum number of", "quota", "support ticket", "cpu limit",
+                   "allowed on your account", "too many linodes", "request an increase")
+CAPACITY_MARKERS = ("capacity", "not available in this region", "unavailable in this region",
+                    "not available in the selected region", "out of stock", "sold out",
+                    "no resources available", "not accepting new")
+TRANSIENT_MARKERS = ("http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
+                     "try again", "busy", "timed out", "timeout", "did not succeed after retries",
+                     "connection reset", "temporarily")
 
 
 def load_token() -> str:
@@ -311,6 +342,125 @@ def split_optional(nodes: list[dict], sites: list[str]) -> tuple[dict, list[dict
     return first, rest
 
 
+def is_listener_host(node: dict) -> bool:
+    """A listener host of the scale run (role load, purpose "listeners", or
+    named *-load-N in a topology without purposes): the nodes that `up`
+    creates last, in batches, and does without when the account refuses
+    them. Everything else is the core."""
+    if node.get("role") != "load":
+        return False
+    purpose = node.get("purpose")
+    if purpose:
+        return purpose == "listeners"
+    return bool(re.search(r"-load-[0-9]+$", str(node.get("name") or "")))
+
+
+def listener_batches(nodes: list[dict], count: int) -> list[list[dict]]:
+    """The listener hosts in `count` batches, each with its share of every
+    site's hosts (the first hosts of each site in the first batch), so that
+    a lab whose later batches are refused still has listeners everywhere."""
+    count = max(1, int(count))
+    by_site: dict[str, list[dict]] = {}
+    for node in nodes:
+        by_site.setdefault(node["site"], []).append(node)
+    batches: list[list[dict]] = [[] for _ in range(count)]
+    for site_nodes in by_site.values():
+        size = math.ceil(len(site_nodes) / count)
+        for index in range(count):
+            batches[index] += site_nodes[index * size:(index + 1) * size]
+    return [batch for batch in batches if batch]
+
+
+def refusal_kind(error) -> str:
+    """Why a create was refused, from the API's message: "account" (the
+    account's limit of instances or of dedicated vCPUs), "capacity" (the
+    region has none of the plan today), "transient" (retried already and
+    still failing: a timeout, 429, 5xx, busy) or "other"."""
+    text = str(error).lower()
+    if any(marker in text for marker in ACCOUNT_MARKERS):
+        return "account"
+    if any(marker in text for marker in CAPACITY_MARKERS):
+        return "capacity"
+    if any(marker in text for marker in TRANSIENT_MARKERS):
+        return "transient"
+    return "other"
+
+
+def create_batch(api: "Api", state: dict, state_path: pathlib.Path, nodes: list[dict], key: str,
+                 capacity_blocks_plan_only: bool = False,
+                 workers: int | None = None) -> dict:
+    """Create `nodes` (CREATE_WORKERS at a time), recording each in the
+    state as it lands, and stop at the first refusal: no create starts
+    after it (the ones under way finish and are recorded). With
+    `capacity_blocks_plan_only`, a capacity refusal stops only the nodes of
+    the same region and plan; any other refusal stops all. Returns
+    {"created": [names], "refused": [{"name", "region", "type", "kind",
+    "error"}], "skipped": [{"name", "region", "type", "after"}]}."""
+    stop: list[dict] = []
+    blocked: dict[tuple[str, str], dict] = {}
+    lock = threading.Lock()
+    out: dict = {"created": [], "refused": [], "skipped": []}
+
+    def one(node: dict) -> dict | None:
+        with lock:
+            cause = stop[0] if stop else blocked.get((node["region"], node["type"]))
+            if cause:
+                out["skipped"].append({"name": node["name"], "site": node["site"],
+                                       "region": node["region"], "type": node["type"],
+                                       "after": f"{cause['kind']} refusal of {cause['name']}"})
+                return None
+        try:
+            return create_node(api, state["run_id"], state["tag"], state["image"], key, node)
+        except Exception as error:  # noqa: BLE001 - every refusal is recorded and stops
+            refusal = {"name": node["name"], "site": node["site"], "region": node["region"],
+                       "type": node["type"], "kind": refusal_kind(error),
+                       "error": str(error)[-400:]}
+            with lock:
+                out["refused"].append(refusal)
+                if refusal["kind"] == "capacity" and capacity_blocks_plan_only:
+                    blocked.setdefault((node["region"], node["type"]), refusal)
+                elif not stop:
+                    stop.append(refusal)
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers or CREATE_WORKERS)) \
+            as pool:
+        futures = [pool.submit(one, node) for node in nodes]
+        for future in concurrent.futures.as_completed(futures):
+            created = future.result()
+            if not created:
+                continue
+            state["nodes"][created["name"]] = created
+            write_state(state_path, state)
+            out["created"].append(created["name"])
+            print(f"  created {created['name']:<18} {created['region']:<13} "
+                  f"{created['type']:<14} {created['public_ipv4']}")
+    for refusal in out["refused"]:
+        print(f"  refused {refusal['name']:<18} {refusal['region']:<13} {refusal['type']:<14} "
+              f"{refusal['kind']}: {refusal['error'][-200:]}", file=sys.stderr)
+    return out
+
+
+def drop_site(api: "Api", state: dict, state_path: pathlib.Path, site: str, why: str) -> None:
+    """Delete every node of an optional site that `up` created, by its
+    recorded id, and go on without the site. Billing keeps each (a whole
+    hour at least: state["removed"])."""
+    dropped = [name for name, node in state["nodes"].items() if node["site"] == site]
+    for name in dropped:
+        node = state["nodes"].pop(name)
+        api.call("DELETE", f"/linode/instances/{node['id']}", allow_404=True)
+        state.setdefault("removed", []).append(removed_record(state, node, time.time()))
+    if site not in state.setdefault("sites_left_out", []):
+        state["sites_left_out"].append(site)
+    state["hourly_usd"] = round(sum(node.get("hourly_usd", 0.0)
+                                    for node in state["nodes"].values()), 4)
+    write_state(state_path, state)
+    cost = sum(row["usd"] for row in billed(state)["rows"]
+               if not row["live"] and row["name"] in dropped)
+    print(f"site {site} left out ({why}); deleted the {len(dropped)} of its nodes that were "
+          f"created: ${cost:.2f} billed for them (an hour each at least)", file=sys.stderr)
+
+
 def command_check(args: argparse.Namespace) -> None:
     """Price a topology and check it against today's plans, regions and
     capacity, from the API's public endpoints (no token, nothing created).
@@ -408,6 +558,124 @@ def create_node(api: Api, run_id: str, tag: str, image: str, key: str,
     }
 
 
+def missing_entry(node: dict, kind: str, why: str) -> dict:
+    return {"name": node["name"], "site": node["site"], "region": node["region"],
+            "type": node["type"], "kind": kind, "why": why[-300:]}
+
+
+def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path: pathlib.Path,
+                  nodes: list[dict], optional: list[str], key: str) -> None:
+    """`up`'s creation, in stages, each stopping at its first refusal:
+
+    1. the core of each optional site (Sydney: the region short of capacity,
+       tried first): a refusal deletes what of the site was created and the
+       lab goes on without it;
+    2. the core, every other node but the listener hosts (contributor,
+       source, forwarders, edges with the standby ones, view hosts, LiveKit
+       and its Redis): without it the lab is of no use, so a refusal deletes
+       the partial lab (`down`) and says what it billed. An account refusal
+       (the limit of instances or vCPUs) first gives up the optional sites,
+       whose instances count against the same limit, and tries the rest of
+       the core once more;
+    3. the listener hosts, in `--listener-batches` batches (LISTENER_BATCHES),
+       each with a share of every site's: a refusal keeps what exists. An
+       account refusal, or one that is neither capacity nor account, stops
+       every later create; a capacity refusal stops only that region's plan.
+       The hosts not created are recorded in `listeners_missing` with why,
+       and scale-run.py fits its ramp to the hosts that exist. An optional
+       site left with no listener host is deleted (its edges would carry no
+       listener).
+    Every refusal is kept in `refusals`."""
+    batches = getattr(args, "listener_batches", None) or LISTENER_BATCHES
+    first, rest = split_optional(nodes, optional)
+    core = [node for node in rest if not is_listener_host(node)]
+    listeners = [node for node in nodes if is_listener_host(node)]
+    state.setdefault("refusals", [])
+
+    def note(result: dict, stage: str) -> None:
+        state["refusals"] += [{**item, "stage": stage} for item in result["refused"]]
+        write_state(state_path, state)
+
+    for site, site_nodes in first.items():
+        result = create_batch(api, state, state_path,
+                              [node for node in site_nodes if not is_listener_host(node)], key)
+        if result["refused"]:
+            note(result, f"core of optional site {site}")
+            refused = result["refused"][0]
+            drop_site(api, state, state_path, site,
+                      f"{refused['kind']} refusal of {refused['name']}")
+    print(f"Core: {len(core)} nodes")
+    result = create_batch(api, state, state_path, core, key)
+    kept_optional = [site for site in first if site not in state.get("sites_left_out", [])]
+    if result["refused"] and kept_optional and any(
+            item["kind"] == "account" for item in result["refused"]):
+        note(result, "core")
+        for site in kept_optional:
+            drop_site(api, state, state_path, site,
+                      "the account refused the core: the optional site's instances are given "
+                      "back to its limit")
+        result = create_batch(api, state, state_path,
+                              [node for node in core if node["name"] not in state["nodes"]], key)
+    if result["refused"]:
+        note(result, "core")
+        refused = result["refused"][0]
+        cost = billed(state)
+        print(f"the core was refused at {refused['name']} ({refused['kind']}: "
+              f"{refused['error'][-200:]}); creation stopped there. {cost['live']} instances "
+              f"exist and {cost['removed']} were deleted already; deleting the partial lab. It "
+              f"bills ${cost['usd']:.2f} ({cost['instance_hours']} instance-hours: every "
+              "instance created bills an hour at least)", file=sys.stderr)
+        command_down(args)
+        sys.exit(1)
+
+    listeners = [node for node in listeners
+                 if node["site"] not in state.get("sites_left_out", [])]
+    missing: list[dict] = []
+    stopped: str | None = None
+    blocked: dict[tuple[str, str], str] = {}
+    for index, batch in enumerate(listener_batches(listeners, batches), 1):
+        todo = []
+        for node in batch:
+            why = stopped or blocked.get((node["region"], node["type"]))
+            if why:
+                missing.append(missing_entry(node, "not attempted", why))
+            else:
+                todo.append(node)
+        if not todo:
+            continue
+        print(f"Listener hosts, batch {index}: {len(todo)} nodes")
+        result = create_batch(api, state, state_path, todo, key, capacity_blocks_plan_only=True)
+        note(result, f"listener batch {index}")
+        for item in result["refused"]:
+            missing.append({**{key_: item[key_] for key_ in ("name", "site", "region", "type",
+                                                               "kind")},
+                            "why": item["error"][-300:]})
+            cause = f"{item['kind']} refusal of {item['name']}"
+            if item["kind"] == "capacity":
+                blocked.setdefault((item["region"], item["type"]), cause)
+            elif not stopped:
+                stopped = cause
+        for item in result["skipped"]:
+            missing.append(missing_entry(item, "not attempted", item["after"]))
+    for site in first:
+        if site in state.get("sites_left_out", []):
+            continue
+        if not any(node["site"] == site and is_listener_host(node)
+                   for node in state["nodes"].values()):
+            drop_site(api, state, state_path, site, "none of its listener hosts was created")
+            missing = [item for item in missing if item["site"] != site]
+    state["listeners_missing"] = missing
+    state["hourly_usd"] = round(sum(node.get("hourly_usd", 0.0)
+                                    for node in state["nodes"].values()), 4)
+    write_state(state_path, state)
+    if missing:
+        made = sum(1 for node in state["nodes"].values() if is_listener_host(node))
+        print(f"listener hosts: {made} created, {len(missing)} missing ("
+              + ", ".join(f"{item['name']}: {item['kind']}" for item in missing)
+              + "); the lab is kept. scale-run.py fits its steps to the hosts that exist; "
+              "`grow` creates the missing ones once the account allows", file=sys.stderr)
+
+
 def command_up(args: argparse.Namespace) -> None:
     state_path = pathlib.Path(args.state)
     if state_path.exists():
@@ -454,51 +722,7 @@ def command_up(args: argparse.Namespace) -> None:
     print(f"Creating {len(topology['nodes'])} Linodes at ${hourly:.4f}/hour "
           f"(run {run_id})")
     key = key_path.read_text().strip()
-
-    def create(nodes: list[dict]) -> list[str]:
-        failures: list[str] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {
-                pool.submit(create_node, api, run_id, tag, image, key, node): node
-                for node in nodes
-            }
-            for future in concurrent.futures.as_completed(futures):
-                node = futures[future]
-                try:
-                    created = future.result()
-                except RuntimeError as error:
-                    failures.append(f"{node['name']}: {error}")
-                    continue
-                state["nodes"][created["name"]] = created
-                write_state(state_path, state)
-                print(f"  created {created['name']:<18} {created['region']:<13} "
-                      f"{created['type']:<14} {created['public_ipv4']}")
-        return failures
-
-    # The nodes of an optional site first (a region whose dedicated capacity
-    # runs out, such as Sydney): when one of them cannot be created, the
-    # site's nodes are deleted and the lab goes on without it.
-    first, rest = split_optional(topology["nodes"], optional)
-    for site, nodes in first.items():
-        failures = create(nodes)
-        if failures:
-            print("\n".join(failures), file=sys.stderr)
-            dropped = [state["nodes"].pop(node["name"]) for node in nodes
-                       if node["name"] in state["nodes"]]
-            for item in dropped:
-                api.call("DELETE", f"/linode/instances/{item['id']}", allow_404=True)
-            state.setdefault("sites_left_out", []).append(site)
-            state["hourly_usd"] = round(state["hourly_usd"] - sum(
-                node.get("_hourly", 0.0) for node in nodes), 4)
-            write_state(state_path, state)
-            print(f"site {site} left out: {len(failures)} of its {len(nodes)} nodes could not "
-                  f"be created; deleted the {len(dropped)} that were", file=sys.stderr)
-    failures = create(rest)
-    if failures:
-        print("\n".join(failures), file=sys.stderr)
-        print("creation failed; removing the partial lab", file=sys.stderr)
-        command_down(args)
-        sys.exit(1)
+    create_staged(args, api, state, state_path, topology["nodes"], optional, key)
 
     operator = operator_ipv4()
     node_addresses = [f"{node['public_ipv4']}/32" for node in state["nodes"].values()]
@@ -717,8 +941,28 @@ def command_grow(args: argparse.Namespace) -> None:
         return
     print(f"Adding {len(missing)} Linodes; the lab will cost ${hourly:.4f}/hour")
     state["topology_file"] = str(pathlib.Path(args.topology).resolve())
-    add_nodes(args, api, state, missing)
+    try:
+        add_nodes(args, api, state, missing)
+    except RuntimeError as error:
+        # Some were refused: those created are recorded (and behind the
+        # firewall); the listener hosts still missing stay recorded.
+        refresh_listeners_missing(pathlib.Path(args.state), str(error))
+        sys.exit(f"grow: {error}")
+    refresh_listeners_missing(pathlib.Path(args.state))
     command_status(args)
+
+
+def refresh_listeners_missing(state_path: pathlib.Path, error: str = "") -> None:
+    """After `grow`: the listener hosts that `up` recorded as missing and
+    that the lab still does not have (a refusal of this grow, `error`,
+    named on each that it did not create)."""
+    state = read_state(state_path)
+    if state is None or not state.get("listeners_missing"):
+        return
+    still = [item if not error else {**item, "why": f"grow: {error}"[-300:]}
+             for item in state["listeners_missing"] if item["name"] not in state["nodes"]]
+    state["listeners_missing"] = still
+    write_state(state_path, state)
 
 
 def command_replace(args: argparse.Namespace) -> None:
@@ -1090,6 +1334,10 @@ def command_status(args: argparse.Namespace) -> None:
     if deadline:
         print(f"watchdog: the lab is gone in {(deadline - time.time()) / 60:.0f} min "
               f"(down starts {WATCHDOG_LEAD_S // 60} min before)")
+    if state.get("listeners_missing"):
+        print("listener hosts missing (refused at up; scale-run.py fits its steps to the rest): "
+              + ", ".join(f"{item['name']} ({item['kind']})"
+                          for item in state["listeners_missing"]))
     print(f"{'NAME':<18} {'ROLE':<12} {'REGION':<13} {'TYPE':<14} "
           f"{'PUBLIC':<16} {'VLAN':<13} STATUS")
     for name in sorted(state["nodes"]):
@@ -1266,8 +1514,12 @@ def main() -> None:
                     help="arm the watchdog (delete the lab after this many hours) before the "
                          "first instance is created")
     up.add_argument("--optional-sites", default="",
-                    help="comma-separated sites created first and left out when one of "
-                         "their nodes cannot be created (no capacity)")
+                    help="comma-separated sites whose core is created first; the site is left "
+                         "out when one of its nodes cannot be created (no capacity), when the "
+                         "account refuses the core, or when none of its listener hosts is")
+    up.add_argument("--listener-batches", type=int, default=LISTENER_BATCHES,
+                    help="the listener hosts are created after the core in this many batches; "
+                         "a refusal among them keeps the lab and records the hosts missing")
     up.set_defaults(handler=command_up)
     check = sub.add_parser("check", help="price a topology against today's plans and "
                                          "capacity; creates nothing, needs no token")

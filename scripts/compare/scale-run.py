@@ -254,18 +254,22 @@ def split(total: int, weights: list[float]) -> list[int]:
 
 
 def allocate(total: int, regions: dict, hls_share: float = 0.5,
-             hls_cap_per_host: int | None = None) -> dict:
+             hls_cap_per_host: int | None = None, caps: dict[str, int] | None = None) -> dict:
     """{site: {host: {"udp": n, "hls": n, "hls_by_edge": {edge: n}}}} for a
     step of `total` listeners: over the regions in proportion to their
     edges, in a region over its listener hosts in proportion to their vCPUs,
     `hls_share` of a region's listeners LL-HLS readers, and a host's readers
     evenly over the region's edges (each host starting at the next edge, so
     that the region's readers spread evenly). With `hls_cap_per_host` a host
-    runs at most that many readers and the rest of its share is UDP."""
+    runs at most that many readers and the rest of its share is UDP. With
+    `caps` ({site: n}) a region takes at most n listeners (what its listener
+    hosts drive, fit_caps) and the others keep their share."""
     if not 0.0 <= hls_share <= 1.0:
         raise ValueError("hls_share is a fraction")
     sites = sorted(regions)
     per_site = split(total, [len(regions[site]["edges"]) for site in sites])
+    if caps:
+        per_site = [min(count, caps.get(site, count)) for site, count in zip(sites, per_site)]
     out: dict[str, dict] = {}
     for site, count in zip(sites, per_site):
         hosts = regions[site]["listeners"]
@@ -324,6 +328,36 @@ def host_load(alloc: dict, capacity: dict) -> float:
     return used
 
 
+def drivable(alloc: dict, capacity: dict) -> bool:
+    return all(host_load(item, capacity[name]) <= 1.0
+               for by_host in alloc.values() for name, item in by_host.items())
+
+
+def fit_caps(regions: dict, capacity: dict, hls_share: float,
+             hls_cap_per_host: int | None = None, allocate_with=None) -> dict[str, int]:
+    """{site: the most listeners that the region's listener hosts drive}
+    within the plan's headroom (each host's load at most 1.0), for the
+    step's share of LL-HLS: the largest count whose allocation over the
+    region alone is drivable (a binary search; the load rises with the
+    count)."""
+    allocate_with = allocate_with or (lambda total, one: allocate(total, one, hls_share,
+                                                                  hls_cap_per_host))
+    caps = {}
+    for site, region in regions.items():
+        one = {site: region}
+        low, high = 0, 1
+        while drivable(allocate_with(high, one), capacity) and high < 10_000_000:
+            low, high = high, high * 2
+        while high - low > 1:
+            middle = (low + high) // 2
+            if drivable(allocate_with(middle, one), capacity):
+                low = middle
+            else:
+                high = middle
+        caps[site] = low
+    return caps
+
+
 def step_seconds(listeners_per_host: int, ramp: float | None = None,
                  hold: float = 60.0) -> tuple[float, float]:
     """(ramp, hold) of a step: listeners join over the ramp (about 100 a
@@ -337,9 +371,13 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
                hls_cap_per_host: int | None = None, standby: list[str] = (),
                hold: float = 60.0, ramp: float | None = None, costs: dict | None = None,
                udp_mbps: float | None = None,
-               inbound_gbps: float = LOAD_HOST_INBOUND_GBPS) -> dict:
+               inbound_gbps: float = LOAD_HOST_INBOUND_GBPS, fit: bool = False) -> dict:
     """The allocation, the capacity check, the edges' planned egress and the
-    duration of every step."""
+    duration of every step. With `fit` (a lab whose account refused some
+    listener hosts: `listeners_missing` in its state, or --fit-hosts), each
+    region takes at most what its listener hosts drive (fit_caps), a step
+    is named by the listeners it runs ("requested": what was asked), and a
+    step that would run no more than the one before is dropped."""
     regions = regions_of(state, standby)
     if not regions:
         raise ValueError("the lab has no region with an edge and a listener host")
@@ -354,10 +392,23 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
            "capacity": {name: host_capacity(node, config, costs, udp_mbps, inbound_gbps)
                         for name, node in hosts.items()},
            "steps": []}
+    caps = None
+    if fit:
+        caps = fit_caps(regions, out["capacity"], hls_share, hls_cap_per_host)
+        out["fit"] = {"caps": caps, "dropped": [],
+                      "listeners_missing": [item.get("name") for item in
+                                            state.get("listeners_missing") or []]}
     total_s = 0.0
-    for total in steps:
-        alloc = allocate(total, regions, hls_share, hls_cap_per_host)
-        uncapped = allocate(total, regions, hls_share)
+    previous = 0
+    for requested in steps:
+        alloc = allocate(requested, regions, hls_share, hls_cap_per_host, caps)
+        uncapped = allocate(requested, regions, hls_share, None, caps)
+        total = sum(item["udp"] + item["hls"] for by_host in alloc.values()
+                    for item in by_host.values())
+        if fit and total <= previous:
+            out["fit"]["dropped"].append(requested)
+            continue
+        previous = total
         loads = {name: round(host_load(item, out["capacity"][name]), 3)
                  for by_host in alloc.values() for name, item in by_host.items()}
         biggest = max((item["udp"] + item["hls"] for by_host in alloc.values()
@@ -380,7 +431,11 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
         seconds = step_ramp + step_hold + STEP_OVERHEAD_S
         total_s += seconds
         out["steps"].append({
-            "listeners": total, "udp": udp, "hls": hls,
+            "listeners": total, "requested": requested, "udp": udp, "hls": hls,
+            **({"clipped_regions": {site: caps[site] for site, count in zip(
+                sorted(regions), split(requested, [len(regions[site]["edges"])
+                                                   for site in sorted(regions)]))
+                if count > caps[site]}} if fit else {}),
             "hls_clipped": hls < sum(item["hls"] for by_host in uncapped.values()
                                      for item in by_host.values()),
             "allocation": alloc, "host_load": loads, "sites": sites,
@@ -2547,10 +2602,37 @@ def command_settings(args: argparse.Namespace) -> None:
                    for key, value in scale_settings(standby).items()))
 
 
+def fit_wanted(args: argparse.Namespace, lab: dict) -> bool:
+    """Fit the steps to the listener hosts that exist: with --fit-hosts, or
+    when the lab tool recorded listener hosts that the account refused
+    (`listeners_missing`), unless --force (run the steps as given; the
+    monitor still stops a step whose host saturates)."""
+    if getattr(args, "fit_hosts", False):
+        return True
+    return bool(lab.get("listeners_missing")) and not getattr(args, "force", False)
+
+
 def build_plan(args: argparse.Namespace, lab: dict, standby: list[str]) -> dict:
     return plan_steps(lab, parse_steps(args.steps), args.config, args.hls_share,
                       args.hls_cap_per_host, standby, args.hold, args.ramp,
-                      load_costs(args.cost), args.udp_mbps, args.inbound_gbps)
+                      load_costs(args.cost), args.udp_mbps, args.inbound_gbps,
+                      fit=fit_wanted(args, lab))
+
+
+def fit_line(plan: dict) -> str | None:
+    """What fitting the steps to the listener hosts changed, for the
+    operator and the events (None when the plan was not fitted)."""
+    fit = plan.get("fit")
+    if not fit:
+        return None
+    clipped = sorted({site for step in plan["steps"] for site in step.get("clipped_regions", {})})
+    return (f"steps fitted to the listener hosts that exist (missing: "
+            f"{', '.join(fit['listeners_missing']) or 'none'}): at most "
+            + ", ".join(f"{site} {cap}" for site, cap in sorted(fit["caps"].items()))
+            + f" listeners a region; clipped in {', '.join(clipped) or 'no region'}; steps "
+            f"run {[step['listeners'] for step in plan['steps']]}"
+            + (f", dropped {fit['dropped']} (no more listeners than the step before)"
+               if fit["dropped"] else ""))
 
 
 def command_plan(args: argparse.Namespace) -> dict:
@@ -2583,6 +2665,8 @@ def command_plan(args: argparse.Namespace) -> dict:
     for name, cap in sorted(plan["capacity"].items()):
         print(f"  {name:<12} {cap['vcpus']} vCPU: UDP {cap['udp']} (CPU {cap['udp_by_cpu']}, "
               f"network {cap['udp_by_network']}) or LL-HLS {cap['hls']}")
+    if fit_line(plan):
+        print(fit_line(plan))
     for step in plan["steps"]:
         worst = max(step["host_load"].values()) if step["host_load"] else 0
         edges = "; ".join(f"{site[:3]} {item['listeners_per_edge']:g}/edge "
@@ -2862,6 +2946,9 @@ def command_run(args: argparse.Namespace) -> None:
     phases = phase_setup(args)
     resolve_defaults(args)
     plan = build_plan(args, lab, standby)
+    if not plan["steps"]:
+        sys.exit("no step is left once fitted to the listener hosts that exist "
+                 f"({fit_line(plan)})")
     regions = regions_of(lab, standby)
     check_vlan(lab, regions, args.allow_public_transfer)
     if settings.get("playback_address") != "vlan" and not args.allow_public_transfer:
@@ -2889,6 +2976,9 @@ def command_run(args: argparse.Namespace) -> None:
             events.flush()
         print(json.dumps(item), flush=True)
 
+    if plan.get("fit"):
+        log({"fit": plan["fit"], "steps": [step["listeners"] for step in plan["steps"]],
+             "note": fit_line(plan)})
     if phases:
         phases["events"] = events_path
         (directory / "phases.json").write_text(json.dumps(
@@ -3019,6 +3109,10 @@ def main(argv: list[str] | None = None) -> None:
                           help="wire rate of one UDP listener (default per config)")
         item.add_argument("--inbound-gbps", type=float, default=LOAD_HOST_INBOUND_GBPS)
         item.add_argument("--topology", default=str(TOPOLOGY))
+        item.add_argument("--fit-hosts", action="store_true",
+                          help="each region takes at most what its listener hosts drive (the "
+                               "default when the lab misses listener hosts that the account "
+                               "refused, unless --force)")
 
     settings = sub.add_parser("settings", help="the deploy's --set arguments")
     settings.add_argument("--topology", default=str(TOPOLOGY))
@@ -3056,7 +3150,8 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--keep-going", action="store_true",
                      help="run the next step after a tier gave out")
     run.add_argument("--force", action="store_true",
-                     help="run steps that the plan says the listener hosts cannot drive")
+                     help="run steps that the plan says the listener hosts cannot drive (on a "
+                          "lab missing listener hosts: the steps as given, not fitted)")
     run.add_argument("--allow-public-transfer", action="store_true")
     run.add_argument("--budget-usd", type=float, default=None,
                      help="the shared budget, for a phase's add or the autoscaler's creates")

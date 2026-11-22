@@ -140,12 +140,55 @@ only. Sydney's listener hosts are therefore sixteen g6-dedicated-4, the
 same 64 vCPUs as the other regions' eight g6-dedicated-8 at the same
 price. The availability endpoint has been wrong for Sydney before, which
 is why Sydney is optional and created first. What this account may create
-in all (instances, dedicated vCPUs: 40 g6-dedicated-2, 22 g6-dedicated-4
-and 24 g6-dedicated-8 are 344 vCPUs) is not in a public endpoint and was
-not checked: confirm it before `up` (Linode support raises the limits on
-request). If the account refuses an instance, `up` deletes the partial
-lab; every instance created bills a full hour, so a refused `up` costs up
-to about $10.
+in all is not in a public endpoint and was not checked: the largest lab
+so far had 33 nodes, and this one has 69 (40 g6-dedicated-2, 5
+g6-dedicated-4 and 24 g6-dedicated-8: 292 dedicated vCPUs) or, with
+Sydney, 99 (53, 22 and 24: 386 vCPUs). Confirm it before `up` if you can
+(Linode support raises the limits on request). `up` does not count on it:
+it creates in stages, and each stage stops at its first refusal (the
+creates already under way, at most three, finish and are recorded).
+
+1. **Sydney's core** (`--optional-sites sydney`): its forwarders, edges,
+   view host and SFU, 14 nodes. A refusal deletes what of Sydney was
+   created and goes on without it.
+2. **The core**: the contributor, the source, the forwarders, the edges
+   (the standby ones too), the view hosts, the LiveKit SFUs and their
+   Redis: 45 nodes, $2.70 an hour (59 and $3.51 with Sydney's). Without it
+   the lab is of no use, so a refusal deletes the partial lab and prints
+   what it billed: every instance created bills an hour, so a refused core
+   costs at most $2.70 ($3.51 with Sydney). An account refusal (the limit
+   of instances or of dedicated vCPUs) first deletes Sydney's nodes, which
+   count against the same limit, and tries the rest of the core again.
+3. **The listener hosts**, in two batches (`--listener-batches 2`), each
+   with half of every region's (the first batch: lon-, new-, tok-load-1 to
+   4 and syd-load-1 to 8). A refusal here keeps the lab. An account
+   refusal stops every later create; a capacity refusal stops only that
+   region's plan. The hosts not created are in the lab state's
+   `listeners_missing`, with the refusal; `status` lists them, and `grow`
+   creates them once the account allows. A Sydney left with no listener
+   host is deleted (its edges would carry no one).
+
+Refusals are told apart by the API's message (`refusal_kind` in the lab
+tool): an account limit ("Account Limit reached. Please open a support
+ticket ...", "maximum number of", "quota", "cpu limit", ...), no capacity
+("capacity", "not available in this region", "out of stock", ...) or a
+transient error (HTTP 408, 429, 5xx, busy, timed out, once `create_node`'s
+retries are spent). The exact text Linode returns at this account's limit
+has not been seen: a refusal of no known kind stops creation as an account
+refusal does, and is recorded as "other". Every refusal is kept in the
+lab state's `refusals`.
+
+**A lab short of listener hosts.** When the lab state names
+`listeners_missing`, `scale-run.py plan` and `run` fit every step to the
+listener hosts that exist rather than refusing it: each region takes at
+most what its hosts drive within the plan's headroom (`fit_caps`, from the
+per-host capacity and the step's LL-HLS share), the other regions keep
+their share, a step is named by the listeners it runs
+(`requested` is what was asked), and a step that would add no listener is
+dropped. The fit is printed, logged (`fit` in events.jsonl) and kept in
+plan.json. `--force` runs the steps as given (the monitor still stops a
+step whose listener host saturates); `--fit-hosts` fits a whole lab too.
+The schedule below then ends early: the run costs the hours it lasts.
 
 **Listeners on the VLAN.** The listener and view hosts are on their
 region's VLAN (.100 the view host, .101 up the listener hosts), and every
@@ -168,9 +211,11 @@ and nothing steers to them, for they advertise nothing. The second curve
 starts them with `start --nodes`, which restarts no other node. This
 avoids creating instances in the middle of a run.
 
-Sydney is optional. `up --optional-sites sydney` creates Sydney's 30 nodes
-first. If one of them cannot be created, it deletes them and goes on
-without Sydney, which saves $2.538 an hour. Every tool works without it.
+Sydney is optional. `up --optional-sites sydney` creates Sydney's core (14
+nodes) first and its 16 listener hosts with the other regions'. If its
+core cannot be created, if the account refuses the core, or if none of its
+listener hosts is created, `up` deletes Sydney's nodes and goes on without
+it, which saves $2.538 an hour. Every tool works without it.
 `--without-sites sydney` leaves Sydney out from the start.
 
 ## Cost and duration
@@ -353,6 +398,9 @@ T=deploy/low-latency/topology-scale.json
 scripts/linode-small-mesh-lab.py check --topology $T     # prices, capacity, slots; no token
 export NEEDLETAIL_LINODE_MAX_NODES=103 NEEDLETAIL_LINODE_MAX_HOURLY_USD=10.7
 scripts/linode-small-mesh-lab.py up --topology $T --optional-sites sydney --watchdog-hours 6
+#   (staged: Sydney's core, the core, then the listener hosts in two batches; a
+#   refused core deletes the lab, refused listener hosts are listed by status)
+scripts/linode-small-mesh-lab.py status                  # listener hosts missing, if any
 scripts/linode-small-mesh-lab.py hosts                   # forwarders on distinct hosts
 scripts/linode-small-mesh-deploy.py push $(scripts/compare/scale-run.py settings)
 scripts/compare/compare_lab.py livekit                   # the referee's LiveKit (needs *-lk, lk-redis)

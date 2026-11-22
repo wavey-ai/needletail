@@ -138,6 +138,48 @@ class Steps(unittest.TestCase):
         slow = scale.host_capacity({"type": "g6-dedicated-8"}, "opus-2.5")
         self.assertAlmostEqual(slow["hls"], fast["hls"] * 2.5, delta=2)
 
+    def test_steps_fit_the_listener_hosts_that_exist(self):
+        # The account refused Tokyo's last six listener hosts at `up`.
+        state = lab(["sydney"])
+        missing = [f"tok-load-{index}" for index in range(3, 9)]
+        for name in missing:
+            del state["nodes"][name]
+        state["listeners_missing"] = [{"name": name, "kind": "account"} for name in missing]
+        regions = scale.regions_of(state, STANDBY)
+        plain = scale.plan_steps(state, [1000, 12000, 15000, 20000], "pcm-1", hls_share=0,
+                                 standby=STANDBY)
+        self.assertFalse(plain["steps"][1]["drivable"])
+        plan = scale.plan_steps(state, [1000, 12000, 30000, 40000], "pcm-1", hls_share=0,
+                                standby=STANDBY, fit=True)
+        caps = plan["fit"]["caps"]
+        # Two g6-dedicated-8 in Tokyo drive about 2,000 UDP listeners at 1 ms;
+        # London and New York, eight each, about 8,000.
+        self.assertEqual(caps["tokyo"], 2 * plan["capacity"]["tok-load-1"]["udp"])
+        self.assertEqual(caps["london"], 8 * plan["capacity"]["lon-load-1"]["udp"])
+        self.assertTrue(all(step["drivable"] for step in plan["steps"]))
+        # Tokyo is clipped, the others keep their share; a step past every
+        # region's hosts adds nothing and is dropped.
+        first, second, third = plan["steps"]
+        self.assertEqual(first["listeners"], 1000)
+        self.assertEqual(second["requested"], 12000)
+        self.assertEqual(second["clipped_regions"], {"tokyo": caps["tokyo"]})
+        self.assertEqual(second["sites"]["london"]["udp"], 4000)
+        self.assertEqual(second["listeners"], 8000 + caps["tokyo"])
+        self.assertEqual(third["requested"], 30000)
+        self.assertEqual(third["listeners"], sum(caps.values()))
+        self.assertEqual(plan["fit"]["dropped"], [40000])
+        self.assertEqual(plan["fit"]["listeners_missing"], missing)
+        self.assertIn("tokyo", scale.fit_line(plan))
+        # A lab that misses listener hosts is fitted by default, unless --force.
+        self.assertTrue(scale.fit_wanted(argparse.Namespace(force=False), state))
+        self.assertFalse(scale.fit_wanted(argparse.Namespace(force=True), state))
+        self.assertFalse(scale.fit_wanted(argparse.Namespace(force=False), lab()))
+        self.assertTrue(scale.fit_wanted(argparse.Namespace(force=False, fit_hosts=True), lab()))
+        for name, cap in caps.items():
+            one = {name: regions[name]}
+            self.assertTrue(scale.drivable(scale.allocate(cap, one, 0), plan["capacity"]))
+            self.assertFalse(scale.drivable(scale.allocate(cap + 1, one, 0), plan["capacity"]))
+
     def test_plan_command_offline(self):
         args = argparse.Namespace(
             topology_only=True, topology=str(TOPOLOGY), without_sites="sydney",

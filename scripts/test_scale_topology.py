@@ -755,8 +755,192 @@ class LabTool(unittest.TestCase):
         self.assertEqual(events[0], ("watchdog", 5.5, False))
         self.assertEqual(events[1][0], "create")
         self.assertEqual(events[-1], ("down",))
+        # The core stops at its first refusal: one create, not 69.
+        self.assertEqual(sum(1 for item in events if item[0] == "create"), 1)
         self.assertEqual(json.loads((tmp / "state.json").read_text())["watchdog_deadline_unix"],
                          123)
+
+
+ACCOUNT = ("POST /linode/instances failed with HTTP 400: {\"errors\": [{\"reason\": \"Account "
+           "Limit reached. Please open a support ticket with our support team to request an "
+           "increase.\"}]}")
+CAPACITY = ("POST /linode/instances failed with HTTP 400: {\"errors\": [{\"reason\": \"No "
+            "capacity available in this region for the requested plan.\"}]}")
+
+
+class StagedUp(unittest.TestCase):
+    """`up` in stages (offline: create_node and the API are fakes)."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.path = self.tmp / "state.json"
+        self.state = {"run_id": "t", "tag": "needletail-small-mesh-t", "image": "linode/debian13",
+                      "created_unix": 1_000_000, "hourly_usd": 0.0, "nodes": {},
+                      "sites_left_out": [], "removed": []}
+        self.path.write_text(json.dumps(self.state))
+        self.created: list[str] = []
+        self.deleted: list[str] = []
+        self.downs = 0
+        test = self
+
+        class FakeApi:
+            def call(self, method, path, body=None, allow_404=False):
+                test.deleted.append(path)
+                return {}
+
+        self.api = FakeApi()
+        topology = lab_tool.created_part(json.loads(SCALE.read_text()))
+        for node in topology["nodes"]:
+            node["_hourly"] = {"g6-dedicated-2": 0.054, "g6-dedicated-4": 0.108,
+                               "g6-dedicated-8": 0.216}[node["type"]]
+        self.nodes = topology["nodes"]
+
+    def run_up(self, refuse, optional=("sydney",), batches=2):
+        test = self
+
+        def create(api, run_id, tag, image, key, node):
+            why = refuse(node, len(test.created))
+            if why:
+                raise RuntimeError(why)
+            test.created.append(node["name"])
+            return {"id": len(test.created), "name": node["name"], "label": f"ntsm-t-{node['name']}",
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": "192.0.2.1", "vlan_ipv4": None,
+                    "created": "2026-11-22T10:00:00", "created_unix": 1_000_000}
+
+        def down(args):
+            test.downs += 1
+
+        args = argparse.Namespace(state=str(self.path), listener_batches=batches)
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "CREATE_WORKERS", 1), \
+                mock.patch.object(lab_tool, "command_down", down), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            try:
+                lab_tool.create_staged(args, self.api, self.state, self.path, self.nodes,
+                                       list(optional), "ssh-ed25519 AAAA")
+                code = None
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, err.getvalue(), json.loads(self.path.read_text())
+
+    def test_refusals_are_told_apart(self):
+        self.assertEqual(lab_tool.refusal_kind(ACCOUNT), "account")
+        self.assertEqual(lab_tool.refusal_kind("You have reached the maximum number of "
+                                               "Linodes allowed on your account"), "account")
+        self.assertEqual(lab_tool.refusal_kind(CAPACITY), "capacity")
+        self.assertEqual(lab_tool.refusal_kind("g6-dedicated-4 is not available in this region"),
+                         "capacity")
+        self.assertEqual(lab_tool.refusal_kind("POST /linode/instances did not succeed after "
+                                               "retries"), "transient")
+        self.assertEqual(lab_tool.refusal_kind("failed with HTTP 503: busy"), "transient")
+        self.assertEqual(lab_tool.refusal_kind("HTTP 400: image not found"), "other")
+
+    def test_listener_batches_take_a_share_of_every_site(self):
+        listeners = [node for node in self.nodes if lab_tool.is_listener_host(node)]
+        self.assertEqual(len(listeners), 40)
+        core = [node for node in self.nodes if not lab_tool.is_listener_host(node)]
+        self.assertEqual(len(core), 59)
+        self.assertEqual(len([node for node in core if node["site"] != "sydney"]), 45)
+        first, second = lab_tool.listener_batches(listeners, 2)
+        self.assertEqual(len(first), 20)
+        self.assertEqual([node["name"] for node in first if node["site"] == "london"],
+                         [f"lon-load-{index}" for index in range(1, 5)])
+        self.assertEqual(sum(1 for node in second if node["site"] == "sydney"), 8)
+        self.assertEqual(len(lab_tool.listener_batches(listeners, 1)), 1)
+        # The older labs' hosts by name; view and source hosts are core.
+        self.assertTrue(lab_tool.is_listener_host({"role": "load", "name": "lon-load-3"}))
+        self.assertFalse(lab_tool.is_listener_host({"role": "load", "name": "lon-view"}))
+        self.assertFalse(lab_tool.is_listener_host({"role": "load", "name": "lon-src",
+                                                    "purpose": "source"}))
+
+    def test_the_core_first_then_the_listener_hosts(self):
+        code, _err, state = self.run_up(lambda node, made: None)
+        self.assertIsNone(code)
+        self.assertEqual(len(state["nodes"]), 99)
+        self.assertEqual(state["listeners_missing"], [])
+        # Sydney's core, then the rest of the core, then the listener hosts.
+        listener_at = [index for index, name in enumerate(self.created) if "-load-" in name]
+        self.assertEqual(min(listener_at), 59)
+        self.assertTrue(all(name.startswith("syd-") for name in self.created[:14]))
+        self.assertIn("contrib-lon", self.created[14:59])
+
+    def test_an_account_refusal_among_the_listener_hosts_keeps_the_lab(self):
+        # The account allows 80 instances: the core and 21 listener hosts.
+        code, err, state = self.run_up(lambda node, made: ACCOUNT if made >= 80 else None)
+        self.assertIsNone(code)
+        self.assertEqual(self.downs, 0)
+        self.assertEqual(len(state["nodes"]), 80)
+        missing = state["listeners_missing"]
+        self.assertEqual(len(missing), 19)
+        self.assertEqual(missing[0]["kind"], "account")
+        # Stopped at the first refusal: the rest never tried.
+        self.assertEqual({item["kind"] for item in missing[1:]}, {"not attempted"})
+        self.assertTrue(all("account refusal" in item["why"] for item in missing[1:]))
+        self.assertEqual(sum(1 for name in state["nodes"] if "-load-" in name), 21)
+        self.assertEqual(state["refusals"][0]["stage"], "listener batch 2")
+        self.assertIn("missing", err)
+        self.assertAlmostEqual(state["hourly_usd"],
+                               sum(node["hourly_usd"] for node in state["nodes"].values()))
+
+    def test_a_capacity_refusal_stops_only_its_plan_and_a_site_without_listeners_goes(self):
+        def refuse(node, made):
+            if node["region"] == "ap-southeast" and node["type"] == "g6-dedicated-4" \
+                    and node["role"] == "load" and "-load-" in node["name"]:
+                return CAPACITY
+            return None
+        code, err, state = self.run_up(refuse)
+        self.assertIsNone(code)
+        # Every other region's listener hosts were created; Sydney had none,
+        # so its core was deleted too and the lab goes on without it.
+        self.assertEqual(state["sites_left_out"], ["sydney"])
+        self.assertFalse([name for name in state["nodes"] if name.startswith("syd-")])
+        self.assertEqual(sum(1 for name in state["nodes"] if "-load-" in name), 24)
+        self.assertEqual(state["listeners_missing"], [])
+        self.assertEqual(len([item for item in state["removed"]
+                              if item["name"].startswith("syd-")]), 14)
+        self.assertIn("left out", err)
+
+    def test_a_refusal_in_the_core_deletes_the_lab_and_says_what_it_cost(self):
+        code, err, state = self.run_up(
+            lambda node, made: ACCOUNT if made >= 20 else None, optional=())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.downs, 1)
+        # The first refusal stopped the core: 20 created, the 21st refused.
+        self.assertEqual(len(self.created), 20)
+        self.assertIn("the core was refused", err)
+        self.assertIn("$", err)
+        self.assertEqual(state["refusals"][0]["kind"], "account")
+
+    def test_an_account_refusal_in_the_core_gives_up_the_optional_site_first(self):
+        # 50 instances allowed: Sydney's core (14) and 36 of the 45 others.
+        def refuse(node, made):
+            live = made - len([path for path in self.deleted if path.startswith("/linode")])
+            return ACCOUNT if live >= 50 else None
+        code, err, state = self.run_up(refuse)
+        self.assertIsNone(code)
+        self.assertEqual(self.downs, 0)
+        self.assertEqual(state["sites_left_out"], ["sydney"])
+        core = [node["name"] for node in self.nodes
+                if not lab_tool.is_listener_host(node) and node["site"] != "sydney"]
+        self.assertTrue(set(core) <= set(state["nodes"]))
+        # Then 5 listener hosts fit, and the rest are recorded as missing.
+        self.assertEqual(sum(1 for name in state["nodes"] if "-load-" in name), 5)
+        self.assertEqual(len(state["listeners_missing"]), 19)
+        self.assertEqual(len(state["removed"]), 14)
+        self.assertIn("given back", err)
+
+    def test_grow_clears_the_listener_hosts_it_created(self):
+        self.state["nodes"] = {"tok-load-3": {"site": "tokyo"}}
+        self.state["listeners_missing"] = [{"name": "tok-load-3", "kind": "account"},
+                                           {"name": "tok-load-4", "kind": "account"}]
+        self.path.write_text(json.dumps(self.state))
+        lab_tool.refresh_listeners_missing(self.path, "HTTP 400: Account Limit reached")
+        missing = json.loads(self.path.read_text())["listeners_missing"]
+        self.assertEqual([item["name"] for item in missing], ["tok-load-4"])
+        self.assertIn("grow: HTTP 400", missing[0]["why"])
 
 
 if __name__ == "__main__":
