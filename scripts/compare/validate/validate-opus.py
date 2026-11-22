@@ -10,7 +10,8 @@ units directory names each part's file and URI (partN).
 Decoders:
 
 probe   aep1-48k-probe decode-soundkit-opus, the consumer of receive-hls: it
-        chooses Opus Custom (48, 64, 72-sample frames, no signalling byte) or
+        chooses Opus Custom (48, 64, 72-sample frames, with libopus's
+        signalling byte, the lane's default) or
         standard Opus by each packet's frame count. Opus Custom cannot be
         put in Ogg (OpusHead cannot describe it), so its streams need this.
 ffmpeg  the old way, standard Opus only: the raw packets in Ogg/OpusHead,

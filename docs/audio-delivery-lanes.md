@@ -74,34 +74,40 @@ Every AEP1 payload kind reaches mandatory LL-HLS. The route chooses one policy:
 ## Opus Custom frames in the private Opus lane
 
 The private SoundKit Opus rendition (stream 3001, the low-latency Opus lane)
-defaults to 1 ms Opus Custom CELT frames. Standard Opus (RFC 6716) stops at
-2.5 ms; libopus's Opus Custom API also codes 48, 64 and 72-sample frames at
-48 kHz (1, 1.33 and 1.5 ms), and SoundKit Opus (branch `opus-custom-1ms`)
-codes and decodes them packet for packet and sample for sample as libopus
-does. A custom mode's MDCT overlap equals its frame, so the codec's own delay
+defaults to 1 ms Opus Custom CELT frames at 320 kb/s CBR. Standard Opus
+(RFC 6716) stops at 2.5 ms; libopus's Opus Custom API also codes 48, 64 and
+72-sample frames at 48 kHz (1, 1.33 and 1.5 ms), and SoundKit Opus (branch
+`opus-custom-1ms`) codes and decodes them packet for packet and sample for
+sample as libopus does. A custom mode's MDCT overlap equals its frame, so the codec's own delay
 falls with the frame: 2 ms at 1 ms frames, against 5 ms at 2.5 ms.
 
 The contract:
 
 - The producer (daw-nexus) chooses the frame: `--opus-frame-ms
   1|1.33|1.5|2.5|5` (`NEXUS_OPUS_FRAME_MS`, or `AUDIO_OPUS_FRAME_SAMPLES` in
-  samples) and `--opus-bitrate` (`AUDIO_OPUS_BITRATE`). The default is the
-  placeholder pair `LANE_DEFAULT_OPUS_FRAME_SAMPLES = 48` and
-  `LANE_DEFAULT_OPUS_BITRATE = 256000` in daw-nexus `src/opus_lane.rs`,
-  until the quality measurements choose the size.
+  samples) and `--opus-bitrate` (`AUDIO_OPUS_BITRATE`). The default is
+  `LANE_DEFAULT_OPUS_FRAME_SAMPLES = 48` and `LANE_DEFAULT_OPUS_BITRATE =
+  320000` in daw-nexus `src/opus_lane.rs` (and `opus_custom.rs` in
+  av-contrib, whose `aep1-48k-probe send --payload opus` sends the same by
+  default). The lab and deploy tools' `opus_epoch_samples` (48) and
+  `opus_bitrate` (320000) settings follow it.
 - The SoundKit v2 header keeps `EncodingFlag::Opus`; `frame_count` is the
   frame size. A 48 kHz count that is not a multiple of 120 (48, 64, 72) is
   Opus Custom; every multiple of 120 is standard Opus with a TOC byte (each is
   the duration of some standard packet). Every decoder chooses with
   `soundkit_opus::custom_frame_size(sample_rate, frame_count)`
   (`Decoder::new_for_frame_count`).
-- Custom packets carry no libopus signalling byte (`CELT_SET_SIGNALLING(0)`):
-  the header already gives the frame size and the channels. At the same CBR
-  packet size (32 bytes in stereo at 1 ms and 256 kb/s) the byte goes to CELT
-  data instead, 8 kb/s at 1 ms. Every decoder must turn signalling off too
-  (`set_custom_signalling(false)`): daw-nexus's playback decoders and
-  av-contrib's `aep1-48k-probe` do; a browser WASM decoder
-  (`Decoder.newCustom`) must call `set_custom_signalling(false)` as well.
+- Custom packets carry libopus's one-byte signalling header, the libopus
+  default (`CELT_SET_SIGNALLING(1)`). Every SoundKit and libopus custom
+  decoder expects it by default, so a reader needs no extra setting: the
+  browser's soundkit-opus WASM `new Decoder(channels, 48000, frame_count)`
+  (av-llhls `RustOpusWasmFrameDecoder` with `frameSize` set to the SoundKit
+  header's `frame_count`) decodes lane packets as they come. The byte also
+  checks each packet's frame size (LM) and channel count. It costs 8 kb/s at
+  1 ms (40-byte stereo packets at 320 kb/s, 39 of them CELT data).
+  `LANE_OPUS_CUSTOM_SIGNALLING` (daw-nexus `opus_lane.rs`, av-contrib
+  `opus_custom.rs`) is the one switch; a deployment that turns it off must
+  turn it off in every decoder as well.
 - Parts: by default one frame per part (`--audio-part epoch`), 1 ms at 48
   samples. The contributor counts samples; a part of a set size must hold
   whole frames (64-sample frames fit 4 ms parts, not 5 ms ones) or the
@@ -115,9 +121,47 @@ The contract:
   (`scripts/compare/validate/validate-opus.py` uses it: Opus Custom cannot be
   put in Ogg for ffmpeg).
 
-The interop rule: Opus Custom is only for the opaque private SoundKit lane
-(AEP1 UDP, WebTransport, cache-mesh UDP to the client and opaque LL-HLS, none
-of which declare a codec to a generic player). It has no OpusHead/dOps and no
+### The quality bar and the default
+
+The lane default must be at least as good as the shipped SoundKit Opus
+production setting, standard 5 ms at 192 kb/s CBR (the bottom of SoundKit
+Opus's 192-320 kb/s production range), on all three of mean PEAQ advanced DI,
+mean ViSQOL MOS-LQO and the worst excerpt's ViSQOL, over the 16-excerpt
+corpus:
+
+| Frame, rate (CBR) | PEAQ DI | ViSQOL mean | ViSQOL worst | Bar |
+|---|---:|---:|---:|---|
+| 5 ms @ 192 kb/s (production) | 2.50 | 4.721 | 4.693 | the bar |
+| **1 ms @ 320 kb/s (default)** | 2.87 | 4.723 | 4.699 | passes |
+| 1 ms @ 256 kb/s | 2.29 | 4.708 | 4.646 | fails |
+| 1.33 ms @ 256 kb/s | 2.53 | 4.716 | 4.658 | fails (worst excerpt) |
+| 1.5 ms @ 256 kb/s | 2.59 | 4.718 | 4.673 | fails (worst excerpt) |
+| 2.5 ms @ 192 kb/s (standard) | 2.18 | 4.711 | 4.648 | fails; for comparison |
+
+1.33 and 1.5 ms also pass at 320 kb/s, but they are larger frames, so the
+smallest acceptable frame is 1 ms (48 samples) at 320 kb/s. 1 ms at
+256 kb/s (`--opus-bitrate 256000`, `opus_bitrate=256000`) is the documented
+lower-bandwidth option: it equals standard 2.5 ms at 192 kb/s (PEAQ DI
+2.29 against 2.18, ViSQOL mean 4.708 against 4.711, worst 4.646 against
+4.648), below the bar.
+
+The measurements (delay, PEAQ, ViSQOL, CPU, bytes, for 1, 1.33, 1.5, 2.5 and
+5 ms at 96 to 384 kb/s) and the interop proof against libopus custom modes are
+the SoundKit record
+[`soundkit-opus/quality-results/2026-11-21-opus-custom-frames/README.md`](https://github.com/wavey-ai/soundkit/blob/opus-custom-1ms/soundkit-opus/quality-results/2026-11-21-opus-custom-frames/README.md)
+(branch `opus-custom-1ms`, wavey-ai/soundkit). At 1 ms and 320 kb/s the
+native encoder takes about 30 ms of CPU per second of stereo audio (19.7 at
+2.5 ms) and the decoder about 6.4.
+
+On the wire a 1 ms lane is 1,000 packets a second; the 16-byte SoundKit v2
+header adds 128 kb/s, so 320 kb/s of Opus is 448 kb/s before AEP1, FEC and
+UDP/IP.
+
+### The interop rule
+
+Opus Custom is only for the opaque private SoundKit lane (AEP1 UDP,
+WebTransport, cache-mesh UDP to the client and opaque LL-HLS, none of which
+declare a codec to a generic player). It has no OpusHead/dOps and no
 RTP payload format, so everything that must interoperate stays standard Opus,
 with 2.5 ms (120 samples) as its smallest frame: fMP4/CMAF and Ogg boxing
 (`--daw-hls-packaging fmp4` refuses custom frames), `CODECS="opus"`
