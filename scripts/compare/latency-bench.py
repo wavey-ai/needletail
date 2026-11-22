@@ -7,8 +7,8 @@ flags, so that each low-latency change can be switched off and on; send the
 64-second loop with the AEP1 sender (aep1-48k-probe send, as
 compare-audio.py does on lon-src) from the contributor's own host to its
 ingest, as PCM, FLAC or Opus (--payload) in epochs of --epoch-samples (one
-epoch is one part: 48 samples = 1 ms by default for PCM and FLAC, 120 =
-2.5 ms for Opus); run N ntcmp HLS readers of each kind, over HTTP/2 with
+epoch is one part: 48 samples = 1 ms by default for PCM and FLAC, and for Opus
+(1 ms Opus Custom at 320 kb/s, the lane default; 120 = 2.5 ms standard)); run N ntcmp HLS readers of each kind, over HTTP/2 with
 5 ms of parts in flight (--h2-window-ms; one part at 5 ms, 5 at 1 ms, 20 at
 0.25 ms) and over HTTP/3 with 40 parts in flight, on each reader host
 (lon-readers and new-readers) for D seconds; then join the hop journals of every node with the readers'
@@ -95,7 +95,7 @@ SAMPLE_RATE = hops.SAMPLE_RATE
 # daw_hls_base_stream_id 2001 + the format's offset (Opus 1000, PCM 2000).
 PAYLOAD_STREAM = hops.PAYLOAD_STREAM
 DEFAULT_EPOCH_SAMPLES = hops.DEFAULT_EPOCH_SAMPLES
-OPUS_EPOCH_SAMPLES = (120, 240, 480, 960)
+OPUS_EPOCH_SAMPLES = (48, 64, 72, 120, 240, 480, 960)
 MIN_EPOCH_SAMPLES = {"pcm": 12, "flac": 32}
 READER_HOSTS = ["lon-readers", "new-readers"]
 # Time in flight of the HTTP/2 readers. ntcmp's window 1 asks for part n + 1
@@ -151,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "from the same loop); the stream follows (pcm 4001, flac 2001, opus 3001)")
     parser.add_argument("--epoch-samples", type=int, default=None,
                         help="samples of one AEP1 epoch, one part (default pcm and flac 48 = 1 ms, "
-                             "opus 120 = 2.5 ms; pcm >= 12, flac >= 32, opus 120/240/480/960)")
+                             "opus 48 = 1 ms Opus Custom; pcm >= 12, flac >= 32, opus 48/64/72 (Opus Custom) or 120/240/480/960)")
     parser.add_argument("--h2-window", type=int, default=None,
                         help="parts in flight of the HTTP/2 readers (default: --h2-window-ms)")
     parser.add_argument("--h2-window-ms", type=float, default=H2_WINDOW_MS,

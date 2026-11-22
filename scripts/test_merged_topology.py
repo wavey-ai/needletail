@@ -358,5 +358,30 @@ class Lifecycle(Base):
         self.assertIn("topology=legacy", str(caught.exception))
 
 
+
+class CompilerAge(unittest.TestCase):
+    """A compiler binary older than its sources is refused by name, not
+    left to reject today's program by old rules."""
+
+    def test_a_compiler_older_than_a_source_is_named(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = root / "src" / "relay_topology.rs"
+            source.write_text("// rules\n")
+            compiler = root / "needletail-compile"
+            compiler.write_text("")
+            os.utime(compiler, (1_000, 1_000))
+            os.utime(source, (2_000, 2_000))
+            saved = deploy.common.ROOT
+            deploy.common.ROOT = root
+            try:
+                self.assertEqual(deploy.compiler_stale_by(compiler), "src/relay_topology.rs")
+                os.utime(compiler, (3_000, 3_000))
+                self.assertIsNone(deploy.compiler_stale_by(compiler))
+            finally:
+                deploy.common.ROOT = saved
+
 if __name__ == "__main__":
     unittest.main()

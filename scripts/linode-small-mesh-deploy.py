@@ -1251,6 +1251,18 @@ def measure_routes(state: dict, settings: dict | None = None) -> dict:
     }
 
 
+def compiler_stale_by(compiler: pathlib.Path) -> str | None:
+    """The newest source of the compiler (src/**/*.rs, Cargo.toml,
+    Cargo.lock) that is newer than the binary, or None."""
+    built = compiler.stat().st_mtime
+    root = common.ROOT
+    sources = [*sorted((root / "src").rglob("*.rs")), root / "Cargo.toml", root / "Cargo.lock"]
+    newer = [path for path in sources if path.is_file() and path.stat().st_mtime > built]
+    if not newer:
+        return None
+    return str(max(newer, key=lambda path: path.stat().st_mtime).relative_to(root))
+
+
 def compile_plan(program: dict) -> dict:
     program_path = common.ARTIFACT_DIR / "relay-program.json"
     plan_path = common.ARTIFACT_DIR / "compiled-plan.json"
@@ -1258,6 +1270,13 @@ def compile_plan(program: dict) -> dict:
     compiler = common.ROOT / "target" / "release" / "needletail-compile"
     if not compiler.is_file():
         sys.exit("build needletail-compile first: cargo build --release --bin needletail-compile")
+    stale = compiler_stale_by(compiler)
+    if stale:
+        # A compiler older than its sources judges today's program by old
+        # rules (an old binary rejected the merged topology's declared
+        # shared-domain parents as parent_failure_domain_overlap).
+        sys.exit(f"needletail-compile is older than {stale}; rebuild it: "
+                 "cargo build --release --bin needletail-compile")
     result = subprocess.run(
         [str(compiler), "--program", str(program_path), "--pretty"],
         capture_output=True, text=True,

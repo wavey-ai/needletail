@@ -77,7 +77,7 @@ START + (k+1) * E, where E is one epoch: --epoch-samples N at --sample-rate
 (48 kHz), so 48 samples are 1 ms, 120 are 2.5 ms, 12 are 0.25 ms. The epoch
 is the run's: --epoch-samples, --epoch-us, the sender's JSON summary
 (--sender-summary, its `epoch_samples`), or else the default epoch of the
-payload (--payload: pcm and flac 48 samples, opus 120), never a constant.
+payload (--payload: pcm and flac 48 samples, opus 48 = 1 ms Opus Custom), never a constant.
 A collection saved with --raw-out records the epoch, and --journal reads it
 back. A collection without one (saved before 22 November 2026: wave-1 runs
 were 240-sample, 5 ms epochs) falls back to the payload's default, and when a
@@ -121,8 +121,9 @@ SCRIPTS = HERE.parent
 SAMPLE_RATE = 48_000
 # The default AEP1 epoch of each payload of aep1-48k-probe send, in samples:
 # one part each (the contributor's --audio-part epoch). FLAC frames are at
-# least 32 samples; Opus frames are 120, 240, 480 or 960.
-DEFAULT_EPOCH_SAMPLES = {"pcm": 48, "flac": 48, "opus": 120}
+# least 32 samples; Opus frames are 48, 64 or 72 (Opus Custom: 1, 1.33,
+# 1.5 ms; the lane default is 48 at 320 kb/s) or 120, 240, 480, 960.
+DEFAULT_EPOCH_SAMPLES = {"pcm": 48, "flac": 48, "opus": 48}
 # The LL-HLS stream of each payload of AEP1 group 0 at the lab contributor:
 # --daw-hls-base-stream-id 2001, + 1000 for Opus, + 2000 for PCM.
 PAYLOAD_STREAM = {"flac": 2001, "opus": 3001, "pcm": 4001}
