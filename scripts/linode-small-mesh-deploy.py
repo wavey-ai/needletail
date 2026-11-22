@@ -215,6 +215,13 @@ DEFAULT_SETTINGS = {
     # SO_MAX_PACING_RATE of the contributor's video sockets in Mbit/s under
     # the fq band (0: not paced).
     "relay_video_pacing_mbps": 0,
+    # 4K symbols leave the contributor's video lanes and the relays' and
+    # distributors' video fast-plane threads as UDP GSO messages (up to 64
+    # symbols per pass through the kernel's stack instead of one each):
+    # av-contrib and av-mesh --relay-video-gso. The 4K regression of wave 2
+    # was relays saturated by one send per symbol per child. False sends
+    # one datagram per symbol, as before.
+    "relay_video_gso": True,
     # The contributor audio hot path (low-latency item 3): audio parts are
     # published on the packager's thread and each lane takes its symbols with
     # non-blocking sendmmsg, with no join across lanes
@@ -392,6 +399,7 @@ def class_plan(settings: dict) -> dict:
         "audio_hot_path": switch("audio_hot_path"),
         "relay_repair_both_lanes": switch("relay_repair_both_lanes"),
         "relay_class_realtime": bool(settings.get("relay_class_realtime", True)),
+        "relay_video_gso": switch("relay_video_gso"),
         "service_capabilities": switch("service_capabilities"),
     }
     try:
@@ -1404,6 +1412,7 @@ def contributor_class_args(node: dict, plan: dict) -> list[str]:
         "--audio-hot-thread", flag(hot),
         "--audio-hot-cpu", str(audio_hot_cpu(node, plan)),
         "--relay-repair-both-lanes", flag(plan["relay_repair_both_lanes"]),
+        "--relay-video-gso", flag(plan.get("relay_video_gso", True)),
     ]
 
 
@@ -1419,7 +1428,8 @@ def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
         out += ["--relay-class-threads", flag(split),
                 "--relay-class-port-offset", str(plan["class_port_offset"])]
         if split:
-            out += ["--relay-class-realtime", flag(plan["relay_class_realtime"])]
+            out += ["--relay-class-realtime", flag(plan["relay_class_realtime"]),
+                    "--relay-video-gso", flag(plan.get("relay_video_gso", True))]
             cpus = relay_class_cpus(node, plan)
             if cpus:
                 out += ["--relay-class-cpus", cpus]

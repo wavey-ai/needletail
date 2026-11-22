@@ -228,6 +228,24 @@ class Render(unittest.TestCase):
             return error
         self.fail(f"{overrides} rendered")
 
+    def test_video_gso_is_rendered_on_and_can_be_turned_off(self):
+        # 4K symbols as UDP GSO messages on the contributor's video lanes and
+        # the video fast-plane threads of relays and distributors.
+        args = self.render()
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "true")
+        for name in ("relay-primary", "relay-secondary", "lon-dist-a", "new-dist-b"):
+            self.assertEqual(value_of(args[name], "--relay-video-gso"), "true", name)
+        # An edge runs no relay ingest.
+        self.assertNotIn("--relay-video-gso", args["lon-edge-1"])
+        args = self.render(["relay_video_gso=false"])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "false")
+        self.assertEqual(value_of(args["relay-primary"], "--relay-video-gso"), "false")
+        # Without the class threads there is no video thread to send it.
+        args = self.render(["class_isolation=false"])
+        self.assertNotIn("--relay-video-gso", args["relay-primary"])
+        args = self.render(["low_latency_baseline=true"])
+        self.assertEqual(value_of(args["contrib-lon"], "--relay-video-gso"), "false")
+
     def test_the_baseline_turns_every_piece_off(self):
         args = self.render(["low_latency_baseline=true", "relay_class_split=true",
                             "audio_hot_path=true", "host_qdisc=prio"])
