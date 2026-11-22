@@ -66,7 +66,7 @@ steps/STEP/HOST/..., scale.json, summary.md).
                                            events.jsonl with unix_us, the
                                            "Phases" table of summary.md)
 
-The UDP listeners are av-mesh's needletail-load (branch scale-load):
+The UDP listeners are av-mesh's needletail-load (low-latency, scale-load merged):
 --edges --stream --listeners --ramp --duration --sample --out DIR, which
 writes DIR/intervals.jsonl (needletail.load.interval.v1: a line a second,
 "unix_ms", "total", "edges" {edge: {...}}, "load_host",

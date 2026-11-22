@@ -2279,7 +2279,7 @@ def endurance_churn(ctx):
 # ============================================================ scale operations
 # Failover, redistribution and autoscaling with UDP listeners
 # (low-latency ops item 7): needletail-load crowds (the real client session
-# per listener; av-mesh branch scale-load) on a reader host, over the London
+# per listener; av-mesh low-latency) on a reader host, over the London
 # edges' public addresses. Local proofs of the deploy's slots (a join
 # restarts nothing), of the scale run's faults, and of the autoscaler's
 # edge_lab backend through a ramp up and down.
@@ -2339,7 +2339,7 @@ def udp_listeners(ctx, key: str, count: int, seconds: int, host: str = LON_READE
                   stream: int = AUDIO, edges: list[str] | None = None,
                   ramp: str | None = None) -> UdpJob:
     if not pathlib.Path(lab.binary("needletail-load")).is_file():
-        raise lab.LabError("needletail-load is not built (av-mesh branch scale-load: "
+        raise lab.LabError("needletail-load is not built (av-mesh low-latency: "
                            "cargo build --release --bin needletail-load)")
     out = ctx.directory / f"{key}.udp"
     command = udp_command(host, edges or udp_edges(), stream, count, seconds, out,

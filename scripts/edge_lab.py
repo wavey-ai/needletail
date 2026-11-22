@@ -77,7 +77,8 @@ AV_MESH = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_MESH_BIN", str(MESH_ROOT / "target" / "release" / "av-mesh")))
 READER = pathlib.Path(os.environ.get(
     "NEEDLETAIL_READER_BIN", str(MESH_ROOT / "target" / "release" / "needletail-reader")))
-# The UDP listener crowds of the scale scenarios (av-mesh branch scale-load).
+# The UDP listener crowds of the scale scenarios (av-mesh low-latency, where
+# scale-load is merged).
 # Optional: a lab without it runs every scenario but those.
 LOAD_BIN = pathlib.Path(os.environ.get(
     "NEEDLETAIL_LOAD_BIN", str(MESH_ROOT / "target" / "release" / "needletail-load")))

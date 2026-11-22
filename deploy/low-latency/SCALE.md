@@ -40,7 +40,8 @@ before the watchdog's `down`). See "Cost and duration".
   step is spread over the regions in proportion to their edges, and over a
   region's listener hosts in proportion to their vCPUs. Half of each step
   listens over UDP and half over LL-HLS (`--hls-share 0` for UDP alone):
-  - **UDP:** `needletail-load` from av-mesh branch `scale-load`. Each
+  - **UDP:** `needletail-load` from av-mesh `low-latency` (branch `scale-load`
+    merged at d0d9ee4, on the wave 7 client lanes). Each
     listener has its own socket and subscription, with the real FEC and
     compact decode, NACKs and loss accounting. Results are sampled rather
     than logged, as histograms of publication-to-arrival time and of time
@@ -602,15 +603,16 @@ names them). Nothing is added in the time a shed frees.
 Builds (Linux, x86_64-unknown-linux-gnu, as for the latency labs):
 
 ```sh
-# av-mesh branch scale-load (eb4fe2e: needletail-load and its review fixes), cross-built
+# av-mesh low-latency (scale-load eb4fe2e merged at d0d9ee4: needletail-load on the
+# wave 7 client session), cross-built
 # for the lab's glibc: the deploy takes target/x86_64-unknown-linux-gnu/release,
 # not a host build (cargo build --release puts needletail-load in target/release,
 # linked against this host's newer glibc).
-(cd /home/jamieb/wavey.ai/av-mesh-scale && cargo zigbuild --release \
+(cd /home/jamieb/wavey.ai/av-mesh-features && cargo zigbuild --release \
    --target x86_64-unknown-linux-gnu.2.36 --bin av-mesh --bin needletail-load \
    --bin needletail-reader --bin needletail-udp-client)
 # av-contrib and daw-nexus: as for the latency labs (same zigbuild target).
-export NEEDLETAIL_AV_MESH_ROOT=/home/jamieb/wavey.ai/av-mesh-scale
+export NEEDLETAIL_AV_MESH_ROOT=/home/jamieb/wavey.ai/av-mesh-features
 export NEEDLETAIL_AV_CONTRIB_ROOT=/home/jamieb/wavey.ai/av-contrib-run   # or the referee's
 cd /home/jamieb/wavey.ai/needletail-scale
 scripts/compare/gobuild.sh                         # target/ntcmp (listener hosts get it)
@@ -1068,13 +1070,13 @@ binaries: edges get audio in full from both forwarders.
 ### Local proofs still to run
 
 Not run in this round. Run them only when no other lab pass runs
-(`pgrep -af 'edge-lab|latency-bench'` prints nothing), with the scale-load
-av-mesh (it has needletail-load):
+(`pgrep -af 'edge-lab|latency-bench'` prints nothing), with the low-latency
+av-mesh (scale-load merged: it has needletail-load):
 
 ```sh
-cd /home/jamieb/wavey.ai/needletail-scale
+cd /home/jamieb/wavey.ai/needletail-features
 pgrep -af 'edge-lab|latency-bench'                       # must print nothing
-export NEEDLETAIL_AV_MESH_ROOT=/home/jamieb/wavey.ai/av-mesh-scale
+export NEEDLETAIL_AV_MESH_ROOT=/home/jamieb/wavey.ai/av-mesh-features
 (cd $NEEDLETAIL_AV_MESH_ROOT && nice -n 19 cargo build --release -j 12 \
    --bin av-mesh --bin needletail-reader --bin needletail-load)
 # 1. A slot edge joins under load and nothing else restarts; UDP listeners
