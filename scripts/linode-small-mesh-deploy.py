@@ -278,6 +278,23 @@ DEFAULT_SETTINGS = {
     "client_udp_batched_admission": None,
     "client_udp_resume_from_request": None,
     "client_udp_fanout_inline_shard": None,
+    # Wave 8 stage 4 (Phase AM 8, 9, 11), the nodes that serve UDP clients.
+    # None renders nothing (the binaries' defaults, all on); false or 0 is
+    # the A/B.
+    # - client_udp_egress_load: the client UDP lanes' bytes count in the
+    #   advertised load_permille and free capacity (AM 8; the autoscaler's
+    #   trigger and assignment see UDP load).
+    # - client_udp_admit_by_load: an overloaded edge refuses a new UDP
+    #   subscription (edge-busy) but takes a client that moves to it (AM 8).
+    # - client_udp_drain_spread_ms: a draining edge sends its UDP clients
+    #   MOVE draining spread over this long (AM 9; av-mesh default 2000).
+    # - client_udp_region_hold_ms: a region-wide silence this long, with a
+    #   --failover-entry region fresh, sends the UDP clients there (AM 11;
+    #   default 2000; needs region_failover).
+    "client_udp_egress_load": None,
+    "client_udp_admit_by_load": None,
+    "client_udp_drain_spread_ms": None,
+    "client_udp_region_hold_ms": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1889,9 +1906,14 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
     if "--client-udp-bind" in node_args:
-        for key in WAVE8_CLIENT_UDP:
+        for key in WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL:
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+        for key in AM_CLIENT_UDP_MS:
+            if settings.get(key) is not None:
+                # 0 is the behaviour of before (no spread, no region move).
+                value = 0 if float(settings[key]) == 0 else whole(settings[key], key)
+                out += ["--" + key.replace("_", "-"), str(value)]
     return out
 
 
@@ -1899,6 +1921,9 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
 # av-mesh flag of the same name.
 WAVE8_CLIENT_UDP = ("client_udp_repair_thread", "client_udp_batched_admission",
                     "client_udp_resume_from_request", "client_udp_fanout_inline_shard")
+# Wave 8 stage 4 (Phase AM 8, 9, 11): the same, on/off and in ms.
+AM_CLIENT_UDP_BOOL = ("client_udp_egress_load", "client_udp_admit_by_load")
+AM_CLIENT_UDP_MS = ("client_udp_drain_spread_ms", "client_udp_region_hold_ms")
 
 
 def is_contributor_args(args: list[str]) -> bool:

@@ -326,6 +326,31 @@ class Render(Base):
             else:
                 self.assertNotIn(flag, node_args, name)
 
+    def test_the_phase_am_client_udp_settings_reach_the_nodes_that_serve_clients(self):
+        """Wave 8 stage 4 (Phase AM 8, 9, 11): each setting renders its av-mesh
+        flag on every node with --client-udp-bind, only when given."""
+        flags = ("--client-udp-egress-load", "--client-udp-admit-by-load",
+                 "--client-udp-drain-spread-ms", "--client-udp-region-hold-ms")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "client_udp_egress_load=false", "client_udp_admit_by_load=false",
+            "client_udp_drain_spread_ms=0", "client_udp_region_hold_ms=5000"])
+        served = 0
+        for name, node_args in args.items():
+            if "--client-udp-bind" not in node_args:
+                for flag in flags:
+                    self.assertNotIn(flag, node_args, name)
+                continue
+            served += 1
+            self.assertEqual(value_of(node_args, "--client-udp-egress-load"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-admit-by-load"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-drain-spread-ms"), "0")
+            self.assertEqual(value_of(node_args, "--client-udp-region-hold-ms"), "5000")
+        self.assertGreater(served, 0)
+
     def test_the_wave8_client_udp_settings_reach_the_nodes_that_serve_clients(self):
         """Wave 8 stage 2: each setting renders its av-mesh flag on every node
         with --client-udp-bind, only when given."""
