@@ -197,6 +197,13 @@ class Render(Base):
             self.assertEqual(value_of(off[name], "--relay-lease-children"), "false", name)
             for flag in LEASE_FLAGS:
                 self.assertNotIn(flag, off[name], (name, flag))
+            if name.endswith("-dist-c"):
+                # A slot is a fast-plane lease child of its site's first two
+                # distributors too (AM 12): off, it is fed on the cache mesh
+                # alone, like the edges.
+                self.assertIn("--relay-controlled-local", on[name], name)
+                self.assertNotIn("--relay-controlled-local", off[name], name)
+                continue
             # Nothing else of a distributor changes.
             strip = lambda items: [item for item in items if item not in  # noqa: E731
                                    ("--relay-lease-children", "true", "false")]

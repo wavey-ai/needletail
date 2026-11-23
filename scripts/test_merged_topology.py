@@ -354,6 +354,45 @@ class Render(Base):
         _program, _plan, args = self.render(["cache_mesh_warm_total_kbps=60000"])
         self.assertEqual(value_of(args["lon-dist-a"], "--cache-mesh-warm-total-kbps"), "60000")
 
+    def test_the_review_settings_reach_their_nodes_only_when_given(self):
+        """Wave 8 review fixes: keepalive, datagram capacity and the region
+        head check on the nodes that serve UDP clients; the second parent's
+        warm-up on every mesh node; RLD1 to lease parents and the fallback
+        nice on relay nodes; the lease sockets' drain on forwarders."""
+        flags = {"--client-udp-keepalive-ms": "--client-udp-bind",
+                 "--client-udp-datagram-capacity": "--client-udp-bind",
+                 "--client-udp-region-head-check": "--client-udp-bind",
+                 "--cache-mesh-warm-second-parent": "--mesh-bind",
+                 "--relay-demand-report-lease-parents": "--relay-controlled-local",
+                 "--relay-class-fallback-nice": "--relay-controlled-local",
+                 "--relay-lease-drain-inbound": "--relay-lease-bind"}
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "client_udp_keepalive_ms=0", "client_udp_datagram_capacity=400000",
+            "client_udp_region_head_check=false", "cache_mesh_warm_second_parent=false",
+            "relay_demand_report_lease_parents=true", "relay_class_fallback_nice=5",
+            "relay_lease_drain_inbound=false"])
+        want = {"--client-udp-keepalive-ms": "0", "--client-udp-datagram-capacity": "400000",
+                "--client-udp-region-head-check": "false",
+                "--cache-mesh-warm-second-parent": "false",
+                "--relay-demand-report-lease-parents": "true",
+                "--relay-class-fallback-nice": "5", "--relay-lease-drain-inbound": "false"}
+        seen = {flag: 0 for flag in flags}
+        for name, node_args in args.items():
+            for flag, where in flags.items():
+                if where in node_args:
+                    self.assertEqual(value_of(node_args, flag), want[flag], (name, flag))
+                    seen[flag] += 1
+                else:
+                    self.assertNotIn(flag, node_args, (name, flag))
+        for flag, count in seen.items():
+            self.assertGreater(count, 0, flag)
+        self.assertIn("--client-udp-datagram-capacity", args["lon-edge-1"])
+        self.assertIn("--relay-lease-drain-inbound", args["lon-dist-a"])
+
     def test_the_phase_am_client_udp_settings_reach_the_nodes_that_serve_clients(self):
         """Wave 8 stage 4 (Phase AM 8, 9, 11): each setting renders its av-mesh
         flag on every node with --client-udp-bind, only when given."""

@@ -321,6 +321,32 @@ DEFAULT_SETTINGS = {
     "cache_mesh_release_unranked_parents": None,
     "cache_mesh_avoid_draining_parents": None,
     "cache_mesh_warm_total_kbps": None,
+    # Wave 8 review fixes. None renders nothing (the binaries' defaults);
+    # a value is the A/B.
+    # - client_udp_keepalive_ms (nodes that serve UDP clients): WAIT to the
+    #   subscribers of a quiet stream this often (av-mesh default 80, under
+    #   the clients' 200 ms move silence; 0: 300 ms, before).
+    # - client_udp_datagram_capacity (same): client datagrams a second that
+    #   make an edge full; each counts in the load as at least capacity / 8
+    #   / this many bytes (0: bytes alone, the default). scale-run settings
+    #   --datagram-capacity sets it for the autoscale phases.
+    # - client_udp_region_head_check (same): a failover region is fresh for
+    #   MOVE region-lost only with parts newer than this region's head.
+    # - cache_mesh_warm_second_parent (every mesh node): with a slot among
+    #   the live distributors, the second parent warms a new copy too.
+    # - relay_demand_report_lease_parents (relay nodes): edges and slots send
+    #   RLD1 to their lease parents too (false by default: F-I1).
+    # - relay_lease_drain_inbound (forwarders with --relay-lease-bind): read
+    #   and count what arrives on the lease sockets.
+    # - relay_class_fallback_nice (relay nodes): the nice step of the other
+    #   threads where SCHED_FIFO is refused (av-mesh default 0, off).
+    "client_udp_keepalive_ms": None,
+    "client_udp_datagram_capacity": None,
+    "client_udp_region_head_check": None,
+    "cache_mesh_warm_second_parent": None,
+    "relay_demand_report_lease_parents": None,
+    "relay_lease_drain_inbound": None,
+    "relay_class_fallback_nice": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1961,14 +1987,27 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
             out += ["--cache-mesh-warm-total-kbps",
                     "0" if float(total) == 0 else str(whole(total, "cache_mesh_warm_total_kbps"))]
     if "--client-udp-bind" in node_args:
-        for key in WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL:
+        for key in WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL + REVIEW_CLIENT_UDP_BOOL:
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
-        for key in AM_CLIENT_UDP_MS:
+        for key in AM_CLIENT_UDP_MS + REVIEW_CLIENT_UDP_COUNT:
             if settings.get(key) is not None:
                 # 0 is the behaviour of before (no spread, no region move).
                 value = 0 if float(settings[key]) == 0 else whole(settings[key], key)
                 out += ["--" + key.replace("_", "-"), str(value)]
+    if "--mesh-bind" in node_args and settings.get("cache_mesh_warm_second_parent") is not None:
+        out += ["--cache-mesh-warm-second-parent",
+                flag(bool(settings["cache_mesh_warm_second_parent"]))]
+    if "--relay-controlled-local" in node_args:
+        if settings.get("relay_demand_report_lease_parents") is not None:
+            out += ["--relay-demand-report-lease-parents",
+                    flag(bool(settings["relay_demand_report_lease_parents"]))]
+        if settings.get("relay_class_fallback_nice") is not None:
+            out += ["--relay-class-fallback-nice",
+                    str(whole(settings["relay_class_fallback_nice"], "relay_class_fallback_nice")
+                        if float(settings["relay_class_fallback_nice"]) else 0)]
+    if "--relay-lease-bind" in node_args and settings.get("relay_lease_drain_inbound") is not None:
+        out += ["--relay-lease-drain-inbound", flag(bool(settings["relay_lease_drain_inbound"]))]
     return out
 
 
@@ -1983,6 +2022,9 @@ AM_MESH_BOOL = ("relay_lease_ranked", "relay_ranked_parents", "cache_mesh_subscr
 # Wave 8 stage 4 (Phase AM 8, 9, 11): the same, on/off and in ms.
 AM_CLIENT_UDP_BOOL = ("client_udp_egress_load", "client_udp_admit_by_load")
 AM_CLIENT_UDP_MS = ("client_udp_drain_spread_ms", "client_udp_region_hold_ms")
+# The wave 8 review's settings of the nodes that serve UDP clients.
+REVIEW_CLIENT_UDP_BOOL = ("client_udp_region_head_check",)
+REVIEW_CLIENT_UDP_COUNT = ("client_udp_keepalive_ms", "client_udp_datagram_capacity")
 
 
 def is_contributor_args(args: list[str]) -> bool:
