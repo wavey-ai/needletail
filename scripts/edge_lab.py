@@ -1063,6 +1063,10 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         process = subprocess.Popen(
             enter("contrib-lon") + [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
+                # A 4K clip of 120 Mbit/s or more holds its first audio
+                # packet past the default 5 MB probe: without a longer one
+                # ffmpeg finds no sample rate and sends nothing.
+                "-probesize", "64M", "-analyzeduration", "10000000",
                 "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP), "-t", str(seconds),
                 "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-muxdelay", "0",
                 "-muxpreload", "0", "-f", "mpegts",
@@ -1294,6 +1298,55 @@ def read_netdev(pid: int) -> dict:
     return out
 
 
+def read_udp_sockets(pid: int) -> dict:
+    """Per-socket UDP receive drops and receive-queue bytes of the namespace
+    of `pid` (/proc/PID/net/udp and udp6: the kernel's `drops` column, a
+    socket whose receive queue was full, as `ss -uamn` shows it in skmem
+    `d`), keyed by local port (sockets of one port summed; the queue is the
+    largest): `udp_socket_drops`, `udp_socket_rx_queue`. The node-wide
+    RcvbufErrors cannot tell which socket overflowed (wave 8 stage 3: the
+    referee's 4K losses were at one socket of each node)."""
+    drops: dict[str, int] = {}
+    queue: dict[str, int] = {}
+    for table in ("udp", "udp6"):
+        try:
+            text = pathlib.Path(f"/proc/{pid}/net/{table}").read_text()
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 13:
+                continue
+            try:
+                port = str(int(fields[1].rsplit(":", 1)[1], 16))
+                rx_queue = int(fields[4].split(":")[1], 16)
+                dropped = int(fields[-1])
+            except (ValueError, IndexError):
+                continue
+            drops[port] = drops.get(port, 0) + dropped
+            queue[port] = max(queue.get(port, 0), rx_queue)
+    if not drops:
+        return {}
+    return {"udp_socket_drops": drops, "udp_socket_rx_queue": queue}
+
+
+def socket_drop_deltas(running: list[dict]) -> dict:
+    """What each port's sockets dropped over the samples (ports with a drop
+    only), and each port's largest receive queue seen (bytes)."""
+    have = [item["udp_socket_drops"] for item in running if "udp_socket_drops" in item]
+    if len(have) < 2:
+        return {}
+    first, last = have[0], have[-1]
+    drops = {port: last[port] - first.get(port, 0) for port in last
+             if last[port] - first.get(port, 0) > 0}
+    queues: dict[str, int] = {}
+    for item in running:
+        for port, size in item.get("udp_socket_rx_queue", {}).items():
+            queues[port] = max(queues.get(port, 0), size)
+    return {"udp_socket_drops": dict(sorted(drops.items(), key=lambda kv: -kv[1])),
+            "udp_socket_rx_queue_max": {port: size for port, size in queues.items() if size > 0}}
+
+
 def netdev_rates(running: list[dict]) -> dict:
     """Per-second packets and Mbit/s of each interface over the samples
     that have the counters: `eth0_tx_pps`, `eth0_tx_mbps`, `eth0_rx_pps`,
@@ -1383,7 +1436,7 @@ class Sampler:
                 continue
             directory = cgroup_dir(name)
             item = {"at": now, "running": True, **(read_cgroup(directory) if directory else {}),
-                    **read_process(pid), **read_netdev(pid)}
+                    **read_process(pid), **read_netdev(pid), **read_udp_sockets(pid)}
             if tick % 5 == 0:
                 item.update(read_netstat(name))
             out[name] = item
@@ -1448,6 +1501,7 @@ class Sampler:
                 "udp_out": delta("udp_out"),
                 "udp_in": delta("udp_in"),
                 **netdev_rates(running),
+                **socket_drop_deltas(running),
             }
         return out
 

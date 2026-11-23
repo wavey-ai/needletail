@@ -211,6 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "serves the most UDP clients for MS ms (SIGSTOP, as a stalled "
                              "host: its sockets queue) and let it run again: the referee's edge "
                              "stall (wave 8 S2: the clients' move and the parts it costs)")
+    parser.add_argument("--stall-node", default="", metavar="NAME:SECOND:MS",
+                        help="SECOND s into the readers' window, stop node NAME for MS ms "
+                             "(SIGSTOP) and let it run again: a forwarder's failure as its "
+                             "children see it (wave 8 stage 3: an edge's 4K when the "
+                             "distributor that feeds it the sources stops)")
     parser.add_argument("--sample-nodes", action="store_true",
                         help="sample every node's CPU, throttling and UDP drops each second "
                              "(always on with 4K)")
@@ -705,6 +710,13 @@ def node_summary_lines(nodes: dict | None) -> list[str]:
         lines.append(f"  {name:<16} {item['cpu_percent_mean']:>6} {item['cpu_percent_p95']:>6} "
                      f"{item['cpu_percent_max']:>6}  throttled {item.get('throttled_ms')}  "
                      f"rcvbuf drops {item.get('udp_rcvbuf_errors')}")
+        drops = item.get("udp_socket_drops")
+        if drops:
+            queues = item.get("udp_socket_rx_queue_max", {})
+            lines.append("      socket drops by port: " + ", ".join(
+                f":{port} {count}" + (f" (queue max {queues[port] // 1024} KiB)"
+                                      if port in queues else "")
+                for port, count in list(drops.items())[:8]))
     return lines
 
 
@@ -917,6 +929,19 @@ def stall_edge(spec: str, began: float) -> dict:
         lab.freeze_service(edge, False)
     return {"edge": edge, "clients": counts, "from_us": started_us,
             "until_us": time.time_ns() // 1000}
+
+
+def stall_node(spec: str, began: float) -> dict:
+    """--stall-node: stop one named node for the stall."""
+    name, second, length = spec.split(":")
+    time.sleep(max(0.0, began + float(second) - time.time()))
+    started_us = time.time_ns() // 1000
+    lab.freeze_service(name, True)
+    try:
+        time.sleep(float(length) / 1000)
+    finally:
+        lab.freeze_service(name, False)
+    return {"node": name, "from_us": started_us, "until_us": time.time_ns() // 1000}
 
 
 def edge_wake_report(events: list[dict], since_us: int | None,
@@ -1469,6 +1494,8 @@ def run(args, steps: dict) -> int:
     lines += edge_wake_lines(wake)
     if measured.get("stall"):
         result["stall"] = measured["stall"]
+    if measured.get("stall_node"):
+        result["stall_node"] = measured["stall_node"]
         lines += ["", f"stall: {json.dumps(measured['stall'])}"]
     lines += video_summary_lines(video["source"] if regions else None, regions,
                                  video["frame_deadline_ms"])
@@ -1620,6 +1647,14 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
                                      daemon=True)
             stall.start()
             measured["stall"] = box
+        if args.stall_node:
+            import threading
+            began = began_us / 1e6
+            node_box = {}
+            node_stall = threading.Thread(
+                target=lambda: node_box.update(stall_node(args.stall_node, began)), daemon=True)
+            node_stall.start()
+            measured["stall_node"] = node_box
         for process in readers:
             try:
                 process.wait(timeout=args.seconds + 90)
