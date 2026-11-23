@@ -1265,12 +1265,15 @@ COUNT_FIELDS = {
     "moves_out": ("moves_out",),
     "missing_moved": ("missing_moved",),
     "move_lost": ("move_lost",),
+    # Wave 8 review: the parts lost in moves away from an edge, booked on
+    # the edge left (a fault of that edge cost them).
+    "left_lost": ("left_lost",),
 }
 
 
 # Fields that are None, not 0, when the load tool does not give them.
 OPTIONAL_FIELDS = ("active", "stranded", "never_resumed", "moves_out", "missing_moved",
-                   "move_lost")
+                   "move_lost", "left_lost")
 
 
 def interval_rows(rows: list[dict]) -> list[dict]:
@@ -2314,6 +2317,7 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
     counts a move on the edge the listener moved to)."""
     parts = missing = moves = 0
     missing_moved = None
+    left_lost = None
     moved: list[dict] = []
     listeners: dict[float, int] = {}
     by_edge: dict[str, int] = {}
@@ -2328,6 +2332,8 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
         moves += row["moves"]
         if row.get("missing_moved") is not None:
             missing_moved = (missing_moved or 0) + row["missing_moved"]
+        if row.get("left_lost") is not None:
+            left_lost = (left_lost or 0) + row["left_lost"]
         if row.get("time_to_move"):
             moved.append(row["time_to_move"])
         by_edge[name] = by_edge.get(name, 0) + row["moves"]
@@ -2337,6 +2343,8 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
             # the time from a moving listener's last part on its old edge
             # to its first on the new one (booked on the new edge).
             "missing_moved": missing_moved,
+            # Wave 8 review: parts lost in moves away from these edges.
+            "left_lost": left_lost,
             "time_to_move_ms": histogram_quantiles(merge_histograms(moved)) if moved else None,
             "time_to_move_histogram": merge_histograms(moved) if moved else None,
             "missing_percent": round(100.0 * missing / (parts + missing), 4)
@@ -2517,13 +2525,23 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
     every = on_edges_not_faulted + sum(result["udp"][key]["faulted"]["missing"]
                                        for key in ("during", "after"))
     out.append(check("all listeners (moved ones included): 0 missing", every == 0, every))
-    # needletail-load counts the missing parts of listeners that moved
-    # (Phase AM item 10): the others' are the unaffected listeners'.
+    # The fault's own losses are the parts lost in moves away from a faulted
+    # node (needletail-load's left_lost, booked on the edge left): every
+    # other missing part is an unaffected listener's, a listener that moved
+    # off an edge not faulted (an overloaded survivor) included (wave 8
+    # review: missing_moved counted every part a listener lost after its
+    # first move, whatever the cause, and hid that collateral damage).
+    fault_lost = [result["udp"][key]["faulted"].get("left_lost") for key in ("during", "after")]
     moved_missing = [result["udp"][key][side].get("missing_moved")
                      for key in ("during", "after") for side in ("unaffected", "faulted")]
-    if all(value is not None for value in moved_missing):
-        unaffected = every - sum(moved_missing)
+    if all(value is not None for value in fault_lost):
+        unaffected = every - sum(fault_lost)
         out.append(check("unaffected listeners alone: 0 missing", unaffected == 0, unaffected))
+    elif all(value is not None for value in moved_missing):
+        unaffected = every - sum(moved_missing)
+        out.append(check("unaffected listeners alone: 0 missing", unaffected == 0, unaffected,
+                         "an upper bound only: this needletail-load has no left_lost, and its "
+                         "missing_moved holds every loss of a moved listener"))
     else:
         out.append(check("unaffected listeners alone: 0 missing", None, on_edges_not_faulted,
                          "needletail-load with missing_moved (Phase AM item 10): without it a "
@@ -2582,6 +2600,12 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
     if needs:
         out.append(check("Phase AM items this scenario needs before it can pass", None,
                          needs, ", ".join(f"AM item {item}" for item in needs)))
+    # Settings a scenario needs in the deploy (wave 8 review: the autoscale
+    # phases need an edge load that means a full CPU).
+    settings = deploy_settings()
+    for key, why in (spec.get("needs_settings") or {}).items():
+        if not settings.get(key):
+            out.append(check(f"deploy setting {key}", None, settings.get(key), why))
     return out
 
 
@@ -2996,16 +3020,23 @@ def deploy_settings() -> dict:
     return json.loads(path.read_text()) if path.is_file() else {}
 
 
-def scale_settings(standby: list[str]) -> dict:
+def scale_settings(standby: list[str], datagram_capacity: int = 0) -> dict:
     """The deploy settings of the scale run: readers on the VLAN (Linode does
     not bill it), PCM in the contributor's LL-HLS formats, the edges' UDP
     subscription cap and egress capacity above what a g6-dedicated-2 can send
     (4 Gbit/s), so that what gives out is the edge and not a setting, and
     the London edges of the second curve on standby (none with
     --second-curve), and a new copy's warm-up sized in time (WARM_MS)."""
-    return {"playback_address": "vlan", "daw_hls_formats": "flac,opus,pcm",
-            "client_udp_max_subscribers": 65536, "edge_egress_capacity_bps": 4_000_000_000,
-            "edge_session_limit": 0, "cache_mesh_warm_ms": WARM_MS, "standby_edges": standby}
+    settings = {"playback_address": "vlan", "daw_hls_formats": "flac,opus,pcm",
+                "client_udp_max_subscribers": 65536, "edge_egress_capacity_bps": 4_000_000_000,
+                "edge_session_limit": 0, "cache_mesh_warm_ms": WARM_MS, "standby_edges": standby}
+    # The autoscale phases (wave 8 review): at 4 Gbit/s in bytes alone an
+    # edge with a full CPU reads ~100 permille, so the controller's 700
+    # never fires and its scale-down always would. With a datagram capacity
+    # the edges' load counts their client datagram rate against it.
+    if datagram_capacity:
+        settings["client_udp_datagram_capacity"] = datagram_capacity
+    return settings
 
 
 def topology_state(path: pathlib.Path, without: list[str] = ()) -> dict:
@@ -3145,7 +3176,8 @@ def command_settings(args: argparse.Namespace) -> None:
                           [] if args.second_curve else topology.get("standby_edges", []),
                           args.edges_per_region)
     print(" ".join(f"--set {key}={json.dumps(value, separators=(',', ':'))}"
-                   for key, value in scale_settings(standby).items()))
+                   for key, value in scale_settings(
+                       standby, getattr(args, "datagram_capacity", 0)).items()))
 
 
 def fit_wanted(args: argparse.Namespace, lab: dict) -> bool:
@@ -4181,6 +4213,10 @@ def build_parser() -> argparse.ArgumentParser:
                           help="no standby edge: London's extra edges in")
     settings.add_argument("--edges-per-region", type=int, default=None,
                           help="the first N edges of each region in service, the rest standby")
+    settings.add_argument("--datagram-capacity", type=int, default=0,
+                          help="client UDP datagrams a second that fill an edge "
+                               "(client_udp_datagram_capacity; the autoscale phases need it: "
+                               "~400000 for a g6-dedicated-2 by wave 7's estimate)")
     settings.set_defaults(handler=command_settings)
     plan = sub.add_parser("plan", help="allocation, capacity, duration and cost of the steps")
     planning(plan)

@@ -940,7 +940,7 @@ class Phases(unittest.TestCase):
         self.assertIsNone(scale.stranded_listeners(none, 100.0, 160.0)["stranded"])
 
     def write_phase_step(self, directory: pathlib.Path, start: float, timeline: dict,
-                         am10: bool = False) -> None:
+                         am10: bool = False, left_lost: bool = False) -> None:
         """A step of F1 (drain lon-edge-1) from its files: lon-load-1 with
         listeners on lon-edge-1 and lon-edge-2, which move off lon-edge-1 at
         the fault onto lon-edge-2 (and two onto lon-edge-3), their missing
@@ -973,6 +973,16 @@ class Phases(unittest.TestCase):
                     edge["missing_moved"] = edge["missing"]
                     edge["moves_out"] = 0
                 edges[address["lon-edge-1"]]["moves_out"] = 25 if moving else 0
+                if left_lost:
+                    # Wave 8 review: the moves' losses booked on the edge
+                    # left; and a listener of lon-edge-3 (not faulted) that
+                    # stalls, moves and loses a part 5 s later: collateral.
+                    for edge in edges.values():
+                        edge["left_lost"] = 0
+                    edges[address["lon-edge-1"]]["left_lost"] = 1 if moving else 0
+                    if int(t - fault) == 5:
+                        edges[address["lon-edge-3"]].update(
+                            missing=1, missing_moved=1, left_lost=1)
                 if moving:
                     edges[address["lon-edge-2"]]["time_to_move_ms"] = {
                         "count": 24, "p99": 201.0, "buckets_us": [[200704, 24]]}
@@ -1069,6 +1079,57 @@ class Phases(unittest.TestCase):
         self.assertTrue(moved["ok"], moved)
         self.assertAlmostEqual(moved["value"], 201.727, places=2)
         self.assertNotIn("Phase AM items this scenario needs before it can pass", criteria)
+
+    def test_collateral_losses_of_unaffected_listeners_are_not_hidden(self):
+        """Wave 8 review: the fault's losses are the parts lost in moves away
+        from the faulted node (left_lost); a listener of an edge not faulted
+        that moves and loses parts counts as unaffected, where missing_moved
+        (every loss of a listener that ever moved) hid it."""
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        plan = scale.load_phase_plan(PHASES, names=["F1"])
+        timeline = scale.phase_timeline(plan)
+        start = 1_790_000_000.0
+        self.write_phase_step(directory, start, timeline, am10=True, left_lost=True)
+        result = scale.analyse_phases(lab(), directory, timeline, start, plan, [],
+                                      readers_launched=start - 10)[0]
+        during = result["udp"]["during"]
+        self.assertEqual(during["faulted"]["left_lost"], 2)
+        self.assertEqual(during["unaffected"]["left_lost"], 1)
+        criteria = {item["criterion"]: item for item in result["criteria"]}
+        unaffected = criteria["unaffected listeners alone: 0 missing"]
+        self.assertFalse(unaffected["ok"], unaffected)
+        self.assertEqual(unaffected["value"], 1)
+
+    def test_the_autoscale_phases_need_a_datagram_capacity(self):
+        """Wave 8 review: A1-A3 need client_udp_datagram_capacity in the
+        deploy (an edge load that means a full CPU); scale-run settings
+        --datagram-capacity sets it."""
+        plan = json.loads(PHASES.read_text())
+        for scenario in plan["scenarios"]:
+            needs = scenario.get("needs_settings") or {}
+            self.assertEqual("client_udp_datagram_capacity" in needs,
+                             scenario["name"] in ("A1", "A2", "A3"), scenario["name"])
+        standby = json.loads(TOPOLOGY.read_text())["standby_edges"]
+        self.assertNotIn("client_udp_datagram_capacity", scale.scale_settings(standby))
+        self.assertEqual(scale.scale_settings(standby, 400_000)["client_udp_datagram_capacity"],
+                         400_000)
+        spec = next(item for item in plan["scenarios"] if item["name"] == "A1")
+        quiet = {"nodes": [], "cpu_max": 0.1, "core_max": 0.1, "nic_share_max": 0.1}
+        result = {"stranded": {"max": 0},
+                  "udp": {key: {side: {"missing": 0} for side in ("unaffected", "faulted")}
+                          for key in ("during", "after")},
+                  "survivors": {key: dict(quiet) for key in ("before", "during", "after")},
+                  "moves": {"udp": 0, "udp_spread_max_over_mean": None},
+                  "mesh": {key: {"survivors": {}} for key in ("before", "during", "after")}}
+        setting = "deploy setting client_udp_datagram_capacity"
+        with mock.patch.object(scale, "deploy_settings", return_value={}):
+            names = [item["criterion"] for item in scale.phase_criteria(result, spec)]
+        self.assertIn(setting, names)
+        with mock.patch.object(scale, "deploy_settings",
+                               return_value={"client_udp_datagram_capacity": 400_000}):
+            names = [item["criterion"] for item in scale.phase_criteria(result, spec)]
+        self.assertNotIn(setting, names)
 
     def test_the_load_command_asks_the_entry_points(self):
         alloc = {"udp": 700, "hls": 0, "hls_by_edge": {}}

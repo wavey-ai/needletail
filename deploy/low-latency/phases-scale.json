@@ -414,7 +414,10 @@
         "trigger_to_fresh_s": 20
       },
       "needs_am": [],
-      "shed": 17
+      "shed": 17,
+      "needs_settings": {
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: deploy with scale-run settings --datagram-capacity (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)"
+      }
     },
     {
       "name": "A2",
@@ -442,7 +445,10 @@
       "settle_s": 30,
       "expect": {},
       "needs_am": [],
-      "shed": 16
+      "shed": 16,
+      "needs_settings": {
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: deploy with scale-run settings --datagram-capacity (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)"
+      }
     },
     {
       "name": "A3",
@@ -485,7 +491,10 @@
         "12"
       ],
       "note": "Run in place of A1 and A2 (--scenarios A3) once AM item 12 lands. Until then the fallback of the design: edges only, and dist-c's join and leave as the cache-mesh redistribution of R4.",
-      "shed": 0
+      "shed": 0,
+      "needs_settings": {
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: deploy with scale-run settings --datagram-capacity (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)"
+      }
     }
   ],
   "shedding": "When the run's projected end passes 345 min of the lab's life (5.75 h; the watchdog's down starts at 355 min and the lab is gone at 6.0 h): first the joins of the representative steps not yet run, then what is left of the 10 min of reruns, then curve 1's c1-opus1-mixed, then half of curve 2's steps (SCALE.md), then the scenarios, the lowest `shed` first: F8, R5, F2r, R4, F7, ... ; 0 is not run until its Phase AM work lands.",

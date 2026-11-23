@@ -792,7 +792,14 @@ scripts/compare/scale-run.py plan --topology-only --phase-plan $P --group F --st
 scripts/compare/scale-run.py run $COST --phase-plan $P --group F --name ph-f --steps 6000
 scripts/compare/scale-run.py run $COST --phase-plan $P --group R --name ph-r --steps 6000
 # A1, A2: the controller alone (it starts the standby edges, and only past
-# them creates a slot, through the lab tool, within the budget):
+# them creates a slot, through the lab tool, within the budget). First the
+# edges' load must mean a full CPU (wave 8 review): at 4 Gbit/s in bytes a
+# full g6-dedicated-2 reads ~100 permille, the controller's 700 never fires
+# and its 450 scale-down always would. Push the A group's deploy with
+#   scripts/linode-small-mesh-deploy.py push $(scripts/compare/scale-run.py \
+#     settings --datagram-capacity 400000)
+# (client_udp_datagram_capacity: datagrams a second that fill an edge, wave
+# 7's estimate for 1 ms audio); without it A1-A3 report the setting as open.
 scripts/compare/scale-run.py run $COST --phase-plan $P --group A --name ph-a --steps 6000 \
   --budget-usd 100 --spent-before-usd $SPENT
 # when AM item 12 has landed:
