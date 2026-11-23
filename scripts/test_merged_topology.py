@@ -779,9 +779,9 @@ class Lifecycle(Base):
                         ("activate", node["name"])) or {"ok": True, "why": "", "qdisc": None}), \
                     mock.patch.object(deploy, "stop_service", lambda node, *a: calls.append(
                         ("stop", node["name"]))), \
+                    mock.patch.object(deploy, "record_deployed", lambda *a, **k: None), \
                     redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 ops = deploy.LinodeOps(state, self.settings([f"topology={mode}"]))
-                ops.record = lambda entries: None
                 ops.install(["relay-primary"], None)
             self.assertEqual(calls, [("stage", "relay-primary"), ("activate", "relay-primary")]
                              if staged else [("stop", "relay-primary")], mode)
@@ -1093,7 +1093,11 @@ class Rollable(Base):
     node that runs the new value next to one that runs the old needs no
     peer to agree. Each key, set alone, changes only the flags named here
     (and, for the unit's keys, the unit), never an address, a port, a peer,
-    a part or the relay DAG."""
+    a part or the relay DAG; and it reaches only the roles and the units
+    named in REACH. C 2.6 asks one role a key; twelve keys of C's own list
+    reach the edges and the forwarders both (a departure): what keeps a
+    roll safe is the scope check at run time (LinodeOps.changed_by_set),
+    and REACH makes a key that silently reaches another role show."""
 
     LOCAL = "--test-local-flag"
     CASES = {
@@ -1118,6 +1122,30 @@ class Rollable(Base):
         "rebalance_target_permille": (700, {"--rebalance-target-permille"}),
     }
 
+    MESH, CONTRIB = "needletail-mesh", "needletail-contrib"
+    EDGE_AND_FORWARDER = ({"edge", "distributor"}, set())
+    REACH = {
+        "rust_log_mesh": (set(), {MESH}),
+        "rust_log_contrib": (set(), {CONTRIB}),
+        "node_env": (set(), {MESH, CONTRIB}),
+        "tokio_worker_threads": (set(), {MESH, CONTRIB}),
+        "extra_edge_args": ({"edge"}, set()),
+        "extra_distributor_args": ({"distributor"}, set()),
+        "extra_contributor_args": ({"contributor"}, set()),
+        "mlock_all": ({"edge", "distributor"}, {MESH}),
+        "malloc_tune": EDGE_AND_FORWARDER,
+        "prefault": EDGE_AND_FORWARDER,
+        "relay_class_cpus": EDGE_AND_FORWARDER,
+        "relay_class_realtime": EDGE_AND_FORWARDER,
+        "audio_hot_cpu": ({"contributor"}, set()),
+        "cpu_load": EDGE_AND_FORWARDER,
+        "cpu_load_full_percent": EDGE_AND_FORWARDER,
+        "client_udp_datagram_capacity": EDGE_AND_FORWARDER,
+        "egress_capacity_bps": EDGE_AND_FORWARDER,
+        "client_udp_drain_spread_ms": EDGE_AND_FORWARDER,
+        "rebalance_target_permille": EDGE_AND_FORWARDER,
+    }
+
     @staticmethod
     def pairs(args: list[str]) -> list[tuple]:
         """(flag, value) of every argument, the render's time masked."""
@@ -1140,19 +1168,25 @@ class Rollable(Base):
 
     def test_each_rollable_setting_renders_local_flags_only(self):
         self.assertEqual(set(self.CASES), set(deploy.ROLLABLE_SETTINGS))
+        self.assertEqual(set(self.REACH), set(deploy.ROLLABLE_SETTINGS))
         _program, _plan, base = self.render()
         base_units = self.units()
+        roles = {name: node["role"] for name, node in lab.lab_state()["nodes"].items()}
         for key, (value, flags) in self.CASES.items():
             with self.subTest(key=key):
                 override = [f"{key}={json.dumps(value)}"]
                 _program, _plan, args = self.render(override)
-                changed = set()
+                changed, reached = set(), set()
                 for name in base:
                     before, after = self.pairs(base[name]), self.pairs(args[name])
                     changed |= {flag for flag, _value in set(before) ^ set(after)}
+                    if before != after:
+                        reached.add(roles[name])
                 self.assertEqual(changed, flags)
-                if not flags:
-                    self.assertNotEqual(self.units(override), base_units)
+                units = self.units(override)
+                self.assertEqual((reached, {service for service in units
+                                            if units[service] != base_units[service]}),
+                                 self.REACH[key])
 
 
 class CompilerAge(unittest.TestCase):

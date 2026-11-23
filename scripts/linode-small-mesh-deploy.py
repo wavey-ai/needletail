@@ -32,12 +32,15 @@ Subcommands:
   status    service state, build, readiness and the deployed record per node
 
 What is deployed is recorded in the lab state (`deployed`): the settings,
-the routes and hunted ports, and each node's build and arguments. A node
-runs a build from /opt/needletail/builds/<git>-<unix>/, staged beside the
-one in force and put in force by /opt/needletail/activate with a deadline;
-`roll`, `restart --nodes` and `start --nodes` refuse settings that do not
-reproduce the record. settings.json, routes.json and ecmp-ports.json name
-the lab they belong to and are refused for another.
+the routes and hunted ports, and each node's build and arguments (with the
+`--set` values a node runs beyond the settings until every node runs them,
+and an activation begun and not seen to end, which the next command settles
+by what the node runs). A node runs a build from
+/opt/needletail/builds/<git>-<unix>/, staged beside the one in force and
+put in force by /opt/needletail/activate with a deadline; `roll`, `restart
+--nodes` and `start --nodes` refuse settings that do not reproduce the
+record. settings.json, routes.json and ecmp-ports.json name the lab they
+belong to and are refused for another.
 
 Joining without a restart (low-latency ops, D3). Every peer list is
 rendered from the lab's roster, not from the nodes in service: every edge
@@ -60,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import filecmp
 import functools
 import hashlib
 import importlib.util
@@ -71,6 +75,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -3343,19 +3348,43 @@ def builds_dir() -> pathlib.Path:
 def cache_build(role: str) -> dict:
     """Copy the binaries that `push` installs on a node of `role` from the
     roots (binaries_for) into builds/<key>/, the key from the service's
-    binary; its build. Only push and roll take a build from the roots."""
+    binary as copied (a build that finishes meanwhile cannot land under
+    another's key); its build. A cached build is never written again: the
+    copy goes in whole by a rename, and a root whose service binary names a
+    cached build but differs from it is refused. Only push and roll take a
+    build from the roots."""
     files = binaries_for(role)
     missing = [str(path) for path in files if not path.is_file()]
     if missing:
         raise mesh_ops.Refused(f"binary is missing: {', '.join(missing)}")
-    build = build_of(files[0])
-    target = builds_dir() / build["key"]
-    target.mkdir(parents=True, exist_ok=True)
-    for path in files:
-        temporary = target / f".{path.name}.new"
-        shutil.copy2(path, temporary)
-        temporary.replace(target / path.name)
-    return build
+    builds_dir().mkdir(parents=True, exist_ok=True)
+    copy = pathlib.Path(tempfile.mkdtemp(prefix=".copy-", dir=builds_dir()))
+    try:
+        for path in files:
+            shutil.copy2(path, copy / path.name)
+        build = build_of(copy / files[0].name)
+        target = builds_dir() / build["key"]
+        if not target.is_dir():
+            try:
+                copy.rename(target)
+                return build
+            except OSError:
+                if not target.is_dir():
+                    raise
+        cached = target / files[0].name
+        if not cached.is_file() or not filecmp.cmp(cached, copy / files[0].name, shallow=False):
+            raise mesh_ops.Refused(
+                f"{files[0]} names build {build['key']}, and {target} holds another "
+                f"{files[0].name} of that build: a build id names one binary (rebuild it)")
+        return build
+    finally:
+        shutil.rmtree(copy, ignore_errors=True)
+
+
+def cached(key: str, binary: str) -> bool:
+    """Whether builds/<key>/ holds the service's binary (a build directory
+    is only ever made whole, cache_build and fetch_build)."""
+    return (builds_dir() / key / binary).is_file()
 
 
 def build_files(key: str) -> list[pathlib.Path]:
@@ -3371,11 +3400,23 @@ def build_flags(key: str, binary: str) -> frozenset:
     return binary_flags(str(path), path.stat().st_mtime_ns) or frozenset()
 
 
-def fetch_build(node: dict, key: str) -> None:
-    """A build that this worktree's cache lacks, from a node that has it."""
+def fetch_build(node: dict, key: str, binary: str) -> None:
+    """A build that this worktree's cache lacks, from a node that has it:
+    fetched aside and renamed into place only with its service binary, so
+    an interrupted fetch is never taken for the build."""
     target = builds_dir() / key
-    target.parent.mkdir(parents=True, exist_ok=True)
-    common.rsync_from(node, f"{NODE_BUILDS}/{key}/", str(target) + "/")
+    builds_dir().mkdir(parents=True, exist_ok=True)
+    fetched = pathlib.Path(tempfile.mkdtemp(prefix=".fetch-", dir=builds_dir()))
+    try:
+        common.rsync_from(node, f"{NODE_BUILDS}/{key}/", str(fetched) + "/")
+        if not (fetched / binary).is_file():
+            raise RuntimeError(f"{NODE_BUILDS}/{key}/ on {node['name']} has no {binary}")
+        if target.exists() and not cached(key, binary):
+            shutil.rmtree(target)
+        if not target.exists():
+            fetched.rename(target)
+    finally:
+        shutil.rmtree(fetched, ignore_errors=True)
 
 
 def installed_args(item: dict, role: str, key: str) -> list[str]:
@@ -3601,6 +3642,21 @@ def lab_tool():
     return module
 
 
+# What the deploy calls of the lab tool in-process (C CT3).
+LAB_TOOL_CALLS = ("change_state", "watchdog_ensure")
+
+
+def lab_tool_checked() -> None:
+    """Exit 2, before anything is touched, when the lab tool lacks the
+    state lock or the watchdog check that every change command and its
+    record go through (C CT3)."""
+    missing = [name for name in LAB_TOOL_CALLS if not hasattr(lab_tool(), name)]
+    if missing:
+        print(f"scripts/linode-small-mesh-lab.py has no {', '.join(missing)}: the deployed "
+              "record and the watchdog check need the lab tool of C CT3", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+
+
 def run_lab(*arguments: str) -> subprocess.CompletedProcess:
     """The lab tool's command line, for what bills (replace, add, remove):
     its own watchdog and budget checks apply. Its output goes to stderr
@@ -3632,24 +3688,75 @@ def tier_builds(nodes: dict, roles: dict) -> dict:
 RECORD_FIELDS = ("args_sha256", "render_sha256", "unit_sha256")
 
 
-def record_deployed(full: dict, settings: dict, entries: dict) -> None:
-    """state["deployed"] (C 2.6), under the lab state's lock: the settings
-    in force, the routes and hunted ports they were rendered with, and per
-    node `{"build", "args_sha256", "render_sha256", "unit_sha256"}` as the
-    node reported them after its activation; the tiers' builds follow
+def record_deployed(full: dict, entries: dict, settings: dict | None = None,
+                    standby: list[str] | None = None, files: bool = False) -> None:
+    """state["deployed"] (C 2.6), under the lab state's lock. `entries`:
+    per node `{"build", "args_sha256", "render_sha256", "unit_sha256"}` as
+    the node reported them after its activation, with "set" (the `--set`
+    values it runs beyond the deployed settings), "prev" (what its
+    `.args.prev` holds) and "activating" (an activation begun and not yet
+    seen to end) where they apply; None drops a node (held out). `settings`:
+    the settings in force (a push, a fold, an adoption), `standby` the edges
+    held out, `files`: the routes and hunted ports rendered with. Only nodes
+    of the lab are kept, and the tiers' builds follow what they run
     (tier_builds)."""
-    roles = {name: node["role"] for name, node in {**lab_slots(full), **full["nodes"]}.items()}
     routes = sha256_file(common.ARTIFACT_DIR / "routes.json")
     ecmp = sha256_file(HUNT_FILE)
 
     def change(current: dict) -> None:
         deployed = current.setdefault("deployed", {})
-        deployed.update(settings=dict(settings), routes_sha256=routes, ecmp_sha256=ecmp)
-        nodes = deployed.setdefault("nodes", {})
-        nodes.update(entries)
-        deployed["tiers"] = tier_builds(nodes, roles)
+        if settings is not None:
+            deployed["settings"] = dict(settings)
+        if standby is not None:
+            deployed.setdefault("settings", {})["standby_edges"] = list(standby)
+        if files:
+            deployed.update(routes_sha256=routes, ecmp_sha256=ecmp)
+        created = current.get("nodes") or {}
+        nodes = {**(deployed.get("nodes") or {}), **entries}
+        deployed["nodes"] = {name: entry for name, entry in nodes.items()
+                             if entry is not None and name in created}
+        deployed["tiers"] = tier_builds(deployed["nodes"],
+                                        {name: created[name]["role"] for name in deployed["nodes"]})
 
     lab_tool().change_state(common.state_path(), full, change)
+
+
+def setting(settings: dict, key: str):
+    """A setting's value, a key that `settings` lacks taken at its default."""
+    return settings.get(key, DEFAULT_SETTINGS.get(key))
+
+
+def bare(entry: dict) -> dict:
+    """A record entry without what it keeps beside the node's own state."""
+    return {key: value for key, value in entry.items() if key not in ("prev", "activating")}
+
+
+def rebased(entry: dict, old: dict, new: dict) -> dict:
+    """A record entry whose "set" is against the deployed settings `old`,
+    against `new`: every value the node runs stays as it is (its "prev" and
+    "activating" too)."""
+    own = entry.get("set") or {}
+    effective = {**old, **own}
+    keys = set(own) | {key for key in set(old) | set(new)
+                       if key not in ("standby_edges", "settings_version")
+                       and setting(old, key) != setting(new, key)}
+    delta = {key: setting(effective, key) for key in sorted(keys)
+             if setting(effective, key) != setting(new, key)}
+    out = {key: value for key, value in entry.items() if key != "set"}
+    if delta:
+        out["set"] = delta
+    for inner in ("prev", "activating"):
+        if isinstance(entry.get(inner), dict):
+            out[inner] = rebased(entry[inner], old, new)
+    return out
+
+
+def binary_build(binary: str | None) -> str | None:
+    """The build key that line 1 of an `.args` names
+    (/opt/needletail/builds/<key>/<binary>); None for any other path (the
+    layout before builds: /usr/local/bin/av-mesh)."""
+    match = re.fullmatch(re.escape(NODE_BUILDS) + r"/([0-9A-Za-z._-]+-[0-9]+)/[^/]+", binary or "")
+    return match.group(1) if match else None
 
 
 def settings_differ(recorded: dict, current: dict) -> dict:
@@ -3712,7 +3819,15 @@ class LinodeOps(mesh_ops.Ops):
     service (a standby edge or a slot gets the arguments it runs once taken
     in; no other node's change, D3), on a build of its own: its binary
     from the build cache, line 1 of its arguments that build's path on the
-    node (installed_args)."""
+    node (installed_args), and with settings of its own: the worktree's,
+    its record's "set" and this command's `--set` (node_settings). A `--set`
+    goes into the deployed settings and settings.json only once every
+    running node runs it (fold); until then each node's record says what
+    it runs, so a command stopped part-way can be run again or resumed."""
+
+    # C 3.5: the ssh control connection lapses after 900 s idle
+    # (ControlPersist); a node in hand gets a fresh one before its gate.
+    SSH_REFRESH_S = 600.0
 
     def __init__(self, full: dict, settings: dict, given: dict | None = None,
                  adopt: bool = False, http: mesh_ops.Http | None = None):
@@ -3721,6 +3836,7 @@ class LinodeOps(mesh_ops.Ops):
         self.given = dict(given or {})
         self.settings = {**self.base, **self.given}
         self.adopt = adopt
+        self.adopting = False
         self.http = http or mesh_ops.Http()
         path = common.state_path()
         self.lock_path = path.with_name(path.name + ".ops.lock")
@@ -3728,10 +3844,30 @@ class LinodeOps(mesh_ops.Ops):
         self.staged: dict[str, dict] = {}
         self._plans: dict[str, dict] = {}
         self._renders: dict[tuple, dict] = {}
+        self._ssh_at: dict[str, float] = {}
 
     # ---------------------------------------------------------- the lab
     def deployed(self) -> dict:
         return self.full.get("deployed") or {}
+
+    def entry(self, name: str) -> dict:
+        """Node `name`'s entry of the deployed record (record_deployed)."""
+        return dict((self.deployed().get("nodes") or {}).get(name) or {})
+
+    def held_out(self, name: str) -> bool:
+        return name in standby_edges(self.settings)
+
+    def node_settings(self, name: str, given: dict | None = None) -> dict:
+        """The settings node `name` runs by the record (the worktree's with
+        its own "set"; a node held out takes the worktree's when started),
+        with `given` on top."""
+        own = {} if self.held_out(name) else (self.entry(name).get("set") or {})
+        return {**self.base, **own, **(given or {})}
+
+    def set_of(self, settings: dict) -> dict:
+        """The values of a node's settings that are not the worktree's."""
+        return {key: value for key, value in sorted(settings.items())
+                if value != setting(self.base, key)}
 
     def role(self, name: str) -> str | None:
         node = self.full["nodes"].get(name) or lab_slots(self.full).get(name)
@@ -3777,11 +3913,31 @@ class LinodeOps(mesh_ops.Ops):
         return records
 
     def status(self, node: str):
+        """The engine asks this of the node in hand (its gate, drain and
+        readiness), and of no other: the ssh control connection to a node
+        that answers is opened, or refreshed, here (fresh_ssh)."""
         target = self.address(node)
         if target is None:
             return None
         code, document = self.http.get(*target, "/api/node")
-        return document if code == 200 else None
+        if code != 200:
+            return None
+        self.fresh_ssh(node)
+        return document
+
+    def fresh_ssh(self, node: str) -> None:
+        """An ssh to the node unless this command reached it within
+        SSH_REFRESH_S, so that its activation, 1.5 s after a gate, runs on
+        an open control connection (C 3.5). Best effort: the activation
+        opens one itself when this fails."""
+        now = time.monotonic()
+        if now - self._ssh_at.get(node, -self.SSH_REFRESH_S) < self.SSH_REFRESH_S:
+            return
+        self._ssh_at[node] = now
+        try:
+            common.ssh_text(self.full["nodes"][node], "true", check=False, timeout=10)
+        except (KeyError, OSError, RuntimeError, subprocess.SubprocessError):
+            pass
 
     def statuses(self, nodes) -> dict:
         targets = {name: (*self.address(name), "/api/node") for name in nodes if self.address(name)}
@@ -3799,20 +3955,21 @@ class LinodeOps(mesh_ops.Ops):
 
     # ---------------------------------------------------------- builds and the render
     def recorded(self, name: str) -> str | None:
-        """The build key node `name` runs by the record, else its tier's."""
+        """The build key node `name` runs by the record, else (a node not
+        recorded, or held out: it is started on it) its tier's."""
         deployed = self.deployed()
-        entry = (deployed.get("nodes") or {}).get(name) or {}
         tier = mesh_ops.ROLE_TIER.get(self.role(name))
-        return entry.get("build") or (deployed.get("tiers") or {}).get(tier)
+        own = None if self.held_out(name) else self.entry(name).get("build")
+        return own or (deployed.get("tiers") or {}).get(tier)
 
-    def ensure_cached(self, key: str | None) -> None:
-        if key is None or (builds_dir() / key).is_dir():
+    def ensure_cached(self, key: str | None, binary: str) -> None:
+        if key is None or cached(key, binary):
             return
         holders = [name for name, entry in (self.deployed().get("nodes") or {}).items()
                    if entry.get("build") == key and name in self.full["nodes"]]
         for name in holders:
             try:
-                fetch_build(self.full["nodes"][name], key)
+                fetch_build(self.full["nodes"][name], key, binary)
                 return
             except Exception as error:  # noqa: BLE001 - the next holder may answer
                 print(f"build {key} from {name}: {error}", file=sys.stderr)
@@ -3835,8 +3992,8 @@ class LinodeOps(mesh_ops.Ops):
     def rendered(self, settings: dict, mesh_key: str | None, contrib_key: str | None) -> dict:
         cache = (json.dumps(settings, sort_keys=True, default=str), mesh_key, contrib_key)
         if cache not in self._renders:
-            for key in (mesh_key, contrib_key):
-                self.ensure_cached(key)
+            self.ensure_cached(mesh_key, "av-mesh")
+            self.ensure_cached(contrib_key, "av-contrib")
             RENDER_BINARIES.clear()
             RENDER_BINARIES.update({
                 "av-mesh": builds_dir() / mesh_key / "av-mesh" if mesh_key else None,
@@ -3854,7 +4011,7 @@ class LinodeOps(mesh_ops.Ops):
             mesh_key, contrib_key = deployed_tiers.get("forwarders"), key
         else:
             mesh_key, contrib_key = key, deployed_tiers.get("contributors")
-        self.ensure_cached(key)
+        self.ensure_cached(key, "av-contrib" if role == "contributor" else "av-mesh")
         item = self.rendered(settings, mesh_key, contrib_key).get(name)
         if item is None:
             raise mesh_ops.Refused(f"{name}: no service is rendered for it")
@@ -3871,6 +4028,7 @@ class LinodeOps(mesh_ops.Ops):
         problems = lab_tool().watchdog_ensure(self.full, common.state_path())
         if problems:
             raise mesh_ops.Refused("the lab's watchdog: " + "; ".join(problems))
+        self.settle()
         deployed = self.deployed()
         if not deployed.get("nodes"):
             raise mesh_ops.Refused("the lab state records nothing deployed: push the lab first")
@@ -3893,7 +4051,14 @@ class LinodeOps(mesh_ops.Ops):
             if entry is None:
                 mismatched.append(f"{name} (not in the record)")
                 continue
-            args, unit, _service = self.node_args(name, self.base, entry["build"])
+            if entry.get("activating"):
+                mismatched.append(f"{name} (an activation of it did not end, and it runs neither "
+                                  "the arguments before it nor those it put in force)")
+                continue
+            if not entry.get("build"):
+                mismatched.append(f"{name} (runs no build of {NODE_BUILDS})")
+                continue
+            args, unit, _service = self.node_args(name, self.node_settings(name), entry["build"])
             if status.args_sha256 != entry.get("args_sha256"):
                 mismatched.append(f"{name} (runs other arguments than the record)")
             elif (render_sha256(args), sha256_text(unit)) != \
@@ -3911,30 +4076,92 @@ class LinodeOps(mesh_ops.Ops):
                 raise mesh_ops.Refused(f"these settings do not reproduce what is deployed: {text} "
                                        "(--adopt-settings adopts them)")
             print(f"--adopt-settings: adopting what this worktree renders: {text}", file=sys.stderr)
+            # The deployed settings become the worktree's at this command's
+            # first activation (record).
+            self.adopting = bool(differ or files)
         if self.given:
             beyond = [name for name in self.changed_by_set() if name not in nodes]
             if beyond:
                 raise mesh_ops.Refused(f"--set {', '.join(sorted(self.given))} changes "
                                        f"{', '.join(beyond)}, outside the nodes of this {command}")
+            self.fold()
 
     def changed_by_set(self) -> list[str]:
         """The nodes that run (recorded, not held out) whose arguments or
-        unit `--set` changes, each on its recorded build. A node held out
-        takes the settings of the record when it is started."""
-        standby = set(standby_edges(self.settings))
+        unit `--set` changes, each on its recorded build with its recorded
+        settings. A node held out takes the deployed settings when it is
+        started."""
         out = []
         for name in sorted(self.deployed().get("nodes") or {}, key=mesh_ops.natural):
             key = self.recorded(name)
-            if name not in self.full["nodes"] or name in standby or key is None:
+            if name not in self.full["nodes"] or self.held_out(name) or key is None:
                 continue
             try:
-                before = self.node_args(name, self.base, key)
+                before = self.node_args(name, self.node_settings(name), key)
             except mesh_ops.Refused:
                 continue  # no service (a backbone the topology does not use)
-            after = self.node_args(name, self.settings, key)
+            after = self.node_args(name, self.node_settings(name, self.given), key)
             if (render_sha256(before[0]), before[1]) != (render_sha256(after[0]), after[1]):
                 out.append(name)
         return out
+
+    def settle(self) -> None:
+        """Activations begun and not seen to end (the tool killed or its ssh
+        dropped during one, a push that failed part-way), each settled by
+        what the node runs: the arguments it was to put in force (it ran:
+        recorded as such) or those it had (it did not). A node that does
+        not answer stays as it is, and one that runs neither is named by
+        the reproduce check."""
+        nodes = self.deployed().get("nodes") or {}
+        pending = [name for name, entry in nodes.items()
+                   if entry.get("activating") and name in self.full["nodes"]]
+        if not pending:
+            return
+        statuses = self.statuses(pending)
+        settled = {}
+        for name in pending:
+            status = mesh_ops.status_of(statuses.get(name))
+            entry = nodes[name]
+            if status is None:
+                continue
+            if status.args_sha256 == entry["activating"].get("args_sha256"):
+                settled[name] = entry["activating"]
+                print(f"{name}: an activation that did not end had run; recorded",
+                      file=sys.stderr)
+            elif status.args_sha256 == entry.get("args_sha256"):
+                settled[name] = {key: value for key, value in entry.items() if key != "activating"}
+                print(f"{name}: an activation that did not end had not run", file=sys.stderr)
+        if settled:
+            record_deployed(self.full, settled)
+
+    def fold(self) -> None:
+        """Once every running node runs this command's `--set`, it becomes
+        the deployed settings, and the keys it sets are written into this
+        worktree's settings.json as that file is now (another command may
+        have changed it meanwhile): the next command reproduces the lab
+        from them. The record's entries keep what each node runs."""
+        new = {**self.base, **self.given}
+        if not settings_differ(self.base, new) or self.changed_by_set():
+            return
+        entries = {}
+        for name, entry in (self.deployed().get("nodes") or {}).items():
+            # Each node renders the same with the new value as with its own
+            # (none is changed by the --set), and one held out takes the
+            # deployed settings when it starts: its own values of these
+            # keys go. What it ran before ("prev") keeps its values.
+            own = {key: value for key, value in (entry.get("set") or {}).items()
+                   if key not in self.given and value != setting(new, key)}
+            entry = {key: value for key, value in rebased(entry, self.base, new).items()
+                     if key != "set"}
+            entries[name] = {**entry, "set": own} if own else entry
+        record_deployed(self.full, entries, settings=new)
+        document = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
+        document.update(self.given)
+        document["lab_run_id"] = self.full["run_id"]
+        SETTINGS_FILE.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+        self.base = new
+        print(f"--set {', '.join(sorted(self.given))}: every node runs it; it is now the "
+              f"deployed settings and {SETTINGS_FILE}'s", file=sys.stderr)
 
     def target(self, tier: str) -> dict:
         build = cache_build(TIER_ROLE[tier])
@@ -3947,12 +4174,41 @@ class LinodeOps(mesh_ops.Ops):
             key = f"{build['git']}-{build['unix']}" if build else self.recorded(name)
             if key is None:
                 raise mesh_ops.Refused(f"{name} has no recorded build (push first)")
-            args, unit, service = self.node_args(name, self.settings, key)
-            plans[name] = (service, key, node_files(args, unit, self.settings))
-            self.staged[name] = {"build": key, "service": service,
-                                 "args_sha256": args_sha256(args), "unit_sha256": sha256_text(unit)}
+            settings = self.node_settings(name, self.given)
+            args, unit, service = self.node_args(name, settings, key)
+            args = self.kept_stamp(name, key, args, unit)
+            plans[name] = (service, key, node_files(args, unit, settings))
+            self.staged[name] = self.intended(key, args, unit, settings)
         common.parallel([self.full["nodes"][name] for name in nodes],
                         lambda node: stage_node(node, *plans[node["name"]]))
+        now = time.monotonic()
+        self._ssh_at.update({name: now for name in nodes})
+
+    def intended(self, key: str, args: list[str], unit: str, settings: dict) -> dict:
+        """The record entry of a node once `args` (rendered with `settings`
+        on build `key`) and `unit` are in force."""
+        entry = {"build": key, "args_sha256": args_sha256(args),
+                 "render_sha256": render_sha256(args), "unit_sha256": sha256_text(unit)}
+        own = self.set_of(settings)
+        return {**entry, "set": own} if own else entry
+
+    def kept_stamp(self, name: str, key: str, args: list[str], unit: str) -> list[str]:
+        """The arguments the node runs, when they are today's render but for
+        the time of their render (a contributor's path observation,
+        RENDER_TIME_FLAG): staged again as they are, so that the node is on
+        the target and skipped, and a forced restart keeps what it ran."""
+        old = self.entry(name)
+        if old.get("args_sha256") in (None, args_sha256(args)) or \
+                (old.get("build"), old.get("render_sha256"), old.get("unit_sha256")) != \
+                (key, render_sha256(args), sha256_text(unit)):
+            return args
+        running = common.ssh_text(self.full["nodes"][name],
+                                  f"cat {NODE_ETC}/{self.service(name)}.args",
+                                  check=False).splitlines()
+        if running and args_sha256(running) == old["args_sha256"] and \
+                render_sha256(running) == render_sha256(args):
+            return running
+        return args
 
     def expected(self, node: str, rollback: bool = False) -> dict:
         if rollback:
@@ -3961,7 +4217,11 @@ class LinodeOps(mesh_ops.Ops):
             args = text.splitlines()
             if not args:
                 raise mesh_ops.Refused(f"{node} has no previous arguments to roll back to")
-            build = key_build(args[0].split("/")[-2])
+            key = binary_build(args[0])
+            if key is None:
+                raise mesh_ops.Refused(f"{node}: its previous arguments run {args[0]}, not a "
+                                       f"build of {NODE_BUILDS}; they cannot be put back")
+            build = key_build(key)
             return {"git": build["git"], "unix": build["unix"], "args_sha256": args_sha256(args)}
         staged = self.staged.get(node)
         if staged is None:
@@ -3969,29 +4229,72 @@ class LinodeOps(mesh_ops.Ops):
         build = key_build(staged["build"])
         return {"git": build["git"], "unix": build["unix"], "args_sha256": staged["args_sha256"]}
 
+    def activation_of(self, node: str, old: dict, rollback: bool) -> dict | None:
+        """The entry node `node` has once its activation has run: what is
+        staged, or with `rollback` what its `.args.prev` holds by the record
+        (None when the record does not know). Either keeps what it replaces
+        as its "prev"."""
+        if rollback:
+            prev = old.get("prev")
+            return {**prev, "prev": prev} if prev else None
+        staged = self.staged.get(node)
+        if staged is None:
+            return None
+        return {**staged, "prev": bare(old)} if old.get("build") else dict(staged)
+
+    @staticmethod
+    def settled(old: dict, intended: dict | None, result: dict) -> dict | None:
+        """The record entry after an activation, by what the node then has
+        in force (`result`, read on the node after its script): what was
+        intended, what was there before (nothing was put in force), or,
+        when it is neither, what the node reports. None: nothing to
+        record."""
+        read = {field: result.get(field) for field in RECORD_FIELDS}
+        if read["args_sha256"] is None:
+            return None
+        if intended is not None and read["args_sha256"] == intended["args_sha256"]:
+            return {**intended, **read}
+        if read["args_sha256"] == old.get("args_sha256"):
+            return {key: value for key, value in old.items() if key != "activating"}
+        return {"build": binary_build(result.get("binary")), **read}
+
     def activate(self, node: str, not_after_ms: int, rollback: bool = False) -> dict:
-        record = self.full["nodes"][node]
-        result = activate_node(record, self.service(node), not_after_ms, rollback)
-        if result["ok"]:
-            binary = result.get("binary") or ""
-            self.record({node: {"build": binary.split("/")[-2] if binary.count("/") > 1 else None,
-                                **{field: result.get(field) for field in RECORD_FIELDS}}})
-        qdisc_checked(node, result.get("qdisc"), self.settings)
+        """The activation, recorded as begun ("activating") before it runs:
+        if this command dies or its ssh drops during it, the next command
+        settles the record by what the node runs (settle)."""
+        old = self.entry(node)
+        intended = self.activation_of(node, old, rollback)
+        if intended is not None:
+            record_deployed(self.full, {node: {**old, "activating": intended}})
+        result = activate_node(self.full["nodes"][node], self.service(node), not_after_ms, rollback)
+        self._ssh_at[node] = time.monotonic()
+        entry = self.settled(old, intended, result)
+        if entry is not None:
+            self.record({node: entry})
+        qdisc_checked(node, result.get("qdisc"), self.node_settings(node))
         return {"ok": result["ok"], "why": result["why"]}
 
     def record(self, entries: dict) -> None:
-        """The deployed record, and this worktree's settings.json with this
-        command's settings: what the lab now runs."""
-        record_deployed(self.full, self.settings, entries)
-        save_settings(self.settings, self.full["run_id"])
+        """The record of nodes this command activated; with
+        `--adopt-settings`, the worktree's settings as the deployed ones;
+        then the fold of this command's `--set`."""
+        if self.adopting:
+            record_deployed(self.full, entries, settings=self.base, files=True)
+            self.adopting = False
+        else:
+            record_deployed(self.full, entries)
+        if self.given:
+            self.fold()
 
     def install(self, names: list[str] | None, builds: dict | None, binaries: bool = True) -> None:
         """push and restart --roles (C 2.6): by role, parents first, every
         node of a role in parallel: a node in service staged on its tier's
         build (`builds`, else the recorded one) and activated, a standby
         edge staged and left stopped, a load host's tools and kernel
-        settings; a backbone the topology does not use is stopped. The
-        record after each role."""
+        settings; a backbone the topology does not use is stopped. Every
+        node to activate is recorded as such first, and each node that
+        activated is recorded even when another of its role failed; the
+        settings, routes and hunted ports with them."""
         standby = set(standby_edges(self.settings))
         for role in ("backbone", "distributor", "edge", "contributor", "load"):
             group = [node for node in common.nodes_by_role(self.full, role)
@@ -4019,9 +4322,13 @@ class LinodeOps(mesh_ops.Ops):
                     plans[name] = None
                     continue
                 plans[name] = (service, key, node_files(args, unit, self.settings))
-                self.staged[name] = {"build": key, "service": service,
-                                     "args_sha256": args_sha256(args),
-                                     "unit_sha256": sha256_text(unit)}
+                self.staged[name] = self.intended(key, args, unit, self.settings)
+            olds = {name: self.entry(name) for name in plans}
+            intended = {name: self.activation_of(name, olds[name], False) for name in plans
+                        if plans[name] is not None and name not in standby}
+            if intended:
+                record_deployed(self.full, {name: {**olds[name], "activating": entry}
+                                            for name, entry in intended.items()})
             entries: dict[str, dict] = {}
 
             def one(node: dict) -> str:
@@ -4037,29 +4344,35 @@ class LinodeOps(mesh_ops.Ops):
                     stop_service(node)
                     return "staged, held out"
                 result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000))
+                entry = self.settled(olds[name], intended[name], result)
+                if entry is not None:
+                    entries[name] = entry
                 if not result["ok"]:
                     raise RuntimeError(f"activation: {result['why']}")
                 qdisc_checked(name, result.get("qdisc"), self.settings)
-                entries[name] = {"build": plans[name][1],
-                                 **{field: result.get(field) for field in RECORD_FIELDS}}
                 return "activated"
 
-            results = common.parallel(group, one)
-            if entries:
-                self.record(entries)
+            try:
+                results = common.parallel(group, one)
+            finally:
+                if intended:
+                    record_deployed(self.full, entries, settings=self.settings, files=True)
             print(f"installed {len(group)} {role} node(s): "
                   + ", ".join(f"{name} {what}" for name, what in sorted(results.items())),
                   file=sys.stderr)
 
     # ---------------------------------------------------------- the node's service manager
     def boot_changed(self, node: str, since_ms: int) -> bool | None:
+        """The service's start time to the microsecond (systemd 248 and
+        later; whole seconds would read a restart in the activation's own
+        second as none) against `since_ms`."""
         service = self.service(node)
         try:
             text = common.ssh_text(self.full["nodes"][node],
-                                   f't=$(systemctl show {service}.service -p ExecMainStartTimestamp '
-                                   f'--value); [ -n "$t" ] && date -d "$t" +%s%3N', check=False,
-                                   timeout=30)
-            return int(text.strip()) > since_ms
+                                   f"t=$(systemctl show {service}.service -p ExecMainStartTimestamp "
+                                   f'--timestamp=us+utc --value); [ -n "$t" ] && date -d "$t" +%s%6N',
+                                   check=False, timeout=30)
+            return int(text.strip()) > since_ms * 1000
         except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError):
             return None
 
@@ -4097,7 +4410,8 @@ class LinodeOps(mesh_ops.Ops):
 
     def hold(self, name: str, out: bool) -> None:
         """Hold a node out of service, or take it in (standby_edges): this
-        worktree's settings.json, this command's settings and the record."""
+        worktree's settings.json, this command's settings and the record (a
+        node held out is no longer recorded: it runs nothing)."""
         standby = held_out_after(self.settings, stop=[name]) if out else \
             held_out_after(self.settings, start=[name])
         for settings in (self.base, self.settings):
@@ -4105,7 +4419,7 @@ class LinodeOps(mesh_ops.Ops):
         document = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
         document.update(standby_edges=standby, lab_run_id=self.full["run_id"])
         SETTINGS_FILE.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
-        record_deployed(self.full, self.settings, {})
+        record_deployed(self.full, {name: None} if out else {}, standby=standby)
 
     def start_node(self, node: str) -> None:
         record = self.full["nodes"].get(node)
@@ -4170,6 +4484,7 @@ def linode_ops(args: argparse.Namespace) -> LinodeOps:
     """The backend of a change command: this lab's state, the worktree's
     settings (which must be this lab's, as its routes and hunted ports),
     this command's `--set` and `--adopt-settings`."""
+    lab_tool_checked()
     full = common.load_state()
     lab_files_checked(full)
     settings = load_settings([], lab_run_id=full["run_id"])
@@ -4279,6 +4594,7 @@ def command_push(args: argparse.Namespace) -> None:
                              or not (common.ARTIFACT_DIR / "routes.json").is_file()):
         sys.exit("push --nodes keeps the routes of the last whole push (measuring them "
                  "would reach other nodes): push the whole lab first, and no --remeasure")
+    lab_tool_checked()
     with ops_locked():
         ensure_tls()
         if not args.skip_bootstrap:
@@ -4310,9 +4626,15 @@ def command_restart(args: argparse.Namespace) -> None:
         ops = linode_ops(args)
         contributors = [name for name in names if ops.role(name) == "contributor"]
         if contributors:
-            if len(names) > 1:
-                sys.exit("restart --nodes: a contributor is restarted alone, by workstream A's "
-                         "change contrib-restart")
+            given = [flag for flag, value in (("--rollback", args.rollback),
+                                              ("--hold-s", args.hold_s), ("--set", args.set),
+                                              ("--resume", args.resume)) if value]
+            if len(names) > 1 or given:
+                print("restart --nodes: a contributor is restarted alone, on the arguments it "
+                      "runs, by workstream A's change contrib-restart"
+                      + (f", which takes no {', '.join(given)}" if given else ""),
+                      file=sys.stderr)
+                sys.exit(mesh_ops.EXIT_REFUSED)
             sys.exit(run_change(ops, "contrib-restart", ["--node", names[0]]))
         sys.exit(mesh_ops.restart_nodes(ops, names, options=engine_options(args),
                                         resume=args.resume))
@@ -4320,6 +4642,7 @@ def command_restart(args: argparse.Namespace) -> None:
         sys.exit("--rollback, --hold-s and --resume go with --nodes")
     print("restart --roles restarts every node of a role at once; it is not a rolling restart "
           "(roll, restart --nodes)", file=sys.stderr)
+    lab_tool_checked()
     with ops_locked():
         args.remeasure = getattr(args, "remeasure", False)
         full, settings, _rendered = command_plan(args)

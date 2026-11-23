@@ -525,6 +525,15 @@ class FakeHosts:
             with self.guard:
                 self.inflight -= 1
 
+    def rsync_from(self, node, source, destination, timeout=900):
+        self.touched.append(node["name"])
+        target = pathlib.Path(destination)
+        target.mkdir(parents=True, exist_ok=True)
+        for path, data in self.fs(node["name"]).items():
+            if path.startswith(source):
+                (target / path[len(source):]).write_bytes(data)
+                (target / path[len(source):]).chmod(0o755)
+
     def ssh_text(self, node, script, **kwargs):
         name = node["name"]
         self.touched.append(name)
@@ -683,6 +692,7 @@ class FakeLab(Base):
         for target, name, value in (
                 (deploy.common, "ssh_text", self.hosts.ssh_text),
                 (deploy.common, "rsync_to", self.hosts.rsync_to),
+                (deploy.common, "rsync_from", self.hosts.rsync_from),
                 (deploy, "binaries_for", self.binaries_for),
                 (deploy, "lab_tool", lambda: lab),
                 (deploy.mesh_ops, "Http", lambda *a, **k: FakeHttp(self.hosts)),
@@ -912,12 +922,14 @@ class Deployed(FakeLab):
         self.assertEqual(len(set(self.hosts.scripts) - set(london)), 4)
 
     def engine(self):
-        """A fake clock shared by the engine and the hosts: (clock, sleep)."""
-        clock = types.SimpleNamespace(now=time.time())
+        """A fake clock shared by the engine and the hosts: (clock, sleep);
+        it goes on from where the last command's left it."""
+        clock = types.SimpleNamespace(now=max(time.time(), getattr(self, "last_now", 0.0)))
         clock_now = lambda: clock.now  # noqa: E731
 
         def sleep(seconds):
             clock.now += max(seconds, 0.001)
+            self.last_now = clock.now
 
         self.hosts.clock = clock_now
         return {"out": io.StringIO(), "err": io.StringIO(), "clock": clock_now, "sleep": sleep}
@@ -1197,6 +1209,309 @@ class Deployed(FakeLab):
             finally:
                 lock.release()
             self.assertEqual(hunted, [1, 1])
+
+
+
+class Recorded(FakeLab):
+    """The deployed record stays what the lab runs (CT2 review): an
+    activation whose ssh dropped, a command killed during one and a push
+    that failed part-way are settled by what each node runs; a `--set`
+    stopped part-way is held per node until every node runs it; a
+    contributor whose arguments carry the time of their render is on its
+    recorded build; a node that runs nothing leaves the record; the build
+    cache holds one binary a build; a change without the lab tool of CT3
+    is refused before it begins."""
+
+    engine = Deployed.engine
+    GIVEN = ['extra_edge_args=["--egress-request-capacity","100000000"]']
+
+    def setUp(self):
+        super().setUp()
+        # What LinodeOps says on stderr (a settled activation, a fold).
+        quiet = redirect_stderr(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
+    def serving_edges(self) -> list[str]:
+        return [name for site in ("sydney", "london", "newyork", "tokyo")
+                for name in self.edges(site)]
+
+    def digest(self, name: str) -> str:
+        return hashlib.sha256("\n".join(self.args_of(name)).encode()).hexdigest()
+
+    def test_an_activation_whose_ssh_dropped_is_recorded_by_what_the_node_runs(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        real = deploy.activate_node
+
+        def dropped(node, *args, **kwargs):
+            result = real(node, *args, **kwargs)
+            if node["name"] == "lon-edge-1":
+                raise RuntimeError("ssh: connection reset")
+            return result
+
+        run = self.engine()
+        with mock.patch.object(deploy, "activate_node", dropped):
+            code = deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertEqual(self.args_of("lon-edge-1")[0], f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+        entry = self.state()["deployed"]["nodes"]["lon-edge-1"]
+        self.assertEqual((entry["build"], entry["activating"]["build"]), (key(OLD), key(NEW)))
+        # The next command settles it by what the node runs, and goes on.
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("roll", self.serving_edges())
+        entry = self.state()["deployed"]["nodes"]["lon-edge-1"]
+        self.assertNotIn("activating", entry)
+        self.assertEqual((entry["build"], entry["args_sha256"], entry["prev"]["build"]),
+                         (key(NEW), self.digest("lon-edge-1"), key(OLD)))
+
+    def test_a_roll_killed_during_an_activation_is_resumed(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        real = deploy.activate_node
+
+        class Killed(BaseException):
+            pass
+
+        def killed(node, *args, **kwargs):
+            real(node, *args, **kwargs)
+            raise Killed()
+
+        run = self.engine()
+        with mock.patch.object(deploy, "activate_node", killed), self.assertRaises(Killed):
+            deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], **run)
+        self.assertEqual(self.hosts.drained, {"lon-edge-1"})
+        run = self.engine()
+        code = deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], resume=True, **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        nodes = self.state()["deployed"]["nodes"]
+        for name in self.edges("london"):
+            self.assertEqual(nodes[name]["build"], key(NEW), name)
+            self.assertNotIn("activating", nodes[name])
+            self.assertEqual(nodes[name]["args_sha256"], self.digest(name), name)
+        self.assertEqual(self.hosts.drained, set())
+
+    def test_a_push_that_fails_on_one_node_records_every_node_that_activated(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        real = deploy.activate_node
+
+        def refused(node, *args, **kwargs):
+            if node["name"] == "lon-edge-2":
+                raise RuntimeError("ssh: connection reset")
+            return real(node, *args, **kwargs)
+
+        with mock.patch.object(deploy, "activate_node", refused), \
+                self.assertRaises(RuntimeError):
+            self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+        nodes = self.state()["deployed"]["nodes"]
+        for name in ("lon-edge-1", "new-edge-1", "lon-dist-a"):
+            self.assertEqual(nodes[name]["build"], key(NEW), name)
+            self.assertEqual(nodes[name]["args_sha256"], self.digest(name), name)
+        self.assertEqual(nodes["lon-edge-2"]["build"], key(OLD))
+        self.assertEqual(nodes["lon-edge-2"]["activating"]["build"], key(NEW))
+        # It never ran: the next command drops what was begun.
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("restart", ["lon-edge-2"])
+        entry = self.state()["deployed"]["nodes"]["lon-edge-2"]
+        self.assertEqual((entry["build"], "activating" in entry), (key(OLD), False))
+
+    def test_a_roll_with_a_set_stopped_part_way_goes_on_when_run_again(self):
+        self.push()
+        edges = self.serving_edges()
+        ops = self.ops(set=self.GIVEN)
+        order = deploy.mesh_ops.plan_order(deploy.mesh_ops.Lab(ops.nodes()), "edges")
+        busy = {"subscribers": 3, "hls_sessions": 0, "hls_moved_active": 0,
+                "hls_requests_in_flight": 0, "single_legs": 0, "legs_by_other": {},
+                "load_permille": 100}
+        self.hosts.udp[order[1]] = busy
+        run = self.engine()
+        options = deploy.mesh_ops.Options(drain_timeout_s=2.0, gate_timeout_s=2.0)
+        self.assertEqual(deploy.mesh_ops.roll(ops, "edges", options=options, **run), 3,
+                         run["err"].getvalue())
+        self.assertIn("--egress-request-capacity", self.args_of(order[0]))
+        self.assertNotIn("--egress-request-capacity", self.args_of(order[1]))
+        deployed = self.state()["deployed"]
+        self.assertEqual(deployed["nodes"][order[0]]["set"],
+                         {"extra_edge_args": ["--egress-request-capacity", "100000000"]})
+        self.assertEqual(deployed["settings"]["extra_edge_args"],
+                         deploy.DEFAULT_SETTINGS["extra_edge_args"])
+        self.assertEqual(json.loads((self.dir / "settings.json").read_text())["extra_edge_args"],
+                         deploy.DEFAULT_SETTINGS["extra_edge_args"])
+        # The same command again, without --adopt-settings: it goes on from
+        # the first edge that does not run it. Meanwhile another command
+        # held an edge out in this worktree's settings.json: the fold keeps
+        # that and writes only the keys of the --set.
+        del self.hosts.udp[order[1]]
+        ops = self.ops(set=self.GIVEN)
+        document = json.loads((self.dir / "settings.json").read_text())
+        document["standby_edges"] = sorted(document["standby_edges"] + ["tok-edge-5"])
+        (self.dir / "settings.json").write_text(json.dumps(document))
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(ops, "edges", **run), 0, run["err"].getvalue())
+        self.assertIn(f"plan: {order[0]} skipped", run["err"].getvalue())
+        for name in edges:
+            self.assertIn("--egress-request-capacity", self.args_of(name), name)
+        deployed = self.state()["deployed"]
+        self.assertEqual(deployed["settings"]["extra_edge_args"],
+                         ["--egress-request-capacity", "100000000"])
+        self.assertEqual([name for name, entry in deployed["nodes"].items() if "set" in entry], [])
+        saved = json.loads((self.dir / "settings.json").read_text())
+        self.assertEqual(saved["extra_edge_args"], ["--egress-request-capacity", "100000000"])
+        self.assertIn("tok-edge-5", saved["standby_edges"])
+        # The next command reproduces the lab from the worktree, without
+        # --set; the same roll again restarts nothing.
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("roll", self.serving_edges())
+        self.hosts.scripts.clear()
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(self.ops(set=self.GIVEN), "edges", **run), 0,
+                         run["err"].getvalue())
+        self.assertFalse(any("systemd-run" in script for scripts in self.hosts.scripts.values()
+                             for script in scripts))
+
+    def test_a_rollback_after_the_fold_runs_what_the_node_ran_before(self):
+        """The last edge to take a --set folds it into the deployed
+        settings; when its rollback follows, the record still says what it
+        runs (the setting before, as its own)."""
+        self.push()
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(self.ops(set=self.GIVEN), "edges", **run), 0,
+                         run["err"].getvalue())
+        name = self.serving_edges()[0]
+        run = self.engine()
+        code = deploy.mesh_ops.restart_nodes(
+            self.ops(), [name], options=deploy.mesh_ops.Options(rollback=True), **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertNotIn("--egress-request-capacity", self.args_of(name))
+        entry = self.state()["deployed"]["nodes"][name]
+        self.assertEqual(entry["set"], {"extra_edge_args": deploy.DEFAULT_SETTINGS["extra_edge_args"]})
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("restart", self.serving_edges())
+
+    def test_a_contributor_on_its_recorded_build_is_on_the_target(self):
+        self.push()
+        running = self.args_of("contrib-lon")
+        time.sleep(0.002)
+        ops = self.ops()
+        fresh, _unit, _service = ops.node_args("contrib-lon", ops.base, key(CONTRIB))
+        self.assertNotEqual(deploy.args_sha256(fresh), deploy.args_sha256(running))
+        ops.stage(["contrib-lon"], None)
+        self.assertEqual(self.args_of("contrib-lon", ".next"), running)
+        self.assertEqual(ops.expected("contrib-lon")["args_sha256"], self.digest("contrib-lon"))
+        # Through the engine: skipped, nothing activated.
+        passes = lambda ops, node, **kwargs: (True, "", {})  # noqa: E731
+        self.hosts.scripts.clear()
+        with mock.patch.object(deploy.mesh_ops, "contributor_rules", lambda: (passes, passes)):
+            run = self.engine()
+            code = deploy.mesh_ops.roll(self.ops(), "contributors", **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertIn("plan: contrib-lon skipped", run["err"].getvalue())
+        self.assertFalse(any("systemd-run" in script
+                             for script in self.hosts.scripts.get("contrib-lon", [])))
+
+    def test_a_node_that_runs_nothing_leaves_the_record(self):
+        self.push()
+        state = self.state()
+        del state["nodes"]["lon-edge-11"]  # a slot deleted
+        self.state_file.write_text(json.dumps(state))
+        self.ops().hold("lon-edge-5", out=True)
+        nodes = self.state()["deployed"]["nodes"]
+        self.assertNotIn("lon-edge-11", nodes)
+        self.assertNotIn("lon-edge-5", nodes)
+        self.assertIn("lon-edge-5", self.state()["deployed"]["settings"]["standby_edges"])
+
+    def test_a_cached_build_is_never_written_again_and_a_cut_off_fetch_is_no_build(self):
+        self.push()
+        cached = self.dir / "builds" / key(OLD) / "av-mesh"
+        before = cached.read_bytes()
+        # Another binary that names the same build: refused, the cache as it was.
+        fake_binary(self.roots / "mesh" / "av-mesh", "av-mesh", OLD, "--other-flags")
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            deploy.cache_build("edge")
+        self.assertIn("a build id names one binary", str(caught.exception))
+        self.assertEqual(cached.read_bytes(), before)
+        self.assertEqual(sorted(path.name for path in (self.dir / "builds").iterdir()),
+                         sorted([key(OLD), key(CONTRIB)]))
+        # A fetch cut off left the directory without its binary: the build
+        # comes whole from a node that runs it.
+        shutil.rmtree(cached.parent)
+        cached.parent.mkdir()
+        (cached.parent / "aep1-48k-probe").write_text("part of a fetch")
+        self.quietly(deploy.command_start, self.namespace(nodes="lon-edge-6"))
+        self.assertEqual(cached.read_bytes(), before)
+        args = self.args_of("lon-edge-6")
+        self.assertEqual(args[0], f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+        self.assertEqual(deploy.flag_value(args, "--stop-drain-ms"), "14000")
+
+    def test_without_the_lab_tool_of_ct3_a_change_is_refused_before_it_begins(self):
+        self.push()
+        lab = types.SimpleNamespace(change_state=self.change_state)
+        with mock.patch.object(deploy, "lab_tool", lambda: lab):
+            for command, namespace in (
+                    (deploy.command_roll, self.namespace(tier="edges")),
+                    (deploy.command_push, self.namespace(skip_bootstrap=True)),
+                    (deploy.command_restart, self.namespace(nodes="lon-edge-1")),
+                    (deploy.command_restart, self.namespace(roles="edge")),
+                    (deploy.command_start, self.namespace(nodes="lon-edge-6"))):
+                with self.assertRaises(SystemExit) as code:
+                    self.quietly(command, namespace)
+                self.assertEqual(code.exception.code, 2, command.__name__)
+                self.assertIn("watchdog_ensure", self.stderr)
+                self.assertIn("C CT3", self.stderr)
+        self.assertEqual(self.hosts.touched, [])
+
+    def test_the_service_s_start_is_read_to_the_microsecond(self):
+        self.push()
+        ops = self.ops()
+        sent = []
+        with mock.patch.object(deploy.common, "ssh_text",
+                               lambda node, script, **kwargs: sent.append(script)
+                               or "1795223802527845"):
+            self.assertTrue(ops.boot_changed("lon-edge-1", 1795223802527))
+            self.assertFalse(ops.boot_changed("lon-edge-1", 1795223802528))
+        self.assertIn("--timestamp=us+utc", sent[0])
+        self.assertIn("+%s%6N", sent[0])
+
+    def test_the_node_in_hand_gets_a_fresh_ssh_connection(self):
+        self.push()
+        ops = self.ops()
+        ops.status("lon-edge-1")
+        ops.status("lon-edge-1")
+        self.assertEqual(self.hosts.scripts["lon-edge-1"], ["true"])
+        ops._ssh_at["lon-edge-1"] -= ops.SSH_REFRESH_S
+        ops.status("lon-edge-1")
+        self.assertEqual(self.hosts.scripts["lon-edge-1"], ["true", "true"])
+        # Staging reached it: no refresh.
+        ops.stage(["lon-edge-2"], None)
+        count = len(self.hosts.scripts["lon-edge-2"])
+        ops.status("lon-edge-2")
+        self.assertEqual(len(self.hosts.scripts["lon-edge-2"]), count)
+        # A node that does not answer is not reached by ssh.
+        self.hosts.running["lon-edge-3"] = False
+        self.assertIsNone(ops.status("lon-edge-3"))
+        self.assertNotIn("lon-edge-3", self.hosts.scripts)
+
+    def test_arguments_of_the_layout_before_builds_are_not_rolled_back_to(self):
+        self.push()
+        files = self.hosts.fs("lon-edge-1")
+        files["/etc/needletail/needletail-mesh.args.prev"] = b"/usr/local/bin/av-mesh\n--x\n"
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            self.ops().expected("lon-edge-1", rollback=True)
+        self.assertIn("not a build of /opt/needletail/builds", str(caught.exception))
+
+    def test_a_contributor_restart_takes_none_of_the_engine_s_options(self):
+        self.push()
+        seen = []
+        module = types.SimpleNamespace(change=lambda ops, kind, arguments: seen.append(kind) or 0)
+        with mock.patch.object(deploy, "contributor_changes", lambda: module):
+            for extra in ({"rollback": True}, {"hold_s": 5.0}, {"set": ["rust_log_contrib=info"]},
+                          {"resume": True}):
+                with self.assertRaises(SystemExit) as code:
+                    self.quietly(deploy.command_restart, self.namespace(nodes="contrib-lon", **extra))
+                self.assertEqual(code.exception.code, 2, extra)
+                self.assertIn("takes no --", self.stderr)
+        self.assertEqual(seen, [])
 
 
 class Limits(Base):
