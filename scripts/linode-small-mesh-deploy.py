@@ -295,6 +295,32 @@ DEFAULT_SETTINGS = {
     "client_udp_admit_by_load": None,
     "client_udp_drain_spread_ms": None,
     "client_udp_region_hold_ms": None,
+    # Wave 8 stage 5 (Phase AM 12): a distributor slot (dist-c) is a
+    # fast-plane lease child of its site's first two distributors AND a
+    # lease parent of the site's edges: it feeds them on its class threads
+    # (--relay-lease-bind), subscribes at its two forwarders to every
+    # playlist its children lease from it (--cache-mesh-upstream-demand),
+    # and it and they list each other as cache-mesh peers. The edges rank
+    # the live distributors of their site per playlist and the first two
+    # feed them (--relay-lease-ranked, --relay-ranked-parents in av-mesh).
+    # False: the slot feeds no lease child, as before.
+    "forwarder_slot_feeds_edges": True,
+    # Wave 8 stage 5 (AM 12, 13) on every mesh node. None renders nothing
+    # (the binaries' defaults, all on; the total warm-up cap 40,000 kbit/s);
+    # false or 0 is the A/B.
+    # - relay_lease_ranked: a lease's rank decides primary or secondary.
+    # - relay_ranked_parents: an edge admits every distributor of its site.
+    # - cache_mesh_subscribe_rank: Subscribe frames carry the rank.
+    # - cache_mesh_release_unranked_parents: a parent that leaves a
+    #   playlist's ranked set is released at once.
+    # - cache_mesh_avoid_draining_parents: a draining distributor ranks last.
+    # - cache_mesh_warm_total_kbps: a distributor's warm-up windows together.
+    "relay_lease_ranked": None,
+    "relay_ranked_parents": None,
+    "cache_mesh_subscribe_rank": None,
+    "cache_mesh_release_unranked_parents": None,
+    "cache_mesh_avoid_draining_parents": None,
+    "cache_mesh_warm_total_kbps": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1633,12 +1659,7 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     """Regional cache plane: distributors push to edges over the site VLAN."""
     if not node.get("vlan_ipv4"):
         return ["--mesh-bind", f"0.0.0.0:{MESH_PORT}"]
-    peer_role = "edge" if node["role"] == "distributor" else "distributor"
-    # The roster: edges and distributors held out, and autoscale slots not
-    # created yet, are peers that are down until they start.
-    peers = [peer for peer in sorted(roster(state).values(), key=lambda item: item["name"])
-             if peer["site"] == node["site"] and peer["role"] == peer_role
-             and peer.get("vlan_ipv4")]
+    peers = mesh_peer_nodes(node, settings, state)
     children = int(settings["cache_mesh_max_children"])
     if node["role"] == "distributor":
         children = max(children, len(peers))
@@ -1665,6 +1686,32 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     for peer in peers:
         args += ["--peer", f"{peer['vlan_ipv4']}:{MESH_PORT}"]
     return args
+
+
+def mesh_peer_nodes(node: dict, settings: dict, state: dict) -> list[dict]:
+    """The cache-mesh peers of an edge or distributor (its --peer list): its
+    site's nodes of the other role (a distributor lists its edges, an edge
+    its distributors), and with forwarder_slot_feeds_edges a distributor
+    slot and its site's first two distributors (its lease parents) list each
+    other: the slot subscribes at them for its children's leases (AM 12).
+    The roster: edges and distributors held out, and autoscale slots not
+    created yet, are peers that are down until they start."""
+    peer_role = "edge" if node["role"] == "distributor" else "distributor"
+    every = sorted(roster(state).values(), key=lambda item: item["name"])
+    peers = [peer for peer in every
+             if peer["site"] == node["site"] and peer["role"] == peer_role
+             and peer.get("vlan_ipv4")]
+    if node["role"] == "distributor" and settings.get("forwarder_slot_feeds_edges"):
+        slots = slot_names(state)
+        site_forwarders = [peer for peer in every
+                           if peer["site"] == node["site"] and peer["role"] == "distributor"
+                           and peer.get("vlan_ipv4")]
+        parents = [peer for peer in site_forwarders if peer["name"] not in slots][:2]
+        if node["name"] in slots:
+            peers += parents
+        elif node["name"] in {peer["name"] for peer in parents}:
+            peers += [peer for peer in site_forwarders if peer["name"] in slots]
+    return peers
 
 
 def warm_parts(settings: dict) -> int:
@@ -1905,6 +1952,14 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
             and settings.get("client_udp_compact_short_header") is not None):
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
+    if "--mesh-bind" in node_args:
+        for key in AM_MESH_BOOL:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+        if settings.get("cache_mesh_warm_total_kbps") is not None:
+            total = settings["cache_mesh_warm_total_kbps"]
+            out += ["--cache-mesh-warm-total-kbps",
+                    "0" if float(total) == 0 else str(whole(total, "cache_mesh_warm_total_kbps"))]
     if "--client-udp-bind" in node_args:
         for key in WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL:
             if settings.get(key) is not None:
@@ -1921,6 +1976,10 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
 # av-mesh flag of the same name.
 WAVE8_CLIENT_UDP = ("client_udp_repair_thread", "client_udp_batched_admission",
                     "client_udp_resume_from_request", "client_udp_fanout_inline_shard")
+# Wave 8 stage 5 (Phase AM 12, 13): on every mesh node, the av-mesh flag of
+# the same name.
+AM_MESH_BOOL = ("relay_lease_ranked", "relay_ranked_parents", "cache_mesh_subscribe_rank",
+                "cache_mesh_release_unranked_parents", "cache_mesh_avoid_draining_parents")
 # Wave 8 stage 4 (Phase AM 8, 9, 11): the same, on/off and in ms.
 AM_CLIENT_UDP_BOOL = ("client_udp_egress_load", "client_udp_admit_by_load")
 AM_CLIENT_UDP_MS = ("client_udp_drain_spread_ms", "client_udp_region_hold_ms")
@@ -2064,7 +2123,8 @@ REMOVED_MESH_FLAGS = {
 }
 
 
-def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
+def check_cache_mesh_peers(state: dict, rendered: dict[str, dict],
+                           settings: dict | None = None) -> None:
     """Raise ValueError when an av-mesh service would not start or its cache
     mesh would refuse a peer: a flag that av-mesh no longer has
     (REMOVED_MESH_FLAGS), or a --peer that does not list its node back. The
@@ -2077,7 +2137,9 @@ def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
     A peer that is a node of the roster held out of this render (a standby
     edge, an autoscale slot not in service: down until it starts) is
     checked by the rule that renders its own list when it starts (its
-    site's nodes of the other cache-mesh role, cache_mesh_args)."""
+    site's nodes of the other cache-mesh role, and a distributor slot's
+    pairing with its lease parents: mesh_peer_nodes)."""
+    settings = settings if settings is not None else DEFAULT_SETTINGS
     problems = []
     for name, item in sorted(rendered.items()):
         if item["service"] != "needletail-mesh":
@@ -2101,7 +2163,8 @@ def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
             other = address.get(peer)
             if other is None and peer in held:
                 node, down = state["nodes"].get(name) or roster(state)[name], held[peer]
-                if down["site"] != node["site"] or down["role"] == node["role"]:
+                if node["name"] not in {item["name"] for item in
+                                        mesh_peer_nodes(down, settings, state)}:
                     problems.append(f"{name} lists {down['name']} ({peer}), which would "
                                     f"not list {name} when it starts")
                 continue
@@ -2384,6 +2447,20 @@ def fast_edge_args(feed: dict, services: dict, settings: dict) -> tuple[list[str
     return switches, pairs
 
 
+def slot_forwarder_feed(node: dict, state: dict, feed: dict, settings: dict) -> dict | None:
+    """The forwarder entry of a distributor slot that feeds its site's edges
+    (forwarder_slot_feeds_edges, AM 12): every edge of its site, none named
+    a primary child (the edges' ranks decide); None when it feeds none."""
+    if not settings.get("forwarder_slot_feeds_edges") or not feed.get("edges"):
+        return None
+    every = {"nodes": roster(state)}
+    children = sorted(edge["name"] for edge in common.nodes_by_role(every, "edge")
+                      if edge["site"] == node["site"] and edge["name"] in feed["edges"])
+    if not children:
+        return None
+    return {"node": node, "children": children, "primary_children": []}
+
+
 def fast_forwarder_args(forwarder: dict | None, settings: dict) -> list[str]:
     """`--flag value` pairs of a distributor that feeds edges on the fast
     plane (`forwarder`, an entry of fast_plane_feed's "forwarders"), or
@@ -2506,10 +2583,11 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             args += direct_mesh.get(node["name"], [])
         if slot_forwarder:
             # dist-c: a cache-mesh parent of its site's edges, fed as a
-            # fast-plane lease child of its site's first two distributors;
-            # it feeds no lease child of its own (edges keep their fixed
-            # fast-plane parents until av-mesh ranks them among the live
-            # distributors).
+            # fast-plane lease child of its site's first two distributors.
+            # With forwarder_slot_feeds_edges (AM 12) it feeds the edges that
+            # rank it among their first two parents of a playlist, as a lease
+            # parent, and subscribes at its forwarders for their leases;
+            # otherwise it feeds no lease child of its own.
             args += cache_mesh_args(node, settings, state)
             args += ["--edge-webtransport"]
             extra = list(settings["extra_distributor_args"])
@@ -2521,7 +2599,10 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
                 args += [switch for switch in switches if switch not in given]
                 args += yield_to(extra, pairs)
             if classes["relay_class_split"]:
-                args += yield_to(extra, fast_forwarder_args(None, settings))
+                args += yield_to(extra, fast_forwarder_args(
+                    slot_forwarder_feed(node, state, feed, settings), settings))
+                if feed_item is not None and slot_forwarder_feed(node, state, feed, settings):
+                    args += yield_to(extra, ["--cache-mesh-upstream-demand", "true"])
         elif role == "backbone":
             args += ["--mesh-bind", f"0.0.0.0:{MESH_PORT}", "--edge-webtransport"]
             extra = list(settings["extra_backbone_args"])
@@ -2554,7 +2635,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
-    check_cache_mesh_peers(state, rendered)
+    check_cache_mesh_peers(state, rendered, settings)
     check_class_ports(rendered, classes)
     check_fast_plane(state, rendered)
     if topology_mode(settings) == "merged":

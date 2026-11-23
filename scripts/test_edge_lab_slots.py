@@ -106,8 +106,31 @@ class Render(Base):
         self.assertEqual(value("--cache-mesh-role"), "distributor")
         self.assertEqual(value("--relay-primary-id"), "lon-dist-a")
         self.assertEqual(value("--relay-secondary-id"), "lon-dist-b")
-        self.assertEqual(value("--relay-lease-children"), "false")
+        # Wave 8 stage 5 (AM 12): it is a lease parent of its site's edges
+        # (their ranks decide which streams), subscribes at its forwarders
+        # for its children's leases, and it and they list each other.
+        self.assertEqual(value("--relay-lease-children"), "true")
+        self.assertEqual(value("--relay-lease-bind"), "10.77.1.13:22901")
+        self.assertNotIn("--relay-lease-primary-children", args)
+        self.assertEqual(value("--cache-mesh-upstream-demand"), "true")
+        peers = [args[index + 1] for index, arg in enumerate(args) if arg == "--peer"]
+        self.assertIn("10.77.1.11:29101", peers)
+        self.assertIn("10.77.1.12:29101", peers)
+        self.assertIn("10.77.1.13:29101",
+                      [arg for index, arg in enumerate(rendered["lon-dist-a"]["args"])
+                       if rendered["lon-dist-a"]["args"][index - 1] == "--peer"])
+        self.assertNotIn("10.77.1.12:29101",
+                         [arg for index, arg in enumerate(rendered["lon-dist-a"]["args"])
+                          if rendered["lon-dist-a"]["args"][index - 1] == "--peer"])
         self.assertNotIn("--relay-forward", args)
+        # forwarder_slot_feeds_edges=false: as before, no lease child.
+        with redirect_stderr(io.StringIO()):
+            off = deploy.load_settings([f"{key}={json.dumps(value)}"
+                                        for key, value in lab.DEFAULT_OVERRIDES.items()]
+                                       + ["forwarder_slot_feeds_edges=false"])
+        old = deploy.render(state, off, plan)["lon-dist-c"]["args"]
+        self.assertEqual(old[old.index("--relay-lease-children") + 1], "false")
+        self.assertNotIn("--cache-mesh-upstream-demand", old)
         # Without lon-dist-c the other nodes' compiled relay ports are the
         # same: it never took a relay child's index.
         bare = {**state, "nodes": {name: node for name, node in state["nodes"].items()

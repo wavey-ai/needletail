@@ -326,6 +326,34 @@ class Render(Base):
             else:
                 self.assertNotIn(flag, node_args, name)
 
+    def test_the_phase_am_mesh_settings_reach_every_mesh_node(self):
+        """Wave 8 stage 5 (Phase AM 12, 13): each setting renders its av-mesh
+        flag on every node with a cache mesh, only when given."""
+        flags = ("--relay-lease-ranked", "--relay-ranked-parents",
+                 "--cache-mesh-subscribe-rank", "--cache-mesh-release-unranked-parents",
+                 "--cache-mesh-avoid-draining-parents", "--cache-mesh-warm-total-kbps")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "relay_lease_ranked=false", "relay_ranked_parents=false",
+            "cache_mesh_subscribe_rank=false", "cache_mesh_release_unranked_parents=false",
+            "cache_mesh_avoid_draining_parents=false", "cache_mesh_warm_total_kbps=0"])
+        meshed = 0
+        for name, node_args in args.items():
+            if "--mesh-bind" not in node_args:
+                for flag in flags:
+                    self.assertNotIn(flag, node_args, name)
+                continue
+            meshed += 1
+            for flag in flags[:-1]:
+                self.assertEqual(value_of(node_args, flag), "false", (name, flag))
+            self.assertEqual(value_of(node_args, "--cache-mesh-warm-total-kbps"), "0")
+        self.assertGreater(meshed, 0)
+        _program, _plan, args = self.render(["cache_mesh_warm_total_kbps=60000"])
+        self.assertEqual(value_of(args["lon-dist-a"], "--cache-mesh-warm-total-kbps"), "60000")
+
     def test_the_phase_am_client_udp_settings_reach_the_nodes_that_serve_clients(self):
         """Wave 8 stage 4 (Phase AM 8, 9, 11): each setting renders its av-mesh
         flag on every node with --client-udp-bind, only when given."""
@@ -513,9 +541,16 @@ class Render(Base):
         # scale work: a slot is in every peer list from the first push).
         self.assertEqual(distributors,
                          ["10.77.1.11:29101", "10.77.1.12:29101", "10.77.1.13:29101"])
+        # Each distributor lists its site's edges; the slot lon-dist-c and its
+        # lease parents lon-dist-a and lon-dist-b also list each other
+        # (forwarder_slot_feeds_edges, AM 12), but never dist-a and dist-b.
+        pairs = {"10.77.1.11:29101": ["10.77.1.13:29101"],
+                 "10.77.1.12:29101": ["10.77.1.13:29101"],
+                 "10.77.1.13:29101": ["10.77.1.11:29101", "10.77.1.12:29101"]}
         for name, bind in binds.items():
             if bind in distributors:
-                self.assertEqual(sorted(values_of(args[name], "--peer")), edges, name)
+                self.assertEqual(sorted(values_of(args[name], "--peer")),
+                                 sorted(edges + pairs[bind]), name)
         with self.assertRaises(ValueError) as caught:
             self.render(['extra_edge_args=["--mesh-sync-on-publish","false"]'])
         self.assertIn("--mesh-sync-on-publish", str(caught.exception))

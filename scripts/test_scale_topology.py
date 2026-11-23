@@ -233,10 +233,15 @@ class Render(Base):
         all_dists = sorted(name for name, node in nodes.items()
                            if node["role"] == "distributor" and node["site"] == site)
         dists = [name for name in all_dists if name not in slots]
+        slot_dists = [name for name in all_dists if name in slots]
         for dist in dists:
             peers = flag_values(args[dist], "--peer")
+            # Its edges, then (AM 12, forwarder_slot_feeds_edges) the site's
+            # forwarder slots, which subscribe at it.
             self.assertEqual(peers, [f"{nodes[edge]['vlan_ipv4']}:{deploy.MESH_PORT}"
-                                     for edge in roster_edges], dist)
+                                     for edge in roster_edges]
+                             + [f"{nodes[slot]['vlan_ipv4']}:{deploy.MESH_PORT}"
+                                for slot in slot_dists], dist)
             children = int(deploy.flag_value(args[dist], "--cache-mesh-max-children"))
             self.assertGreaterEqual(children, len(roster_edges), dist)
             lease = int(deploy.flag_value(args[dist], "--relay-max-lease-children"))
@@ -377,12 +382,19 @@ class Render(Base):
             self.assertEqual(flag_values(dist_c, "--peer"), [
                 f"{roster[edge]['vlan_ipv4']}:{deploy.MESH_PORT}" for edge in sorted(
                     item for item, node in roster.items()
-                    if node["role"] == "edge" and node["site"] == site)])
+                    if node["role"] == "edge" and node["site"] == site)] + [
+                f"{roster[parent]['vlan_ipv4']}:{deploy.MESH_PORT}"
+                for parent in (f"{short}-dist-a", f"{short}-dist-b")])
             self.assertEqual(deploy.flag_value(dist_c, "--relay-primary-id"), f"{short}-dist-a")
             self.assertEqual(deploy.flag_value(dist_c, "--relay-secondary-id"), f"{short}-dist-b")
             self.assertEqual(deploy.flag_value(dist_c, "--relay-primary-peer"),
                              f"{roster[short + '-dist-a']['vlan_ipv4']}:{deploy.LEASE_PORT}")
-            self.assertEqual(deploy.flag_value(dist_c, "--relay-lease-children"), "false")
+            # AM 12: a lease parent of its site's edges too (their ranks
+            # decide), subscribing at its forwarders for their leases.
+            self.assertEqual(deploy.flag_value(dist_c, "--relay-lease-children"), "true")
+            self.assertEqual(deploy.flag_value(dist_c, "--relay-lease-bind"),
+                             f"{roster[name]['vlan_ipv4']}:{deploy.LEASE_PORT}")
+            self.assertEqual(deploy.flag_value(dist_c, "--cache-mesh-upstream-demand"), "true")
             self.assertNotIn("--relay-forward", dist_c)
             self.assertIn(roster[name]["vlan_ipv4"], deploy.flag_value(
                 args[f"{short}-dist-a"], "--relay-lease-primary-children").split(","))
