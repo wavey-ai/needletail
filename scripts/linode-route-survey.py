@@ -16,9 +16,13 @@ two default ports of a relay link. Routers hash the 5-tuple, so a source
 port picks one of the parallel long-haul paths. The receiver stamps every
 probe in the kernel (SO_TIMESTAMPNS) and keeps every one: a record of 16
 bytes (source port, link, probe id, receive minus send in ns), about 19 MB
-a link an hour. It creates nothing and calls no cloud API: it reads the
-lab's state file (NEEDLETAIL_LINODE_LAB_STATE) for addresses and reaches
-the nodes over ssh. `start`, `stop` and `collect` take `--dry`, which
+a link an hour. Each `start` writes into a directory of its own on the
+nodes (named by its start second, which survey.json keeps), so a survey
+started again after a replacement never mixes its records with the first
+one's (probe ids count from 0 at each start); `collect --out DIR` fetches
+the start that DIR/survey.json names. It creates nothing and calls no cloud
+API: it reads the lab's state file (NEEDLETAIL_LINODE_LAB_STATE) for
+addresses and reaches the nodes over ssh. `start`, `stop` and `collect` take `--dry`, which
 prints every command and runs none; `plan` prints the links and the
 commands from the topology alone.
 
@@ -147,7 +151,7 @@ else:
     sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
     sock.bind(("0.0.0.0", config["receiver_port"]))
     sock.settimeout(1.0)
-    files = {link["id"]: open(f"{config['dir']}/link-{link['id']}.rec", "ab")
+    files = {link["id"]: open(f"{config['dir']}/link-{link['id']}.rec", "wb")
              for link in config["links"]}
     flushed = time.time()
     while time.time_ns() < stop:
@@ -213,6 +217,11 @@ def topology_of(state: dict | None, path: str | None) -> dict:
     return json.loads(file.read_text())
 
 
+def run_dir(start_ns: int | None) -> str:
+    """The nodes' directory of one start of the survey."""
+    return f"{REMOTE}/{'<start>' if start_ns is None else start_ns // 1_000_000_000}"
+
+
 def agent_configs(links: list[dict], addresses: dict[str, str], start_ns: int,
                   stop_ns: int) -> dict[str, dict]:
     """{node: {"send": config, "recv": config}} of the survey's ends
@@ -226,30 +235,33 @@ def agent_configs(links: list[dict], addresses: dict[str, str], start_ns: int,
             "start_unix_ns": start_ns, "stop_unix_ns": stop_ns, "links": []})
         sender["send"]["links"].append({"id": link["id"], "target": addresses[link["receiver"]]})
         receiver = out.setdefault(link["receiver"], {})
-        receiver.setdefault("recv", {"receiver_port": RECEIVER_PORT, "dir": REMOTE,
+        receiver.setdefault("recv", {"receiver_port": RECEIVER_PORT, "dir": run_dir(start_ns),
                                      "stop_unix_ns": stop_ns, "links": []})
         receiver["recv"]["links"].append({"id": link["id"]})
     return out
 
 
-def start_commands(configs: dict[str, dict]) -> list[tuple[str, str]]:
+def start_commands(configs: dict[str, dict], start_ns: int) -> list[tuple[str, str]]:
     """(node, shell command) in order: every end gets the agent and its
-    configuration, receivers start before senders."""
+    configuration in this start's directory, receivers start before
+    senders."""
+    directory = run_dir(start_ns)
     out = []
     for name in sorted(configs):
         # The deploy tool installs nothing on a bare node: the agent's
         # interpreter is put there if the image lacks it.
-        files = [PYTHON, f"mkdir -p {REMOTE}", f"cat >{REMOTE}/agent.py <<'PY'\n{AGENT}\nPY"]
+        files = [PYTHON, f"mkdir -p {directory}",
+                 f"cat >{REMOTE}/agent.py <<'PY'\n{AGENT}\nPY"]
         for mode, config in sorted(configs[name].items()):
-            files.append(f"cat >{REMOTE}/{mode}.json <<'JSON'\n{json.dumps(config)}\nJSON")
+            files.append(f"cat >{directory}/{mode}.json <<'JSON'\n{json.dumps(config)}\nJSON")
         out.append((name, "\n".join(files)))
     for mode in ("recv", "send"):
         for name in sorted(configs):
             if mode in configs[name]:
                 out.append((name, (
                     f"pkill -f '{REMOTE}/agent.py {mode}' ; "
-                    f"(setsid nohup python3 {REMOTE}/agent.py {mode} {REMOTE}/{mode}.json "
-                    f">{REMOTE}/{mode}.log 2>&1 </dev/null &)")))
+                    f"(setsid nohup python3 {REMOTE}/agent.py {mode} {directory}/{mode}.json "
+                    f">{directory}/{mode}.log 2>&1 </dev/null &)")))
     return out
 
 
@@ -291,7 +303,7 @@ def command_plan(args: argparse.Namespace) -> None:
           "records a link an hour")
     for link in links:
         print(f"  link {link['id']:>2}  {link['sender']} -> {link['receiver']}")
-    for name, command in start_commands(agent_configs(links, addresses, 0, 0)):
+    for name, command in start_commands(agent_configs(links, addresses, 0, 0), 0):
         say(name, command)
 
 
@@ -312,7 +324,7 @@ def command_start(args: argparse.Namespace) -> None:
               "ports": survey_ports(),
               "links": [{**link, "sender_ipv4": addresses[link["sender"]],
                          "receiver_ipv4": addresses[link["receiver"]]} for link in links]}
-    for name, command in start_commands(configs):
+    for name, command in start_commands(configs, start_ns):
         if args.dry:
             say(name, command)
         else:
@@ -344,11 +356,16 @@ def command_collect(args: argparse.Namespace) -> None:
     state = None if args.dry and not common.state_path().is_file() else common.load_state()
     topology = topology_of(state, args.topology)
     directory = out_dir(args, state)
+    started = directory / "survey.json"
+    if not started.is_file() and not args.dry:
+        sys.exit(f"{started} is missing: this directory's survey was never started")
+    remote = run_dir(json.loads(started.read_text())["start_unix_ns"] if started.is_file()
+                     else None)
     links = survey_links(topology, set(state["nodes"]) if state else None)
     receivers = sorted({link["receiver"] for link in links})
     failures = []
     for name in survey_nodes(state, topology):
-        wanted = [f"{REMOTE}/*.log"] + ([f"{REMOTE}/link-*.rec"] if name in receivers else [])
+        wanted = [f"{remote}/*.log"] + ([f"{remote}/link-*.rec"] if name in receivers else [])
         for source in wanted:
             target = directory / "logs" / name if source.endswith(".log") else directory
             if args.dry:

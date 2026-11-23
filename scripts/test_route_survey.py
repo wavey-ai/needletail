@@ -4,17 +4,23 @@
 the hunt's topology; the three policies replayed on synthetic records (two
 route classes and a step; one class); the chooser against the fixture
 that av-mesh's chooser passes too, and the two copies of the fixture byte
-for byte when NEEDLETAIL_AV_MESH_ROOT names an av-mesh checkout.
+for byte when NEEDLETAIL_AV_MESH_ROOT names an av-mesh checkout; a survey
+stopped and started again (a replaced end) writes and collects a record of
+its own.
 python3 -m unittest scripts/test_route_survey.py"""
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("route_survey", HERE / "linode-route-survey.py")
@@ -72,13 +78,65 @@ class Record(unittest.TestCase):
         self.assertEqual(len(survey.survey_links(topology, present)), 8)
         addresses = {node["name"]: f"192.0.2.{index}" for index, node in
                      enumerate(topology["nodes"], 1)}
-        commands = survey.start_commands(survey.agent_configs(links, addresses, 1, 2))
+        commands = survey.start_commands(survey.agent_configs(links, addresses, 1, 2), 1)
         started = [(name, "recv" if " recv " in command else "send")
                    for name, command in commands if "setsid" in command]
         modes = [mode for _name, mode in started]
         self.assertEqual(modes, sorted(modes))          # every receiver before any sender
         self.assertTrue(all("python3" in command for _name, command in commands[:len(addresses)]
                             if "agent.py <<" in command))
+
+
+class Restart(unittest.TestCase):
+    def test_a_restarted_survey_keeps_its_records_apart(self):
+        """A replaced survey end: the survey is stopped, collected, and
+        started again. The second start's agents write into a directory of
+        their own (from empty files; probe ids count from 0 again), and
+        each collect fetches the records of the start its survey.json names."""
+        topology = json.loads(survey.TOPOLOGY.read_text())
+        nodes = {node["name"]: {**node, "public_ipv4": f"192.0.2.{index}"}
+                 for index, node in enumerate(topology["nodes"], 1)}
+        commands, fetched = [], []
+        with tempfile.TemporaryDirectory() as directory:
+            state = {"run_id": "hunttest", "topology_file": str(survey.TOPOLOGY),
+                     "nodes": nodes, "watchdog_deadline_unix": 1_795_390_000}
+            path = pathlib.Path(directory) / "hunt-lab.json"
+            path.write_text(json.dumps(state))
+            first, second = (pathlib.Path(directory) / name for name in ("survey", "survey-2"))
+            with mock.patch.dict(os.environ, {"NEEDLETAIL_LINODE_LAB_STATE": str(path)}), \
+                    mock.patch.object(survey.common, "ssh",
+                                      lambda node, command, **_k: commands.append(
+                                          (node["name"], command))), \
+                    mock.patch.object(survey.common, "rsync_from",
+                                      lambda node, source, target, **_k: fetched.append(
+                                          (node["name"], source, target))), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for out, now in ((first, 1_795_384_000_200_000_000),
+                                 (second, 1_795_386_100_700_000_000)):
+                    with mock.patch.object(survey.time, "time_ns", lambda now=now: now):
+                        survey.command_start(argparse.Namespace(
+                            dry=False, topology=None, out=str(out), hours=None))
+                    survey.command_stop(argparse.Namespace(dry=False, topology=None))
+                    survey.command_collect(argparse.Namespace(
+                        dry=False, topology=None, out=str(out)))
+            starts = [json.loads((out / "survey.json").read_text())["start_unix_ns"]
+                      for out in (first, second)]
+        dirs = [survey.run_dir(start) for start in starts]
+        self.assertEqual(dirs, [f"{survey.REMOTE}/1795384005", f"{survey.REMOTE}/1795386105"])
+        receivers = [command for _name, command in commands if "recv.json <<'JSON'" in command]
+        self.assertTrue(receivers)
+        for directory_of_start in dirs:
+            self.assertTrue(any(f'"dir": "{directory_of_start}"' in command
+                                for command in receivers))
+        # Each collect reads the record files of its own start only.
+        records = [(source, target) for _name, source, target in fetched if source.endswith(".rec")]
+        self.assertEqual({source for source, target in records if target.startswith(str(first) + "/")},
+                         {f"{dirs[0]}/link-*.rec"})
+        self.assertEqual({source for source, target in records if target.startswith(str(second) + "/")},
+                         {f"{dirs[1]}/link-*.rec"})
+        # The receiver starts each record file empty.
+        self.assertIn('"wb")', survey.AGENT)
+        self.assertNotIn('"ab")', survey.AGENT)
 
 
 class Policies(unittest.TestCase):
