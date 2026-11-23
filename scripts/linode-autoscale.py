@@ -88,15 +88,16 @@ import os
 import pathlib
 import re
 import signal
-import ssl
 import subprocess
 import sys
 import threading
 import time
-import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
+sys.path.insert(0, str(HERE))
+from mesh_ops import (Refused, control_accepted, control_body, gauge,  # noqa: E402
+                      http_json, http_post)
 SCHEMA = "needletail.autoscale.v1"
 # Never touched, whatever a state file says.
 DENY = {"arch-us-east"}
@@ -104,7 +105,6 @@ DENY = {"arch-us-east"}
 # Nov; the lab tool checks the class from the API again before it creates).
 DEDICATED_PRICES = {"g6-dedicated-2": 0.054, "g6-dedicated-4": 0.108,
                     "g6-dedicated-8": 0.216}
-HTTP_PORT = 19444
 # av-mesh --rebalance-target-permille's default: an edge over it sends UDP
 # listeners to an edge with room (wave 9 C1).
 REBALANCE_TARGET_PERMILLE = 800
@@ -157,10 +157,6 @@ class Config:
     # Seconds between two "hold" decisions of a region written to the
     # events (every other decision is written when it is taken).
     hold_log_s: float = 30.0
-
-
-class Refused(Exception):
-    """A safety rule refused an action; nothing was done."""
 
 
 # ----------------------------------------------------------------- events
@@ -334,60 +330,6 @@ class Guarded(Backend):
             # A dry run reads no account: the projection of the lab alone.
             return self.inner.budget(new, offline=True)
         return self.inner.budget(new)
-
-
-def http_json(address: str, path: str, timeout: float = 2.0):
-    """GET https://<address>:19444<path>, certificate not checked (the lab's
-    own CA); the JSON, or None."""
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    try:
-        with urllib.request.urlopen(f"https://{address}:{HTTP_PORT}{path}", timeout=timeout,
-                                    context=context) as response:
-            return json.loads(response.read())
-    except Exception:  # noqa: BLE001 - a node that does not answer is not advertised
-        return None
-
-
-def control_body(node_id: str) -> dict:
-    """The body of a drain-node or resume-node request. It always names its
-    node: av-mesh takes a request with no node_id and no region as global
-    (control_targets_local), so an empty body could drain every node that
-    hears it."""
-    if not node_id:
-        raise Refused("a control request must name its node")
-    return {"node_id": node_id}
-
-
-def control_accepted(status) -> bool:
-    """av-mesh answers a control command (drain-node, resume-node) with 202
-    Accepted: it is queued, not done. Any 2xx is taken; 200 as well, for a
-    node of before."""
-    return isinstance(status, int) and 200 <= status < 300
-
-
-def http_post(address: str, path: str, body: dict, timeout: float = 5.0) -> int:
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    request = urllib.request.Request(f"https://{address}:{HTTP_PORT}{path}",
-                                     data=json.dumps(body).encode(), method="POST",
-                                     headers={"content-type": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-        return response.status
-
-
-def gauge(item, *names):
-    """The first of `names` in a dict (nested "a.b" allowed) that is a
-    number, else None."""
-    for name in names:
-        value = item
-        for part in name.split("."):
-            value = value.get(part) if isinstance(value, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return value
-    return None
 
 
 def node_view(name: str, assignment: dict | None, local: dict | None) -> dict:
