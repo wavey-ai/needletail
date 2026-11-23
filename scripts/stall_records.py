@@ -270,3 +270,110 @@ def kernel_second(item: dict) -> bool:
     softirq ticks over half of the time the line covers."""
     busy = int(item.get("system") or 0) + int(item.get("softirq") or 0)
     return busy * 2 > line_ticks(item)
+
+
+# ------------------------------------------------- what delayed the audio
+
+# A side of a delay before publish (D-hunt.md 3.1 and E3), and the
+# contributor's stall journal kinds that name one (2.8).
+CONTRIBUTOR_SIDES = (("src_gap", "link"), ("rx_wait", "contributor read"),
+                     ("inline_publish", "contributor publish"),
+                     ("lane_send", "contributor publish"))
+
+
+def sender_events(lines: list[dict], min_late_us: int = 500) -> list[dict]:
+    """The AEP1 sender's lateness journal (2.7) as events: each `late`
+    line covers [its deadline, the deadline + late_last_us], its side the
+    pacer (it woke late) or the encode (the encode took the time)."""
+    out = []
+    for line in lines:
+        if line.get("kind") != "late" or line.get("deadline_us") is None:
+            continue
+        late = int(line.get("late_last_us") or line.get("late_first_us") or 0)
+        if int(line.get("late_first_us") or late) < min_late_us:
+            continue
+        woke, encode = int(line.get("woke_late_us") or 0), int(line.get("encode_us") or 0)
+        out.append({"kind": "late", "t_us": int(line["deadline_us"]) + late, "dur_us": late,
+                    "span_us": late, "n": 1, "epoch": line.get("epoch"),
+                    "side": "pacer" if woke >= encode else "encode"})
+    return out
+
+
+def overlapping(events: list[dict], start_us: int, end_us: int) -> list[dict]:
+    """The events whose interval meets [start_us, end_us]."""
+    out = []
+    for event in events:
+        if event.get("kind") == "sec" or not event.get("t_us"):
+            continue
+        begin, end = interval(event)
+        if begin <= end_us and end >= start_us:
+            out.append(event)
+    return out
+
+
+def first_cause(start_us: int, end_us: int, sources: list[tuple[str, list[dict]]]):
+    """The first of `sources` ([(side, events)], in the order of the join)
+    with an event over [start_us, end_us]: (side, event), or None."""
+    for side, events in sources:
+        found = overlapping(events, start_us, end_us)
+        if found:
+            return side, max(found, key=lambda event: int(event.get("dur_us") or 0))
+    return None
+
+
+def source_sides(sender: list[dict], contributor: list[dict], source_watch: list[dict],
+                 contributor_name: str = "contributor",
+                 source_name: str = "source host") -> list[tuple[str, list[dict]]]:
+    """The sides of a delay before publish, in the order they are asked:
+    a node that was not run (listed apart), the sender's pacer or encode,
+    the link (an epoch arrived late at the contributor with the sender on
+    time), the contributor's read and its publish."""
+    sides: list[tuple[str, list[dict]]] = [
+        (f"stopped ({source_name})", stopped_ticks(source_watch, 0)),
+        (f"stopped ({contributor_name})", stopped_ticks(contributor, 0))]
+    sides += [("pacer", [event for event in sender if event["side"] == "pacer"]),
+              ("encode", [event for event in sender if event["side"] == "encode"])]
+    for kind, side in CONTRIBUTOR_SIDES:
+        sides.append((side, [event for event in contributor if event.get("kind") == kind]))
+    return sides
+
+
+def episodes(lateness_us: dict[int, int], above_us: int) -> list[dict]:
+    """E3's episodes: maximal runs of consecutive parts whose lateness
+    (published minus the part's ideal instant) is more than `above_us`
+    over the median. [{"first", "last", "parts", "excess_us"}]."""
+    if not lateness_us:
+        return []
+    ordered = sorted(lateness_us.values())
+    median = ordered[(len(ordered) - 1) // 2]
+    out: list[dict] = []
+    for part in sorted(lateness_us):
+        excess = lateness_us[part] - median
+        if excess <= above_us:
+            continue
+        if out and out[-1]["last"] == part - 1:
+            out[-1]["last"] = part
+            out[-1]["parts"] += 1
+            out[-1]["excess_us"] = max(out[-1]["excess_us"], excess)
+        else:
+            out.append({"first": part, "last": part, "parts": 1, "excess_us": excess})
+    return out
+
+
+def attribute(found: list[dict], ideal_us, sides: list[tuple[str, list[dict]]],
+              margin_us: int = 1000) -> dict:
+    """Each episode's side: the first side with an event over the episode
+    ([ideal of its first part - margin, ideal of its last + its excess +
+    margin]). {"episodes": [...with "side"], "by_side": {side: {"n", "ms"}},
+    "unattributed": n}."""
+    by_side: dict[str, dict] = {}
+    for episode in found:
+        start = ideal_us(episode["first"]) - margin_us
+        end = ideal_us(episode["last"]) + episode["excess_us"] + margin_us
+        cause = first_cause(start, end, sides)
+        episode["side"] = cause[0] if cause else "unattributed"
+        slot = by_side.setdefault(episode["side"], {"n": 0, "ms": 0.0})
+        slot["n"] += 1
+        slot["ms"] = round(slot["ms"] + episode["excess_us"] / 1000, 3)
+    return {"episodes": found, "by_side": by_side,
+            "unattributed": by_side.get("unattributed", {}).get("n", 0)}
