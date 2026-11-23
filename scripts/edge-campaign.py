@@ -2504,6 +2504,20 @@ def first_parts(job: UdpJob, begin: float, end: float) -> dict[str, int]:
     return out
 
 
+def join_warm_up_s(pending: list[tuple[float, int]], joined: float) -> float:
+    """Seconds from a join to the end of its warm-up: the first sample at
+    0 after the first run of samples with warm-up parts pending (a later
+    run is the warm-up of another playlist's copy, taken when its first
+    listener came, not the join's)."""
+    started = False
+    for t, value in pending:
+        if value > 0:
+            started = True
+        elif started:
+            return round(t - joined, 1)
+    return 0.0 if not started else round(pending[-1][0] - joined, 1)
+
+
 class OpsSampler:
     """Once a second, every London edge and distributor in service: its
     client UDP gauges and counters, its own advertisement (load_permille,
@@ -2965,8 +2979,7 @@ def slot_edge_join(ctx):
     dists = lab.distributors("london")
     pending = [(row["t"], sum(ops_value(row, name, "cache_mesh.warm_parts_pending") or 0
                               for name in dists)) for row in rows if row["t"] >= joined]
-    busy = [t for t, value in pending if value > 0]
-    zero_after = (busy[-1] - joined + 1.0) if busy else 0.0
+    zero_after = join_warm_up_s(pending, joined)
     ctx.measure("warm_parts_pending", {"max": max((value for _, value in pending), default=None),
                                        "zero_after_join_s": round(zero_after, 1)})
     ctx.check("R1: the distributors' warm-up backlog reached 0 within 10 s of the join",

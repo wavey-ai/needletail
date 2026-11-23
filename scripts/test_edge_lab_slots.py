@@ -324,6 +324,12 @@ class Campaign(Base):
         self.assertEqual(campaign.move_spread(report["moves_by_edge"],
                                               ["lon-edge-2", "lon-edge-3"]), 1.1)
 
+    def test_the_join_warm_up_ends_at_its_first_zero(self):
+        pending = [(20.5, 9941), (21.7, 2487), (23.0, 0), (24.2, 0), (35.1, 1016), (36.4, 0)]
+        self.assertEqual(campaign.join_warm_up_s(pending, 20.0), 3.0)
+        self.assertEqual(campaign.join_warm_up_s([(21.0, 0), (22.0, 0)], 20.0), 0.0)
+        self.assertEqual(campaign.join_warm_up_s([(21.0, 5), (22.0, 7)], 20.0), 2.0)
+
     def test_the_udp_report_and_the_spread_of_moves(self):
         out = self.work / "udp"
         out.mkdir()
