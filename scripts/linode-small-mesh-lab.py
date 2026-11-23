@@ -1017,8 +1017,8 @@ def command_up(args: argparse.Namespace) -> None:
           f"${other['usd']:.2f} for the other live labs to their deadlines")
     if other["without_deadline"]:
         print(f"{other['without_deadline']} instance(s) of other labs carry no "
-              f"{DEADLINE_TAG}<unix> tag (an older tool made them): priced to now, not to a "
-              "deadline", file=sys.stderr)
+              f"{DEADLINE_TAG}<unix> tag (another tool made them): each priced to "
+              f"{MAX_LIFE_HOURS:g} h from its creation", file=sys.stderr)
     key = key_path.read_text().strip()
     create_staged(args, api, state, state_path, topology["nodes"], optional, key)
 
@@ -1537,17 +1537,39 @@ def tagged_deadline(tags: list[str]) -> int | None:
     return None
 
 
+def plan_prices(api: "Api") -> dict:
+    """{(plan, region): hourly price} from the API's plans, region prices
+    included; (plan, None) is the plan's base price."""
+    prices = {}
+    for item in api.list_all("/linode/types"):
+        prices[(item["id"], None)] = item["price"]["hourly"]
+        for override in item.get("region_prices", []):
+            prices[(item["id"], override["id"])] = override["hourly"]
+    return prices
+
+
+def instance_price(prices: dict, instance: dict) -> float:
+    """The hourly price of a live instance: its plan's price in its region."""
+    plan = instance.get("type")
+    return prices.get((plan, instance.get("region")), prices.get((plan, None), 0.0))
+
+
 def account_billed(api: "Api", run_tag: str | None, now: float | None = None) -> dict:
     """What the account's other live Needletail labs will have cost when
     their own watchdogs delete them: every live instance tagged
     needletail-qualification but not `run_tag`, ceil(hours) x its plan's
-    price from its creation to the deadline its needletail-deadline tag
-    carries (to now when it carries none, or the deadline has passed:
-    `without_deadline` counts the first). The dev box has no tag and is
-    never counted, never touched. Labs already deleted are not listed by
-    the API: the ledger holds what they cost."""
+    price in its region from its creation to the deadline its
+    needletail-deadline tag carries (to now once that has passed). An
+    instance without the tag (made by another tool, the referee's among
+    them, whose watchdog this tool cannot read) is priced to MAX_LIFE_HOURS
+    from its creation, the longest life any watchdog here allows and the
+    referee's default, never to now: a lab created half an hour ago bills
+    the hours its watchdog gives it, not one (`without_deadline` counts
+    them). The dev box has no tag and is never counted, never touched.
+    Labs already deleted are not listed by the API: the ledger holds what
+    they cost."""
     now = time.time() if now is None else now
-    prices = {item["id"]: item["price"]["hourly"] for item in api.list_all("/linode/types")}
+    prices = plan_prices(api)
     rows = []
     for item in api.list_all("/linode/instances", "needletail-qualification"):
         tags = item.get("tags", [])
@@ -1555,9 +1577,10 @@ def account_billed(api: "Api", run_tag: str | None, now: float | None = None) ->
             continue
         start = created_unix({"created": item.get("created")}, now)
         deadline = tagged_deadline(tags)
-        hours = billed_hours(start, max(now, deadline or now))
+        until = deadline if deadline is not None else start + MAX_LIFE_HOURS * 3600
+        hours = billed_hours(start, max(now, until))
         rows.append({"label": item.get("label"), "type": item.get("type"), "hours": hours,
-                     "usd": hours * prices.get(item.get("type"), 0.0),
+                     "usd": hours * instance_price(prices, item),
                      "deadline_unix": deadline})
     return {"usd": round(sum(row["usd"] for row in rows), 4), "instances": rows,
             "without_deadline": sum(1 for row in rows if row["deadline_unix"] is None)}

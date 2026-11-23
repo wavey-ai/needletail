@@ -370,8 +370,9 @@ class UpBudget(Base):
                      int(now - 80000), "removed_unix": int(now - 70000), "billed_usd": 5.0,
                      "source": "down"})
         # Another live lab: two instances an hour old whose watchdog deletes
-        # them at four hours (4 billed hours each), and one of an older
-        # tool with no deadline tag, half an hour old (priced to now: 1).
+        # them at four hours (4 billed hours each), and one of another tool
+        # with no deadline tag, half an hour old: priced to the longest
+        # life a watchdog allows (6 billed hours), not to now (1).
         made = int(now) - 3600
         for ident in (2, 3):
             api.instances[ident] = {"id": ident, "label": f"ntsm-o1-n{ident}",
@@ -382,7 +383,7 @@ class UpBudget(Base):
         api.instances[4] = {"id": 4, "label": "ntsm-o2-n4", "type": "g6-dedicated-2",
                             "created": stamp(int(now) - 1800),
                             "tags": ["needletail-qualification", "needletail-small-mesh-o2"]}
-        other = 2 * 4 * 0.108 + 0.054
+        other = 2 * 4 * 0.108 + 6 * 0.054
         # Every node of the topology, its four slots included, 3 billed
         # hours each for a watchdog of 2.5 h.
         topology = json.loads(SCALE.read_text())
@@ -1165,8 +1166,20 @@ class Billing(unittest.TestCase):
         now = lab_tool.created_unix({"created": "2026-11-22T02:30:00"})
         result = lab_tool.account_billed(api, api.tag, now)
         self.assertEqual([row["label"] for row in result["instances"]], ["ntsm-other-x"])
-        self.assertAlmostEqual(result["usd"], 3 * 0.108)
+        # No deadline tag (the referee's tool writes none): to the longest
+        # life a watchdog allows from its creation, 6 h, not to now (3 h).
+        self.assertAlmostEqual(result["usd"], 6 * 0.108)
         self.assertEqual(result["without_deadline"], 1)
+        # Past that life it is priced to now: 7 h.
+        later = now + 4.5 * 3600
+        self.assertAlmostEqual(lab_tool.account_billed(api, api.tag, later)["usd"], 7 * 0.108)
+        # A region's own price, where the plan lists one.
+        api.instances[2]["region"] = "ap-southeast"
+        dearer = {**TYPES["g6-dedicated-4"],
+                  "region_prices": [{"id": "ap-southeast", "hourly": 0.13}]}
+        with mock.patch.dict(TYPES, {"g6-dedicated-4": dearer}):
+            self.assertAlmostEqual(lab_tool.account_billed(api, api.tag, now)["usd"], 6 * 0.13)
+        del api.instances[2]["region"]
         # To the deadline its tag carries, not to now (2.5 h): 5 hours.
         api.instances[2]["tags"].append(
             f"needletail-deadline:{int(lab_tool.created_unix({'created': '2026-11-22T05:00:00'}))}")
