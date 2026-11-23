@@ -31,12 +31,22 @@ n-th --frames) adds the same on the listener host's kernel receive stamp
 (mouth to kernel) and on publish to kernel, joined by part number.
 
 The steady state's acceptance (3.1, on the 23 Nov bar): on a probe of
-300 s or more, the silence and the p99 criteria each fail no more than
-twice their chance floor (5 % at the 97.5th percentile), and missing
-never. The windows overlap, so a rate is an estimate from about T/L
-independent windows: on a stationary probe of 300 s the referee finds
-about 7 % of no-change windows failing one criterion or the other. Exit 0:
-a measurement.
+300 s or more, the silence and the p99 criteria each fail no more often
+than a stationary probe of the same length would at the same window
+length, and missing never. The windows overlap, so a rate is an estimate
+from about T/L independent windows and a stationary probe's rate is far
+from the nominal floor at long windows (the largest silence of a probe
+fails every window that holds it: about (L+1)/(T-L) of them). So each
+criterion's limit is calibrated, not fixed: the largest of that
+criterion's rates over CALIBRATION_SEEDS (20) stationary synthetic probes
+of the probe's length (rounded down to 10 s) at the same window length,
+scored by the same code (the referee's Probe and pct, the same windows). Both
+criteria compare windows by rank, so a stationary probe's rates do not
+depend on its latency distribution, and hardly on its unit rate: the
+synthetic probes have a unit every 10 ms (mouth to ear 1.5 ms plus an
+exponential 0.3 ms), which keeps the calibration to a second or so a
+probe. A stationary probe then exceeds one criterion's limit at one
+window length one time in 21. Exit 0: a measurement.
 """
 
 from __future__ import annotations
@@ -47,15 +57,21 @@ import importlib.util
 import json
 import os
 import pathlib
+import random
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKSPACE = ROOT.parent
 LENGTHS = (8, 15, 30)
-# 3.1: the acceptance is judged on probes this long; a criterion may fail
-# up to this many times its chance floor.
+# 3.1: the acceptance is judged on probes this long, each criterion
+# against its calibrated limit.
 ACCEPT_PROBE_S = 300
-ACCEPT_FLOORS = 2
+CALIBRATION_SEEDS = 20
+CALIBRATION_SPACING_US = 10_000
+CALIBRATION_STEP_S = 10
+CALIBRATION_T0_US = 1_795_381_000_000_000
+# Calibrated limits, by probe length, window length and the bar's settings.
+_LIMITS: dict[tuple, dict | None] = {}
 # Where the change is placed for the referee's own null: at the end of the
 # probe, this far before its last unit.
 END_MARGIN_US = 1_500_000
@@ -190,8 +206,52 @@ def measure(cw, rows: list, probe, length_s: float, skip_s: float, percentile: f
     return out
 
 
-def acceptance(probe_seconds: float, lengths: dict) -> dict:
-    """3.1 on the 23 Nov bar: judged on probes of ACCEPT_PROBE_S or more."""
+def stationary_rows(seed: int, seconds: int, spacing_us: int = CALIBRATION_SPACING_US) -> list:
+    """A stationary synthetic probe in the referee's rows (number,
+    complete, latency, source): a unit every `spacing_us`, mouth to ear
+    1.5 ms plus an exponential 0.3 ms, nothing lost."""
+    rng = random.Random(seed)
+    rows = []
+    for number in range(seconds * 1_000_000 // spacing_us):
+        source = CALIBRATION_T0_US + number * spacing_us
+        latency = 1500 + int(rng.expovariate(1 / 300))
+        rows.append((number, source + latency, latency, source))
+    return rows
+
+
+def calibrated_limits(cw, probe_seconds: float, length_s: float, skip_s: float,
+                      percentile: float, min_null: int) -> dict | None:
+    """Each criterion's limit for a probe of `probe_seconds` at windows of
+    `length_s`: the largest of its fail rates over CALIBRATION_SEEDS
+    stationary synthetic probes of that length (rounded down to
+    CALIBRATION_STEP_S), scored as a real probe is. None when such a probe
+    is too short for the referee's null."""
+    seconds = int(probe_seconds // CALIBRATION_STEP_S * CALIBRATION_STEP_S)
+    key = (getattr(cw, "__file__", None), seconds, length_s, skip_s, percentile, min_null)
+    if key in _LIMITS:
+        return _LIMITS[key]
+    length_us, skip_us = int(length_s * 1e6), int(skip_s * 1e6)
+    rates: dict[str, list[float]] = {"silence": [], "p99": []}
+    for seed in range(CALIBRATION_SEEDS):
+        probe = cw.Probe(stationary_rows(seed, seconds), skip_us)
+        end = probe.end - END_MARGIN_US
+        windows = null_windows(cw, probe, length_us, (end - length_us, end))
+        split = split_by_criterion(cw, windows, length_us, percentile, min_null)
+        if not split["scored"]:
+            _LIMITS[key] = None
+            return None
+        for criterion in rates:
+            rates[criterion].append(split["rates"][criterion])
+    _LIMITS[key] = {**{criterion: max(values) for criterion, values in rates.items()},
+                    "probe_s": seconds, "seeds": CALIBRATION_SEEDS}
+    return _LIMITS[key]
+
+
+def acceptance(cw, probe_seconds: float, lengths: dict, skip_s: float, percentile: float,
+               min_null: int) -> dict:
+    """3.1 on the 23 Nov bar: judged on probes of ACCEPT_PROBE_S or more,
+    each criterion against its calibrated limit (written into the length's
+    item as `limit`)."""
     if probe_seconds < ACCEPT_PROBE_S:
         return {"judged": False,
                 "why": f"probe {probe_seconds:.0f} s: acceptance needs {ACCEPT_PROBE_S} s or more"}
@@ -201,11 +261,17 @@ def acceptance(probe_seconds: float, lengths: dict) -> dict:
         if item.get("error") or not item.get("scored"):
             failures.append(f"{length} s: not scored")
             continue
-        limit = item["floor"] * ACCEPT_FLOORS
+        limit = calibrated_limits(cw, probe_seconds, item["length_s"], skip_s, percentile,
+                                  min_null)
+        item["limit"] = limit
+        if limit is None:
+            failures.append(f"{length} s: no stationary probe of this length is scored")
+            continue
         for criterion in ("silence", "p99"):
-            if rates[criterion] > limit:
+            if rates[criterion] > limit[criterion]:
                 failures.append(f"{length} s: {criterion} fails {100 * rates[criterion]:.1f}% "
-                                f"(at most {100 * limit:.1f}%)")
+                                f"(a stationary {limit['probe_s']} s probe: at most "
+                                f"{100 * limit[criterion]:.1f}%)")
         if item["fails"]["missing"]:
             failures.append(f"{length} s: {item['fails']['missing']} windows miss units")
     return {"judged": True, "met": not failures, "failures": failures}
@@ -225,9 +291,10 @@ def analyse(cw, frames: list[str], arrivals: list[str], lengths, skip_s: float,
             by_length = {str(length): measure(cw, rows, probe, length, skip_s, percentile,
                                               min_null)
                          for length in lengths}
+            verdict = acceptance(cw, seconds, by_length, skip_s, percentile, min_null)
             probes.append({"frames": str(path), "basis": basis, "seconds": seconds,
                            "units": len(rows), "steady_gap_ms": steady_gap_ms(probe),
-                           "lengths": by_length, "acceptance": acceptance(seconds, by_length)})
+                           "lengths": by_length, "acceptance": verdict})
     return {"schema": "needletail.null-window.v1", "percentile": percentile,
             "min_null": min_null, "skip_s": skip_s, "probes": probes}
 
@@ -250,11 +317,15 @@ def format_result(result: dict) -> str:
                 continue
             rates = item["rates"]
             p99 = item["p99_range_ms"]
+            limit = item.get("limit")
+            stationary = (f", a stationary probe's at most silence {pct_text(limit['silence'])} "
+                          f"p99 {pct_text(limit['p99'])}" if limit else "")
             scored = (f"referee's null fail rate {pct_text(item['null_fail_rate'])}; by "
                       f"criterion silence {pct_text(rates['silence'])}, p99 "
                       f"{pct_text(rates['p99'])}, missing {item['fails']['missing']} (floor "
-                      f"{pct_text(item['floor'])} a criterion); bars gap {item['gap_bar_ms']} ms, "
-                      f"p99 {item['p99_bar_ms']} ms" if item["scored"] else item.get("note"))
+                      f"{pct_text(item['floor'])} a criterion{stationary}); bars gap "
+                      f"{item['gap_bar_ms']} ms, p99 {item['p99_bar_ms']} ms"
+                      if item["scored"] else item.get("note"))
             lines.append(f"  {length:>3} s: {item['windows']} null windows, {scored}; window p99 "
                          + (f"{p99[0]:.2f} to {p99[1]:.2f} ms" if p99 else "-"))
         verdict = probe["acceptance"]

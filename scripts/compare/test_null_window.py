@@ -2,7 +2,9 @@
 """Tests of null-window.py (D-hunt.md 2.11, 3.1 on the referee's bar of
 23 Nov): the arithmetic is the referee's change-window.py, imported from
 its worktree; the split by criterion adds up to the referee's own
-null_fail_rate; the floor of the bar and 3.1's acceptance; and, when the
+null_fail_rate; the floor of the bar and 3.1's acceptance, whose limits
+are calibrated on stationary probes (stationary probes of 300 s meet it at
+8 s and at 30 s windows, a probe with a worse minute does not); and, when the
 referee's wave 7 files are on this machine, E4's figures and departure
 1's null rates (the latter with the referee's scorer as it stood before 23
 Nov, read from its own history).
@@ -34,18 +36,18 @@ T0 = 1_795_381_000_000_000
 
 
 def write_frames(path: pathlib.Path, seconds: int, latency_us, gap_after=None,
-                 drop=frozenset()) -> None:
-    """A 1 ms probe of `seconds`: unit n sourced at T0 + n ms, arriving
-    latency_us(n) later (gap_after(n): extra delay of the arrival; the
-    units of `drop` never arrive)."""
+                 drop=frozenset(), spacing_us: int = 1000) -> None:
+    """A probe of `seconds` with a unit every `spacing_us` (1 ms): unit n
+    sourced at T0 + n spacings, arriving latency_us(n) later (gap_after(n):
+    extra delay of the arrival; the units of `drop` never arrive)."""
     with open(path, "w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["kind", "index", "latency_us", "complete_unix_us", "first_unix_us"])
-        for number in range(seconds * 1000):
+        for number in range(seconds * 1_000_000 // spacing_us):
             if number in drop:
                 continue
             latency = latency_us(number) + (gap_after(number) if gap_after else 0)
-            writer.writerow(["a", number, latency, T0 + number * 1000 + latency, number])
+            writer.writerow(["a", number, latency, T0 + number * spacing_us + latency, number])
 
 
 def write_arrivals(path: pathlib.Path, seconds: int) -> None:
@@ -136,6 +138,38 @@ class Null(unittest.TestCase):
         self.assertTrue(any("miss units" in line for line in stalled[0]["acceptance"]["failures"]))
         self.assertGreaterEqual(stalled[0]["steady_gap_ms"], 299)
         self.assertGreaterEqual(item["gap_bar_ms"], 299)
+
+    def test_acceptance_at_8_and_30_s_on_several_stationary_probes(self):
+        """3.1 on the 23 Nov bar. At 30 s windows on a 310 s probe a
+        stationary probe fails the silence criterion in up to 15 % of its
+        windows (its largest silence fails every window that holds it), so
+        a fixed limit of twice the floor (5 %) called most stationary
+        probes NOT met. Four stationary probes of the 2.5 ms lane, on seeds
+        the calibration does not use, meet the calibrated limits at both
+        lengths; the same probe with a minute of wider spread does not."""
+        rates = []
+        with tempfile.TemporaryDirectory() as directory:
+            for seed in range(4):
+                rng = random.Random(1000 + seed)
+                path = pathlib.Path(directory) / f"stationary-{seed}.probe.csv"
+                write_frames(path, 310, lambda _n, rng=rng: 1500 + int(rng.expovariate(1 / 300)),
+                             spacing_us=2500)
+                probe = null_window.analyse(self.cw, [str(path)], [], [8, 30], 5.0, 97.5,
+                                            120)["probes"][0]
+                self.assertTrue(probe["acceptance"]["met"], (seed, probe["acceptance"]))
+                rates.append(probe["lengths"]["30"]["rates"]["silence"])
+                limit = probe["lengths"]["30"]["limit"]
+                self.assertEqual((limit["probe_s"], limit["seeds"]), (310, 20))
+            rng = random.Random(2000)
+            worse = pathlib.Path(directory) / "worse.probe.csv"
+            write_frames(worse, 310, lambda n: 1500 + int(rng.expovariate(
+                1 / (3000 if 100_000 <= n * 2500 // 1000 < 160_000 else 300))), spacing_us=2500)
+            probe = null_window.analyse(self.cw, [str(worse)], [], [8, 30], 5.0, 97.5,
+                                        120)["probes"][0]
+        # Twice the floor would have failed most of them on silence at 30 s.
+        self.assertGreater(sum(1 for rate in rates if rate > 0.05), len(rates) // 2)
+        self.assertFalse(probe["acceptance"]["met"])
+        self.assertTrue(any("p99 fails" in line for line in probe["acceptance"]["failures"]))
 
     def test_a_short_probe_is_not_scored(self):
         short = pathlib.Path(self.directory.name) / "short.probe.csv"
