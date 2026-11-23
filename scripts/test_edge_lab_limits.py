@@ -101,3 +101,16 @@ class CpuSets(unittest.TestCase):
         self.assertEqual(lab.node_class_cpus(EDGE, "1"), "11")
         # Without a set the rendered value stands.
         self.assertEqual(lab.node_class_cpus(CONTRIBUTOR, "0,1"), "0,1")
+
+
+class SiteDelays(unittest.TestCase):
+    def test_a_site_may_be_put_as_far_as_tokyo(self):
+        base = {"london": 2.0, "amsterdam": 4.0, "newyork": 34.0}
+        self.assertEqual(lab.site_delays(None, base), base)
+        self.assertEqual(lab.site_delays("", base), base)
+        far = lab.site_delays("newyork=101", base)
+        self.assertEqual(far, {"london": 2.0, "amsterdam": 4.0, "newyork": 101.0})
+        self.assertEqual(base["newyork"], 34.0, "the base is not changed")
+        self.assertEqual(lab.site_delays(" london=3 , newyork=50", base)["london"], 3.0)
+        with self.assertRaises(lab.LabError):
+            lab.site_delays("tokyo=100", base)

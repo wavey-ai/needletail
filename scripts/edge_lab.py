@@ -190,6 +190,25 @@ SITE_PUBLIC = {"london": "10.90.0", "amsterdam": "10.90.1", "newyork": "10.90.2"
 # London to New York is 37 ms each way (a 74 ms round trip), London to
 # Amsterdam 7 ms. Two nodes of one site are 1 ms apart on the public network.
 SITE_DELAY_MS = {"london": 2.0, "amsterdam": 4.0, "newyork": 34.0}
+
+
+def site_delays(text: str | None, base: dict[str, float]) -> dict[str, float]:
+    """`base` with the delays of NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS
+    (`site=ms[,site=ms]`) put in. `newyork=101` puts the second region as far
+    from London as Tokyo is (104.5 ms one way with the access links), for
+    the long-haul hop; the rendered route RTTs follow."""
+    out = dict(base)
+    for item in (text or "").split(","):
+        if not item.strip():
+            continue
+        site, _, ms = item.partition("=")
+        site = site.strip()
+        if site not in out:
+            raise LabError(f"NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS: unknown site {site!r}")
+        out[site] = float(ms)
+    return out
+
+
 ACCESS_DELAY_MS = 0.5
 VLAN_DELAY_MS = 0.15
 # The limits of a node. The tiny node of the design is the smallest
@@ -254,6 +273,9 @@ DEFAULT_OVERRIDES = {
 
 class LabError(RuntimeError):
     pass
+
+
+SITE_DELAY_MS = site_delays(os.environ.get("NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS"), SITE_DELAY_MS)
 
 
 def node(name: str) -> dict:
