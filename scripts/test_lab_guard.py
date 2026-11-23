@@ -125,7 +125,7 @@ class Outside(Temp):
         total = os.cpu_count()
         self.register("a", [0, 1])
         self.register("b", [total - 1])
-        with mock.patch.object(lab, "active_scopes", return_value=[]):
+        with mock.patch.object(guard, "lab_scopes", return_value=[]):
             command = guard.outside_command(
                 [sys.executable, "-c", "import os; print(sorted(os.sched_getaffinity(0)))"])
         self.assertEqual(command[:2], ["taskset", "-c"])
@@ -136,7 +136,7 @@ class Outside(Temp):
         self.assertEqual(cpus, set(range(2, total - 1)))
 
     def test_a_lab_the_registry_does_not_know_may_be_on_any_cpu(self):
-        with mock.patch.object(lab, "active_scopes",
+        with mock.patch.object(guard, "lab_scopes",
                                return_value=["needletail-lab-edge-lab-0123abcd-lon-edge-1.scope"]):
             with self.assertRaisesRegex(lab.LabError, "not registered"):
                 guard.outside_cpus()
@@ -147,13 +147,22 @@ class Outside(Temp):
     def test_a_registered_lab_s_own_scopes_are_known(self):
         self.register("a", [0])
         tag = lab.work_tag(self.dir / "elab-a")
-        with mock.patch.object(lab, "active_scopes",
+        with mock.patch.object(guard, "lab_scopes",
                                return_value=[f"needletail-lab-{tag}-lon-edge-1.scope"]):
             self.assertNotIn(0, guard.outside_cpus())
 
+    def test_without_the_user_manager_nothing_is_known_and_outside_is_refused(self):
+        failed = subprocess.CompletedProcess([], 1, "", "Failed to connect to bus: No medium found")
+        with mock.patch.object(guard.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(lab.LabError, "Failed to connect to bus"):
+                guard.outside_cpus()
+            with redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(guard.main(["outside", "--", "true"]), 2)
+            self.assertIn("cannot list the labs", err.getvalue())
+
     def test_no_cpu_left_is_refused(self):
         self.register("a", list(range(os.cpu_count() or 1)))
-        with mock.patch.object(lab, "active_scopes", return_value=[]):
+        with mock.patch.object(guard, "lab_scopes", return_value=[]):
             with self.assertRaisesRegex(lab.LabError, "every CPU of the host is a lab's"):
                 guard.outside_cpus()
 

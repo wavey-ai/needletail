@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 
@@ -130,15 +131,30 @@ def players_lock(out=sys.stderr):
 
 # ------------------------------------------------------------------ CPUs outside the labs
 
+def lab_scopes() -> list[str]:
+    """Every lab scope of the user's systemd manager. Refused (LabError)
+    when the manager cannot be asked (no user bus: a cron job, a
+    non-interactive login), since a lab it runs could then be on any CPU."""
+    result = subprocess.run(
+        ["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--no-legend",
+         "--plain", "needletail-lab-*.scope"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise lab.LabError(
+            "cannot list the labs of this host from the user's systemd manager "
+            f"({result.stderr.strip()[:200] or f'exit {result.returncode}'}): run `outside` "
+            "from a login session of the lab's user")
+    return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+
+
 def outside_cpus() -> list[int]:
     """The host CPUs that no registered lab has. Refused (LabError) while a
-    lab that the registry does not know runs: it may be on any CPU."""
+    lab that the registry does not know runs (it may be on any CPU), and
+    when the user's systemd manager cannot say which labs run."""
     with lab.registry_lock():
         entries = lab.live_entries()
         known = tuple(f"needletail-lab-{lab.work_tag(pathlib.Path(entry['work']))}-"
                       for entry in entries)
-        unknown = [unit for unit in lab.active_scopes("needletail-lab-*.scope")
-                   if not unit.startswith(known)]
+        unknown = [unit for unit in lab_scopes() if not unit.startswith(known)]
     if unknown:
         raise lab.LabError(
             f"a lab that is not registered runs on this host, on any of its CPUs: "
