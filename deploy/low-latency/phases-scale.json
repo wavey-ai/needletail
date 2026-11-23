@@ -1,6 +1,6 @@
 {
   "schema": "needletail.scale.phases.v1",
-  "description": "Failover (F), redistribution (R) and autoscale (A) phases of the large audio mesh, each group one held step of listeners on curve 1 (five edges a region). Every scenario: a baseline, the fault at baseline_s, an observation, the restore, a settle. A kill is SIGKILL and then the unit stopped (Restart=always would bring it back in 2 s; low-latency ops D4); a crash is the SIGKILL alone, the 2 s restart (F2r). Fault sizes against five serving edges a region: at most 2 of 5 at once (D5). LL-HLS readers are needletail-reader crowds that follow steering and move; their entry points and the liveness check are nodes that no phase faults. scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A. needs_am names the Phase AM items a scenario waits for before it can pass; until then it runs and measures what the current binaries do (for example the pile-up when needletail-load moves to the next edge of its list). deploy/low-latency/SCALE.md has the cost, the shedding order and the local proofs.",
+  "description": "Failover (F), redistribution (R) and autoscale (A) phases of the large audio mesh, each group one held step of listeners on curve 1 (five edges a region). Every scenario: a baseline, the fault at baseline_s, an observation, the restore, a settle. A kill is SIGKILL and then the unit stopped (Restart=always would bring it back in 2 s; low-latency ops D4); a crash is the SIGKILL alone, the 2 s restart (F2r). Fault sizes against five serving edges a region: at most 2 of 5 at once (D5). LL-HLS readers are needletail-reader crowds that follow steering and move; their entry points and the liveness check are nodes that no phase faults. scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A. needs_am names what a scenario still waits for before it can pass (Phase AM items 8-11 are in the low-latency binaries since wave 8 stage 4: UDP egress in the load, live gauges, paced drain, needletail-load through /api/assignment with per-move accounting, UDP region failover); until then it runs and measures what the binaries do. deploy/low-latency/SCALE.md has the cost, the shedding order and the local proofs.",
   "defaults": {
     "config": "pcm-1",
     "listeners": 8000,
@@ -41,14 +41,7 @@
         "spread_max_over_mean": 1.3,
         "time_to_move_p99_ms": 300
       },
-      "needs_am": [
-        "8",
-        "9",
-        "10"
-      ],
-      "needs_for": {
-        "time_to_move_p99_ms": "needletail-load's time-to-move histogram (AM item 10)"
-      },
+      "needs_am": [],
       "shed": 14
     },
     {
@@ -67,13 +60,7 @@
         "time_to_move_p99_ms": 1500,
         "time_to_move_max_ms": 3000
       },
-      "needs_am": [
-        "10"
-      ],
-      "needs_for": {
-        "time_to_move_p99_ms": "needletail-load's time-to-move histogram (AM item 10)",
-        "time_to_move_max_ms": "needletail-load's time-to-move histogram (AM item 10)"
-      },
+      "needs_am": [],
       "shed": 15
     },
     {
@@ -89,9 +76,7 @@
         }
       ],
       "expect": {},
-      "needs_am": [
-        "10"
-      ],
+      "needs_am": [],
       "shed": 4
     },
     {
@@ -204,10 +189,7 @@
         "time_to_move_p99_ms": 1500,
         "time_to_move_max_ms": 3000
       },
-      "needs_am": [
-        "9",
-        "10"
-      ],
+      "needs_am": [],
       "shed": 6
     },
     {
@@ -234,7 +216,6 @@
         "time_to_move_max_ms": 3000
       },
       "needs_am": [
-        "10",
         "F5/F6 premise (lon-dist-b is the second ingress)"
       ],
       "shed": 1
@@ -262,7 +243,6 @@
         "time_to_move_p99_ms": 3000
       },
       "needs_am": [
-        "11",
         "public-path Opus listeners in scale-run (not built: VLAN listeners cannot leave their region)"
       ],
       "note": "Not run until UDP region failover (AM item 11) lands and the run has a small public-path Opus listener group; reported as an open gap. Listeners on the VLAN cannot reach another region, and 1 ms PCM over the public network is billed transfer beyond the receiving edges' egress (critique 20).",
@@ -286,12 +266,11 @@
         "warm_parts_pending_zero_s": 10
       },
       "needs_am": [
-        "13",
-        "10"
+        "13"
       ],
       "needs_for": {
         "warm_parts_pending_zero_s": "a warm-up backlog gauge on /api/mesh/local (AM item 13; f592da0 has backfill_parts_pending only)",
-        "first_part_s": "UDP arrivals on the new edge: needletail-load subscribes through /api/assignment (AM item 10, critique 16)"
+        "first_part_s": "the join's first_serving event against its start: logged, not judged by scale-run yet"
       },
       "shed": 13
     },
@@ -319,7 +298,6 @@
         "missing": 0
       },
       "needs_am": [
-        "8",
         "13"
       ],
       "shed": 12
@@ -338,7 +316,6 @@
       ],
       "expect": {},
       "needs_am": [
-        "10",
         "13"
       ],
       "shed": 9
@@ -402,7 +379,6 @@
         "watermark_stall_ms": 250
       },
       "needs_am": [
-        "9",
         "13"
       ],
       "needs_for": {
@@ -437,13 +413,7 @@
       "expect": {
         "trigger_to_fresh_s": 20
       },
-      "needs_am": [
-        "8",
-        "10"
-      ],
-      "needs_for": {
-        "trigger_to_fresh_s": "the controller's events (serving.trigger_to_fresh_s); the trigger needs UDP egress in load_permille (AM item 8)"
-      },
+      "needs_am": [],
       "shed": 17
     },
     {
@@ -471,10 +441,7 @@
       "observe_s": 840,
       "settle_s": 30,
       "expect": {},
-      "needs_am": [
-        "8",
-        "10"
-      ],
+      "needs_am": [],
       "shed": 16
     },
     {
@@ -515,8 +482,6 @@
       "settle_s": 30,
       "expect": {},
       "needs_am": [
-        "8",
-        "10",
         "12"
       ],
       "note": "Run in place of A1 and A2 (--scenarios A3) once AM item 12 lands. Until then the fallback of the design: edges only, and dist-c's join and leave as the cache-mesh redistribution of R4.",

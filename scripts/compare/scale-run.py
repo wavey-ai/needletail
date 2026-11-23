@@ -712,16 +712,21 @@ def ramp_spec(listeners: int, ramp_s: float, stages: int = RAMP_STAGES) -> str:
 def load_command(alloc: dict, edges: list[str], config: str, ramp_s: float,
                  duration_s: float, sample: int, remote_dir: str, label: str = "scale",
                  bind: str | None = None, extra: str = "", threads: int | None = None,
-                 ramp: str | None = None) -> str:
+                 ramp: str | None = None, entries: list[str] | None = None) -> str:
     """needletail-load of one listener host for one step (empty when it runs
-    no UDP listener). `edges`: the region's edges' VLAN host:port (a
-    listener starts at edge i mod n and follows MOVE as the real client
-    does); `bind`: the host's VLAN address for the sockets; `threads`: its
-    workers, one per vCPU."""
+    no UDP listener). `entries`: the region's entry points (VLAN
+    https://host:port of nodes not under fault): each listener asks one
+    for its assignment when it starts and when it moves, as the real client
+    does (Phase AM item 10); `edges`: the region's edges' VLAN host:port,
+    the fallback (without entries a listener starts at edge i mod n and
+    moves by rendezvous); `bind`: the host's VLAN address for the sockets;
+    `threads`: its workers, one per vCPU."""
     if not alloc["udp"]:
         return ""
+    assign = (f"--entry {','.join(entries)} --tls-ca {CA} --server-name {SERVER_NAME} "
+              if entries else "")
     return (f"ulimit -n 1048576; nohup {LOAD_PROCESS} "
-            f"--edges {','.join(edges)} --stream {CONFIGS[config]['stream']} "
+            f"--edges {','.join(edges)} {assign}--stream {CONFIGS[config]['stream']} "
             f"--listeners {alloc['udp']} --ramp {ramp or ramp_spec(alloc['udp'], ramp_s)} "
             f"--duration {int(round(duration_s))} --sample {min(sample, alloc['udp'])} "
             + (f"--bind {bind} " if bind else "")
@@ -1255,11 +1260,17 @@ COUNT_FIELDS = {
     "active": ("active", "listeners_active"),
     "stranded": ("stranded",),
     "never_resumed": ("never_resumed",),
+    # Phase AM item 10: moves away from the edge, missing parts of
+    # listeners that moved (all of them, and those of the moves alone).
+    "moves_out": ("moves_out",),
+    "missing_moved": ("missing_moved",),
+    "move_lost": ("move_lost",),
 }
 
 
 # Fields that are None, not 0, when the load tool does not give them.
-OPTIONAL_FIELDS = ("active", "stranded", "never_resumed")
+OPTIONAL_FIELDS = ("active", "stranded", "never_resumed", "moves_out", "missing_moved",
+                   "move_lost")
 
 
 def interval_rows(rows: list[dict]) -> list[dict]:
@@ -1286,7 +1297,8 @@ def interval_rows(rows: list[dict]) -> list[dict]:
         host = next((row[key] for key in ("load_host", "host")
                      if isinstance(row.get(key), dict)), row)
         for edge, item in groups:
-            out.append({"t": t, "edge": edge,
+            _, moved = timing(item, "time_to_move") if isinstance(item, dict) else (None, None)
+            out.append({"t": t, "edge": edge, "time_to_move": moved,
                         **{key: (pick(item, *names) if key in OPTIONAL_FIELDS
                                  else pick(item, *names, default=0) or 0)
                            for key, names in COUNT_FIELDS.items()},
@@ -2301,6 +2313,8 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
     rows; moves by the edge that they were counted on (needletail-load
     counts a move on the edge the listener moved to)."""
     parts = missing = moves = 0
+    missing_moved = None
+    moved: list[dict] = []
     listeners: dict[float, int] = {}
     by_edge: dict[str, int] = {}
     for row in rows:
@@ -2312,9 +2326,19 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
         parts += row["parts"]
         missing += row["missing"]
         moves += row["moves"]
+        if row.get("missing_moved") is not None:
+            missing_moved = (missing_moved or 0) + row["missing_moved"]
+        if row.get("time_to_move"):
+            moved.append(row["time_to_move"])
         by_edge[name] = by_edge.get(name, 0) + row["moves"]
         listeners[round(row["t"])] = listeners.get(round(row["t"]), 0) + row["listeners"]
     return {"parts": parts, "missing": missing, "moves": moves, "moves_by_edge": by_edge,
+            # Phase AM item 10: missing parts of listeners that moved, and
+            # the time from a moving listener's last part on its old edge
+            # to its first on the new one (booked on the new edge).
+            "missing_moved": missing_moved,
+            "time_to_move_ms": histogram_quantiles(merge_histograms(moved)) if moved else None,
+            "time_to_move_histogram": merge_histograms(moved) if moved else None,
             "missing_percent": round(100.0 * missing / (parts + missing), 4)
             if parts + missing else None,
             "listeners_max": max(listeners.values()) if listeners else 0}
@@ -2493,9 +2517,17 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
     every = on_edges_not_faulted + sum(result["udp"][key]["faulted"]["missing"]
                                        for key in ("during", "after"))
     out.append(check("all listeners (moved ones included): 0 missing", every == 0, every))
-    out.append(check("unaffected listeners alone: 0 missing", None, on_edges_not_faulted,
-                     "per-listener moves from needletail-load (Phase AM item 10): until then "
-                     "a moved listener's losses are booked on the edge it moved to"))
+    # needletail-load counts the missing parts of listeners that moved
+    # (Phase AM item 10): the others' are the unaffected listeners'.
+    moved_missing = [result["udp"][key][side].get("missing_moved")
+                     for key in ("during", "after") for side in ("unaffected", "faulted")]
+    if all(value is not None for value in moved_missing):
+        unaffected = every - sum(moved_missing)
+        out.append(check("unaffected listeners alone: 0 missing", unaffected == 0, unaffected))
+    else:
+        out.append(check("unaffected listeners alone: 0 missing", None, on_edges_not_faulted,
+                         "needletail-load with missing_moved (Phase AM item 10): without it a "
+                         "moved listener's losses are booked on the edge it moved to"))
     before = result["survivors"]["before"]
     worst = {key: max(result["survivors"][window][key] for window in ("during", "after"))
              for key in ("cpu_max", "core_max", "nic_share_max")}
@@ -2530,7 +2562,17 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
         out.append(check(f"moves spread max/mean <= {expect['spread_max_over_mean']}",
                          None if value is None else value <= expect["spread_max_over_mean"],
                          value, None if value is not None else "moves to spread"))
-    for name in ("time_to_move_p99_ms", "time_to_move_max_ms", "warm_parts_pending_zero_s",
+    moved = merge_histograms([histogram for histogram in (
+        result["udp"]["during"][side].get("time_to_move_histogram")
+        for side in ("unaffected", "faulted")) if histogram])
+    moved_ms = histogram_quantiles(moved) if moved else None
+    for name, key in (("time_to_move_p99_ms", "p99"), ("time_to_move_max_ms", "max")):
+        if name in expect:
+            value = moved_ms.get(key) if moved_ms else None
+            out.append(check(f"{name} <= {expect[name]}",
+                             None if value is None else value <= expect[name], value,
+                             None if value is not None else "moves timed by needletail-load"))
+    for name in ("warm_parts_pending_zero_s",
                  "first_part_s", "largest_burst_per_tick", "watermark_stall_ms",
                  "parent_change_share", "trigger_to_fresh_s"):
         if name in expect:
@@ -3524,7 +3566,9 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args,
                              remote_dir, label, lab["nodes"][name].get("vlan_ipv4"),
                              args.load_args, vcpus(lab["nodes"][name]),
                              profile_ramp(alloc["udp"], step["ramp_s"], timeline)
-                             if timeline else None),
+                             if timeline else None,
+                             [f"https://{ip}:{HTTP_PORT}" for ip in entries[:4]]
+                             if getattr(args, "udp_assignment", "on") == "on" else None),
                 *(reader_commands(alloc, entries[:4], args.config, duration, remote_dir, label)
                   if readers else
                   hls_commands(alloc, entry, args.config, step["ramp_s"], duration, remote_dir,
@@ -4163,6 +4207,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--sample", type=int, default=20,
                      help="listeners per host whose every part arrival is kept")
     run.add_argument("--load-args", default="", help="extra arguments of needletail-load")
+    run.add_argument("--udp-assignment", choices=("on", "off"), default="on",
+                     help="UDP listeners subscribe and move through the region's "
+                          "/api/assignment (Phase AM item 10), or start at edge i mod n "
+                          "and move by rendezvous over --edges (off)")
     run.add_argument("--hls-window", type=int, default=40)
     run.add_argument("--hls-http2", action="store_true", help="LL-HLS over HTTP/2, not HTTP/3")
     run.add_argument("--hls-steering", choices=("spread", "steered"), default="spread",

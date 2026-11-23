@@ -939,7 +939,8 @@ class Phases(unittest.TestCase):
         none = [dict(row, active=None) for row in rows]
         self.assertIsNone(scale.stranded_listeners(none, 100.0, 160.0)["stranded"])
 
-    def write_phase_step(self, directory: pathlib.Path, start: float, timeline: dict) -> None:
+    def write_phase_step(self, directory: pathlib.Path, start: float, timeline: dict,
+                         am10: bool = False) -> None:
         """A step of F1 (drain lon-edge-1) from its files: lon-load-1 with
         listeners on lon-edge-1 and lon-edge-2, which move off lon-edge-1 at
         the fault onto lon-edge-2 (and two onto lon-edge-3), their missing
@@ -965,6 +966,16 @@ class Phases(unittest.TestCase):
                                              "moves": 24 if moving else 0},
                      address["lon-edge-3"]: {"up": 2 if t >= fault + 2 else 0, "parts": 0,
                                              "missing": 0, "moves": 1 if moving else 0}}
+            if am10:
+                # needletail-load of Phase AM item 10: the moved listeners'
+                # missing parts, and their time to move (~201 ms each).
+                for edge in edges.values():
+                    edge["missing_moved"] = edge["missing"]
+                    edge["moves_out"] = 0
+                edges[address["lon-edge-1"]]["moves_out"] = 25 if moving else 0
+                if moving:
+                    edges[address["lon-edge-2"]]["time_to_move_ms"] = {
+                        "count": 24, "p99": 201.0, "buckets_us": [[200704, 24]]}
             lines.append({"unix_ms": int(t * 1000), "edges": edges,
                           "total": {"up": 100, "active": 100, "parts": 100_000, "missing": 0}})
         host = directory / "lon-load-1" / "udp"
@@ -1027,13 +1038,47 @@ class Phases(unittest.TestCase):
         self.assertFalse(criteria["missing = 0"]["ok"])
         self.assertFalse(criteria["moves spread max/mean <= 1.3"]["ok"])
         self.assertIsNone(criteria["time_to_move_p99_ms <= 300"]["ok"])
-        self.assertIn("AM item 10", criteria["time_to_move_p99_ms <= 300"]["needs"])
+        self.assertIn("needletail-load", criteria["time_to_move_p99_ms <= 300"]["needs"])
         self.assertTrue(criteria["survivors: busiest core < 90%"]["ok"])
         self.assertTrue(criteria["survivors: no rise in client_udp.would_block"]["ok"])
         self.assertEqual(result["survivors"]["during"]["cpu_max"], 0.5)
         text = scale.format_phases([result])
         self.assertIn("| F1 | lon-edge-1 |", text)
         self.assertIn("FAIL missing = 0", text)
+
+    def test_a_scenario_judges_moved_listeners_apart_with_the_am10_load(self):
+        """needletail-load of Phase AM item 10 counts a moved listener's
+        missing parts and times each move: the unaffected listeners' 0
+        missing and the time to move are judged."""
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        plan = scale.load_phase_plan(PHASES, names=["F1"])
+        timeline = scale.phase_timeline(plan)
+        start = 1_790_000_000.0
+        self.write_phase_step(directory, start, timeline, am10=True)
+        result = scale.analyse_phases(lab(), directory, timeline, start, plan, [],
+                                      readers_launched=start - 10)[0]
+        during = result["udp"]["during"]
+        self.assertEqual(during["unaffected"]["missing_moved"], 2)
+        self.assertEqual(during["unaffected"]["time_to_move_ms"]["count"], 48)
+        criteria = {item["criterion"]: item for item in result["criteria"]}
+        self.assertTrue(criteria["unaffected listeners alone: 0 missing"]["ok"])
+        self.assertEqual(criteria["unaffected listeners alone: 0 missing"]["value"], 0)
+        self.assertFalse(criteria["all listeners (moved ones included): 0 missing"]["ok"])
+        moved = criteria["time_to_move_p99_ms <= 300"]
+        self.assertTrue(moved["ok"], moved)
+        self.assertAlmostEqual(moved["value"], 201.727, places=2)
+        self.assertNotIn("Phase AM items this scenario needs before it can pass", criteria)
+
+    def test_the_load_command_asks_the_entry_points(self):
+        alloc = {"udp": 700, "hls": 0, "hls_by_edge": {}}
+        command = scale.load_command(alloc, ["10.80.1.21:19446"], "pcm-1", 20, 80, 20, "/r/7",
+                                     entries=["https://10.80.1.11:19444",
+                                              "https://10.80.1.12:19444"])
+        self.assertIn("--entry https://10.80.1.11:19444,https://10.80.1.12:19444 ", command)
+        self.assertIn(f"--tls-ca {scale.CA} --server-name {scale.SERVER_NAME} ", command)
+        self.assertIn("--edges 10.80.1.21:19446 ", command)
+        self.assertNotIn("--entry", scale.load_command(alloc, ["a:1"], "pcm-1", 1, 1, 1, "/r"))
 
     def test_the_runner_acts_in_order_logs_unix_us_and_restores_what_it_owes(self):
         timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2", "F3"]))
