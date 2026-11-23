@@ -346,12 +346,12 @@ class ChangeWindow(unittest.TestCase):
     cw = load("change_window", "change-window.py")
     T0 = 1_800_000_000_000_000  # Unix microseconds
 
-    def frames(self, drop=(), stall=None):
-        # 30 s of 1 ms units, 3 ms mouth to ear. stall=(first, last, ms): units
+    def frames(self, drop=(), stall=None, seconds=120):
+        # `seconds` of 1 ms units, 3 ms mouth to ear. stall=(first, last, ms): units
         # first..last are held and arrive together `ms` after the first was due.
         lines = ["kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets,"
                  "published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part"]
-        for n in range(30_000):
+        for n in range(seconds * 1000):
             if n in drop:
                 continue
             source = self.T0 + n * 1000
@@ -364,23 +364,29 @@ class ChangeWindow(unittest.TestCase):
         return self.cw.load(str(path))
 
     def window(self, rows):
-        return self.cw.score(rows, self.T0 + 15_000_000, self.T0 + 18_000_000, 5_000_000)
+        return self.cw.score(rows, self.T0 + 15_000_000, self.T0 + 18_000_000, 5_000_000, 95, 30)
 
     def test_clean_change_passes(self):
         r = self.window(self.frames())
-        self.assertEqual(r["missing"], 0)
+        self.assertEqual(r["change"]["missing"], 0)
+        self.assertGreaterEqual(r["null_windows"], 30)
+        self.assertEqual(r["null_fail_rate"], 0)
         self.assertTrue(r["pass"], r)
+
+    def test_short_probe_is_not_scored(self):
+        r = self.window(self.frames(seconds=30))
+        self.assertIsNone(r["pass"])
 
     def test_lost_units_fail(self):
         r = self.window(self.frames(drop=range(16_000, 16_005)))
-        self.assertEqual(r["missing"], 5)
+        self.assertEqual(r["change"]["missing"], 5)
         self.assertFalse(r["pass"])
 
     def test_stall_fails_on_gap_and_p99(self):
         r = self.window(self.frames(stall=(16_000, 16_299, 300)))
-        self.assertEqual(r["missing"], 0)
-        self.assertGreaterEqual(r["longest_gap_ms"], 290)
-        self.assertGreater(r["inside_ms"]["p99"], 100)
+        self.assertEqual(r["change"]["missing"], 0)
+        self.assertGreaterEqual(r["change"]["gap_ms"], 290)
+        self.assertGreater(r["change"]["p99_ms"], 100)
         self.assertFalse(r["pass"])
 
     def test_marks(self):

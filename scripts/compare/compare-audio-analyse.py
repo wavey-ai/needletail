@@ -139,6 +139,9 @@ def daw_source(meta: dict, lane: str) -> tuple[int, int]:
     return int(epoch), int(buffer)
 
 
+SAMPLE_RATE_KHZ = 48
+
+
 def daw_wait_ms(index: int, epoch: int = DAW_EPOCH_SAMPLES, buffer: int = DAW_BUFFER) -> float:
     """Time between the last sample of Needletail epoch `index` and the
     delivery of the DAW host buffer that contains it. The source's audio is
@@ -151,8 +154,14 @@ def daw_wait_ms(index: int, epoch: int = DAW_EPOCH_SAMPLES, buffer: int = DAW_BU
 
 
 def mouth_to_ear(latencies: list[float], frame_ms: float) -> list[float]:
-    """Age of the samples of each unit at its arrival: four points across the unit."""
-    return [value + frame_ms * (k + 0.5) / 4 for value in latencies for k in range(4)]
+    """Age of every sample of each unit at the unit's arrival: one point per
+    sample (48 kHz), the same for every lane. Until analysis version 15 it
+    was four points across the unit, which, for a lane whose unit latencies
+    spread less than a quarter of the unit, put the median in a gap between
+    clusters set by the tails (lead, 23 Nov; checked on waudio7-std)."""
+    points = max(1, round(frame_ms * SAMPLE_RATE_KHZ))
+    offsets = [frame_ms * (k + 0.5) / points for k in range(points)]
+    return [value + offset for value in latencies for offset in offsets]
 
 
 def analyse_probe(summary: dict, csv_path: pathlib.Path, lane: str, frame_ms: float,
@@ -408,7 +417,7 @@ def analyse_player(record: dict, base_ms: float | None, end_ms: float | None) ->
     return out
 
 
-ANALYSIS_VERSION = 14
+ANALYSIS_VERSION = 15
 
 
 def analyse_step(path: pathlib.Path) -> dict | None:

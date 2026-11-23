@@ -52,6 +52,19 @@ Median / 99th percentile (ms):
 The scoreboard, metric by metric and region by region, is
 [evidence/20261122-scoreboard-wave7.json](evidence/20261122-scoreboard-wave7.json).
 
+**Re-scored with the per-sample estimator (23 November).** From analysis version 15, mouth to ear counts every sample of a unit once. It used to count four points across the unit, and both systems get the same change.
+- Why it changed: the lead session found that Needletail's 2.5 ms unit latencies spread less than the 0.625 ms between those four points. The pooled distribution then had four clusters, and the median fell in a gap whose position the tails decided. The referee confirmed this on `waudio7-std`.
+- Wave 7 under version 15: 73 wins, 2 ties, 9 losses of 84 (71, 2 and 11 above).
+  - Standard 2.5 ms Opus becomes 24 wins, 2 ties and 2 losses. London's median is 5.2 ms against LiveKit's 5.3 (it was 5.4 against 5.3).
+  - The two losses left are p99 at 5% loss in London (7.6 against 7.2) and Sydney (135.4 against 134.9).
+  - On the 1 ms lanes, LiveKit moves by 0.01 ms at most. Needletail's p99 rises slightly.
+- [evidence/20261122-scoreboard-wave7-v15.json](evidence/20261122-scoreboard-wave7-v15.json). Earlier waves keep their version 14 figures, and waves from 9 on use version 15.
+
+**A known asymmetry in LiveKit's favour.** LiveKit's sender, `ntcmp-lk pub`, sends Opus units encoded in advance, at the instant a live encoder would have the unit's last sample. Needletail's AEP1 sender encodes after that instant, which costs it 0.11 to 0.22 ms per unit.
+- The look-ahead part of this asymmetry was corrected on 21 November (`WEBRTC_OPUS_EARLY`); the encode time is not.
+- LiveKit's mouth to ear is therefore short by the encode time of a live encoder. That is up to about 0.2 ms, which is the size of some of the standard-Opus margins above.
+- From the next build, the sender journals its encode time, and the record will give it beside the figures.
+
 - **Time to first audio, a new measurement.** Each view host started 20 new
   listeners per lane, one after another, on a stream already running. Each
   was timed from its process start to its first audio unit, LiveKit's

@@ -137,8 +137,18 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
             stats = common.ssh_text(item, "kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
                                           "cat /var/tmp/compare-stats.log", check=False)
             (session.dir / "samplers" / f"{item['name']}.stats.{int(time.time())}.log").write_text(stats + "\n")
+            # The node's own stop journal (per-CPU ticks, each stop classed as
+            # stopped, starved or own work), on builds that serve it.
+            url = stats_url(item).replace("/api/stats", "/api/stalls")
+            stalls = common.ssh_text(item, f"curl -sk --max-time 5 '{url}'", check=False)
+            (session.dir / "samplers" / f"{item['name']}.stalls.{int(time.time())}.json").write_text(stalls + "\n")
 
     common.parallel(sampled, collect)
+    # Which physical host each node is on, beside the samplers: stops below
+    # the processes follow the instance, not the role (lead, 23 Nov).
+    hosts = subprocess.run([sys.executable, str(ROOT / "scripts" / "linode-small-mesh-lab.py"), "hosts"],
+                           capture_output=True, text=True, check=False)
+    (session.dir / "samplers" / f"hosts.{int(time.time())}.txt").write_text(hosts.stdout + hosts.stderr)
 
 
 def log(text: str) -> None:
