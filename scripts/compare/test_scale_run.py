@@ -1046,7 +1046,15 @@ class Phases(unittest.TestCase):
         self.assertIsNone(criteria["unaffected listeners alone: 0 missing"]["ok"])
         self.assertIn("AM item 10", criteria["unaffected listeners alone: 0 missing"]["needs"])
         self.assertFalse(criteria["missing = 0"]["ok"])
-        self.assertFalse(criteria["moves spread max/mean <= 1.3"]["ok"])
+        # Wave 9 C4: judged against each receiving edge's headroom, which
+        # needs their loads before the fault (none sampled here: open); the
+        # old equal-spread figure stays in the record.
+        share = "each edge's moves within 1.3x of its headroom-weighted share"
+        self.assertIsNone(criteria[share]["ok"])
+        self.assertIn("load before the fault", criteria[share]["needs"])
+        self.assertIn("listeners per receiving edge after the moves max/mean <= 1.15",
+                      criteria)
+        self.assertNotIn("moves spread max/mean <= 1.3", criteria)
         self.assertIsNone(criteria["time_to_move_p99_ms <= 300"]["ok"])
         self.assertIn("needletail-load", criteria["time_to_move_p99_ms <= 300"]["needs"])
         self.assertTrue(criteria["survivors: busiest core < 90%"]["ok"])
@@ -1055,6 +1063,25 @@ class Phases(unittest.TestCase):
         text = scale.format_phases([result])
         self.assertIn("| F1 | lon-edge-1 |", text)
         self.assertIn("FAIL missing = 0", text)
+
+    def test_moves_are_judged_against_each_edges_headroom(self):
+        """Wave 9 C4: the wave 8 local F1 (36 movers, 17/9/10 into survivors
+        at 285/450/404 permille): 1.42x the equal share, but within 1.3x of
+        each survivor's headroom-weighted share; the listeners after are
+        judged by their own max/mean."""
+        moves = {"lon-edge-2": 17, "lon-edge-3": 9, "lon-edge-4": 10}
+        loads = {"lon-edge-2": 285, "lon-edge-3": 450, "lon-edge-4": 404}
+        self.assertEqual(scale.spread(moves, list(loads)), 1.417)
+        shares = scale.headroom_shares(moves, loads)
+        self.assertAlmostEqual(shares["lon-edge-2"]["expected"], 13.83, places=2)
+        self.assertLess(scale.share_worst(shares), 1.3)
+        # All onto one edge: far off its share either way.
+        piled = scale.headroom_shares({"lon-edge-2": 36}, loads)
+        self.assertGreater(scale.share_worst(piled), 1.3)
+        self.assertEqual(scale.share_worst(piled), float("inf"))
+        self.assertIsNone(scale.headroom_shares(moves, {**loads, "lon-edge-4": None}))
+        self.assertEqual(scale.balance({"a": 48, "b": 58, "c": 54}), 1.087)
+        self.assertIsNone(scale.balance({"a": 48, "b": None}))
 
     def test_a_scenario_judges_moved_listeners_apart_with_the_am10_load(self):
         """needletail-load of Phase AM item 10 counts a moved listener's
@@ -1103,17 +1130,22 @@ class Phases(unittest.TestCase):
 
     def test_the_autoscale_phases_need_a_datagram_capacity(self):
         """Wave 8 review: A1-A3 need client_udp_datagram_capacity in the
-        deploy (an edge load that means a full CPU); scale-run settings
-        --datagram-capacity sets it."""
+        deploy (an edge load that means a full CPU), and wave 9 C2 the CPU
+        term; scale-run settings renders both by default (wave 9 C3), and
+        --datagram-capacity 0 leaves the capacity out."""
         plan = json.loads(PHASES.read_text())
         for scenario in plan["scenarios"]:
             needs = scenario.get("needs_settings") or {}
-            self.assertEqual("client_udp_datagram_capacity" in needs,
-                             scenario["name"] in ("A1", "A2", "A3"), scenario["name"])
+            for key in ("client_udp_datagram_capacity", "cpu_load"):
+                self.assertEqual(key in needs, scenario["name"] in ("A1", "A2", "A3"),
+                                 (scenario["name"], key))
         standby = json.loads(TOPOLOGY.read_text())["standby_edges"]
-        self.assertNotIn("client_udp_datagram_capacity", scale.scale_settings(standby))
-        self.assertEqual(scale.scale_settings(standby, 400_000)["client_udp_datagram_capacity"],
-                         400_000)
+        settings = scale.scale_settings(standby)
+        self.assertEqual(settings["client_udp_datagram_capacity"], 400_000)
+        self.assertIs(settings["cpu_load"], True)
+        self.assertNotIn("client_udp_datagram_capacity", scale.scale_settings(standby, 0))
+        self.assertEqual(scale.scale_settings(standby, 300_000)["client_udp_datagram_capacity"],
+                         300_000)
         spec = next(item for item in plan["scenarios"] if item["name"] == "A1")
         quiet = {"nodes": [], "cpu_max": 0.1, "core_max": 0.1, "nic_share_max": 0.1}
         result = {"stranded": {"max": 0},
@@ -1127,9 +1159,11 @@ class Phases(unittest.TestCase):
             names = [item["criterion"] for item in scale.phase_criteria(result, spec)]
         self.assertIn(setting, names)
         with mock.patch.object(scale, "deploy_settings",
-                               return_value={"client_udp_datagram_capacity": 400_000}):
+                               return_value={"client_udp_datagram_capacity": 400_000,
+                                             "cpu_load": True}):
             names = [item["criterion"] for item in scale.phase_criteria(result, spec)]
         self.assertNotIn(setting, names)
+        self.assertNotIn("deploy setting cpu_load", names)
 
     def test_the_load_command_asks_the_entry_points(self):
         alloc = {"udp": 700, "hls": 0, "hls_by_edge": {}}

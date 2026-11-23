@@ -38,7 +38,8 @@
       ],
       "expect": {
         "missing": 0,
-        "spread_max_over_mean": 1.3,
+        "move_share_within": 1.3,
+        "balance_after_max_over_mean": 1.15,
         "time_to_move_p99_ms": 300
       },
       "needs_am": [],
@@ -58,7 +59,9 @@
       ],
       "expect": {
         "time_to_move_p99_ms": 1500,
-        "time_to_move_max_ms": 3000
+        "time_to_move_max_ms": 3000,
+        "move_share_within": 1.3,
+        "balance_after_max_over_mean": 1.15
       },
       "needs_am": [],
       "shed": 15
@@ -416,7 +419,8 @@
       "needs_am": [],
       "shed": 17,
       "needs_settings": {
-        "client_udp_datagram_capacity": "an edge load that means a full CPU: deploy with scale-run settings --datagram-capacity (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)"
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
+        "cpu_load": "an edge load that counts its CPU (wave 9 C2: LL-HLS readers and per-listener work that bytes do not show; av-mesh's default, rendered by scale-run settings)"
       }
     },
     {
@@ -447,7 +451,8 @@
       "needs_am": [],
       "shed": 16,
       "needs_settings": {
-        "client_udp_datagram_capacity": "an edge load that means a full CPU: deploy with scale-run settings --datagram-capacity (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)"
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
+        "cpu_load": "an edge load that counts its CPU (wave 9 C2: LL-HLS readers and per-listener work that bytes do not show; av-mesh's default, rendered by scale-run settings)"
       }
     },
     {
@@ -493,7 +498,8 @@
       "note": "Run in place of A1 and A2 (--scenarios A3) once AM item 12 lands. Until then the fallback of the design: edges only, and dist-c's join and leave as the cache-mesh redistribution of R4.",
       "shed": 0,
       "needs_settings": {
-        "client_udp_datagram_capacity": "an edge load that means a full CPU: deploy with scale-run settings --datagram-capacity (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)"
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
+        "cpu_load": "an edge load that counts its CPU (wave 9 C2: LL-HLS readers and per-listener work that bytes do not show; av-mesh's default, rendered by scale-run settings)"
       }
     }
   ],

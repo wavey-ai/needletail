@@ -2465,10 +2465,53 @@ def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None,
 
 
 def move_spread(moves: dict[str, int], edges: list[str]) -> float | None:
+    """The old (wave 8) spread figure: the most moves into one edge over
+    the mean, as if every survivor should take an equal share."""
     counts = [moves.get(edge, 0) for edge in edges]
     if not counts or not sum(counts):
         return None
     return round(max(counts) / (sum(counts) / len(counts)), 3)
+
+
+# Wave 9 C4: each survivor's share of the moves within this factor of its
+# headroom-weighted share, and the listeners per survivor after the moves
+# within this of their mean.
+MOVE_SHARE_LIMIT = 1.3
+BALANCE_AFTER_LIMIT = 1.15
+
+
+def headroom_shares(moves: dict[str, int], loads: dict[str, int | None]) -> dict | None:
+    """Wave 9 C4: each survivor's moves against its headroom-weighted share
+    (headroom = 1,000 less its load_permille just before the fault, at
+    least 1): `ratio` = moves / (all moves x headroom / all headroom).
+    None without moves or loads."""
+    total = sum(moves.get(name, 0) for name in loads)
+    known = {name: load for name, load in loads.items() if isinstance(load, (int, float))}
+    if not total or not known or len(known) != len(loads):
+        return None
+    headroom = {name: max(1, 1000 - int(load)) for name, load in known.items()}
+    whole = sum(headroom.values())
+    out = {}
+    for name, room in headroom.items():
+        expected = total * room / whole
+        out[name] = {"load_permille": known[name], "headroom": room,
+                     "expected": round(expected, 2), "moves": moves.get(name, 0),
+                     "ratio": round(moves.get(name, 0) / expected, 3) if expected else None}
+    return out
+
+
+def headroom_share_worst(shares: dict | None) -> float | None:
+    """The worst survivor's factor off its headroom-weighted share, either
+    way (1.25 = 25% over or 1/1.25 under)."""
+    if not shares:
+        return None
+    worst = 1.0
+    for item in shares.values():
+        ratio = item["ratio"]
+        if ratio is None:
+            continue
+        worst = max(worst, (1 / ratio) if ratio > 0 else float("inf"), ratio)
+    return round(worst, 3)
 
 
 def edge_p99(job: UdpJob, edges: list[str], begin: float, end: float) -> float | None:
@@ -2772,25 +2815,48 @@ def udp_fault(ctx, fault, label: str, targets: list[str], count: int = 160,
     report = udp_report(ctx, udp, faulted=targets, since=ctx.t0 + 10)
     others = [edge for edge in lab.edges() if edge not in targets]
     spread = move_spread(report["moves_by_edge"], others)
+    # The old equal-spread figure stays in the record (wave 9 C4).
     ctx.measure("moves_spread_max_over_mean", spread)
+    # Each survivor's load just before the fault (its own gauge, which
+    # counts its CPU, datagrams and bytes): its headroom-weighted share.
+    before_fault = next((row for row in reversed(rows) if row["t"] <= fault_unix), None)
+    loads = {name: (ops_value(before_fault, name, "gauges.load_permille")
+                    if before_fault else None) for name in others}
+    shares = headroom_shares(report["moves_by_edge"], loads)
+    share_worst = headroom_share_worst(shares)
+    ctx.measure("moves_by_headroom", shares)
+    ctx.measure("moves_headroom_share_worst", share_worst)
+    balance = None
     late = next((row for row in reversed(rows) if row["t"] <= (heal_unix or time.time()) - 1),
                 None)
     if late:
         held = {name: ops_value(late, name, "gauges.subscribers") for name in others}
         known = [value for value in held.values() if isinstance(value, int)]
+        balance = (round(max(known) / (sum(known) / len(known)), 3)
+                   if known and sum(known) else None)
         ctx.measure("listeners_per_survivor_after", held)
-        ctx.measure("listeners_per_survivor_max_over_mean",
-                    round(max(known) / (sum(known) / len(known)), 3)
-                    if known and sum(known) else None)
+        ctx.measure("listeners_per_survivor_max_over_mean", balance)
+        # Their loads too: an edge whose load is its LL-HLS readers' CPU
+        # takes fewer listeners by headroom (wave 9 C4).
+        loads_after = {name: ops_value(late, name, "gauges.load_permille") for name in others}
+        known_loads = [value for value in loads_after.values() if isinstance(value, (int, float))]
+        ctx.measure("load_per_survivor_after", loads_after)
+        ctx.measure("load_per_survivor_max_over_mean",
+                    round(max(known_loads) / (sum(known_loads) / len(known_loads)), 3)
+                    if known_loads and sum(known_loads) else None)
     if watches:
         ctx.measure("drain_gauges", [watch.result() for watch in watches])
     listener_checks(ctx, report)
     moved_out = sum(report["moves_out_by_edge"].get(target, 0) for target in targets)
     ctx.check("UDP listeners moved off the faulted edges", moved_out > 0,
               report["moves_out_by_edge"])
-    ctx.check("moves spread over the other edges (max/mean <= 1.3)",
-              spread is not None and spread <= 1.3,
-              {"spread": spread, "moves_by_edge": report["moves_by_edge"]})
+    ctx.check(f"moves spread over the other edges by headroom (each survivor's share within "
+              f"{MOVE_SHARE_LIMIT}x of its headroom-weighted share)",
+              share_worst is not None and share_worst <= MOVE_SHARE_LIMIT,
+              {"worst": share_worst, "shares": shares, "equal_spread_max_over_mean": spread})
+    ctx.check(f"listeners per survivor after the moves: max/mean <= {BALANCE_AFTER_LIMIT}",
+              balance is not None and balance <= BALANCE_AFTER_LIMIT,
+              {"max_over_mean": balance})
     ttm = report["time_to_move_ms"] or {}
     if drained:
         ctx.check("F1: 0 parts missing (every listener, the moved ones included)",
@@ -2851,8 +2917,9 @@ def udp_fault(ctx, fault, label: str, targets: list[str], count: int = 160,
           "An edge with its share of 160 UDP listeners (1 ms Opus, placed through "
           "/api/assignment) and steered LL-HLS readers is drained. Where do its listeners "
           "go, how fast, and does anyone stay behind or lose a part?",
-          "F1: nobody stranded, 0 parts missing, time to move p99 <= 300 ms, moves spread "
-          "max/mean <= 1.3 over the other edges, the drained edge's subscriber gauge reaches "
+          "F1: nobody stranded, 0 parts missing, time to move p99 <= 300 ms, each other edge's "
+          "share of the moves within 1.3x of its headroom-weighted share and the listeners per "
+          "survivor after them max/mean <= 1.15, the drained edge's subscriber gauge reaches "
           "0; survivors' CPU under 80% and no rise in would-block, send-queue drops or "
           "refusals. R2: the distributors release its copies; warm-up bytes reported.")
 def udp_edge_drain(ctx):
@@ -2880,7 +2947,8 @@ def udp_edge_drain(ctx):
           "until the heal 30 s later: node loss). Where do its listeners go, and how fast?",
           "F2: nobody stranded, time to move p99 <= 1.5 s and max <= 3 s, parts lost only by "
           "the moved listeners (each at most time to move / part length), unaffected "
-          "listeners 0 missing, moves spread max/mean <= 1.3; survivors' criteria.")
+          "listeners 0 missing, moves by headroom (each survivor within 1.3x of its "
+          "headroom-weighted share, listeners after max/mean <= 1.15); survivors' criteria.")
 def udp_edge_kill(ctx):
     udp_fault(ctx, lab.kill_service, "killed", ["lon-edge-2"], heal=lab.start_service)
 
@@ -3051,12 +3119,54 @@ def dist_c_join_kill(ctx):
     survivor_checks(ctx, rows, edges, joined, time.time(), (ctx.t0 + 8, joined))
 
 
+# Wave 9 C3: the autoscale scenario ramps at SCALE.md's A1 rate (0.135 % of
+# the capacity of the edges in service a second; ~100 listeners fill the
+# lab's three) from 50 to 95 listeners, holds, and comes down to 25.
+# NEEDLETAIL_AUTOSCALE_RAMP (a needletail-load ramp), with
+# NEEDLETAIL_AUTOSCALE_SECONDS, replaces it (e.g. the wave 8 proof's
+# "30@0,60@15,90@30,120@90,25@150" over 250 s, 13x SCALE.md's rate).
+AUTOSCALE_RAMP = os.environ.get("NEEDLETAIL_AUTOSCALE_RAMP")
+AUTOSCALE_SECONDS = int(os.environ.get("NEEDLETAIL_AUTOSCALE_SECONDS") or 600)
+AUTOSCALE_PEAK = (max(int(step.split("@")[0]) for step in AUTOSCALE_RAMP.split(","))
+                  if AUTOSCALE_RAMP else 95)
+
+
+def autoscale_ramp() -> str:
+    if AUTOSCALE_RAMP:
+        return AUTOSCALE_RAMP
+    steps, at = [], 0
+    while at <= 330:
+        steps.append(f"{min(AUTOSCALE_PEAK, round(50 + 0.135 * at))}@{at}")
+        at += 10
+    for at in range(370, 501, 10):
+        steps.append(f"{max(25, round(AUTOSCALE_PEAK - 0.54 * (at - 370)))}@{at}")
+    return ",".join(steps)
+
+
+def rebalance_moves_out(job) -> dict[str, int]:
+    """Moves off each edge for `rebalance` (needletail-load's per-edge
+    reasons)."""
+    summary = job.summary()
+    per_edge = summary.get("per_edge") or summary.get("edges") or {}
+    if isinstance(per_edge, list):
+        per_edge = {item.get("edge"): item for item in per_edge if isinstance(item, dict)}
+    names = edge_name_map()
+    out = {}
+    for edge, block in per_edge.items():
+        count = ((block or {}).get("moves_by_reason") or {}).get("rebalance", 0)
+        if count:
+            out[names.get(edge, edge)] = count
+    return out
+
+
 @scenario("autoscale-edge-lab", "scale-ops",
           "Does the autoscaler, with the edge_lab backend and nothing but the mesh's own "
           "advertised load, take a slot edge in as UDP listeners ramp up, and drain it out "
           "without a stranded listener as they leave?",
-          "A1/A2: the controller alone joins lon-edge-4 when the mean load passes 700 "
-          "permille (client datagrams count: client_udp_datagram_capacity), it serves within "
+          "A1/A2 at SCALE.md's ramp rate: the controller alone joins lon-edge-4 when the mean "
+          "load passes 700 permille or an edge 850 with the mean over 600 (client datagrams "
+          "and the CPU count), no edge passes 1,000 permille (target 900; an edge over 800 "
+          "sends listeners to the joined one, MOVE rebalance, losing nothing), it serves within "
           "20 s, no other service restarts; new arrivals reach it; on the way down it drains "
           "an edge and deletes the slot only after its live gauges read 0; listeners on edges "
           "not drained see no move and no loss; drained edges meet F1.",
@@ -3070,7 +3180,8 @@ def autoscale_edge_lab(ctx):
     controller = subprocess.Popen(
         [sys.executable, str(pathlib.Path(__file__).resolve().parent / "linode-autoscale.py"),
          "run", "--backend", "edge_lab", "--stream", str(OPS_STREAM), "--sites", "london",
-         "--events", str(events), "--controller-state", str(state), "--duration", "270",
+         "--events", str(events), "--controller-state", str(state), "--duration",
+         str(AUTOSCALE_SECONDS + 20),
          "--poll-s", "1", "--up-samples", "3", "--cooldown-s", "20", "--down-hold-s", "40",
          "--no-flap-s", "60", "--join-timeout-s", "60", "--drain-timeout-s", "40",
          "--min-edges", "2", "--no-warm-pool"],
@@ -3078,15 +3189,17 @@ def autoscale_edge_lab(ctx):
         stdin=subprocess.DEVNULL, start_new_session=True)
     ctx.defer(lambda: controller.poll() is None and controller.terminate())
     before = service_pids()
-    # 1 ms Opus listeners (~1,031 client datagrams a second each; 700
-    # permille of 40,000 a second is ~27 a listener-edge): up to 90 on
-    # three edges (~770 permille), 30 more once the slot serves, then down
-    # to 25.
-    udp = udp_listeners(ctx, "udp", 120, 250, ramp="30@0,60@15,90@30,120@90,25@150")
-    hls = ctx.readers("audio", AUDIO, 3, 240, steering=True)
+    # 1 ms Opus listeners (~1,031 client datagrams a second each, ~30
+    # permille of 40,000 with their repair: ~33 fill an edge, ~100 the
+    # three edges in service). Wave 9 C3: the ramp of SCALE.md's A1 (30 to
+    # 95 % of capacity over 480 s, 0.135 % of it a second), from 50 % to
+    # 95 % (50 to 95 listeners in steps every 10 s), held, then down to 25
+    # four times as fast as A2's.
+    udp = udp_listeners(ctx, "udp", AUTOSCALE_PEAK, AUTOSCALE_SECONDS, ramp=autoscale_ramp())
+    hls = ctx.readers("audio", AUDIO, 3, AUTOSCALE_SECONDS - 10, steering=True)
     udp.wait()
     ctx.wait_readers()
-    controller.wait(timeout=90)
+    controller.wait(timeout=120)
     rows = ops.stop()
     lines = [json.loads(line) for line in events.read_text().splitlines()] \
         if events.is_file() else []
@@ -3138,10 +3251,20 @@ def autoscale_edge_lab(ctx):
     drained = sorted(touched)
     report = udp_report(ctx, udp, faulted=drained, since=ctx.t0 + 10)
     listener_checks(ctx, report)
-    others_moved = {name: count for name, count in report["moves_out_by_edge"].items()
-                    if name not in drained}
-    ctx.check("listeners on edges not drained: 0 moves", not others_moved,
-              report["moves_out_by_edge"])
+    # Wave 9 C1: an edge over its target sends listeners to one with room
+    # (MOVE rebalance): those moves are counted, timed and must lose
+    # nothing; any other move off an edge not drained is a fault.
+    rebalanced = rebalance_moves_out(udp)
+    ctx.measure("rebalance_moves_out_by_edge", rebalanced)
+    ctx.measure("rebalance_moves", sum(rebalanced.values()))
+    ctx.measure("rebalance_moves_by_edge_gauge",
+                {name: ops_delta(rows, [name], "gauges.rebalance_moves", rows[0]["t"],
+                                 rows[-1]["t"]) for name in lab.edges()} if rows else {})
+    others_moved = {name: count - rebalanced.get(name, 0)
+                    for name, count in report["moves_out_by_edge"].items()
+                    if name not in drained and count - rebalanced.get(name, 0) > 0}
+    ctx.check("listeners on edges not drained: 0 moves but rebalance", not others_moved,
+              {"moves_out_by_edge": report["moves_out_by_edge"], "rebalance": rebalanced})
     ctx.check("drained edges meet F1: 0 missing, time to move p99 <= 300 ms",
               report["missing"] == 0 and ((report["time_to_move_ms"] or {}).get("p99")
                                           or 0) <= 300,
@@ -3162,6 +3285,27 @@ def autoscale_edge_lab(ctx):
              for name in sorted({name for row in rows for name in row["nodes"]})
              if lab.node(name)["role"] == "edge"}
     ctx.measure("load_permille_every_5_s", loads)
+    # Wave 9 C3: no edge over 1,000 permille in the ramp (overload), and
+    # the target is 900: the largest load of each edge (its own gauge, every
+    # second, CPU and datagrams counted) and the seconds over 900.
+    peak = {}
+    for name in sorted({name for row in rows for name in row["nodes"]}):
+        if lab.node(name)["role"] != "edge":
+            continue
+        values = [value for value in (ops_value(row, name, "gauges.load_permille")
+                                      for row in rows) if value is not None]
+        cpu = [value for value in (ops_value(row, name, "gauges.cpu_permille")
+                                   for row in rows) if value is not None]
+        if values:
+            peak[name] = {"max": max(values), "seconds_over_900": sum(v > 900 for v in values),
+                          "seconds_over_1000": sum(v > 1000 for v in values),
+                          "cpu_max": max(cpu) if cpu else None}
+    ctx.measure("edge_load_peak", peak)
+    worst = max((item["max"] for item in peak.values()), default=None)
+    ctx.check("no edge over 1,000 permille in the ramp", worst is not None and worst <= 1000,
+              peak)
+    ctx.check("no edge over the 900 permille target in the ramp",
+              worst is not None and worst <= 900, {"max": worst})
     ctx.expect_served(hls)
 
 

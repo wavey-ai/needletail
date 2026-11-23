@@ -2353,12 +2353,60 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
 
 
 def spread(by_edge: dict[str, int], edges: list[str]) -> float | None:
-    """max/mean of the moves over the edges that took them (F1: at most
-    1.3)."""
+    """max/mean of the moves over the edges that took them: the wave 8
+    figure (an equal share each), kept in the record beside the wave 9
+    criterion (`headroom_shares`)."""
     counts = [by_edge.get(edge, 0) for edge in edges]
     if not counts or not sum(counts):
         return None
     return round(max(counts) / (sum(counts) / len(counts)), 3)
+
+
+def headroom_shares(by_edge: dict[str, int], loads: dict[str, float | None]) -> dict | None:
+    """Wave 9 C4: each receiving edge's moves against its headroom-weighted
+    share (headroom = 1,000 less its load_permille just before the fault,
+    at least 1): `ratio` = moves / (all moves x headroom / all headroom).
+    None without moves or with an edge's load unknown."""
+    total = sum(by_edge.get(name, 0) for name in loads)
+    if not total or not loads or any(not isinstance(load, (int, float))
+                                     for load in loads.values()):
+        return None
+    headroom = {name: max(1, 1000 - int(load)) for name, load in loads.items()}
+    whole = sum(headroom.values())
+    out = {}
+    for name, room in headroom.items():
+        expected = total * room / whole
+        out[name] = {"load_permille": loads[name], "headroom": room,
+                     "expected": round(expected, 2), "moves": by_edge.get(name, 0),
+                     "ratio": round(by_edge.get(name, 0) / expected, 3)}
+    return out
+
+
+def share_worst(shares: dict | None) -> float | None:
+    """The worst edge's factor off its headroom-weighted share, either way
+    (1.25: 25% over, or 1/1.25 of it)."""
+    if not shares:
+        return None
+    worst = 1.0
+    for item in shares.values():
+        ratio = item["ratio"]
+        worst = max(worst, ratio, (1 / ratio) if ratio > 0 else float("inf"))
+    return round(worst, 3)
+
+
+def last_before(rows: list[dict], key: str, before: float):
+    """A sampled value's last reading before a Unix time."""
+    values = [dotted(row, key) for row in rows if row["t"] < before]
+    values = [value for value in values if value is not None]
+    return values[-1] if values else None
+
+
+def balance(values: dict[str, float | None]) -> float | None:
+    """max/mean of the listeners per edge."""
+    known = [value for value in values.values() if isinstance(value, (int, float))]
+    if not known or not sum(known) or len(known) != len(values):
+        return None
+    return round(max(known) / (sum(known) / len(known)), 3)
 
 
 def reader_moves(report: dict, launched: float) -> list[dict]:
@@ -2484,11 +2532,23 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
         receiving = [edge for edge in unaffected
                      if any(state["nodes"].get(edge, {}).get("site")
                             == state["nodes"].get(target, {}).get("site") for target in targets)]
+        # Wave 9 C4: the moves against each receiving edge's headroom just
+        # before the fault, and the listeners per receiving edge at the end
+        # of the observation.
+        loads = {edge: last_before(meshes.get(edge) or [], "load_permille", fault_t)
+                 for edge in receiving}
+        shares = headroom_shares(during["unaffected"]["moves_by_edge"], loads)
+        held = {edge: last_before(meshes.get(edge) or [], "client_udp.subscribers",
+                                  windows["during"][1]) for edge in receiving}
         result["moves"] = {"udp": during["unaffected"]["moves"] + during["faulted"]["moves"],
                            "udp_by_edge": {**during["unaffected"]["moves_by_edge"],
                                            **during["faulted"]["moves_by_edge"]},
                            "udp_spread_max_over_mean": spread(
                                during["unaffected"]["moves_by_edge"], receiving),
+                           "udp_by_headroom": shares,
+                           "udp_headroom_share_worst": share_worst(shares),
+                           "listeners_after": held,
+                           "listeners_after_max_over_mean": balance(held),
                            "hls": [move for move in moves if fault_t <= move["t"] < end_t]}
         result["moves"]["hls_by_reason"] = {}
         for move in result["moves"]["hls"]:
@@ -2580,6 +2640,26 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
         out.append(check(f"moves spread max/mean <= {expect['spread_max_over_mean']}",
                          None if value is None else value <= expect["spread_max_over_mean"],
                          value, None if value is not None else "moves to spread"))
+    if "move_share_within" in expect:
+        # Wave 9 C4: each receiving edge's share of the moves within this
+        # factor of its headroom-weighted share (the equal-spread figure
+        # stays in the record: udp_spread_max_over_mean).
+        value = result["moves"].get("udp_headroom_share_worst")
+        out.append(check(f"each edge's moves within {expect['move_share_within']}x of its "
+                         "headroom-weighted share",
+                         None if value is None else value <= expect["move_share_within"],
+                         {"worst": value,
+                          "equal_spread_max_over_mean": result["moves"].get(
+                              "udp_spread_max_over_mean")},
+                         None if value is not None else
+                         "moves, and each receiving edge's load before the fault"))
+    if "balance_after_max_over_mean" in expect:
+        value = result["moves"].get("listeners_after_max_over_mean")
+        out.append(check(f"listeners per receiving edge after the moves max/mean <= "
+                         f"{expect['balance_after_max_over_mean']}",
+                         None if value is None else
+                         value <= expect["balance_after_max_over_mean"], value,
+                         None if value is not None else "each receiving edge's UDP gauge"))
     moved = merge_histograms([histogram for histogram in (
         result["udp"]["during"][side].get("time_to_move_histogram")
         for side in ("unaffected", "faulted")) if histogram])
@@ -3020,7 +3100,13 @@ def deploy_settings() -> dict:
     return json.loads(path.read_text()) if path.is_file() else {}
 
 
-def scale_settings(standby: list[str], datagram_capacity: int = 0) -> dict:
+# Wave 9 C3: client UDP datagrams a second that fill a g6-dedicated-2 edge
+# (wave 7's estimate, ~390 listeners of 1 ms parts), rendered by default so
+# that the autoscale phases are never open for want of it.
+DATAGRAM_CAPACITY = 400_000
+
+
+def scale_settings(standby: list[str], datagram_capacity: int = DATAGRAM_CAPACITY) -> dict:
     """The deploy settings of the scale run: readers on the VLAN (Linode does
     not bill it), PCM in the contributor's LL-HLS formats, the edges' UDP
     subscription cap and egress capacity above what a g6-dedicated-2 can send
@@ -3036,6 +3122,12 @@ def scale_settings(standby: list[str], datagram_capacity: int = 0) -> dict:
     # the edges' load counts their client datagram rate against it.
     if datagram_capacity:
         settings["client_udp_datagram_capacity"] = datagram_capacity
+    # Wave 9 C2: and the process's CPU over its CPUs (LL-HLS readers and
+    # any per-listener work that the bytes do not show). av-mesh's default;
+    # rendered so that the record shows it.
+    settings["cpu_load"] = True
+    # The standby edges last, as before (operators read them there).
+    settings["standby_edges"] = settings.pop("standby_edges")
     return settings
 
 
@@ -3177,7 +3269,8 @@ def command_settings(args: argparse.Namespace) -> None:
                           args.edges_per_region)
     print(" ".join(f"--set {key}={json.dumps(value, separators=(',', ':'))}"
                    for key, value in scale_settings(
-                       standby, getattr(args, "datagram_capacity", 0)).items()))
+                       standby, getattr(args, "datagram_capacity",
+                                        DATAGRAM_CAPACITY)).items()))
 
 
 def fit_wanted(args: argparse.Namespace, lab: dict) -> bool:
@@ -4213,10 +4306,11 @@ def build_parser() -> argparse.ArgumentParser:
                           help="no standby edge: London's extra edges in")
     settings.add_argument("--edges-per-region", type=int, default=None,
                           help="the first N edges of each region in service, the rest standby")
-    settings.add_argument("--datagram-capacity", type=int, default=0,
+    settings.add_argument("--datagram-capacity", type=int, default=DATAGRAM_CAPACITY,
                           help="client UDP datagrams a second that fill an edge "
-                               "(client_udp_datagram_capacity; the autoscale phases need it: "
-                               "~400000 for a g6-dedicated-2 by wave 7's estimate)")
+                               "(client_udp_datagram_capacity; the autoscale phases need it; "
+                               f"default {DATAGRAM_CAPACITY}, a g6-dedicated-2 by wave 7's "
+                               "estimate; 0 leaves it out)")
     settings.set_defaults(handler=command_settings)
     plan = sub.add_parser("plan", help="allocation, capacity, duration and cost of the steps")
     planning(plan)

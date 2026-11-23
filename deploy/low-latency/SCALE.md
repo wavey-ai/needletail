@@ -792,14 +792,16 @@ scripts/compare/scale-run.py plan --topology-only --phase-plan $P --group F --st
 scripts/compare/scale-run.py run $COST --phase-plan $P --group F --name ph-f --steps 6000
 scripts/compare/scale-run.py run $COST --phase-plan $P --group R --name ph-r --steps 6000
 # A1, A2: the controller alone (it starts the standby edges, and only past
-# them creates a slot, through the lab tool, within the budget). First the
-# edges' load must mean a full CPU (wave 8 review): at 4 Gbit/s in bytes a
-# full g6-dedicated-2 reads ~100 permille, the controller's 700 never fires
-# and its 450 scale-down always would. Push the A group's deploy with
-#   scripts/linode-small-mesh-deploy.py push $(scripts/compare/scale-run.py \
-#     settings --datagram-capacity 400000)
-# (client_udp_datagram_capacity: datagrams a second that fill an edge, wave
-# 7's estimate for 1 ms audio); without it A1-A3 report the setting as open.
+# them creates a slot, through the lab tool, within the budget). The edges'
+# load must mean a full edge (wave 8 review: at 4 Gbit/s in bytes a full
+# g6-dedicated-2 reads ~100 permille, the controller's 700 never fires and
+# its 450 scale-down always would). `scale-run.py settings` renders it by
+# default (wave 9 C3): client_udp_datagram_capacity 400,000 (datagrams a
+# second that fill an edge, wave 7's estimate for 1 ms audio; --datagram-
+# capacity N to change it, 0 to leave it out) and cpu_load true (the edge's
+# CPU over its CPUs counts too: LL-HLS readers' cost). Without either, A1-A3
+# report the setting as open. The deploy that the phases run on is
+#   scripts/linode-small-mesh-deploy.py push $(scripts/compare/scale-run.py settings)
 scripts/compare/scale-run.py run $COST --phase-plan $P --group A --name ph-a --steps 6000 \
   --budget-usd 100 --spent-before-usd $SPENT
 # when AM item 12 has landed:
@@ -986,8 +988,12 @@ scenario's baseline shows whether the mesh came back.
   nothing" is reported open, with the figure on the edges not faulted,
   until AM item 10); the survivors' busiest core under 90%, CPU under 80%, tx
   under 80% of the cap; no rise in would-block, send-queue drops or
-  refusals. Each scenario adds its own (F1: moves spread max/mean at most
-  1.3; F3, F4: no move, nothing missing; ...). A criterion the run cannot
+  refusals. Each scenario adds its own (F1, F2: each receiving edge's share
+  of the moves within 1.3x of its headroom-weighted share, headroom being
+  1,000 less its load_permille just before the fault, and the listeners per
+  receiving edge after the moves max/mean at most 1.15; the record keeps
+  the wave 8 figure, the moves' max/mean as if each should take an equal
+  share; F3, F4: no move, nothing missing; ...). A criterion the run cannot
   measure yet is reported open, with what it waits for, never passed.
 - **What gave out first** leaves out only the scenarios that fault a node
   (kill, crash, drain, stop, leave, remove), from the fault to the end of
@@ -1009,8 +1015,9 @@ scenario's baseline shows whether the mesh came back.
   creates and deletes only autoscale slots of the recorded lab, through the
   lab tool; drains before it deletes (resume and no delete when the drain
   does not reach 0 in 60 s); scales up at a mean of 700 permille for 3
-  samples or refusals in 2, down when the load with one edge fewer stays at
-  or under 450 for 300 s; one region at a time per 60 s, never an add and a
+  samples, at one edge of 850 or more with the mean at 600 or more for 3
+  samples (wave 9 C3: a ramp fills the edges unevenly), or refusals in 2,
+  down when the load with one edge fewer stays at or under 450 for 300 s; one region at a time per 60 s, never an add and a
   remove within 5 min; at most 2 nodes an action; joining nodes counted;
   standby edges first, then drained slots inside their paid hour (the warm
   pool), then a create; a warm slot is deleted 5 min before its next billed
@@ -1024,6 +1031,26 @@ scenario's baseline shows whether the mesh came back.
   `controller-<scenario>.log`, its exit code a `controller_exit` event; A2's
   controller starts only once A1's has exited (waited for up to 5 min,
   then SIGINT), and the step's end stops it the same way.
+- **The edges rebalance (wave 9 C1).** An edge over 800 permille
+  (`--rebalance-target-permille`) sends some of its UDP listeners `MOVE
+  rebalance`, paced over 2 s, a round every 3 s, when an edge of its region
+  is under 650 (the target less `--client-udp-rebalance-margin-permille`
+  150): never more than its own excess, nor more than the receivers' room up
+  to 725 shared among the edges over the target by their excess (each
+  receiver judged by the larger of its advertised load and its live
+  subscribers at the region's cost of a listener, since the advertised load
+  is a 10 s mean). The client asks the assignment again without the edge
+  (a mover goes to a cache under the target first, by headroom) and resumes
+  from its oldest hole. A listener admitted less than 10 s ago is not moved.
+  So a joined edge takes the excess that its region had before it joined,
+  not only new arrivals. Rebalance moves are counted by reason in
+  needletail-load and `client_udp.rebalance_moves` on the edge.
+- **An edge's load (wave 9 C2).** load_permille is the largest of the bytes
+  against the egress admission limit, the client datagrams against
+  `client_udp_datagram_capacity`, the sessions against the session limit, and
+  the process's CPU over its available CPUs (5 s mean, 1,000 at 85 %:
+  `--cpu-load-full-percent`); `cpu_permille` beside it. The entry points'
+  free capacity of an edge is the less of the bytes' headroom and the load's.
 
 ### What waits for Phase AM (honestly)
 
@@ -1083,7 +1110,9 @@ proofs" section of the wave's results. `scale-ops` is six scenarios, each
 judged by the ops design's criteria as far as one host carries them:
 `udp-edge-drain` (F1, R2), `udp-edge-kill` (F2, R3), `udp-two-edges-drain`
 (R5 with 2 of 4 edges), `dist-c-join-kill` (R4), `slot-edge-join` (R1) and
-`autoscale-edge-lab` (A1, A2). The UDP crowds are needletail-load listeners
+`autoscale-edge-lab` (A1, A2; since wave 9 at SCALE.md's A1 ramp rate, 0.135 % of
+the capacity a second, 50 to 95 listeners, then down to 25, 600 s; judged
+also on no edge over 1,000 permille and the 900 target). The UDP crowds are needletail-load listeners
 of the DAW lane's 1 ms Opus placed and moved through /api/assignment at the
 London distributors; the start-up (first 10 s) is reported apart from the
 fault's windows. The join and autoscale scenarios run with
