@@ -1077,7 +1077,9 @@ def forwarder_lines(rows: list[dict], events: list[dict], stream: int) -> tuple[
     stream measured, each child's first parent per sample: how many
     (child, stream) pairs changed their first parent, and when."""
     if not rows:
-        return [], {}
+        return ([""] + ["node events: " + "; ".join(
+            f"{item['action']} {item['node']} at {item['second']} s" for item in events)]
+            if events else []), {"events": events}
     names = sorted({key for row in rows for key in row if key != "t"})
     lines = ["", "forwarders (Phase AM 12, 13): node: lease children min/max, cache-mesh "
                  "children min/max, leases ranked first max; at the end: warm parts/bytes, "
