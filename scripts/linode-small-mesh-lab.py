@@ -1772,6 +1772,14 @@ def ledger_holds(known: list[dict], lab: dict) -> bool:
     return False
 
 
+def ledger_has(known: list[dict], lab: dict) -> bool:
+    """Whether the ledger has this very lab already: a line of its run id
+    and its creation time (a lab state written back after `down` removed
+    it is the same lab, and is not billed twice)."""
+    return any(line.get("run_id") == lab["run_id"]
+               and line.get("created_unix") == lab["created_unix"] for line in known)
+
+
 def account_events(api: "Api", since: float) -> list[dict]:
     """The account's creates and deletes of lab instances (`ntsm-*` labels)
     after `since`, from GET /account/events: [{"action", "id", "label",
@@ -2398,7 +2406,8 @@ def command_down(args: argparse.Namespace) -> None:
                     "topology": state.get("topology_file"),
                     "created_unix": state["created_unix"],
                     "removed_unix": state["removed_unix"], "billed_usd": total["usd"],
-                    "instance_hours": total["instance_hours"], "source": "down"}])
+                    "instance_hours": total["instance_hours"], "source": "down"}],
+                  unless=ledger_has)
     forget_known_hosts({item.get("public_ipv4") for item in
                         list(state["nodes"].values()) + state.get("removed", [])} - {None})
     print(f"Removed {len(instance_ids)} Linodes and {len(firewall_ids)} firewalls "
@@ -2632,7 +2641,7 @@ def down_by_tag(api: "Api", run_id: str, last: dict | None) -> None:
                     "topology": state.get("topology_file"), "created_unix": int(first),
                     "removed_unix": int(end), "billed_usd": total["usd"],
                     "instance_hours": total["instance_hours"], "source": "watchdog"}],
-                  unless=ledger_holds)
+                  unless=ledger_has)
     addresses = {(item.get("ipv4") or [None])[0] for item in found.values()}
     addresses |= {item.get("public_ipv4") for item in
                   list(state.get("nodes", {}).values()) + state["removed"]}

@@ -768,10 +768,13 @@ class Watchdog(Base):
         deadline, writes the ledger, and only then removes itself. An
         unreadable state is the same, never a crash loop."""
         self.ledger({"run_id": "before-23-nov", "billed_usd": 38.0, "removed_unix": 1})
-        for lose in ("removed", "unreadable", "another run's"):
+        for index, lose in enumerate(("removed", "unreadable", "another run's")):
             api = FakeApi()
             state = lab_state(self.tmp, api)
             path = pathlib.Path(self.args.state)
+            # Three labs of one run id, one after another.
+            state["created_unix"] -= index
+            path.write_text(json.dumps(state))
             deadline = state["watchdog_deadline_unix"]
             api.firewalls[9] = {"id": 9, "tags": ["needletail-qualification", api.tag]}
             api.firewalls[10] = {"id": 10, "tags": ["needletail-qualification",
@@ -834,9 +837,7 @@ class Watchdog(Base):
             self.assertEqual(line["instance_hours"], 99 * 2, lose)
             self.assertAlmostEqual(line["billed_usd"], 10.422 * 2, places=3)
             self.assertEqual(lab_tool.KNOWN_HOSTS.read_text(), "")
-        # The three labs share a run id and their times: one lab to the
-        # ledger, written once.
-        self.assertEqual(len(lab_tool.read_ledger()), 2)
+        self.assertEqual(len(lab_tool.read_ledger()), 4)  # one line for each lab
 
     def test_add_racing_down_leaves_no_instance_and_no_state(self):
         api = FakeApi()
@@ -1031,6 +1032,15 @@ class Ledger(Base):
         self.assertEqual(lab_tool.KNOWN_HOSTS.read_text().splitlines(), known[2:])
         archive = json.loads(path.with_name("small-mesh-lab-t1.removed.json").read_text())
         self.assertEqual(archive["billed_usd"], line["billed_usd"])
+        # A state written back after down (a command that held an old copy)
+        # is the same lab: its second down bills it once.
+        archive.pop("removed_unix")
+        path.write_text(json.dumps(archive))
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.command_down(argparse.Namespace(state=str(path)))
+        self.assertEqual(len(lab_tool.read_ledger()), 2)
 
 
 class Replace(Base):
