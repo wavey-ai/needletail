@@ -654,6 +654,7 @@ fn local_relay_program(args: &Args) -> RelayProgram {
         forwarding: ForwardingShape::Legacy,
         shared_domain_parents: Vec::new(),
         max_edges_per_forwarder: None,
+        origin_standby: None,
         topology: RelayTopology {
             generation: args.relay_topology_generation,
             nodes: vec![
