@@ -14,6 +14,15 @@ distributors as fast-plane relay parents: each cache-mesh lease that a
 distributor serves to an edge makes the edge a lease child of the stream,
 fed the contributor's RaptorQ symbols as they arrive.
 
+A lab may have a second contributor, the standby (a topology node of role
+contributor with "standby": true, at the contributor's site and on its
+VLAN). Both always publish the same parts: the standby is compiled as a
+replica of the origin (`origin_standby`), with lanes of its own to the same
+two first nodes, each of which takes it on its secondary lane. Two
+contributors by two first nodes is the whole fan-out; the render refuses a
+pair that would not publish the same parts (check_contributor_pair), and
+`plan` prints the address of every contributor for the source to send to.
+
 Subcommands:
   plan      measure routes, generate the relay program, compile it, and render
             one argument file per service under the artifact directory
@@ -462,6 +471,12 @@ DEFAULT_SETTINGS = {
     "failover_heartbeat_ms": 25,
     "failover_lease_ms": 300,
     "media_deadline_ms": 1000,
+    # --wall-clock-estimated-error-ms of every contributor, in ms: the
+    # confidence of the clock in each audio part's envelope. It is part of
+    # what two contributors must render alike (check_contributor_pair): a
+    # contributor on another value publishes another object version, and the
+    # first forwarders merge nothing of the two.
+    "contributor_clock_error_ms": 5,
     # --canonical-gap-hold-ms of a distributor outside the contributor's
     # region, fed over a long-haul path (low-latency A5). A hole that it
     # holds stops the contiguous watermark, and so cache-mesh replication to
@@ -633,7 +648,7 @@ HTTP_PORT = 19444
 CONTRIB_HTTP_PORT = 19443
 TELEMETRY_PORT = 27300
 MEDIA_FEC_PORT = 22101
-DAW_MEDIA_PORT = 27100
+DAW_MEDIA_PORT = common.DAW_MEDIA_PORT
 # Source port of the contributor's direct lanes to the distributors of its
 # site (contributor_direct_region).
 CONTRIB_DIRECT_PORT = 22303
@@ -877,6 +892,9 @@ def class_plan(settings: dict) -> dict:
         raise ValueError("relay_burst_copy_ms is not a whole number of ms") from None
     if plan["relay_burst_copy_ms"] < 0:
         raise ValueError("relay_burst_copy_ms is below 0")
+    plan["media_deadline_ms"] = whole(
+        settings.get("media_deadline_ms", DEFAULT_SETTINGS["media_deadline_ms"]),
+        "media_deadline_ms")
     qdisc = settings.get("host_qdisc") or "none"
     if qdisc not in HOST_QDISCS:
         raise ValueError(f"host_qdisc {qdisc!r} is not one of {', '.join(HOST_QDISCS)}")
@@ -1167,8 +1185,11 @@ def deployed_part_ms(settings: dict) -> float:
 
 
 def relay_node_id(node: dict) -> str:
+    """The id of a node in the relay program and on the wire: its name, but
+    "contrib" for the contributor and "contrib-b" for the standby
+    contributor (the topology's `"standby": true`)."""
     if node["role"] == "contributor":
-        return "contrib"
+        return "contrib-b" if node.get("standby") else "contrib"
     return node["name"]
 
 
@@ -1209,13 +1230,30 @@ def relay_tree(state: dict, settings: dict) -> dict:
       "primary" and "secondary" parent and its "index" (its ports: receiver
       22200/22201 + 10 x index, the parents' senders 22401/22402 + 10 x
       index, failover 22501/22502 + 10 x index);
-    - "unused": the backbone relays that the topology does not use.
+    - "unused": the backbone relays that the topology does not use;
+    - "contrib": the contributor, and "standby": the standby contributor or
+      None. A lab has one contributor, or two of which one is marked
+      `"standby": true`: it publishes the same parts on lanes of its own to
+      the same two "first" nodes, from the contributor's site and VLAN.
     Exits when the state cannot carry the topology."""
     mode = topology_mode(settings)
-    contributors = common.nodes_by_role(state, "contributor")
-    if len(contributors) != 1:
-        sys.exit("the lab needs exactly one contributor")
-    contrib = contributors[0]
+    contributors = common.contributors(state)
+    origins = [node for node in contributors if not node.get("standby")]
+    standbys = [node for node in contributors if node.get("standby")]
+    if len(origins) != 1 or len(standbys) > 1:
+        sys.exit("the lab needs one contributor, or two of which one is the standby "
+                 "(\"standby\": true in the topology); found "
+                 + (", ".join(f"{node['name']}{' (standby)' if node.get('standby') else ''}"
+                              for node in contributors) or "none"))
+    contrib = origins[0]
+    standby = standbys[0] if standbys else None
+    if standby is not None and (
+            standby["site"] != contrib["site"] or not contrib.get("vlan_ipv4")
+            or not standby.get("vlan_ipv4") or standby["vlan_ipv4"] == contrib["vlan_ipv4"]):
+        sys.exit(f"the standby contributor {standby['name']} must be at the contributor's "
+                 f"site {contrib['site']}, on its VLAN, with an address of its own (it is at "
+                 f"{standby['site']}, VLAN address {standby.get('vlan_ipv4')}; "
+                 f"{contrib['name']} has {contrib.get('vlan_ipv4')})")
     # An autoscale slot (dist-c) is a fast-plane lease child, never a
     # compiled relay child: a child of its own would take an index and move
     # the ports of every child after it.
@@ -1228,8 +1266,8 @@ def relay_tree(state: dict, settings: dict) -> dict:
         primary, secondary = backbone(state)
         children = [{"node": node, "primary": primary, "secondary": secondary, "index": index}
                     for index, node in enumerate(distributors)]
-        return {"mode": mode, "contrib": contrib, "first": [primary, secondary],
-                "children": children, "unused": []}
+        return {"mode": mode, "contrib": contrib, "standby": standby,
+                "first": [primary, secondary], "children": children, "unused": []}
     local = [node for node in distributors if node["site"] == contrib["site"]]
     if len(local) < 2:
         sys.exit(f"the merged topology needs two distributors at the contributor's site "
@@ -1245,8 +1283,8 @@ def relay_tree(state: dict, settings: dict) -> dict:
         primary, secondary = first if rank % 2 == 0 else first[::-1]
         children.append({"node": node, "primary": primary, "secondary": secondary,
                          "index": index})
-    return {"mode": mode, "contrib": contrib, "first": first, "children": children,
-            "unused": common.nodes_by_role(state, "backbone")}
+    return {"mode": mode, "contrib": contrib, "standby": standby, "first": first,
+            "children": children, "unused": common.nodes_by_role(state, "backbone")}
 
 
 def check_edge_fanout(state: dict, settings: dict) -> None:
@@ -1312,6 +1350,29 @@ def build_program(state: dict, settings: dict, routes: dict) -> dict:
          "receiver_bind": "0.0.0.0:22002",
          "receiver_target": f"{contrib_to_secondary[1]}:22002"},
     ]
+    # The standby contributor is a replica of the origin, not a topology
+    # node: the same two lanes from its own address, each to the socket that
+    # the contributor's other lane leaves free on that first node (its
+    # secondary lane). Two contributors by two first nodes, and no more.
+    origin_standby = None
+    if tree["standby"] is not None:
+        standby_to_primary = link_addresses(tree["standby"], primary)
+        standby_to_secondary = link_addresses(tree["standby"], secondary)
+        origin_standby = {
+            "node_id": relay_node_id(tree["standby"]),
+            "failure_domain": domain(tree["standby"]),
+            "carrier_links": [
+                {"child_node_id": relay_node_id(primary), "lane": "source",
+                 "sender_bind": f"{standby_to_primary[0]}:22301",
+                 "sender_peer": f"{standby_to_primary[0]}:22301",
+                 "receiver_bind": "0.0.0.0:22002",
+                 "receiver_target": f"{standby_to_primary[1]}:22002"},
+                {"child_node_id": relay_node_id(secondary), "lane": "source_and_repair",
+                 "sender_bind": f"{standby_to_secondary[0]}:22302",
+                 "sender_peer": f"{standby_to_secondary[0]}:22302",
+                 "receiver_bind": "0.0.0.0:22001",
+                 "receiver_target": f"{standby_to_secondary[1]}:22001"},
+            ]}
     failover_links = []
     hunted = load_hunted_ports()
 
@@ -1377,6 +1438,7 @@ def build_program(state: dict, settings: dict, routes: dict) -> dict:
              {"shared_domain_parents": shared_domain_parents} if shared_domain_parents else {})
     return {
         **shape,
+        **({"origin_standby": origin_standby} if origin_standby else {}),
         "purpose": "single_provider_qualification",
         "carrier": "controlled_public_udp",
         "subscription_id": 1,
@@ -1832,6 +1894,17 @@ def relay_args(service: dict) -> list[str]:
         ]
         if secondary["lane"] == "source_and_repair" or service.get("failover_controller"):
             args.append("--relay-secondary-promoted")
+    standby = service.get("standby_origin_parent")
+    if standby:
+        # The standby contributor on a first forwarder's secondary lane
+        # (never beside a secondary parent: the compiler refuses that). It
+        # sends all that the contributor sends, so it is admitted in full.
+        args += [
+            "--relay-secondary-bind", standby["bind"],
+            "--relay-secondary-peer", standby["peer"],
+            "--relay-secondary-id", standby["parent_node_id"],
+            "--relay-secondary-promoted",
+        ]
     args += [
         "--relay-topology-generation", str(service["topology_generation"]),
         "--relay-subscription-id", str(service["subscription_id"]),
@@ -1890,7 +1963,9 @@ def yield_to(extra: list[str], pairs: list[str]) -> list[str]:
 
 def contributor_args(service: dict, settings: dict, node: dict | None = None) -> list[str]:
     """Port of deploy/gcp-lab/av-contrib-run, with the class isolation and
-    audio hot path arguments of the contributor on `node`."""
+    audio hot path arguments of the contributor on `node`. `service` is the
+    compiled av_contrib service of that contributor: the standby's carries
+    its own id and lanes and everything else of the contributor's."""
     args = [
         "/usr/local/bin/av-contrib",
         "--cert", "/etc/needletail/tls/fullchain.pem",
@@ -1908,9 +1983,10 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
         "--video-part", part_plan(settings)["video_part"],
         *(["--fmp4-video-segment-ms", str(settings["fmp4_video_segment_ms"])]
           if settings.get("fmp4_video_segment_ms") else []),
-        "--wall-clock-estimated-error-ms", "5",
+        "--wall-clock-estimated-error-ms",
+        str(whole(settings["contributor_clock_error_ms"], "contributor_clock_error_ms")),
         "--rist-bind", "0.0.0.0:27000", "--rtmp-bind", "0.0.0.0:19350",
-        "--relay-local-id", "contrib",
+        "--relay-local-id", service["node_id"],
         "--relay-primary-bind", service["primary"]["bind"],
         "--relay-primary-target", service["primary"]["target"],
         "--relay-primary-id", service["primary"]["child_node_id"],
@@ -1948,6 +2024,12 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
         if observed.get("observed_at_unix_ms") is not None:
             args += [f"{prefix}-observed-at-unix-ms", str(observed["observed_at_unix_ms"])]
     extra = list(settings["extra_contributor_args"])
+    if node:
+        # What /api/node reports the contributor as: the node's own name
+        # (the two contributors' relay ids are not node names) and its
+        # region, as av-mesh has them.
+        args += yield_to(extra, binary_takes("av-contrib", ["--node-id", node["name"],
+                                                            "--region", node["region"]]))
     args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
     args += yield_to(extra, wave7_args(args, settings))
     return args + extra
@@ -1998,6 +2080,21 @@ def binary_has(kind: str, name: str) -> bool | None:
         return None
     flags = binary_flags(str(path), mtime_ns)
     return None if flags is None else name in flags
+
+
+def binary_takes(kind: str, pairs: list[str]) -> list[str]:
+    """The `--flag value` pairs of `pairs` whose flag the `kind` binary that
+    the render is for lists in its --help. The flags that the resilient mesh
+    adds are rendered through this, so that the tools work before the
+    binaries have them and a roll can render an older build beside a newer
+    one: a binary without a flag, and one that the render cannot see (no
+    RENDER_BINARIES, as in the unit tests), gets none and runs on its
+    default."""
+    out = []
+    for index in range(0, len(pairs), 2):
+        if binary_has(kind, pairs[index]):
+            out += pairs[index:index + 2]
+    return out
 
 
 def wave7_args(node_args: list[str], settings: dict) -> list[str]:
@@ -2163,6 +2260,13 @@ def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
             cpus = relay_class_cpus(node, plan)
             if cpus:
                 out += ["--relay-class-cpus", cpus]
+        # The budget on a stream's own timeline within which a relay node
+        # still takes a part (media_deadline_ms, the contributors'
+        # --relay-deadline-ms): a part that far behind its stream's head is
+        # shed, whatever any wall clock says.
+        out += binary_takes("av-mesh", [
+            "--relay-media-deadline-ms",
+            str(plan.get("media_deadline_ms", DEFAULT_SETTINGS["media_deadline_ms"]))])
     if "--client-udp-bind" in args:
         out += ["--client-udp-class-sockets", flag(plan["client_udp_class_sockets"])]
     return out
@@ -2378,27 +2482,56 @@ def check_class_ports(rendered: dict[str, dict], plan: dict) -> None:
 
 def check_merged(state: dict, rendered: dict[str, dict]) -> None:
     """Raise ValueError when a render of the merged topology is not its
-    shape: the contributor's two lanes end at two distributors of its own
-    site and it has no direct lane (--relay-direct-target) to anything; no
-    backbone relay runs; every other distributor takes its two parents
-    among those first forwarders. An edge takes relay parents only on the
-    fast plane, from the distributors of its own site (check_fast_plane
-    checks those). An extra argument of a role can break it."""
+    shape: each contributor's two lanes end at two distributors of its own
+    site and it has no direct lane (--relay-direct-target) to anything; the
+    standby contributor's lanes end where the contributor's do; each of
+    those first forwarders admits each contributor's lane from the address
+    it is sent from, on the port it is sent to (the contributor on its
+    primary lane, the standby on its secondary lane); no backbone relay
+    runs; every other distributor takes its two parents among the first
+    forwarders. An edge takes relay parents only on the fast plane, from
+    the distributors of its own site (check_fast_plane checks those). An
+    extra argument of a role can break it."""
     problems = []
-    contrib = common.nodes_by_role(state, "contributor")[0]
     by_id = {relay_node_id(node): node for node in state["nodes"].values()}
-    contrib_args = rendered[contrib["name"]]["args"]
-    if "--relay-direct-target" in flag_names(contrib_args):
-        problems.append("the contributor has a --relay-direct-target")
-    first = [flag_value(contrib_args, "--relay-primary-id"),
-             flag_value(contrib_args, "--relay-secondary-id")]
-    for node_id in first:
-        node = by_id.get(node_id or "")
-        if not node or node["role"] != "distributor" or node["site"] != contrib["site"]:
-            problems.append(f"the contributor feeds {node_id}, not a distributor of "
-                            f"its site {contrib['site']}")
-    if len(set(first)) != 2:
-        problems.append(f"the contributor's two lanes end at {first}")
+    first: list = []
+    for contrib in common.contributors(state):
+        who = f"the contributor {contrib['name']}"
+        contrib_args = rendered[contrib["name"]]["args"]
+        if "--relay-direct-target" in flag_names(contrib_args):
+            problems.append(f"{who} has a --relay-direct-target")
+        lanes = [flag_value(contrib_args, "--relay-primary-id"),
+                 flag_value(contrib_args, "--relay-secondary-id")]
+        for node_id in lanes:
+            node = by_id.get(node_id or "")
+            if not node or node["role"] != "distributor" or node["site"] != contrib["site"]:
+                problems.append(f"{who} feeds {node_id}, not a distributor of "
+                                f"its site {contrib['site']}")
+        if len(set(lanes)) != 2:
+            problems.append(f"the two lanes of {who} end at {lanes}")
+        if not first:
+            first = lanes
+        elif lanes != first:
+            problems.append(f"the lanes of {who} end at {lanes}, the contributor's at {first}")
+        # The forwarder at the end of a lane takes the contributor as its
+        # primary parent and the standby on its secondary lane.
+        taken = "secondary" if contrib.get("standby") else "primary"
+        for lane, node_id in zip(("primary", "secondary"), lanes):
+            node = by_id.get(node_id or "")
+            if not node or node["name"] not in rendered:
+                continue
+            node_args = rendered[node["name"]]["args"]
+            sent_from = flag_value(contrib_args, f"--relay-{lane}-bind")
+            sent_to = flag_value(contrib_args, f"--relay-{lane}-target") or ""
+            bind = flag_value(node_args, f"--relay-{taken}-bind") or ""
+            if (flag_value(node_args, f"--relay-{taken}-id") != relay_node_id(contrib)
+                    or flag_value(node_args, f"--relay-{taken}-peer") != sent_from
+                    or bind.rsplit(":", 1)[-1] != sent_to.rsplit(":", 1)[-1]):
+                problems.append(
+                    f"{node['name']} does not admit the {lane} lane of {who} "
+                    f"({sent_from} to {sent_to}) on its {taken} lane: it takes "
+                    f"{flag_value(node_args, f'--relay-{taken}-id')} from "
+                    f"{flag_value(node_args, f'--relay-{taken}-peer')} on {bind or None}")
     for name, item in sorted(rendered.items()):
         node = state["nodes"][name]
         args = item["args"]
@@ -2425,15 +2558,101 @@ def check_merged(state: dict, rendered: dict[str, dict]) -> None:
                          + "; ".join(problems))
 
 
+# What two contributors must be started alike with: the flags that decide
+# the bytes of an audio part and of its datagrams (packaging, formats, stream
+# ids, part, segment, deadline, clock confidence, the RelaySession identity,
+# the compact form), those that decide which datagrams are sent (the whole
+# part's grid, the repair floor, the encoder path) and the nodes their two
+# lanes end at. Rendered or left to the binary's default, they must be the
+# same on both: the first forwarders merge the two by first arrival and
+# compare nothing but the key.
+CONTRIBUTOR_PAIR_FLAGS = (
+    "--daw-hls-packaging", "--daw-hls-formats", "--daw-hls-base-stream-id", "--audio-part",
+    "--fmp4-segment-ms", "--relay-deadline-ms", "--wall-clock-estimated-error-ms",
+    "--relay-topology-generation", "--relay-subscription-id", "--relay-compact-audio",
+    "--relay-compact-whole-ms", "--relay-min-repair-symbols", "--relay-send-batch",
+    "--relay-source-first", "--relay-primary-id", "--relay-secondary-id")
+# And every flag of the path observations that seed their repair.
+CONTRIBUTOR_PAIR_PREFIXES = ("--relay-path-", "--relay-secondary-path-")
+
+
+def contributor_identity(args: list[str]) -> dict | None:
+    """The identity that the av-contrib of this render computes for a
+    contributor started with `args`: the object that `av-contrib ARGS
+    --print-fingerprint` prints (fingerprint, numbering, envelope, wire,
+    fields), run here with the binary that the render is for and binding
+    nothing. None when that binary has no --print-fingerprint or the render
+    cannot see it. Raises ValueError when it has the flag and does not
+    answer: an identity that cannot be read is not known to be equal."""
+    if not binary_has("av-contrib", "--print-fingerprint"):
+        return None
+    command = [str(RENDER_BINARIES["av-contrib"]), *args[1:], "--print-fingerprint"]
+    result = identity = None
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                                check=False)
+        if result.returncode == 0:
+            identity = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        identity = None
+    if not isinstance(identity, dict) or not identity.get("fingerprint"):
+        said = "" if result is None else (result.stderr or result.stdout).strip()[-400:]
+        raise ValueError("av-contrib --print-fingerprint gave no identity"
+                         + (f": {said}" if said else ""))
+    return identity
+
+
+def check_contributor_pair(state: dict, rendered: dict[str, dict]) -> None:
+    """Raise ValueError unless the contributor and its standby are rendered
+    to publish the same parts: opaque packaging on both (fMP4 audio is not
+    numbered from the source), equal values of CONTRIBUTOR_PAIR_FLAGS and of
+    the path observation flags, and, where the av-contrib of this render
+    prints one, equal fingerprints. Nothing to check with one contributor.
+    An extra argument cannot break it (both take the same); a setting of one
+    node alone can."""
+    pair = [node for node in common.contributors(state) if node["name"] in rendered]
+    if len(pair) < 2:
+        return
+    one, other = (rendered[node["name"]]["args"] for node in pair[:2])
+    names = f"{pair[0]['name']} and {pair[1]['name']}"
+    problems = []
+    for node, args in zip(pair, (one, other)):
+        packaging = flag_value(args, "--daw-hls-packaging")
+        if packaging != "opaque":
+            problems.append(f"{node['name']} packages audio as {packaging}; two contributors "
+                            "publish the same parts only with --daw-hls-packaging opaque")
+    flags = set(CONTRIBUTOR_PAIR_FLAGS) | {
+        name for name in flag_names(one) | flag_names(other)
+        if name.startswith(CONTRIBUTOR_PAIR_PREFIXES)}
+    for name in sorted(flags):
+        values = (flag_value(one, name), flag_value(other, name))
+        if values[0] != values[1]:
+            problems.append(f"{name} is {values[0]} and {values[1]}")
+    if not problems:
+        identities = [contributor_identity(args) for args in (one, other)]
+        if None not in identities and (identities[0]["fingerprint"]
+                                       != identities[1]["fingerprint"]):
+            parts = [part for part in ("numbering", "envelope", "wire")
+                     if identities[0].get(part) != identities[1].get(part)]
+            problems.append(f"their fingerprints are {identities[0]['fingerprint']} and "
+                            f"{identities[1]['fingerprint']}"
+                            + (f" ({', '.join(parts)} differ)" if parts else ""))
+    if problems:
+        raise ValueError(f"the contributors {names} would not publish the same parts: "
+                         + "; ".join(problems))
+
+
 def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str, list[str]]]:
     """contributor_direct_region: the contributor's --relay-direct-* arguments
     for the distributors of its site, and for each of those distributors the
     arguments that register the contributor's direct source endpoint as a
     parent. A direct target is the port on which the distributor takes its
-    primary backbone parent; the symbols are the same."""
-    contrib = common.nodes_by_role(state, "contributor")[0]
+    primary backbone parent; the symbols are the same. The direct lanes are
+    the contributor's alone: a standby contributor has none."""
+    contrib = next((node for node in common.contributors(state)
+                    if not node.get("standby")), None)
     mates = [node for node in common.nodes_by_role(state, "distributor")
-             if node["site"] == contrib["site"]]
+             if contrib is not None and node["site"] == contrib["site"]]
     if not mates:
         return [], {}
     bind = f"{link_addresses(contrib, mates[0])[0]}:{CONTRIB_DIRECT_PORT}"
@@ -2452,13 +2671,13 @@ def direct_region_args(state: dict, services: dict) -> tuple[list[str], dict[str
 
 
 def gap_hold_args(node: dict, settings: dict, state: dict) -> list[str]:
-    """--canonical-gap-hold-ms for a distributor outside the contributor's
+    """--canonical-gap-hold-ms for a distributor outside the contributors'
     region (canonical_gap_hold_long_haul_ms); nothing for any other node."""
     hold = settings.get("canonical_gap_hold_long_haul_ms")
     if not hold or node["role"] != "distributor":
         return []
-    contributors = common.nodes_by_role(state, "contributor")
-    if not contributors or contributors[0]["region"] == node["region"]:
+    regions = {contributor["region"] for contributor in common.contributors(state)}
+    if not regions or node["region"] in regions:
         return []
     return ["--canonical-gap-hold-ms", str(int(hold))]
 
@@ -2686,12 +2905,18 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     feed = fast_plane_feed(state, classes)
     direct_contrib, direct_mesh = (direct_region_args(state, services)
                                    if settings.get("contributor_direct_region") else ([], {}))
+    contributor_ids = {relay_node_id(node) for node in common.contributors(state)}
     rendered: dict[str, dict] = {}
     for node in state["nodes"].values():
         role = node["role"]
         if role == "contributor":
-            args = contributor_args(services[("av_contrib", "contrib")], settings, node)
-            args += direct_contrib
+            service = services.get(("av_contrib", relay_node_id(node)))
+            if service is None:
+                raise ValueError(f"{node['name']}: the compiled plan has no contributor "
+                                 f"service {relay_node_id(node)}")
+            args = contributor_args(service, settings, node)
+            if not node.get("standby"):
+                args += direct_contrib
             rendered[node["name"]] = {
                 "service": "needletail-contrib", "args": args,
                 "rust_log": settings["rust_log_contrib"]}
@@ -2708,9 +2933,10 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         if role in ("backbone", "distributor") and not slot_forwarder:
             args += relay_args(service)
             # The contributor sends repair on its primary lane too: the
-            # backbone at the end of that lane admits it.
+            # backbone at the end of that lane admits it. (The standby's
+            # lanes are admitted in full already: relay_args.)
             if (classes["relay_repair_both_lanes"]
-                    and service["primary_parent"]["parent_node_id"] == "contrib"
+                    and service["primary_parent"]["parent_node_id"] in contributor_ids
                     and "--relay-primary-promoted" not in flag_names(
                         args + list(settings[f"extra_{role}_args"]))):
                 args.append("--relay-primary-promoted")
@@ -2774,6 +3000,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     check_fast_plane(state, rendered)
     if topology_mode(settings) == "merged":
         check_merged(state, rendered)
+    check_contributor_pair(state, rendered)
     out = common.ARTIFACT_DIR / "nodes"
     out.mkdir(parents=True, exist_ok=True)
     for name, item in rendered.items():
@@ -3120,6 +3347,7 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
              f"{', '.join(node['name'] for node in unused)}" if unused else "")
           + (f"; standby edges (stopped): {', '.join(standby_edges(settings))}"
              if standby_edges(settings) else ""))
+    print("contributor targets: " + " ".join(common.contributor_targets(state)))
     return full, settings, rendered
 
 

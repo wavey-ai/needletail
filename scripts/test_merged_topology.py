@@ -6,10 +6,14 @@ edge, no --relay-direct-target), every other distributor has both of them as
 parents, crossed, the backbone relays get no service, the plan records the
 shared parent region as a declared gap, the class ports do not collide, and
 everything but the relay arguments renders as the legacy topology does.
+With a standby contributor (resilient mesh, workstream A): two contributors
+by the same two first forwarders, each forwarder taking the standby on its
+secondary lane, both contributors rendered alike, and no other node changed.
 python3 -m unittest scripts/test_merged_topology.py"""
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import io
 import json
@@ -18,7 +22,7 @@ import shutil
 import tempfile
 import unittest
 import sys
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -742,6 +746,497 @@ class Render(Base):
         self.assertEqual(primaries, ["lon-dist-a"] * 3 + ["lon-dist-b"] * 3)
         self.assertEqual(len([gap for gap in plan["production_readiness_gaps"]
                               if gap.startswith("shared_parent_failure_domain:")]), 6)
+
+
+STANDBY = {"name": "contrib-lon-b", "role": "contributor", "site": "london", "region": "gb-lon",
+           "public_ipv4": "10.90.0.7", "vlan_ipv4": "10.77.1.7", "type": "local",
+           "standby": True}
+# The arguments in which two contributors differ: who each is, and its own
+# end of each lane (the first forwarders' ports are crossed between them).
+OWN_OF_A_CONTRIBUTOR = {"--relay-local-id", "--relay-primary-bind", "--relay-primary-target",
+                        "--relay-secondary-bind", "--relay-secondary-target",
+                        "--mesh-fec-target", "--mesh-media-fec-target"}
+
+
+def one_contributor_state() -> dict:
+    """The lab with its contributor alone."""
+    state = lab.lab_state()
+    state["nodes"] = {name: node for name, node in state["nodes"].items()
+                      if not node.get("standby")}
+    return state
+
+
+def two_contributor_state() -> dict:
+    """The lab with the standby contributor contrib-lon-b on the London
+    VLAN beside contrib-lon."""
+    state = one_contributor_state()
+    state["nodes"][STANDBY["name"]] = dict(STANDBY)
+    return state
+
+
+def fake_binary(directory: pathlib.Path, name: str, flags: list[str], body: str = "") -> pathlib.Path:
+    """An executable whose --help lists `flags` and that otherwise runs the
+    shell lines of `body` (what `--print-fingerprint` prints)."""
+    path = directory / name
+    path.write_text("#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = --help ]; then\n"
+                    "    cat <<'EOF'\nOptions:\n"
+                    + "".join(f"      {flag} <X>\n" for flag in flags)
+                    + "EOF\n    exit 0\n  fi\ndone\n" + body + "\n")
+    path.chmod(0o755)
+    return path
+
+
+def flag_values(args: list[str]) -> dict[str, list[str]]:
+    """{flag: its values} of an argument list; a switch has none."""
+    out: dict[str, list[str]] = {}
+    for index, arg in enumerate(args):
+        if arg.startswith("--"):
+            follows = args[index + 1] if index + 1 < len(args) else "--"
+            out.setdefault(arg, []).extend([] if follows.startswith("--") else [follows])
+    return out
+
+
+class Contributors(Base):
+    """One contributor, or one and its standby: what the tree, the program
+    and the tools take, without the compiler."""
+
+    def test_the_standby_has_an_id_of_its_own(self):
+        self.assertEqual(deploy.relay_node_id(lab.node("contrib-lon")), "contrib")
+        self.assertEqual(deploy.relay_node_id(STANDBY), "contrib-b")
+        self.assertEqual(deploy.relay_node_id(lab.node("lon-dist-a")), "lon-dist-a")
+
+    def test_the_tree_takes_one_contributor_or_one_and_its_standby(self):
+        settings = self.settings()
+        tree = deploy.relay_tree(one_contributor_state(), settings)
+        self.assertEqual(tree["contrib"]["name"], "contrib-lon")
+        self.assertIsNone(tree["standby"])
+        for overrides in ((), ("topology=legacy",)):
+            tree = deploy.relay_tree(two_contributor_state(), self.settings(overrides))
+            self.assertEqual(tree["contrib"]["name"], "contrib-lon")
+            self.assertEqual(tree["standby"]["name"], "contrib-lon-b")
+        # The standby changes nothing else of the tree.
+        self.assertEqual(
+            {key: value for key, value in deploy.relay_tree(two_contributor_state(),
+                                                            settings).items() if key != "standby"},
+            {key: value for key, value in deploy.relay_tree(one_contributor_state(),
+                                                            settings).items() if key != "standby"})
+
+    def test_anything_but_one_contributor_and_at_most_one_standby_is_refused(self):
+        settings = self.settings()
+
+        def refused(change) -> str:
+            state = two_contributor_state()
+            change(state["nodes"])
+            with self.assertRaises(SystemExit) as caught:
+                deploy.relay_tree(state, settings)
+            return str(caught.exception)
+
+        # Two contributors, neither the standby.
+        self.assertIn("one is the standby",
+                      refused(lambda nodes: nodes["contrib-lon-b"].pop("standby")))
+        # A standby and no contributor.
+        self.assertIn("contrib-lon-b (standby)", refused(lambda nodes: nodes.pop("contrib-lon")))
+        # Two standbys: the fan-out would be three contributors.
+        self.assertIn("one is the standby", refused(lambda nodes: nodes.update(
+            {"contrib-lon-c": {**STANDBY, "name": "contrib-lon-c", "vlan_ipv4": "10.77.1.8"}})))
+        # No contributor at all.
+        state = one_contributor_state()
+        del state["nodes"]["contrib-lon"]
+        with self.assertRaises(SystemExit) as caught:
+            deploy.relay_tree(state, settings)
+        self.assertIn("found none", str(caught.exception))
+        # The standby in another site, off the VLAN, or on the contributor's
+        # own address.
+        for change in (lambda nodes: nodes["contrib-lon-b"].update(site="newyork",
+                                                                    region="us-east"),
+                       lambda nodes: nodes["contrib-lon-b"].update(vlan_ipv4=None),
+                       lambda nodes: nodes["contrib-lon-b"].update(vlan_ipv4="10.77.1.5"),
+                       lambda nodes: nodes["contrib-lon"].update(vlan_ipv4=None)):
+            self.assertIn("on its VLAN", refused(change))
+
+    def test_the_program_carries_the_standby_as_a_replica_of_the_origin(self):
+        settings = self.settings()
+        with mock.patch.object(deploy.time, "time", return_value=1_763_900_000.0):
+            single = deploy.build_program(one_contributor_state(), settings, ROUTES)
+            program = deploy.build_program(two_contributor_state(), settings, ROUTES)
+        # As workstream A 2.9 writes it: the standby's own lanes, each to
+        # the port that the contributor's other lane leaves free.
+        self.assertEqual(program["origin_standby"], {
+            "node_id": "contrib-b",
+            "failure_domain": {"provider": "linode", "region": "gb-lon", "asn": 63949,
+                               "zone": "gb-lon"},
+            "carrier_links": [
+                {"child_node_id": "lon-dist-a", "lane": "source",
+                 "sender_bind": "10.77.1.7:22301", "sender_peer": "10.77.1.7:22301",
+                 "receiver_bind": "0.0.0.0:22002", "receiver_target": "10.77.1.11:22002"},
+                {"child_node_id": "lon-dist-b", "lane": "source_and_repair",
+                 "sender_bind": "10.77.1.7:22302", "sender_peer": "10.77.1.7:22302",
+                 "receiver_bind": "0.0.0.0:22001", "receiver_target": "10.77.1.12:22001"}]})
+        # Still one origin with two children, and the standby is no node.
+        origins = [node for node in program["topology"]["nodes"] if node["role"] == "origin"]
+        self.assertEqual([node["node_id"] for node in origins], ["contrib"])
+        self.assertNotIn("contrib-b", {node["node_id"] for node in program["topology"]["nodes"]})
+        self.assertEqual(program["topology"]["limits"]["max_origin_children"], 2)
+        # Nothing else of the program moves, and one contributor's program
+        # has no such key.
+        self.assertNotIn("origin_standby", single)
+        self.assertEqual({key: value for key, value in program.items()
+                          if key != "origin_standby"}, single)
+
+    def test_the_sources_targets_are_every_contributor(self):
+        self.assertEqual(deploy.common.contributor_targets(one_contributor_state()),
+                         ["10.77.1.5:27100"])
+        state = two_contributor_state()
+        self.assertEqual(deploy.common.contributor_targets(state),
+                         ["10.77.1.5:27100", "10.77.1.7:27100"])
+        # The origin first whatever the names, and a public address where a
+        # contributor has no VLAN.
+        state["nodes"]["contrib-lon"]["name"] = "z-contrib"
+        state["nodes"]["contrib-lon"]["vlan_ipv4"] = None
+        self.assertEqual(deploy.common.contributor_targets(state),
+                         ["10.90.0.5:27100", "10.77.1.7:27100"])
+        self.assertEqual(deploy.DAW_MEDIA_PORT, 27100)
+
+    def test_a_distributor_of_the_contributors_region_holds_no_long_haul_gap(self):
+        settings = self.settings()
+        for state in (one_contributor_state(), two_contributor_state()):
+            held = {name: deploy.gap_hold_args(node, settings, state)
+                    for name, node in state["nodes"].items()}
+            self.assertEqual(held["lon-dist-a"], [])
+            self.assertEqual(held["new-dist-a"], ["--canonical-gap-hold-ms", "400"])
+        # No contributor: nothing to be far from.
+        state = one_contributor_state()
+        del state["nodes"]["contrib-lon"]
+        self.assertEqual(deploy.gap_hold_args(state["nodes"]["new-dist-a"], settings, state), [])
+
+    def test_the_lab_tool_records_the_standby_in_its_state(self):
+        lab_tool = load_module("lab_tool_merged", "linode-small-mesh-lab.py")
+
+        class Api:
+            def call(self, method, path, body=None, allow_404=False):
+                return {"id": 7, "label": body["label"], "ipv4": ["192.0.2.7"],
+                        "created": "2026-11-23T20:00:00"}
+
+        node = {"name": "contrib-lon-b", "role": "contributor", "site": "london",
+                "region": "gb-lon", "type": "g6-dedicated-4", "vlan_ipv4": "10.80.1.6/24",
+                "_hourly": 0.108, "standby": True}
+        record = lab_tool.create_node(Api(), "t1", "needletail-small-mesh-t1", "image", "key",
+                                      node)
+        self.assertIs(record["standby"], True)
+        self.assertEqual(deploy.relay_node_id(record), "contrib-b")
+        record = lab_tool.create_node(Api(), "t1", "needletail-small-mesh-t1", "image", "key",
+                                      {**node, "name": "contrib-lon", "standby": False})
+        self.assertNotIn("standby", record)
+
+
+@unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
+class TwoContributors(Base):
+    """The render of the contributor and its standby (workstream A NT2)."""
+
+    def render(self, overrides=(), state: dict | None = None) -> tuple[dict, dict, dict]:
+        settings = self.settings(overrides)
+        state = state or two_contributor_state()
+        # One clock for every render of a test: the path observations carry
+        # the time of the plan.
+        with mock.patch.object(deploy.time, "time", return_value=1_763_900_000.0):
+            program = deploy.build_program(state, settings, ROUTES)
+        plan = deploy.compile_plan(program)
+        rendered = deploy.render(state, settings, plan)
+        return state, rendered, {name: item["args"] for name, item in rendered.items()}
+
+    def test_the_ports_of_two_contributors_at_the_first_forwarders(self):
+        """Workstream A 2.7: each first forwarder takes contrib-lon on its
+        primary socket and contrib-lon-b on its secondary socket, crossed."""
+        _state, _rendered, args = self.render()
+        for name, local_id, address, to_a, to_b in (
+                ("contrib-lon", "contrib", "10.77.1.5", "22001", "22002"),
+                ("contrib-lon-b", "contrib-b", "10.77.1.7", "22002", "22001")):
+            contrib = args[name]
+            self.assertEqual(value_of(contrib, "--relay-local-id"), local_id, name)
+            self.assertEqual(contrib.count("--relay-local-id"), 1, name)
+            # Today's shape on both: the primary lane to lon-dist-a, the
+            # secondary lane (sources and repair) to lon-dist-b.
+            self.assertEqual(value_of(contrib, "--relay-primary-id"), "lon-dist-a", name)
+            self.assertEqual(value_of(contrib, "--relay-primary-bind"), f"{address}:22301")
+            self.assertEqual(value_of(contrib, "--relay-primary-target"), f"10.77.1.11:{to_a}")
+            self.assertEqual(value_of(contrib, "--relay-secondary-id"), "lon-dist-b", name)
+            self.assertEqual(value_of(contrib, "--relay-secondary-bind"), f"{address}:22302")
+            self.assertEqual(value_of(contrib, "--relay-secondary-target"), f"10.77.1.12:{to_b}")
+            self.assertIn("--relay-secondary-seed-source", contrib)
+            self.assertEqual(value_of(contrib, "--mesh-fec-target"), f"10.77.1.11:{to_a}")
+            self.assertEqual(value_of(contrib, "--daw-media-bind"), "0.0.0.0:27100")
+        plan = deploy.class_plan(self.settings())
+        for name, primary, secondary in (
+                ("lon-dist-a", ("0.0.0.0:22001", "10.77.1.5:22301"),
+                 ("0.0.0.0:22002", "10.77.1.7:22301")),
+                ("lon-dist-b", ("0.0.0.0:22002", "10.77.1.5:22302"),
+                 ("0.0.0.0:22001", "10.77.1.7:22302"))):
+            node_args = args[name]
+            self.assertEqual(value_of(node_args, "--fec-bind"), primary[0], name)
+            self.assertEqual(value_of(node_args, "--relay-primary-bind"), primary[0], name)
+            self.assertEqual(value_of(node_args, "--relay-primary-peer"), primary[1], name)
+            self.assertEqual(value_of(node_args, "--relay-primary-id"), "contrib", name)
+            self.assertEqual(value_of(node_args, "--relay-secondary-bind"), secondary[0], name)
+            self.assertEqual(value_of(node_args, "--relay-secondary-peer"), secondary[1], name)
+            self.assertEqual(value_of(node_args, "--relay-secondary-id"), "contrib-b", name)
+            # Both sessions admitted in full, each flag once; nothing
+            # promotes or demotes a contributor.
+            for flag in ("--relay-primary-promoted", "--relay-secondary-promoted",
+                         "--relay-secondary-bind", "--relay-secondary-peer",
+                         "--relay-secondary-id"):
+                self.assertEqual(node_args.count(flag), 1, (name, flag))
+            self.assertNotIn("--relay-failover-controller", node_args, name)
+            # Audio on the two ports, video on their twins (23001, 23002).
+            ports = {port for _socket, port, _arg in deploy.udp_binds(node_args, plan)}
+            self.assertTrue({22001, 22002, 23001, 23002} <= ports, (name, ports))
+
+    def test_no_other_nodes_arguments_change_with_a_standby(self):
+        _state, _rendered, single = self.render(state=one_contributor_state())
+        _state, _rendered, pair = self.render()
+        self.assertEqual(set(pair) - set(single), {"contrib-lon-b"})
+        self.assertEqual(set(single) - set(pair), set())
+        firsts = ("lon-dist-a", "lon-dist-b")
+        for name in single:
+            if name not in firsts:
+                self.assertEqual(pair[name], single[name], name)
+        # A first forwarder gains its secondary lane, in one place, and
+        # nothing else of it moves.
+        for name in firsts:
+            at = pair[name].index("--relay-secondary-bind")
+            self.assertEqual(pair[name][at:at + 7:2],
+                             ["--relay-secondary-bind", "--relay-secondary-peer",
+                              "--relay-secondary-id", "--relay-secondary-promoted"], name)
+            self.assertEqual(pair[name][:at] + pair[name][at + 7:], single[name], name)
+
+    def test_a_one_contributor_topology_renders_as_before(self):
+        _state, _rendered, args = self.render(state=one_contributor_state())
+        contrib = args["contrib-lon"]
+        self.assertEqual(value_of(contrib, "--relay-local-id"), "contrib")
+        self.assertEqual(value_of(contrib, "--wall-clock-estimated-error-ms"), "5")
+        # Nothing of the resilient mesh without a binary that has it.
+        for flag in ("--node-id", "--region", "--print-fingerprint"):
+            self.assertNotIn(flag, contrib, flag)
+        for name, node_args in args.items():
+            self.assertNotIn("--relay-media-deadline-ms", node_args, name)
+            self.assertNotIn("contrib-b", node_args, name)
+        for name in ("lon-dist-a", "lon-dist-b"):
+            self.assertNotIn("--relay-secondary-id", args[name], name)
+        plan = json.loads((self.dir / "compiled-plan.json").read_text())
+        self.assertEqual([service["node_id"] for service in plan["services"]
+                          if service["service"] == "av_contrib"], ["contrib"])
+        self.assertNotIn("standby", (self.dir / "compiled-plan.json").read_text())
+        self.assertNotIn("standby", (self.dir / "relay-program.json").read_text())
+        self.assertFalse((self.dir / "nodes" / "contrib-lon-b.args").exists())
+
+    def test_both_contributors_render_equal_identity_arguments(self):
+        for overrides in ((), ("audio_part=96samples", "media_deadline_ms=800",
+                               "contributor_clock_error_ms=6", "relay_compact_audio=false",
+                               "relay_min_repair_symbols=2", "daw_hls_formats=flac,opus,pcm",
+                               "daw_hls_base_stream_id=5001",
+                               'extra_contributor_args=["--relay-compact-whole-ms","50"]')):
+            _state, _rendered, args = self.render(overrides)
+            one, other = flag_values(args["contrib-lon"]), flag_values(args["contrib-lon-b"])
+            self.assertEqual(list(one), list(other))
+            for flag in deploy.CONTRIBUTOR_PAIR_FLAGS:
+                self.assertEqual(one.get(flag), other.get(flag), flag)
+            for flag in one:
+                if flag.startswith(deploy.CONTRIBUTOR_PAIR_PREFIXES):
+                    self.assertEqual(one[flag], other[flag], flag)
+            # They differ in who they are and in their own end of each
+            # lane, and in nothing else.
+            self.assertEqual({flag for flag in one if one[flag] != other[flag]},
+                             OWN_OF_A_CONTRIBUTOR, overrides)
+        # The settings that are the identity reach both.
+        self.assertEqual(one["--audio-part"], ["96samples"])
+        self.assertEqual(one["--relay-deadline-ms"], ["800"])
+        self.assertEqual(one["--wall-clock-estimated-error-ms"], ["6"])
+        self.assertEqual(other["--relay-compact-whole-ms"], ["50"])
+        with self.assertRaises(ValueError) as caught:
+            self.render(["contributor_clock_error_ms=five"])
+        self.assertIn("contributor_clock_error_ms", str(caught.exception))
+
+    def test_two_contributors_that_would_not_publish_the_same_parts_are_refused(self):
+        state, rendered, _args = self.render()
+        deploy.check_contributor_pair(state, rendered)
+        deploy.check_contributor_pair(one_contributor_state(), rendered)
+
+        def doctored(flag: str, value: str | None) -> dict:
+            """The render with `flag` given another value (None: taken
+            away) on the standby alone."""
+            args = list(rendered["contrib-lon-b"]["args"])
+            if flag in args:
+                at = args.index(flag)
+                args[at:at + 2] = [] if value is None else [flag, value]
+            elif value is not None:
+                args += [flag, value]
+            return {**rendered, "contrib-lon-b": {**rendered["contrib-lon-b"], "args": args}}
+
+        for flag, value in (
+                ("--daw-hls-formats", "flac"), ("--daw-hls-base-stream-id", "5001"),
+                ("--audio-part", "96samples"), ("--fmp4-segment-ms", "2000"),
+                ("--relay-deadline-ms", "800"), ("--wall-clock-estimated-error-ms", "6"),
+                ("--relay-topology-generation", "2"), ("--relay-subscription-id", "2"),
+                ("--relay-compact-audio", "false"), ("--relay-compact-whole-ms", "50"),
+                ("--relay-min-repair-symbols", "1"), ("--relay-send-batch", "false"),
+                ("--relay-source-first", "false"), ("--relay-primary-id", "lon-dist-b"),
+                ("--relay-path-loss-fraction", "0.5"), ("--relay-path-rtt-ms", None),
+                ("--relay-secondary-path-jitter-ms", "9.0")):
+            with self.assertRaises(ValueError, msg=flag) as caught:
+                deploy.check_contributor_pair(state, doctored(flag, value))
+            self.assertIn(flag, str(caught.exception))
+            self.assertIn("contrib-lon and contrib-lon-b", str(caught.exception))
+        # fMP4 audio is numbered by each contributor for itself: refused on
+        # both, whatever else is equal.
+        with self.assertRaises(ValueError) as caught:
+            self.render(["daw_hls_packaging=fmp4"])
+        self.assertIn("--daw-hls-packaging opaque", str(caught.exception))
+        self.render(["daw_hls_packaging=fmp4"], state=one_contributor_state())
+
+    def test_a_first_forwarder_that_would_not_admit_a_contributor_is_refused(self):
+        state, rendered, _args = self.render()
+        deploy.check_merged(state, rendered)
+        for name, flag, value in (("lon-dist-a", "--relay-secondary-peer", "10.77.1.9:22301"),
+                                  ("lon-dist-b", "--relay-secondary-bind", "0.0.0.0:22005"),
+                                  ("lon-dist-a", "--relay-secondary-id", "contrib"),
+                                  ("lon-dist-b", "--relay-primary-peer", "10.77.1.7:22302")):
+            args = list(rendered[name]["args"])
+            args[args.index(flag) + 1] = value
+            with self.assertRaises(ValueError, msg=(name, flag)) as caught:
+                deploy.check_merged(state, {**rendered, name: {**rendered[name], "args": args}})
+            self.assertIn(f"{name} does not admit", str(caught.exception))
+        # A standby whose lanes end elsewhere than the contributor's.
+        args = list(rendered["contrib-lon-b"]["args"])
+        args[args.index("--relay-primary-id") + 1] = "lon-dist-b"
+        with self.assertRaises(ValueError) as caught:
+            deploy.check_merged(state, {**rendered, "contrib-lon-b": {
+                **rendered["contrib-lon-b"], "args": args}})
+        self.assertIn("the two lanes of the contributor contrib-lon-b", str(caught.exception))
+
+    def test_a_plan_without_the_standbys_service_is_refused(self):
+        """A compiled plan from a compiler that knows no standby (it drops
+        the key it does not know) must not render one contributor's lanes
+        twice."""
+        settings = self.settings()
+        state = two_contributor_state()
+        plan = deploy.compile_plan(deploy.build_program(one_contributor_state(), settings, ROUTES))
+        with self.assertRaises(ValueError) as caught:
+            deploy.render(state, settings, plan)
+        self.assertIn("no contributor service contrib-b", str(caught.exception))
+
+    def test_the_legacy_topology_takes_the_standby_on_its_backbones(self):
+        _state, _rendered, args = self.render(["topology=legacy"])
+        self.assertEqual(value_of(args["relay-primary"], "--relay-primary-id"), "contrib")
+        self.assertEqual(value_of(args["relay-primary"], "--relay-secondary-id"), "contrib-b")
+        self.assertEqual(value_of(args["relay-primary"], "--relay-secondary-peer"),
+                         "10.77.1.7:22301")
+        self.assertEqual(value_of(args["relay-secondary"], "--relay-secondary-id"), "contrib-b")
+        self.assertEqual(value_of(args["contrib-lon-b"], "--relay-primary-id"), "relay-primary")
+
+    def test_the_new_flags_render_only_for_a_binary_that_has_them(self):
+        old_contrib = fake_binary(self.dir, "old-contrib", ["--relay-exclusive"])
+        new_contrib = fake_binary(self.dir, "new-contrib",
+                                  ["--relay-exclusive", "--node-id", "--region"])
+        old_mesh = fake_binary(self.dir, "old-mesh", ["--client-udp-bind", "--region"])
+        new_mesh = fake_binary(self.dir, "new-mesh",
+                               ["--client-udp-bind", "--region", "--relay-media-deadline-ms"])
+        try:
+            deploy.RENDER_BINARIES.update({"av-contrib": old_contrib, "av-mesh": old_mesh})
+            _state, _rendered, args = self.render()
+            for name, node_args in args.items():
+                self.assertNotIn("--relay-media-deadline-ms", node_args, name)
+                if name.startswith("contrib"):
+                    self.assertNotIn("--node-id", node_args, name)
+                    self.assertNotIn("--region", node_args, name)
+            deploy.RENDER_BINARIES.update({"av-contrib": new_contrib, "av-mesh": new_mesh})
+            _state, _rendered, args = self.render(["media_deadline_ms=800"])
+            # What /api/node names each contributor: the node, not the id
+            # that the relay sessions carry.
+            for name in ("contrib-lon", "contrib-lon-b"):
+                self.assertEqual(value_of(args[name], "--node-id"), name)
+                self.assertEqual(value_of(args[name], "--region"), "gb-lon")
+                self.assertEqual(value_of(args[name], "--relay-deadline-ms"), "800")
+                self.assertNotIn("--relay-media-deadline-ms", args[name])
+            # The same budget on every node with a relay session, edges and
+            # the forwarder slot included, and on no other.
+            relayed = 0
+            for name, node_args in args.items():
+                if "--relay-controlled-local" in node_args:
+                    relayed += 1
+                    self.assertEqual(value_of(node_args, "--relay-media-deadline-ms"), "800",
+                                     name)
+                    self.assertEqual(node_args.count("--relay-media-deadline-ms"), 1, name)
+                else:
+                    self.assertNotIn("--relay-media-deadline-ms", node_args, name)
+            self.assertGreater(relayed, 8)
+            for name in ("lon-dist-a", "new-dist-b", "lon-edge-1", "lon-dist-c"):
+                self.assertIn("--relay-media-deadline-ms", args[name], name)
+            # An extra argument of a role still wins.
+            _state, _rendered, args = self.render(
+                ['extra_distributor_args=["--relay-media-deadline-ms","700"]'])
+            self.assertEqual(args["lon-dist-a"].count("--relay-media-deadline-ms"), 1)
+            self.assertEqual(value_of(args["lon-dist-a"], "--relay-media-deadline-ms"), "700")
+            self.assertEqual(value_of(args["lon-edge-1"], "--relay-media-deadline-ms"), "1000")
+        finally:
+            deploy.RENDER_BINARIES.clear()
+
+    def test_the_fingerprints_of_both_renders_must_be_equal(self):
+        flags = ["--relay-exclusive", "--print-fingerprint"]
+        checks = ('case "$1" in /*) echo "argv[0] passed on" >&2; exit 9;; esac\n'
+                  'for last in "$@"; do :; done\n'
+                  '[ "$last" = --print-fingerprint ] || { echo "not asked" >&2; exit 8; }\n')
+        same = fake_binary(self.dir, "same", flags, checks + (
+            'echo \'{"fingerprint": "9f2c41aa7d10e6b3", "numbering": "51c0", '
+            '"envelope": "0be2", "wire": "77aa"}\''))
+        # A build whose envelope depends on who sends it.
+        differs = fake_binary(self.dir, "differs", flags, checks + (
+            'prev=""; for arg in "$@"; do [ "$prev" = --relay-local-id ] && id="$arg"; '
+            'prev="$arg"; done\n'
+            'echo "{\\"fingerprint\\": \\"f-$id\\", \\"numbering\\": \\"51c0\\", '
+            '\\"envelope\\": \\"e-$id\\", \\"wire\\": \\"77aa\\"}"'))
+        silent = fake_binary(self.dir, "silent", flags,
+                             'echo "cannot read /etc/needletail/tls/privkey.pem" >&2; exit 1')
+        garbled = fake_binary(self.dir, "garbled", flags, "echo ready")
+        without = fake_binary(self.dir, "without", ["--relay-exclusive"], "exit 7")
+        try:
+            deploy.RENDER_BINARIES.update({"av-contrib": same})
+            _state, _rendered, args = self.render()
+            self.assertEqual(deploy.contributor_identity(args["contrib-lon-b"])["fingerprint"],
+                             "9f2c41aa7d10e6b3")
+            deploy.RENDER_BINARIES.update({"av-contrib": differs})
+            with self.assertRaises(ValueError) as caught:
+                self.render()
+            self.assertIn("fingerprints are f-contrib and f-contrib-b", str(caught.exception))
+            self.assertIn("(envelope differ)", str(caught.exception))
+            # One contributor has nothing to be equal to: the binary is not
+            # even asked.
+            self.render(state=one_contributor_state())
+            for binary, said in ((silent, "privkey.pem"), (garbled, "gave no identity")):
+                deploy.RENDER_BINARIES.update({"av-contrib": binary})
+                with self.assertRaises(ValueError, msg=binary.name) as caught:
+                    self.render()
+                self.assertIn(said, str(caught.exception))
+            # A binary without the flag is not run for it.
+            deploy.RENDER_BINARIES.update({"av-contrib": without})
+            _state, _rendered, args = self.render()
+            self.assertIsNone(deploy.contributor_identity(args["contrib-lon"]))
+        finally:
+            deploy.RENDER_BINARIES.clear()
+
+    def test_plan_names_the_targets_of_the_source(self):
+        state_file = self.dir / "lab.json"
+        state_file.write_text(json.dumps(two_contributor_state()))
+        (self.dir / "routes.json").write_text(json.dumps({**ROUTES, "topology": "merged"}))
+        out = io.StringIO()
+        try:
+            with mock.patch.dict("os.environ", {"NEEDLETAIL_LINODE_LAB_STATE": str(state_file)}), \
+                    mock.patch.object(deploy, "binaries_for",
+                                      lambda role, node=None: [self.dir / "no-such-binary"]), \
+                    redirect_stdout(out), redirect_stderr(io.StringIO()):
+                deploy.command_plan(argparse.Namespace(set=[], remeasure=False))
+        finally:
+            deploy.RENDER_BINARIES.clear()
+        self.assertIn("contributor targets: 10.77.1.5:27100 10.77.1.7:27100\n", out.getvalue())
+        self.assertIn("compiled 6 relay services", out.getvalue())
 
 
 class Lifecycle(Base):

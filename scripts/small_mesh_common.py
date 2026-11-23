@@ -74,6 +74,28 @@ def nodes_for(state: dict, purpose: str) -> list[dict]:
     return [node for node in nodes_by_role(state, "load") if load_purpose(node) == purpose]
 
 
+# The port on which a contributor takes its source's AEP1 epochs (av-contrib
+# --daw-media-bind).
+DAW_MEDIA_PORT = 27100
+
+
+def contributors(state: dict) -> list[dict]:
+    """The contributors of a lab: the origin first, then the standby (the
+    node its topology marks `"standby": true`), which publishes the same
+    parts beside it."""
+    return sorted(nodes_by_role(state, "contributor"),
+                  key=lambda node: bool(node.get("standby")))
+
+
+def contributor_targets(state: dict) -> list[str]:
+    """Where a source sends every AEP1 epoch: `address:27100` of each
+    contributor, the origin first (one `--target` each for aep1-48k-probe
+    send). A contributor's VLAN address where it has one: the source host is
+    on its site's VLAN."""
+    return [f"{node.get('vlan_ipv4') or node['public_ipv4']}:{DAW_MEDIA_PORT}"
+            for node in contributors(state)]
+
+
 def ssh_base() -> list[str]:
     CONTROL_DIR.mkdir(mode=0o700, exist_ok=True)
     KNOWN_HOSTS.parent.mkdir(parents=True, exist_ok=True)
