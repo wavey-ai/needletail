@@ -647,6 +647,59 @@ class Render(Base):
         finally:
             deploy.RENDER_BINARIES.clear()
 
+    def test_a_setting_the_binary_cannot_take_is_named_on_stderr(self):
+        """Review of B W1: a setting not at its default whose flag the
+        av-mesh of the render lacks is named once on stderr with why, and the
+        render is unchanged; a setting at its default, or one an extra
+        argument gives, is not named."""
+        def render(overrides) -> tuple[str, dict]:
+            err = io.StringIO()
+            with redirect_stderr(err):
+                args = self.render(overrides)[2]
+            return err.getvalue(), args
+
+        old_mesh = fake_binary(self.dir, "old-mesh", ["--client-udp-bind", "--mesh-bind"])
+        new_mesh = fake_binary(self.dir, "new-mesh", [
+            "--client-udp-assign-confirms-per-source", "--relay-media-deadline-ms"])
+        try:
+            deploy.RENDER_BINARIES.update({"av-mesh": old_mesh})
+            quiet, before = render([])
+            self.assertEqual(quiet, "")
+            err, args = render(["client_udp_assign_confirms_per_source=4096"])
+            # The av-mesh nodes (a contributor's path observations carry the
+            # time of the render).
+            meshed = lambda rendered: {name: node_args for name, node_args in rendered.items()
+                                       if "--mesh-bind" in node_args}
+            self.assertEqual(meshed(args), meshed(before))
+            self.assertIn("client_udp_assign_confirms_per_source=4096", err)
+            # media_deadline_ms reaches the contributors whatever the av-mesh.
+            err, args = render(["client_udp_assign_confirms_per_source=4096",
+                                "media_deadline_ms=250"])
+            self.assertEqual(len(err.splitlines()), 1, err)
+            self.assertIn("client_udp_assign_confirms_per_source=4096 (av-mesh at "
+                          f"{old_mesh} lacks --client-udp-assign-confirms-per-source)", err)
+            self.assertIn(f"media_deadline_ms=250 (av-mesh at {old_mesh} lacks "
+                          "--relay-media-deadline-ms)", err)
+            self.assertNotIn("move_grace", err)
+            err, _args = render([
+                "client_udp_assign_confirms_per_source=4096",
+                'extra_edge_args=["--client-udp-assign-confirms-per-source","4096"]',
+                'extra_distributor_args=["--client-udp-assign-confirms-per-source","4096"]'])
+            self.assertEqual(err, "")
+            # A binary that cannot be run is said so.
+            broken = self.dir / "broken-mesh"
+            broken.write_text("#!/bin/sh\nexit 3\n")
+            broken.chmod(0o755)
+            deploy.RENDER_BINARIES.update({"av-mesh": broken})
+            err, _args = render(["client_udp_assign_confirms_per_source=4096"])
+            self.assertIn(f"(cannot read {broken} --help)", err)
+            deploy.RENDER_BINARIES.update({"av-mesh": new_mesh})
+            err, _args = render(["client_udp_assign_confirms_per_source=4096",
+                                 "media_deadline_ms=250"])
+            self.assertEqual(err, "")
+        finally:
+            deploy.RENDER_BINARIES.clear()
+
     def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
         """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
         lon-dist-a/b, rendered on its own path) takes every wave 7 setting

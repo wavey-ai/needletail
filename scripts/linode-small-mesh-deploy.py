@@ -2107,6 +2107,15 @@ def binary_has(kind: str, name: str) -> bool | None:
     return None if flags is None else name in flags
 
 
+# The flags that binary_takes left out of the render under way, with why
+# ({(kind, flag): reason}): render names the settings that did not apply.
+UNRENDERED_FLAGS: dict = {}
+
+# The setting that a flag left out by binary_takes renders, where it is not
+# the flag's own name (--client-udp-move-grace-ms: client_udp_move_grace_ms).
+FLAG_SETTINGS = {"--relay-media-deadline-ms": "media_deadline_ms"}
+
+
 def binary_takes(kind: str, pairs: list[str]) -> list[str]:
     """The `--flag value` pairs of `pairs` whose flag the `kind` binary that
     the render is for lists in its --help. The flags that the resilient mesh
@@ -2114,12 +2123,39 @@ def binary_takes(kind: str, pairs: list[str]) -> list[str]:
     binaries have them and a roll can render an older build beside a newer
     one: a binary without a flag, and one that the render cannot see (no
     RENDER_BINARIES, as in the unit tests), gets none and runs on its
-    default."""
+    default. Each flag left out is recorded in UNRENDERED_FLAGS."""
     out = []
     for index in range(0, len(pairs), 2):
-        if binary_has(kind, pairs[index]):
+        name = pairs[index]
+        has = binary_has(kind, name)
+        if has:
             out += pairs[index:index + 2]
+            continue
+        path = RENDER_BINARIES.get(kind)
+        UNRENDERED_FLAGS[(kind, name)] = (
+            f"the render names no {kind} binary" if path is None
+            else f"{kind} at {path} lacks {name}" if has is False
+            else f"cannot read {path} --help")
     return out
+
+
+def report_unrendered(settings: dict, rendered: dict[str, dict]) -> None:
+    """One stderr line naming each setting not at its default whose flag
+    binary_takes left out of every node, with why: the binary runs on its
+    own default instead (B 7: confirmations per source at a load host)."""
+    given = set()
+    for item in rendered.values():
+        given |= flag_names(item["args"])
+    unapplied = []
+    for (_kind, name), reason in sorted(UNRENDERED_FLAGS.items()):
+        key = FLAG_SETTINGS.get(name, name[2:].replace("-", "_"))
+        if (name in given or key not in settings
+                or settings[key] == DEFAULT_SETTINGS.get(key)):
+            continue
+        unapplied.append(f"{key}={json.dumps(settings[key])} ({reason})")
+    if unapplied:
+        print("render: settings not applied, the binaries run on their defaults: "
+              + "; ".join(unapplied), file=sys.stderr)
 
 
 def two_path_args(node_args: list[str], settings: dict) -> list[str]:
@@ -2963,6 +2999,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
     direct_contrib, direct_mesh = (direct_region_args(state, services)
                                    if settings.get("contributor_direct_region") else ([], {}))
     contributor_ids = {relay_node_id(node) for node in common.contributors(state)}
+    UNRENDERED_FLAGS.clear()
     rendered: dict[str, dict] = {}
     for node in state["nodes"].values():
         role = node["role"]
@@ -3052,6 +3089,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
+    report_unrendered(settings, rendered)
     check_class_agreement(rendered)
     check_cache_mesh_peers(state, rendered, settings)
     check_class_ports(rendered, classes)
