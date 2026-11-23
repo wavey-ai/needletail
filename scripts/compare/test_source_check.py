@@ -153,14 +153,15 @@ class FirstSession(unittest.TestCase):
         for line in lab:
             for word, kind in (("edge_lab.py up", "up"), ("nodecheck watch", "watch"),
                                ("# idle", "idle"), ("edge_lab.py burn", "burn"),
-                               ("edge_lab.py restart contrib-lon", "restart"),
+                               ("edge_lab.py stop contrib-lon", "stop"),
+                               ("edge_lab.py start contrib-lon", "start"),
                                ("-first --no-up", "first"),
                                ("-warm --no-up", "warm"), ("/api/stalls", "stalls"),
                                ("edge_lab.py down", "down")):
                 if word in line and (not kinds or kinds[-1] != kind):
                     kinds.append(kind)
-        self.assertEqual(kinds, ["up", "watch", "idle", "burn", "restart", "first", "stalls",
-                                 "warm", "stalls", "down"])
+        self.assertEqual(kinds, ["up", "watch", "idle", "burn", "stop", "start", "first",
+                                 "stalls", "warm", "stalls", "down"])
         burns = [line for line in lab if "edge_lab.py burn" in line]
         self.assertEqual(len(burns), len(first_session.mesh_nodes()))
         self.assertNotIn("lon-dist-c", " ".join(burns))
@@ -170,6 +171,16 @@ class FirstSession(unittest.TestCase):
             self.assertIn(flag, first)
         self.assertIn("# idle, as the referee's lab before its first session: 990 s", lines)
         self.assertFalse((first_session.OUT / "fs-test").exists())
+
+    def test_the_preflight_reads_the_lab_s_dispatch_not_its_usage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            usage = pathlib.Path(directory) / "edge_lab.py"
+            usage.write_text('"""edge_lab.py burn NODE SECONDS"""\nif command == "up":\n    pass\n')
+            with mock.patch.object(first_session, "EDGE_LAB", usage):
+                self.assertTrue(any("no `burn`" in line for line in first_session.preflight()))
+            usage.write_text('if command == "up":\n    pass\nelif command == "burn":\n    pass\n')
+            with mock.patch.object(first_session, "EDGE_LAB", usage):
+                self.assertFalse(any("no `burn`" in line for line in first_session.preflight()))
 
     def test_the_report_sets_first_against_warm(self):
         with tempfile.TemporaryDirectory() as directory:

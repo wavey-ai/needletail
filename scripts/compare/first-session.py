@@ -16,7 +16,9 @@ the contributor restarted, the first stream):
  2. --idle-s seconds idle (990, the referee's 16.5 minutes);
  3. `edge_lab.py burn NODE --burn-s` on every mesh node at once
     (workstream C's verb);
- 4. `edge_lab.py restart contrib-lon` (C's verb);
+ 4. the contributor restarted: `edge_lab.py stop contrib-lon`, then
+    `edge_lab.py start contrib-lon` (the lab's own verbs; C's CL1 adds no
+    `restart`);
  5. the first session: scripts/compare/latency-bench.py --no-up --keep-up
     --skip-seconds 0, Opus 1 ms (or --payload), 2 UDP clients a host and a
     crowd of 40 listeners an edge with 8 sampled, as wave 9's gate ran it;
@@ -60,8 +62,9 @@ ARCHIVE_TOOL = ROOT / "scripts" / "run_archive.py"
 OUT = ROOT / "target" / "first-session"
 CONTRIBUTOR = "contrib-lon"
 MESH_ROLES = ("contributor", "distributor", "edge")
-# What workstream C's CL1 gives the lab (C-operations.md 2.12).
-LAB_VERBS = ("burn", "restart")
+# What workstream C's CL1 gives the lab (C-operations.md 2.12) and this
+# tool needs: a verb of edge_lab.py's command dispatch.
+LAB_VERBS = ("burn",)
 GATE_P99_MS = 0.3
 SESSIONS = ("first", "warm")
 NODECHECK = pathlib.Path(os.environ.get(
@@ -134,7 +137,8 @@ def preflight() -> list[str]:
     problems = []
     source = EDGE_LAB.read_text()
     for verb in LAB_VERBS:
-        if f"edge_lab.py {verb} " not in source:
+        # The dispatch of main(), not its usage text.
+        if f'command == "{verb}"' not in source:
             problems.append(f"edge_lab.py has no `{verb}` (workstream C's CL1)")
     for path in (NODECHECK, ARCHIVE_TOOL):
         if not path.is_file():
@@ -160,7 +164,8 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
     steps.wait(args.idle_s, "idle, as the referee's lab before its first session")
     steps.together([[sys.executable, str(EDGE_LAB), "burn", name, str(args.burn_s)]
                     for name in mesh_nodes()], timeout=args.burn_s + 120)
-    steps.run([sys.executable, str(EDGE_LAB), "restart", CONTRIBUTOR])
+    steps.run([sys.executable, str(EDGE_LAB), "stop", CONTRIBUTOR])
+    steps.run([sys.executable, str(EDGE_LAB), "start", CONTRIBUTOR])
     for session in SESSIONS:
         began = time.time()
         # The first session's journals from the lab's start (its idle, the
