@@ -552,6 +552,10 @@ def create_batch(api: "Api", state: dict, state_path: pathlib.Path, nodes: list[
     out: dict = {"created": [], "refused": [], "skipped": []}
     gone: str | None = None
     orphans: list[dict] = []
+    # Read once, before the workers start: record_node brings `state` up
+    # to the file on disk (clear, then update) while they run.
+    run_id, tag, image = state["run_id"], state["tag"], state["image"]
+    stamped = {node["name"]: under_watchdog(state, node) for node in nodes}
 
     def one(node: dict) -> dict | None:
         with lock:
@@ -562,8 +566,7 @@ def create_batch(api: "Api", state: dict, state_path: pathlib.Path, nodes: list[
                                        "after": f"{cause['kind']} refusal of {cause['name']}"})
                 return None
         try:
-            return create_node(api, state["run_id"], state["tag"], state["image"], key,
-                               under_watchdog(state, node))
+            return create_node(api, run_id, tag, image, key, stamped[node["name"]])
         except Exception as error:  # noqa: BLE001 - every refusal is recorded and stops
             refusal = {"name": node["name"], "site": node["site"], "region": node["region"],
                        "type": node["type"], "kind": refusal_kind(error),
