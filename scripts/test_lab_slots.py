@@ -67,7 +67,8 @@ class FakeApi:
     """The Linode API as far as the lab tool uses it, in memory. The dev
     box (arch-us-east, no tags) is one of its instances. An instance has a
     config profile with its interfaces; a rebuild shows `rebuilding` for
-    one read and then `offline`, and (with `rebuild_drops_vlan`) leaves the
+    one read and then `offline` (`running`, with `rebuild_boots`: the API
+    booted it all the same), and (with `rebuild_drops_vlan`) leaves the
     config with the public interface only."""
 
     def __init__(self, tag: str = "needletail-small-mesh-t1"):
@@ -82,6 +83,7 @@ class FakeApi:
         self.firewalls: dict[int, dict] = {}
         self.event_pages: list[list[dict]] = [[]]
         self.rebuild_drops_vlan = False
+        self.rebuild_boots = False
         self.tag = tag
 
     def list_all(self, path, tag=None):
@@ -137,7 +139,7 @@ class FakeApi:
                     item.update(body)
                     return dict(item)
                 if item and item["status"] == "rebuilding":
-                    item["status"] = "offline"
+                    item["status"] = "running" if self.rebuild_boots else "offline"
                     return {**item, "status": "rebuilding"}
                 return dict(item or {})
             if ident == 1:
@@ -155,6 +157,9 @@ class FakeApi:
                 return {}
             if parts[4] == "boot":
                 item["status"] = "running"
+                return {}
+            if parts[4] == "shutdown":
+                item["status"] = "offline"
                 return {}
         return {"id": 77}
 
@@ -1094,6 +1099,30 @@ class Replace(Base):
         self.replace(api, ["lon-dist-a"])
         self.assertFalse([call for call in api.calls if "/configs/" in call[1]])
         self.assertEqual(api.calls.count(("POST", f"/linode/instances/{ident}/boot")), 1)
+        # A rebuild that boots all the same, without the VLAN: shut down,
+        # the config put right, then one boot.
+        api.rebuild_boots = True
+        api.rebuild_drops_vlan = True
+        api.calls.clear()
+        self.replace(api, ["lon-dist-a"])
+        calls = api.calls
+        shutdown = calls.index(("POST", f"/linode/instances/{ident}/shutdown"))
+        put = calls.index(("PUT", f"/linode/instances/{ident}/configs/{700 + ident}"))
+        boots = [index for index, call in enumerate(calls)
+                 if call == ("POST", f"/linode/instances/{ident}/boot")]
+        self.assertEqual(len(boots), 1)
+        self.assertLess(shutdown, put)
+        self.assertLess(put, boots[0])
+        self.assertEqual(api.instances[ident]["status"], "running")
+        self.assertEqual(len(api.configs[ident][0]["interfaces"]), 2)
+        # One that boots with both interfaces: left running, no boot.
+        api.rebuild_drops_vlan = False
+        api.calls.clear()
+        self.replace(api, ["lon-dist-a"])
+        self.assertFalse([call for call in api.calls if call[1].endswith(("/boot", "/shutdown"))
+                          or "/configs/" in call[1]])
+        self.assertEqual(api.instances[ident]["status"], "running")
+        api.rebuild_boots = False
         # A public address that is not the recorded one: not booted.
         api.instances[ident]["ipv4"] = ["192.0.2.99"]
         api.calls.clear()

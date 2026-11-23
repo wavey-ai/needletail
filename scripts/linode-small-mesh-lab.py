@@ -1328,12 +1328,15 @@ def owned_instance(api: Api, state: dict, name: str, verb: str) -> dict:
     return live
 
 
-def wait_rebuilt(api: Api, ident: int, name: str, started: dict) -> None:
+def wait_rebuilt(api: Api, ident: int, name: str, started: dict) -> bool:
     """Wait for a rebuild with `booted: false` to end: the instance shows
     `rebuilding`, then `offline`. A rebuild shuts the instance down first,
     so `offline` alone is not the end: an instance that reads `offline`
     without having shown `rebuilding` (in the rebuild's own answer,
-    `started`, or since) is given REBUILD_SETTLE_S to show it."""
+    `started`, or since) is given REBUILD_SETTLE_S to show it. An instance
+    that shows `booting` or `running` after `rebuilding` was booted after
+    all (the API ignored `booted: false`): that too is the end. Returns
+    whether it booted."""
     seen = started.get("status") == "rebuilding"
     until = time.time() + REBUILD_TIMEOUT_S
     quiet_since: float | None = None
@@ -1341,17 +1344,32 @@ def wait_rebuilt(api: Api, ident: int, name: str, started: dict) -> None:
         status = api.call("GET", f"/linode/instances/{ident}").get("status")
         if status == "rebuilding":
             seen = True
+        elif status in ("booting", "running") and seen:
+            return True
         elif status == "offline":
             if seen:
-                return
+                return False
             quiet_since = quiet_since or time.time()
             if time.time() - quiet_since >= REBUILD_SETTLE_S:
-                return
+                return False
         if status != "offline":
             quiet_since = None
         time.sleep(5)
     sys.exit(f"replace: the rebuild of {name} (instance {ident}) did not end in "
              f"{REBUILD_TIMEOUT_S / 60:.0f} min; it is still the lab's, under its watchdog")
+
+
+def shut_down(api: Api, state: dict, name: str) -> None:
+    """Shut a running lab instance down and wait for `offline`."""
+    ident = state["nodes"][name]["id"]
+    wait_running(api, state, [name])
+    api.call("POST", f"/linode/instances/{ident}/shutdown")
+    until = time.time() + REBUILD_TIMEOUT_S
+    while api.call("GET", f"/linode/instances/{ident}").get("status") != "offline":
+        if time.time() >= until:
+            sys.exit(f"replace: {name} (instance {ident}) did not shut down in "
+                     f"{REBUILD_TIMEOUT_S / 60:.0f} min")
+        time.sleep(5)
 
 
 def rebuild_node(api: Api, state_path: pathlib.Path, state: dict, spec: dict,
@@ -1364,7 +1382,10 @@ def rebuild_node(api: Api, state_path: pathlib.Path, state: dict, spec: dict,
     not to boot. Once it is done the config profile is read, and both
     interfaces (public, then the regional VLAN at the node's address) are
     put in place if the rebuild did not keep them; the public address and
-    the lab firewall are checked; then the instance is booted, once."""
+    the lab firewall are checked; then the instance is booted, once. An
+    instance that booted after its rebuild all the same is shut down
+    before its interfaces are put in place, and booted once after; when
+    its config holds both, it is left running."""
     name = spec["name"]
     node = state["nodes"][name]
     ident = node["id"]
@@ -1374,11 +1395,10 @@ def rebuild_node(api: Api, state_path: pathlib.Path, state: dict, spec: dict,
         "root_pass": secrets.token_urlsafe(48),
         "booted": False,
     })
-    wait_rebuilt(api, ident, name, started)
+    booted = wait_rebuilt(api, ident, name, started)
     configs = api.list_all(f"/linode/instances/{ident}/configs")
     if not configs:
-        sys.exit(f"replace: {name} (instance {ident}) has no config profile after its rebuild; "
-                 "not booted")
+        sys.exit(f"replace: {name} (instance {ident}) has no config profile after its rebuild")
     config = configs[0]
     wanted = node_interfaces(state["run_id"], spec)
 
@@ -1387,6 +1407,9 @@ def rebuild_node(api: Api, state_path: pathlib.Path, state: dict, spec: dict,
                  item.get("ipam_address") or None) for item in interfaces]
 
     if shape(config.get("interfaces") or []) != shape(wanted):
+        if booted:
+            shut_down(api, state, name)
+            booted = False
         api.call("PUT", f"/linode/instances/{ident}/configs/{config['id']}",
                  {"interfaces": wanted})
         print(f"  {name}: the rebuilt config did not hold both interfaces; put in place")
@@ -1394,12 +1417,14 @@ def rebuild_node(api: Api, state_path: pathlib.Path, state: dict, spec: dict,
     public = (live.get("ipv4") or [None])[0]
     if public != node["public_ipv4"]:
         sys.exit(f"replace: {name} (instance {ident}) now has the public address {public}, "
-                 f"not the recorded {node['public_ipv4']}; not booted")
+                 f"not the recorded {node['public_ipv4']}"
+                 + ("" if booted else "; not booted"))
     if not firewall_attached(api, state, name):
         api.call("POST", f"/networking/firewalls/{state['firewall_id']}/devices",
                  {"id": ident, "type": "linode"})
         print(f"  {name}: the lab firewall was not attached; attached before the boot")
-    api.call("POST", f"/linode/instances/{ident}/boot", {"config_id": config["id"]})
+    if not booted:
+        api.call("POST", f"/linode/instances/{ident}/boot", {"config_id": config["id"]})
     wait_running(api, state, [name])
     change_state(state_path, state, lambda current: current.setdefault("replaced", []).append(
         {"name": name, "id": ident, "unix": int(time.time()), "mode": "rebuild"}))
