@@ -118,6 +118,14 @@ class Manifest(Base):
         self.assertEqual(m["command"], ["tool-a", "--x"])
         self.assertTrue(m["started_at_utc"].endswith("Z"))
 
+    def test_list_names_a_manifest_that_is_not_in_the_schema_and_goes_on(self):
+        self.make("good")
+        for name, body in (("hand", {"run_id": "hand", "files": {"a.md": "notes"}}), ("text", "notes")):
+            (self.root / name).mkdir()
+            (self.root / name / "manifest.json").write_text(json.dumps(body))
+        runs = {r["run_id"]: r["status"] for r in ra.list_runs()}
+        self.assertEqual(runs, {"good": "running", "hand": "foreign-manifest", "text": "foreign-manifest"})
+
     def test_failed_rename_leaves_previous_manifest(self):
         archive = self.make()
         archive.record_step(1, "opus-1ms", 100)

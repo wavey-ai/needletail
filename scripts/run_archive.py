@@ -786,6 +786,10 @@ def list_runs(root: pathlib.Path | None = None) -> list[dict]:
             runs.append({"run_id": path.name, "status": "unreadable", "kind": None,
                          "bytes": None, "cost_usd": None, "started_at_utc": None})
             continue
+        if not isinstance(m, dict) or not m.get("schema_version") or not isinstance(m.get("files"), list):
+            runs.append({"run_id": path.name, "status": "foreign-manifest", "kind": None,
+                         "bytes": None, "cost_usd": None, "started_at_utc": None})
+            continue
         runs.append({"run_id": m.get("run_id", path.name), "status": m.get("status"),
                      "kind": m.get("kind"), "bytes": sum(f.get("bytes") or 0 for f in m.get("files", [])),
                      "files": len(m.get("files", [])), "cost_usd": (m.get("lab") or {}).get("cost_usd"),
