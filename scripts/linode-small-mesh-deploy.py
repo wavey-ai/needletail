@@ -352,6 +352,16 @@ DEFAULT_SETTINGS = {
     # for by the entry point's estimate spills within its region rather than
     # being sent to the failover region (av-mesh default true; false: before).
     "assignment_udp_in_region": None,
+    # Wave 9 (cold start), each the av-mesh flag of the same name (None: the
+    # binary's default, true): mlock_all (every mesh node; the unit gets
+    # LimitMEMLOCK=infinity unless it is false, since av-mesh locks only
+    # without a limit), malloc_tune and prefault (every mesh node), and
+    # client_udp_prompt_sender (nodes that serve UDP clients: the stream's
+    # sender does not wait for a playable copy).
+    "mlock_all": None,
+    "malloc_tune": None,
+    "prefault": None,
+    "client_udp_prompt_sender": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1984,7 +1994,7 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
     if "--mesh-bind" in node_args:
-        for key in AM_MESH_BOOL + PROOF_MESH_BOOL:
+        for key in AM_MESH_BOOL + PROOF_MESH_BOOL + COLD_MESH_BOOL:
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
         if settings.get("cache_mesh_warm_total_kbps") is not None:
@@ -1992,7 +2002,8 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
             out += ["--cache-mesh-warm-total-kbps",
                     "0" if float(total) == 0 else str(whole(total, "cache_mesh_warm_total_kbps"))]
     if "--client-udp-bind" in node_args:
-        for key in WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL + REVIEW_CLIENT_UDP_BOOL:
+        for key in (WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL + REVIEW_CLIENT_UDP_BOOL
+                    + COLD_CLIENT_UDP_BOOL):
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
         for key in AM_CLIENT_UDP_MS + REVIEW_CLIENT_UDP_COUNT:
@@ -2032,6 +2043,10 @@ REVIEW_CLIENT_UDP_BOOL = ("client_udp_region_head_check",)
 REVIEW_CLIENT_UDP_COUNT = ("client_udp_keepalive_ms", "client_udp_datagram_capacity")
 # Wave 8 local proofs: on every mesh node, the av-mesh flag of the same name.
 PROOF_MESH_BOOL = ("assignment_udp_in_region",)
+# Wave 9 (cold start): on every mesh node, and on the nodes that serve UDP
+# clients, the av-mesh flag of the same name.
+COLD_MESH_BOOL = ("mlock_all", "malloc_tune", "prefault")
+COLD_CLIENT_UDP_BOOL = ("client_udp_prompt_sender",)
 
 
 def is_contributor_args(args: list[str]) -> bool:
@@ -2786,6 +2801,10 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
         # threads; socket buffers beyond rmem_max (SO_RCVBUFFORCE). The
         # service is still the needletail user, and NoNewPrivileges holds.
         thread_line += "AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN\n"
+    if service != "needletail-contrib" and settings.get("mlock_all") is not False:
+        # Wave 9 (cold start): av-mesh locks its memory (mlockall) only
+        # where it may without a limit; the default 8 MB would refuse it.
+        thread_line += "LimitMEMLOCK=infinity\n"
     return f"""[Unit]
 Description={description} (small-mesh lab)
 After=network-online.target

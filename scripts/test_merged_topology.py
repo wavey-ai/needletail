@@ -446,6 +446,28 @@ class Render(Base):
             self.assertEqual(value_of(node_args, "--client-udp-fanout-inline-shard"), "true")
         self.assertIn("--client-udp-repair-thread", args["lon-edge-1"])
 
+    def test_the_wave9_cold_start_settings_reach_their_nodes_only_when_given(self):
+        """Wave 9 (cold start): mlock_all, malloc_tune and prefault render on
+        every mesh node, client_udp_prompt_sender on the nodes that serve UDP
+        clients, each only when given."""
+        mesh = ("--mlock-all", "--malloc-tune", "--prefault")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in mesh + ("--client-udp-prompt-sender",):
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "mlock_all=false", "malloc_tune=false", "prefault=false",
+            "client_udp_prompt_sender=false"])
+        for name, node_args in args.items():
+            if "--mesh-bind" in node_args:
+                for flag in mesh:
+                    self.assertEqual(value_of(node_args, flag), "false", (name, flag))
+            if "--client-udp-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--client-udp-prompt-sender"), "false", name)
+            else:
+                self.assertNotIn("--client-udp-prompt-sender", node_args, name)
+        self.assertEqual(value_of(args["lon-edge-1"], "--client-udp-prompt-sender"), "false")
+
     def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
         """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
         lon-dist-a/b, rendered on its own path) takes every wave 7 setting
