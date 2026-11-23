@@ -2625,6 +2625,19 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
         sites = {state["nodes"][target]["site"] for target in targets if target in state["nodes"]}
         receiving = [edge for edge in serving if edge not in targets
                      and (state["nodes"].get(edge) or {}).get("site") in sites]
+        # An edge of the faulted sites that took moves and was neither in
+        # service at the start nor started by this scenario (review of CL6):
+        # it is weighed with the receiving edges, and the share and the
+        # balance fail naming it, since its listeners were not foreseen.
+        took = during["unaffected"]["moves_by_edge"]
+        started = [edge for edge in sorted(row["joins"], key=natural)
+                   if edge not in receiving and edge not in targets
+                   and (state["nodes"].get(edge) or {}).get("site") in sites]
+        unlisted = [edge for edge in sorted(took, key=natural)
+                    if took[edge] and edge not in receiving and edge not in targets
+                    and edge not in started
+                    and (state["nodes"].get(edge) or {}).get("site") in sites]
+        receiving += started + unlisted
         # Wave 9 C4: the moves against each receiving edge's headroom just
         # before the fault, and the listeners per receiving edge at the end
         # of the observation.
@@ -2659,6 +2672,7 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
                            # headroom to 1,000.
                            "udp_headroom_to_full_share_worst": share_worst(headroom_shares(
                                during["unaffected"]["moves_by_edge"], loads, level=1000)),
+                           "unlisted_receiving": unlisted,
                            "listeners_after": held,
                            "listeners_after_max_over_mean": balance(held),
                            "hls": [move for move in moves if fault_t <= move["t"] < end_t]}
@@ -2692,7 +2706,9 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
     # is void.
     baseline = sum(result["udp"]["before"][side]["missing"]
                    for side in ("unaffected", "faulted"))
-    out.append(check("baseline: 0 missing", baseline == 0, baseline))
+    counted = sum(result["udp"]["before"][side]["parts"] for side in ("unaffected", "faulted"))
+    out.append(check("baseline: 0 missing", baseline == 0 if counted else None, baseline,
+                     None if counted else "no listener intervals in the baseline"))
     # needletail-load books a listener's missing parts on its current edge,
     # and a move switches the edge before the parts lost around it settle:
     # the edges not faulted carry the moved listeners' losses too. So the
@@ -2758,6 +2774,9 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
         out.append(check(f"moves spread max/mean <= {expect['spread_max_over_mean']}",
                          None if value is None else value <= expect["spread_max_over_mean"],
                          value, None if value is not None else "moves to spread"))
+    # Moves into an edge not in service when the phases began fail the share
+    # and the balance, and the value names it (review of CL6).
+    unlisted = result["moves"].get("unlisted_receiving") or []
     if "move_share_within" in expect:
         # Wave 9 C4: each receiving edge's share of the moves within this
         # factor of its headroom-weighted share (the equal-spread figure
@@ -2765,19 +2784,23 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
         value = result["moves"].get("udp_headroom_share_worst")
         out.append(check(f"each edge's moves within {expect['move_share_within']}x of its "
                          "headroom-weighted share",
+                         False if unlisted else
                          None if value is None else value <= expect["move_share_within"],
                          {"worst": value,
                           "equal_spread_max_over_mean": result["moves"].get(
-                              "udp_spread_max_over_mean")},
-                         None if value is not None else
+                              "udp_spread_max_over_mean"),
+                          **({"not_serving": unlisted} if unlisted else {})},
+                         None if value is not None or unlisted else
                          "moves, and each receiving edge's load before the fault"))
     if "balance_after_max_over_mean" in expect:
         value = result["moves"].get("listeners_after_max_over_mean")
         out.append(check(f"listeners per receiving edge after the moves max/mean <= "
                          f"{expect['balance_after_max_over_mean']}",
-                         None if value is None else
-                         value <= expect["balance_after_max_over_mean"], value,
-                         None if value is not None else "each receiving edge's UDP gauge"))
+                         False if unlisted else None if value is None else
+                         value <= expect["balance_after_max_over_mean"],
+                         {"max_over_mean": value, "not_serving": unlisted} if unlisted else value,
+                         None if value is not None or unlisted else
+                         "each receiving edge's UDP gauge"))
     moved = merge_histograms([histogram for histogram in (
         result["udp"]["during"][side].get("time_to_move_histogram")
         for side in ("unaffected", "faulted")) if histogram])
@@ -3339,24 +3362,71 @@ def counter_delta(before: dict, after: dict) -> dict:
     return out
 
 
+# An edge whose GET /api/node fails is asked again this many times, this far
+# apart, before a phase run takes the failure as its answer (review of CL6).
+NODE_RETRIES = 2
+NODE_RETRY_S = 2.0
+
+
 def serving_edges(lab: dict, standby: list[str]) -> tuple[list[str], dict[str, dict]]:
     """The edges in service, by name: created (in the lab's state), not held
     out (`standby`: the deploy's standby_edges) and ready by their own word
     (GET /api/node, "ready"). A phase run records them as it starts
     (phases.json "serving_edges"): they are the edges that can take a
     faulted edge's listeners. Second: what each other edge that is not held
-    out answered (its state and reasons, or the error)."""
+    out answered (its state and reasons, or the error of its last try; an
+    edge that does not answer is asked NODE_RETRIES more times)."""
     edges = [node for node in common.nodes_by_role(lab, "edge") if node["name"] not in standby]
     answers = common.parallel(edges, lambda node: http_get(node, "/api/node"), workers=64)
+    for _ in range(NODE_RETRIES):
+        failed = [node for node in edges if not isinstance(answers[node["name"]], dict)
+                  or "error" in answers[node["name"]]]
+        if not failed:
+            break
+        time.sleep(NODE_RETRY_S)
+        answers.update(common.parallel(failed, lambda node: http_get(node, "/api/node"),
+                                       workers=64))
     serving, left_out = [], {}
     for name in sorted(answers, key=natural):
-        found = answers[name] if isinstance(answers[name], dict) else {}
+        found = answers[name] if isinstance(answers[name], dict) \
+            else {"error": "the answer is not a JSON object"}
         if found.get("ready") is True:
             serving.append(name)
         else:
             left_out[name] = {key: found[key] for key in ("error", "state", "not_ready",
                                                           "drain_reasons") if key in found}
     return serving, left_out
+
+
+def begin_phases(lab: dict, standby: list[str], phases: dict, plan: dict,
+                 directory: pathlib.Path, log) -> None:
+    """A phase run's start: the edges in service (serving_edges) logged,
+    recorded in `phases` and written with the plan, the timeline and the
+    cost to phases.json, which `analyse` reads back. Exits before anything
+    is started when an edge not on standby did not answer (an error is not
+    its state, and an edge left out unseen would take listeners that no
+    share or balance weighs) or when no edge is ready."""
+    serving, left_out = serving_edges(lab, standby)
+    log({"serving_edges": serving, "not_ready": left_out})
+    unanswered = {name: item["error"] for name, item in left_out.items() if "error" in item}
+    if unanswered and all("HTTP Error 404" in error for error in unanswered.values()):
+        sys.exit("this build has no /api/node (every edge not on standby answers 404): a phase "
+                 "run needs a build that reports its readiness")
+    if unanswered:
+        sys.exit("edges not on standby did not answer GET /api/node: "
+                 + ", ".join(f"{name} ({error})" for name, error
+                             in sorted(unanswered.items(), key=lambda item: natural(item[0])))
+                 + "; a phase run needs every edge's state to know which take a fault's "
+                   "listeners")
+    if not serving:
+        sys.exit("no edge in service says it is ready (GET /api/node of every edge not on "
+                 "standby): a phase run needs the edges that take a fault's listeners")
+    phases["serving_edges"] = serving
+    (directory / "phases.json").write_text(json.dumps(
+        {"plan": phases["plan"], "timeline": phases["timeline"],
+         "serving_edges": serving,
+         "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
+                            plan["cost"]["hourly_usd"])}, indent=1) + "\n")
 
 
 def live_node(lab: dict, avoid: set[str] = frozenset()) -> dict:
@@ -4128,6 +4198,14 @@ def phase_setup(args: argparse.Namespace) -> dict | None:
     if args.joins and entries:
         raise ValueError(f"the joins phase enters at each region's dist-a, which this phase plan "
                          f"faults ({', '.join(entries)}): run it without --joins")
+    # The analysis books a loss at its row's time less the tool's default
+    # settle time (settle_seconds): another settle would put a scenario's
+    # losses in the wrong window (review of CL6).
+    settle = [token for token in shlex.split(getattr(args, "load_args", "") or "")
+              if token.split("=")[0] in ("--settle-parts", "--settle-ms")]
+    if settle:
+        raise ValueError(f"a phase run's analysis assumes needletail-load's default settle time: "
+                         f"drop {', '.join(settle)} from --load-args")
     return {"plan": plan, "timeline": timeline}
 
 
@@ -4271,16 +4349,7 @@ def command_run(args: argparse.Namespace) -> None:
         log({"idle_regions": plan["idle_regions"], "note": idle_line(plan)})
     if phases:
         phases["events"] = events_path
-        phases["serving_edges"], left_out = serving_edges(lab, standby)
-        log({"serving_edges": phases["serving_edges"], "not_ready": left_out})
-        if not phases["serving_edges"]:
-            sys.exit("no edge in service says it is ready (GET /api/node of every edge not on "
-                     "standby): a phase run needs the edges that take a fault's listeners")
-        (directory / "phases.json").write_text(json.dumps(
-            {"plan": phases["plan"], "timeline": phases["timeline"],
-             "serving_edges": phases["serving_edges"],
-             "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
-                                plan["cost"]["hourly_usd"])}, indent=1) + "\n")
+        begin_phases(lab, standby, phases, plan, directory, log)
 
     control = control_setup(args, lab, plan, regions, run, directory, log)
     source = common.nodes_for(lab, "source")[0]

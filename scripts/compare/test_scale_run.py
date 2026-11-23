@@ -1225,34 +1225,11 @@ class Phases(unittest.TestCase):
         self.assertIn("| F1 | lon-edge-1 |", out.getvalue())
         self.assertEqual(out.getvalue(), (directory / "summary.md").read_text() + "\n")
 
-    def test_standby_edges_are_not_receiving_edges(self):
-        """The edges that take a faulted edge's listeners are those in
-        service when the phases began. An edge held out on standby is
-        stopped: it has no load and no gauge, and counted as a receiving
-        edge it left the share and the balance of F1 and F2 unjudged."""
-        state = lab()
-        asked = []
-
-        def answer(node, path, timeout=5.0):
-            asked.append((node["name"], path))
-            if node["name"] == "lon-edge-2":
-                return {"state": "draining", "ready": False, "not_ready": ["draining: operator"],
-                        "drain_reasons": ["operator"]}
-            if node["name"] == "new-edge-3":
-                return {"error": "timed out"}
-            return {"state": "ready", "ready": True, "not_ready": []}
-
-        with mock.patch.object(scale, "http_get", answer):
-            serving, left_out = scale.serving_edges(state, STANDBY)
-        self.assertEqual(serving, [name for name in SERVING
-                                   if name not in ("lon-edge-2", "new-edge-3")])
-        self.assertEqual(left_out, {
-            "lon-edge-2": {"state": "draining", "not_ready": ["draining: operator"],
-                           "drain_reasons": ["operator"]},
-            "new-edge-3": {"error": "timed out"}})
-        # An edge on standby is not asked: it is out whatever it would say.
-        self.assertEqual(sorted(asked), sorted((name, "/api/node") for name in SERVING))
-
+    def write_f1_moves(self, state: dict, taken: dict[str, int]):
+        """A step directory of F1: 50 listeners on each of London's five
+        serving edges; lon-edge-1 drains and its listeners move in the
+        second after the fault, `taken` {edge: count} of them to each other
+        edge. The directory, the plan, the timeline and the start."""
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1"])
@@ -1262,9 +1239,6 @@ class Phases(unittest.TestCase):
         fault = start + row["fault"]
         london = [f"lon-edge-{index}" for index in range(1, 11)]
         address = {name: f"{state['nodes'][name]['vlan_ipv4']}:19446" for name in london[:5]}
-        # 50 listeners on each of London's five edges; lon-edge-1 drains and
-        # its 50 move in the second after the fault: 13, 12, 13 and 12.
-        taken = dict(zip(london[1:5], (13, 12, 13, 12)))
         lines = []
         for second in range(int(row["end"]) + 1):
             t = start + second
@@ -1296,6 +1270,45 @@ class Phases(unittest.TestCase):
             (directory / name).mkdir()
             (directory / name / "mesh.jsonl").write_text(
                 "\n".join(json.dumps(item) for item in rows))
+        return directory, plan, timeline, start
+
+    def test_standby_edges_are_not_receiving_edges(self):
+        """The edges that take a faulted edge's listeners are those in
+        service when the phases began. An edge held out on standby is
+        stopped: it has no load and no gauge, and counted as a receiving
+        edge it left the share and the balance of F1 and F2 unjudged."""
+        state = lab()
+        asked = []
+
+        def answer(node, path, timeout=5.0):
+            asked.append((node["name"], path))
+            if node["name"] == "lon-edge-2":
+                return {"state": "draining", "ready": False, "not_ready": ["draining: operator"],
+                        "drain_reasons": ["operator"]}
+            if node["name"] == "new-edge-3":
+                return {"error": "timed out"}
+            return {"state": "ready", "ready": True, "not_ready": []}
+
+        with mock.patch.object(scale, "http_get", answer), \
+                mock.patch.object(scale.time, "sleep", lambda seconds: None):
+            serving, left_out = scale.serving_edges(state, STANDBY)
+        self.assertEqual(serving, [name for name in SERVING
+                                   if name not in ("lon-edge-2", "new-edge-3")])
+        self.assertEqual(left_out, {
+            "lon-edge-2": {"state": "draining", "not_ready": ["draining: operator"],
+                           "drain_reasons": ["operator"]},
+            "new-edge-3": {"error": "timed out"}})
+        # An edge on standby is not asked: it is out whatever it would say.
+        # One that does not answer is asked again.
+        self.assertEqual(sorted(asked), sorted(
+            [(name, "/api/node") for name in SERVING]
+            + [("new-edge-3", "/api/node")] * scale.NODE_RETRIES))
+
+        london = [f"lon-edge-{index}" for index in range(1, 11)]
+        # lon-edge-1 drains and its 50 listeners move to the other four
+        # serving edges: 13, 12, 13 and 12.
+        directory, plan, timeline, start = self.write_f1_moves(
+            state, dict(zip(london[1:5], (13, 12, 13, 12))))
         share = "each edge's moves within 1.3x of its headroom-weighted share"
         after = "listeners per receiving edge after the moves max/mean <= 1.15"
         result = scale.analyse_phases(state, directory, timeline, start, plan, SERVING,
@@ -1318,6 +1331,119 @@ class Phases(unittest.TestCase):
         self.assertIsNone(criteria[share]["ok"])
         self.assertIsNone(criteria[after]["ok"])
         self.assertEqual(result["moves"]["udp_spread_max_over_mean"], 2.34)
+
+    def test_moves_into_an_edge_left_out_fail_the_share_and_the_balance(self):
+        """Review of CL6: an edge in service that serving_edges left out
+        still takes listeners. Its moves are weighed, and the share and the
+        balance fail naming it, never pass over the edges that were listed."""
+        state = lab()
+        london = [f"lon-edge-{index}" for index in range(2, 6)]
+        # lon-edge-5 takes 40 of lon-edge-1's 50: the imbalance F1 catches.
+        directory, plan, timeline, start = self.write_f1_moves(
+            state, dict(zip(london, (3, 3, 4, 40))))
+        share = "each edge's moves within 1.3x of its headroom-weighted share"
+        after = "listeners per receiving edge after the moves max/mean <= 1.15"
+
+        def criteria(serving: list[str]) -> tuple[dict, dict]:
+            result = scale.analyse_phases(state, directory, timeline, start, plan, serving,
+                                          "pcm-1")[0]
+            return result, {item["criterion"]: item for item in result["criteria"]}
+
+        result, judged = criteria(SERVING)
+        self.assertEqual(result["moves"]["unlisted_receiving"], [])
+        self.assertFalse(judged[share]["ok"])
+        self.assertEqual(judged[share]["value"]["worst"], 4.167)
+        self.assertFalse(judged[after]["ok"])
+        self.assertEqual(judged[after]["value"], 1.44)
+        result, judged = criteria([name for name in SERVING if name != "lon-edge-5"])
+        self.assertEqual(result["moves"]["unlisted_receiving"], ["lon-edge-5"])
+        self.assertEqual(sorted(result["moves"]["listeners_after"]), london)
+        self.assertFalse(judged[share]["ok"], judged[share])
+        self.assertEqual(judged[share]["value"]["not_serving"], ["lon-edge-5"])
+        self.assertEqual(judged[share]["value"]["worst"], 4.167)
+        self.assertFalse(judged[after]["ok"], judged[after])
+        self.assertEqual(judged[after]["value"], {"max_over_mean": 1.44,
+                                                  "not_serving": ["lon-edge-5"]})
+        self.assertIn("not_serving", scale.format_phases([result]))
+
+    def test_a_phase_run_records_its_serving_edges_or_does_not_start(self):
+        """`run` asks every edge not on standby for /api/node as the phases
+        begin, asks again an edge that did not answer, and writes the ready
+        ones to phases.json, which `analyse` requires; an edge that never
+        answers, a build without /api/node, or no ready edge stops the run
+        before anything is started."""
+        state = lab()
+        phase_plan = scale.load_phase_plan(PHASES, names=["F1"])
+        timeline = scale.phase_timeline(phase_plan)
+        plan = scale.plan_steps(state, [6000], "pcm-1", 0.05, standby=STANDBY,
+                                hold=timeline["hold_s"])
+        plan["cost"] = scale.cost_estimate(state, plan)
+        asked: list[str] = []
+
+        def begin(answer) -> tuple[pathlib.Path, dict, list[dict]]:
+            directory = pathlib.Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, directory, True)
+            phases, logged = {"plan": phase_plan, "timeline": timeline}, []
+            asked.clear()
+
+            def get(node, path, timeout=5.0):
+                asked.append(node["name"])
+                return answer(node["name"], asked.count(node["name"]))
+            with mock.patch.object(scale, "http_get", get), \
+                    mock.patch.object(scale.time, "sleep", lambda seconds: None):
+                scale.begin_phases(state, STANDBY, phases, plan, directory, logged.append)
+            return directory, phases, logged
+
+        ready = {"state": "ready", "ready": True, "not_ready": []}
+        # new-edge-3 times out once and answers the second time.
+        directory, phases, logged = begin(
+            lambda name, tries: {"error": "timed out"} if name == "new-edge-3" and tries == 1
+            else ready)
+        self.assertEqual(asked.count("new-edge-3"), 2)
+        self.assertEqual(phases["serving_edges"], SERVING)
+        written = json.loads((directory / "phases.json").read_text())
+        self.assertEqual(written["serving_edges"], SERVING)
+        self.assertEqual(written["timeline"], timeline)
+        self.assertIn("pro_rata_usd", written["cost"])
+        self.assertEqual(logged, [{"serving_edges": SERVING, "not_ready": {}}])
+        # A draining edge is left out by its own word.
+        directory, phases, logged = begin(
+            lambda name, tries: {"state": "draining", "ready": False,
+                                 "drain_reasons": ["operator"]}
+            if name == "lon-edge-2" else ready)
+        self.assertNotIn("lon-edge-2", phases["serving_edges"])
+        self.assertEqual(logged[0]["not_ready"],
+                         {"lon-edge-2": {"state": "draining", "drain_reasons": ["operator"]}})
+        for answer, text in (
+                (lambda name, tries: {"error": "timed out"} if name == "new-edge-3" else ready,
+                 "new-edge-3 (timed out)"),
+                (lambda name, tries: {"error": "HTTP Error 404: Not Found"},
+                 "this build has no /api/node"),
+                (lambda name, tries: {"state": "starting", "ready": False},
+                 "no edge in service says it is ready")):
+            with self.assertRaises(SystemExit) as caught:
+                begin(answer)
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual(asked.count("lon-edge-1"), 1)
+        # An edge that never answers is asked three times in all.
+        with self.assertRaises(SystemExit):
+            begin(lambda name, tries: {"error": "timed out"} if name == "new-edge-3" else ready)
+        self.assertEqual(asked.count("new-edge-3"), 1 + scale.NODE_RETRIES)
+
+    def test_a_phase_run_keeps_the_load_tools_settle_time(self):
+        """Review of CL6: the analysis books losses by the load tool's
+        default settle time, so a phase run refuses another."""
+        for extra in ("--settle-parts 500", "--quiet --settle-ms=3500"):
+            args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="",
+                                      steps=None, hls_share=None, config=None, joins=None,
+                                      lk_per_sfu=None, load_args=extra)
+            with self.assertRaises(ValueError) as caught:
+                scale.phase_setup(args)
+            self.assertIn("settle", str(caught.exception))
+        args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="", steps=None,
+                                  hls_share=None, config=None, joins=None, lk_per_sfu=None,
+                                  load_args="--quiet")
+        self.assertIsNotNone(scale.phase_setup(args))
 
     def test_a_late_settle_is_booked_in_its_own_scenario(self):
         """needletail-load counts a part missing 1,500 parts after it was due
@@ -1393,6 +1519,14 @@ class Phases(unittest.TestCase):
         result = analyse({183: 1}, config="opus-2.5")
         self.assertEqual(result["F1"]["settle_s"], 3.75)
         self.assertEqual((missing(result, "F1", "after"), missing(result, "F2", "before")), (1, 0))
+        # No listener intervals at all (a host's file not fetched): the
+        # baseline is not known clean, so it is open, not passed.
+        (directory / "lon-load-1" / "udp" / "intervals.jsonl").unlink()
+        result = {item["name"]: item for item in scale.analyse_phases(
+            state, directory, timeline, start, plan, SERVING, "pcm-1")}
+        baseline = criterion(result, "F1", "baseline: 0 missing")
+        self.assertIsNone(baseline["ok"])
+        self.assertEqual(baseline["needs"], "no listener intervals in the baseline")
 
     def test_the_autoscale_phases_need_a_datagram_capacity(self):
         """Wave 8 review: A1-A3 need client_udp_datagram_capacity in the
@@ -1415,7 +1549,8 @@ class Phases(unittest.TestCase):
         spec = next(item for item in plan["scenarios"] if item["name"] == "A1")
         quiet = {"nodes": [], "cpu_max": 0.1, "core_max": 0.1, "nic_share_max": 0.1}
         result = {"stranded": {"max": 0},
-                  "udp": {key: {side: {"missing": 0} for side in ("unaffected", "faulted")}
+                  "udp": {key: {side: {"missing": 0, "parts": 1000}
+                                for side in ("unaffected", "faulted")}
                           for key in ("before", "during", "after")},
                   "survivors": {key: dict(quiet) for key in ("before", "during", "after")},
                   "moves": {"udp": 0, "udp_spread_max_over_mean": None},
