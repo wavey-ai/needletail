@@ -369,7 +369,8 @@ class Render(Base):
                  "--cache-mesh-warm-second-parent": "--mesh-bind",
                  "--relay-demand-report-lease-parents": "--relay-controlled-local",
                  "--relay-class-fallback-nice": "--relay-controlled-local",
-                 "--relay-lease-drain-inbound": "--relay-lease-bind"}
+                 "--relay-lease-drain-inbound": "--relay-lease-bind",
+                 "--assignment-udp-in-region": "--mesh-bind"}
         _program, _plan, args = self.render()
         for name, node_args in args.items():
             for flag in flags:
@@ -378,8 +379,8 @@ class Render(Base):
             "client_udp_keepalive_ms=0", "client_udp_datagram_capacity=400000",
             "client_udp_region_head_check=false", "cache_mesh_warm_second_parent=false",
             "relay_demand_report_lease_parents=true", "relay_class_fallback_nice=5",
-            "relay_lease_drain_inbound=false"])
-        want = {"--client-udp-keepalive-ms": "0", "--client-udp-datagram-capacity": "400000",
+            "relay_lease_drain_inbound=false", "assignment_udp_in_region=false"])
+        want = {"--assignment-udp-in-region": "false","--client-udp-keepalive-ms": "0", "--client-udp-datagram-capacity": "400000",
                 "--client-udp-region-head-check": "false",
                 "--cache-mesh-warm-second-parent": "false",
                 "--relay-demand-report-lease-parents": "true",

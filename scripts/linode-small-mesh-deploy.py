@@ -347,6 +347,11 @@ DEFAULT_SETTINGS = {
     "relay_demand_report_lease_parents": None,
     "relay_lease_drain_inbound": None,
     "relay_class_fallback_nice": None,
+    # Wave 8 local proofs: assignment_udp_in_region (every mesh node, the
+    # entry points of /api/assignment): a UDP client that no cache has room
+    # for by the entry point's estimate spills within its region rather than
+    # being sent to the failover region (av-mesh default true; false: before).
+    "assignment_udp_in_region": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -1979,7 +1984,7 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
     if "--mesh-bind" in node_args:
-        for key in AM_MESH_BOOL:
+        for key in AM_MESH_BOOL + PROOF_MESH_BOOL:
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
         if settings.get("cache_mesh_warm_total_kbps") is not None:
@@ -2025,6 +2030,8 @@ AM_CLIENT_UDP_MS = ("client_udp_drain_spread_ms", "client_udp_region_hold_ms")
 # The wave 8 review's settings of the nodes that serve UDP clients.
 REVIEW_CLIENT_UDP_BOOL = ("client_udp_region_head_check",)
 REVIEW_CLIENT_UDP_COUNT = ("client_udp_keepalive_ms", "client_udp_datagram_capacity")
+# Wave 8 local proofs: on every mesh node, the av-mesh flag of the same name.
+PROOF_MESH_BOOL = ("assignment_udp_in_region",)
 
 
 def is_contributor_args(args: list[str]) -> bool:
