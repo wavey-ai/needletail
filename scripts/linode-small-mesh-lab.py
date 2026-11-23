@@ -2568,6 +2568,8 @@ def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id:
     while True:
         try:
             current = read_state(state_path)
+            if current is not None and not isinstance(current, dict):
+                raise ValueError("not a JSON object")
             why = None if current is None else f"another run's ({current.get('run_id')})"
         except (OSError, ValueError) as error:
             current, why = None, f"unreadable ({error})"

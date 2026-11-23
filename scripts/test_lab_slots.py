@@ -768,7 +768,8 @@ class Watchdog(Base):
         deadline, writes the ledger, and only then removes itself. An
         unreadable state is the same, never a crash loop."""
         self.ledger({"run_id": "before-23-nov", "billed_usd": 38.0, "removed_unix": 1})
-        for index, lose in enumerate(("removed", "unreadable", "another run's")):
+        for index, lose in enumerate(("removed", "unreadable", "not an object",
+                                      "another run's")):
             api = FakeApi()
             state = lab_state(self.tmp, api)
             path = pathlib.Path(self.args.state)
@@ -804,6 +805,8 @@ class Watchdog(Base):
                         path.unlink()
                     elif lose == "unreadable":
                         path.write_text("{")
+                    elif lose == "not an object":
+                        path.write_text("[]")
                     else:
                         path.write_text(json.dumps({"run_id": "t2", "nodes": {}}))
                 sleeps.append(seconds)
@@ -837,7 +840,7 @@ class Watchdog(Base):
             self.assertEqual(line["instance_hours"], 99 * 2, lose)
             self.assertAlmostEqual(line["billed_usd"], 10.422 * 2, places=3)
             self.assertEqual(lab_tool.KNOWN_HOSTS.read_text(), "")
-        self.assertEqual(len(lab_tool.read_ledger()), 4)  # one line for each lab
+        self.assertEqual(len(lab_tool.read_ledger()), 5)  # one line for each lab
 
     def test_add_racing_down_leaves_no_instance_and_no_state(self):
         api = FakeApi()
