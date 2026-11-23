@@ -39,8 +39,9 @@ the cgroups are scopes of the user's systemd manager.
   edge_lab.py drain <node>              POST /api/control/drain-node for that node
   edge_lab.py resume <node>             POST /api/control/resume-node for that node
   edge_lab.py crash <node> [--restart-s 1]
-                                        SIGKILL a node's service and start it again
-                                        after the unit's RestartSec
+                                        SIGKILL a node's service, start it again
+                                        after the unit's RestartSec, and return
+                                        when it is back (ready, or /up answers)
   edge_lab.py burn <node> <seconds>     busy loops in the node's own cgroup, on its CPUs
 
 Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
@@ -67,12 +68,15 @@ writes the lab into a registry that every worktree of the host shares
   runs on host CPUs A to B: the last max(2, N // 4) of them for the reader
   hosts, the load tool, probes, senders and the lab's own commands, the
   others for the nodes, each a window of as many CPUs as its limit, taken
-  round robin (nodes share CPUs when the range is short). A lab without a
-  range may run on every CPU. CPUs that a registered lab has are refused
-  unless `up cpus_overlap=1`. The standing layout of two labs on the 32 CPU
-  host: lab a on 2-15, lab b on 16-29.
-- `up node_cpus=FIRST` is the layout of one lab alone: each node its own
-  CPUs from FIRST on, the reader hosts on every other CPU of the host.
+  round robin (nodes share CPUs when the range is short; a held slot takes
+  its window when it is taken in). A lab without a range may run on every
+  CPU. CPUs that a registered lab has are refused unless `up
+  cpus_overlap=1`, and so is any CPU while a lab that the registry does not
+  know runs. The standing layout of two labs on the 32 CPU host: lab a on
+  2-15, lab b on 16-29.
+- `up node_cpus=FIRST` is the layout of one lab alone: each node, the slots
+  included, its own CPUs from FIRST on, the reader hosts on every other CPU
+  of the host.
 - Whatever the lab runs beside a node's service is in one cgroup, the scope
   needletail-lab-...-tools.scope, the process that drives the lab included,
   so the lab's own CPU time can be read (scope_cpu_usec).
@@ -534,27 +538,55 @@ def cpu_ranges(cpus: list[int]) -> str:
     return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
 
 
-def pid_alive(pid) -> bool:
+def process_started_unix(pid: int) -> float | None:
+    """When a process started (unix seconds, to the clock tick, and the
+    boot time to the second), None when there is no such process."""
     try:
-        return bool(pathlib.Path(f"/proc/{int(pid)}/cmdline").read_bytes())
+        stat = pathlib.Path(f"/proc/{int(pid)}/stat").read_text()
+        boot = next(float(line.split()[1]) for line in
+                    pathlib.Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime "))
+        # Field 22, counted after the command name, which may hold spaces.
+        ticks = int(stat.rpartition(")")[2].split()[19])
+    except (OSError, ValueError, IndexError, StopIteration, TypeError):
+        return None
+    return boot + ticks / os.sysconf("SC_CLK_TCK")
+
+
+def pid_alive(pid, written_unix: float | None = None) -> bool:
+    """Whether a process runs as `pid`. With `written_unix`, when the
+    record that names it was written, it must also have started by then:
+    a process that started later has only been given the same pid."""
+    try:
+        if not pathlib.Path(f"/proc/{int(pid)}/cmdline").read_bytes():
+            return False
     except (OSError, TypeError, ValueError):
         return False
+    if written_unix is None:
+        return True
+    started = process_started_unix(pid)
+    return started is not None and started <= written_unix + 1.0
+
+
+def active_scopes(pattern: str) -> list[str]:
+    """The active scopes of the user's systemd manager whose names match
+    `pattern`."""
+    result = subprocess.run(
+        ["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--no-legend",
+         "--plain", pattern], capture_output=True, text=True)
+    return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
 
 
 def lab_scopes(work: str) -> list[str]:
     """The systemd scopes of the lab in state directory `work` that are
     alive: its nodes' services and its tools."""
-    result = subprocess.run(
-        ["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--no-legend",
-         "--plain", f"needletail-lab-{work_tag(pathlib.Path(work))}-*.scope"],
-        capture_output=True, text=True)
-    return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+    return active_scopes(f"needletail-lab-{work_tag(pathlib.Path(work))}-*.scope")
 
 
 def live_entries() -> list[dict]:
     """The registry's labs that run, read under registry_lock. An entry is
-    stale, and is dropped, when its process is gone and no scope of its lab
-    is alive."""
+    stale, and is dropped, when its process is gone (or its pid is another
+    process's now) and no scope of its lab is alive."""
     out = []
     for path in sorted(REGISTRY.glob("*.json")):
         try:
@@ -563,7 +595,8 @@ def live_entries() -> list[dict]:
                      "pid": int(entry["pid"]), "worktree": str(entry["worktree"]),
                      "work": str(entry["work"]), "cpus": [int(cpu) for cpu in entry["cpus"]],
                      "since_unix": float(entry["since_unix"])}
-            alive = pid_alive(entry["pid"]) or bool(lab_scopes(entry["work"]))
+            alive = (pid_alive(entry["pid"], path.stat().st_mtime)
+                     or bool(lab_scopes(entry["work"])))
         except (OSError, ValueError, KeyError, TypeError):
             alive = False
         if alive:
@@ -620,6 +653,18 @@ def claim(cpus: list[int], take: bool = False, overlap: bool = False) -> None:
                         f"worktree {entry['worktree']}); CPUs {cpu_ranges(taken)} are taken on "
                         "this host. Give `up cpus=A-B` (or NEEDLETAIL_EDGE_LAB_CPUS) a range "
                         "outside them, or `up cpus_overlap=1`")
+            # A lab that no entry names (brought up by the code before the
+            # registry) may run on any CPU.
+            known = [f"needletail-lab-{work_tag(pathlib.Path(item))}-"
+                     for item in [work] + [entry["work"] for entry in entries]]
+            unknown = [unit for unit in active_scopes("needletail-lab-*.scope")
+                       if not unit.startswith(tuple(known))]
+            if unknown:
+                raise LabError(
+                    f"a lab that is not registered runs on this host, on any of its CPUs: "
+                    f"{', '.join(unknown[:4])}{' ...' if len(unknown) > 4 else ''}. Stop it "
+                    "(`edge_lab.py down` from its worktree, with its NEEDLETAIL_EDGE_LAB_WORK), "
+                    "or `up cpus_overlap=1`")
         for entry in same:
             if entry["work"] != work:
                 kill_lab(pathlib.Path(entry["work"]))
@@ -709,9 +754,13 @@ def node_cpu_sets(names: list[str], first: int | None = None,
     instance has, from host CPU FIRST on, and "_rest" is every other CPU of
     the host: the layout of one lab alone.
 
-    A node that is not in `names` (a slot that is held out) has no CPUs
-    until its service is started (node_cpus). With neither layout: {}, and
-    every node shares every CPU of the host under its CPU quota."""
+    In a range, a node that is not in `names` (a slot that is held out, a
+    backbone relay) takes its window on the ring when its service starts
+    (node_cpus). With `first` every node that is to have CPUs must be in
+    `names`: a window taken later could only come out of "_rest", which the
+    reader hosts and the lab's own commands already run on. With neither
+    layout: {}, and every node shares every CPU of the host under its CPU
+    quota."""
     total = os.cpu_count() or 1
     if cpus is not None:
         low, high = cpus
@@ -731,25 +780,30 @@ def node_cpu_sets(names: list[str], first: int | None = None,
 
 def node_cpus(name: str) -> list[int] | None:
     """The CPUs of a node's service in this lab's layout, None without a
-    layout. A node that has none yet (a slot taken in, a backbone relay of
-    the legacy topology) takes its window now."""
+    layout. In a range, a node that has none yet (a slot taken in, a
+    backbone relay of the legacy topology) takes its window on the ring
+    now, under a lock, so that two starts at once take two windows. With
+    `node_cpus` every node that has CPUs was given them at `up`; a backbone
+    relay of the legacy topology runs under its quota alone, as before."""
     sets = load("cpus.json")
-    if name in sets or not ("_range" in sets or "_first" in sets):
+    if name in sets or "_range" not in sets:
         return sets.get(name)
-    window = take_window(sets, name)
-    save("cpus.json", sets)
-    return window
+    with open(WORK / "cpus.json.lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        sets = load("cpus.json")
+        if name not in sets:
+            take_window(sets, name)
+            save("cpus.json", sets)
+        return sets[name]
 
 
 def lab_cpus(sets: dict) -> list[int]:
     """Every host CPU that a lab with the layout `sets` may use: its range;
-    with `node_cpus` the whole host; without a layout the CPUs that the
-    process which starts it may use."""
+    with `node_cpus`, or without a layout, every CPU of the host (a node or
+    a command that a later shell starts may run on any of them)."""
     if "_range" in sets:
         return list(range(sets["_range"][0], sets["_range"][1] + 1))
-    if "_first" in sets:
-        return list(range(sets["_total"]))
-    return sorted(os.sched_getaffinity(0))
+    return list(range(sets.get("_total") or os.cpu_count() or 1))
 
 
 def node_class_cpus(name: str, value: str) -> str:
@@ -781,12 +835,30 @@ def attach(unit: str, pid: int) -> None:
                        "or under `systemd-run --user --scope`)")
 
 
+CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup")
+
+
 def cgroup_of(pid: int) -> pathlib.Path | None:
     try:
         path = pathlib.Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
     except (OSError, IndexError):
         return None
-    return pathlib.Path("/sys/fs/cgroup" + path)
+    return CGROUP_ROOT / path.lstrip("/")
+
+
+def scope_state(unit: str) -> tuple[str, list[int]]:
+    """A scope's ActiveState and the processes in its cgroup."""
+    result = subprocess.run(["systemctl", "--user", "show", "--property=ActiveState",
+                             "--property=ControlGroup", unit], capture_output=True, text=True)
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    pids = []
+    if fields.get("ControlGroup"):
+        try:
+            pids = [int(pid) for pid in (CGROUP_ROOT / fields["ControlGroup"].lstrip("/")
+                                         / "cgroup.procs").read_text().split()]
+        except (OSError, ValueError):
+            pass
+    return fields.get("ActiveState") or "inactive", pids
 
 
 def start_tools() -> None:
@@ -796,21 +868,37 @@ def start_tools() -> None:
     unit = unit_name("tools")
     quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
              "stderr": subprocess.DEVNULL, "start_new_session": True}
-    if subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0:
-        # A process of the lab that ran here before is still in it (this
-        # one, after a `down`): the new holder joins the scope that exists.
+    # The holder of the lab that ran here was killed a moment ago: wait
+    # until its scope has ended, or is held by a process that is still in
+    # it (this one, after a `down`), before taking it again or joining it.
+    deadline = time.time() + 5
+    state, pids = scope_state(unit)
+    while not (state in ("inactive", "failed") or state == "active" and pids):
+        if time.time() > deadline:
+            raise LabError(f"the tools scope {unit} is {state} with no process in it")
+        time.sleep(0.05)
+        state, pids = scope_state(unit)
+    joining = state == "active"
+    if joining:
         holder = subprocess.Popen(["sleep", "infinity"], **quiet)
-        attach(unit, holder.pid)
     else:
         subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True)
         holder = subprocess.Popen(
             ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
              "-p", "Delegate=yes", "--", "sleep", "infinity"], **quiet)
-    deadline = time.time() + 5
-    while not str(cgroup_of(holder.pid) or "").endswith("/" + unit):
-        if time.time() > deadline or holder.poll() is not None:
-            raise LabError(f"the tools scope {unit} did not start")
-        time.sleep(0.05)
+    try:
+        if joining:
+            attach(unit, holder.pid)
+        deadline = time.time() + 5
+        while not str(cgroup_of(holder.pid) or "").endswith("/" + unit):
+            if time.time() > deadline or holder.poll() is not None:
+                raise LabError(f"the tools scope {unit} did not start")
+            time.sleep(0.05)
+    except BaseException:
+        # A holder that is left would keep the scope, and the lab's entry,
+        # alive with nothing to stop it.
+        holder.kill()
+        raise
     save("tools.json", {"pid": holder.pid, "unit": unit})
 
 
@@ -1348,6 +1436,11 @@ def render(overrides: list[str], build: str = "a") -> dict:
             if arg in ("--cert", "--key"):
                 fixed += [arg, str(tls / pathlib.Path(args[index + 1]).name)]
                 index += 2
+            elif arg == "--drain-state-file":
+                # The deploy's /var/lib/needletail/<service>.drained: a
+                # node's own file in this lab's state directory.
+                fixed += [arg, str(WORK / "state" / f"{name}.drained")]
+                index += 2
             else:
                 fixed.append(arg)
                 index += 1
@@ -1361,6 +1454,13 @@ def render(overrides: list[str], build: str = "a") -> dict:
                 and node(name)["role"] == "distributor" and "--relay-lease-children" in fixed):
             fixed[fixed.index("--relay-lease-children") + 1] = "false"
         out[name] = {"args": fixed, "rust_log": item["rust_log"]}
+    if lab_only.get("relay_lease_children") is False and not any(
+            "--relay-lease-children" in out[name]["args"] for name in out
+            if node(name)["role"] == "distributor"):
+        raise LabError(f"relay_lease_children=false: no distributor of build set {build} is "
+                       "rendered with --relay-lease-children, so the setting would change "
+                       "nothing")
+    (WORK / "state").mkdir(parents=True, exist_ok=True)
     save(set_file("rendered", build), out)
     return out
 
@@ -1416,7 +1516,17 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
     cpus = node_cpus(name)
     args = service_args(name, build)
     settings = load(set_file("settings", build))
+    given = {"limits": limits, "env": env, "extra_args": extra_args}
     limits = {**default_limits(name), **(limits or load("limits.json").get(name, {}))}
+    # The scope of the node's last start ends when its last process has
+    # gone (the service, or a burn's loops, which follow it within a few
+    # milliseconds); a scope that still runs cannot be started again.
+    deadline = time.time() + 5
+    while unit_active(unit_name(name)):
+        if time.time() > deadline:
+            raise LabError(f"{unit_name(name)} still runs: {name} cannot be started again "
+                           "until it has stopped")
+        time.sleep(0.1)
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
@@ -1447,10 +1557,16 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
         stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
     log.close()
     services = load("services.json")
+    # What it was started with, so that a crash brings it back the same.
     services[name] = {"pid": process.pid, "started_unix": time.time(), "build": build,
-                      "starts": services.get(name, {}).get("starts", 0) + 1}
+                      "starts": services.get(name, {}).get("starts", 0) + 1, **given}
     save("services.json", services)
     return process.pid
+
+
+def unit_active(unit: str) -> bool:
+    return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
+                          capture_output=True).returncode == 0
 
 
 def service_pid(name: str) -> int | None:
@@ -1505,37 +1621,83 @@ def restart_service(name: str, **kwargs) -> int:
     return start_service(name, **kwargs)
 
 
-def crash_service(name: str, restart_s: float = 1.0) -> int:
+def wait_back(name: str, timeout: float = 60.0) -> str:
+    """Wait until a node that was started again is back: its `/api/node`
+    says `ready`, or, from a build without `/api/node` (it answers 404),
+    `/up` answers. Returns what was seen; LabError when the service stops
+    again or `timeout` (the tool's readiness bound) passes first."""
+    deadline = time.time() + timeout
+    seen = "no answer"
+    while True:
+        if service_pid(name) is None:
+            raise LabError(f"{name} stopped again after its start:\n{node_log(name)[-1200:]}")
+        code, body = http_json(name, "/api/node", timeout=2.0)
+        if code == 200 and isinstance(body, dict):
+            seen = f"state {body.get('state')}"
+            if body.get("state") == "ready":
+                return "ready"
+        elif code == 404:
+            up_code, _body = http_json(name, "/up", timeout=2.0)
+            seen = f"no /api/node, /up {up_code}"
+            if up_code == 200:
+                return "up"
+        if time.time() > deadline:
+            raise LabError(f"{name} was not back within {timeout:g} s ({seen})")
+        time.sleep(0.25)
+
+
+def crash_service(name: str, restart_s: float = 1.0, ready_timeout_s: float = 60.0) -> int:
     """A crash of a node's service and its return: SIGKILL, and a start
     `restart_s` after the process is gone, as systemd starts a unit again
-    after its RestartSec (1 s). The same build set, the same limits."""
+    after its RestartSec (1 s), with what it was started with (build set,
+    limits, environment, extra arguments). Returns, with the new pid, only
+    when the node is back (wait_back), so that a wrapper's marks around the
+    command hold the whole change."""
     if service_pid(name) is None:
         raise LabError(f"{name} is not running")
+    given = load("services.json").get(name, {})
     kill_service(name)
     deadline = time.time() + 5
     while time.time() < deadline and service_pid(name):
         time.sleep(0.02)
     time.sleep(restart_s)
-    return start_service(name)
+    pid = start_service(name, limits=given.get("limits"), env=given.get("env"),
+                        extra_args=given.get("extra_args"))
+    wait_back(name, ready_timeout_s)
+    return pid
 
 
-def burn(name: str, seconds: float) -> None:
+def burn(name: str, seconds: float) -> float:
     """Busy loops in the cgroup of a node's service for `seconds`, one for
     each CPU of its limit, on its CPUs: they take the node's own CPU time
-    under its quota, as a noisy neighbour inside an instance does. Returns
-    when they end."""
-    if service_pid(name) is None:
+    under its quota, as a noisy neighbour inside an instance does. A loop
+    ends with the service, so that it does not keep the node's scope (and
+    the node's next start) after a kill, a crash or a `down`. Returns the
+    seconds they ran."""
+    pid = service_pid(name)
+    if pid is None:
         raise LabError(f"{name} is not running")
     cpus = load("cpus.json").get(name)
     pin = ["taskset", "-c", cpu_list(cpus)] if cpus else []
     # Each loop waits for a line, so that it is in the node's cgroup before
-    # it uses any CPU.
+    # it uses any CPU, and looks every few milliseconds whether the service
+    # still runs (a pid whose command line is gone has ended).
     script = ("import sys, time\nsys.stdin.readline()\n"
               "end = time.monotonic() + float(sys.argv[1])\n"
-              "while time.monotonic() < end:\n    pass\n")
-    loops = [subprocess.Popen([*pin, sys.executable, "-c", script, str(seconds)],
+              "service = '/proc/' + sys.argv[2] + '/cmdline'\n"
+              "turn = 0\n"
+              "while time.monotonic() < end:\n"
+              "    turn += 1\n"
+              "    if turn % 20000 == 0:\n"
+              "        try:\n"
+              "            if not open(service, 'rb').read():\n"
+              "                break\n"
+              "        except OSError:\n"
+              "            break\n")
+    loops = [subprocess.Popen([*pin, sys.executable, "-c", script, str(seconds), str(pid)],
                               stdin=subprocess.PIPE, start_new_session=True)
              for _ in range(max(1, service_limits(name)["cpu_percent"] // 100))]
+    started = time.monotonic()
     try:
         for loop in loops:
             attach(unit_name(name), loop.pid)
@@ -1548,6 +1710,7 @@ def burn(name: str, seconds: float) -> None:
         for loop in loops:
             if loop.poll() is None:
                 loop.kill()
+    return time.monotonic() - started
 
 
 def set_limits(name: str, cpu_percent: int | None = None,
@@ -1627,9 +1790,11 @@ def up(overrides: list[str], start: bool = True) -> dict:
     if first_cpu is not None and cpus is not None:
         raise LabError(f"node_cpus={first_cpu} is the layout of one lab on the whole host and "
                        f"cpus={cpus} that of a lab in a range: give one")
-    # A slot that is held out has no CPUs until it is taken in.
+    # In a range, a slot that is held out takes its window when it is taken
+    # in; with node_cpus every slot has its own CPUs from the start, as the
+    # reader hosts are pinned to what is left (node_cpu_sets).
     sets = node_cpu_sets([name for name, role, *_ in NODES
-                          if role != "backbone" and name not in slots],
+                          if role != "backbone" and (cpus is None or name not in slots)],
                          first=first_cpu, cpus=None if cpus is None else cpu_range(cpus))
     # Refused here, with nothing stopped yet, when the lab is another
     # owner's or its CPUs are another lab's; else the lab that ran in this
@@ -1639,6 +1804,9 @@ def up(overrides: list[str], start: bool = True) -> dict:
     for log in (WORK / "logs").glob("*"):
         if log.is_file():
             log.unlink()
+    # New nodes: no operator's drain of the lab before is kept.
+    for kept in (WORK / "state").glob("*.drained"):
+        kept.unlink()
     save("limits.json", limits)
     save("cpus.json", sets)
     save("slots.json", sorted(slots))
@@ -2320,12 +2488,13 @@ def main() -> None:
                     sys.exit("usage: edge_lab.py crash <node> [--restart-s SECONDS]")
                 restart_s = float(arguments[2])
             pid = crash_service(name, restart_s)
-            print(f"{name} was killed and runs again (pid {pid})")
+            print(f"{name} was killed and is back (pid {pid})")
         elif command == "burn":
             if len(arguments) != 2:
                 sys.exit("usage: edge_lab.py burn <node> <seconds>")
-            burn(arguments[0], float(arguments[1]))
-            print(f"{arguments[0]} burned for {arguments[1]} s")
+            burned = burn(arguments[0], float(arguments[1]))
+            print(f"{arguments[0]} burned for {burned:.1f} s"
+                  + ("" if burned >= float(arguments[1]) else ": its service stopped"))
         else:
             sys.exit(__doc__)
     except LabError as error:

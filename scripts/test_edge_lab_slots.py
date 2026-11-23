@@ -19,6 +19,7 @@ import io
 import json
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -263,6 +264,40 @@ class Render(Base):
             lab.render(["relay_lease_children=maybe"])
 
 
+class LabRender(Base):
+    """What the lab changes in the deploy tool's render, with a deploy tool
+    of the test's own."""
+
+    def render(self, args: dict, overrides=()) -> dict:
+        lab.save("binaries.json", {"a": {"av-mesh": "/a/av-mesh", "av-contrib": "/a/av-contrib"}})
+        deploy = mock.Mock(RENDER_BINARIES={})
+        deploy.load_settings.side_effect = lambda items: {}
+        deploy.node_sysctls.return_value = {}
+        deploy.render.return_value = {name: {"service": "needletail-mesh", "rust_log": "info",
+                                             "args": ["av-mesh", *flags]}
+                                      for name, flags in args.items()}
+        with mock.patch.object(lab, "deploy_module", lambda: deploy):
+            return lab.render(list(overrides))
+
+    def test_a_nodes_drain_is_kept_in_the_labs_own_state(self):
+        rendered = self.render({
+            "lon-edge-1": ["--drain-state-file", "/var/lib/needletail/needletail-mesh.drained",
+                           "--peer", "10.77.1.11:29101"],
+            "lon-dist-a": ["--relay-lease-children", "true"]})
+        self.assertEqual(rendered["lon-edge-1"]["args"], [
+            "/a/av-mesh", "--drain-state-file", str(self.work / "state" / "lon-edge-1.drained"),
+            "--peer", "10.77.1.11:29101", "--fec-bind", "0.0.0.0:12001"])
+        self.assertTrue((self.work / "state").is_dir())
+
+    def test_a_lab_setting_that_would_change_nothing_is_refused(self):
+        with self.assertRaises(lab.LabError) as caught:
+            self.render({"lon-dist-a": ["--peer", "x"]}, ["relay_lease_children=false"])
+        self.assertIn("--relay-lease-children", str(caught.exception))
+        rendered = self.render({"lon-dist-a": ["--relay-lease-children", "true"]},
+                               ["relay_lease_children=false"])
+        self.assertEqual(rendered["lon-dist-a"]["args"][1:], ["--relay-lease-children", "false"])
+
+
 def fake_builds(directory: pathlib.Path, helps: dict) -> dict:
     """Executables that answer --help with the given flags, as a build of
     av-mesh or av-contrib does."""
@@ -382,20 +417,37 @@ class Verbs(Base):
         return out.getvalue()
 
     def test_crash_kills_a_node_and_starts_it_after_the_units_restart_time(self):
+        # It was started with flags and an environment of a campaign's own:
+        # it comes back with them.
+        lab.save("services.json", {"new-dist-a": {
+            "pid": 10, "build": "a", "limits": {"cpu_percent": 150},
+            "env": {"X": "1"}, "extra_args": ["--more"]}})
         for arguments, restart_s in ((["new-dist-a"], 1.0),
                                      (["new-dist-a", "--restart-s", "0.25"], 0.25)):
             calls = []
             running = {"new-dist-a": 10}
+
+            def start(name, **kwargs):
+                calls.append(("start", name, kwargs))
+                running[name] = 11
+                return 11
+
             with mock.patch.object(lab, "service_pid", lambda name: running.get(name)), \
                     mock.patch.object(lab, "kill_service", lambda name: (
                         calls.append(("kill", name)), running.pop(name))), \
                     mock.patch.object(lab.time, "sleep",
                                       lambda seconds: calls.append(("sleep", seconds))), \
-                    mock.patch.object(lab, "start_service", lambda name: (
-                        calls.append(("start", name)), 11)[1]):
+                    mock.patch.object(lab, "start_service", start), \
+                    mock.patch.object(lab, "wait_back", lambda name, timeout: calls.append(
+                        ("back", name, timeout))):
                 out = self.main("crash", *arguments)
-            self.assertEqual(calls, [("kill", "new-dist-a"), ("sleep", restart_s),
-                                     ("start", "new-dist-a")])
+            self.assertEqual(calls, [
+                ("kill", "new-dist-a"), ("sleep", restart_s),
+                ("start", "new-dist-a", {"limits": {"cpu_percent": 150}, "env": {"X": "1"},
+                                         "extra_args": ["--more"]}),
+                # The command lasts until the node is back, so that the marks
+                # that a wrapper writes around it hold the whole change.
+                ("back", "new-dist-a", 60.0)])
             self.assertIn("pid 11", out)
         with mock.patch.object(lab, "service_pid", lambda name: None), \
                 self.assertRaises(SystemExit) as stopped:
@@ -403,6 +455,98 @@ class Verbs(Base):
         self.assertEqual(str(stopped.exception), "new-dist-a is not running")
         with self.assertRaises(SystemExit):
             self.main("crash", "new-dist-a", "--hold-s", "1")
+
+    def test_a_node_is_back_when_it_says_ready_or_an_old_build_answers_up(self):
+        clock = [0.0]
+
+        def answers(table):
+            asked = []
+
+            def http_json(name, path, method="GET", body=None, timeout=5.0):
+                asked.append(path)
+                return table[path].pop(0) if len(table[path]) > 1 else table[path][0]
+            return asked, http_json
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        common = (mock.patch.object(lab.time, "time", lambda: clock[0]),
+                  mock.patch.object(lab.time, "sleep", advance))
+        # A build with /api/node: back when its state is ready, not when it
+        # first answers.
+        asked, http_json = answers({"/api/node": [
+            (0, None), (200, {"state": "starting"}), (200, {"state": "ready"})]})
+        with common[0], common[1], mock.patch.object(lab, "http_json", http_json), \
+                mock.patch.object(lab, "service_pid", lambda name: 11):
+            self.assertEqual(lab.wait_back("lon-edge-1"), "ready")
+        self.assertEqual(asked, ["/api/node"] * 3)
+        # A build without it (404): back when /up answers.
+        asked, http_json = answers({"/api/node": [(0, None), (404, None)],
+                                    "/up": [(200, "OK")]})
+        with common[0], common[1], mock.patch.object(lab, "http_json", http_json), \
+                mock.patch.object(lab, "service_pid", lambda name: 11):
+            self.assertEqual(lab.wait_back("contrib-lon"), "up")
+        self.assertEqual(asked, ["/api/node", "/api/node", "/up"])
+        # Never ready within the bound: an error that says what it saw.
+        asked, http_json = answers({"/api/node": [(200, {"state": "degraded"})]})
+        with common[0], common[1], mock.patch.object(lab, "http_json", http_json), \
+                mock.patch.object(lab, "service_pid", lambda name: 11), \
+                self.assertRaises(lab.LabError) as caught:
+            lab.wait_back("lon-edge-1", timeout=5)
+        self.assertIn("state degraded", str(caught.exception))
+        # The service stopped again: an error at once, with its log.
+        with mock.patch.object(lab, "service_pid", lambda name: None), \
+                self.assertRaises(lab.LabError) as caught:
+            lab.wait_back("lon-edge-1")
+        self.assertIn("stopped again", str(caught.exception))
+
+    def test_a_node_whose_scope_still_runs_is_not_started_again(self):
+        lab.save("rendered.json", {"lon-edge-1": {"args": ["/a/av-mesh"], "rust_log": ""}})
+        lab.save("namespaces.json", {"lab": 100, "lon-edge-1": 101})
+        clock = [0.0]
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        with mock.patch.object(lab, "unit_active", lambda unit: True), \
+                mock.patch.object(lab.time, "time", lambda: clock[0]), \
+                mock.patch.object(lab.time, "sleep", advance), \
+                mock.patch.object(lab.subprocess, "Popen") as popen, \
+                self.assertRaises(lab.LabError) as caught:
+            lab.start_service("lon-edge-1")
+        popen.assert_not_called()
+        self.assertIn(lab.unit_name("lon-edge-1"), str(caught.exception))
+        # One that ends within the bound is waited for.
+        ending = [True, True, False]
+        with mock.patch.object(lab, "unit_active", lambda unit: ending.pop(0)), \
+                mock.patch.object(lab.time, "sleep"), \
+                mock.patch.object(lab.subprocess, "run"), \
+                mock.patch.object(lab.subprocess, "Popen") as popen:
+            popen.return_value.pid = 12
+            self.assertEqual(lab.start_service("lon-edge-1"), 12)
+        self.assertEqual(ending, [])
+
+    def test_a_burn_ends_with_its_nodes_service(self):
+        # The loop itself, for real: its node's service is gone (a pid that
+        # has ended), so it stops at once and leaves the scope free.
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        lab.save("services.json", {"lon-edge-1": {"pid": 9}})
+        popen = subprocess.Popen
+        started = []
+
+        def loop(command, **kwargs):
+            command = [*command[:-1], str(gone.pid)]
+            started.append(command)
+            return popen(command, **kwargs)
+
+        with mock.patch.object(lab, "service_pid", lambda name: 9), \
+                mock.patch.object(lab, "service_limits", lambda name: {"cpu_percent": 100}), \
+                mock.patch.object(lab.subprocess, "Popen", loop), \
+                mock.patch.object(lab, "attach", lambda unit, pid: None):
+            burned = lab.burn("lon-edge-1", 30)
+        self.assertEqual(len(started), 1)
+        self.assertLess(burned, 10)
 
     def test_burn_is_in_the_nodes_cgroup_on_its_cpus(self):
         lab.save("cpus.json", {"lon-edge-1": [10, 11], "_rest": [13, 14, 15]})
@@ -431,7 +575,8 @@ class Verbs(Base):
         self.assertEqual(len(loops), 2)
         for _kind, command, new_session in loops:
             self.assertEqual(command[:4], ["taskset", "-c", "10,11", sys.executable])
-            self.assertEqual(command[-1], "20.0")
+            # Its seconds, and the service it ends with.
+            self.assertEqual(command[-2:], ["20.0", "9"])
             self.assertTrue(new_session)
         # Each is in the node's cgroup before it is told to begin.
         unit = lab.unit_name("lon-edge-1")

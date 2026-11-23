@@ -30,6 +30,9 @@ import edge_campaign_core as core  # noqa: E402
 
 CONTRIBUTOR = lab.names("contributor")[0]
 EDGE = lab.names("edge")[0]
+# The real halves that Isolated replaces, for the tests of their own.
+ATTACH, KILL_LAB, LAB_SCOPES, ACTIVE_SCOPES = (lab.attach, lab.kill_lab, lab.lab_scopes,
+                                              lab.active_scopes)
 
 
 class Limits(unittest.TestCase):
@@ -150,10 +153,13 @@ class Isolated(unittest.TestCase):
         self.attached = []
         self.pinned = []
         self.killed = []
+        # The scopes of labs on the host (systemctl list-units).
+        self.host_scopes = []
         for name, value in (
                 ("WORK", self.work), ("REGISTRY", self.registry), ("LAB_ID", "b"),
                 ("_joined", (threading.Lock(), set())),
                 ("lab_scopes", lambda work: []),
+                ("active_scopes", lambda pattern: list(self.host_scopes)),
                 ("attach", lambda unit, pid: self.attached.append((unit, pid))),
                 ("kill_lab", lambda work: self.killed.append(pathlib.Path(work)))):
             patcher = mock.patch.object(lab, name, value)
@@ -287,15 +293,58 @@ class CpuRange(Isolated):
         self.assertEqual(lab.load("cpus.json")["lon-dist-c"], after[:2])
         self.assertEqual(lab.node_cpus("new-dist-c"), after[2:])
         self.assertEqual(lab.node_cpus(EDGE), sets[EDGE], "the others keep theirs")
-        # With node_cpus the slot's CPUs are its own, and leave the readers'.
-        lab.save("cpus.json", lab.node_cpu_sets(STANDING, first=0))
-        self.assertEqual(lab.load("cpus.json")["_rest"], list(range(26, 32)))
-        self.assertEqual(lab.node_cpus("lon-dist-c"), [26, 27])
-        self.assertEqual(lab.load("cpus.json")["_rest"], [28, 29, 30, 31])
         # Without a layout there is nothing to take.
         lab.save("cpus.json", {})
         self.assertIsNone(lab.node_cpus("lon-dist-c"))
         self.assertEqual(lab.load("cpus.json"), {})
+
+    def test_with_node_cpus_a_slot_never_takes_the_readers_cpus(self):
+        # The reader hosts, the load tool and the driving process are pinned
+        # to "_rest" at `up` and never again: with node_cpus every node, the
+        # slots included, has its own CPUs from `up` on, and a slot that is
+        # taken in later takes none of "_rest".
+        every = [name for name, role, *_ in lab.NODES if role != "backbone"]
+        sets = lab.node_cpu_sets(every, first=0)
+        lab.save("cpus.json", sets)
+        rest = list(sets["_rest"])
+        self.assertEqual(rest, [30, 31])
+        for slot in lab.SLOT_CANDIDATES:
+            self.assertEqual(lab.node_cpus(slot), sets[slot])
+            self.assertFalse(set(sets[slot]) & set(rest), slot)
+        self.assertEqual(lab.load("cpus.json")["_rest"], rest)
+        # A backbone relay of the legacy topology runs under its quota, as
+        # it did before: no window out of the readers' CPUs.
+        self.assertIsNone(lab.node_cpus("relay-primary"))
+        self.assertEqual(lab.load("cpus.json"), sets)
+
+    def test_two_slots_started_at_once_take_two_windows(self):
+        sets = lab.node_cpu_sets(STANDING, cpus=(2, 15))
+        lab.save("cpus.json", sets)
+        take = lab.take_window
+        barrier = threading.Barrier(2, timeout=5)
+
+        def slow(sets, name):
+            # Both have read cpus.json before either writes it, unless the
+            # lock keeps the second out until the first has saved.
+            try:
+                barrier.wait(timeout=0.3)
+            except threading.BrokenBarrierError:
+                pass
+            return take(sets, name)
+
+        found = {}
+        with mock.patch.object(lab, "take_window", slow):
+            threads = [threading.Thread(target=lambda slot=slot: found.__setitem__(
+                slot, lab.node_cpus(slot))) for slot in lab.DEFAULT_SLOTS]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        one, two = (found[slot] for slot in lab.DEFAULT_SLOTS)
+        self.assertNotEqual(one, two)
+        saved = lab.load("cpus.json")
+        self.assertEqual(sorted([saved["lon-dist-c"], saved["new-dist-c"]]), sorted([one, two]))
+        self.assertEqual(saved["_next"], (sets["_next"] + 4) % len(sets["_node_cpus"]))
 
     def test_two_labs_on_the_standing_ranges_share_no_cpu(self):
         one = lab.node_cpu_sets(STANDING, cpus=(2, 15))
@@ -304,9 +353,11 @@ class CpuRange(Isolated):
         self.assertEqual(every(one), set(range(2, 16)))
         self.assertEqual(every(two), set(range(16, 30)))
         self.assertFalse(set(lab.lab_cpus(one)) & set(lab.lab_cpus(two)))
-        # A lab without a range may run wherever its starter may; one with
-        # node_cpus is on the whole host.
-        self.assertEqual(lab.lab_cpus({}), sorted(os.sched_getaffinity(0)))
+        # A lab without a range, or with node_cpus, is on the whole host,
+        # whatever CPUs the process that brings it up may use: a node or a
+        # command that a later shell starts may run on any of them.
+        with mock.patch.object(lab.os, "sched_getaffinity", lambda pid: {2, 3, 4}):
+            self.assertEqual(lab.lab_cpus({}), list(range(32)))
         self.assertEqual(lab.lab_cpus(lab.node_cpu_sets(STANDING, first=0)), list(range(32)))
 
 
@@ -357,6 +408,40 @@ class Registry(Isolated):
         self.entry("a", range(2, 16), pid=dead_pid())
         lab.claim(list(range(2, 16)))
         self.assertEqual(sorted(self.registered()), ["b"])
+
+    def test_a_reused_pid_is_not_the_lab(self):
+        # The entry's pid is this process, which started before the entry
+        # was written: the lab runs.
+        self.entry("a", range(2, 16))
+        self.assertEqual([entry["id"] for entry in lab.registered_labs()], ["a"])
+        # Written before this process started: the lab's process is gone
+        # and its pid was given to another one.
+        started = lab.process_started_unix(os.getpid())
+        self.assertIsNotNone(started)
+        os.utime(self.registry / "a.json", (started - 60, started - 60))
+        self.assertEqual(lab.registered_labs(), [])
+        self.assertEqual(self.registered(), {})
+        self.assertFalse(lab.pid_alive(dead_pid()))
+        self.assertTrue(lab.pid_alive(os.getpid()))
+        self.assertTrue(lab.pid_alive(os.getpid(), started + 0.5))
+        self.assertFalse(lab.pid_alive(os.getpid(), started - 5))
+
+    def test_a_lab_the_registry_does_not_know_is_refused(self):
+        # The lab of another worktree, registered, and this lab's own units:
+        # known. A lab brought up before the registry existed: not known,
+        # and it may be on any CPU.
+        other = self.entry("a", range(2, 16))
+        self.host_scopes = [
+            f"needletail-lab-{lab.work_tag(pathlib.Path(other['work']))}-lon-edge-1.scope",
+            f"needletail-lab-{lab.work_tag(self.work)}-tools.scope"]
+        lab.claim(list(range(16, 30)))
+        self.host_scopes.append("needletail-lab-edge-lab-lon-edge-1.scope")
+        with self.assertRaises(lab.LabError) as caught:
+            lab.claim(list(range(16, 30)))
+        self.assertIn("needletail-lab-edge-lab-lon-edge-1.scope", str(caught.exception))
+        self.assertIn("cpus_overlap=1", str(caught.exception))
+        self.assertEqual(self.killed, [self.work], "the refused claim stopped nothing")
+        lab.claim(list(range(16, 30)), overlap=True)
 
     def test_up_on_a_lab_of_another_owner_is_refused_unless_it_is_taken(self):
         work = str(self.work.resolve())
@@ -452,8 +537,10 @@ class Up(Isolated):
                 ("AV_MESH", binary), ("READER", binary), ("AV_CONTRIB", binary),
                 ("PROBE", binary), ("AV_MESH_NEXT", None), ("AV_CONTRIB_NEXT", None),
                 ("kill_lab", lambda work: self.calls.append(("kill_lab", pathlib.Path(work)))),
+                # Each `up` has a holder of its own.
                 ("start_tools", lambda: (self.calls.append("start_tools"), lab.save(
-                    "tools.json", {"pid": 7, "unit": lab.unit_name("tools")}))),
+                    "tools.json", {"pid": 7 + self.calls.count("start_tools"),
+                                   "unit": lab.unit_name("tools")}))),
                 ("build_networks", networks),
                 ("snapshot_binaries", lambda: self.calls.append("snapshot_binaries")),
                 ("build_clock_shim", lambda: None), ("render", render),
@@ -501,10 +588,17 @@ class Up(Isolated):
         lab.up(["cpus=16-29"], start=False)
         self.assertEqual(self.registered()["b"]["cpus"], list(range(16, 30)))
         del lab.os.environ["NEEDLETAIL_EDGE_LAB_CPUS"]
-        # One lab alone on the host, each node its own CPUs.
-        lab.up(["node_cpus=0"], start=False)
+        # One lab alone on the host, each node its own CPUs, the slots
+        # included: the readers are pinned to what is left, once.
+        lab.up(["node_cpus=0", "slots=lon-edge-4"], start=False)
         self.assertEqual(self.registered()["b"]["cpus"], list(range(32)))
-        self.assertEqual(lab.load("cpus.json")[CONTRIBUTOR], [0, 1, 2, 3])
+        sets = lab.load("cpus.json")
+        self.assertEqual(sets[CONTRIBUTOR], [0, 1, 2, 3])
+        nodes = [cpu for name in lab.SLOT_CANDIDATES for cpu in sets[name]]
+        self.assertEqual(len(nodes), 8)
+        self.assertEqual(sets["_rest"], [30, 31])
+        self.assertFalse(set(nodes) & set(sets["_rest"]))
+        self.assertEqual({tuple(cpus) for _task, cpus in self.pinned[-1:]}, {(30, 31)})
 
     def test_lab_settings_that_cannot_be(self):
         for overrides in (["cpus=2-15", "node_cpus=0"], ["take=yes"], ["cpus_overlap=2"],
@@ -553,34 +647,142 @@ class Tools(Isolated):
 
     def test_the_tools_scope_is_made_once_and_lets_processes_join(self):
         unit = lab.unit_name("tools")
-        for active, command in ((False, ["systemd-run", "--user", "--scope", "--quiet",
-                                         "--collect", "--unit", unit, "-p", "Delegate=yes",
-                                         "--", "sleep", "infinity"]),
-                                (True, ["sleep", "infinity"])):
+        for state, command in ((("inactive", []), [
+                                   "systemd-run", "--user", "--scope", "--quiet", "--collect",
+                                   "--unit", unit, "-p", "Delegate=yes", "--", "sleep",
+                                   "infinity"]),
+                               (("active", [os.getpid()]), ["sleep", "infinity"])):
             self.attached.clear()
-            with mock.patch.object(lab.subprocess, "run") as run, \
+            with mock.patch.object(lab.subprocess, "run"), \
+                    mock.patch.object(lab, "scope_state", lambda unit: state), \
                     mock.patch.object(lab.subprocess, "Popen") as popen, \
                     mock.patch.object(lab, "cgroup_of",
                                       lambda pid: pathlib.Path("/sys/fs/cgroup/app.slice") / unit):
-                run.return_value.returncode = 0 if active else 3
                 popen.return_value.pid = 555
                 lab.start_tools()
             self.assertEqual(popen.call_args.args[0], command)
             self.assertTrue(popen.call_args.kwargs["start_new_session"])
             # A scope that a process of the lab still holds is joined.
-            self.assertEqual(self.attached, [(unit, 555)] if active else [])
+            self.assertEqual(self.attached, [(unit, 555)] if state[0] == "active" else [])
             self.assertEqual(lab.load("tools.json"), {"pid": 555, "unit": unit})
 
-    def test_a_scope_that_does_not_start_fails_the_up(self):
-        with mock.patch.object(lab.subprocess, "run") as run, \
+    def test_the_scope_of_the_last_lab_is_let_end_first(self):
+        # `up` killed the last holder a moment ago: its scope is still
+        # active with nothing in it, then deactivating, then gone. The new
+        # scope is made only then, under the same name.
+        unit = lab.unit_name("tools")
+        states = [("active", []), ("deactivating", []), ("inactive", [])]
+        with mock.patch.object(lab.subprocess, "run"), \
+                mock.patch.object(lab, "scope_state", lambda unit: states.pop(0)), \
+                mock.patch.object(lab.time, "sleep"), \
                 mock.patch.object(lab.subprocess, "Popen") as popen, \
-                mock.patch.object(lab, "cgroup_of", lambda pid: None), \
-                self.assertRaises(lab.LabError):
-            run.return_value.returncode = 3
-            popen.return_value.pid = 555
-            popen.return_value.poll.return_value = 1
+                mock.patch.object(lab, "cgroup_of",
+                                  lambda pid: pathlib.Path("/sys/fs/cgroup/app.slice") / unit):
+            popen.return_value.pid = 556
             lab.start_tools()
-        self.assertEqual(lab.load("tools.json"), {})
+        self.assertEqual(states, [])
+        self.assertEqual(popen.call_args.args[0][0], "systemd-run")
+        self.assertEqual(self.attached, [])
+        # A scope that never ends is an error, and nothing is started.
+        with mock.patch.object(lab, "scope_state", lambda unit: ("deactivating", [])), \
+                mock.patch.object(lab.time, "time", side_effect=[0.0, 1.0, 6.0]), \
+                mock.patch.object(lab.time, "sleep"), \
+                mock.patch.object(lab.subprocess, "Popen") as popen, \
+                self.assertRaises(lab.LabError):
+            lab.start_tools()
+        popen.assert_not_called()
+
+    def test_a_scope_that_does_not_start_fails_the_up_and_leaves_no_holder(self):
+        for state in (("inactive", []), ("active", [os.getpid()])):
+            with mock.patch.object(lab.subprocess, "run"), \
+                    mock.patch.object(lab, "scope_state", lambda unit: state), \
+                    mock.patch.object(lab.subprocess, "Popen") as popen, \
+                    mock.patch.object(lab, "cgroup_of", lambda pid: None), \
+                    self.assertRaises(lab.LabError):
+                popen.return_value.pid = 555
+                popen.return_value.poll.return_value = 1
+                lab.start_tools()
+            popen.return_value.kill.assert_called_once_with()
+            self.assertEqual(lab.load("tools.json"), {})
+        # The holder could not be moved into the scope that exists.
+        def refuse(unit, pid):
+            raise lab.LabError("could not move")
+
+        with mock.patch.object(lab, "scope_state", lambda unit: ("active", [os.getpid()])), \
+                mock.patch.object(lab, "attach", refuse), \
+                mock.patch.object(lab.subprocess, "Popen") as popen, \
+                self.assertRaises(lab.LabError):
+            lab.start_tools()
+        popen.return_value.kill.assert_called_once_with()
+
+    def test_the_state_of_a_scope_is_read_from_systemd_and_its_cgroup(self):
+        cgroup = self.tmp / "cg" / "user.slice" / "x.scope"
+        cgroup.mkdir(parents=True)
+        (cgroup / "cgroup.procs").write_text("12\n34\n")
+        answers = {"x.scope": "ActiveState=active\nControlGroup=/user.slice/x.scope\n",
+                   "gone.scope": "ActiveState=inactive\nControlGroup=\n"}
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, answers[command[-1]], "")
+
+        with mock.patch.object(lab.subprocess, "run", run), \
+                mock.patch.object(lab, "CGROUP_ROOT", self.tmp / "cg"):
+            self.assertEqual(lab.scope_state("x.scope"), ("active", [12, 34]))
+            self.assertEqual(lab.scope_state("gone.scope"), ("inactive", []))
+        self.assertEqual(calls[0], ["systemctl", "--user", "show", "--property=ActiveState",
+                                    "--property=ControlGroup", "x.scope"])
+
+    def test_a_process_is_moved_into_a_scope_by_the_users_manager(self):
+        with mock.patch.object(lab.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            ATTACH("needletail-lab-elab-b-0123abcd-tools.scope", 4321)
+            run.return_value = subprocess.CompletedProcess(
+                [], 1, "", "Process migration not available on non-delegated units.")
+            with self.assertRaises(lab.LabError) as caught:
+                ATTACH("needletail-lab-elab-b-0123abcd-tools.scope", 4321)
+        self.assertEqual(run.call_args_list[0].args[0], [
+            "busctl", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager", "AttachProcessesToUnit", "ssau",
+            "needletail-lab-elab-b-0123abcd-tools.scope", "", "1", "4321"])
+        self.assertIn("non-delegated", str(caught.exception))
+        self.assertIn("tmux", str(caught.exception))
+
+    def test_the_scopes_of_a_lab_are_read_from_list_units(self):
+        # systemctl --user list-units --plain --no-legend, as it prints.
+        listed = ("needletail-lab-elab-b-0123abcd-lon-edge-1.scope loaded active running "
+                  "[systemd-run] /usr/bin/nsenter ...\n"
+                  "needletail-lab-elab-b-0123abcd-tools.scope        loaded active running "
+                  "[systemd-run] /usr/bin/sleep infinity\n\n")
+        with mock.patch.object(lab.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, listed, "")
+            with mock.patch.object(lab, "work_tag", lambda work: "elab-b-0123abcd"), \
+                    mock.patch.object(lab, "active_scopes", ACTIVE_SCOPES):
+                found = LAB_SCOPES("/x/target/elab-b")
+        self.assertEqual(found, ["needletail-lab-elab-b-0123abcd-lon-edge-1.scope",
+                                 "needletail-lab-elab-b-0123abcd-tools.scope"])
+        self.assertEqual(run.call_args.args[0], [
+            "systemctl", "--user", "list-units", "--type=scope", "--state=active",
+            "--no-legend", "--plain", "needletail-lab-elab-b-0123abcd-*.scope"])
+
+    def test_kill_lab_stops_every_process_it_recorded_the_tools_holder_too(self):
+        work = self.tmp / "other" / "target" / "elab-c"
+        work.mkdir(parents=True)
+        for name, value in (("services.json", {"lon-edge-1": {"pid": 301, "build": "a"},
+                                               "contrib-lon": {"pid": 302}}),
+                            ("sources.json", {"audio": 303}),
+                            ("namespaces.json", {"lab": 304, "lon-edge-1": 305}),
+                            ("tools.json", {"pid": 306, "unit": "x-tools.scope"}),
+                            ("cpus.json", {"_rest": [30, 31]}), ("links.json", {}),
+                            ("shaped.json", {}), ("qdisc.json", {})):
+            (work / name).write_text(json.dumps(value))
+        (work / "rendered.json").write_text("{}")
+        killed = []
+        with mock.patch.object(lab.os, "killpg", lambda pid, sig: killed.append((pid, sig))):
+            KILL_LAB(work)
+        self.assertEqual(sorted(killed), [(pid, lab.signal.SIGKILL) for pid in range(301, 307)])
+        self.assertEqual(sorted(path.name for path in work.iterdir()), ["rendered.json"])
 
     def test_a_process_joins_once_for_each_lab_instance(self):
         self.a_lab_that_is_up({}, ["lon-readers"])
