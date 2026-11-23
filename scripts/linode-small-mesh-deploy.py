@@ -226,6 +226,21 @@ DEFAULT_SETTINGS = {
     "relay_audio_copies": None,
     "cache_mesh_fast_plane_push": None,
     "relay_demand_renditions": None,
+    # Wave 8 stage 3. cache_mesh_fast_plane_video_push: av-mesh
+    # --cache-mesh-fast-plane-video-push on the distributors, the same for a
+    # video stream: "secondary" (the binary's default: a distributor does not
+    # push a video stream to an edge that takes its sources from this
+    # distributor's fast plane; the edge's secondary, which feeds it repair
+    # only, keeps the push), "none" (no push of a fed pair), "all" (as before
+    # wave 8: an edge took 4K four ways). None renders nothing.
+    "cache_mesh_fast_plane_video_push": None,
+    # - relay_failover_promotion_backoff: av-mesh
+    #   --relay-failover-promotion-backoff on every node with a failover
+    #   controller (the edges): each promotion of the warm secondary within
+    #   30 s doubles the primary silence the next one needs (S6: no switch,
+    #   and no doubled video, for each short stall of a loaded forwarder).
+    #   None renders nothing (the binary's default, on); false is the A/B.
+    "relay_failover_promotion_backoff": None,
     # Wave 7 items 3 and 9. None renders nothing: the binaries' defaults (on)
     # hold; false is the A/B against wave 7.
     # - relay_compact_audio: av-contrib --relay-compact-audio, a 1 ms audio
@@ -1858,6 +1873,15 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
          or "--relay-lease-bind" in node_args)
             and settings.get("cache_mesh_fast_plane_push") is not None):
         out += ["--cache-mesh-fast-plane-push", str(settings["cache_mesh_fast_plane_push"])]
+    if ("--relay-failover-controller" in node_args
+            and settings.get("relay_failover_promotion_backoff") is not None):
+        out += ["--relay-failover-promotion-backoff",
+                flag(bool(settings["relay_failover_promotion_backoff"]))]
+    if ((flag_value(node_args, "--cache-mesh-role") == "distributor"
+         or "--relay-lease-bind" in node_args)
+            and settings.get("cache_mesh_fast_plane_video_push") is not None):
+        out += ["--cache-mesh-fast-plane-video-push",
+                str(settings["cache_mesh_fast_plane_video_push"])]
     if ("--client-udp-bind" in node_args
             and settings.get("client_udp_compact_short_header") is not None):
         out += ["--client-udp-compact-short-header",

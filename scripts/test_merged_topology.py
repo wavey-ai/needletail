@@ -293,6 +293,39 @@ class Render(Base):
         self.assertEqual(value_of(args["new-dist-a"], "--relay-demand-renditions"),
                          "5001,6001,7001")
 
+    def test_the_video_push_setting_reaches_every_forwarder_only_when_given(self):
+        """Wave 8 stage 3: cache_mesh_fast_plane_video_push renders
+        --cache-mesh-fast-plane-video-push on every forwarder (the slot
+        included) and on nothing else, only when given."""
+        flag = "--cache-mesh-fast-plane-video-push"
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render(['cache_mesh_fast_plane_video_push="all"'])
+        for name in ("lon-dist-a", "lon-dist-b", "lon-dist-c", "new-dist-a"):
+            self.assertEqual(value_of(args[name], flag), "all", name)
+            self.assertEqual(args[name].count(flag), 1, name)
+        for name in ("lon-edge-1", "contrib-lon"):
+            self.assertNotIn(flag, args[name], name)
+
+    def test_the_promotion_backoff_setting_reaches_the_failover_controllers(self):
+        """Wave 8 stage 3 (S6): relay_failover_promotion_backoff renders
+        --relay-failover-promotion-backoff on every node with a failover
+        controller (the edges), only when given."""
+        flag = "--relay-failover-promotion-backoff"
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render(["relay_failover_promotion_backoff=false"])
+        controllers = [name for name, node_args in args.items()
+                       if "--relay-failover-controller" in node_args]
+        self.assertIn("lon-edge-1", controllers)
+        for name, node_args in args.items():
+            if name in controllers:
+                self.assertEqual(value_of(node_args, flag), "false", name)
+            else:
+                self.assertNotIn(flag, node_args, name)
+
     def test_the_wave8_client_udp_settings_reach_the_nodes_that_serve_clients(self):
         """Wave 8 stage 2: each setting renders its av-mesh flag on every node
         with --client-udp-bind, only when given."""
