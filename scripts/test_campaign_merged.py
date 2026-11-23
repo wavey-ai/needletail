@@ -14,6 +14,7 @@ import io
 import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -204,8 +205,20 @@ class PerLab(Base):
             self.addCleanup(patcher.stop)
 
     def test_the_runs_of_a_lab_with_an_id_are_its_own(self):
-        self.assertEqual(core.runs_dir("a"), lab.ROOT / "target" / "edge-campaign-a")
-        self.assertEqual(core.runs_dir(None), lab.ROOT / "target" / "edge-campaign")
+        """The campaign as a lab's shell starts it: RUNS (where `run` puts
+        its runs and `latest`) follows NEEDLETAIL_EDGE_LAB_ID."""
+        def runs(**extra) -> pathlib.Path:
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("NEEDLETAIL_EDGE_LAB_ID", "NEEDLETAIL_EDGE_LAB_WORK")}
+            env.update(extra)
+            program = (f"import sys; sys.path.insert(0, {str(HERE)!r}); "
+                       "import edge_campaign_core as core; print(core.RUNS)")
+            ran = subprocess.run([sys.executable, "-c", program], env=env, capture_output=True,
+                                 text=True, check=True)
+            return pathlib.Path(ran.stdout.strip())
+
+        self.assertEqual(runs(NEEDLETAIL_EDGE_LAB_ID="a"), lab.ROOT / "target" / "edge-campaign-a")
+        self.assertEqual(runs(), lab.ROOT / "target" / "edge-campaign")
 
     def run_campaign(self, *arguments: str, allow_live: bool = True) -> list:
         seen = []
@@ -241,6 +254,26 @@ class PerLab(Base):
             with self.assertRaisesRegex(SystemExit, "not in a frozen set"):
                 self.run_campaign("run", "baseline", allow_live=False)
         self.assertFalse((self.work / "runs").exists())
+
+    def test_down_refuses_at_once_while_another_run_holds_the_lab(self):
+        downs = []
+        with mock.patch.object(lab, "down", lambda: downs.append(True)):
+            with core.guard.hold("edge-campaign.py run baseline"):
+                # Inside the hold (a tool of the run): down goes ahead.
+                self.run_campaign("down")
+                self.assertEqual(len(downs), 1)
+                held = os.environ.pop(core.guard.HELD_ENV)
+                try:
+                    with self.assertRaisesRegex(SystemExit, r"held by pid .*edge-campaign.py run "
+                                                            r"baseline.*--force"):
+                        self.run_campaign("down")
+                    self.assertEqual(len(downs), 1)
+                    self.run_campaign("down", "--force")
+                    self.assertEqual(len(downs), 2)
+                finally:
+                    os.environ[core.guard.HELD_ENV] = held
+            self.run_campaign("down")
+            self.assertEqual(len(downs), 3)
 
     def test_player_scenarios_take_the_players_lock(self):
         held = {}

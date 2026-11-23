@@ -11,7 +11,7 @@ sockets, drops).
   edge-campaign.py list [group ...]
   edge-campaign.py run [--out DIR] [--no-slow] [group or scenario ...]
   edge-campaign.py summary [DIR]
-  edge-campaign.py down
+  edge-campaign.py down [--force]
 
 A result is PASS, FAIL, or GAP: a failure that the scenario knows to be a
 missing feature, with the name of the gap. Evidence is written under
@@ -19,7 +19,9 @@ target/edge-campaign/<run>/<scenario>/evidence.json, or for a lab with an id
 (NEEDLETAIL_EDGE_LAB_ID) under target/edge-campaign-<id>/<run>/, with the
 `latest` link of that lab's runs. A run holds its lab (scripts/lab_guard.py:
 it waits while another run holds it) and refuses binaries outside a frozen
-set (scripts/freeze-binaries.py) unless NEEDLETAIL_ALLOW_LIVE=1.
+set (scripts/freeze-binaries.py) unless NEEDLETAIL_ALLOW_LIVE=1. `down`
+does not wait for a run that holds the lab: it refuses at once and names
+the holder, and --force tears the lab down anyway.
 """
 
 from __future__ import annotations
@@ -3477,8 +3479,14 @@ def main() -> None:
     elif command == "summary":
         print_summary(pathlib.Path(arguments[0]) if arguments else core.RUNS / "latest")
     elif command == "down":
-        with core.guard.hold("edge-campaign.py down"):
-            lab.down()
+        if arguments not in ([], ["--force"]):
+            sys.exit(__doc__)
+        entry = core.guard.holder()
+        inside = os.environ.get(core.guard.HELD_ENV) == str(lab.WORK.resolve())
+        if entry is not None and not inside and not arguments:
+            sys.exit(f"lab {lab.lab_key()} is held by {core.guard.describe(entry)}: `down` "
+                     "would pull it from under that run; --force tears it down anyway")
+        lab.down()
     else:
         sys.exit(__doc__)
 

@@ -118,7 +118,10 @@ def hold(label: str, work: pathlib.Path | None = None, out=sys.stderr):
 
 @contextlib.contextmanager
 def players_lock(out=sys.stderr):
-    """One lab of the host at a time runs a player scenario."""
+    """One lab of the host at a time runs a player scenario. The player
+    scenarios of linode-edge-campaign.py run their players on this host
+    through edge_campaign_core.run_scenario, so they take it too, and wait
+    without limit while a local lab's player scenario holds it."""
     lab.REGISTRY.mkdir(parents=True, exist_ok=True)
     with open(lab.REGISTRY / PLAYERS_LOCK, "a+") as handle:
         try:
