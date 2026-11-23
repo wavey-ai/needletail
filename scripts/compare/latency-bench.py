@@ -211,11 +211,25 @@ def build_parser() -> argparse.ArgumentParser:
                              "serves the most UDP clients for MS ms (SIGSTOP, as a stalled "
                              "host: its sockets queue) and let it run again: the referee's edge "
                              "stall (wave 8 S2: the clients' move and the parts it costs)")
-    parser.add_argument("--stall-node", default="", metavar="NAME:SECOND:MS",
+    parser.add_argument("--stall-node", default="", metavar="NAME:SECOND:MS[,...]",
                         help="SECOND s into the readers' window, stop node NAME for MS ms "
                              "(SIGSTOP) and let it run again: a forwarder's failure as its "
                              "children see it (wave 8 stage 3: an edge's 4K when the "
-                             "distributor that feeds it the sources stops)")
+                             "distributor that feeds it the sources stops); a comma list "
+                             "stops several (a stop past the run's end is a kill)")
+    parser.add_argument("--drain-node", default="", metavar="NAME:SECOND",
+                        help="SECOND s into the readers' window, drain node NAME (POST "
+                             "/api/control/drain-node) and sample its live gauges every 100 ms "
+                             "until its UDP subscribers reach 0 (wave 8 stage 4, Phase AM 9: "
+                             "the paced drain); resumed after the run")
+    parser.add_argument("--load-assign", action="store_true",
+                        help="needletail-load listeners subscribe and move through the site's "
+                             "/api/assignment (every distributor and edge of the site an entry "
+                             "point; Phase AM 10), not edge i mod n")
+    parser.add_argument("--sample-gauges", action="store_true",
+                        help="sample every serving edge's client UDP gauges (/api/assignment: "
+                             "subscribers, load_permille, egress_observed_bps, draining) once a "
+                             "second (Phase AM 8)")
     parser.add_argument("--sample-nodes", action="store_true",
                         help="sample every node's CPU, throttling and UDP drops each second "
                              "(always on with 4K)")
@@ -834,9 +848,17 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
         count = args.load_listeners * len(edges)
         ramp = load_ramp(args.load_ramp, len(edges)) if args.load_ramp else f"{count}@0"
         directory = out / f"load-{site}"
+        assign = []
+        if getattr(args, "load_assign", False):
+            # Phase AM 10: every distributor and edge of the site answers
+            # /api/assignment.
+            entries = [f"https://{lab.node(name)['public_ipv4']}:{lab.HTTP_PORT}"
+                       for name in [*lab.distributors(site), *edges]]
+            assign = ["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
+                      "--server-name", lab.SERVER_NAME]
         items.append({"site": site, "host": LOAD_HOSTS[site], "edges": dict(zip(targets, edges)),
                       "per_edge": args.load_listeners, "ramp": ramp, "out": str(directory),
-                      "command": [str(LOAD_BIN), "--edges", ",".join(targets),
+                      "command": [str(LOAD_BIN), "--edges", ",".join(targets), *assign,
                                   "--stream", str(PAYLOAD_STREAM[args.payload]),
                                   "--listeners", str(count), "--ramp", ramp,
                                   "--duration", str(args.seconds), "--out", str(directory),
@@ -931,6 +953,98 @@ def stall_edge(spec: str, began: float) -> dict:
             "until_us": time.time_ns() // 1000}
 
 
+def stall_nodes(specs: str, began: float) -> dict:
+    """--stall-node: each NAME:SECOND:MS of the comma list in a thread of
+    its own."""
+    import threading
+    items = [item for item in specs.split(",") if item]
+    if len(items) == 1:
+        return stall_node(items[0], began)
+    out: dict = {}
+    threads = [threading.Thread(target=lambda item=item: out.update(
+        {item.split(":")[0]: stall_node(item, began)}), daemon=True) for item in items]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return out
+
+
+def drain_node(spec: str, began: float, until: float) -> dict:
+    """--drain-node: drain NAME at SECOND and sample its live gauges
+    (/api/assignment client_udp: subscribers, draining; HLS sessions) every
+    100 ms until its UDP subscribers reach 0 or the run ends (Phase AM 9)."""
+    name, _, second = spec.partition(":")
+    time.sleep(max(0.0, began + float(second) - time.time()))
+    started_us = time.time_ns() // 1000
+    status, body = lab.http_json(name, "/api/control/drain-node", "POST", {"node_id": name})
+    samples = []
+    while time.time() < until:
+        state, found = lab.http_json(name, "/api/assignment")
+        udp = (found or {}).get("client_udp") or {} if isinstance(found, dict) else {}
+        samples.append({"t_ms": (time.time_ns() // 1000 - started_us) // 1000,
+                        "subscribers": udp.get("subscribers"),
+                        "hls_sessions": udp.get("hls_sessions"),
+                        "draining": udp.get("draining"), "moves": udp.get("moves")})
+        if udp.get("subscribers") == 0:
+            break
+        time.sleep(0.1)
+    first = samples[0]["subscribers"] if samples else None
+    left = [item["t_ms"] for item in samples
+            if isinstance(item["subscribers"], int) and isinstance(first, int)
+            and item["subscribers"] < first]
+    zero = next((item["t_ms"] for item in samples if item["subscribers"] == 0), None)
+    return {"node": name, "status": status, "from_us": started_us,
+            "subscribers_at_drain": first, "first_left_ms": left[0] if left else None,
+            "zero_ms": zero, "samples": samples}
+
+
+def gauge_sampler(stop, out: list) -> None:
+    """--sample-gauges: every serving edge's client UDP gauges once a
+    second (Phase AM 8), until `stop` is set."""
+    while not stop.is_set():
+        row = {"t": round(time.time(), 3)}
+        for site in ("london", "newyork"):
+            for name in lab.edges(site):
+                try:
+                    status, body = lab.http_json(name, "/api/assignment")
+                except Exception:  # a measurement only
+                    continue
+                udp = (body or {}).get("client_udp") if isinstance(body, dict) else None
+                if status == 200 and isinstance(udp, dict):
+                    caches = {item.get("node_id"): item for item in body.get("caches") or []}
+                    row[name] = {key: udp.get(key) for key in (
+                        "subscribers", "load_permille", "egress_observed_bps", "draining",
+                        "hls_sessions", "load_refusals", "egress_wire_bytes")}
+                    row[name]["advertised_free_bps"] = (caches.get(name) or {}).get("free_bps")
+        out.append(row)
+        stop.wait(1.0)
+
+
+def gauge_lines(rows: list[dict]) -> list[str]:
+    """Per edge over the run: the most subscribers, load_permille (max and
+    mean of the samples with subscribers), measured egress."""
+    if not rows:
+        return []
+    names = sorted({key for row in rows for key in row if key != "t"})
+    lines = ["", "client UDP gauges (Phase AM 8): edge: subscribers max, load_permille "
+                 "max/mean, egress Mbit/s max/mean, free Mbit/s min"]
+    for name in names:
+        items = [row[name] for row in rows if isinstance(row.get(name), dict)]
+        loaded = [item for item in items if (item.get("subscribers") or 0) > 0] or items
+        def numbers(key):
+            return [item.get(key) for item in loaded if isinstance(item.get(key), (int, float))]
+        load, egress = numbers("load_permille"), numbers("egress_observed_bps")
+        free = numbers("advertised_free_bps")
+        lines.append(
+            f"  {name}: {max([item.get('subscribers') or 0 for item in items] or [0])}, "
+            f"{max(load or [0])}/{round(sum(load) / len(load)) if load else '-'}, "
+            f"{round(max(egress or [0]) / 1e6, 2)}/"
+            f"{round(sum(egress) / len(egress) / 1e6, 2) if egress else '-'}, "
+            f"{round(min(free) / 1e6, 2) if free else '-'}")
+    return lines
+
+
 def stall_node(spec: str, began: float) -> dict:
     """--stall-node: stop one named node for the stall."""
     name, second, length = spec.split(":")
@@ -1008,12 +1122,15 @@ def load_report(items: list[dict]) -> list[dict]:
         total = summary.get("total") or {}
         keys = ("listeners_started", "listeners_with_parts", "parts", "missing", "gaps",
                 "recovered", "duplicates", "nack_parts", "abandoned", "moves", "socket_drops",
-                "compact_fallbacks", "latency_ms", "ttfp_ms")
+                "compact_fallbacks", "latency_ms", "ttfp_ms", "moves_out", "moves_by_reason",
+                "time_to_move_ms", "move_lost", "missing_moved", "never_resumed",
+                "assignments", "assignment_errors", "assignment_ms", "fallbacks")
         out.append({"site": item["site"], "per_edge": item["per_edge"], "ramp": item["ramp"],
                     "total": {key: slim(total.get(key)) for key in keys if key in total},
                     "edges": {item["edges"].get(edge, edge): {
                         key: slim(row.get(key)) for key in ("listeners_started", "parts",
                                                             "missing", "nack_parts", "moves",
+                                                            "moves_out", "time_to_move_ms",
                                                             "latency_ms")
                         if key in row}
                         for edge, row in (summary.get("per_edge") or {}).items()},
@@ -1498,6 +1615,14 @@ def run(args, steps: dict) -> int:
     if measured.get("stall_node"):
         result["stall_node"] = measured["stall_node"]
         lines += ["", f"stalled node: {json.dumps(measured['stall_node'])}"]
+    if measured.get("drain_node"):
+        drained = measured["drain_node"]
+        result["drain_node"] = drained
+        lines += ["", "drained node: " + json.dumps(
+            {key: value for key, value in drained.items() if key != "samples"})]
+    if measured.get("gauges"):
+        result["gauges"] = measured["gauges"]
+        lines += gauge_lines(measured["gauges"])
     lines += video_summary_lines(video["source"] if regions else None, regions,
                                  video["frame_deadline_ms"])
     lines += node_summary_lines(measured.get("nodes"))
@@ -1653,15 +1778,35 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             began = began_us / 1e6
             node_box = {}
             node_stall = threading.Thread(
-                target=lambda: node_box.update(stall_node(args.stall_node, began)), daemon=True)
+                target=lambda: node_box.update(stall_nodes(args.stall_node, began)), daemon=True)
             node_stall.start()
             measured["stall_node"] = node_box
+        if args.drain_node:
+            import threading
+            began = began_us / 1e6
+            drain_box = {}
+            drain = threading.Thread(target=lambda: drain_box.update(
+                drain_node(args.drain_node, began, began + args.seconds + 5)), daemon=True)
+            drain.start()
+            measured["drain_node"] = drain_box
+        gauge_stop = None
+        if args.sample_gauges:
+            import threading
+            gauge_stop, gauge_rows = threading.Event(), []
+            threading.Thread(target=gauge_sampler, args=(gauge_stop, gauge_rows),
+                             daemon=True).start()
+            measured["gauges"] = gauge_rows
         for process in readers:
             try:
                 process.wait(timeout=args.seconds + 90)
             except subprocess.TimeoutExpired:
                 process.kill()
         ended_us = time.time_ns() // 1000
+        if gauge_stop is not None:
+            gauge_stop.set()
+        if args.drain_node:
+            name = args.drain_node.partition(":")[0]
+            lab.http_json(name, "/api/control/resume-node", "POST", {"node_id": name})
         since_us = began_us + SKIP_SECONDS * 1_000_000
         measured["edge_stats"] = edge_stats_delta(stats_before, edge_client_stats())
         measured["load"] = load_report(loads)

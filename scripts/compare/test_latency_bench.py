@@ -655,6 +655,27 @@ class EdgeLoad(unittest.TestCase):
         self.assertEqual(london[-2:], ["--silence-nack", "false"])
         self.assertEqual(bench.load_commands(parse(), pathlib.Path("/x")), [])
 
+    def test_a_crowd_through_the_assignment_and_the_gauges(self):
+        """Phase AM 10: --load-assign gives needletail-load every distributor
+        and edge of the site as entry points; AM 8: the gauge lines."""
+        args = parse("--load-listeners", "8", "--load-assign")
+        with mock.patch.object(bench.lab, "edges", return_value=["lon-edge-1"]), \
+                mock.patch.object(bench.lab, "distributors", return_value=["lon-dist-a"]):
+            command = bench.load_commands(args, pathlib.Path("/x"))[0]["command"]
+        entries = command[command.index("--entry") + 1].split(",")
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(all(entry.startswith("https://") and entry.endswith(":19444")
+                            for entry in entries), entries)
+        self.assertEqual(command[command.index("--tls-ca") + 1], bench.lab.ca_file())
+        rows = [{"t": 1.0, "lon-edge-1": {"subscribers": 64, "load_permille": 700,
+                                          "egress_observed_bps": 70e6,
+                                          "advertised_free_bps": 15e6}},
+                {"t": 2.0, "lon-edge-1": {"subscribers": 64, "load_permille": 800,
+                                          "egress_observed_bps": 80e6,
+                                          "advertised_free_bps": 5e6}}]
+        lines = bench.gauge_lines(rows)
+        self.assertIn("lon-edge-1: 64, 800/750, 80.0/75.0, 5.0", lines[-1])
+
     def test_the_edges_counters_over_the_window(self):
         before = {"lon-edge-1": {"nack_parts": 10, "subscriptions": 1,
                                  "fast_lane": {"fanout_shed": 3, "class_repair_max_us": 5}}}
