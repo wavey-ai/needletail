@@ -676,6 +676,42 @@ class EdgeLoad(unittest.TestCase):
         lines = bench.gauge_lines(rows)
         self.assertIn("lon-edge-1: 64, 800/750, 80.0/75.0, 5.0", lines[-1])
 
+    def test_node_events_parse_in_time_order(self):
+        events = bench.parse_node_events("kill:lon-dist-c:30,start:lon-dist-c:12,drain:lon-edge-1:20")
+        self.assertEqual(events, [(12.0, "start", "lon-dist-c"), (20.0, "drain", "lon-edge-1"),
+                                  (30.0, "kill", "lon-dist-c")])
+        with self.assertRaises(SystemExit):
+            bench.parse_node_events("explode:lon-dist-c:3")
+        self.assertTrue(parse("--node-events", "start:lon-dist-c:12", "--sample-forwarders")
+                        .sample_forwarders)
+
+    def test_the_forwarders_and_the_first_parent_changes(self):
+        """Phase AM 12: a slot joins; one edge's first parent of the stream
+        moves to it."""
+        def row(t, slot_served, a_served):
+            return {"t": t,
+                    "lon-dist-a": {"fast_plane": {"lease_children": 3},
+                                   "cache_mesh": {"children": 3, "first_parent_pairs": 2,
+                                                  "warm_parts_sent": 0,
+                                                  "watermark_stall_max_us": 2500},
+                                   "served": a_served},
+                    **({"lon-dist-c": {"fast_plane": {"lease_children": len(slot_served)},
+                                       "cache_mesh": {"children": len(slot_served),
+                                                      "first_parent_pairs": len(slot_served)},
+                                       "served": slot_served}} if slot_served is not None
+                       else {})}
+        rows = [row(0.0, None, [["10.0.0.21:29101", 3001, 0], ["10.0.0.22:29101", 3001, 0]]),
+                row(1.0, [["10.0.0.22:29101", 3001, 0]], [["10.0.0.21:29101", 3001, 0],
+                                                          ["10.0.0.22:29101", 3001, 1]])]
+        lines, report = bench.forwarder_lines(rows, [{"action": "start", "node": "lon-dist-c",
+                                                      "second": 1.0}], 3001)
+        self.assertEqual(report["pairs"], 2)
+        self.assertEqual(report["first_parent_changes"],
+                         [{"t": 1.0, "child": "10.0.0.22", "from": "lon-dist-a",
+                           "to": "lon-dist-c"}])
+        self.assertIn("lon-dist-c: 1/1, 1/1, 1", "\n".join(lines))
+        self.assertIn("start lon-dist-c at 1.0 s", lines[-1])
+
     def test_the_edges_counters_over_the_window(self):
         before = {"lon-edge-1": {"nack_parts": 10, "subscriptions": 1,
                                  "fast_lane": {"fanout_shed": 3, "class_repair_max_us": 5}}}

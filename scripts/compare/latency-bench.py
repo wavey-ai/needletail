@@ -222,6 +222,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "/api/control/drain-node) and sample its live gauges every 100 ms "
                              "until its UDP subscribers reach 0 (wave 8 stage 4, Phase AM 9: "
                              "the paced drain); resumed after the run")
+    parser.add_argument("--node-events", default="", metavar="ACTION:NAME:SECOND[,...]",
+                        help="start, stop (SIGTERM), kill (SIGKILL, not restarted), drain or "
+                             "resume a node SECOND s into the window; starting a slot "
+                             "(lon-dist-c) takes it into service (Phase AM 12: a forwarder "
+                             "slot joins and leaves under load)")
+    parser.add_argument("--sample-forwarders", action="store_true",
+                        help="every London distributor's fast-plane lease and cache-mesh "
+                             "gauges and its served leases with their ranks, once a second "
+                             "(Phase AM 12, 13)")
     parser.add_argument("--load-assign", action="store_true",
                         help="needletail-load listeners subscribe and move through the site's "
                              "/api/assignment (every distributor and edge of the site an entry "
@@ -999,6 +1008,129 @@ def drain_node(spec: str, began: float, until: float) -> dict:
             "zero_ms": zero, "samples": samples}
 
 
+def parse_node_events(spec: str) -> list[tuple[float, str, str]]:
+    """--node-events: [(second, action, name)] in time order."""
+    events = []
+    for item in [item for item in spec.split(",") if item]:
+        action, name, second = item.split(":")
+        if action not in ("start", "stop", "kill", "drain", "resume"):
+            raise SystemExit(f"--node-events: unknown action {action!r}")
+        events.append((float(second), action, name))
+    return sorted(events)
+
+
+def node_events(spec: str, began: float) -> list[dict]:
+    """--node-events: each event at its second of the window, in order."""
+    done = []
+    for second, action, name in parse_node_events(spec):
+        time.sleep(max(0.0, began + second - time.time()))
+        at_us = time.time_ns() // 1000
+        detail = None
+        if action == "start":
+            if name in lab.SLOT_CANDIDATES:
+                lab.set_slot_in_service(name, True)
+            detail = lab.service_pid(name) or lab.start_service(name)
+        elif action == "stop":
+            lab.terminate_service(name)
+        elif action == "kill":
+            lab.kill_service(name)
+        else:
+            detail = lab.http_json(name, f"/api/control/{action}-node", "POST",
+                                   {"node_id": name})[0]
+        done.append({"action": action, "node": name, "second": second, "at_us": at_us,
+                     "detail": detail})
+    return done
+
+
+def forwarder_sampler(stop, out: list) -> None:
+    """--sample-forwarders: every London distributor's (the slot included)
+    /api/mesh/local: fast_plane and cache_mesh gauges, its served leases
+    (child, stream, rank) and its fast plane's received counts, once a
+    second, until `stop` is set."""
+    while not stop.is_set():
+        row = {"t": round(time.time(), 3)}
+        for name in lab.names("distributor", "london"):
+            try:
+                status, body = lab.http_json(name, "/api/mesh/local", timeout=0.8)
+            except Exception:  # a measurement only
+                continue
+            if status != 200 or not isinstance(body, dict):
+                continue
+            served = ((body.get("cache_replication") or {}).get("served_subscriptions") or [])
+            fast = ((body.get("relay_session") or {}).get("fast_plane") or {})
+            row[name] = {
+                "fast_plane": body.get("fast_plane"),
+                "cache_mesh": {key: value for key, value in (body.get("cache_mesh") or {}).items()
+                               if key != "draining_peers"},
+                "served": [[item.get("child"), item.get("stream_id"), item.get("rank")]
+                           for item in served],
+                "audio_received": fast.get("audio_received"),
+                "audio_forwarded": fast.get("audio_forwarded"),
+            }
+        out.append(row)
+        stop.wait(1.0)
+
+
+def forwarder_lines(rows: list[dict], events: list[dict], stream: int) -> tuple[list[str], dict]:
+    """Per London distributor over the run: lease children and cache-mesh
+    children (min/max), the warm-up counters at the end; and for the
+    stream measured, each child's first parent per sample: how many
+    (child, stream) pairs changed their first parent, and when."""
+    if not rows:
+        return [], {}
+    names = sorted({key for row in rows for key in row if key != "t"})
+    lines = ["", "forwarders (Phase AM 12, 13): node: lease children min/max, cache-mesh "
+                 "children min/max, leases ranked first max; at the end: warm parts/bytes, "
+                 "largest warm tick bytes, capped ticks, parents released, watermark stall "
+                 "max ms"]
+    report: dict = {"nodes": {}, "events": events}
+    for name in names:
+        items = [row[name] for row in rows if isinstance(row.get(name), dict)]
+        lease = [((item.get("fast_plane") or {}).get("lease_children")) for item in items]
+        lease = [value for value in lease if isinstance(value, int)]
+        cache = [(item.get("cache_mesh") or {}).get("children") for item in items]
+        cache = [value for value in cache if isinstance(value, int)]
+        first = [(item.get("cache_mesh") or {}).get("first_parent_pairs") for item in items]
+        first = [value for value in first if isinstance(value, int)]
+        last = (items[-1].get("cache_mesh") or {}) if items else {}
+        report["nodes"][name] = {"lease_children": lease, "cache_children": cache,
+                                 "last": last, "samples": len(items)}
+        stall = last.get("watermark_stall_max_us")
+        lines.append(
+            f"  {name}: {min(lease) if lease else '-'}/{max(lease) if lease else '-'}, "
+            f"{min(cache) if cache else '-'}/{max(cache) if cache else '-'}, "
+            f"{max(first) if first else '-'}; {last.get('warm_parts_sent')}/"
+            f"{last.get('warm_bytes_sent')}, {last.get('warm_tick_max_bytes')}, "
+            f"{last.get('warm_capped_ticks')}, {last.get('parents_released')}, "
+            f"{round(stall / 1000, 1) if isinstance(stall, int) else '-'}")
+    # The first parent of each (child, stream) pair, sample by sample.
+    firsts: list[tuple[float, dict]] = []
+    for row in rows:
+        mapping = {}
+        for name in names:
+            for child, stream_id, rank in (row.get(name) or {}).get("served") or []:
+                if stream_id == stream and rank == 0:
+                    mapping[child.rsplit(":", 1)[0]] = name
+        firsts.append((row["t"], mapping))
+    changes = []
+    for (_, before), (at, after) in zip(firsts, firsts[1:]):
+        for child in sorted(set(before) | set(after)):
+            if before.get(child) != after.get(child):
+                changes.append({"t": at, "child": child, "from": before.get(child),
+                                "to": after.get(child)})
+    pairs = sorted({child for _, mapping in firsts for child in mapping})
+    report["first_parent_changes"] = changes
+    report["pairs"] = len(pairs)
+    lines.append(f"  first parents of stream {stream}: {len(pairs)} (edge, stream) pairs; "
+                 f"{len(changes)} changes: " + "; ".join(
+                     f"{change['child']} {change['from']}->{change['to']} at "
+                     f"{round(change['t'] - rows[0]['t'], 1)} s" for change in changes[:12]))
+    if events:
+        lines.append("  node events: " + "; ".join(
+            f"{item['action']} {item['node']} at {item['second']} s" for item in events))
+    return lines, report
+
+
 def gauge_sampler(stop, out: list) -> None:
     """--sample-gauges: every serving edge's client UDP gauges once a
     second (Phase AM 8), until `stop` is set."""
@@ -1623,6 +1755,12 @@ def run(args, steps: dict) -> int:
     if measured.get("gauges"):
         result["gauges"] = measured["gauges"]
         lines += gauge_lines(measured["gauges"])
+    if measured.get("forwarders") or measured.get("node_events"):
+        more, report = forwarder_lines(measured.get("forwarders") or [],
+                                       measured.get("node_events") or [],
+                                       steps["hops"]["stream"])
+        result["forwarders"] = {**report, "rows": measured.get("forwarders") or []}
+        lines += more
     lines += video_summary_lines(video["source"] if regions else None, regions,
                                  video["frame_deadline_ms"])
     lines += node_summary_lines(measured.get("nodes"))
@@ -1789,6 +1927,20 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
                 drain_node(args.drain_node, began, began + args.seconds + 5)), daemon=True)
             drain.start()
             measured["drain_node"] = drain_box
+        if args.node_events:
+            import threading
+            began = began_us / 1e6
+            event_box: list = []
+            threading.Thread(target=lambda: event_box.extend(
+                node_events(args.node_events, began)), daemon=True).start()
+            measured["node_events"] = event_box
+        forwarder_stop = None
+        if args.sample_forwarders:
+            import threading
+            forwarder_stop, forwarder_rows = threading.Event(), []
+            threading.Thread(target=forwarder_sampler, args=(forwarder_stop, forwarder_rows),
+                             daemon=True).start()
+            measured["forwarders"] = forwarder_rows
         gauge_stop = None
         if args.sample_gauges:
             import threading
@@ -1804,6 +1956,8 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
         ended_us = time.time_ns() // 1000
         if gauge_stop is not None:
             gauge_stop.set()
+        if forwarder_stop is not None:
+            forwarder_stop.set()
         if args.drain_node:
             name = args.drain_node.partition(":")[0]
             lab.http_json(name, "/api/control/resume-node", "POST", {"node_id": name})
