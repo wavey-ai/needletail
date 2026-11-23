@@ -364,6 +364,13 @@ DEFAULT_SETTINGS = {
     "malloc_tune": None,
     "prefault": None,
     "client_udp_prompt_sender": None,
+    # Wave 9 B (time to first audio under loss): the nodes that serve UDP
+    # clients answer a client's UDP ASSIGN at their client UDP port with the
+    # /api/assignment answer (av-mesh --client-udp-assign, default true; None:
+    # the binary's default). needletail-udp-client asks its entry point there
+    # (its --assignment-udp-port, default 19446 = client_udp_port) and over
+    # HTTPS 50 ms later, and takes the first answer.
+    "client_udp_assign": None,
     "relay_lease_descriptors": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
@@ -2051,7 +2058,7 @@ PROOF_MESH_BOOL = ("assignment_udp_in_region",)
 # Wave 9 (cold start): on every mesh node, and on the nodes that serve UDP
 # clients, the av-mesh flag of the same name.
 COLD_MESH_BOOL = ("mlock_all", "malloc_tune", "prefault")
-COLD_CLIENT_UDP_BOOL = ("client_udp_prompt_sender",)
+COLD_CLIENT_UDP_BOOL = ("client_udp_prompt_sender", "client_udp_assign")
 
 
 def is_contributor_args(args: list[str]) -> bool:
