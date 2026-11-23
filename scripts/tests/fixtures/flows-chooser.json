@@ -1,0 +1,1017 @@
+{
+ "schema": "needletail.flows-chooser.v1",
+ "about": "Cases of the long-haul flow chooser (docs/plans/resilient-mesh/D-hunt.md, 2.6 Choice). Kept byte for byte in needletail (scripts/tests/fixtures/flows-chooser.json) and in av-mesh; both implementations pass every case. A report gives each port's relative delay in us (a port without one is absent) and the ports seen in two of their last three probes; `extra` and `state` are the chooser's answer after it.",
+ "settings": {
+  "class_us": 300,
+  "keep_us": 150,
+  "hold_reports": 3,
+  "idle_s": 60
+ },
+ "cases": [
+  {
+   "name": "base slow: the fastest eligible port, after three reports in a row",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "base on the fastest class: the nearest other class, 300 us or more from the base",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 0,
+      "24000": 100,
+      "24001": 350,
+      "24002": 4000,
+      "24003": 299
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002,
+      24003
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 0,
+      "24000": 100,
+      "24001": 350,
+      "24002": 4000,
+      "24003": 299
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002,
+      24003
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 0,
+      "24000": 100,
+      "24001": 350,
+      "24002": 4000,
+      "24003": 299
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002,
+      24003
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 20,
+      "24000": 0,
+      "24001": 350,
+      "24002": 4000,
+      "24003": 319
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002,
+      24003
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "no second class: no media, single-class after 60 s, and back after three reports with one",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 299,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 299,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 59500,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 299,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 60000,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 299,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "single-class"
+    },
+    {
+     "t_ms": 60500,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 299,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "single-class"
+    },
+    {
+     "t_ms": 61000,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 400,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "single-class"
+    },
+    {
+     "t_ms": 61500,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 400,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "single-class"
+    },
+    {
+     "t_ms": 62000,
+     "delays_us": {
+      "22401": 0,
+      "24000": 40,
+      "24001": 400,
+      "24002": 150
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "a choice needs three reports in a row for the same port",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 500
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 500
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 500,
+      "24001": 0
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 500
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 2000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 500
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 2500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 500
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "the current extra is kept while it is within 150 us of the best",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24003": 300
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24003": 300
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24003": 300
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 150,
+      "24003": 0
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 2000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 151,
+      "24003": 0
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 2500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 151,
+      "24003": 0
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 3000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 151,
+      "24003": 0
+     },
+     "eligible": [
+      22401,
+      24000,
+      24003
+     ],
+     "extra": 24003,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "none must hold for 60 s before the extra stops",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 61000,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 61500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "single-class"
+    }
+   ]
+  },
+  {
+   "name": "a class that returns starts the 60 s again",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 30000,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 30500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 90000,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 90500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 100
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "single-class"
+    }
+   ]
+  },
+  {
+   "name": "a port seen in fewer than two of its last three probes is not chosen",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 200
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 200
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 200
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 200
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 2000,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 200
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 2500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 200
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "a report without the base port's delay changes nothing",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      24000,
+      24001,
+      24002
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 4000,
+      "24000": 0,
+      "24001": 3900,
+      "24002": 120
+     },
+     "eligible": [
+      22401,
+      24000,
+      24001,
+      24002
+     ],
+     "extra": 24000,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "both carrying flows turn slow: the extra moves to the fast port",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 0,
+      "24001": 400
+     },
+     "eligible": [
+      22401,
+      24001
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 1500,
+     "delays_us": {
+      "22401": 4000,
+      "24001": 4400,
+      "24005": 0
+     },
+     "eligible": [
+      22401,
+      24001,
+      24005
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 2000,
+     "delays_us": {
+      "22401": 4000,
+      "24001": 4400,
+      "24005": 0
+     },
+     "eligible": [
+      22401,
+      24001,
+      24005
+     ],
+     "extra": 24001,
+     "state": "diverse"
+    },
+    {
+     "t_ms": 2500,
+     "delays_us": {
+      "22401": 4000,
+      "24001": 4400,
+      "24005": 0
+     },
+     "eligible": [
+      22401,
+      24001,
+      24005
+     ],
+     "extra": 24005,
+     "state": "diverse"
+    }
+   ]
+  },
+  {
+   "name": "ties go to the lower port",
+   "base": 22401,
+   "reports": [
+    {
+     "t_ms": 0,
+     "delays_us": {
+      "22401": 4000,
+      "24003": 0,
+      "24007": 0
+     },
+     "eligible": [
+      22401,
+      24003,
+      24007
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 500,
+     "delays_us": {
+      "22401": 4000,
+      "24003": 0,
+      "24007": 0
+     },
+     "eligible": [
+      22401,
+      24003,
+      24007
+     ],
+     "extra": null,
+     "state": "probing"
+    },
+    {
+     "t_ms": 1000,
+     "delays_us": {
+      "22401": 4000,
+      "24003": 0,
+      "24007": 0
+     },
+     "eligible": [
+      22401,
+      24003,
+      24007
+     ],
+     "extra": 24003,
+     "state": "diverse"
+    }
+   ]
+  }
+ ]
+}
