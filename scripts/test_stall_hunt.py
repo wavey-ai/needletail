@@ -5,7 +5,10 @@ lab's cost is under the hunt's ceilings and every plan is dedicated; the
 timeline is the one of 7.3; a dry run prints every command and runs none;
 a real run refuses before anything is billed when the lab tool has no
 watchdog and budget on `up`; the node replaced at minute 35 is the one
-stopped most.
+stopped most; the memory programme holds the first region until it is
+taken again; a replacement that fails part-way leaves the polls and the
+route survey running; the first command on a new instance waits for its
+ssh; the polls count their failures and never run twice.
 python3 -m unittest scripts/test_stall_hunt.py"""
 
 from __future__ import annotations
@@ -14,8 +17,13 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -189,13 +197,22 @@ class DryRun(unittest.TestCase):
         self.assertTrue(all("--lateness-journal" in line for line in senders))
         self.assertEqual(len([line for line in senders if "--epoch-samples 120" in line]), 2)
         self.assertEqual(len(self.commands("cat >run.sh")), 7 * 2)
-        self.assertEqual(len(self.commands("/api/hops")), 7 * 5)
+        hops = self.commands("/api/hops")
+        self.assertEqual(len(hops), 7 * 5)
+        # Only the session's own stream since its start, never the ring.
+        self.assertTrue(all("/api/hops?since_us=<session start>&stream=" in line
+                            for line in hops))
         for word in ("create hunttest", "add-tree hunttest", "collected hunttest",
                      "finish hunttest"):
             self.assertEqual(len(self.commands(f"run_archive.py --tool stall-hunt {word}")), 1,
                              word)
         self.assertTrue(any("tar -C /var/lib/needletail-runs/hunt" in line
                             for line in self.lines))
+        # The first command on the new instances waits for their ssh: at
+        # minute 0 and after each replacement.
+        self.assertEqual(len(self.commands("# until ssh answers on")), 3)
+        # One last poll after the poller stops, before collect's fetches.
+        self.assertEqual(len(self.commands("once more: GET /api/stalls")), 1)
 
     def test_the_sessions_are_the_referee_s(self):
         text = self.printed
@@ -229,6 +246,22 @@ class Preflight(unittest.TestCase):
         text = "\n".join(problems)
         self.assertIn("--watchdog-hours", text)
         self.assertIn("--budget-usd", text)
+
+    def test_a_real_run_refuses_a_touch_that_does_not_hold(self):
+        topology = hunt_tool.load_topology()
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "needletail-nodecheck"
+            binary.write_text("")
+            with mock.patch.object(hunt_tool, "STATE", pathlib.Path(directory) / "hunt-lab.json"), \
+                    mock.patch.object(hunt_tool, "mesh_binary",
+                                      lambda name: pathlib.Path(directory) / name), \
+                    mock.patch.object(hunt_tool, "help_text",
+                                      lambda _command: "usage: touch --mb --rate-mb-s --thp --out"):
+                problems = hunt_tool.preflight(topology)
+        self.assertTrue(any("touch has no --hold" in line for line in problems), problems)
+
+    def test_the_default_run_id_is_new_each_run_of_a_day(self):
+        self.assertRegex(hunt_tool.default_run_id(), r"^hunt\d{8}$")
 
     def test_the_run_stops_before_anything_is_billed(self):
         args = mock.Mock(topology=str(TOPOLOGY), dry=False, run_id="hunttest", budget_usd=300,
@@ -268,6 +301,229 @@ class Replacement(unittest.TestCase):
         with mock.patch.object(hunt.runner, "ssh",
                                lambda name, _command, **_kwargs: quiet[name]):
             self.assertIsNone(hunt.worst()[0])
+
+
+
+# A stand-in for needletail-nodecheck touch: it writes when it started and
+# ended to lifetimes.txt; with --hold it ends only on SIGTERM.
+FAKE_TOUCH = """
+import signal, sys, time
+args = sys.argv[1:]
+out = args[args.index("--out") + 1]
+def line(word):
+    with open("lifetimes.txt", "a") as handle:
+        handle.write(f"{word} {out} {time.time():.6f}\\n")
+line("start")
+def ended(*_):
+    line("end")
+    sys.exit(0)
+signal.signal(signal.SIGTERM, ended)
+if "--hold" in args:
+    while True:
+        signal.pause()
+line("end")
+"""
+
+
+class TouchProgramme(unittest.TestCase):
+    def test_the_first_region_is_held_until_it_is_taken_again(self):
+        """7.3: A is touched at 20 and held, B (25) is fresh memory because A
+        still holds its own, A is freed at 30 just before C takes it again;
+        B and C are held to the end. The script runs with its sleeps cut to
+        a fifth of a second and a fake nodecheck that records lifetimes."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = pathlib.Path(directory)
+            fake = folder / "nodecheck"
+            fake.write_text(f"#!{sys.executable}\n{FAKE_TOUCH}")
+            fake.chmod(0o755)
+            body = hunt_tool.touch_body().replace(hunt_tool.NODECHECK, str(fake))
+            (folder / "touch.sh").write_text("sleep() { command sleep 0.2; }\n" + body)
+            subprocess.run(["sh", "touch.sh"], cwd=directory, check=True, timeout=60)
+            marks = {word: float(at) for word, at in
+                     (line.split() for line in (folder / "touch-marks.txt").read_text().splitlines())}
+            life: dict[str, dict[str, float]] = {}
+            for line in (folder / "lifetimes.txt").read_text().splitlines():
+                word, out, at = line.split()
+                life.setdefault(out, {})[word] = float(at)
+        self.assertEqual(list(marks), ["fresh", "thp-never", "again", "end"])
+        a, b, c = (life[f"touch-{name}.ndjson"] for name in ("fresh", "thp-never", "again"))
+        # A outlives B's start (B's region is fresh) and ends before C starts.
+        self.assertGreater(a["end"], b["start"])
+        self.assertGreater(a["end"], marks["thp-never"])
+        self.assertLessEqual(a["end"], marks["again"])
+        self.assertLessEqual(a["end"], c["start"])
+        # B and C are held to the end.
+        self.assertGreaterEqual(b["end"], marks["end"])
+        self.assertGreaterEqual(c["end"], marks["end"])
+        body = hunt_tool.touch_body()
+        self.assertEqual(body.count(f"{hunt_tool.NODECHECK} touch"), 3)
+        self.assertEqual(body.count("--hold"), 3)
+
+
+def live_hunt(directory: str):
+    """A hunt in its real mode whose lab, tools and nodes are fakes."""
+    topology = hunt_tool.load_topology()
+    hunt = hunt_tool.Hunt(hunt_tool.Runner(False, pathlib.Path(directory) / "run"), topology,
+                          TOPOLOGY, "hunttest", clock=time.time, sleep=lambda _s: None)
+    return hunt
+
+
+class ReplaceRecovers(unittest.TestCase):
+    def test_a_failed_watch_on_the_new_instance_leaves_the_polls_and_the_survey_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hunt = live_hunt(directory)
+            calls = []
+            hunt.survey_dirs = [pathlib.Path(directory) / "survey"]
+
+            def tool(script, *args, **_kwargs):
+                calls.append((script.name, args[0]))
+                return 0, ""
+
+            def watch(_names=None):
+                raise RuntimeError("lon-bare-3: ssh: connect to host: Connection refused")
+
+            with mock.patch.object(hunt.runner, "tool", tool), \
+                    mock.patch.object(hunt.runner, "fetch_directory",
+                                      side_effect=subprocess.TimeoutExpired("ssh", 900)), \
+                    mock.patch.object(hunt, "hosts", lambda _label: None), \
+                    mock.patch.object(hunt, "watch", watch), \
+                    mock.patch.object(hunt, "start_polling",
+                                      lambda: calls.append(("poll", "start"))), \
+                    mock.patch.object(hunt, "save", lambda: None), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(RuntimeError) as failed:
+                    hunt.replace("lon-bare-3", push=True, stopped_ms=45.0)
+        self.assertIn("Connection refused", str(failed.exception))
+        names = [call[1] if call[0] != "poll" else "poll" for call in calls]
+        # The survey is closed, the instance replaced (its records'
+        # timeout did not stop it), pushed all the same, then the polls
+        # and the survey start again.
+        self.assertEqual(names, ["stop", "collect", "remove", "grow", "push", "poll", "start"])
+        self.assertEqual(hunt.record["replaced"][0]["name"], "lon-bare-3")
+        self.assertFalse(hunt.record["replaced"][0]["watched"])
+        self.assertTrue(hunt.record["replaced"][0]["pushed"])
+
+    def test_a_grow_refused_is_tried_again_and_the_polls_come_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hunt = live_hunt(directory)
+            statuses = iter([0, 1, 1, 1, 1])
+            calls = []
+
+            def tool(script, *args, **_kwargs):
+                calls.append(args[0])
+                return (next(statuses) if args[0] in ("remove", "grow") else 0), ""
+
+            with mock.patch.object(hunt.runner, "tool", tool), \
+                    mock.patch.object(hunt.runner, "fetch_directory", lambda *_a, **_k: None), \
+                    mock.patch.object(hunt, "start_polling", lambda: calls.append("poll")), \
+                    mock.patch.object(hunt, "save", lambda: None), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(RuntimeError) as failed:
+                    hunt.replace("lon-edge-1", push=True)
+        self.assertIn("in 4 tries", str(failed.exception))
+        self.assertEqual(calls, ["remove", "grow", "grow", "grow", "grow", "poll"])
+
+
+class Ssh(unittest.TestCase):
+    def test_the_first_command_waits_for_ssh_and_names_a_node_that_never_answers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hunt = live_hunt(directory)
+            tries: dict[str, int] = {}
+            now = [0.0]
+            hunt.clock = lambda: now[0]
+
+            def sleep(seconds):
+                now[0] += seconds
+
+            def answers(name):
+                tries[name] = tries.get(name, 0) + 1
+                return name == "lon-edge-1" and tries[name] >= 3
+
+            started = []
+            hunt.sleep = sleep
+            with mock.patch.object(hunt.runner, "answers", answers), \
+                    mock.patch.object(hunt, "install_nodecheck", lambda names: None), \
+                    mock.patch.object(hunt.runner, "ssh",
+                                      lambda name, command, **_k: started.append(name)):
+                with self.assertRaises(RuntimeError) as failed:
+                    hunt.watch(["lon-edge-1", "lon-edge-2"])
+        self.assertEqual(started, ["lon-edge-1"])
+        self.assertIn("no watch on lon-edge-2", str(failed.exception))
+        self.assertGreaterEqual(now[0], hunt_tool.SSH_WAIT_S)
+
+
+class Polls(unittest.TestCase):
+    def test_a_failed_poll_is_counted_and_one_poller_runs_at_a_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hunt = live_hunt(directory)
+            first, second = hunt.mesh[:2]
+            running = []
+            lock = threading.Lock()
+            peak = [0]
+
+            def poll(name, _since):
+                with lock:
+                    running.append(name)
+                    peak[0] = max(peak[0], len(running))
+                time.sleep(0.01)
+                with lock:
+                    running.remove(name)
+                if name == first:
+                    raise OSError("timed out")
+
+            with mock.patch.object(hunt, "poll", poll), \
+                    mock.patch.object(hunt_tool, "POLL_S", 0.05):
+                for _ in range(5):
+                    hunt.start_polling()
+                    time.sleep(0.03)
+                    hunt.stop_polling_now()
+                hunt.save()
+            saved = json.loads((pathlib.Path(directory) / "run" / "hunt.json").read_text())
+        self.assertEqual(peak[0], 1)
+        self.assertGreaterEqual(saved["poll_failures"][first]["n"], 5)
+        self.assertIn("timed out", saved["poll_failures"][first]["last"])
+        self.assertNotIn(second, saved["poll_failures"])
+
+
+class Hangup(unittest.TestCase):
+    def test_after_a_hangup_the_output_goes_to_the_run_s_file(self):
+        """A closed terminal: SIGHUP is taken as SIGTERM (collect and down
+        still run), and what this process and its tools write goes to
+        after-hangup.log, not to the terminal that is gone."""
+        with tempfile.TemporaryDirectory() as directory:
+            program = (
+                "import importlib.util, pathlib, subprocess, sys\n"
+                f"spec = importlib.util.spec_from_file_location('h', {str(HERE / 'linode-stall-hunt.py')!r})\n"
+                "tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(tool)\n"
+                "try:\n"
+                f"    tool.hung_up(pathlib.Path({directory!r}) / 'run')\n"
+                "except KeyboardInterrupt:\n"
+                "    print('interrupted', flush=True)\n"
+                "    subprocess.run(['echo', 'a tool'])\n")
+            result = subprocess.run([sys.executable, "-c", program], capture_output=True,
+                                    timeout=60)
+            log = (pathlib.Path(directory) / "run" / "after-hangup.log").read_text()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(log, "interrupted\na tool\n")
+
+
+class Tools(unittest.TestCase):
+    def test_tools_run_from_the_checkout_s_root(self):
+        seen = {}
+
+        def run(command, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(hunt_tool.subprocess, "run", run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            runner = hunt_tool.Runner(False, pathlib.Path(directory))
+            runner.tool(hunt_tool.SURVEY_TOOL, "start", "--out", "target/stall-hunt/x/survey")
+        self.assertEqual(seen["cwd"], str(hunt_tool.ROOT))
+        self.assertFalse(any("TOKEN" in key or key.endswith("_PAT") for key in seen["env"]
+                             if key not in os.environ))
 
 
 if __name__ == "__main__":

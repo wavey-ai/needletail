@@ -55,9 +55,13 @@ Timeline, minutes after `up` returns (7.3):
   88  down (inside the second billed hour; the watchdog is at 1.9 h)
 A session is the referee's: the contributor restarted, the AEP1 sender at
 the next 64 s boundary (with --lateness-journal), listeners from 12 s after
-it; then one /api/hops pull from the nodes with an enlarged ring. A step
-that fails is recorded and the run goes on; `collect` and `down` always
-run, also after an interrupt.
+it; then one /api/hops pull (since the session's start) from the nodes with
+an enlarged ring. A step that fails is recorded and the run goes on;
+`collect` and `down` always run, also after an interrupt, SIGTERM or
+SIGHUP (after a hangup the output goes to after-hangup.log in the run's
+directory). Run it in tmux all the same: the lab tool's watchdog deletes
+the lab at its deadline whatever happens here, but an uncollected run is a
+failed run.
 """
 
 from __future__ import annotations
@@ -102,6 +106,14 @@ HOURLY = {"g6-dedicated-2": 0.054, "g6-dedicated-4": 0.108}
 # No step starts this close to the watchdog's deadline (it starts `down`
 # five minutes before it): the run goes to collect and down instead.
 LATEST_START_BEFORE_DEADLINE_S = 15 * 60
+# A new instance is `running` to the API before its sshd answers: the first
+# command on it waits this long at most.
+SSH_WAIT_S = 180
+# `grow` after `remove`: the label of an instance just deleted can stay
+# taken a while (the lab tool's own `replace` and `add` give a new label
+# instead; `grow` cannot), so it is tried again this many times.
+GROW_ATTEMPTS = 4
+GROW_RETRY_S = 30.0
 REMOTE = "/var/lib/needletail-runs/hunt"
 REMOTE_MEDIA = "/var/lib/compare"
 NODECHECK = "/usr/local/bin/needletail-nodecheck"
@@ -150,6 +162,9 @@ LAB_UP_FLAGS = ("--watchdog-hours", "--budget-usd", "--optional-sites", "--run-i
 DEPLOY_SETTINGS = ("node_overrides", "stall_journal_capacity", "mlock")
 MESH_FLAGS = ("--stall-journal-capacity", "--mlock")
 SENDER_FLAGS = ("--lateness-journal",)
+# The memory programme holds each region until it is ended (7.3: the first
+# 400 MB is held from minute 20 to 30, so that the second is fresh memory).
+TOUCH_FLAGS = ("--hold",)
 
 BURN = (
     "a=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8+$9, $9}' /proc/stat); "
@@ -329,15 +344,16 @@ def listener_script(directory: str, commands: list[str]) -> str:
             "(setsid nohup sh run.sh >run.log 2>&1 </dev/null &)")
 
 
-def touch_script() -> str:
-    """The memory program of a bare node (7.3), minutes 20 to 33: 400 MB of
-    fresh memory touched at 2 MB a second; five minutes later a fresh
-    400 MB without huge pages; five minutes later the first is freed and
-    400 MB is taken again. `touch` keeps its mapping until it is ended.
-    The marks give the report its periods."""
-    touch = (f"{NODECHECK} touch --mb {TOUCH_MB} --rate-mb-s {TOUCH_RATE_MB_S}")
+def touch_body() -> str:
+    """The memory programme of a bare node (7.3), minutes 20 to 33: 400 MB
+    of fresh memory touched at 2 MB a second, then held; five minutes later
+    a fresh 400 MB without huge pages (fresh because the first is still
+    held); five minutes later the first is freed (its process ends) and
+    400 MB is taken again, which the guest serves from the pages just
+    freed. `touch --hold` keeps its mapping after the last page until it
+    is sent SIGTERM. The marks give the report its periods."""
+    touch = f"{NODECHECK} touch --mb {TOUCH_MB} --rate-mb-s {TOUCH_RATE_MB_S} --hold"
     return (
-        f"mkdir -p {REMOTE} && cd {REMOTE} && cat >touch.sh <<'RUN'\n"
         "mark() { echo \"$1 $(date +%s.%N)\" >>touch-marks.txt; }\n"
         f"mark fresh; {touch} --thp always --out touch-fresh.ndjson & A=$!\n"
         "sleep 300\n"
@@ -346,9 +362,13 @@ def touch_script() -> str:
         "kill $A 2>/dev/null; wait $A 2>/dev/null\n"
         f"mark again; {touch} --thp always --out touch-again.ndjson & C=$!\n"
         "sleep 180\n"
-        "mark end; kill $B $C 2>/dev/null\n"
-        "RUN\n"
-        "(setsid nohup sh touch.sh >touch.log 2>&1 </dev/null &)")
+        "mark end; kill $B $C 2>/dev/null; wait\n")
+
+
+def touch_script() -> str:
+    """The memory programme, written to the node and started detached."""
+    return (f"mkdir -p {REMOTE} && cd {REMOTE} && cat >touch.sh <<'RUN'\n{touch_body()}RUN\n"
+            "(setsid nohup sh touch.sh >touch.log 2>&1 </dev/null &)")
 
 
 def node_overrides(topology: dict) -> dict:
@@ -412,8 +432,9 @@ class Runner:
 
     def tool(self, script: pathlib.Path, *args: str, capture: bool = False,
              timeout: float | None = None) -> tuple[int, str]:
-        """A tool of this checkout by command line, under the hunt's lab
-        state and ceilings. Returns (exit status, its output when captured)."""
+        """A tool of this checkout by command line, from the checkout's root
+        (paths are given relative to it), under the hunt's lab state and
+        ceilings. Returns (exit status, its output when captured)."""
         environment = tool_environment()
         shown = " ".join(f"{key}={relative(value) if key.endswith('STATE') else value}"
                          for key, value in environment.items())
@@ -422,7 +443,7 @@ class Runner:
             self.say(f"$ {line}")
             return 0, ""
         self.say(f"$ {relative(script)} " + " ".join(shlex.quote(arg) for arg in args))
-        result = subprocess.run([sys.executable, str(script), *args],
+        result = subprocess.run([sys.executable, str(script), *args], cwd=str(ROOT),
                                 env={**os.environ, **environment}, timeout=timeout,
                                 stdout=subprocess.PIPE if capture else None,
                                 stderr=subprocess.STDOUT if capture else None)
@@ -445,6 +466,13 @@ class Runner:
             raise RuntimeError(f"{name}: remote command failed ({result.returncode}): "
                                f"{result.stderr.decode(errors='replace')[-800:]}")
         return result.stdout.decode(errors="replace").strip()
+
+    def answers(self, name: str) -> bool:
+        """Whether a node takes an ssh command now."""
+        try:
+            return common.ssh(self.nodes[name], "true", check=False, timeout=30).returncode == 0
+        except Exception:  # noqa: BLE001 - a timeout or a refused connection: not yet
+            return False
 
     def send_file(self, name: str, source: pathlib.Path, destination: str,
                   mode: str = "755") -> None:
@@ -520,6 +548,11 @@ class Hunt:
         self.t0: float | None = None
         self.stop_polling = threading.Event()
         self.poller: threading.Thread | None = None
+        # The polls' place in each node's journal, kept across restarts of
+        # the poller, and their failures per node (into hunt.json).
+        self.poll_since: dict[str, int] = {}
+        self.poll_failures: dict[str, dict] = {}
+        self.poll_lock = threading.Lock()
         self.survey_dirs: list[pathlib.Path] = []
         self.interrupted = False
         self.record: dict = {
@@ -606,6 +639,8 @@ class Hunt:
         if self.runner.dry:
             return
         self.out().mkdir(parents=True, exist_ok=True)
+        with self.poll_lock:
+            self.record["poll_failures"] = json.loads(json.dumps(self.poll_failures))
         path = self.out() / "hunt.json"
         temporary = path.with_suffix(".json.next")
         temporary.write_text(json.dumps(self.record, indent=1) + "\n")
@@ -673,14 +708,38 @@ class Hunt:
         source = mesh_binary("needletail-nodecheck")
         self.runner.each(names, lambda name: self.runner.send_file(name, source, NODECHECK))
 
+    def wait_ssh(self, names: list[str], patience_s: float = SSH_WAIT_S) -> list[str]:
+        """The nodes of `names` that take an ssh command within `patience_s`:
+        a new instance is `running` to the API before its sshd answers."""
+        if self.runner.dry:
+            self.runner.say(f"# until ssh answers on {', '.join(names)} (at most {patience_s:g} s)")
+            return list(names)
+        deadline = self.clock() + patience_s
+        pending = list(names)
+        while True:
+            answered = self.runner.each(pending, self.runner.answers)
+            pending = [name for name in pending if not answered.get(name)]
+            if not pending or self.clock() >= deadline:
+                break
+            self.sleep(5.0)
+        return [name for name in names if name not in pending]
+
     def watch(self, names: list[str] | None = None) -> None:
         """On every node, the first command: needletail-nodecheck watch,
-        which runs to the end and allocates nothing."""
+        which runs to the end and allocates nothing. A node whose ssh does
+        not answer in time is named in the step's failure; the others are
+        watched all the same."""
         names = sorted(self.nodes) if names is None else names
-        self.install_nodecheck(names)
-        self.runner.each(names, lambda name: self.runner.ssh(name, (
-            f"mkdir -p {REMOTE} && (setsid nohup {NODECHECK} watch --out {REMOTE}/watch.ndjson "
-            f">{REMOTE}/watch.log 2>&1 </dev/null &)")))
+        ready = self.wait_ssh(names)
+        if ready:
+            self.install_nodecheck(ready)
+            self.runner.each(ready, lambda name: self.runner.ssh(name, (
+                f"mkdir -p {REMOTE} && (setsid nohup {NODECHECK} watch --out "
+                f"{REMOTE}/watch.ndjson >{REMOTE}/watch.log 2>&1 </dev/null &)")))
+        silent = [name for name in names if name not in ready]
+        if silent:
+            raise RuntimeError(f"ssh did not answer within {SSH_WAIT_S} s: no watch on "
+                               + ", ".join(silent))
 
     def warm(self, names: list[str], label: str) -> None:
         started = self.clock()
@@ -838,8 +897,10 @@ class Hunt:
             self.wait_for_probes(sorted(entry["hosts"]), directory, 90)
             entry["probes_to_unix"] = round(launched + seconds, 3)
         self.runner.ssh(source, "pkill -x aep1-48k-probe; true", check=False)
-        # Once, after the session has ended, never during one (2.5).
-        entry["hops_pull"] = self.pull_hops(name)
+        # Once, after the session has ended, never during one (2.5); only
+        # the session's own events are sent.
+        entry["hops_pull"] = self.pull_hops(name, CONFIGS[config]["stream"],
+                                            entry.get("start_unix"))
         self.record["sessions"].append(entry)
         self.period(name, "session", entry.get("probes_from_unix", launched),
                     entry.get("probes_to_unix", launched + seconds), config=config)
@@ -858,17 +919,21 @@ class Hunt:
             self.runner.say(f"probes still running on {', '.join(sorted(pending))}: "
                             "their records are taken as they are at collect")
 
-    def pull_hops(self, session: str) -> dict:
+    def pull_hops(self, session: str, stream: int, start_unix: int | None) -> dict:
+        """/api/hops of the session's stream since its sender's START (the
+        whole enlarged ring is hundreds of MB from the far sites)."""
         names = self.present(self.topology["hunt"].get("hop_journal_large", []))
         started = self.clock()
+        since = None if start_unix is None else int(start_unix) * 1_000_000
+        query = f"/api/hops?since_us={'<session start>' if since is None else since}&stream={stream}"
         if self.runner.dry:
             for name in names:
                 self.runner.say(f"GET https://{self.nodes[name]['public_ipv4']}:{HTTP_PORT}"
-                                f"/api/hops >nodes/{name}/hops-{session}.ndjson")
+                                f"{query} >nodes/{name}/hops-{session}.ndjson")
             return {"nodes": names}
 
         def one(name: str) -> int:
-            body = stall_records.fetch(self.nodes[name]["public_ipv4"], HTTP_PORT, "/api/hops",
+            body = stall_records.fetch(self.nodes[name]["public_ipv4"], HTTP_PORT, query,
                                        timeout=120)
             target = self.out() / "nodes" / name
             target.mkdir(parents=True, exist_ok=True)
@@ -881,8 +946,9 @@ class Hunt:
                 sizes[name] = one(name)
             except Exception as error:  # noqa: BLE001 - one node's journal is not the run
                 failed[name] = str(error)[-200:]
-        return {"nodes": names, "from_unix": round(started, 3),
-                "to_unix": round(self.clock(), 3), "bytes": sizes, "failed": failed}
+        return {"nodes": names, "since_us": since, "stream": stream,
+                "from_unix": round(started, 3), "to_unix": round(self.clock(), 3),
+                "bytes": sizes, "failed": failed}
 
     # ---- the replacement
 
@@ -945,47 +1011,83 @@ class Hunt:
         (an edge is named by its peers by VLAN address only, which the new
         instance keeps). A distributor is not pushed: its public address is
         compiled into other nodes' arguments, and nothing may depend on
-        rendering them again."""
-        dry = self.runner.dry
-        before = None if dry else self.nodes[name].get("host_uuid")
-        surveyed = dry or name in self.survey_ends()
+        rendering them again. The polls and, for a survey end, the route
+        survey stop for it and start again whatever happened in between."""
+        surveyed = self.runner.dry or name in self.survey_ends()
         if surveyed:
             # Its links end with its address: their record is closed and a
             # new one begins with the new instance.
             self.survey_collect()
         self.stop_polling_now()
+        failure = None
+        try:
+            self.replace_instance(name, push, stopped_ms)
+        except Exception as error:  # noqa: BLE001 - raised again once the polls run again
+            failure = error
+        problems = self.resume(surveyed)
+        if failure is not None:
+            raise failure
+        if problems:
+            raise RuntimeError("; ".join(problems))
+
+    def replace_instance(self, name: str, push: bool, stopped_ms: float | None) -> None:
+        dry = self.runner.dry
+        before = None if dry else self.nodes[name].get("host_uuid")
         # The instance's own records (its watch above all) go with it:
         # they are fetched first, beside the new instance's.
         try:
             self.runner.fetch_directory(name, REMOTE, self.out() / "nodes" / name / "before-replace")
-        except RuntimeError as error:
+        except Exception as error:  # noqa: BLE001 - a timeout too; the replace goes on
             self.runner.say(f"{name}: its records could not be fetched before the replace: {error}")
         status, _ = self.lab("remove", name, "--any-lab-node")
         if not dry and status != 0:
-            self.start_polling()
             raise RuntimeError(f"lab remove {name} failed")
-        status, _ = self.lab("grow", "--topology", relative(self.topology_path))
-        if not dry and status != 0:
-            # The label of an instance just deleted can stay taken a while.
-            self.sleep(30.0)
+        for attempt in range(GROW_ATTEMPTS):
+            if attempt:
+                self.sleep(GROW_RETRY_S)
             status, _ = self.lab("grow", "--topology", relative(self.topology_path))
+            if dry or status == 0:
+                break
         if not dry and status != 0:
-            self.use_lab_nodes()
-            self.start_polling()
-            raise RuntimeError(f"lab grow did not recreate {name}: the run goes on without it")
+            raise RuntimeError(f"lab grow did not recreate {name} in {GROW_ATTEMPTS} tries: "
+                               "the run goes on without it")
         self.hosts(f"replaced-{name}" if not dry else "replaced")
-        self.watch([name])
-        if push and self.deploy("push", "--nodes", name) != 0 and not dry:
-            self.runner.say(f"push --nodes {name} failed: the new instance runs the watch only")
+        entry = {"name": name, "unix": round(self.clock(), 3), "pushed": False,
+                 "watched": False, "stopped_ms_before": stopped_ms,
+                 "host_uuid_before": before,
+                 "host_uuid_after": None if dry else self.nodes[name].get("host_uuid")}
         if not dry:
-            self.record["replaced"].append({
-                "name": name, "unix": round(self.clock(), 3), "pushed": push,
-                "stopped_ms_before": stopped_ms, "host_uuid_before": before,
-                "host_uuid_after": self.nodes[name].get("host_uuid")})
+            self.record["replaced"].append(entry)
             self.save()
+        watch_error = None
+        try:
+            self.watch([name])
+            entry["watched"] = True
+        except Exception as error:  # noqa: BLE001 - the push is tried all the same
+            watch_error = error
+        if push:
+            entry["pushed"] = self.deploy("push", "--nodes", name) == 0
+            if not dry and not entry["pushed"]:
+                self.runner.say(f"push --nodes {name} failed: the new instance runs the watch only")
+        if not dry:
+            self.save()
+        if watch_error is not None:
+            raise watch_error
+
+    def resume(self, surveyed: bool) -> list[str]:
+        """After a replacement, whatever happened: the lab as it is now, the
+        polls, and the survey on the ends the lab has. Returns what did not
+        start again."""
+        problems = []
+        if not self.runner.dry and STATE.exists():
+            self.use_lab_nodes()
         self.start_polling()
         if surveyed:
-            self.survey_start()
+            try:
+                self.survey_start()
+            except Exception as error:  # noqa: BLE001 - named in the step's failure
+                problems.append(f"the route survey did not start again: {error}")
+        return problems
 
     def survey_ends(self) -> set[str]:
         survey = self.topology["hunt"].get("survey", {})
@@ -996,7 +1098,8 @@ class Hunt:
     def start_polling(self) -> None:
         """Every POLL_S from every mesh node: /api/stalls?since_us= and
         /api/mesh/local; from the contributor its stall journal and its
-        pacing record (7.4). Never /api/hops (2.5)."""
+        pacing record (7.4). Never /api/hops (2.5). One poller at a time,
+        each with its own stop event."""
         if self.runner.dry:
             self.runner.say(f"every {POLL_S:g} s: GET /api/stalls?since_us=T and /api/mesh/local "
                             f"from {', '.join(self.names('distributor', 'edge'))}; /api/stalls "
@@ -1004,26 +1107,52 @@ class Hunt:
             return
         if self.poller and self.poller.is_alive():
             return
-        self.stop_polling.clear()
-        self.poller = threading.Thread(target=self.poll_loop, daemon=True)
+        stop = threading.Event()
+        self.stop_polling = stop
+        self.poller = threading.Thread(target=self.poll_loop, args=(stop,), daemon=True)
         self.poller.start()
 
     def stop_polling_now(self) -> None:
+        """The poller ends after the node it is polling: no second one can
+        start while it runs."""
         self.stop_polling.set()
         if self.poller:
-            self.poller.join(timeout=30)
+            self.poller.join()
             self.poller = None
 
-    def poll_loop(self) -> None:
-        since: dict[str, int] = {}
-        while not self.stop_polling.is_set():
+    def poll_loop(self, stop: threading.Event) -> None:
+        while not stop.is_set():
             started = time.time()
             for name in self.mesh:
-                try:
-                    self.poll(name, since)
-                except Exception:  # noqa: BLE001 - a node that does not answer is polled again
-                    pass
-            self.stop_polling.wait(max(0.5, POLL_S - (time.time() - started)))
+                if stop.is_set():
+                    break
+                self.poll_once(name)
+            stop.wait(max(0.5, POLL_S - (time.time() - started)))
+
+    def poll_once(self, name: str) -> bool:
+        """One poll of a node; a failure is counted (hunt.json
+        `poll_failures`) and the node is polled again next time."""
+        try:
+            self.poll(name, self.poll_since)
+            return True
+        except Exception as error:  # noqa: BLE001 - a node that does not answer is polled again
+            with self.poll_lock:
+                slot = self.poll_failures.setdefault(name, {"n": 0})
+                slot["n"] += 1
+                slot["last"] = str(error)[-200:]
+                slot["last_unix"] = round(time.time(), 3)
+            return False
+
+    def last_poll(self) -> None:
+        """One more poll of every mesh node once the poller has stopped: the
+        journals' last events, which the 5 s cadence may not have reached."""
+        if self.runner.dry:
+            self.runner.say("once more: GET /api/stalls?since_us=T, /api/mesh/local and "
+                            "/api/pacing from every mesh node")
+            return
+        failed = [name for name in self.mesh if not self.poll_once(name)]
+        if failed:
+            self.runner.say(f"the last poll failed on {', '.join(failed)}")
 
     def poll(self, name: str, since: dict[str, int]) -> None:
         node = self.nodes[name]
@@ -1050,6 +1179,7 @@ class Hunt:
     def collect(self) -> None:
         """Everything the report reads, into target/stall-hunt/<run id>/."""
         self.stop_polling_now()
+        self.last_poll()
         self.survey_collect()
         nodes_dir = self.out() / "nodes"
 
@@ -1272,6 +1402,11 @@ def preflight(topology: dict) -> list[str]:
         text = help_text([str(mesh_binary("av-mesh")), "--help"])
         problems += [f"av-mesh has no {flag}: the build is without the stall instruments"
                      for flag in MESH_FLAGS if flag not in text]
+    if mesh_binary("needletail-nodecheck").is_file():
+        text = help_text([str(mesh_binary("needletail-nodecheck")), "touch", "--help"])
+        problems += [f"needletail-nodecheck touch has no {flag}: the first 400 MB would be "
+                     "freed before the second is taken, and that is not fresh memory (7.3)"
+                     for flag in TOUCH_FLAGS if flag not in text]
     if contrib_binary("aep1-48k-probe").is_file():
         text = help_text([str(contrib_binary("aep1-48k-probe")), "send", "--help"])
         problems += [f"aep1-48k-probe send has no {flag}: the sender is without its journal"
@@ -1284,7 +1419,9 @@ def preflight(topology: dict) -> list[str]:
 # ----------------------------------------------------------------- commands
 
 def default_run_id() -> str:
-    return "hunt" + dt.datetime.now(dt.timezone.utc).strftime("%m%d")
+    """hunt<month><day><hour><minute> (UTC): R6's repeat on the same day
+    gets a run id, an archive entry and a run directory of its own."""
+    return "hunt" + dt.datetime.now(dt.timezone.utc).strftime("%m%d%H%M")
 
 
 def print_plan(topology: dict) -> None:
@@ -1325,8 +1462,25 @@ def command_run(args: argparse.Namespace) -> None:
     hunt = Hunt(Runner(args.dry, OUT / args.run_id), topology, path, args.run_id,
                 args.budget_usd, args.spent_before_usd)
     if not args.dry:
-        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+        signal.signal(signal.SIGTERM, interrupt)
+        signal.signal(signal.SIGHUP, lambda *_: hung_up(hunt.out()))
     sys.exit(hunt.run())
+
+
+def interrupt(*_args) -> None:
+    raise KeyboardInterrupt()
+
+
+def hung_up(out: pathlib.Path) -> None:
+    """The terminal is gone: this process's output and its tools' (they
+    share its descriptors) go to a file of the run, so that collect and
+    down do not fail on a write; then as SIGTERM."""
+    out.mkdir(parents=True, exist_ok=True)
+    log = os.open(out / "after-hangup.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(log, 1)
+    os.dup2(log, 2)
+    os.close(log)
+    interrupt()
 
 
 def existing_hunt(args: argparse.Namespace) -> Hunt:
@@ -1368,7 +1522,7 @@ def main() -> None:
     run = sub.add_parser("run", help="bring the lab up, run the timeline, collect, take it down")
     run.add_argument("--topology", default=str(TOPOLOGY))
     run.add_argument("--run-id", default=default_run_id(),
-                     help="the lab's run id and tag (default hunt<month><day>, UTC)")
+                     help="the lab's run id and tag (default hunt<month><day><hour><minute>, UTC)")
     run.add_argument("--budget-usd", type=float, default=None,
                      help="the budget of the work, passed to the lab tool's `up`: it refuses "
                           "when this lab to its watchdog's deadline, what was spent before and "
