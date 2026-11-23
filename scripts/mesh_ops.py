@@ -495,7 +495,10 @@ class Ops:
         raise NotImplementedError
 
     def activate(self, node: str, not_after_ms: int, rollback: bool = False) -> dict:
-        """Run the node's activation script; {"ok": bool, "why": str}."""
+        """Run the node's activation script; {"ok": bool, "why": str}, "why"
+        "late" for the script's deadline refusal. It returns only once the
+        script's result file is written (the restart has run), so the
+        engine's NRestarts read after it is the one to compare with."""
         raise NotImplementedError
 
     def boot_changed(self, node: str, since_ms: int) -> bool | None:
@@ -505,7 +508,9 @@ class Ops:
         raise NotImplementedError
 
     def unit_restarts(self, node: str) -> int | None:
-        """The unit's NRestarts."""
+        """The unit's NRestarts, an integer (`systemctl show -p NRestarts`;
+        the local lab gives its own count). None only when it cannot be
+        read, which fails a readiness wait as not the build's."""
         raise NotImplementedError
 
     def clock_offset(self, node: str) -> float | None:
@@ -914,10 +919,18 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
     `statuses` {name: Status or None} of `forwarder_scope`; `previous` the
     poll before (for the deadline-drop checks LG4, CG4); `assignments`
     {name: (status, JSON)} of `/api/assignment` on the site's two first
-    distributors when X is the first of them. `pairs` are the lease pairs
-    (child, address, stream) seen at X, kept for R4."""
+    distributors when X is the first of them. `pairs` are the audio lease
+    pairs (child, address, stream, fed) seen at X, kept for R4; `fed`: X
+    feeds the child that stream (X's row at the child has objects_1s > 0).
+
+    A lease pair that X does not feed (no row for X at the child, or
+    objects_1s 0: a playlist held with no source, or a build that keeps its
+    leases and forwards nothing) cannot be harmed by X's stop: it is judged
+    as an idle mesh is (LG1 and some other parent `ready`) and listed in
+    the evidence as not fed. A row for X without objects_1s is "parity
+    unknown"."""
     problems: list[str] = []
-    evidence: dict = {"lease": [], "compiled": [], "video": []}
+    evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": []}
     pairs: list = []
     sx = statuses.get(x)
     if sx is None:
@@ -955,18 +968,30 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
         if sc.state == "stopping":
             problems.append(f"LG1: {child} is stopping")
             continue
-        own_row = parent_row(sc, x_addresses, stream_id) or {}
-        kind = sx.stream_class(stream_id) or own_row.get("class")
-        if kind is None:
+        if sc.parents is None:
+            problems.append(f"parity unknown: {child}'s parents[]")
+            continue
+        own_row = parent_row(sc, x_addresses, stream_id)
+        if own_row is not None and _num(own_row, "objects_1s") is None:
+            problems.append(f"parity unknown: {child}'s row for {x} has no objects_1s "
+                            f"(stream {stream_id})")
+            continue
+        fed = own_row is not None and own_row["objects_1s"] > 0
+        kind = sx.stream_class(stream_id) or (own_row or {}).get("class")
+        if fed and kind is None:
             problems.append(f"parity unknown: the class of stream {stream_id} at {child}")
             continue
-        if kind != "audio":
+        if kind is not None and kind != "audio":
             evidence["video"].append({"child": child, "stream_id": stream_id})
             continue
-        pairs.append((child, child_address, stream_id))
-        others = [parent for parent in sc.parents or [] if parent.address not in x_addresses]
+        if not fed and not idle:
+            evidence["not_fed"].append({"child": child, "stream_id": stream_id})
+        pairs.append((child, child_address, stream_id, fed))
+        # Judged as an idle mesh is when X does not feed this pair.
+        light = idle or not fed
+        others = [parent for parent in sc.parents if parent.address not in x_addresses]
         candidates = [lab.name_of(parent.address) for parent in others]
-        if idle and not others:
+        if light and not others:
             candidates = [name for name in lab.distributors(lab.site(x)) if name != x]
         found, reasons = False, []
         for other in candidates:
@@ -975,14 +1000,14 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                 continue
             sp = statuses.get(other)
             failed = []
-            if not idle:
+            if not light:
                 failed += [f"LG2 {child} <- {other} {stream_id}: {item}" for item in
                            feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms)]
             if sp is None:
                 failed.append(f"LG3: {other} does not answer /api/node")
             elif sp.ready is not True:
                 failed.append(f"LG3: {other} is not ready ({sp.state})")
-            elif not idle:
+            elif not light:
                 if sp.hello_draining is not False:
                     failed.append(f"LG3: {other}'s hellos say draining (or say nothing)")
                 if sp.lease_pairs is None or (child_address, stream_id) not in sp.lease_pairs:
@@ -1288,7 +1313,7 @@ def readiness_check(lab: Lab, name: str, statuses: dict, *, expected: dict, befo
     if status.warm is not True or status.state != "ready":
         out["R3"].append(f"warm {status.warm}, state {status.state}")
     addresses = lab.addresses(name)
-    for child, child_address, stream_id in gate_pairs:
+    for child, child_address, stream_id, fed in gate_pairs:
         held_elsewhere = any(
             other != name and statuses.get(other) is not None
             and (child_address, stream_id) in (statuses[other].lease_pairs or [])
@@ -1297,6 +1322,9 @@ def readiness_check(lab: Lab, name: str, statuses: dict, *, expected: dict, befo
             continue
         if (child_address, stream_id) not in (status.lease_pairs or []):
             out["R4"].append(f"{child}'s lease of {stream_id} is not back")
+            continue
+        if not fed:
+            # The node fed this pair nothing before its restart either.
             continue
         row = parent_row(statuses.get(child), addresses, stream_id)
         if row is None or _num(row, "source_age_ms") is None or row["source_age_ms"] > LIVE_MS:
@@ -1335,7 +1363,9 @@ def wait_ready(ops: Ops, name: str, *, expected: dict, before_boot: int, activat
                poll_s: float = POLL_S, clock=time.time, sleep=time.sleep) -> Ready:
     """Poll until every check of 3.4 for the node's tier holds at once, then
     the unit's NRestarts must not have risen; else, at `timeout_s`, the
-    cause: "build" when R1, R2 or R4 fails, "other" otherwise."""
+    cause: "build" when R1, R2 or R4 fails, "other" otherwise. An NRestarts
+    the backend cannot read is no evidence against the build: it fails the
+    wait as "unit", cause "other"."""
     lab = lab or Lab(ops.nodes())
     scope = forwarder_scope(lab, name) if lab.tier(name) == "forwarders" else [name]
     deadline = clock() + timeout_s
@@ -1349,7 +1379,7 @@ def wait_ready(ops: Ops, name: str, *, expected: dict, before_boot: int, activat
         if not any(last.values()):
             restarts = ops.unit_restarts(name)
             if restarts is None or restarts_before is None:
-                last["R1"].append("parity unknown: the unit's NRestarts")
+                last["unit"] = ["parity unknown: the unit's NRestarts"]
             elif restarts > restarts_before:
                 last["R1"].append(f"the unit restarted {restarts - restarts_before} times")
             else:

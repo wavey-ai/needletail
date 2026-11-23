@@ -58,7 +58,9 @@ class Sim(mesh_ops.Ops):
     standby. New York: new-dist-a (primary lon-dist-a, repair lane
     lon-dist-b) and new-dist-b (the other way round); new-edge-1 to -3
     serving, new-edge-4 on standby. Stream 3001 is audio. Every node runs
-    OLD; `stage` makes NEW the target. A node warms 1 s after its start."""
+    OLD; `stage` makes NEW the target. A node warms 1 s after its start.
+    `broken[(node, git)]`: "silent" (no HTTP), "cold" (never warm),
+    "threads" (a class thread short), "mute" (forwards nothing)."""
 
     def __init__(self, clock: Clock, tmp: pathlib.Path):
         self.clock = clock
@@ -143,6 +145,9 @@ class Sim(mesh_ops.Ops):
             age = self.clock() - self.nodes_[parent]["start"]
             window = int(min(10, max(0, age)))
             row = good_row(window_s=window, objects_10s=1000 * window)
+            if self.broken.get((parent, self.nodes_[parent]["build"][0])) == "mute":
+                # A build that keeps its leases and forwards nothing.
+                row.update(objects_1s=0, objects_10s=0, source_age_ms=9000)
             row.update(self.row.get((child, parent), {}))
             path = "secondary" if node.get("secondary") == parent else "primary"
             out.append({"address": self.nodes_[parent][via], "id": parent, "path": path,
@@ -724,6 +729,30 @@ class ForwarderGate(Base):
             "compiled": [], "lease": {"pairs": 3}}}
         self.assert_refused("new-dist-b", "pairs_list", timeout_s=2)
 
+    def test_a_lease_pair_x_does_not_feed_is_listed_not_judged(self):
+        # A reader holds FLAC 2001 at new-edge-1 with no source: new-dist-b
+        # keeps the lease and no child has a row for it.
+        def held(doc):
+            doc["children"]["lease"]["pairs_list"].append(
+                {"child": "10.77.2.21", "stream_id": 2001, "primary": True, "rank": 0})
+            doc["streams"].append({"stream_id": 2001, "class": "audio", "seen_age_ms": 60000,
+                                   "decoded": False})
+            return doc
+        self.sim.patch["new-dist-b"] = held
+        gate = self.gate("new-dist-b", timeout_s=3)
+        self.assertTrue(gate.ok, gate.problems)
+        self.assertEqual(gate.evidence["not_fed"], [{"child": "new-edge-1", "stream_id": 2001}])
+        self.assertIn(("new-edge-1", "10.77.2.21", 2001, False), gate.pairs)
+        self.assertIn(("new-edge-1", "10.77.2.21", 3001, True), gate.pairs)
+        # Not fed, the child still needs another parent that is ready.
+        self.sim.patch["new-dist-a"] = lambda doc: {**doc, "ready": False, "state": "degraded"}
+        self.assert_refused("new-dist-b", "LG3: new-dist-a is not ready", timeout_s=2)
+        self.sim.patch.pop("new-dist-a")
+        # A row for X without objects_1s is a missing figure, not "not fed".
+        self.sim.row[("new-edge-2", "new-dist-b")] = {"objects_1s": None}
+        self.assert_refused("new-dist-b", "parity unknown: new-edge-2's row for new-dist-b has "
+                            "no objects_1s", timeout_s=2)
+
     def test_video_streams_are_listed_not_judged(self):
         def video(doc):
             doc["children"]["lease"]["pairs_list"].append(
@@ -902,6 +931,23 @@ class Roll(Base):
         evidence = json.loads(next(path for path in self.sim.evidence_dir.glob("roll-*.json")
                                    if not path.name.endswith(".state.json")).read_text())
         self.assertEqual(evidence["nodes"]["new-dist-b"]["result"], "rolled-back")
+
+    def test_a_forwarder_that_keeps_its_leases_and_feeds_nothing_is_rolled_back(self):
+        # upgrade-bad-forwarder: R4 fails, the rollback's gate passes (X
+        # feeds no pair, so none is X's to judge) and the rollback is made.
+        self.sim.broken[("new-dist-b", NEW[0])] = "mute"
+        code = self.roll("forwarders", options=self.options(ready_timeout_s=5, gate_timeout_s=3))
+        self.assertEqual(code, 4, self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [("new-dist-b", False), ("new-dist-b", True)])
+        self.assertEqual(self.sim.nodes_["new-dist-b"]["build"], OLD)
+        self.assertIn("is not fed 3001 by new-dist-b", self.err.getvalue())
+
+    def test_an_nrestarts_that_cannot_be_read_is_not_the_build_s(self):
+        self.sim.unit_restarts = lambda name: None
+        code = self.roll("forwarders", nodes=["new-dist-b"], options=self.options(ready_timeout_s=3))
+        self.assertEqual(code, 3, self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [("new-dist-b", False)])
+        self.assertIn("unit: parity unknown: the unit's NRestarts", self.err.getvalue())
 
     def test_a_rollback_the_gate_refuses_is_not_made(self):
         self.sim.broken[("new-dist-b", NEW[0])] = "threads"
