@@ -25,6 +25,9 @@ import json
 import pathlib
 
 NT, LK = "nt-uc", "lkregion"
+# --against: the LiveKit lane on the other side of the board.
+AGAINST = {"lkregion": "self-hosted LiveKit (an SFU in each region)",
+           "lkcloud": "LiveKit Cloud (LiveKit's own SFU mesh)"}
 SITES = [("lon", "London"), ("new", "New York"), ("tok", "Tokyo"), ("syd", "Sydney")]
 # (key, label, step detail, field path, digits)
 METRICS = [
@@ -118,7 +121,7 @@ def markdown(rows: list[dict]) -> str:
     for row in rows:
         counts[row["result"]] = counts.get(row["result"], 0) + 1
     total = len(rows)
-    out.append("Needletail (UDP from the edge) against self-hosted LiveKit (an SFU in each region), "
+    out.append(f"Needletail (UDP from the edge) against {AGAINST[LK]}, "
                "same session; lower is better. "
                + ", ".join(f"{counts.get(k, 0)} {k}" for k in ("win", "tie", "loss", "not measured"))
                + f" of {total}.\n")
@@ -144,7 +147,11 @@ def main() -> None:
     parser.add_argument("evidence")
     parser.add_argument("--sessions", required=True, help="comma-separated sessions of the evidence")
     parser.add_argument("--out", help="the scoreboard as JSON (target/compare/scoreboard-*.json)")
+    parser.add_argument("--against", choices=sorted(AGAINST), default="lkregion",
+                        help="the LiveKit lane: self-hosted (default) or LiveKit Cloud (audio sessions only)")
     args = parser.parse_args()
+    global LK
+    LK = args.against
     evidence = json.loads(pathlib.Path(args.evidence).read_text())
     rows = board(evidence, args.sessions.split(","))
     if args.out:

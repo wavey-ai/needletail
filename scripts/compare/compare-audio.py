@@ -104,11 +104,44 @@ def set_nt_popus(samples: int) -> None:
 
 
 def refuse_livekit_cloud(lanes: list[str]) -> None:
-    """LiveKit Cloud is no longer measured (owner, 22 November: "we dont need
-    to test with their cloud"); its wave 5 figures stand as its record."""
-    if "lkcloud" in lanes:
-        raise SystemExit("lkcloud: LiveKit Cloud is no longer measured (owner, 22 Nov); "
-                         "self-hosted LiveKit (lkregion, lkmulti) is the control")
+    """LiveKit Cloud is measured again in the audio sessions (owner, 23 Nov:
+    "lets use cloud for audio only tests including pcm"): 2.5 ms Opus and PCM
+    on its data channel, beside self-hosted LiveKit and Needletail. Its 4K
+    sweeps stay off (compare-run.py refuses them). Nothing to refuse here."""
+    return None
+
+
+# Bytes on the wire per unit beyond its payload, LiveKit Cloud to a listener:
+# IPv4, UDP, SRTP (RTP header, extensions, auth tag) for Opus; IPv4, UDP,
+# DTLS record and AEAD, SCTP common header and DATA chunk for the data channel.
+LKCLOUD_OVERHEAD = {"rtp": 58, "data": 95}
+
+
+def lkcloud_egress(directory: pathlib.Path, since: float) -> dict:
+    """LiveKit Cloud's egress to this invocation's listeners, estimated from
+    what they received (owner, 23 Nov: record each session's egress; the free
+    plan's 50 GB is used up, overage about $0.12 per GB). Payload plus header
+    overhead per unit; retransmissions, RTCP, signalling and the publisher's
+    ingress are not in it, so LiveKit's own usage figure is the authority."""
+    payload = packets = wire = listeners = 0
+    for meta_path in directory.glob("*/meta.json"):
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (meta.get("started_unix") or 0) < since:
+            continue
+        kind = "data" if meta.get("config") == "pcm" else "rtp"
+        for report in meta_path.parent.glob("*/lkcloud.*.json"):
+            try:
+                r = json.loads(report.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            b, n = int(r.get("audio_bytes") or 0), int(r.get("audio_packets") or 0)
+            payload, packets, listeners = payload + b, packets + n, listeners + 1
+            wire += b + n * LKCLOUD_OVERHEAD[kind]
+    return {"listeners": listeners, "units": packets, "payload_bytes": payload,
+            "wire_bytes_estimated": wire, "gb": wire / 1e9, "usd_at_0_12_per_gb": round(wire / 1e9 * 0.12, 4)}
 
 
 def daw_command(target: str) -> str:
@@ -610,7 +643,11 @@ def main() -> None:
               "pipelined_window_parts": args.window, "nt_formats": args.nt_formats,
               "nt_pcm_epoch_samples": args.nt_pcm_samples,
               "phases": args.phases, "started_unix": started, "ended_unix": time.time(),
-              "lab_run": session.state["run_id"], "steps": session.steps}
+              "lab_run": session.state["run_id"], "steps": session.steps,
+              "lkcloud_egress": lkcloud_egress(session.dir, started)}
+    if record["lkcloud_egress"]["listeners"]:
+        e = record["lkcloud_egress"]
+        run.log(f"lkcloud egress, estimated: {e['gb']:.3f} GB to {e['listeners']} listener reports")
     path = session.dir / "session.json"
     history = json.loads(path.read_text()) if path.is_file() else []
     history.append(record)

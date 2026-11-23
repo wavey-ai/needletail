@@ -163,11 +163,12 @@ def log(text: str) -> None:
 
 
 def refuse_livekit_cloud(lanes: list[str]) -> None:
-    """LiveKit Cloud is no longer measured (owner, 22 November: "we dont need
-    to test with their cloud"); its wave 5 figures stand as its record."""
+    """LiveKit Cloud is measured in the audio sessions only (owner, 23 Nov:
+    "lets use cloud for audio only tests including pcm"); this harness runs
+    video, so it is refused here. Its wave 5 4K figures stand as its record."""
     if "lkcloud" in lanes:
-        raise SystemExit("lkcloud: LiveKit Cloud is no longer measured (owner, 22 Nov); "
-                         "self-hosted LiveKit (lkregion, lkmulti) is the control")
+        raise SystemExit("lkcloud: LiveKit Cloud is measured in audio sessions only (owner, 23 Nov); "
+                         "run it with compare-audio.py, not in video or 4K sweeps")
 
 class Session:
     def __init__(self, name: str):
