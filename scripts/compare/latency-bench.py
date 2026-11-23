@@ -153,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
                                      epilog=__doc__.split("\n\n", 1)[1])
     parser.add_argument("--name", required=True, help="results go to target/latency-bench/NAME")
     parser.add_argument("--seconds", type=int, default=60, help="D: how long the readers listen")
+    parser.add_argument("--skip-seconds", type=int, default=None,
+                        help=f"seconds at the start of the readers' window left out of every "
+                             f"figure (default {SKIP_SECONDS}; 0: the start-up counts, as the "
+                             "referee's first session after a deploy does)")
     parser.add_argument("--readers", type=int, default=1, help="N: readers of each kind on each host")
     parser.add_argument("--hosts", default=",".join(READER_HOSTS), help="reader namespaces")
     parser.add_argument("--video", action="store_true",
@@ -278,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "reader's fastest frame (default %(default)g)")
     video.add_argument("--udp-client", default=str(UDP_CLIENT), help="needletail-udp-client")
     return parser
+
+
+def skip_seconds(args) -> int:
+    """--skip-seconds, else the bench's default (read when the run starts)."""
+    value = getattr(args, "skip_seconds", None)
+    return SKIP_SECONDS if value is None else max(0, int(value))
 
 
 def split(text: str) -> list[str]:
@@ -445,7 +455,7 @@ def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
                                 f"?sid=bench-{args.name}-{host}-{lane}-{{i}}",
                        "--ca", lab.ca_file(), "--server-name", lab.SERVER_NAME,
                        "--audio-index", index, "--duration", str(args.seconds),
-                       "--skip-seconds", str(SKIP_SECONDS), "--label", f"{args.name}-{host}-{lane}",
+                       "--skip-seconds", str(skip_seconds(args)), "--label", f"{args.name}-{host}-{lane}",
                        "--count", str(args.readers),
                        *(["--spread-ms", str(min(10_000, 400 * args.readers))] if args.readers > 1 else []),
                        "--report", f"{stem}.probe.json", "--frames", f"{stem}.probe.csv"]
@@ -579,7 +589,7 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
                               "--url", f"{lab.base_url(entry)}/live/{VIDEO_STREAM}/master.m3u8"
                                        f"?sid=bench-{args.name}-{host}-4k-{{i}}",
                               "--ca", lab.ca_file(), "--server-name", lab.SERVER_NAME,
-                              "--duration", str(args.seconds), "--skip-seconds", str(SKIP_SECONDS),
+                              "--duration", str(args.seconds), "--skip-seconds", str(skip_seconds(args)),
                               "--label", f"{args.name}-{host}-4k", "--count", str(viewers["readers"]),
                               "--report", f"{stem}.report.json", "--frames", f"{stem}.frames.csv"]})
         for index in range(viewers["udp_clients"]):
@@ -1599,7 +1609,7 @@ def plan(args) -> dict:
                   "sample_nodes": video_measured(args) or args.sample_nodes},
         "reader_netem": reader_netem(args),
         "hops": {"stream": PAYLOAD_STREAM[args.payload], "source_start_ns": start * 1_000_000_000,
-                 "skip_seconds": SKIP_SECONDS,
+                 "skip_seconds": skip_seconds(args),
                  "journal_capacity": None if args.no_up else journal_capacity(args)},
     }
 
@@ -1963,7 +1973,7 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
         if args.drain_node:
             name = args.drain_node.partition(":")[0]
             lab.http_json(name, "/api/control/resume-node", "POST", {"node_id": name})
-        since_us = began_us + SKIP_SECONDS * 1_000_000
+        since_us = began_us + skip_seconds(args) * 1_000_000
         measured["edge_stats"] = edge_stats_delta(stats_before, edge_client_stats())
         measured["load"] = load_report(loads)
         if sampler is not None:

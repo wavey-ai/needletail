@@ -366,9 +366,51 @@ def ns_pid(name: str) -> int:
 
 def enter(name: str | None) -> list[str]:
     """Command prefix that runs a command in the namespace of a node, or in
-    the lab namespace (which holds the bridges) for `None`."""
+    the lab namespace (which holds the bridges) for `None`. With the lab's
+    CPU sets (`node_cpus`), a reader host's commands run on the CPUs that
+    no node has."""
     pid = lab_pid() if name is None else ns_pid(name)
-    return ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
+    prefix = ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
+    if name is not None and any(item == name for item, *_ in READER_HOSTS):
+        rest = load("cpus.json").get("_rest")
+        if rest:
+            prefix += ["taskset", "-c", ",".join(str(cpu) for cpu in rest)]
+    return prefix
+
+
+def node_cpu_sets(first: int, names: list[str]) -> dict:
+    """`node_cpus=FIRST`: each node its own CPUs, as a Linode instance has
+    (a g6-dedicated-2 edge or distributor 2, the contributor 4), from host
+    CPU FIRST on in the order of NODES, and "_rest": the host's other CPUs
+    (the reader and load hosts). Without it every node shares every CPU of
+    the host under its CPU quota, and a pinned class thread
+    (--relay-class-cpus) of every node would land on the same host CPU."""
+    total = os.cpu_count() or 1
+    out, cpu = {}, first
+    for name, *_ in NODES:
+        if name not in names:
+            continue
+        count = max(1, default_limits(name)["cpu_percent"] // 100)
+        if cpu + count > total:
+            raise LabError(f"node_cpus={first}: the host has {total} CPUs, too few for "
+                           f"{name} ({count} from CPU {cpu})")
+        out[name] = list(range(cpu, cpu + count))
+        cpu += count
+    used = {cpu for cpus in out.values() for cpu in cpus}
+    out["_rest"] = [cpu for cpu in range(total) if cpu not in used]
+    if not out["_rest"]:
+        raise LabError(f"node_cpus={first}: no CPU is left for the reader hosts")
+    return out
+
+
+def node_class_cpus(name: str, value: str) -> str:
+    """--relay-class-cpus of a node with a CPU set: the rendered CPUs are
+    its own CPUs by index (0,1: the first two of its set), as the deploy's
+    "0,1" pins the audio and video threads of an instance."""
+    cpus = load("cpus.json").get(name)
+    if not cpus:
+        return value
+    return ",".join(str(cpus[int(item) % len(cpus)]) for item in value.split(",") if item)
 
 
 def run_in(name: str | None, command: list[str], check: bool = True,
@@ -817,6 +859,9 @@ def render(overrides: list[str]) -> dict:
             else:
                 fixed.append(arg)
                 index += 1
+        if "--relay-class-cpus" in fixed:
+            at = fixed.index("--relay-class-cpus") + 1
+            fixed[at] = node_class_cpus(name, fixed[at])
         if contributor:
             fixed += ["--srt-bind", "0.0.0.0:27001", "--srt-stream-id", str(VIDEO_STREAM)]
         elif node(name)["role"] == "edge" and "--fec-bind" not in fixed:
@@ -845,12 +890,15 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
                    capture_output=True)
+    # The node's own CPUs (node_cpus), as an instance has.
+    cpus = load("cpus.json").get(name)
+    pin = ["taskset", "-c", ",".join(str(cpu) for cpu in cpus)] if cpus else []
     command = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                "--unit", unit_name(name),
                "-p", f"CPUQuota={limits['cpu_percent']}%",
                "-p", f"MemoryMax={limits['memory_mb']}M",
                "-p", "MemorySwapMax=0",
-               "--", *enter(name), *item["args"], *(extra_args or [])]
+               "--", *enter(name), *pin, *item["args"], *(extra_args or [])]
     # A service on a Nanode sees one CPU and starts one worker thread. Here it
     # would see every CPU of the host, so it is told the number that its
     # limit stands for.
@@ -956,8 +1004,14 @@ def up(overrides: list[str], start: bool = True) -> dict:
     limits = {}
     plain = []
     slots = set(DEFAULT_SLOTS)
+    first_cpu = None
     for item in overrides:
         key, _, value = item.partition("=")
+        if key == "node_cpus":
+            # A lab setting: each node its own host CPUs (node_cpu_sets).
+            value = value.strip().strip('"')
+            first_cpu = int(value) if value not in ("", "null", "none") else None
+            continue
         if key == "slots":
             given = {name for name in value.split(",") if name}
             unknown = sorted(given - set(SLOT_CANDIDATES))
@@ -973,6 +1027,8 @@ def up(overrides: list[str], start: bool = True) -> dict:
         else:
             plain.append(item)
     save("limits.json", limits)
+    save("cpus.json", {} if first_cpu is None else node_cpu_sets(
+        first_cpu, [name for name, role, *_ in NODES if role != "backbone"]))
     save("slots.json", sorted(slots))
     save("slots-created.json", [])
     build_networks()
@@ -1024,7 +1080,7 @@ def down(quiet: bool = False) -> None:
         except OSError:
             pass
     for path in ("services.json", "namespaces.json", "sources.json", "links.json",
-                 "shaped.json", "qdisc.json"):
+                 "shaped.json", "qdisc.json", "cpus.json"):
         (WORK / path).unlink(missing_ok=True)
     if not quiet:
         print("down")

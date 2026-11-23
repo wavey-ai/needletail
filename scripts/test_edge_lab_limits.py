@@ -70,3 +70,34 @@ class Limits(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CpuSets(unittest.TestCase):
+    """Wave 9 (cold start): node_cpus gives each node its own host CPUs, as
+    an instance has, and --relay-class-cpus then names a node's own."""
+
+    def setUp(self):
+        self.work = pathlib.Path(tempfile.mkdtemp())
+        patcher = mock.patch.object(lab, "WORK", self.work)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_each_node_its_own_cpus_and_the_rest_for_the_readers(self):
+        names = [name for name, role, *_ in lab.NODES if role != "backbone"]
+        with mock.patch.object(lab.os, "cpu_count", return_value=32):
+            sets = lab.node_cpu_sets(0, names)
+        self.assertEqual(sets[CONTRIBUTOR], [0, 1, 2, 3])
+        self.assertEqual(len(sets[EDGE]), 2)
+        used = [cpu for name in names for cpu in sets[name]]
+        self.assertEqual(len(used), len(set(used)), "no CPU is shared")
+        self.assertEqual(sets["_rest"], [cpu for cpu in range(32) if cpu not in used])
+        with mock.patch.object(lab.os, "cpu_count", return_value=8), \
+                self.assertRaises(lab.LabError):
+            lab.node_cpu_sets(0, names)
+
+    def test_pinned_class_threads_land_on_the_nodes_own_cpus(self):
+        lab.save("cpus.json", {EDGE: [10, 11], "_rest": [30, 31]})
+        self.assertEqual(lab.node_class_cpus(EDGE, "0,1"), "10,11")
+        self.assertEqual(lab.node_class_cpus(EDGE, "1"), "11")
+        # Without a set the rendered value stands.
+        self.assertEqual(lab.node_class_cpus(CONTRIBUTOR, "0,1"), "0,1")

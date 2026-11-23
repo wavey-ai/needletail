@@ -149,6 +149,15 @@ class Arguments(unittest.TestCase):
         self.assertEqual(plan["hops"]["source_start_ns"], start * 10**9)
         self.assertIn("loss random 5.0%", plan["reader_netem"])
 
+    def test_the_start_up_counts_with_skip_seconds_0(self):
+        """Wave 9 (cold start): --skip-seconds 0 keeps the first seconds in
+        every figure (the readers' and the window's); 5 by default."""
+        for given, expected in ((None, "5"), ("0", "0"), ("2", "2")):
+            plan = dry_run(*(["--skip-seconds", given] if given else []))
+            h2 = plan["readers"][0]["command"]
+            self.assertEqual(h2[h2.index("--skip-seconds") + 1], expected)
+            self.assertEqual(plan["hops"]["skip_seconds"], int(expected))
+
     def test_no_up_refuses_service_flags(self):
         with self.assertRaises(SystemExit):
             bench.main(["--name", "t", "--dry-run", "--no-up", "--mesh-args", "--a b"])
