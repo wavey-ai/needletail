@@ -630,6 +630,50 @@ class Watchdog(Base):
         state["watchdog_deadline_unix"] = int(time.time() + 6 * 3600)
         self.add(api, state, ["lon-edge-12"], max_life_hours=8.0, budget_usd=1000.0)
 
+    def test_grow_is_held_to_the_watchdog_and_the_budget(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        # Two nodes the lab does not have yet: grow has something to create.
+        for name in ("lon-edge-1", "lon-edge-2"):
+            api.instances.pop(state["nodes"].pop(name)["id"])
+        path.write_text(json.dumps(state))
+
+        def grow(budget=None):
+            args = argparse.Namespace(state=self.args.state, topology=str(SCALE),
+                                      without_sites="", ssh_public_key=self.args.ssh_public_key,
+                                      budget_usd=budget, spent_before_usd=None)
+            with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                lab_tool.command_grow(args)
+
+        def lab(**changes):
+            path.write_text(json.dumps({**state, **changes}))
+
+        # The unit is dead and cannot be started again (the user does not
+        # linger): refused.
+        self.systemd.active.clear()
+        self.systemd.linger = "no"
+        self.assertIn("not active", self.refused(grow))
+        self.systemd.linger = "yes"
+        # Within 15 minutes of the deadline.
+        lab(watchdog_deadline_unix=int(time.time() + 10 * 60))
+        self.assertIn("within 15 min", self.refused(grow))
+        # Armed for more of the lab's life than a watchdog allows.
+        lab(watchdog_deadline_unix=int(time.time() + 6 * 3600))
+        self.assertIn("of the lab's life", self.refused(grow))
+        # Over a budget given, and over the budget that up recorded.
+        lab()
+        self.assertIn("over the budget", self.refused(grow, 50.0))
+        lab(budget_usd=50.0)
+        self.assertIn("over the budget", self.refused(grow))
+        self.assertNotIn(("POST", "/linode/instances"), api.calls)
+        # Within them, grow creates the two.
+        lab()
+        grow()
+        self.assertEqual(api.calls.count(("POST", "/linode/instances")), 2)
+        self.assertIn("lon-edge-1", lab_tool.read_state(path)["nodes"])
+
     def test_watchdog_hours_moves_the_deadline_the_unit_and_the_tags(self):
         api = FakeApi()
         state = lab_state(self.tmp, api)
