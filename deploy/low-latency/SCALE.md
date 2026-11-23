@@ -971,7 +971,12 @@ scenario's baseline shows whether the mesh came back.
   `Restart=always` alone the node would be back in 2 s). The 2 s restart
   is its own scenario (F2r, a crash). A drain is POST
   /api/control/drain-node naming the node. At most 2 of a region's 5
-  serving edges at once: 5 of 5 would be the loss of the region.
+  serving edges at once: 5 of 5 would be the loss of the region. A
+  drained node advertises that it drains at once and sends its first
+  listeners away 100 ms later (av-mesh cdfeb5c), so that the entry points
+  never send the movers of one drained edge to another drained at the
+  same moment (before: 3-17 of 55-70 movers moved twice in R5, time to
+  move p99 110-118 ms; after: none, 16-21 ms).
 - **Entry points not under fault.** The LL-HLS readers enter, and the
   stream's liveness is read, at nodes no phase faults (London's entry is
   lon-edge-5 in group F, since F5, F6 and F8 fault both London forwarders).
@@ -1122,7 +1127,17 @@ binaries: edges get audio in full from both forwarders.
 Run on 23 Nov on the wave 8 binaries (av-mesh low-latency 414f8dd and the
 fixes these proofs found: 5515d05, fd4a07c, 39d2758; playlists 1226b80;
 av-contrib 219c6b5); the record with every number is the "Wave 8 local
-proofs" section of the wave's results. `scale-ops` is six scenarios, each
+proofs" section of the wave's results. Run again on the wave 9 final
+binaries (av-mesh low-latency cdfeb5c, playlists c01662d, av-contrib
+219c6b5; the record is "Wave 9 final scale proofs"): A1/A2, F1, R4 and R5
+pass; F2 passes its moves by headroom in 2 of 3 runs and its listener
+balance in 1 of 3 (a survivor busy with LL-HLS readers' CPU takes few
+listeners by headroom, or the crowd's start placed unevenly); R1 lost
+nothing and warmed the slot in 2.8-3.4 s in every run but passed only on a
+quiet host (4 of 5 runs with other builds on the host failed on the other
+edges' p99, +0.29 to +1.09 ms over before; its 150 listeners are more than
+the four edges' 40,000 datagrams a second, so the second wave has no edge
+with headroom). `scale-ops` is six scenarios, each
 judged by the ops design's criteria as far as one host carries them:
 `udp-edge-drain` (F1, R2), `udp-edge-kill` (F2, R3), `udp-two-edges-drain`
 (R5 with 2 of 4 edges), `dist-c-join-kill` (R4), `slot-edge-join` (R1) and
