@@ -693,8 +693,11 @@ class LabTool(unittest.TestCase):
         base = lab_tool.created_part(
             lab_tool.without_sites(json.loads(SCALE.read_text()), ["sydney"]))
         base["nodes"] = [node for node in base["nodes"] if node["name"] not in STANDBY]
+        now = lab_tool.time.time()
         state = {"run_id": "t", "tag": "t", "image": "linode/debian13", "hourly_usd": 0,
-                 "firewall_id": 1, "sites_left_out": ["sydney"],
+                 "firewall_id": 1, "sites_left_out": ["sydney"], "created_unix": now - 60,
+                 "watchdog_deadline_unix": now + 3600, "budget_usd": 300.0,
+                 "spent_before_usd": 0.0,
                  "nodes": {node["name"]: {**node, "hourly_usd": 0.054}
                            for node in base["nodes"]}}
         path = tmp / "state.json"
@@ -710,6 +713,8 @@ class LabTool(unittest.TestCase):
         with mock.patch.object(lab_tool, "Api", FakeApi), \
                 mock.patch.object(lab_tool, "MAX_NODES", 200), \
                 mock.patch.object(lab_tool, "MAX_HOURLY_USD", 20.0), \
+                mock.patch.object(lab_tool, "watchdog_active", lambda run_id: True), \
+                mock.patch.object(lab_tool, "LEDGER", tmp / "ledger.jsonl"), \
                 mock.patch.object(lab_tool, "add_nodes",
                                   lambda args, api, state, nodes: added.extend(nodes)), \
                 mock.patch.object(lab_tool, "command_status", lambda args: None), \
@@ -767,11 +772,10 @@ class LabTool(unittest.TestCase):
             def list_all(self, endpoint, tag=None):
                 return list((LabTool.TYPES if "types" in endpoint else LabTool.REGIONS).values())
 
-        def watchdog(args):
-            events.append(("watchdog", args.hours, args.foreground))
-            state = json.loads(pathlib.Path(args.state).read_text())
-            state["watchdog_deadline_unix"] = 123
-            pathlib.Path(args.state).write_text(json.dumps(state))
+        def watchdog(state_path, state, deadline):
+            events.append(("watchdog", deadline - state["created_unix"]))
+            lab_tool.change_state(state_path, state, lambda current: current.update(
+                watchdog_deadline_unix=deadline))
 
         def create(api, run_id, tag, image, key, node):
             events.append(("create", node["name"]))
@@ -779,25 +783,28 @@ class LabTool(unittest.TestCase):
 
         args = lab_tool.argparse.Namespace(
             state=str(tmp / "state.json"), topology=str(SCALE), run_id="t1",
-            ssh_public_key=str(key), without_sites="", optional_sites="", watchdog_hours=5.5)
+            ssh_public_key=str(key), without_sites="", optional_sites="", watchdog_hours=5.5,
+            budget_usd=300.0, spent_before_usd=0.0)
         with mock.patch.object(lab_tool, "Api", FakeApi), \
                 mock.patch.object(lab_tool, "MAX_NODES", 200), \
                 mock.patch.object(lab_tool, "MAX_HOURLY_USD", 20.0), \
-                mock.patch.object(lab_tool, "command_watchdog", watchdog), \
+                mock.patch.object(lab_tool, "LEDGER", tmp / "ledger.jsonl"), \
+                mock.patch.object(lab_tool, "watchdog_host_problems", lambda: []), \
+                mock.patch.object(lab_tool, "watchdog_arm", watchdog), \
                 mock.patch.object(lab_tool, "create_node", create), \
                 mock.patch.object(lab_tool, "command_down", lambda args: events.append(("down",))), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
                 self.assertRaises(SystemExit):
             lab_tool.command_up(args)
-        self.assertEqual(events[0], ("watchdog", 5.5, False))
+        self.assertEqual(events[0], ("watchdog", 5.5 * 3600))
         self.assertEqual(events[1][0], "create")
         self.assertEqual(events[-1], ("down",))
         # The core stops at its first refusal: only the creates already under
         # way (CREATE_WORKERS at most), not 69.
         self.assertLessEqual(sum(1 for item in events if item[0] == "create"),
                              lab_tool.CREATE_WORKERS)
-        self.assertEqual(json.loads((tmp / "state.json").read_text())["watchdog_deadline_unix"],
-                         123)
+        state = json.loads((tmp / "state.json").read_text())
+        self.assertEqual(state["watchdog_deadline_unix"], state["created_unix"] + 5.5 * 3600)
 
 
 ACCOUNT = ("POST /linode/instances failed with HTTP 400: {\"errors\": [{\"reason\": \"Account "
