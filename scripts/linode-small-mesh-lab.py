@@ -1470,7 +1470,15 @@ def command_replace(args: argparse.Namespace) -> None:
     if hourly > max_hourly + 1e-9:
         sys.exit(f"replace refused: the lab would cost ${hourly:.4f}/hour; the ceiling that up "
                  f"recorded is ${max_hourly:.2f}")
-    held_to_budget("replace", api, state,
+    # Priced as it will be: the named instances deleted now (billed to now,
+    # not to the deadline) and their new ones kept to the deadline.
+    now = time.time()
+    after = {**state,
+             "nodes": {name: node for name, node in state["nodes"].items()
+                       if name not in args.names},
+             "removed": list(state.get("removed", []))
+             + [removed_record(state, state["nodes"][name], now) for name in args.names]}
+    held_to_budget("replace", api, after,
                    [{"name": spec["name"], "hourly_usd": spec["_hourly"]} for spec in specs],
                    getattr(args, "budget_usd", None), getattr(args, "spent_before_usd", None))
     for name in args.names:

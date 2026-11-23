@@ -1163,9 +1163,11 @@ class Replace(Base):
         for mode in ("rebuild", "new"):
             self.assertIn("within 15 min",
                           self.refused(self.replace, api, ["lon-edge-1"], mode=mode))
-        # The lab kept to its deadline, 4.5 h: 5 billed hours of $10.422.
+        # The lab kept to its deadline, 4.5 h: 5 billed hours of $10.422,
+        # less lon-edge-1's 3 hours from its delete now (it bills 2) and
+        # with its new instance's 3: $52.11.
         state["watchdog_deadline_unix"] = int(time.time() + 3 * 3600)
-        state["budget_usd"] = round(10.422 * 5 + 0.054 * 2, 2)
+        state["budget_usd"] = 52.10
         pathlib.Path(self.args.state).write_text(json.dumps(state))
         message = self.refused(self.replace, api, ["lon-edge-1"], mode="new")
         self.assertIn("over the budget", message)
@@ -1176,9 +1178,10 @@ class Replace(Base):
                           or call[1].endswith("/rebuild") or call == ("POST",
                                                                        "/linode/instances")])
         # A rebuild bills no new hour: the same budget allows it, and
-        # `new` with the hour it adds fits a budget given.
+        # `new` fits a budget given just above $52.11 (the old instance is
+        # not also priced to the deadline).
         self.replace(api, ["lon-edge-1"])
-        self.replace(api, ["lon-edge-1"], mode="new", budget_usd=100.0, spent_before_usd=40.0)
+        self.replace(api, ["lon-edge-1"], mode="new", budget_usd=52.12)
 
 
 class Remove(Base):
