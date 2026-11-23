@@ -1,0 +1,949 @@
+#!/usr/bin/env python3
+"""Score one change on the local lab with the referee's own tools.
+
+  change-run.py run --name N [--lanes opus-1,pcm-1] [--seconds 360] [--at 45]
+        [--hosts lon-readers,new-readers] [--clients 1] [--load-listeners 40]
+        [--readers 4] [--client-loss "loss 1%"] [--wan-loss newyork="loss 1%"]
+        [--repeat 1] [--dry] [--no-up] [--keep-up] [--set k=v ...] -- COMMAND...
+  change-run.py score DIR     ingest and score again (a run, or a scenario's runs)
+
+The lab is the one of NEEDLETAIL_EDGE_LAB_ID (scripts/edge_lab.py). A run:
+1. brings the lab up (unless --no-up) and starts one AEP1 sender per lane as
+   the referee sends it (aep1-48k-probe send, session id = START + one
+   epoch, START the next 64 s boundary at least 8 s away, the referee's
+   audio.s24le), and waits until every probed stream is live;
+2. starts, on each host and lane, the referee's probe: the launch time
+   written with `date +%s.%N`, then needletail-udp-client --entry <the
+   site's dist-a> --stream 3001|4001 --arrivals A --write-parts P for
+   --seconds; beside them --load-listeners needletail-load listeners an
+   edge (as latency-bench does) and --readers steered needletail-readers;
+3. at --at seconds runs COMMAND with the lab's environment. Its marks are
+   the lines of its standard output that read `start|end <unix.ns> <label>`;
+   a command that prints none is wrapped in `start`/`end` lines labelled
+   --name; a label that the command opened and did not close (it died) is
+   closed when the command is reaped, and an `aborted` event is kept. The run
+   fails when the last end + 6 s is past the probes' end (the referee's
+   window ends 5 s after the change, and its silence is measured 1 s more);
+4. after the probes exit, ingests each with the referee's
+   `ntcmp udp-ingest` and scores the marks on every probe with the referee's
+   `change-window.py`, both called by path in $NEEDLETAIL_COMPARE_ROOT
+   (default <workspace>/needletail-compare), where nothing is written.
+
+The referee's rule (needletail-compare ac774b9): a change passes when no unit
+is missing, and its longest silence and its p99 are within the 97.5th
+percentile of the same probe's no-change windows; with fewer than 120 such
+windows it is not scored. That needs about 300 s of steady probe around the
+change, so --seconds is 360 or more and the change starts at --at >= 10 s.
+
+The null. The rule fails about one clean window in five by chance on short
+probes (D-hunt, departure 1), and some on long ones, so every result is
+reported beside the null of the same scenario: the same probes, length and
+label with nothing changed. --dry appends --dry-marks to COMMAND (an engine
+command: gates and marks, no restart); a COMMAND that is `sleep S` is the
+null of a plain kill or crash. Both are kept as null runs of the scenario. A
+scenario is proved locally when 10 of 10 changes pass and its null passes 10
+of 10 in the same layout; a null that fails at all goes to the referee with
+its figures before any change is claimed.
+
+Outside interference (C 2.12). Over the probes' time the run reads the busy
+time (user, nice, system) of the lab's CPUs from /proc/stat, less the CPU
+time of the lab's own scopes, as a share of the CPUs, and their steal. The
+run is void when that share is more than 2 points above the floor that
+lab-parity.py measured (target/lab-parity/floor.json).
+
+Results: target/change-run/[ID/]NAME/change-NN or null-NN: run.json (the
+plan and the result), marks.txt, command.out, command.err, verdict.json,
+the probes' files, nodes-before.json, nodes-after.json; NAME/summary.json.
+Exit 0 when every run passed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import pathlib
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import threading
+import time
+from types import SimpleNamespace
+
+HERE = pathlib.Path(__file__).resolve().parent
+SCRIPTS = HERE.parent
+ROOT = SCRIPTS.parent
+sys.path.insert(0, str(SCRIPTS))
+import edge_lab as lab  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("latency_bench", HERE / "latency-bench.py")
+bench = sys.modules.get("latency_bench") or importlib.util.module_from_spec(_spec)
+if "latency_bench" not in sys.modules:
+    sys.modules["latency_bench"] = bench
+    _spec.loader.exec_module(bench)
+
+# The lanes the referee probes: stream, payload, epoch and ntcmp index
+# (compare_lab.py audio makes the indexes; compare-audio.py nt_index).
+LANES = {
+    "opus-1": {"stream": 3001, "payload": "opus", "epoch_samples": 48, "index": "nt-popus-48s-la"},
+    "opus-2.5": {"stream": 3001, "payload": "opus", "epoch_samples": 120,
+                 "index": "nt-popus-120s-la"},
+    "pcm-1": {"stream": 4001, "payload": "pcm", "epoch_samples": 48, "index": "nt-pcm-48s"},
+}
+UC_LANE = "nt-uc"
+# The referee's change steps run probes of 360 s or more (notes-stage2).
+MIN_SECONDS = 360
+# CW drops a probe's first 5 s and widens a window 2 s before it.
+MIN_AT = 10
+SKIP_SECONDS = 5
+# CW widens a window 5 s after its end and measures silence 1 s past it.
+AFTER_END_S = 6
+MARK = re.compile(r"(start|end) [0-9]+\.[0-9]+ \S+")
+NAME = re.compile(r"[A-Za-z0-9._-]+")
+VOID_POINTS = 2.0
+FLOOR_FILE = ROOT / "target" / "lab-parity" / "floor.json"
+SAMPLE_INTERVAL_S = 1.0
+PROBE_GRACE_S = 90
+COMMAND_STOP_S = 30
+PROVED_RUNS = 10
+
+
+def log(text: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {text}", file=sys.stderr, flush=True)
+
+
+def now_ns() -> int:
+    return time.time_ns()
+
+
+def now() -> float:
+    return now_ns() / 1e9
+
+
+def sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def unix_ns_text(ns: int) -> str:
+    """Unix seconds with nine decimals, as `date +%s.%N` writes them."""
+    return f"{ns // 1_000_000_000}.{ns % 1_000_000_000:09d}"
+
+
+# ------------------------------------------------------------------ the referee's tools
+
+def compare_root() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("NEEDLETAIL_COMPARE_ROOT")
+                        or str(lab.WORKSPACE / "needletail-compare"))
+
+
+def ntcmp() -> pathlib.Path:
+    return compare_root() / "target" / "ntcmp"
+
+
+def change_window() -> pathlib.Path:
+    return compare_root() / "scripts" / "compare" / "change-window.py"
+
+
+def audio_media() -> pathlib.Path:
+    return compare_root() / "target" / "compare-media" / "audio"
+
+
+def out_root() -> pathlib.Path:
+    """target/change-run, and a directory of the lab's id when it has one."""
+    base = ROOT / "target" / "change-run"
+    return base / lab.LAB_ID if lab.LAB_ID else base
+
+
+# ------------------------------------------------------------------ arguments
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=__doc__.split("\n\n", 1)[1])
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    run = verbs.add_parser("run", help="run a change (or its null) through the probes")
+    run.add_argument("--name", required=True, help="the scenario: its directory and its label")
+    run.add_argument("--lanes", default="opus-1,pcm-1",
+                     help=f"probed lanes, of {', '.join(LANES)} (opus-1 and opus-2.5 share "
+                          "stream 3001: one of them a pass)")
+    run.add_argument("--seconds", type=int, default=MIN_SECONDS,
+                     help=f"how long each probe listens (at least {MIN_SECONDS})")
+    run.add_argument("--at", type=float, default=45.0,
+                     help=f"seconds after the probes start that COMMAND runs (at least {MIN_AT})")
+    run.add_argument("--hosts", default="lon-readers,new-readers", help="probe hosts")
+    run.add_argument("--clients", type=int, default=1, help="probes a host and lane")
+    run.add_argument("--load-listeners", type=int, default=40,
+                     help="needletail-load listeners an edge of the probed sites (0: none)")
+    run.add_argument("--readers", type=int, default=4,
+                     help="steered needletail-reader sessions a host, on the first lane (0: none)")
+    run.add_argument("--client-loss", default="", metavar="SPEC",
+                     help="netem impairment of the probe hosts' links, in and out, on top of "
+                          "their access delay (e.g. \"loss 1%%\")")
+    run.add_argument("--wan-loss", action="append", default=[], metavar="SITE=SPEC",
+                     help="netem impairment of a site's wide-area link, both directions, on top "
+                          "of its delay (e.g. newyork=\"loss 1%%\"); repeat")
+    run.add_argument("--repeat", type=int, default=1, help="runs, one after another")
+    run.add_argument("--dry", action="store_true",
+                     help="the scenario's null: COMMAND with --dry-marks")
+    run.add_argument("--no-up", action="store_true", help="use the lab that is running")
+    run.add_argument("--keep-up", action="store_true", help="leave the lab running afterwards")
+    run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                     help="a lab setting for `up`; repeat")
+    run.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND...")
+    score = verbs.add_parser("score", help="ingest and score again")
+    score.add_argument("directory", help="a run's directory, or a scenario's")
+    return parser
+
+
+def lanes_of(text: str) -> list[str]:
+    """The lanes of --lanes, Opus first (its sender's session id is the loop's
+    own: ntcmp reads Opus parts by number)."""
+    lanes = []
+    for item in [item.strip() for item in text.split(",") if item.strip()]:
+        if item not in LANES:
+            raise SystemExit(f"--lanes: {item!r} is not one of {', '.join(LANES)}")
+        if item not in lanes:
+            lanes.append(item)
+    if not lanes:
+        raise SystemExit("--lanes names no lane")
+    streams = [LANES[lane]["stream"] for lane in lanes]
+    if len(set(streams)) != len(streams):
+        raise SystemExit("--lanes: opus-1 and opus-2.5 are both stream 3001: run them in "
+                         "separate passes")
+    return sorted(lanes, key=lambda lane: LANES[lane]["payload"] != "opus")
+
+
+def wan_losses(items: list[str]) -> dict[str, str]:
+    """--wan-loss SITE=SPEC: the netem of each site's wide-area link, the
+    impairment on top of the link's own delay."""
+    out = {}
+    for item in items:
+        site, _, impairment = item.partition("=")
+        site = site.strip()
+        if site not in lab.SITE_DELAY_MS or not impairment.strip():
+            raise SystemExit(f"--wan-loss {item!r}: SITE=SPEC with a site of "
+                             f"{', '.join(lab.SITE_DELAY_MS)}")
+        words = impairment.split()
+        if "delay" in words or "limit" in words:
+            raise SystemExit("--wan-loss names the impairment only; the link keeps its delay")
+        out[site] = f"{lab.netem_spec(delay_ms=lab.SITE_DELAY_MS[site])} {' '.join(words)}"
+    return out
+
+
+def command_of(args) -> list[str]:
+    command = list(args.command)
+    if command[:1] == ["--"]:
+        command = command[1:]
+    return command
+
+
+def is_sleep(command: list[str]) -> bool:
+    return bool(command) and pathlib.Path(command[0]).name == "sleep"
+
+
+def change_command(args) -> list[str]:
+    """COMMAND as it runs: with --dry-marks for --dry."""
+    command = command_of(args)
+    return command + ["--dry-marks"] if args.dry else command
+
+
+def kind_of(args) -> str:
+    """`null` for a dry run or a `sleep`, else `change`."""
+    return "null" if args.dry or is_sleep(command_of(args)) else "change"
+
+
+def check(args) -> None:
+    if not NAME.fullmatch(args.name):
+        raise SystemExit("--name is a label: letters, digits, '.', '_' and '-'")
+    if not command_of(args):
+        raise SystemExit("give the change as -- COMMAND...")
+    if args.seconds < MIN_SECONDS:
+        raise SystemExit(f"--seconds {args.seconds}: the referee's rule needs {MIN_SECONDS} s "
+                         "or more of probe (about 300 s of no-change windows around a change)")
+    if args.at < MIN_AT:
+        raise SystemExit(f"--at {args.at:g}: the probes start at least {MIN_AT} s before the change")
+    if args.at + AFTER_END_S >= args.seconds:
+        raise SystemExit("--at leaves no time for the change inside the probes")
+    if args.dry and is_sleep(command_of(args)):
+        raise SystemExit("--dry: `sleep` is already a null and has no --dry-marks")
+    if min(args.clients, args.repeat) < 1 or min(args.load_listeners, args.readers) < 0:
+        raise SystemExit("--clients and --repeat are 1 or more; --load-listeners and "
+                         "--readers 0 or more")
+    if args.no_up and args.set:
+        raise SystemExit("--no-up keeps the running lab's settings: drop --set or --no-up")
+    if args.client_loss:
+        bench.client_loss_spec(args.client_loss)
+    lanes_of(args.lanes)
+    wan_losses(args.wan_loss)
+    for host in hosts_of(args):
+        try:
+            lab.node(host)
+        except lab.LabError as error:
+            raise SystemExit(f"--hosts: {error}") from None
+
+
+def hosts_of(args) -> list[str]:
+    return [item.strip() for item in args.hosts.split(",") if item.strip()]
+
+
+def scenario_of(args) -> dict:
+    """What every run of one scenario shares, its null's included: the probes,
+    their length, the change's place and the lab."""
+    return {"lanes": lanes_of(args.lanes), "seconds": args.seconds, "at": args.at,
+            "hosts": hosts_of(args), "clients": args.clients,
+            "load_listeners": args.load_listeners, "readers": args.readers,
+            "client_loss": args.client_loss or None, "wan_loss": wan_losses(args.wan_loss),
+            "set": list(args.set)}
+
+
+# ------------------------------------------------------------------ the lab
+
+def lab_overrides(args) -> list[str]:
+    """`up` settings: the probed renditions, the senders' epochs, then --set
+    (which wins)."""
+    lanes = [LANES[lane] for lane in lanes_of(args.lanes)]
+    settings = [f"daw_hls_formats={','.join(item['payload'] for item in lanes)}"]
+    for item in lanes:
+        settings.append(f"{item['payload']}_epoch_samples={item['epoch_samples']}")
+    return settings + list(args.set)
+
+
+def sender_commands(lanes: list[str], start: int) -> list[list[str]]:
+    """One AEP1 sender per lane, as the referee's (compare-audio.py
+    aep1_command): it sends epoch k when its last sample has been spoken, so
+    the session id is START plus one epoch; a second lane's id is one ns more
+    (two sessions of one source; PCM is read by fingerprint)."""
+    loop = str(audio_media() / "audio.s24le")
+    out = []
+    for offset, lane in enumerate(lanes):
+        item = LANES[lane]
+        session = start * 1_000_000_000 + bench.epoch_ns(item["epoch_samples"]) + offset
+        out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+                    "--session-id", str(session), "--group-id", "0",
+                    # Stopped at the end of the run (and by the lab's `down`).
+                    "--duration-seconds", "86400",
+                    "--payload", item["payload"], "--epoch-samples", str(item["epoch_samples"]),
+                    "--channels", "2", "--group-channels", "8", "--pcm-s24le-file", loop,
+                    "--repair-percent", "12", "--min-repair-symbols", "1"])
+    return out
+
+
+def probe_items(args, name: str, directory: pathlib.Path) -> list[dict]:
+    """The referee's nt-uc probe (compare-audio.py udp_client) on each host and
+    lane: the launch time, then the client with --arrivals and --write-parts,
+    its report on standard output."""
+    items = []
+    for host in hosts_of(args):
+        site = lab.node(host)["site"]
+        entry = lab.distributors(site)[0]
+        for lane in lanes_of(args.lanes):
+            for index in range(args.clients):
+                key = f"{lane}@{host}" + (f"#{index}" if args.clients > 1 else "")
+                stem = directory / f"{host}.{lane}.uc{index}"
+                files = {suffix: str(stem) + "." + suffix for suffix in
+                         ("launch", "arrivals.csv", "parts.bin", "uc.json", "uc.err",
+                          "probe.json", "probe.csv", "ingest.log")}
+                client = [str(bench.UDP_CLIENT), "--entry", lab.base_url(entry),
+                          "--stream", str(LANES[lane]["stream"]), "--tls-ca", lab.ca_file(),
+                          "--server-name", lab.SERVER_NAME,
+                          "--duration-seconds", str(args.seconds),
+                          "--session", f"change-{name}-{host}-{lane}"
+                          + (f"-{index}" if args.clients > 1 else ""),
+                          "--arrivals", files["arrivals.csv"], "--write-parts", files["parts.bin"]]
+                script = (f"date +%s.%N >{shlex.quote(files['launch'])}; exec {shlex.join(client)} "
+                          f">{shlex.quote(files['uc.json'])} 2>{shlex.quote(files['uc.err'])}")
+                items.append({"key": key, "host": host, "site": site, "lane": lane,
+                              "entry": entry, "files": files, "client": client,
+                              "command": ["bash", "-c", script]})
+    return items
+
+
+def reader_items(args, name: str, directory: pathlib.Path) -> list[dict]:
+    """--readers steered needletail-reader sessions on each host, the first
+    lane's stream, entering through every distributor of the site."""
+    if not args.readers:
+        return []
+    stream = LANES[lanes_of(args.lanes)[0]]["stream"]
+    items = []
+    for host in hosts_of(args):
+        site = lab.node(host)["site"]
+        command = [lab.binary("needletail-reader")]
+        for entry in lab.distributors(site):
+            command += ["--entry", lab.base_url(entry)]
+        report = directory / f"{host}.reader.json"
+        command += ["--stream", str(stream), "--session", f"change-{name}-{host}-reader",
+                    "--readers", str(args.readers), "--duration-seconds", str(args.seconds),
+                    "--tls-ca", lab.ca_file(), "--server-name", lab.SERVER_NAME,
+                    "--report", str(report)]
+        items.append({"host": host, "report": str(report), "log": str(report.with_suffix(".log")),
+                      "command": command})
+    return items
+
+
+def crowd_items(args, name: str, directory: pathlib.Path) -> list[dict]:
+    """--load-listeners an edge of each probed site, latency-bench's crowd on
+    the first lane's stream."""
+    if not args.load_listeners:
+        return []
+    sites = sorted({lab.node(host)["site"] for host in hosts_of(args)})
+    crowd = SimpleNamespace(load_listeners=args.load_listeners, load_ramp="",
+                            load_sites=",".join(sites),
+                            payload=LANES[lanes_of(args.lanes)[0]]["payload"],
+                            seconds=args.seconds, name=f"change-{name}", load_args="",
+                            load_assign=False)
+    return bench.load_commands(crowd, directory)
+
+
+def ingest_command(item: dict, label: str) -> list[str]:
+    """The referee's `ntcmp udp-ingest` of one probe, with its lane's index."""
+    files = item["files"]
+    launch = pathlib.Path(files["launch"]).read_text().strip()
+    return [str(ntcmp()), "udp-ingest", "--arrivals", files["arrivals.csv"],
+            "--parts", files["parts.bin"], "--started", launch,
+            "--audio-index", str(audio_media() / f"{LANES[item['lane']]['index']}.index.json"),
+            "--skip-seconds", str(SKIP_SECONDS), "--lane", UC_LANE, "--label", label,
+            "--client", files["uc.json"], "--report", files["probe.json"],
+            "--frames", files["probe.csv"]]
+
+
+def score_command(items: list[dict], directory: pathlib.Path) -> list[str]:
+    command = [sys.executable, str(change_window())]
+    for item in items:
+        command += ["--frames", item["files"]["probe.csv"]]
+    return command + ["--marks", str(directory / "marks.txt"),
+                      "--json", str(directory / "verdict.json")]
+
+
+def layout() -> str:
+    """The lab's CPU layout, as `up` was given it."""
+    sets = lab.load("cpus.json")
+    if "_range" in sets:
+        return f"cpus={sets['_range'][0]}-{sets['_range'][1]}"
+    if "_first" in sets:
+        return f"node_cpus={sets['_first']}"
+    return "host"
+
+
+def nodes_status() -> dict:
+    """/api/node of every running node of the lab."""
+    return {name: lab.node_status(name) for name in lab.service_names()
+            if lab.service_pid(name)}
+
+
+# ------------------------------------------------------------------ marks
+
+def marks_of(text: str) -> list[tuple[str, int, str]]:
+    """The mark lines of a command's standard output: (kind, unix ns, label)."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not MARK.fullmatch(line):
+            continue
+        kind, stamp, label = line.split()
+        seconds, _, fraction = stamp.partition(".")
+        out.append((kind, int(seconds) * 1_000_000_000 + int(fraction.ljust(9, "0")[:9]), label))
+    return out
+
+
+def close_marks(marks: list[tuple[str, int, str]], started_ns: int, ended_ns: int,
+                label: str) -> tuple[list[tuple[str, int, str]], list[dict]]:
+    """The marks file of a run: the command's own marks, or `start`/`end`
+    around the command labelled `label` when it printed none; a label left
+    open (the command died) is closed when the command was reaped, with an
+    `aborted` event (CW scores nothing while one label is open)."""
+    if not marks:
+        return [("start", started_ns, label), ("end", ended_ns, label)], []
+    opened = {label for kind, _t, label in marks if kind == "start"}
+    closed = {label for kind, _t, label in marks if kind == "end"}
+    out, events = list(marks), []
+    for name in sorted(opened - closed):
+        out.append(("end", ended_ns, name))
+        events.append({"event": "aborted", "label": name, "unix_ns": ended_ns})
+    return out, events
+
+
+def marks_text(marks: list[tuple[str, int, str]]) -> str:
+    return "".join(f"{kind} {unix_ns_text(t)} {label}\n" for kind, t, label in marks)
+
+
+def probe_too_short(marks: list[tuple[str, int, str]], probes_end_ns: int) -> str | None:
+    """Why the probes do not cover the change, or None: CW needs units on
+    both sides of the window, which ends 5 s after the last end, and reads
+    silence 1 s past it."""
+    ends = [t for kind, t, _label in marks if kind == "end"]
+    if not ends:
+        return None
+    late_ns = max(ends) + AFTER_END_S * 1_000_000_000 - probes_end_ns
+    if late_ns > 0:
+        return (f"probe too short: the last end + {AFTER_END_S} s is {late_ns / 1e9:.1f} s past "
+                "the probes' end; run it again with a longer --seconds")
+    return None
+
+
+# ------------------------------------------------------------------ outside interference
+
+def read_cpu_times(cpus: list[int], text: str | None = None) -> dict[int, tuple[int, int]]:
+    """{cpu: (user + nice + system, steal)} in clock ticks, from /proc/stat."""
+    text = pathlib.Path("/proc/stat").read_text() if text is None else text
+    wanted = set(cpus)
+    out = {}
+    for line in text.splitlines():
+        words = line.split()
+        if not words or not words[0].startswith("cpu") or words[0] == "cpu":
+            continue
+        cpu = int(words[0][3:])
+        if cpu in wanted:
+            values = [int(item) for item in words[1:]]
+            out[cpu] = (values[0] + values[1] + values[2], values[7] if len(values) > 7 else 0)
+    return out
+
+
+def scope_delta_usec(samples: list[dict]) -> int:
+    """CPU time of the lab's scopes over the samples. A scope's counter
+    starts again when its service restarts (it goes down, or a scope appears
+    that was not there): the new count is time spent since."""
+    total = 0
+    for before, after in zip(samples, samples[1:]):
+        for name, value in after["scopes"].items():
+            last = before["scopes"].get(name)
+            total += value - last if last is not None and value >= last else value
+    return total
+
+
+def outside_share(samples: list[dict], ticks_per_second: int) -> dict:
+    """The share of the lab's CPUs that something other than the lab used
+    over the samples, and their steal, in percent of the CPUs' time."""
+    if len(samples) < 2:
+        return {"error": "fewer than two samples"}
+    first, last = samples[0], samples[-1]
+    cpus = sorted(set(first["cpu"]) & set(last["cpu"]))
+    elapsed_us = (last["t"] - first["t"]) * 1e6
+    capacity_us = elapsed_us * len(cpus)
+    if capacity_us <= 0:
+        return {"error": "no time between the samples"}
+    tick_us = 1e6 / ticks_per_second
+    busy_us = sum(last["cpu"][cpu][0] - first["cpu"][cpu][0] for cpu in cpus) * tick_us
+    steal_us = sum(last["cpu"][cpu][1] - first["cpu"][cpu][1] for cpu in cpus) * tick_us
+    lab_us = scope_delta_usec(samples)
+    return {"seconds": round(elapsed_us / 1e6, 1), "cpus": len(cpus),
+            "busy_pct": round(100 * busy_us / capacity_us, 2),
+            "lab_pct": round(100 * lab_us / capacity_us, 2),
+            "outside_share_pct": round(100 * max(0.0, busy_us - lab_us) / capacity_us, 2),
+            "steal_pct": round(100 * steal_us / capacity_us, 2)}
+
+
+class Interference:
+    """Samples the lab's CPUs and scopes once a second while the probes run."""
+
+    def __init__(self, cpus: list[int]):
+        self.cpus = cpus
+        self.samples: list[dict] = []
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.loop, daemon=True)
+
+    def sample(self) -> None:
+        self.samples.append({"t": time.monotonic(), "cpu": read_cpu_times(self.cpus),
+                             "scopes": lab.scope_cpu_usec()})
+
+    def loop(self) -> None:
+        while not self.stopped.wait(SAMPLE_INTERVAL_S):
+            self.sample()
+
+    def start(self) -> "Interference":
+        self.sample()
+        self.thread.start()
+        return self
+
+    def stop(self) -> dict:
+        self.stopped.set()
+        self.thread.join()
+        self.sample()
+        return outside_share(self.samples, os.sysconf("SC_CLK_TCK"))
+
+
+def floor() -> float | None:
+    """The accounting floor of lab-parity.py's layout Q1, or None."""
+    try:
+        return float(json.loads(FLOOR_FILE.read_text())["outside_share_pct"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def void_reason(interference: dict, floor_pct: float | None) -> str | None:
+    share = interference.get("outside_share_pct")
+    if floor_pct is None or share is None or share <= floor_pct + VOID_POINTS:
+        return None
+    return (f"void: the outside share was {share:.2f}% of the lab's CPUs, more than "
+            f"{VOID_POINTS:g} points above the floor {floor_pct:.2f}%")
+
+
+# ------------------------------------------------------------------ scoring
+
+def verdict_of(verdict: dict | None, items: list[dict]) -> dict:
+    """CW's verdict per label and probe, with the figures that the null is
+    judged beside: {label: {probe key: {...}}}."""
+    keys = {item["files"]["probe.csv"]: item["key"] for item in items}
+    out = {}
+    for label, per in (verdict or {}).items():
+        out[label] = {}
+        for path, result in per.items():
+            change = result.get("change") or {}
+            out[label][keys.get(path, path)] = {
+                "pass": result.get("pass"), "missing": change.get("missing"),
+                "gap_ms": change.get("gap_ms"), "gap_bar_ms": result.get("gap_bar_ms"),
+                "p99_ms": change.get("p99_ms"), "p99_bar_ms": result.get("p99_bar_ms"),
+                "null_fail_rate": result.get("null_fail_rate"),
+                "null_windows": result.get("null_windows"),
+                **{key: result[key] for key in ("note", "error") if key in result}}
+    return out
+
+
+def status_of(labels: dict, reasons: list[str], cw_exit: int | None) -> str:
+    if any(reason.startswith("void") for reason in reasons):
+        return "void"
+    results = [result for per in labels.values() for result in per.values()]
+    if reasons or cw_exit is None or not results or any(r["pass"] is False for r in results):
+        return "fail"
+    if any(r["pass"] is not True for r in results):
+        return "unscored"
+    return "pass" if cw_exit == 0 else "fail"
+
+
+def score(directory: pathlib.Path) -> dict:
+    """Ingest the probes of a run with ntcmp and score its marks with CW;
+    the result is written into run.json."""
+    run = json.loads((directory / "run.json").read_text())
+    items = run["probes"]
+    reasons = list(run["run_reasons"])
+    for item in items:
+        for name in ("probe.csv", "probe.json"):
+            pathlib.Path(item["files"][name]).unlink(missing_ok=True)
+        if not pathlib.Path(item["files"]["launch"]).is_file():
+            reasons.append(f"{item['key']}: the probe did not start")
+            continue
+        with open(item["files"]["ingest.log"], "wb") as handle:
+            done = subprocess.run(ingest_command(item, f"{run['name']}-{item['key']}"),
+                                  stdout=handle, stderr=subprocess.STDOUT)
+        if done.returncode != 0:
+            reasons.append(f"{item['key']}: ntcmp udp-ingest exited {done.returncode}")
+    (directory / "verdict.json").unlink(missing_ok=True)
+    with open(directory / "cw.log", "wb") as handle:
+        cw = subprocess.run(score_command(items, directory), stdout=handle,
+                            stderr=subprocess.STDOUT)
+    try:
+        verdict = json.loads((directory / "verdict.json").read_text())
+    except (OSError, ValueError):
+        verdict = None
+        reasons.append(f"change-window.py exited {cw.returncode} with no verdict: "
+                       + (directory / "cw.log").read_text(errors="replace")[-300:].strip())
+    floor_pct = floor()
+    void = void_reason(run.get("interference") or {}, floor_pct)
+    if void:
+        reasons.append(void)
+    labels = verdict_of(verdict, items)
+    run.update({"labels": labels, "cw_exit": cw.returncode, "floor_pct": floor_pct,
+                "reasons": reasons,
+                "status": status_of(labels, reasons, cw.returncode if verdict else None)})
+    (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
+    return run
+
+
+# ------------------------------------------------------------------ the scenario's record
+
+def runs_of(scenario: pathlib.Path) -> list[dict]:
+    out = []
+    for path in sorted(scenario.glob("*/run.json")):
+        try:
+            out.append(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def check_scenario(scenario: pathlib.Path, plan: dict) -> None:
+    """A name holds one scenario: its runs share the probes and the change's
+    place, and its changes and dry nulls one command."""
+    for run in runs_of(scenario):
+        if run["scenario"] != plan["scenario"]:
+            raise SystemExit(f"{scenario} holds runs of another set-up "
+                             f"({run['directory']}): give another --name")
+        if (None not in (run.get("base_command"), plan["base_command"])
+                and run["base_command"] != plan["base_command"]):
+            raise SystemExit(f"{scenario} holds runs of `{shlex.join(run['base_command'])}`: "
+                             "give another --name")
+
+
+def next_directory(scenario: pathlib.Path, kind: str) -> pathlib.Path:
+    count = len(list(scenario.glob(f"{kind}-*")))
+    return scenario / f"{kind}-{count + 1:02d}"
+
+
+def tally(runs: list[dict]) -> dict:
+    """Passes of each kind in each layout."""
+    out: dict[str, dict] = {}
+    for run in runs:
+        if "status" not in run:
+            continue
+        layout_tally = out.setdefault(run["layout"], {"change": [0, 0], "null": [0, 0]})
+        counts = layout_tally[run["kind"]]
+        counts[1] += 1
+        counts[0] += run["status"] == "pass"
+    return out
+
+
+def summary(scenario: pathlib.Path) -> tuple[dict, list[str]]:
+    """Each change beside its null: passes of N of both kinds in each layout
+    and whether the scenario is proved locally (summary.json keeps every
+    run's figures)."""
+    runs = runs_of(scenario)
+    tallies = tally(runs)
+    lines = []
+    proved = {}
+    for where, counts in sorted(tallies.items()):
+        (change_pass, changes), (null_pass, nulls) = counts["change"], counts["null"]
+        proved[where] = (changes >= PROVED_RUNS and change_pass == changes
+                         and nulls >= PROVED_RUNS and null_pass == nulls)
+        lines.append(f"{scenario.name} ({where}): change {change_pass} of {changes} pass; "
+                     + (f"null {null_pass} of {nulls} pass" if nulls
+                        else "null not run (--dry, or -- sleep S for a plain kind)")
+                     + ("; proved locally" if proved[where] else ""))
+        if nulls and null_pass < nulls:
+            lines.append(f"  WARNING: the null failed {nulls - null_pass} of {nulls}: the lab or "
+                         "the statistic is at fault; report it to the referee with the figures "
+                         "below before any change is claimed")
+    record = {"scenario": scenario.name, "tally": tallies, "proved": proved,
+              "runs": [{key: run.get(key) for key in ("directory", "kind", "layout", "status",
+                                                      "reasons", "command_exit", "labels",
+                                                      "interference")}
+                       for run in runs]}
+    (scenario / "summary.json").write_text(json.dumps(record, indent=1) + "\n")
+    return record, lines
+
+
+def run_lines(run: dict) -> list[str]:
+    share = (run.get("interference") or {}).get("outside_share_pct")
+    lines = [f"  {pathlib.Path(run['directory']).name}: {run['status']}"
+             f" (command exit {run.get('command_exit')}, outside share "
+             f"{'-' if share is None else f'{share:.2f}%'})"]
+    lines += [f"    {reason}" for reason in run.get("reasons") or []]
+
+    def ms(value) -> str:
+        return "-" if value is None else f"{value:g}"
+    for label, per in (run.get("labels") or {}).items():
+        for key, result in per.items():
+            verdict = {True: "pass", False: "FAIL", None: "unscored"}[result["pass"]]
+            lines.append(f"    {label} {key}: {verdict} missing {ms(result['missing'])} "
+                         f"gap {ms(result['gap_ms'])}/{ms(result['gap_bar_ms'])} ms "
+                         f"p99 {ms(result['p99_ms'])}/{ms(result['p99_bar_ms'])} ms "
+                         f"null fail rate {ms(result['null_fail_rate'])}"
+                         + (f" ({result.get('note') or result.get('error')})"
+                            if result.get("note") or result.get("error") else ""))
+    return lines
+
+
+# ------------------------------------------------------------------ a run
+
+def popen(host: str | None, command: list[str], stdout, stderr) -> subprocess.Popen:
+    return subprocess.Popen(lab.enter(host) + command, stdout=stdout, stderr=stderr,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def stop_command(process: subprocess.Popen) -> None:
+    """An interrupted run lets the command close what it opened (the engine
+    resumes a drained node and prints its end), then kills it."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        process.wait(timeout=COMMAND_STOP_S)
+    except (OSError, subprocess.TimeoutExpired):
+        bench.os_kill_group(process.pid)
+
+
+def run_once(args, plan: dict, directory: pathlib.Path) -> dict:
+    """One pass of the scenario: probes, the change, ingest and score."""
+    directory.mkdir(parents=True)
+    probes = probe_items(args, args.name, directory)
+    readers = reader_items(args, args.name, directory)
+    crowds = crowd_items(args, args.name, directory)
+    run = {**plan, "directory": str(directory), "layout": layout(), "probes": probes,
+           "readers": readers, "crowds": crowds, "run_reasons": [], "events": []}
+    (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
+    (directory / "nodes-before.json").write_text(json.dumps(nodes_status(), indent=1) + "\n")
+    handles, processes = [], []
+    command_process = None
+    interference = Interference(lab.lab_cpus(lab.load("cpus.json"))).start()
+    try:
+        for item in crowds:
+            pathlib.Path(item["out"]).mkdir(parents=True, exist_ok=True)
+            handle = open(pathlib.Path(item["out"]) / "load.log", "ab")
+            handles.append(handle)
+            processes.append(popen(item["host"], item["command"], handle, handle))
+        for item in readers:
+            handle = open(item["log"], "ab")
+            handles.append(handle)
+            processes.append(popen(item["host"], item["command"], handle, handle))
+        started = now()
+        for item in probes:
+            processes.append(popen(item["host"], item["command"], subprocess.DEVNULL,
+                                   subprocess.DEVNULL))
+        log(f"{args.name}: {len(probes)} probes for {args.seconds} s; the change at {args.at:g} s")
+        sleep(max(0.0, started + args.at - now()))
+        command = plan["command"]
+        out_handle = open(directory / "command.out", "wb")
+        err_handle = open(directory / "command.err", "wb")
+        handles += [out_handle, err_handle]
+        started_ns = now_ns()
+        log(f"{args.name}: {shlex.join(command)}")
+        command_process = subprocess.Popen(command, stdout=out_handle, stderr=err_handle,
+                                           stdin=subprocess.DEVNULL, start_new_session=True)
+        run["command_exit"] = command_process.wait()
+        ended_ns = now_ns()
+        marks, events = close_marks(
+            marks_of((directory / "command.out").read_text(errors="replace")),
+            started_ns, ended_ns, args.name)
+        (directory / "marks.txt").write_text(marks_text(marks))
+        run["events"] += events
+        for process in processes:
+            try:
+                process.wait(timeout=max(1.0, started + args.seconds + PROBE_GRACE_S - now()))
+            except subprocess.TimeoutExpired:
+                bench.os_kill_group(process.pid)
+                run["run_reasons"].append(f"a probe or listener (pid {process.pid}) outlived its "
+                                      "duration and was killed")
+    finally:
+        if command_process is not None:
+            stop_command(command_process)
+        for process in processes:
+            if process.poll() is None:
+                bench.os_kill_group(process.pid)
+        for handle in handles:
+            handle.close()
+        run["interference"] = interference.stop()
+    launches = [float(pathlib.Path(item["files"]["launch"]).read_text())
+                for item in probes if pathlib.Path(item["files"]["launch"]).is_file()]
+    if launches:
+        short = probe_too_short(marks, int((min(launches) + args.seconds) * 1e9))
+        if short:
+            run["run_reasons"].append(short)
+    (directory / "nodes-after.json").write_text(json.dumps(nodes_status(), indent=1) + "\n")
+    run["crowd_report"] = bench.load_report(crowds)
+    (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
+    return score(directory)
+
+
+def start_senders(lanes: list[str], directory: pathlib.Path) -> tuple[list, int]:
+    """The senders of the lanes, from the contributor's host, recorded in the
+    lab's sources so that its `down` stops them."""
+    start = bench.loop_start(now())
+    senders = []
+    sources = lab.load("sources.json")
+    for lane, command in zip(lanes, sender_commands(lanes, start)):
+        handle = open(directory / f"sender-{lane}.log", "ab")
+        process = popen("contrib-lon", command, handle, handle)
+        handle.close()
+        senders.append(process)
+        sources[f"change-run-{lane}"] = process.pid
+    lab.save("sources.json", sources)
+    return senders, start
+
+
+def stop_senders(lanes: list[str], senders: list) -> None:
+    for process in senders:
+        bench.stop_sender(process)
+    sources = lab.load("sources.json")
+    for lane in lanes:
+        sources.pop(f"change-run-{lane}", None)
+    lab.save("sources.json", sources)
+
+
+def run(args) -> int:
+    check(args)
+    for tool in (ntcmp(), change_window(), bench.UDP_CLIENT):
+        if not pathlib.Path(tool).is_file():
+            raise SystemExit(f"{tool} is missing")
+    if args.load_listeners and not bench.LOAD_BIN.is_file():
+        raise SystemExit(f"{bench.LOAD_BIN} is missing: build av-mesh's needletail-load or give "
+                         "--load-listeners 0")
+    lanes = lanes_of(args.lanes)
+    kind = kind_of(args)
+    plan = {"name": args.name, "kind": kind, "scenario": scenario_of(args),
+            "command": change_command(args),
+            "base_command": None if is_sleep(command_of(args)) else command_of(args),
+            "lab_id": lab.LAB_ID, "lab_up": None if args.no_up else lab_overrides(args)}
+    scenario = out_root() / args.name
+    check_scenario(scenario, plan)
+    scenario.mkdir(parents=True, exist_ok=True)
+    if args.no_up and not lab.load("services.json"):
+        raise SystemExit("--no-up: the lab is not running")
+    results, senders, shaped, per_packet = [], [], [], False
+    try:
+        if args.no_up:
+            lab.join_tools()
+        else:
+            log(f"lab up: {' '.join(plan['lab_up'])}")
+            lab.up(plan["lab_up"])
+        senders, start = start_senders(lanes, scenario)
+        plan["loop_start_unix"] = start
+        log(f"senders start at {start} ({start - now():.1f} s)")
+        sleep(max(0.0, start - now()))
+        for lane in lanes:
+            for site in sorted({lab.node(host)["site"] for host in hosts_of(args)}):
+                lab.wait_live(LANES[lane]["stream"], site, timeout=60)
+        if args.client_loss:
+            lab.set_tcp_per_packet(True)
+            per_packet = True
+            for host in hosts_of(args):
+                shaped.append(("host", host))
+                lab.set_net(host, "pub", "both", bench.client_loss_spec(args.client_loss))
+        for site, spec in wan_losses(args.wan_loss).items():
+            shaped.append(("wan", site))
+            lab.set_wan(site, "both", spec)
+        for _ in range(args.repeat):
+            result = run_once(args, plan, next_directory(scenario, kind))
+            results.append(result)
+            for line in run_lines(result):
+                print(line, flush=True)
+    finally:
+        for what, name in shaped:
+            if what == "host":
+                lab.set_net(name, "pub", "both", None)
+            else:
+                lab.set_wan(name, "both", None)
+        if per_packet:
+            lab.set_tcp_per_packet(False)
+        stop_senders(lanes, senders)
+        if not args.keep_up and not args.no_up:
+            lab.down(quiet=True)
+    passes = sum(result["status"] == "pass" for result in results)
+    print(f"{args.name}: {kind} {passes} of {len(results)} pass", flush=True)
+    _record, lines = summary(scenario)
+    print("\n".join(lines), flush=True)
+    return 0 if passes == len(results) else 1
+
+
+def rescore(directory: pathlib.Path) -> int:
+    if (directory / "run.json").is_file():
+        runs, scenario = [score(directory)], directory.parent
+    else:
+        runs = [score(path.parent) for path in sorted(directory.glob("*/run.json"))]
+        scenario = directory
+    if not runs:
+        raise SystemExit(f"{directory} holds no run")
+    _record, lines = summary(scenario)
+    print("\n".join([line for run in runs for line in run_lines(run)] + lines), flush=True)
+    return 0 if all(run["status"] == "pass" for run in runs) else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.verb == "score":
+        return rescore(pathlib.Path(args.directory))
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
