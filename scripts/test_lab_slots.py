@@ -304,6 +304,7 @@ class Base(unittest.TestCase):
 class Up(Base):
     def test_up_creates_every_node_but_the_slots_and_records_them(self):
         api = FakeApi()
+        self.systemd.active.clear()
         created = []
 
         def create(api_, run_id, tag, image, key, node):
@@ -334,6 +335,7 @@ class UpBudget(Base):
 
     def test_up_refuses_without_a_watchdog_or_a_budget(self):
         api = FakeApi()
+        self.systemd.active.clear()
         self.ledger({"run_id": "before-23-nov", "billed_usd": 38.0, "removed_unix": 1})
         # From the command line: both flags are required.
         for argv in (["up", "--budget-usd", "300"], ["up", "--watchdog-hours", "2"]):
@@ -362,10 +364,29 @@ class UpBudget(Base):
                                 "tags": ["needletail-qualification", api.tag],
                                 "created": stamp(time.time())}
             self.assertIn("already carry", self.refused(lab_tool.command_up, self.up_args()))
+            api.instances.pop(2)
+            # A run id whose watchdog unit another worktree's lab has (made
+            # in the same minute, or with no instance yet): its unit is
+            # neither taken nor removed.
+            self.systemd.active.add(UNIT)
+            self.assertIn("watchdog unit", self.refused(lab_tool.command_up, self.up_args()))
+            self.assertEqual(self.systemd.active, {UNIT})
+            self.systemd.active.clear()
+            lab_tool.WATCHDOG_UNIT_DIR.mkdir()
+            (lab_tool.WATCHDOG_UNIT_DIR / UNIT).write_text("another lab's")
+            self.assertIn("watchdog unit", self.refused(lab_tool.command_up, self.up_args()))
+            self.assertEqual((lab_tool.WATCHDOG_UNIT_DIR / UNIT).read_text(), "another lab's")
+            (lab_tool.WATCHDOG_UNIT_DIR / UNIT).unlink()
+            # Another up is creating a lab: its instances are not there yet
+            # for this budget to count.
+            lock = lab_tool.LEDGER.with_name(lab_tool.LEDGER.name + ".up.lock")
+            with open(lock, "a") as held:
+                lab_tool.fcntl.flock(held, lab_tool.fcntl.LOCK_EX)
+                self.assertIn("another up", self.refused(lab_tool.command_up, self.up_args()))
         self.assertNotIn(("POST", "/linode/instances"), api.calls)
         self.assertFalse(pathlib.Path(self.args.state).exists())
-        self.assertEqual(self.systemd.active, {UNIT})  # only the fixture's
-        self.assertFalse(lab_tool.WATCHDOG_UNIT_DIR.exists())
+        self.assertFalse(self.systemd.active)
+        self.assertFalse(list(lab_tool.WATCHDOG_UNIT_DIR.iterdir()))
 
     def test_up_counts_the_slots_the_ledger_and_other_labs_to_their_deadlines(self):
         api = FakeApi()

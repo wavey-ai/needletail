@@ -789,6 +789,8 @@ class LabTool(unittest.TestCase):
                 mock.patch.object(lab_tool, "MAX_NODES", 200), \
                 mock.patch.object(lab_tool, "MAX_HOURLY_USD", 20.0), \
                 mock.patch.object(lab_tool, "LEDGER", tmp / "ledger.jsonl"), \
+                mock.patch.object(lab_tool, "WATCHDOG_UNIT_DIR", tmp / "units"), \
+                mock.patch.object(lab_tool, "watchdog_active", lambda run_id: False), \
                 mock.patch.object(lab_tool, "watchdog_host_problems", lambda: []), \
                 mock.patch.object(lab_tool, "watchdog_arm", watchdog), \
                 mock.patch.object(lab_tool, "create_node", create), \

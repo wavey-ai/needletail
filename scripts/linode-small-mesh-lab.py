@@ -922,6 +922,25 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
               f"--without-sites {','.join(idle)}", file=sys.stderr)
 
 
+@contextlib.contextmanager
+def one_up_at_a_time():
+    """flock on `<ledger>.up.lock` (one for every worktree, as the ledger),
+    held for the whole of an `up`, or `up` is refused. Another lab's
+    budget sees this one only once its instances exist: two `up`s at once
+    would each count the other at nothing and could pass the budget
+    together."""
+    path = LEDGER.with_name(LEDGER.name + ".up.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit(f"up refused: another up is creating a lab ({path} is held): its "
+                     "instances are not yet there for this budget to count; run again once "
+                     "it is done")
+        yield
+
+
 def command_up(args: argparse.Namespace) -> None:
     """Create a lab. Refused, before anything exists, without a watchdog
     and a budget: `--watchdog-hours` (above 0, at most MAX_LIFE_HOURS) and
@@ -931,8 +950,16 @@ def command_up(args: argparse.Namespace) -> None:
     and the other live labs to their own deadlines (account_billed). The
     budget, the spent figure and the two ceilings in force are recorded in
     the state for every later command. A run id whose tag a live instance
-    already carries is refused: two labs under one tag would be one lab to
-    `down` and to every budget."""
+    already carries, or whose watchdog unit exists, is refused: two labs
+    under one tag would be one lab to `down` and to every budget, and the
+    second would take the first one's unit. One `up` runs at a time
+    (one_up_at_a_time)."""
+    with one_up_at_a_time():
+        create_lab(args)
+
+
+def create_lab(args: argparse.Namespace) -> None:
+    """command_up, under its lock."""
     state_path = pathlib.Path(args.state)
     if state_path.exists():
         sys.exit("lab state already exists; run status or down first")
@@ -951,6 +978,10 @@ def command_up(args: argparse.Namespace) -> None:
     problems = watchdog_host_problems()
     if problems:
         sys.exit("up refused: " + "; ".join(problems))
+    unit = watchdog_unit(run_id)
+    if (WATCHDOG_UNIT_DIR / unit).exists() or watchdog_active(run_id):
+        sys.exit(f"up refused: run id {run_id}: the watchdog unit {unit} exists or runs (another "
+                 "lab's, in another worktree); give another --run-id")
     key_path = pathlib.Path(args.ssh_public_key).expanduser()
     if not key_path.is_file():
         sys.exit("SSH public key is missing")
