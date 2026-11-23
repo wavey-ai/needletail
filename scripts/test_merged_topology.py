@@ -568,6 +568,85 @@ class Render(Base):
                 self.assertNotIn("--client-udp-rebalance", node_args, name)
         self.assertTrue(seen_udp)
 
+    def test_the_two_path_settings_reach_their_nodes_when_the_binary_has_the_flags(self):
+        """Workstream B W1: the move grace, the confirmations per source and
+        the rebalance to the mean render on the nodes that serve UDP clients,
+        the two-path bit rate on every node of the cache mesh, each with its
+        default, and only for an av-mesh that has the flag."""
+        udp = {"--client-udp-move-grace-ms": "10000",
+               "--client-udp-assign-confirms-per-source": "64",
+               "--client-udp-rebalance-to-mean": "true"}
+        mesh = {"--assignment-two-path-max-bps": "8000000"}
+        for key, value in (("client_udp_move_grace_ms", 10000),
+                           ("client_udp_assign_confirms_per_source", 64),
+                           ("client_udp_rebalance_to_mean", True),
+                           ("assignment_two_path_max_bps", 8000000)):
+            self.assertEqual(deploy.DEFAULT_SETTINGS[key], value, key)
+
+        def check(args: dict, udp_want: dict, mesh_want: dict) -> None:
+            served = meshed = 0
+            for name, node_args in args.items():
+                for flags, where, want in ((udp, "--client-udp-bind", udp_want),
+                                           (mesh, "--mesh-bind", mesh_want)):
+                    for flag in flags:
+                        if where in node_args and flag in want:
+                            self.assertEqual(value_of(node_args, flag), want[flag], (name, flag))
+                            self.assertEqual(node_args.count(flag), 1, (name, flag))
+                        else:
+                            self.assertNotIn(flag, node_args, (name, flag))
+                served += "--client-udp-bind" in node_args
+                meshed += "--mesh-bind" in node_args
+            self.assertGreater(served, 8)
+            self.assertGreater(meshed, 8)
+            self.assertNotIn("--mesh-bind", args["contrib-lon"])
+
+        # A render that cannot see the binary, and one for an av-mesh
+        # without the flags: nothing, whatever the settings say.
+        check(self.render()[2], {}, {})
+        old_mesh = fake_binary(self.dir, "old-mesh", ["--client-udp-bind", "--mesh-bind"])
+        new_mesh = fake_binary(self.dir, "new-mesh", ["--client-udp-bind", *udp, *mesh])
+        part_mesh = fake_binary(self.dir, "part-mesh", [
+            "--client-udp-move-grace-ms", "--assignment-two-path-max-bps"])
+        try:
+            deploy.RENDER_BINARIES.update({"av-mesh": old_mesh})
+            check(self.render(["client_udp_assign_confirms_per_source=4096"])[2], {}, {})
+            deploy.RENDER_BINARIES.update({"av-mesh": new_mesh})
+            _program, _plan, args = self.render()
+            check(args, udp, mesh)
+            # Edges, distributors and the forwarder slot serve UDP clients.
+            for name in ("lon-edge-1", "lon-dist-a", "lon-dist-c", "new-edge-2"):
+                self.assertIn("--client-udp-move-grace-ms", args[name], name)
+            _program, _plan, args = self.render([
+                "client_udp_move_grace_ms=0", "client_udp_assign_confirms_per_source=4096",
+                "client_udp_rebalance_to_mean=false", "assignment_two_path_max_bps=3000000"])
+            check(args, {"--client-udp-move-grace-ms": "0",
+                         "--client-udp-assign-confirms-per-source": "4096",
+                         "--client-udp-rebalance-to-mean": "false"},
+                  {"--assignment-two-path-max-bps": "3000000"})
+            # null renders nothing for that setting: the binary's default.
+            _program, _plan, args = self.render(["client_udp_move_grace_ms=null",
+                                                 "assignment_two_path_max_bps=null"])
+            check(args, {key: value for key, value in udp.items()
+                         if key != "--client-udp-move-grace-ms"}, {})
+            # An extra argument of a role is how one run overrides it.
+            _program, _plan, args = self.render([
+                'extra_edge_args=["--client-udp-assign-confirms-per-source","128"]'])
+            self.assertEqual(
+                args["lon-edge-1"].count("--client-udp-assign-confirms-per-source"), 1)
+            self.assertEqual(
+                value_of(args["lon-edge-1"], "--client-udp-assign-confirms-per-source"), "128")
+            self.assertEqual(
+                value_of(args["lon-dist-a"], "--client-udp-assign-confirms-per-source"), "64")
+            for bad in ("client_udp_assign_confirms_per_source=0",
+                        "assignment_two_path_max_bps=0", "client_udp_move_grace_ms=soon"):
+                with self.assertRaises(ValueError, msg=bad):
+                    self.render([bad])
+            # An av-mesh with some of the flags gets those.
+            deploy.RENDER_BINARIES.update({"av-mesh": part_mesh})
+            check(self.render()[2], {"--client-udp-move-grace-ms": "10000"}, mesh)
+        finally:
+            deploy.RENDER_BINARIES.clear()
+
     def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
         """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
         lon-dist-a/b, rendered on its own path) takes every wave 7 setting

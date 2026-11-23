@@ -416,6 +416,31 @@ DEFAULT_SETTINGS = {
     "client_udp_rebalance": None,
     "client_udp_rebalance_margin_permille": None,
     "client_udp_rebalance_interval_ms": None,
+    # A listener held on two edges (resilient mesh, workstream B 2.3). Each
+    # is the av-mesh flag of the same name, and the value here is that
+    # flag's default. A flag is rendered only for an av-mesh that has it
+    # (binary_takes), so an older build runs as it did; null renders
+    # nothing. On the nodes that serve UDP clients:
+    # - client_udp_move_grace_ms: how long an edge still serves a
+    #   subscriber that it has sent MOVE (a drain, a rebalance), until its
+    #   UNSUB or this long; 0: removed at the MOVE, as before (A/B only).
+    # - client_udp_assign_confirms_per_source: the assignment
+    #   confirmations that a node takes from one source address. A lab that
+    #   runs needletail-load sets 4096: a load host confirms for every one
+    #   of its listeners from one address.
+    # - client_udp_rebalance_to_mean: an edge also sheds listeners when it
+    #   is over its region's mean load by half the rebalance margin, so that
+    #   an edge that joins or restarts takes legs; false: only over the
+    #   rebalance target, as before.
+    # On every node of the cache mesh (each can be the entry point that
+    # assigns):
+    # - assignment_two_path_max_bps: a playlist whose regional bit rate is
+    #   above this is given one leg, whatever its client asks (4K; 1 ms PCM
+    #   is 2.6 Mbit/s a leg).
+    "client_udp_move_grace_ms": 10000,
+    "client_udp_assign_confirms_per_source": 64,
+    "client_udp_rebalance_to_mean": True,
+    "assignment_two_path_max_bps": 8000000,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -2097,6 +2122,38 @@ def binary_takes(kind: str, pairs: list[str]) -> list[str]:
     return out
 
 
+def two_path_args(node_args: list[str], settings: dict) -> list[str]:
+    """The `--flag value` pairs of the listener on two edges (workstream B
+    2.3) for an av-mesh service rendered with `node_args`: the two-path bit
+    rate on every node of the cache mesh, and the move grace, the
+    confirmations per source and the rebalance to the mean on the nodes that
+    serve UDP clients. Only the flags that the av-mesh of this render has,
+    and only the settings that are not null."""
+    pairs = []
+
+    def given(key: str) -> bool:
+        return settings.get(key) is not None
+
+    if "--mesh-bind" in node_args and given("assignment_two_path_max_bps"):
+        pairs += ["--assignment-two-path-max-bps",
+                  str(whole(settings["assignment_two_path_max_bps"],
+                            "assignment_two_path_max_bps"))]
+    if "--client-udp-bind" in node_args:
+        if given("client_udp_move_grace_ms"):
+            grace = settings["client_udp_move_grace_ms"]
+            # 0 is the behaviour of before: no grace.
+            pairs += ["--client-udp-move-grace-ms",
+                      "0" if grace in (0, "0") else str(whole(grace, "client_udp_move_grace_ms"))]
+        if given("client_udp_assign_confirms_per_source"):
+            pairs += ["--client-udp-assign-confirms-per-source",
+                      str(whole(settings["client_udp_assign_confirms_per_source"],
+                                "client_udp_assign_confirms_per_source"))]
+        if given("client_udp_rebalance_to_mean"):
+            pairs += ["--client-udp-rebalance-to-mean",
+                      flag(bool(settings["client_udp_rebalance_to_mean"]))]
+    return binary_takes("av-mesh", pairs)
+
+
 def wave7_args(node_args: list[str], settings: dict) -> list[str]:
     """The `--flag value` pairs of wave 7 items 2, 3, 4, 5 and 9 for a service
     rendered with `node_args`: only the settings that are given."""
@@ -2990,6 +3047,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             args += yield_to(extra, ["--client-udp-fast-lane",
                                      flag(classes["client_udp_fast_lane"])])
         args += yield_to(extra, mesh_class_args(node, args, classes))
+        args += yield_to(extra, two_path_args(args, settings))
         args += yield_to(extra, wave7_args(args, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
