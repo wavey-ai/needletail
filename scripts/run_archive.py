@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Vendored unchanged from needletail rm/arch cceffed (the lead's archive writer), so
+# Vendored unchanged from needletail rm/arch f53eae8 (the lead's archive writer), so
 # the referee's runs and the lead's share one manifest schema. Replace with the
 # merged copy once it lands on low-latency.
 """The run archive: every local and Linode run keeps all its raw data in
@@ -787,6 +787,10 @@ def list_runs(root: pathlib.Path | None = None) -> list[dict]:
             m = json.loads(manifest_path.read_text())
         except ValueError:
             runs.append({"run_id": path.name, "status": "unreadable", "kind": None,
+                         "bytes": None, "cost_usd": None, "started_at_utc": None})
+            continue
+        if not isinstance(m, dict) or not m.get("schema_version") or not isinstance(m.get("files"), list):
+            runs.append({"run_id": path.name, "status": "foreign-manifest", "kind": None,
                          "bytes": None, "cost_usd": None, "started_at_utc": None})
             continue
         runs.append({"run_id": m.get("run_id", path.name), "status": m.get("status"),
