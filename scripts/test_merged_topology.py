@@ -495,6 +495,42 @@ class Render(Base):
         # clients: their client UDP port answers ASSIGN.
         self.assertIn("--client-udp-bind", args["lon-dist-a"])
 
+    def test_the_wave9_scale_settings_reach_their_nodes_only_when_given(self):
+        """Wave 9 C: cpu_load, cpu_load_full_percent, assignment_move_headroom
+        and rebalance_target_permille render on every mesh node, and
+        client_udp_rebalance with its margin and interval on the nodes that
+        serve UDP clients, only when given."""
+        flags = ("--cpu-load", "--cpu-load-full-percent", "--assignment-move-headroom",
+                 "--rebalance-target-permille", "--client-udp-rebalance",
+                 "--client-udp-rebalance-margin-permille",
+                 "--client-udp-rebalance-interval-ms")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, (name, flag))
+        _program, _plan, args = self.render([
+            "cpu_load=false", "cpu_load_full_percent=70", "assignment_move_headroom=false",
+            "rebalance_target_permille=750", "client_udp_rebalance=false",
+            "client_udp_rebalance_margin_permille=100",
+            "client_udp_rebalance_interval_ms=2000"])
+        seen_udp = False
+        for name, node_args in args.items():
+            if "--mesh-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--cpu-load"), "false", name)
+                self.assertEqual(value_of(node_args, "--cpu-load-full-percent"), "70", name)
+                self.assertEqual(value_of(node_args, "--assignment-move-headroom"), "false", name)
+                self.assertEqual(value_of(node_args, "--rebalance-target-permille"), "750", name)
+            if "--client-udp-bind" in node_args:
+                seen_udp = True
+                self.assertEqual(value_of(node_args, "--client-udp-rebalance"), "false", name)
+                self.assertEqual(
+                    value_of(node_args, "--client-udp-rebalance-margin-permille"), "100", name)
+                self.assertEqual(
+                    value_of(node_args, "--client-udp-rebalance-interval-ms"), "2000", name)
+            else:
+                self.assertNotIn("--client-udp-rebalance", node_args, name)
+        self.assertTrue(seen_udp)
+
     def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
         """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
         lon-dist-a/b, rendered on its own path) takes every wave 7 setting

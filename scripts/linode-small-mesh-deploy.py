@@ -372,6 +372,23 @@ DEFAULT_SETTINGS = {
     # HTTPS 50 ms later, and takes the first answer.
     "client_udp_assign": None,
     "relay_lease_descriptors": None,
+    # Wave 9 C (autoscaling and redistribution), each the av-mesh flag of the
+    # same name (None: the binary's default). Every mesh node: cpu_load (an
+    # edge's load_permille is at least its process's CPU over its CPUs, full
+    # at cpu_load_full_percent, default 85), assignment_move_headroom (a
+    # moving UDP client is assigned by the caches' headroom, those under
+    # rebalance_target_permille first), rebalance_target_permille (default
+    # 800). The nodes that serve UDP clients: client_udp_rebalance (an edge
+    # over the target sends listeners to edges of its region with room,
+    # MOVE rebalance), client_udp_rebalance_margin_permille (150) and
+    # client_udp_rebalance_interval_ms (3000).
+    "cpu_load": None,
+    "cpu_load_full_percent": None,
+    "assignment_move_headroom": None,
+    "rebalance_target_permille": None,
+    "client_udp_rebalance": None,
+    "client_udp_rebalance_margin_permille": None,
+    "client_udp_rebalance_interval_ms": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -2004,18 +2021,24 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
     if "--mesh-bind" in node_args:
-        for key in AM_MESH_BOOL + PROOF_MESH_BOOL + COLD_MESH_BOOL:
+        for key in AM_MESH_BOOL + PROOF_MESH_BOOL + COLD_MESH_BOOL + SCALE_MESH_BOOL:
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+        for key in SCALE_MESH_COUNT:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
         if settings.get("cache_mesh_warm_total_kbps") is not None:
             total = settings["cache_mesh_warm_total_kbps"]
             out += ["--cache-mesh-warm-total-kbps",
                     "0" if float(total) == 0 else str(whole(total, "cache_mesh_warm_total_kbps"))]
     if "--client-udp-bind" in node_args:
         for key in (WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL + REVIEW_CLIENT_UDP_BOOL
-                    + COLD_CLIENT_UDP_BOOL):
+                    + COLD_CLIENT_UDP_BOOL + SCALE_CLIENT_UDP_BOOL):
             if settings.get(key) is not None:
                 out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+        for key in SCALE_CLIENT_UDP_COUNT:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
         for key in AM_CLIENT_UDP_MS + REVIEW_CLIENT_UDP_COUNT:
             if settings.get(key) is not None:
                 # 0 is the behaviour of before (no spread, no region move).
@@ -2059,6 +2082,13 @@ PROOF_MESH_BOOL = ("assignment_udp_in_region",)
 # clients, the av-mesh flag of the same name.
 COLD_MESH_BOOL = ("mlock_all", "malloc_tune", "prefault")
 COLD_CLIENT_UDP_BOOL = ("client_udp_prompt_sender", "client_udp_assign")
+# Wave 9 C (autoscaling and redistribution): on every mesh node, and on the
+# nodes that serve UDP clients, the av-mesh flag of the same name.
+SCALE_MESH_BOOL = ("cpu_load", "assignment_move_headroom")
+SCALE_MESH_COUNT = ("cpu_load_full_percent", "rebalance_target_permille")
+SCALE_CLIENT_UDP_BOOL = ("client_udp_rebalance",)
+SCALE_CLIENT_UDP_COUNT = ("client_udp_rebalance_margin_permille",
+                          "client_udp_rebalance_interval_ms")
 
 
 def is_contributor_args(args: list[str]) -> bool:

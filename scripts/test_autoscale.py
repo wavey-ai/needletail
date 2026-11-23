@@ -221,6 +221,29 @@ class Decide(Base):
         self.assertEqual(decisions[0][0]["targets"], [("lon-edge-8", "start")])
         self.assertEqual(decisions[0][0]["inputs"]["joining"], ["lon-edge-6", "lon-edge-7"])
 
+    def test_one_edge_over_850_with_the_region_over_600_adds_an_edge(self):
+        """Wave 9 C3: a ramp fills the edges unevenly; at a mean of 700 one
+        may be past 900 already. One edge at 850 or more for 3 samples with
+        the mean at 600 or more adds an edge (one, when the mean alone asks
+        for none); with the mean under 600 it is the edges' rebalance, not
+        the controller's, and nothing is added."""
+        controller = self.controller()
+        self.sim.set_load(450)
+        self.sim.set_load(900, ["lon-edge-1"])
+        decisions = self.ticks(controller, 5)
+        self.assertTrue(all(item[0]["action"] == "hold" for item in decisions), decisions)
+        self.assertEqual(self.mutating(), [])
+        self.sim.set_load(620)
+        self.sim.set_load(880, ["lon-edge-1"])
+        first, second, third = self.ticks(controller, 3)
+        self.assertEqual(first[0]["action"], "hold")
+        self.assertEqual(second[0]["action"], "hold")
+        self.assertEqual(third[0]["action"], "join", third)
+        self.assertIn("an edge at 880 >= 850", third[0]["reason"])
+        self.assertEqual(third[0]["inputs"]["max_permille"], 880)
+        # 4 x 620 + 880 = 3,360 / 600 = 6 edges: one more.
+        self.assertEqual(third[0]["targets"], [("lon-edge-6", "start")])
+
     def test_refusals_in_two_samples_add_one_edge(self):
         controller = self.controller()
         self.sim.set_load(500)

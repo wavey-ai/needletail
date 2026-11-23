@@ -43,7 +43,8 @@ Safety, before anything else:
   it); a second is refused.
 * Nothing is pushed to a slot that the lab's Cloud Firewall does not
   cover (the lab tool deletes a slot whose firewall cannot be set).
-* Hysteresis (scale up at a mean of 700 permille for 3 samples, or
+* Hysteresis (scale up at a mean of 700 permille for 3 samples, one edge
+  at 850 or more with the mean at 600 or more for 3 samples, or
   refusals in 2 samples; down only when the load with one edge fewer stays
   at or under 450 permille for 300 s), a cooldown per region (60 s), no
   add and remove within 5 min of each other in a region, at most 2 nodes
@@ -120,6 +121,10 @@ def natural(name: str) -> list:
 class Config:
     poll_s: float = 2.0
     up_permille: int = 700
+    # Wave 9 C3: one edge at or over this for up_samples with the mean at
+    # or over target_permille also scales up (a ramp fills the edges
+    # unevenly; at the mean's 700 one may be past 900 already).
+    up_max_permille: int = 850
     up_samples: int = 3
     refusal_samples: int = 2
     target_permille: int = 600
@@ -745,6 +750,11 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
         last[node["name"]] = now_value
     high = mean is not None and mean >= config.up_permille
     region["high_streak"] = region.get("high_streak", 0) + 1 if high else 0
+    hottest = max(loads.values(), default=None)
+    hot = (hottest is not None and config.up_max_permille > 0
+           and hottest >= config.up_max_permille
+           and mean is not None and mean >= config.target_permille)
+    region["hot_streak"] = region.get("hot_streak", 0) + 1 if hot else 0
     region["refusal_streak"] = region.get("refusal_streak", 0) + 1 if refused else 0
     projected = total / (count - 1) if count > 1 else None
     low = (count > config.min_edges and projected is not None
@@ -757,7 +767,8 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
               "sum_permille": total, "mean_permille": None if mean is None else round(mean, 1),
               "projected_one_fewer": None if projected is None else round(projected, 1),
               "refusals": refused, "joining": joining, "draining": draining,
-              "high_streak": region["high_streak"], "refusal_streak": region["refusal_streak"],
+              "high_streak": region["high_streak"], "hot_streak": region["hot_streak"],
+              "max_permille": hottest, "refusal_streak": region["refusal_streak"],
               "low_for_s": round(now - region["low_since_unix"], 1) if low else 0.0}
 
     def result(action: str, reason: str, targets=()) -> dict:
@@ -768,10 +779,11 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
         return result("wait", "a drain of this region is in flight")
     since_action = now - region.get("last_action_unix", -math.inf)
     trigger_up = (region["high_streak"] >= config.up_samples
+                  or region["hot_streak"] >= config.up_samples
                   or region["refusal_streak"] >= config.refusal_samples)
     if trigger_up:
         desired = math.ceil(total / config.target_permille) if count else config.min_edges
-        if refused and desired <= count:
+        if (refused or region["hot_streak"] >= config.up_samples) and desired <= count:
             desired = count + 1
         inputs["desired"] = desired
         want = min(config.max_per_action, desired - (count + len(joining)))
@@ -805,6 +817,9 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
         chosen = [(name, how) for _rank, name, how in candidates[:want]]
         why = (f"mean {mean:.0f} >= {config.up_permille} for {region['high_streak']} samples"
                if region["high_streak"] >= config.up_samples
+               else f"an edge at {hottest} >= {config.up_max_permille} with the mean "
+                    f"{mean:.0f} >= {config.target_permille} for {region['hot_streak']} samples"
+               if region["hot_streak"] >= config.up_samples
                else f"refusals in {region['refusal_streak']} samples")
         return result("join", f"{why}: {count} serving, target {desired}", chosen)
     if joining:
