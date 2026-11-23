@@ -116,10 +116,22 @@ AUDIO_PCM = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AUDIO_PCM",
     str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
         / "daw-nexus-album-1-track-pcm-300s" / "source-track-00.s24le")))
+def newest_build(*paths: pathlib.Path) -> pathlib.Path:
+    """The most recently built of `paths` that exists (else the first): a
+    native build and a cross build (zigbuild, for Linode) of one checkout
+    sit in different target directories, and the older one can lack the
+    options the lab passes (a cross build of 19 Nov has no
+    --opus-frame-samples, so the DAW source refused to start)."""
+    found = [path for path in paths if path.is_file()]
+    return max(found, key=lambda path: path.stat().st_mtime) if found else paths[0]
+
+
 DAW_SOURCE = pathlib.Path(os.environ.get(
     "NEEDLETAIL_DAW_SOURCE_BIN",
-    str(WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
-        / "daw-test-source")))
+    str(newest_build(
+        WORKSPACE / "daw-nexus" / "target" / "release" / "daw-test-source",
+        WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
+        / "daw-test-source"))))
 DAW_TRACKS = pathlib.Path(os.environ.get(
     "NEEDLETAIL_DAW_TRACKS",
     str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
@@ -1082,6 +1094,10 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 # 320 kb/s by default.
                 "--opus-frame-samples", str(probe_epoch_samples("opus")),
                 "--opus-bitrate", str(opus_bitrate()),
+                # The lab's lossless lane is FLAC (the contributor's
+                # daw_hls_formats "flac,opus"); daw-nexus now sends PCM
+                # unless told, and the contributor then made no stream 2001.
+                "--lossless-payload", "flac",
                 "127.0.0.1:27100", str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),

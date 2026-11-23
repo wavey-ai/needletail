@@ -1074,11 +1074,24 @@ lands:
 F3 and F4 (a forwarder drained, stopped or killed) can pass on the current
 binaries: edges get audio in full from both forwarders.
 
-### Local proofs still to run
+### Local proofs
 
-Not run in this round. Run them only when no other lab pass runs
-(`pgrep -af 'edge-lab|latency-bench'` prints nothing), with the low-latency
-av-mesh (scale-load merged: it has needletail-load):
+Run on 23 Nov on the wave 8 binaries (av-mesh low-latency 414f8dd and the
+fixes these proofs found: 5515d05, fd4a07c, 39d2758; playlists 1226b80;
+av-contrib 219c6b5); the record with every number is the "Wave 8 local
+proofs" section of the wave's results. `scale-ops` is six scenarios, each
+judged by the ops design's criteria as far as one host carries them:
+`udp-edge-drain` (F1, R2), `udp-edge-kill` (F2, R3), `udp-two-edges-drain`
+(R5 with 2 of 4 edges), `dist-c-join-kill` (R4), `slot-edge-join` (R1) and
+`autoscale-edge-lab` (A1, A2). The UDP crowds are needletail-load listeners
+of the DAW lane's 1 ms Opus placed and moved through /api/assignment at the
+London distributors; the start-up (first 10 s) is reported apart from the
+fault's windows. The join and autoscale scenarios run with
+client_udp_datagram_capacity 40,000 (a full CPU reads as a full edge) and
+the scale run's cache_mesh_warm_ms 4,500. Run them only when no other lab
+pass runs (`pgrep -af 'edge-lab|latency-bench'` prints nothing; your own
+lab's services match the pattern too: `edge_lab.py down` first), with the
+low-latency av-mesh (scale-load merged: it has needletail-load):
 
 ```sh
 cd /home/jamieb/wavey.ai/needletail-features
@@ -1099,7 +1112,10 @@ scripts/linode-autoscale.py run --backend edge_lab --stream 1 --sites london --d
 scripts/edge_lab.py start lon-edge-4 && scripts/edge_lab.py status
 scripts/edge_lab.py drain lon-edge-4 && scripts/edge_lab.py stop lon-edge-4
 # 4. One controller per state file, and SIGINT resumes a drain in flight
-#    (the events end wound_down, controller_stop; no edge left draining):
+#    (the events end resumed, wound_down, controller_stop; exit 130; no
+#    edge left draining). The controller sets its own SIGINT handler: a job
+#    started with `&` from a script inherits SIGINT ignored. Give it UDP
+#    listeners and --down-hold-s 5 --cooldown-s 0 to have a drain in flight:
 scripts/linode-autoscale.py run --backend edge_lab --stream 1 --sites london --duration 120 \
   --events target/compare/local-controller.jsonl &
 sleep 5; scripts/linode-autoscale.py run --backend edge_lab --stream 1 --sites london --once

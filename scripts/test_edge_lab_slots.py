@@ -79,6 +79,36 @@ class Slots(Base):
         self.assertEqual(calls, [("lon-edge-2", "/api/control/drain-node", "POST",
                                   {"node_id": "lon-edge-2"})])
 
+    def test_drain_answered_202_is_a_success(self):
+        # av-mesh queues a control command and answers 202 Accepted.
+        with mock.patch.object(lab, "http_json", lambda *a, **k: (202, {"status": "queued"})), \
+                mock.patch.object(sys, "argv", ["edge_lab.py", "drain", "lon-edge-2"]), \
+                redirect_stdout(io.StringIO()):
+            lab.main()  # no SystemExit
+        with mock.patch.object(lab, "http_json", lambda *a, **k: (503, {})), \
+                mock.patch.object(sys, "argv", ["edge_lab.py", "resume", "lon-edge-2"]), \
+                redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            lab.main()
+
+    def test_the_newest_build_of_a_binary_is_taken(self):
+        import os
+        native, cross = self.work / "native", self.work / "cross"
+        self.assertEqual(lab.newest_build(native, cross), native)  # neither built
+        cross.write_text("old")
+        self.assertEqual(lab.newest_build(native, cross), cross)
+        native.write_text("new")
+        os.utime(cross, (1, 1))
+        self.assertEqual(lab.newest_build(native, cross), native)
+
+    def test_the_status_command_runs(self):
+        # main() once bound a local `status` in its drain branch, so the
+        # status command failed with UnboundLocalError.
+        out = io.StringIO()
+        with mock.patch.object(lab, "service_pid", lambda name: None), \
+                mock.patch.object(sys, "argv", ["edge_lab.py", "status"]), redirect_stdout(out):
+            lab.main()
+        self.assertIn("lon-dist-c", out.getvalue())
+
 
 @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
 class Render(Base):
@@ -145,10 +175,13 @@ class Render(Base):
 class Campaign(Base):
     def test_the_scale_ops_scenarios_are_registered(self):
         names = {item.name for item in campaign.select(["scale-ops"], True)}
-        self.assertEqual(names, {"udp-edge-drain", "udp-edge-kill", "slot-edge-join",
-                                 "autoscale-edge-lab"})
+        self.assertEqual(names, {"udp-edge-drain", "udp-edge-kill", "udp-two-edges-drain",
+                                 "slot-edge-join", "dist-c-join-kill", "autoscale-edge-lab"})
+        scale = next(item for item in campaign.select(["autoscale-edge-lab"], True))
+        self.assertIn("client_udp_datagram_capacity=40000", scale.needs)
         join = next(item for item in campaign.select(["slot-edge-join"], True))
-        self.assertEqual(join.needs, ["slots=lon-edge-4"])
+        self.assertEqual(join.needs, campaign.SCALE_NEEDS)
+        self.assertIn("cache_mesh_warm_ms=4500", join.needs)
 
     def test_slot_edge_join_fails_when_the_joined_edge_serves_no_one(self):
         """The pass text says the new edge serves readers that arrive
@@ -161,6 +194,8 @@ class Campaign(Base):
                 pass
 
         class Ctx:
+            t0 = 0.0
+
             def __init__(self, finals):
                 self.finals = finals
                 self.checks = {}
@@ -195,20 +230,37 @@ class Campaign(Base):
             def note(self, text):
                 pass
 
+        class FakeOps:
+            def __init__(self, ctx):
+                pass
+
+            def start(self):
+                return self
+
+            def stop(self):
+                return []
+
+        report = {"moves_by_edge": {}, "missing": 0, "stranded_max": 0, "stranded_at_end": 0,
+                  "never_first": 0, "never_resumed": 0, "unaffected_missing": 0,
+                  "fault_lost": 0, "left_lost_by_edge": {}}
         fresh = {"caches": [{"node_id": "lon-edge-4", "fresh": True}]}
         results = {}
-        for finals in (["lon-edge-1", "lon-edge-2"], ["lon-edge-1", "lon-edge-4"]):
+        for finals in (["lon-edge-1", "lon-edge-2"], ["lon-edge-1", "10.90.0.24:19444"]):
             ctx = Ctx(finals)
             with mock.patch.object(lab, "service_pid", lambda name: None), \
                     mock.patch.object(lab, "set_slot_in_service", lambda name, on: None), \
                     mock.patch.object(lab, "start_service", lambda name: None), \
-                    mock.patch.object(lab, "http_json", lambda name, path: (200, fresh)), \
+                    mock.patch.object(lab, "edges", lambda site="london": ["lon-edge-1"]), \
+                    mock.patch.object(lab, "http_json", lambda name, path, **k: (200, fresh)), \
                     mock.patch.object(lab, "wait_for", lambda what, test, *a: test()), \
                     mock.patch.object(campaign, "udp_listeners", lambda *a, **k: Job()), \
                     mock.patch.object(campaign, "play", lambda *a, **k: []), \
                     mock.patch.object(campaign, "service_pids", lambda: {"lon-edge-1": 7}), \
-                    mock.patch.object(campaign, "udp_report",
-                                      lambda ctx, job: {"moves_by_edge": {}}):
+                    mock.patch.object(campaign, "OpsSampler", FakeOps), \
+                    mock.patch.object(campaign, "udp_report", lambda ctx, job, **k: report), \
+                    mock.patch.object(campaign, "edge_p99", lambda *a: 3.0), \
+                    mock.patch.object(campaign, "first_parts", lambda *a: {"lon-edge-4": 9}), \
+                    mock.patch.object(campaign, "survivor_checks", lambda *a, **k: {}):
                 campaign.slot_edge_join(ctx)
             results[tuple(finals)] = ctx.checks["the joined edge serves readers that arrive "
                                                 "after it"]
@@ -224,6 +276,53 @@ class Campaign(Base):
         self.assertEqual(edges, ["10.90.0.21:19446", "10.90.0.22:19446", "10.90.0.23:19446",
                                  "10.90.0.24:19446"])
         self.assertEqual(command[command.index("--ramp") + 1], "200@0")
+
+    def test_the_udp_command_asks_the_assignment_at_the_entries(self):
+        with mock.patch.object(lab, "enter", lambda host: ["nsenter", host]), \
+                mock.patch.object(lab, "binary", lambda label: f"/bin/{label}"), \
+                mock.patch.object(lab, "ca_file", lambda: "/ca.crt"):
+            command = campaign.udp_command("lon-readers", campaign.udp_edges(), 3001, 160, 70,
+                                           pathlib.Path("/out"), "x",
+                                           entries=campaign.udp_entries())
+        self.assertEqual(command[command.index("--entry") + 1],
+                         "https://10.90.0.11:19444,https://10.90.0.12:19444")
+        self.assertEqual(command[command.index("--tls-ca") + 1], "/ca.crt")
+        self.assertEqual(command[command.index("--server-name") + 1], lab.SERVER_NAME)
+
+    def test_the_udp_report_books_a_fault_on_the_edge_left(self):
+        out = self.work / "udp"
+        out.mkdir()
+        (out / "summary.json").write_text(json.dumps({
+            "listeners_without_parts": 0, "never_resumed": 0,
+            "total": {"parts": 1000, "missing": 7, "never_resumed": 0,
+                      "moves_by_reason": {"draining": 40},
+                      "time_to_move_ms": {"count": 40, "p50": 10.0, "p99": 16.5, "max": 17.0}},
+            "per_edge": {"unassigned": {"moves": 0},
+                         "10.90.0.21:19446": {"moves_out": 40, "left_lost": 5, "missing": 0},
+                         "10.90.0.22:19446": {"moves": 22, "missing": 4},
+                         "10.90.0.23:19446": {"moves": 18, "missing": 3}}}))
+        (out / "intervals.jsonl").write_text("\n".join(json.dumps(row) for row in (
+            {"unix_ms": 1, "total": {"active": 160, "up": 150, "stranded": 2}},
+            {"unix_ms": 2, "total": {"active": 160, "up": 160, "stranded": 0}})))
+        job = campaign.UdpJob("udp", "lon-readers", out, None, 0, 0)
+
+        class Ctx:
+            measurements = {}
+
+            def measure(self, key, value):
+                self.measurements[key] = value
+
+        report = campaign.udp_report(Ctx(), job, faulted=["lon-edge-1"])
+        self.assertEqual(report["moves_by_edge"],
+                         {"lon-edge-1": 0, "lon-edge-2": 22, "lon-edge-3": 18})
+        self.assertEqual(report["moves_out_by_edge"], {"lon-edge-1": 40})
+        self.assertEqual(report["fault_lost"], 5)
+        self.assertEqual(report["unaffected_missing"], 2)
+        self.assertEqual(report["stranded_max"], 2)
+        self.assertEqual(report["stranded_at_end"], 0)
+        self.assertEqual(report["time_to_move_ms"]["p99"], 16.5)
+        self.assertEqual(campaign.move_spread(report["moves_by_edge"],
+                                              ["lon-edge-2", "lon-edge-3"]), 1.1)
 
     def test_the_udp_report_and_the_spread_of_moves(self):
         out = self.work / "udp"

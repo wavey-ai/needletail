@@ -21,9 +21,11 @@ target/edge-campaign/<run>/<scenario>/evidence.json.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -2278,13 +2280,32 @@ def endurance_churn(ctx):
 
 # ============================================================ scale operations
 # Failover, redistribution and autoscaling with UDP listeners
-# (low-latency ops item 7): needletail-load crowds (the real client session
-# per listener; av-mesh low-latency) on a reader host, over the London
-# edges' public addresses. Local proofs of the deploy's slots (a join
+# (low-latency ops item 7, judged as the ops design's scenarios F1, F2,
+# R1-R5, A1 and A2 as far as one host can carry them): needletail-load
+# crowds (the real client session per listener) on a reader host, placed and
+# moved through /api/assignment (Phase AM item 10) at the site's
+# distributors, which no edge scenario faults (the scale run's entry points
+# are never under fault). Local proofs of the deploy's slots (a join
 # restarts nothing), of the scale run's faults, and of the autoscaler's
 # edge_lab backend through a ramp up and down.
 
 CLIENT_UDP_PORT = 19446
+# The crowds listen to the DAW lane's 1 ms Opus Custom at 320 kb/s (HQ): the
+# load of latency-bench and of the scale run's opus1 steps, ~0.78 Mbit/s and
+# ~1,031 datagrams a second a listener.
+OPS_STREAM = HQ
+OPS_PART_MS = 1.0
+# Survivors: CPU under 80% of a g6-dedicated-2's two CPUs (% of one CPU).
+OPS_CPU_LIMIT = 160.0
+# The lab of the join and autoscale scenarios: the slot lon-edge-4, an edge
+# load that counts client datagrams (a full CPU reads as a full edge, as the
+# scale run's autoscale phases need), and the scale run's warm-up of a new
+# copy in ms (cache_mesh_warm_ms 4,500; the lab's default is the whole
+# 12,000-part window).
+SCALE_NEEDS = ["slots=lon-edge-4", "client_udp_datagram_capacity=40000",
+               "cache_mesh_warm_ms=4500"]
+UDP_COUNTERS = ("subscribers", "subscriptions", "refusals", "moves", "would_block",
+                "send_queue_drops", "playout_skipped_parts", "nack_parts", "nack_refused")
 
 
 class UdpJob:
@@ -2325,46 +2346,85 @@ def udp_edges(site: str = "london") -> list[str]:
     return [f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}" for name in lab.edges(site)]
 
 
+def udp_entries(site: str = "london") -> list[str]:
+    """needletail-load's entry points (Phase AM item 10): the site's
+    distributors in service."""
+    return [lab.base_url(name) for name in lab.distributors(site)]
+
+
 def udp_command(host: str, edges: list[str], stream: int, count: int, seconds: int,
-                out: pathlib.Path, label: str, ramp: str | None = None) -> list[str]:
+                out: pathlib.Path, label: str, ramp: str | None = None,
+                entries: list[str] | None = None) -> list[str]:
     """needletail-load in a reader host's namespace, as scale-run starts it
-    on a listener host."""
-    return lab.enter(host) + [
+    on a listener host. With `entries` each listener asks /api/assignment
+    where to subscribe and where to move (`edges` is then the fallback)."""
+    command = lab.enter(host) + [
         lab.binary("needletail-load"), "--edges", ",".join(edges), "--stream", str(stream),
         "--listeners", str(count), "--ramp", ramp or f"{count}@0", "--duration", str(seconds),
         "--sample", str(min(5, count)), "--out", str(out), "--label", label, "--quiet"]
+    if entries:
+        command += ["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
+                    "--server-name", lab.SERVER_NAME]
+    # An A/B of the client session's flags (needletail-load options).
+    return command + os.environ.get("NEEDLETAIL_LOAD_EXTRA_ARGS", "").split()
 
 
 def udp_listeners(ctx, key: str, count: int, seconds: int, host: str = LON_READERS,
-                  stream: int = AUDIO, edges: list[str] | None = None,
-                  ramp: str | None = None) -> UdpJob:
+                  stream: int = OPS_STREAM, edges: list[str] | None = None,
+                  ramp: str | None = None, assign: bool = True) -> UdpJob:
     if not pathlib.Path(lab.binary("needletail-load")).is_file():
         raise lab.LabError("needletail-load is not built (av-mesh low-latency: "
                            "cargo build --release --bin needletail-load)")
     out = ctx.directory / f"{key}.udp"
-    command = udp_command(host, edges or udp_edges(), stream, count, seconds, out,
-                          f"{ctx.scenario.name}-{key}", ramp)
+    site = lab.node(host)["site"]
+    command = udp_command(host, edges or udp_edges(site), stream, count, seconds, out,
+                          f"{ctx.scenario.name}-{key}", ramp,
+                          udp_entries(site) if assign else None)
     log = open(ctx.directory / f"{key}.udp.log", "ab")
     process = subprocess.Popen(command, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                start_new_session=True)
-    ctx.event(f"{count} UDP listeners of stream {stream} start on {host} ({key})")
+    ctx.event(f"{count} UDP listeners of stream {stream} start on {host} ({key}"
+              + (", through /api/assignment" if assign else ", static edge list") + ")")
     return UdpJob(key, host, out, process, time.time(), seconds)
 
 
-def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None) -> dict:
-    """What a UDP crowd saw: parts and missing parts, moves per edge (as
-    needletail-load counts them, on the edge moved to), and listeners that
-    exist but are not subscribed at the end (stranded, until needletail-load
-    has its own gauge, Phase AM item 10)."""
+def edge_name_map() -> dict[str, str]:
+    return {f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}": name for name, *_ in lab.NODES}
+
+
+def quantiles(block) -> dict | None:
+    if not isinstance(block, dict) or not block.get("count"):
+        return None
+    return {key: block.get(key) for key in ("count", "p50", "p99", "max")}
+
+
+def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None,
+               faulted=(), since: float | None = None) -> dict:
+    """What a UDP crowd saw (needletail-load's own books): parts and missing
+    parts; moves per edge (`moves` on the edge moved to, `moves_out` on the
+    edge left, by reason), the time to move (from a listener's last part on
+    the old edge to its first on the new one) p50/p99/max; the parts lost in
+    moves away from each edge (`left_lost`): those off a faulted edge are the
+    fault's, every other missing part is an unaffected listener's; listeners
+    stranded (no part for 5 s, needletail-load's gauge, the largest of any
+    interval and at the end), never served, never resumed after a move.
+    With `since` (Unix time: the end of the start-up, before any fault),
+    the missing parts are those that settled from then on, as the scale
+    run's before/during/after windows judge them; the start-up's are
+    reported apart (`startup_missing`)."""
     summary = job.summary()
     total = summary.get("total") or summary
     per_edge = summary.get("per_edge") or summary.get("edges") or {}
     if isinstance(per_edge, list):
         per_edge = {item.get("edge"): item for item in per_edge if isinstance(item, dict)}
-    names = edge_names or {f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}": name
-                           for name, *_ in lab.NODES}
+    names = edge_names or edge_name_map()
+
+    def by_edge(key):
+        return {names.get(edge, edge): (block or {}).get(key, 0) or 0
+                for edge, block in per_edge.items() if (block or {}).get(key)}
+
     moves = {names.get(edge, edge): (block or {}).get("moves", 0)
-             for edge, block in per_edge.items()}
+             for edge, block in per_edge.items() if edge != "unassigned"}
     rows = [row for row in job.intervals() if row.get("phase") != "final"]
     last = (rows[-1].get("total") or {}) if rows else {}
     stranded = None
@@ -2372,9 +2432,34 @@ def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None) -> di
         stranded = max(0, last["active"] - (last.get("up") or 0))
     if last.get("stranded") is not None:
         stranded = last["stranded"]
-    report = {"parts": total.get("parts"), "missing": total.get("missing"),
+    known = [(row.get("total") or {}).get("stranded") for row in rows]
+    known = [value for value in known if isinstance(value, int)]
+    left_lost = by_edge("left_lost")
+    missing = total.get("missing")
+    startup_missing = None
+    if since is not None and missing is not None:
+        startup_missing = sum((row.get("total") or {}).get("missing") or 0 for row in rows
+                              if row.get("unix_ms", 0) < since * 1000)
+        missing -= startup_missing
+    fault_lost = sum(left_lost.get(name, 0) for name in faulted)
+    report = {"parts": total.get("parts"), "missing": missing,
+              "startup_missing": startup_missing,
               "moves_by_edge": moves, "moves": sum(moves.values()),
-              "never_first": total.get("never_first"), "stranded_at_end": stranded}
+              "moves_out_by_edge": by_edge("moves_out"),
+              "moves_by_reason": total.get("moves_by_reason") or {},
+              "time_to_move_ms": quantiles(total.get("time_to_move_ms")),
+              "left_lost_by_edge": left_lost, "move_lost": total.get("move_lost"),
+              "fault_lost": fault_lost,
+              "unaffected_missing": None if missing is None else missing - fault_lost,
+              "missing_by_edge": by_edge("missing"),
+              "never_first": total.get("never_first", summary.get("listeners_without_parts")),
+              "never_resumed": total.get("never_resumed", summary.get("never_resumed")),
+              "stranded_max": max(known) if known else None, "stranded_at_end": stranded,
+              "latency_ms": quantiles(total.get("latency_ms")),
+              "ttfp_ms": quantiles(total.get("ttfp_ms")),
+              "assignment_errors": total.get("assignment_errors"),
+              "fallbacks": total.get("fallbacks"),
+              "load_host_saturated": summary.get("load_host_saturated")}
     ctx.measure(f"{job.key}_udp", report)
     return report
 
@@ -2386,42 +2471,205 @@ def move_spread(moves: dict[str, int], edges: list[str]) -> float | None:
     return round(max(counts) / (sum(counts) / len(counts)), 3)
 
 
+def edge_p99(job: UdpJob, edges: list[str], begin: float, end: float) -> float | None:
+    """The listeners' latency p99 on `edges` between two Unix times: each
+    interval's p99 per edge, weighted by its parts (needletail-load keeps
+    quantiles per interval, not their histogram)."""
+    names = edge_name_map()
+    weighted, count = 0.0, 0
+    for row in job.intervals():
+        if row.get("phase") == "final" or not begin * 1000 <= row.get("unix_ms", 0) < end * 1000:
+            continue
+        for edge, block in (row.get("edges") or {}).items():
+            latency = (block or {}).get("latency_ms") or {}
+            if names.get(edge, edge) in edges and latency.get("count") and \
+                    latency.get("p99") is not None:
+                weighted += latency["p99"] * latency["count"]
+                count += latency["count"]
+    return round(weighted / count, 3) if count else None
+
+
+def first_parts(job: UdpJob, begin: float, end: float) -> dict[str, int]:
+    """Listeners that had their first part on each edge between two Unix
+    times (arrivals, not moves)."""
+    names = edge_name_map()
+    out: dict[str, int] = {}
+    for row in job.intervals():
+        if row.get("phase") == "final" or not begin * 1000 <= row.get("unix_ms", 0) < end * 1000:
+            continue
+        for edge, block in (row.get("edges") or {}).items():
+            value = (block or {}).get("first_parts") or 0
+            if value:
+                out[names.get(edge, edge)] = out.get(names.get(edge, edge), 0) + value
+    return out
+
+
+class OpsSampler:
+    """Once a second, every London edge and distributor in service: its
+    client UDP gauges and counters, its own advertisement (load_permille,
+    fresh, draining, free_bps), the cache mesh's warm-up counters and
+    children, replication and hole-repair counters, the fast plane's lease
+    children. Rows in <scenario>/ops.ndjson."""
+
+    def __init__(self, ctx, stream: int = OPS_STREAM, site: str = "london",
+                 interval: float = 1.0):
+        self.path = ctx.directory / "ops.ndjson"
+        self.stream, self.site = stream, site
+        self.rows: list[dict] = []
+        self.thread = core.Background(self.take, interval)
+
+    def start(self) -> "OpsSampler":
+        self.thread.start()
+        return self
+
+    def stop(self) -> list[dict]:
+        self.thread.stop()
+        return self.rows
+
+    def take(self) -> None:
+        row = {"t": round(time.time(), 3), "nodes": {}}
+        for name in lab.names("edge", self.site) + lab.names("distributor", self.site):
+            if lab.service_pid(name) is None:
+                continue
+            item: dict = {}
+            try:
+                status, local = lab.http_json(name, "/api/mesh/local", timeout=0.8)
+            except Exception:  # noqa: BLE001 - a measurement only
+                status, local = None, None
+            if status == 200 and isinstance(local, dict):
+                item["gauges"] = local.get("client_udp") or {}
+                item["cache_mesh"] = {key: value for key, value in
+                                      (local.get("cache_mesh") or {}).items()
+                                      if key != "draining_peers"}
+                replication = local.get("cache_replication") or {}
+                item["replication"] = {key: replication.get(key) for key in (
+                    "subscriptions_opened", "subscriptions_released", "subscriptions_refused")}
+                item["hole_repair_requests"] = local.get("edge_hole_repair_requests")
+                item["fast_plane"] = local.get("fast_plane")
+                fec = local.get("mesh_fec") or {}
+                item["mesh_fec"] = {key: fec.get(key) for key in (
+                    "rx_presumed_lost", "rx_expired_objects", "rx_evicted_objects")}
+            if lab.node(name)["role"] == "edge":
+                try:
+                    status, body = lab.http_json(name, f"/api/assignment?stream={self.stream}",
+                                                 timeout=0.8)
+                except Exception:  # noqa: BLE001
+                    status, body = None, None
+                if status == 200 and isinstance(body, dict):
+                    udp = body.get("client_udp") or {}
+                    item["udp"] = {key: udp.get(key) for key in UDP_COUNTERS}
+                    own = next((cache for cache in body.get("caches") or []
+                                if cache.get("node_id") == name), {})
+                    item["advert"] = {key: own.get(key) for key in (
+                        "fresh", "draining", "overloaded", "load_permille", "free_bps")}
+            row["nodes"][name] = item
+        self.rows.append(row)
+        with open(self.path, "a") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+
+def ops_value(row: dict, name: str, path: str):
+    value = row.get("nodes", {}).get(name)
+    for part in path.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def ops_delta(rows: list[dict], names, path: str, begin: float, end: float) -> int | None:
+    """A counter's rise between two Unix times, summed over `names` (the
+    last sample before `begin`, or the first after it, to the last sample
+    before `end`)."""
+    total, seen = 0, False
+    for name in names:
+        values = [(row["t"], ops_value(row, name, path)) for row in rows]
+        values = [(t, value) for t, value in values if value is not None]
+        before = [value for t, value in values if t <= begin] or \
+                 [value for t, value in values if t > begin][:1]
+        after = [value for t, value in values if t <= end]
+        if before and after:
+            total += max(0, after[-1] - before[-1])
+            seen = True
+    return total if seen else None
+
+
+def ops_max(rows: list[dict], names, path: str, begin: float, end: float):
+    values = [ops_value(row, name, path) for row in rows if begin <= row["t"] <= end
+              for name in names]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def cpu_percent(ctx, names, begin: float, end: float) -> dict[str, dict]:
+    """Each node's CPU (% of one CPU) from the scenario's node sampler, per
+    second between two Unix times: mean, p95 and max."""
+    path = ctx.directory / "nodes.ndjson"
+    series: dict[str, list[tuple[float, int]]] = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            sample = json.loads(line)
+        except ValueError:
+            continue
+        for name in names:
+            item = sample.get(name) or {}
+            if item.get("running") and "usage_usec" in item:
+                series.setdefault(name, []).append((item["at"], item["usage_usec"]))
+    out = {}
+    for name, points in series.items():
+        cpu = sorted((b[1] - a[1]) / 1e4 / (b[0] - a[0])
+                     for a, b in zip(points, points[1:])
+                     if begin <= b[0] <= end and b[0] > a[0] and b[1] >= a[1])
+        if cpu:
+            out[name] = {"mean": round(sum(cpu) / len(cpu), 1),
+                         "p95": round(cpu[max(0, int(len(cpu) * 0.95) - 1)], 1),
+                         "max": round(cpu[-1], 1)}
+    return out
+
+
+class GaugeWatch(threading.Thread):
+    """A drained edge's live UDP-subscriber gauge every 100 ms: how many it
+    had when the drain was sent, when the first left and when it read 0."""
+
+    def __init__(self, name: str, seconds: float = 20.0):
+        super().__init__(daemon=True)
+        self.name, self.seconds = name, seconds
+        self.samples: list[tuple[float, int | None]] = []
+        self.started = time.time()
+
+    def run(self) -> None:
+        while time.time() - self.started < self.seconds:
+            try:
+                status, body = lab.http_json(self.name, "/api/mesh/local", timeout=0.5)
+                value = ((body or {}).get("client_udp") or {}).get("subscribers") \
+                    if status == 200 and isinstance(body, dict) else None
+            except Exception:  # noqa: BLE001
+                value = None
+            self.samples.append((time.time(), value))
+            if value == 0 and len(self.samples) > 1:
+                break
+            time.sleep(0.1)
+
+    def result(self) -> dict:
+        known = [(t, value) for t, value in self.samples if isinstance(value, int)]
+        first = known[0][1] if known else None
+        left = next((t for t, value in known if first is not None and value < first), None)
+        zero = next((t for t, value in known if value == 0), None)
+        return {"node": self.name, "subscribers_at_drain": first,
+                "first_left_ms": None if left is None else round((left - self.started) * 1000),
+                "zero_ms": None if zero is None else round((zero - self.started) * 1000)}
+
+
 def service_pids() -> dict[str, int | None]:
     return {name: lab.service_pid(name) for name in lab.standing_services()}
 
 
-def udp_fault(ctx, fault, label: str, target: str, seconds: int = 60, fault_at: int = 20,
-              heal=None, heal_at: int = 45):
-    udp = udp_listeners(ctx, "udp", 200, seconds)
-    hls = ctx.readers("audio", AUDIO, 4, seconds, steering=True)
-    ctx.at(fault_at)
-    fault(target)
-    ctx.event(f"{label}: {target}")
-    if heal:
-        ctx.at(heal_at)
-        heal(target)
-        ctx.event(f"healed: {target}")
-    udp.wait()
-    ctx.wait_readers()
-    report = udp_report(ctx, udp)
-    others = [edge for edge in lab.edges() if edge != target]
-    spread = move_spread(report["moves_by_edge"], others)
-    ctx.measure("moves_spread_max_over_mean", spread)
-    ctx.check("UDP listeners: none stranded at the end",
-              report["stranded_at_end"] in (0, None), report["stranded_at_end"])
-    ctx.check("UDP listeners moved off the faulted edge", report["moves"] > 0, report["moves"])
-    ctx.expect_served(hls)
-    if spread is not None and spread > 1.3:
-        ctx.gap = ("needletail-load moves to the next edge of its static list: the moved "
-                   "listeners pile onto one edge (Phase AM item 10: moves and arrivals through "
-                   "/api/assignment with a skip set)")
-        ctx.check("moves spread over the other edges (max/mean <= 1.3)", False, spread)
-    return report
-
-
 def drain(name: str) -> None:
     status, _ = lab.http_json(name, "/api/control/drain-node", "POST", {"node_id": name})
-    if status != 200:
+    # av-mesh answers a control command with 202 Accepted (queued).
+    if not 200 <= status < 300:
         raise lab.LabError(f"drain {name}: HTTP {status}")
 
 
@@ -2429,38 +2677,241 @@ def resume(name: str) -> None:
     lab.http_json(name, "/api/control/resume-node", "POST", {"node_id": name})
 
 
+def survivor_checks(ctx, rows: list[dict], survivors: list[str], begin: float, end: float,
+                    before: tuple[float, float], refusals_expected: bool = False) -> dict:
+    """The survivors' criteria of every scenario: CPU under 80% of two CPUs
+    (p95 of 1 s samples; the largest second reported), and no rise in
+    would_block, send-queue drops or refusals on the edges that stay."""
+    distributors = [name for name in lab.distributors("london")]
+    cpu = cpu_percent(ctx, survivors + distributors, begin, end)
+    ctx.measure("survivors_cpu_percent", cpu)
+    worst = max((item["p95"] for item in cpu.values()), default=None)
+    ctx.check(f"survivors: CPU p95 under {OPS_CPU_LIMIT:.0f}% of one CPU (80% of 2)",
+              worst is not None and worst < OPS_CPU_LIMIT,
+              {name: (item["p95"], item["max"]) for name, item in cpu.items()})
+    rises = {}
+    span = max(1e-9, end - begin)
+    base_span = max(1e-9, before[1] - before[0])
+    for counter in ("would_block", "send_queue_drops", "refusals"):
+        during = ops_delta(rows, survivors, f"udp.{counter}", begin, end)
+        base = ops_delta(rows, survivors, f"udp.{counter}", *before)
+        if during is None:
+            continue
+        rises[counter] = {"before_per_s": round((base or 0) / base_span, 3),
+                          "during_per_s": round(during / span, 3), "during": during}
+    ctx.measure("survivors_udp_counters", rises)
+    for counter, item in rises.items():
+        if counter == "refusals" and refusals_expected:
+            continue
+        ctx.check(f"survivors: no rise in {counter}",
+                  item["during_per_s"] <= item["before_per_s"], item)
+    return {"cpu": cpu, "rises": rises}
+
+
+def listener_checks(ctx, report: dict, moved_from=()) -> None:
+    ctx.check("UDP listeners: none stranded (needletail-load's 5 s gauge, every interval)",
+              report["stranded_max"] in (0, None) and report["stranded_at_end"] in (0, None),
+              {"max": report["stranded_max"], "at_end": report["stranded_at_end"]})
+    ctx.check("UDP listeners: every one had a first part and every mover resumed",
+              not report["never_first"] and not report["never_resumed"],
+              {"never_first": report["never_first"], "never_resumed": report["never_resumed"]})
+    ctx.check("unaffected UDP listeners: 0 missing (missing less the parts lost in moves "
+              "off the faulted edges)", report["unaffected_missing"] == 0,
+              {"missing": report["missing"], "fault_lost": report["fault_lost"],
+               "left_lost_by_edge": report["left_lost_by_edge"]})
+
+
+def udp_fault(ctx, fault, label: str, targets: list[str], count: int = 160,
+              seconds: int = 70, fault_at: int = 25, heal=None, heal_at: int = 55,
+              drained: bool = False) -> dict:
+    """`count` UDP listeners (1 ms Opus, through /api/assignment) and 4
+    steered LL-HLS readers; the fault on every target at once at `fault_at`;
+    the heal at `heal_at`. Judged against the ops design's F1 (drain) or F2
+    (kill) and R2/R3, with the survivors' criteria."""
+    ops = OpsSampler(ctx).start()
+    udp = udp_listeners(ctx, "udp", count, seconds)
+    hls = ctx.readers("audio", AUDIO, 4, seconds, steering=True)
+    ctx.at(fault_at)
+    fault_unix = time.time()
+    watches = [GaugeWatch(target) for target in targets] if drained else []
+    for watch in watches:
+        watch.start()
+    threads = [threading.Thread(target=fault, args=(target,)) for target in targets]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    ctx.event(f"{label}: {', '.join(targets)}")
+    heal_unix = None
+    if heal:
+        ctx.at(heal_at)
+        heal_unix = time.time()
+        for target in targets:
+            heal(target)
+        ctx.event(f"healed: {', '.join(targets)}")
+    udp.wait()
+    ctx.wait_readers()
+    for watch in watches:
+        watch.join(timeout=1)
+    rows = ops.stop()
+    end_unix = heal_unix or time.time()
+    report = udp_report(ctx, udp, faulted=targets, since=ctx.t0 + 10)
+    others = [edge for edge in lab.edges() if edge not in targets]
+    spread = move_spread(report["moves_by_edge"], others)
+    ctx.measure("moves_spread_max_over_mean", spread)
+    late = next((row for row in reversed(rows) if row["t"] <= (heal_unix or time.time()) - 1),
+                None)
+    if late:
+        held = {name: ops_value(late, name, "gauges.subscribers") for name in others}
+        known = [value for value in held.values() if isinstance(value, int)]
+        ctx.measure("listeners_per_survivor_after", held)
+        ctx.measure("listeners_per_survivor_max_over_mean",
+                    round(max(known) / (sum(known) / len(known)), 3)
+                    if known and sum(known) else None)
+    if watches:
+        ctx.measure("drain_gauges", [watch.result() for watch in watches])
+    listener_checks(ctx, report)
+    moved_out = sum(report["moves_out_by_edge"].get(target, 0) for target in targets)
+    ctx.check("UDP listeners moved off the faulted edges", moved_out > 0,
+              report["moves_out_by_edge"])
+    ctx.check("moves spread over the other edges (max/mean <= 1.3)",
+              spread is not None and spread <= 1.3,
+              {"spread": spread, "moves_by_edge": report["moves_by_edge"]})
+    ttm = report["time_to_move_ms"] or {}
+    if drained:
+        ctx.check("F1: 0 parts missing (every listener, the moved ones included)",
+                  report["missing"] == 0, report["missing"])
+        ctx.check("F1: time to move p99 <= 300 ms", (ttm.get("p99") or 1e9) <= 300, ttm)
+        for watch in watches:
+            result = watch.result()
+            ctx.check(f"{watch.name}: its UDP subscriber gauge reached 0 after the drain",
+                      result["zero_ms"] is not None, result)
+    else:
+        ctx.check("F2: time to move p99 <= 1.5 s and max <= 3 s",
+                  (ttm.get("p99") or 1e9) <= 1500 and (ttm.get("max") or 1e9) <= 3000, ttm)
+        per_move = (report["fault_lost"] / moved_out) if moved_out else None
+        bound = (ttm.get("max") or 0) / OPS_PART_MS
+        ctx.measure("fault_lost_per_moved_listener", None if per_move is None
+                    else round(per_move, 1))
+        ctx.check("F2: parts lost only by moved listeners, each at most time to move / part "
+                  "length (mean per mover against the largest time to move)",
+                  report["unaffected_missing"] == 0 and (per_move or 0) <= bound,
+                  {"per_mover": per_move, "bound_parts": bound})
+    survivor_checks(ctx, rows, others, fault_unix, end_unix,
+                    (ctx.t0 + 8, fault_unix))
+    # R2 / R3: what the distributors and the receiving edges did.
+    dists = lab.distributors("london")
+    redistribution = {
+        "distributors_subscriptions_released": ops_delta(
+            rows, dists, "replication.subscriptions_released", fault_unix, end_unix),
+        "receiving_edges_hole_repair_requests": ops_delta(
+            rows, others, "hole_repair_requests", fault_unix, end_unix),
+        "distributors_warm_bytes_sent": ops_delta(rows, dists, "cache_mesh.warm_bytes_sent",
+                                                  fault_unix, end_unix),
+        "distributors_warm_parts_sent": ops_delta(rows, dists, "cache_mesh.warm_parts_sent",
+                                                  fault_unix, end_unix),
+        "distributors_warm_tick_max_bytes": ops_max(rows, dists, "cache_mesh.warm_tick_max_bytes",
+                                                    fault_unix, end_unix),
+        "distributors_warm_capped_ticks": ops_delta(rows, dists, "cache_mesh.warm_capped_ticks",
+                                                    fault_unix, end_unix),
+        "watermark_stall_max_us": ops_max(rows, dists + others,
+                                          "cache_mesh.watermark_stall_max_us",
+                                          fault_unix, end_unix),
+        "watermark_stalls_over_250ms": ops_delta(rows, dists + others,
+                                                 "cache_mesh.watermark_stalls_over_250ms",
+                                                 fault_unix, end_unix),
+        "rx_presumed_lost": ops_delta(rows, dists + others, "mesh_fec.rx_presumed_lost",
+                                      fault_unix, end_unix),
+        "rx_expired_objects": ops_delta(rows, dists + others, "mesh_fec.rx_expired_objects",
+                                        fault_unix, end_unix)}
+    ctx.measure("redistribution", redistribution)
+    ctx.expect_served(hls)
+    ctx.expect_complete(hls)
+    hls_moves = sum(len(reader.get("moves") or []) for reader in hls.readers)
+    ctx.measure("hls_moves", hls_moves)
+    return {"report": report, "rows": rows, "redistribution": redistribution,
+            "fault_unix": fault_unix, "end_unix": end_unix}
+
+
 @scenario("udp-edge-drain", "scale-ops",
-          "An edge with 200 UDP listeners and steered LL-HLS readers is drained. Where do its "
-          "listeners go, and does anyone stay behind?",
-          "No listener is stranded; the drained edge's listeners move; the moves spread over "
-          "the other edges (max/mean <= 1.3; a GAP until needletail-load moves through "
-          "/api/assignment).")
+          "An edge with its share of 160 UDP listeners (1 ms Opus, placed through "
+          "/api/assignment) and steered LL-HLS readers is drained. Where do its listeners "
+          "go, how fast, and does anyone stay behind or lose a part?",
+          "F1: nobody stranded, 0 parts missing, time to move p99 <= 300 ms, moves spread "
+          "max/mean <= 1.3 over the other edges, the drained edge's subscriber gauge reaches "
+          "0; survivors' CPU under 80% and no rise in would-block, send-queue drops or "
+          "refusals. R2: the distributors release its copies; warm-up bytes reported.")
 def udp_edge_drain(ctx):
-    udp_fault(ctx, drain, "drained", "lon-edge-1", heal=resume)
+    result = udp_fault(ctx, drain, "drained", ["lon-edge-1"], heal=resume, drained=True)
+    rows = result["rows"]
+    released = ops_delta(rows, ["lon-edge-1"], "replication.subscriptions_released",
+                         result["fault_unix"], result["end_unix"])
+    children = [(round(row["t"] - result["fault_unix"], 1),
+                 sum(ops_value(row, name, "cache_mesh.children") or 0
+                     for name in lab.distributors("london")))
+                for row in rows if row["t"] >= result["fault_unix"] - 2]
+    ctx.measure("r2_drained_edge_released", released)
+    ctx.measure("r2_distributor_cache_children", children[::2])
+    ctx.check("R2: the drained edge released its cache-mesh copies (its parents lost it as "
+              "a child)", (released or 0) > 0 and children and
+              min(value for _, value in children) < children[0][1],
+              {"released": released, "children_first_min": (children[0][1] if children else
+                                                             None,
+                                                             min((value for _, value in children),
+                                                                 default=None))})
 
 
 @scenario("udp-edge-kill", "scale-ops",
-          "An edge with 200 UDP listeners is killed (SIGKILL; nothing restarts it: node loss). "
-          "Where do its listeners go?",
-          "No listener is stranded; its listeners move within the client's silence detection; "
-          "the moves spread over the other edges (a GAP until AM item 10).")
+          "An edge with its share of 160 UDP listeners is killed (SIGKILL; nothing restarts it "
+          "until the heal 30 s later: node loss). Where do its listeners go, and how fast?",
+          "F2: nobody stranded, time to move p99 <= 1.5 s and max <= 3 s, parts lost only by "
+          "the moved listeners (each at most time to move / part length), unaffected "
+          "listeners 0 missing, moves spread max/mean <= 1.3; survivors' criteria.")
 def udp_edge_kill(ctx):
-    udp_fault(ctx, lab.kill_service, "killed", "lon-edge-2", heal=lab.start_service)
+    udp_fault(ctx, lab.kill_service, "killed", ["lon-edge-2"], heal=lab.start_service)
+
+
+@scenario("udp-two-edges-drain", "scale-ops",
+          "Two of four London edges are drained at once with 120 UDP listeners on them all "
+          "(the catch-up storm of R5, 2 of the region's edges as the critique sizes it). Do "
+          "the two survivors take them without loss, overload or a warm-up burst?",
+          "F1 for each drained edge (0 missing, time to move p99 <= 300 ms, nobody stranded); "
+          "R5: the largest warm-up burst per tick and capped ticks reported, rx_presumed_lost "
+          "and rx_expired_objects 0, no watermark stall over 250 ms; survivors' criteria.")
+def udp_two_edges_drain(ctx):
+    result = udp_fault(ctx, drain, "drained", ["lon-edge-1", "lon-edge-2"], count=120,
+                       heal=resume, drained=True)
+    item = result["redistribution"]
+    ctx.check("R5: rx_presumed_lost and rx_expired_objects stay 0",
+              not item["rx_presumed_lost"] and not item["rx_expired_objects"],
+              {key: item[key] for key in ("rx_presumed_lost", "rx_expired_objects")})
+    ctx.check("R5: no watermark stall over 250 ms", not item["watermark_stalls_over_250ms"],
+              {key: item[key] for key in ("watermark_stall_max_us",
+                                          "watermark_stalls_over_250ms")})
 
 
 @scenario("slot-edge-join", "scale-ops",
           "A slot edge (lon-edge-4, rendered into every peer list but not started) is taken "
-          "into service under load. Does anything else restart, and does it serve?",
-          "No other service restarts (every pid the same); the new edge is advertised fresh "
-          "within 20 s and serves readers that arrive after it.",
-          needs=["slots=lon-edge-4"])
+          "into service under load: 90 UDP listeners on three edges, 60 more arriving 15 s "
+          "after the join. Does anything else restart, does it serve, and does the join "
+          "disturb the other edges?",
+          "R1: no other service restarts (every pid the same); the new edge is advertised "
+          "fresh within 20 s and serves its first part within 20 s; the distributors' warm-up "
+          "backlog for it reaches 0 within 10 s; p99 at the other edges within +5% of before "
+          "the join; new UDP arrivals and late LL-HLS readers reach it. The edges' load counts "
+          "client datagrams (client_udp_datagram_capacity, as the scale run's autoscale phases "
+          "need it): by bytes alone an edge at its CPU limit reads ~40% loaded, and the "
+          "assignment keeps new arrivals on the edges that hold the playlist below 60%.",
+          needs=SCALE_NEEDS)
 def slot_edge_join(ctx):
     slot = "lon-edge-4"
     ctx.defer(lambda: (lab.terminate_service(slot), lab.set_slot_in_service(slot, False)))
     ctx.check("the slot is not in service before the join", lab.service_pid(slot) is None)
-    udp = udp_listeners(ctx, "udp", 150, 60)
-    jobs = play(ctx, 60, video=2, audio=4, steering=True)
-    ctx.at(15)
+    ops = OpsSampler(ctx).start()
+    udp = udp_listeners(ctx, "udp", 150, 70, ramp="90@0,150@35")
+    jobs = play(ctx, 70, video=2, audio=4, steering=True)
+    others = list(lab.edges())
+    ctx.at(20)
     before = service_pids()
     lab.set_slot_in_service(slot, True)
     lab.start_service(slot)
@@ -2473,7 +2924,7 @@ def slot_edge_join(ctx):
                                      for cache in (body or {}).get("caches") or [])
 
     try:
-        lab.wait_for(f"{slot} advertised", fresh, 30, 0.5)
+        lab.wait_for(f"{slot} advertised", fresh, 30, 0.25)
         ctx.measure("join_to_fresh_s", round(time.time() - joined, 2))
     except lab.LabError:
         ctx.measure("join_to_fresh_s", None)
@@ -2481,7 +2932,7 @@ def slot_edge_join(ctx):
               (ctx.measurements.get("join_to_fresh_s") or 99) <= 20,
               ctx.measurements.get("join_to_fresh_s"))
     late = ctx.readers("after-join", AUDIO, 6, 25, steering=True)
-    ctx.at(50)
+    ctx.at(60)
     after = service_pids()
     changed = {name: (before.get(name), after.get(name)) for name in before
                if before.get(name) != after.get(name)}
@@ -2490,85 +2941,215 @@ def slot_edge_join(ctx):
     late.wait()
     udp.wait()
     ctx.wait_readers()
-    on_slot = sum(1 for reader in late.readers if reader.get("final_cache") == slot)
+    rows = ops.stop()
+    # A reader names its cache by node or by address.
+    slot_names = {slot, lab.node(slot)["public_ipv4"],
+                  f"{lab.node(slot)['public_ipv4']}:{lab.HTTP_PORT}"}
+    on_slot = sum(1 for reader in late.readers if reader.get("final_cache") in slot_names)
     ctx.measure("late_readers_on_the_joined_edge", on_slot)
     ctx.check("the joined edge serves readers that arrive after it", on_slot > 0, on_slot)
     for job in jobs + [late]:
         ctx.expect_served(job)
-    report = udp_report(ctx, udp)
-    ctx.note(f"UDP listeners on the joined edge: {report['moves_by_edge'].get(slot, 0)} moved "
-             "there; new UDP arrivals reach it only once needletail-load subscribes through "
-             "/api/assignment (Phase AM item 10)")
+    report = udp_report(ctx, udp, since=ctx.t0 + 10)
+    listener_checks(ctx, report)
+    ctx.check("UDP listeners: 0 missing", report["missing"] == 0, report["missing"])
+    # The first part the new edge served: its first UDP subscriber, or the
+    # first late reader's first part.
+    served = next((row["t"] for row in rows
+                   if (ops_value(row, slot, "gauges.subscribers") or 0) > 0
+                   or (ops_value(row, slot, "gauges.hls_sessions") or 0) > 0), None)
+    ctx.measure("join_to_first_served_s", None if served is None else round(served - joined, 2))
+    ctx.check("R1: the joined edge served within 20 s of its start",
+              served is not None and served - joined <= 20,
+              ctx.measurements["join_to_first_served_s"])
+    dists = lab.distributors("london")
+    pending = [(row["t"], sum(ops_value(row, name, "cache_mesh.warm_parts_pending") or 0
+                              for name in dists)) for row in rows if row["t"] >= joined]
+    busy = [t for t, value in pending if value > 0]
+    zero_after = (busy[-1] - joined + 1.0) if busy else 0.0
+    ctx.measure("warm_parts_pending", {"max": max((value for _, value in pending), default=None),
+                                       "zero_after_join_s": round(zero_after, 1)})
+    ctx.check("R1: the distributors' warm-up backlog reached 0 within 10 s of the join",
+              zero_after <= 10, ctx.measurements["warm_parts_pending"])
+    warm = {"bytes": ops_delta(rows, dists, "cache_mesh.warm_bytes_sent", joined, joined + 30),
+            "parts": ops_delta(rows, dists, "cache_mesh.warm_parts_sent", joined, joined + 30),
+            "tick_max_bytes": ops_max(rows, dists, "cache_mesh.warm_tick_max_bytes", joined,
+                                      joined + 30),
+            "capped_ticks": ops_delta(rows, dists, "cache_mesh.warm_capped_ticks", joined,
+                                      joined + 30)}
+    ctx.measure("warm_up_of_the_joined_edge", warm)
+    # The other edges, the same listeners before the join and while it
+    # warms (the second wave arrives 15 s after the join).
+    p99_before = edge_p99(udp, others, ctx.t0 + 8, joined)
+    p99_during = edge_p99(udp, others, joined, ctx.t0 + 35)
+    ctx.measure("other_edges_p99_ms", {"before": p99_before, "join_and_warm_up": p99_during})
+    ctx.check("R1: p99 at the other edges within +5% of before the join (or +0.5 ms)",
+              p99_before is not None and p99_during is not None
+              and p99_during <= max(p99_before * 1.05, p99_before + 0.5),
+              ctx.measurements["other_edges_p99_ms"])
+    arrivals = first_parts(udp, ctx.t0 + 34, ctx.t0 + 70)
+    ctx.measure("second_wave_first_parts_by_edge", arrivals)
+    free = {name: ops_value(next((row for row in rows if row["t"] >= ctx.t0 + 34), {}),
+                            name, "advert.free_bps") for name in others + [slot]}
+    ctx.measure("free_bps_at_second_wave", free)
+    ctx.check("new UDP arrivals reach the joined edge", arrivals.get(slot, 0) > 0, arrivals)
+    survivor_checks(ctx, rows, others, joined, ctx.t0 + 60, (ctx.t0 + 8, joined))
+
+
+@scenario("dist-c-join-kill", "scale-ops",
+          "The forwarder slot lon-dist-c joins under load (120 UDP listeners) and is killed "
+          "30 s later (node loss). Do edges take it as a parent and lose nothing when it "
+          "goes?",
+          "R4: lon-dist-c gets lease and cache-mesh children; the count of (edge, playlist) "
+          "pairs whose first parent changes is reported; 0 parts lost by the UDP listeners "
+          "and the LL-HLS readers; nobody stranded; survivors' criteria.")
+def dist_c_join_kill(ctx):
+    slot = "lon-dist-c"
+    ctx.defer(lambda: (lab.terminate_service(slot), lab.set_slot_in_service(slot, False)))
+    ops = OpsSampler(ctx).start()
+    udp = udp_listeners(ctx, "udp", 120, 75)
+    hls = ctx.readers("audio", AUDIO, 4, 75, steering=True)
+    ctx.at(20)
+    lab.set_slot_in_service(slot, True)
+    lab.start_service(slot)
+    joined = time.time()
+    ctx.event(f"{slot} started")
+    ctx.at(50)
+    lab.kill_service(slot)
+    killed = time.time()
+    ctx.event(f"{slot} killed")
+    udp.wait()
+    ctx.wait_readers()
+    rows = ops.stop()
+    report = udp_report(ctx, udp, since=ctx.t0 + 10)
+    listener_checks(ctx, report)
+    ctx.check("UDP listeners: 0 missing", report["missing"] == 0, report["missing"])
+    ctx.expect_served(hls)
+    ctx.expect_complete(hls)
+    lease = ops_max(rows, [slot], "fast_plane.lease_children", joined, killed)
+    cache = ops_max(rows, [slot], "cache_mesh.children", joined, killed)
+    ctx.measure("dist_c_children", {"lease": lease, "cache_mesh": cache})
+    ctx.check("lon-dist-c took lease and cache-mesh children", (lease or 0) > 0 and
+              (cache or 0) > 0, {"lease": lease, "cache_mesh": cache})
+    ctx.measure("first_parent_pairs", {
+        name: [ops_value(row, name, "cache_mesh.first_parent_pairs") for row in rows][::5]
+        for name in lab.names("distributor", "london")})
+    edges = lab.edges()
+    survivor_checks(ctx, rows, edges, joined, time.time(), (ctx.t0 + 8, joined))
 
 
 @scenario("autoscale-edge-lab", "scale-ops",
           "Does the autoscaler, with the edge_lab backend and nothing but the mesh's own "
-          "advertised load, take a slot edge in as readers ramp up, and drain it out "
+          "advertised load, take a slot edge in as UDP listeners ramp up, and drain it out "
           "without a stranded listener as they leave?",
-          "The controller alone joins lon-edge-4 when the mean load passes 700 permille, it "
-          "serves within 20 s, and no other service restarts; on the way down it drains the "
-          "edge only once its live gauges read 0, else resumes it (a GAP until the edges "
-          "advertise UDP subscribers and HLS sessions as live gauges, Phase AM item 8).",
-          needs=["slots=lon-edge-4"], slow=True)
+          "A1/A2: the controller alone joins lon-edge-4 when the mean load passes 700 "
+          "permille (client datagrams count: client_udp_datagram_capacity), it serves within "
+          "20 s, no other service restarts; new arrivals reach it; on the way down it drains "
+          "an edge and deletes the slot only after its live gauges read 0; listeners on edges "
+          "not drained see no move and no loss; drained edges meet F1.",
+          needs=SCALE_NEEDS, slow=True)
 def autoscale_edge_lab(ctx):
     slot = "lon-edge-4"
     events = ctx.directory / "autoscale-events.jsonl"
     state = ctx.directory / "autoscale-state.json"
     ctx.defer(lambda: (lab.terminate_service(slot), lab.set_slot_in_service(slot, False)))
+    ops = OpsSampler(ctx).start()
     controller = subprocess.Popen(
         [sys.executable, str(pathlib.Path(__file__).resolve().parent / "linode-autoscale.py"),
-         "run", "--backend", "edge_lab", "--stream", str(VIDEO), "--sites", "london",
-         "--events", str(events), "--controller-state", str(state), "--duration", "260",
-         "--poll-s", "1", "--up-samples", "2", "--cooldown-s", "20", "--down-hold-s", "45",
+         "run", "--backend", "edge_lab", "--stream", str(OPS_STREAM), "--sites", "london",
+         "--events", str(events), "--controller-state", str(state), "--duration", "270",
+         "--poll-s", "1", "--up-samples", "3", "--cooldown-s", "20", "--down-hold-s", "40",
          "--no-flap-s", "60", "--join-timeout-s", "60", "--drain-timeout-s", "40",
-         "--min-edges", "2"],
+         "--min-edges", "2", "--no-warm-pool"],
         stdout=open(ctx.directory / "autoscale.log", "ab"), stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL, start_new_session=True)
     ctx.defer(lambda: controller.poll() is None and controller.terminate())
     before = service_pids()
-    # 4K readers: each about 17 Mbit/s of an edge's 100 Mbit/s. Up over
-    # three waves, held, then gone.
-    waves = [ctx.readers("video-1", VIDEO, 6, 150, steering=True)]
-    ctx.at(30)
-    waves.append(ctx.readers("video-2", VIDEO, 6, 120, steering=True))
-    ctx.at(60)
-    waves.append(ctx.readers("video-3", VIDEO, 6, 90, steering=True))
+    # 1 ms Opus listeners (~1,031 client datagrams a second each; 700
+    # permille of 40,000 a second is ~27 a listener-edge): up to 90 on
+    # three edges (~770 permille), 30 more once the slot serves, then down
+    # to 25.
+    udp = udp_listeners(ctx, "udp", 120, 250, ramp="30@0,60@15,90@30,120@90,25@150")
+    hls = ctx.readers("audio", AUDIO, 3, 240, steering=True)
+    udp.wait()
     ctx.wait_readers()
-    ctx.at(255)
-    controller.wait(timeout=60)
+    controller.wait(timeout=90)
+    rows = ops.stop()
     lines = [json.loads(line) for line in events.read_text().splitlines()] \
         if events.is_file() else []
     joins = [line for line in lines if line.get("kind") == "decision"
              and line.get("action") == "join"]
     serving = [line for line in lines if line.get("kind") == "serving"]
     drains = [line for line in lines if line.get("kind") == "drain_start"]
+    ends = [line for line in lines if line.get("kind") == "drain_end"]
+    stops = [line for line in lines if line.get("kind") == "stopped"]
+    deletes = [line for line in lines if line.get("kind") == "deleted"]
+    failures = [line for line in lines if line.get("kind") in ("failure", "error")]
     ctx.measure("controller_decisions", [{key: line.get(key) for key in
                                           ("unix_us", "action", "reason", "targets", "inputs")}
                                          for line in lines if line.get("kind") == "decision"
                                          and line.get("action") != "hold"][:20])
+    ctx.measure("controller_actions", [{key: line.get(key) for key in
+                                        ("unix_us", "kind", "node", "seconds",
+                                         "trigger_to_fresh_s", "detail", "what")}
+                                       for line in lines if line.get("kind") not in
+                                       ("decision", "controller_start")])
     ctx.check("the controller alone joined the slot edge",
-              any(["lon-edge-4", "create"] in line.get("targets", []) for line in joins),
+              any([slot, "create"] in line.get("targets", []) or [slot, "start"]
+                  in line.get("targets", []) for line in joins),
               [line.get("targets") for line in joins])
     ctx.check("the joined edge served within 20 s of the trigger",
-              any(line.get("trigger_to_fresh_s", 99) <= 20 for line in serving),
+              any((line.get("trigger_to_fresh_s") or 99) <= 20 for line in serving),
               [line.get("trigger_to_fresh_s") for line in serving])
+    ctx.check("the controller made no failed action", not failures,
+              [(line.get("kind"), line.get("node"), line.get("what") or line.get("phase"))
+               for line in failures])
+    touched = {line.get("node") for line in drains + stops}
     after = {name: lab.service_pid(name) for name in before}
-    ctx.check("no other service restarted", all(before[name] == after[name] for name in before),
+    ctx.check("no other service restarted (the nodes the controller drained aside)",
+              all(before[name] == after[name] for name in before if name not in touched),
               {name: (before[name], after[name]) for name in before
                if before[name] != after[name]})
-    for job in waves:
-        ctx.expect_served(job)
-    gauges = [line for line in lines if line.get("kind") == "decision"
-              and "Phase AM item 8" in (line.get("reason") or "")]
-    if not drains and gauges:
-        ctx.gap = ("scale-down needs live UDP-subscriber and HLS-session gauges on the edges "
-                   "(Phase AM item 8): the controller never drains an edge whose listeners it "
-                   "cannot count")
-        ctx.check("the controller drained the joined edge on the way down", False,
-                  "held: no live gauges")
-    else:
-        ctx.check("the controller drained an edge on the way down", bool(drains),
-                  [line.get("node") for line in drains])
+    ctx.check("the controller drained an edge on the way down", bool(drains),
+              [line.get("node") for line in drains])
+    order_ok = True
+    for line in stops + deletes:
+        end = next((item for item in ends if item.get("node") == line.get("node")
+                    and item["unix_us"] <= line["unix_us"]), None)
+        order_ok = order_ok and end is not None
+    ctx.check("every stop and delete came after the drained edge's gauges read 0 (drain_end)",
+              bool(stops) and order_ok,
+              {"drain_end": [(item.get("node"), item.get("seconds")) for item in ends],
+               "stopped": [item.get("node") for item in stops],
+               "deleted": [item.get("node") for item in deletes]})
+    drained = sorted(touched)
+    report = udp_report(ctx, udp, faulted=drained, since=ctx.t0 + 10)
+    listener_checks(ctx, report)
+    others_moved = {name: count for name, count in report["moves_out_by_edge"].items()
+                    if name not in drained}
+    ctx.check("listeners on edges not drained: 0 moves", not others_moved,
+              report["moves_out_by_edge"])
+    ctx.check("drained edges meet F1: 0 missing, time to move p99 <= 300 ms",
+              report["missing"] == 0 and ((report["time_to_move_ms"] or {}).get("p99")
+                                          or 0) <= 300,
+              {"missing": report["missing"], "time_to_move_ms": report["time_to_move_ms"]})
+    if serving:
+        fresh_unix = serving[0]["unix_us"] / 1e6
+        arrivals = first_parts(udp, fresh_unix, fresh_unix + 60)
+        ctx.measure("arrivals_within_60_s_of_the_join", arrivals)
+        free = {}
+        row = next((row for row in rows if row["t"] >= fresh_unix), None)
+        if row:
+            free = {name: ops_value(row, name, "advert.free_bps") for name in row["nodes"]
+                    if lab.node(name)["role"] == "edge"}
+        ctx.measure("free_bps_at_the_join", free)
+        ctx.check("new arrivals reach the joined edge within 60 s", arrivals.get(slot, 0) > 0,
+                  arrivals)
+    loads = {name: [ops_value(row, name, "advert.load_permille") for row in rows][::5]
+             for name in sorted({name for row in rows for name in row["nodes"]})
+             if lab.node(name)["role"] == "edge"}
+    ctx.measure("load_permille_every_5_s", loads)
+    ctx.expect_served(hls)
 
 
 # =================================================================== driver
