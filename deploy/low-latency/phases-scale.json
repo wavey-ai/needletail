@@ -3,7 +3,7 @@
   "description": "Failover (F), redistribution (R) and autoscale (A) phases of the large audio mesh, each group one held step of listeners on curve 1 (five edges a region). Every scenario: a baseline, the fault at baseline_s, an observation, the restore, a settle. A kill is SIGKILL and then the unit stopped (Restart=always would bring it back in 2 s; low-latency ops D4); a crash is the SIGKILL alone, the 2 s restart (F2r). Fault sizes against five serving edges a region: at most 2 of 5 at once (D5). LL-HLS readers are needletail-reader crowds that follow steering and move; their entry points and the liveness check are nodes that no phase faults. scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A. needs_am names what a scenario still waits for before it can pass (Phase AM items 8-11 are in the low-latency binaries since wave 8 stage 4: UDP egress in the load, live gauges, paced drain, needletail-load through /api/assignment with per-move accounting, UDP region failover); until then it runs and measures what the binaries do. deploy/low-latency/SCALE.md has the cost, the shedding order and the local proofs.",
   "defaults": {
     "config": "pcm-1",
-    "listeners": 8000,
+    "listeners": 6000,
     "hls_share": 0.05,
     "baseline_s": 60,
     "observe_s": 90,
@@ -11,15 +11,15 @@
   },
   "groups": {
     "F": {
-      "listeners": 8000,
+      "listeners": 6000,
       "hls_share": 0.05
     },
     "R": {
-      "listeners": 8000,
+      "listeners": 6000,
       "hls_share": 0.05
     },
     "A": {
-      "listeners": 14000,
+      "listeners": 6000,
       "hls_share": 0.0
     }
   },

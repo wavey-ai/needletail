@@ -1959,10 +1959,20 @@ NODE_COMMANDS = {
 # is stranded (ops design 2).
 STRANDED_GAP_S = 5
 STRANDED_AFTER_S = 10
+# needletail-load counts a part missing when the newest part a listener
+# has is this many parts past it, in the interval line of that moment. It
+# is the tool's own default (--settle-parts), which the run leaves alone.
+SETTLE_PARTS = 1500
 
 
 def unix_us() -> int:
     return time.time_ns() // 1000
+
+
+def settle_seconds(config: str) -> float:
+    """How long after a part was due needletail-load counts it missing: 1.5 s
+    at 1 ms parts, 3.75 s at 2.5 ms."""
+    return SETTLE_PARTS / parts_per_s(config)
 
 
 def load_phase_plan(path: str | pathlib.Path, group: str | None = None,
@@ -2316,11 +2326,17 @@ def stranded_listeners(rows: list[dict], fault: float, end: float) -> dict:
 
 
 def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | None,
-               state: dict) -> dict:
+               state: dict, settle_s: float, last: bool) -> dict:
     """UDP listeners' parts, missing parts and moves over a window, for the
     edges in `edges` (None: all), from needletail-load's per-edge interval
     rows; moves by the edge that they were counted on (needletail-load
-    counts a move on the edge the listener moved to)."""
+    counts a move on the edge the listener moved to). The tool counts a
+    part missing `settle_s` after it was due (settle_seconds), so a row's
+    `missing`, `missing_moved` and `left_lost` belong to the window that
+    holds the row's time less `settle_s`: a scenario's last losses are its
+    own, not the next one's baseline. `last`: the step's last window, which
+    also takes the tool's final line whole (what was received and what
+    settled as the tool stopped; the line carries no Unix time)."""
     parts = missing = moves = 0
     missing_moved = None
     left_lost = None
@@ -2331,18 +2347,24 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
     # rebalance) per edge; None if a row lacks the reasons.
     fault_by_edge: dict[str, int] | None = {}
     for row in rows:
-        if row["edge"] is None or not start <= row["t"] < end or row["phase"] == "final":
+        final = row["phase"] == "final"
+        counted = last if final else start <= row["t"] < end
+        settled = last if final else start <= row["t"] - settle_s < end
+        if row["edge"] is None or not (counted or settled):
             continue
         name = edge_name_of(row["edge"], state) or str(row["edge"])
         if edges is not None and name not in edges:
             continue
+        if settled:
+            missing += row["missing"]
+            if row.get("missing_moved") is not None:
+                missing_moved = (missing_moved or 0) + row["missing_moved"]
+            if row.get("left_lost") is not None:
+                left_lost = (left_lost or 0) + row["left_lost"]
+        if not counted:
+            continue
         parts += row["parts"]
-        missing += row["missing"]
         moves += row["moves"]
-        if row.get("missing_moved") is not None:
-            missing_moved = (missing_moved or 0) + row["missing_moved"]
-        if row.get("left_lost") is not None:
-            left_lost = (left_lost or 0) + row["left_lost"]
         if row.get("time_to_move"):
             moved.append(row["time_to_move"])
         by_edge[name] = by_edge.get(name, 0) + row["moves"]
@@ -2354,7 +2376,8 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
                 fault_by_edge[name] = fault_by_edge.get(name, 0) + sum(
                     count for reason, count in (reasons_in or {}).items()
                     if reason != "rebalance")
-        listeners[round(row["t"])] = listeners.get(round(row["t"]), 0) + row["listeners"]
+        if not final:
+            listeners[round(row["t"])] = listeners.get(round(row["t"]), 0) + row["listeners"]
     return {"parts": parts, "missing": missing, "moves": moves, "moves_by_edge": by_edge,
             "fault_moves_by_edge": fault_by_edge,
             # Phase AM item 10: missing parts of listeners that moved, and
@@ -2510,14 +2533,20 @@ def survivors_window(nodes_summary: dict, state: dict, avoid: set[str]) -> dict:
 
 
 def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: float,
-                   plan: dict, events: list[dict] | None = None,
+                   plan: dict, serving: list[str], config: str,
+                   events: list[dict] | None = None,
                    readers_launched: float | None = None) -> list[dict]:
     """Each scenario of a phase run from the step's files: every metric
     before (the baseline), during (the fault and its observation) and after
     (the settle); the listeners stranded; the moves and their spread; the
     survivors' load; the mesh counters of the survivors and of the nodes
     under fault; the readers' moves; the events; and the pass criteria,
-    each True, False or None (cannot be measured yet, and why)."""
+    each True, False or None (cannot be measured yet, and why). `serving`:
+    the edges in service when the phases began (phases.json
+    "serving_edges"); the edges that receive a fault's listeners are those
+    of them in the faulted nodes' sites, never an edge held out on standby,
+    which has no load to weigh a share against. `config`: the run's lane,
+    for the time the load tool takes to count a part missing (udp_window)."""
     samplers, meshes, intervals_by_host, reports = {}, {}, {}, []
     for host_dir in sorted(path for path in step_dir.iterdir() if path.is_dir()):
         sampler = host_dir / "sampler.jsonl"
@@ -2541,6 +2570,7 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
     criteria_of = {scenario["name"]: scenario for scenario in plan["scenarios"]}
     edges_all = sorted((name for name, node in state["nodes"].items() if node["role"] == "edge"),
                        key=natural)
+    settle_s = settle_seconds(config)
     out = []
     for row in timeline["scenarios"]:
         spec = criteria_of.get(row["name"], {})
@@ -2554,11 +2584,14 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
                         "joins": row["joins"],
                         "windows": {key: [round(a, 3), round(b, 3)] for key, (a, b)
                                     in windows.items()},
+                        "settle_s": settle_s,
                         "needs_am": spec.get("needs_am") or [], "udp": {}, "survivors": {},
                         "mesh": {}}
         for key, (a, b) in windows.items():
-            result["udp"][key] = {"unaffected": udp_window(every_row, a, b, unaffected, state),
-                                  "faulted": udp_window(every_row, a, b, targets, state)}
+            last = row is timeline["scenarios"][-1] and key == "after"
+            result["udp"][key] = {
+                "unaffected": udp_window(every_row, a, b, unaffected, state, settle_s, last),
+                "faulted": udp_window(every_row, a, b, targets, state, settle_s, last)}
             summaries = {name: summarize_samples(header, rows, a, b,
                                                  (state["nodes"].get(name) or {}).get("type"))
                          for name, (header, rows) in samplers.items()}
@@ -2589,9 +2622,9 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
                               "source": known[0]["source"] if known else None,
                               "hosts": len(known)}
         during = result["udp"]["during"]
-        receiving = [edge for edge in unaffected
-                     if any(state["nodes"].get(edge, {}).get("site")
-                            == state["nodes"].get(target, {}).get("site") for target in targets)]
+        sites = {state["nodes"][target]["site"] for target in targets if target in state["nodes"]}
+        receiving = [edge for edge in serving if edge not in targets
+                     and (state["nodes"].get(edge) or {}).get("site") in sites]
         # Wave 9 C4: the moves against each receiving edge's headroom just
         # before the fault, and the listeners per receiving edge at the end
         # of the observation.
@@ -2654,6 +2687,12 @@ def phase_criteria(result: dict, spec: dict) -> list[dict]:
     out.append(check("stranded = 0", None if stranded is None else stranded == 0, stranded,
                      None if stranded is not None else
                      "needletail-load's active/stranded gauges (Phase AM item 10)"))
+    # A part lost before the fault is not the fault's: the scenario began
+    # on a mesh that was already losing parts, and whatever it shows after
+    # is void.
+    baseline = sum(result["udp"]["before"][side]["missing"]
+                   for side in ("unaffected", "faulted"))
+    out.append(check("baseline: 0 missing", baseline == 0, baseline))
     # needletail-load books a listener's missing parts on its current edge,
     # and a move switches the edge before the parts lost around it settle:
     # the edges not faulted carry the moved listeners' losses too. So the
@@ -3298,6 +3337,26 @@ def counter_delta(before: dict, after: dict) -> dict:
                      if isinstance(value, (int, float)) and not isinstance(value, bool)
                      and isinstance(then.get(key, 0), (int, float))}
     return out
+
+
+def serving_edges(lab: dict, standby: list[str]) -> tuple[list[str], dict[str, dict]]:
+    """The edges in service, by name: created (in the lab's state), not held
+    out (`standby`: the deploy's standby_edges) and ready by their own word
+    (GET /api/node, "ready"). A phase run records them as it starts
+    (phases.json "serving_edges"): they are the edges that can take a
+    faulted edge's listeners. Second: what each other edge that is not held
+    out answered (its state and reasons, or the error)."""
+    edges = [node for node in common.nodes_by_role(lab, "edge") if node["name"] not in standby]
+    answers = common.parallel(edges, lambda node: http_get(node, "/api/node"), workers=64)
+    serving, left_out = [], {}
+    for name in sorted(answers, key=natural):
+        found = answers[name] if isinstance(answers[name], dict) else {}
+        if found.get("ready") is True:
+            serving.append(name)
+        else:
+            left_out[name] = {key: found[key] for key in ("error", "state", "not_ready",
+                                                          "drain_reasons") if key in found}
+    return serving, left_out
 
 
 def live_node(lab: dict, avoid: set[str] = frozenset()) -> dict:
@@ -4005,8 +4064,8 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
         events = read_jsonl(phases["events"].read_text()) if phases.get("events") \
             and phases["events"].is_file() else []
         result["phases"] = analyse_phases(lab, step_dir, phases["timeline"],
-                                          started + step["ramp_s"], phases["plan"], events,
-                                          started)
+                                          started + step["ramp_s"], phases["plan"],
+                                          phases["serving_edges"], args.config, events, started)
     (step_dir / "step.json").write_text(json.dumps(result, indent=1) + "\n")
     return result
 
@@ -4050,7 +4109,7 @@ def phase_setup(args: argparse.Namespace) -> dict | None:
     defaults = {**(plan.get("defaults") or {}),
                 **((plan.get("groups") or {}).get(args.group or "") or {})}
     if args.steps is None:
-        args.steps = str(defaults.get("listeners", 8000))
+        args.steps = str(defaults.get("listeners", 6000))
     if len(parse_steps(args.steps)) != 1:
         raise ValueError("a phase run holds one step of listeners: give one --steps value")
     if args.hls_share is None:
@@ -4212,8 +4271,14 @@ def command_run(args: argparse.Namespace) -> None:
         log({"idle_regions": plan["idle_regions"], "note": idle_line(plan)})
     if phases:
         phases["events"] = events_path
+        phases["serving_edges"], left_out = serving_edges(lab, standby)
+        log({"serving_edges": phases["serving_edges"], "not_ready": left_out})
+        if not phases["serving_edges"]:
+            sys.exit("no edge in service says it is ready (GET /api/node of every edge not on "
+                     "standby): a phase run needs the edges that take a fault's listeners")
         (directory / "phases.json").write_text(json.dumps(
             {"plan": phases["plan"], "timeline": phases["timeline"],
+             "serving_edges": phases["serving_edges"],
              "cost": phase_cost(phases["timeline"], plan["steps"][0]["ramp_s"],
                                 plan["cost"]["hourly_usd"])}, indent=1) + "\n")
 
@@ -4299,8 +4364,9 @@ def command_analyse(args: argparse.Namespace) -> None:
         step_dir = directory / "steps" / str(step["listeners"])
         exclude = old.get("exclude")
         if exclude:
-            exclude = {"nodes": exclude["nodes"],
-                       "windows": [tuple(window) for window in exclude["windows"]]}
+            exclude = {"windows": [tuple(window) for window in exclude["windows"]],
+                       "node_windows": {name: [tuple(window) for window in windows]
+                                        for name, windows in exclude["node_windows"].items()}}
         outcome = analyse_step(lab, step_dir, step, tuple(old["window"]), plan["config"], exclude)
         outcome["stopped"] = old.get("stopped")
         outcome["ramp_s"], outcome["hold_s"] = step["ramp_s"], step["hold_s"]
@@ -4311,7 +4377,8 @@ def command_analyse(args: argparse.Namespace) -> None:
             for key in ("phase_start", "readers_launched", "exclude"):
                 outcome[key] = old.get(key)
             outcome["phases"] = analyse_phases(lab, step_dir, phases["timeline"],
-                                               old["phase_start"], phases["plan"], events,
+                                               old["phase_start"], phases["plan"],
+                                               phases["serving_edges"], plan["config"], events,
                                                old.get("readers_launched"))
         steps.append(outcome)
     previous["steps"] = steps
