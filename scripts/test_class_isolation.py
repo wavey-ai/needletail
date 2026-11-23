@@ -355,15 +355,21 @@ class Host(unittest.TestCase):
                                 {**deploy.DEFAULT_SETTINGS, "service_capabilities": False})
         self.assertNotIn("AmbientCapabilities", unit)
 
-    def test_a_mesh_node_may_lock_its_memory_unless_mlock_all_is_false(self):
+    def test_a_mesh_node_may_lock_its_memory_only_when_mlock_all_is_true(self):
         """Wave 9 (cold start): av-mesh locks its memory only without a
-        limit, so the mesh unit lifts it; the contributor's does not."""
+        limit, so a mesh unit that asks for it lifts the limit; by default
+        (wave 9 review: unmeasured on a deploy) none does, nor does the
+        contributor's."""
         unit = deploy.unit_text("needletail-mesh", "info", dict(deploy.DEFAULT_SETTINGS))
+        self.assertNotIn("LimitMEMLOCK", unit)
+        unit = deploy.unit_text("needletail-mesh", "info",
+                                {**deploy.DEFAULT_SETTINGS, "mlock_all": True})
         self.assertIn("LimitMEMLOCK=infinity\n", unit)
         unit = deploy.unit_text("needletail-mesh", "info",
                                 {**deploy.DEFAULT_SETTINGS, "mlock_all": False})
         self.assertNotIn("LimitMEMLOCK", unit)
-        unit = deploy.unit_text("needletail-contrib", "info", dict(deploy.DEFAULT_SETTINGS))
+        unit = deploy.unit_text("needletail-contrib", "info",
+                                {**deploy.DEFAULT_SETTINGS, "mlock_all": True})
         self.assertNotIn("LimitMEMLOCK", unit)
 
     PRIO = """== eth0

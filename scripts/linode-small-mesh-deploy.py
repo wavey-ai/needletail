@@ -359,9 +359,11 @@ DEFAULT_SETTINGS = {
     # being sent to the failover region (av-mesh default true; false: before).
     "assignment_udp_in_region": None,
     # Wave 9 (cold start), each the av-mesh flag of the same name (None: the
-    # binary's default, true): mlock_all (every mesh node; the unit gets
-    # LimitMEMLOCK=infinity unless it is false, since av-mesh locks only
-    # without a limit), malloc_tune and prefault (every mesh node), and
+    # binary's default): mlock_all (every mesh node; av-mesh default false
+    # since the wave 9 review, its memory cost on a g6-dedicated-2 being
+    # unmeasured; only mlock_all=true gives the unit LimitMEMLOCK=infinity,
+    # since av-mesh locks only without a limit), malloc_tune and prefault
+    # (every mesh node, default true), and
     # client_udp_prompt_sender (nodes that serve UDP clients: the stream's
     # sender does not wait for a playable copy), relay_lease_descriptors
     # (forwarders with --relay-lease-bind: a new lease child gets the
@@ -2869,9 +2871,10 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
         # threads; socket buffers beyond rmem_max (SO_RCVBUFFORCE). The
         # service is still the needletail user, and NoNewPrivileges holds.
         thread_line += "AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN\n"
-    if service != "needletail-contrib" and settings.get("mlock_all") is not False:
+    if service != "needletail-contrib" and settings.get("mlock_all") is True:
         # Wave 9 (cold start): av-mesh locks its memory (mlockall) only
         # where it may without a limit; the default 8 MB would refuse it.
+        # Only when asked (wave 9 review: off until measured on a deploy).
         thread_line += "LimitMEMLOCK=infinity\n"
     return f"""[Unit]
 Description={description} (small-mesh lab)
