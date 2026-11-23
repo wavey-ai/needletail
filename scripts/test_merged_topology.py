@@ -839,7 +839,8 @@ class Activation(unittest.TestCase):
         for line, path in (("ETC=/etc/needletail", self.etc), ("RUN=/run/needletail", self.run_dir),
                            ("BIN=/usr/local/bin", self.bin),
                            ("UNITS=/etc/systemd/system", self.units),
-                           ("SYSCTL=/etc/sysctl.d/90-needletail.conf", self.sysctl)):
+                           ("SYSCTL=/etc/sysctl.d/90-needletail.conf", self.sysctl),
+                           ("BUILDS=/opt/needletail/builds", self.root / "builds")):
             self.assertIn(f"\n{line}\n", script)
             script = script.replace(f"\n{line}\n", f"\n{line.split('=')[0]}={path}\n")
         self.script = self.root / "activate"
@@ -966,6 +967,96 @@ class Activation(unittest.TestCase):
         subprocess.run([str(self.root / "stubs" / "cp"), str(self.root / "away"),
                         str(self.root / "copy")], env=self.env, check=True)
         self.assertIn("absent", self.calls())
+
+    def test_arguments_of_the_layout_before_builds_are_never_put_back(self):
+        """A lab upgraded to builds: the first activation keeps the old
+        `.args` (line 1 /usr/local/bin/av-mesh) as `.args.prev`. Its
+        rollback is refused, and no file of /usr/local/bin is touched."""
+        self.args.write_text(f"{self.bin}/av-mesh\n--node-id\nlon-edge-1\n")
+        (self.bin / "av-mesh").write_text("#!/bin/sh\n")
+        (self.bin / "av-mesh").chmod(0o755)
+        (self.bin / "needletail-run-args").write_text("#!/bin/sh\n")
+        self.stage("b")
+        self.assertTrue(self.activate()[1]["ok"])
+        self.log.unlink()
+        code, outcome = self.activate("--rollback")
+        self.assertEqual((code, outcome["ok"]), (1, False))
+        self.assertEqual(outcome["why"],
+                         f"not a binary of a build in {self.root}/builds: {self.bin}/av-mesh")
+        self.assertEqual(self.args.read_text(), self.text("b"))
+        self.assertFalse((self.bin / "needletail-run-args").is_symlink())
+        self.assertEqual(self.calls(), "")
+
+    def test_the_host_qdisc_is_applied_once_and_a_failed_one_puts_nothing_in_force(self):
+        qdisc = self.etc / f"{self.SERVICE}.qdisc.next"
+        applied, output = self.run_dir / f"{self.SERVICE}.qdisc", \
+            self.run_dir / f"qdisc-{self.SERVICE}.txt"
+        qdisc.write_text("echo applied\n")
+        self.stage("b")
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (0, True, True))
+        self.assertEqual((output.read_text(), applied.read_text()), ("applied\n", "echo applied\n"))
+        # Staged again as it is: not run again (its copy in /run is the same).
+        output.unlink()
+        self.stage("a")
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (0, True, False))
+        self.assertFalse(output.exists())
+        # A qdisc that fails: its last line is the reason, nothing is put in
+        # force and nothing restarted.
+        qdisc.write_text('echo "starting"\necho "tc: \\"eth1\\" refused"\nexit 1\n')
+        self.stage("b")
+        self.log.unlink()
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (1, False, False))
+        self.assertEqual(outcome["why"], "the host qdisc failed: tc: eth1 refused")
+        self.assertEqual(self.args.read_text(), self.text("a"))
+        self.assertTrue((self.etc / f"{self.SERVICE}.args.next").is_file())
+        self.assertEqual(applied.read_text(), "echo applied\n")
+        self.assertNotIn("systemctl", self.calls())
+
+    def test_the_staged_host_qdisc_checks_every_nic(self):
+        """The qdisc the deploy stages (node_files) fails when a NIC does
+        not show it, so the activation refuses before it puts anything in
+        force; tc is stubbed, and so is /sys/class/net."""
+        net = self.root / "net"
+        for device in ("eth0", "eth1"):
+            (net / device / "device").mkdir(parents=True)
+        (net / "lo").mkdir()
+        shown = self.root / "tc-show"
+        tc = self.root / "stubs" / "tc"
+        tc.write_text(f"#!/bin/sh\ncase \"$*\" in *\"qdisc show\"*) cat {shown} ;; esac\n")
+        tc.chmod(0o755)
+        settings = dict(deploy.DEFAULT_SETTINGS)
+        text = deploy.node_files(["x"], "unit", settings)["qdisc"]
+        self.assertEqual(deploy.class_plan(settings)["host_qdisc"], "prio")
+        (self.etc / f"{self.SERVICE}.qdisc.next").write_text(
+            text.replace("/sys/class/net", str(net)))
+        prio = ("qdisc prio 1: root refcnt 2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n"
+                "qdisc pfifo 10: parent 1:1 limit 10000p\n"
+                "qdisc fq 20: parent 1:2 limit 65536p flow_limit 4096p\n")
+        for content, why in (("qdisc fq_codel 0: root refcnt 2\n",
+                              "the host qdisc prio is not the root of eth0"),
+                             (prio.replace("qdisc fq 20", "qdisc sfq 20"),
+                              "the host qdisc prio has no fq 20: on eth0")):
+            shown.write_text(content)
+            self.stage("b")
+            code, outcome = self.activate()
+            self.assertEqual((code, outcome["ok"]), (1, False), why)
+            self.assertEqual(outcome["why"], f"the host qdisc failed: {why}")
+            self.assertEqual(self.args.read_text(), self.text("a"))
+        shown.write_text(prio)
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (0, True, True))
+        output = (self.run_dir / f"qdisc-{self.SERVICE}.txt").read_text()
+        self.assertEqual(deploy.check_host_qdisc(output, "prio"), [])
+        # No NIC at all is no qdisc.
+        shutil.rmtree(net)
+        net.mkdir()
+        (self.run_dir / f"{self.SERVICE}.qdisc").unlink()
+        self.stage("a")
+        code, outcome = self.activate()
+        self.assertEqual(outcome["why"], "the host qdisc failed: the host qdisc: no NIC")
 
     def test_old_builds_are_pruned_but_never_one_that_is_named(self):
         builds = self.root / "opt-builds"

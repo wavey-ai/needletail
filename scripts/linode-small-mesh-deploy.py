@@ -3167,9 +3167,11 @@ SERVICE_ROLES = ("backbone", "distributor", "edge", "contributor")
 # beside them (`.args` is never absent: a copy, then a rename), links the
 # build's binaries into /usr/local/bin and restarts the service. With
 # --rollback it puts `.args.prev` (and the unit before the last activation)
-# back instead. Its result is one JSON line in /run/needletail. The test of
-# the shell (test_merged_topology's Activation) replaces the five paths of
-# its head.
+# back instead. Line 1 must name a binary of a build directory: an `.args.prev`
+# of the layout before builds (/usr/local/bin/av-mesh) is refused, never put
+# in force. Its result is one JSON line in /run/needletail. The test of the
+# shell (test_merged_topology's Activation) replaces the six paths of its
+# head.
 ACTIVATE_SCRIPT = r"""#!/usr/bin/env bash
 set -u
 ETC=/etc/needletail
@@ -3177,6 +3179,7 @@ RUN=/run/needletail
 BIN=/usr/local/bin
 UNITS=/etc/systemd/system
 SYSCTL=/etc/sysctl.d/90-needletail.conf
+BUILDS=/opt/needletail/builds
 
 service=${1:?usage: activate SERVICE --not-after UNIX_MS [--rollback]}
 shift
@@ -3208,6 +3211,10 @@ case "$not_after" in ''|*[!0-9]*) finish false "no deadline" ;; esac
 if [ "$rollback" = 1 ]; then source="$args.prev"; else source="$args.next"; fi
 [ -f "$source" ] || finish false "nothing to put in force: no $source"
 to=$(head -n 1 "$source")
+case "$(dirname "$to")" in
+  "$BUILDS"/?*) ;;
+  *) finish false "not a binary of a build in $BUILDS: $to" ;;
+esac
 { [ -f "$to" ] && [ -x "$to" ]; } || finish false "not an executable on this node: $to"
 if [ "$rollback" = 1 ]; then
   if [ -f "$ETC/$service.unit.prev" ] && ! cmp -s "$ETC/$service.unit.prev" "$unit"; then
@@ -3226,7 +3233,8 @@ else
   # The applied qdisc is remembered in /run, so a host that rebooted gets
   # it again at its next activation.
   if [ -f "$ETC/$service.qdisc.next" ] && ! cmp -s "$ETC/$service.qdisc.next" "$RUN/$service.qdisc"; then
-    bash "$ETC/$service.qdisc.next" >"$RUN/qdisc-$service.txt" 2>&1 || finish false "the host qdisc failed"
+    bash "$ETC/$service.qdisc.next" >"$RUN/qdisc-$service.txt" 2>&1 \
+      || finish false "the host qdisc failed: $(tail -n 1 "$RUN/qdisc-$service.txt" | tr -d '"\\\000-\037')"
     cp "$ETC/$service.qdisc.next" "$RUN/$service.qdisc"
     qdisc=true
   fi
@@ -3387,13 +3395,42 @@ def installed_args(item: dict, role: str, key: str) -> list[str]:
     return args
 
 
+# The end of a staged host qdisc script: what check_host_qdisc reads, on
+# every NIC, or the script fails, and the activation refuses before it puts
+# anything in force (a roll then gates again and stops, exit 3: the host,
+# not the build).
+HOST_QDISC_VERIFY = r"""
+nics=0
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] || continue
+  dev=${path##*/}
+  nics=$((nics + 1))
+  shown=$(tc qdisc show dev "$dev")
+  root=$(printf '%s\n' "$shown" | grep '^qdisc ' | head -n 1)
+  CHECK
+done
+[ "$nics" -gt 0 ] || { echo "the host qdisc: no NIC"; exit 1; }
+"""
+HOST_QDISC_CHECK = {
+    "prio": r"""case "$root" in "qdisc prio 1: root"*) ;; *) echo "the host qdisc prio is not the root of $dev"; exit 1 ;; esac
+  printf '%s\n' "$shown" | grep -q '^qdisc pfifo 10: parent 1:1' \
+    || { echo "the host qdisc prio has no pfifo 10: on $dev"; exit 1; }
+  printf '%s\n' "$shown" | grep -q '^qdisc fq 20: parent 1:2' \
+    || { echo "the host qdisc prio has no fq 20: on $dev"; exit 1; }""",
+    "none": r"""case "$root" in "qdisc prio 1: root"*) echo "the host qdisc prio is still on $dev"; exit 1 ;; esac""",
+}
+
+
 def node_files(args: list[str], unit: str, settings: dict) -> dict[str, str]:
     """The `.next` files of a service: its arguments, its unit, the kernel
-    settings and the host qdisc script."""
+    settings and the host qdisc script, which checks what it put on every
+    NIC (HOST_QDISC_VERIFY)."""
     sysctls = node_sysctls(settings)
+    qdisc = class_plan(settings)["host_qdisc"]
     return {"args": args_text(args), "unit": unit,
             "sysctl": "".join(f"{key} = {value}\n" for key, value in sysctls.items()),
-            "qdisc": "set -e\n" + HOST_QDISC_SCRIPT[class_plan(settings)["host_qdisc"]]}
+            "qdisc": "set -e\n" + HOST_QDISC_SCRIPT[qdisc]
+            + HOST_QDISC_VERIFY.replace("CHECK", HOST_QDISC_CHECK[qdisc])}
 
 
 def stage_node(node: dict, service: str, key: str, files: dict[str, str]) -> None:
