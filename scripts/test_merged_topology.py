@@ -91,9 +91,13 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir, True)
+        # The lab's state directory too: a running lab (`up slots=lon-edge-4`)
+        # holds lon-edge-4 out of edges() and the peer lists, and the render
+        # tests are of the default lab.
         for target, name, value in ((deploy, "SETTINGS_FILE", self.dir / "settings.json"),
                                     (deploy, "HUNT_FILE", self.dir / "ecmp-ports.json"),
-                                    (deploy.common, "ARTIFACT_DIR", self.dir)):
+                                    (deploy.common, "ARTIFACT_DIR", self.dir),
+                                    (lab, "WORK", self.dir / "edge-lab")):
             patcher = mock.patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)

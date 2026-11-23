@@ -351,6 +351,13 @@ def control_body(node_id: str) -> dict:
     return {"node_id": node_id}
 
 
+def control_accepted(status) -> bool:
+    """av-mesh answers a control command (drain-node, resume-node) with 202
+    Accepted: it is queued, not done. Any 2xx is taken; 200 as well, for a
+    node of before."""
+    return isinstance(status, int) and 200 <= status < 300
+
+
 def http_post(address: str, path: str, body: dict, timeout: float = 5.0) -> int:
     context = ssl.create_default_context()
     context.check_hostname = False
@@ -692,13 +699,13 @@ class EdgeLabBackend(Backend):
     def drain(self, name):
         status, _ = self.edge_lab.http_json(name, "/api/control/drain-node", method="POST",
                                             body=control_body(name))
-        if status != 200:
+        if not control_accepted(status):
             raise RuntimeError(f"drain {name}: HTTP {status}")
 
     def resume(self, name):
         status, _ = self.edge_lab.http_json(name, "/api/control/resume-node", method="POST",
                                             body=control_body(name))
-        if status != 200:
+        if not control_accepted(status):
             raise RuntimeError(f"resume {name}: HTTP {status}")
 
     def delete(self, name):
@@ -1303,8 +1310,7 @@ def main(argv: list[str] | None = None) -> None:
     backend = Guarded(inner, config, args.dry_run)
     events = Events(args.events)
     state_path = pathlib.Path(args.controller_state or default_state_path(args.backend))
-    # SIGTERM stops the controller as SIGINT does: drains in flight resumed.
-    signal.signal(signal.SIGTERM, interrupt)
+    install_stop_signals()
     lock = None
     try:
         # One controller per state file: two would each act on and save it.
@@ -1322,6 +1328,17 @@ def main(argv: list[str] | None = None) -> None:
 
 def interrupt(_signum, _frame) -> None:
     raise KeyboardInterrupt
+
+
+def install_stop_signals() -> None:
+    """SIGINT and SIGTERM stop the controller: drains in flight resumed.
+    SIGINT is set here too, not left to Python's default: a process started
+    in the background by a non-interactive shell (`controller &` in a
+    script) or by a parent that ignores SIGINT inherits SIGINT ignored, and
+    Python then installs no KeyboardInterrupt for it, so `kill -INT` did
+    nothing and the controller went on acting until its --duration."""
+    signal.signal(signal.SIGINT, interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
 
 
 def hold_lock(state_path: pathlib.Path):

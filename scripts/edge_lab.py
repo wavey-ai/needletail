@@ -1571,10 +1571,13 @@ def main() -> None:
             name = arguments[0]
             # Always naming the node: av-mesh takes a request without one
             # as global.
-            status, body = http_json(name, f"/api/control/{command}-node", "POST",
-                                     {"node_id": name})
-            print(f"{command} {name}: HTTP {status} {json.dumps(body)[:200]}")
-            if status != 200:
+            # Not `status`: that name is the status command's function, and
+            # binding it here made `edge_lab.py status` fail (UnboundLocalError).
+            code, body = http_json(name, f"/api/control/{command}-node", "POST",
+                                   {"node_id": name})
+            print(f"{command} {name}: HTTP {code} {json.dumps(body)[:200]}")
+            # av-mesh answers a control command with 202 Accepted (queued).
+            if not 200 <= code < 300:
                 sys.exit(1)
         else:
             sys.exit(__doc__)

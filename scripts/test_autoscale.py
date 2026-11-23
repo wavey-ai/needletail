@@ -742,6 +742,94 @@ class LinodeBackendTests(unittest.TestCase):
         self.assertFalse(obs["lon-edge-11"]["advertised"])  # not created
 
 
+class StopSignalTests(unittest.TestCase):
+    def test_sigint_stops_the_controller_even_when_inherited_ignored(self):
+        import signal
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)  # as `controller &` in a script
+            auto.install_stop_signals()
+            self.assertIs(signal.getsignal(signal.SIGINT), auto.interrupt)
+            self.assertIs(signal.getsignal(signal.SIGTERM), auto.interrupt)
+            with self.assertRaises(KeyboardInterrupt):
+                signal.raise_signal(signal.SIGINT)
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
+
+    def test_a_backgrounded_controller_winds_down_on_sigint(self):
+        """End to end, a controller process started with SIGINT ignored (as
+        a non-interactive shell starts `&` jobs) stops at SIGINT and resumes
+        its drain in flight: the edge_lab backend over a fake lab module."""
+        import os
+        import signal
+        import subprocess
+        import tempfile
+        import textwrap
+        import time
+        work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, work, True)
+        (work / "edge_lab.py").write_text(textwrap.dedent("""
+            import json, pathlib
+            HERE = pathlib.Path(__file__).parent
+            NODES = [("lon-dist-a", "distributor", "london"), ("lon-dist-b", "distributor", "london"),
+                     ("lon-edge-1", "edge", "london"), ("lon-edge-2", "edge", "london"),
+                     ("lon-edge-3", "edge", "london")]
+            def slot_nodes(): return []
+            def load(name, default=None): return default
+            def save(name, value): pass
+            def service_pid(name): return 1
+            def start_service(name): pass
+            def terminate_service(name): pass
+            def http_json(name, path, method="GET", body=None, timeout=5.0):
+                if "control" in path:
+                    with open(HERE / "control.log", "a") as handle:
+                        handle.write(name + " " + path + "\\n")
+                    return 202, {}
+                if "assignment" in path:
+                    return 200, {"caches": [{"node_id": n, "fresh": True, "load_permille": 10}
+                                            for n in ("lon-edge-1", "lon-edge-2", "lon-edge-3")],
+                                 "client_udp": {"subscribers": 5}}
+                return 200, {"edge_services": [{"node_id": name, "active_playback_sessions": 0}]}
+        """))
+        script = pathlib.Path(auto.__file__)
+        command = [sys.executable, "-c", textwrap.dedent(f"""
+            import sys, importlib.util
+            sys.path.insert(0, {str(work)!r})
+            import edge_lab
+            spec = importlib.util.spec_from_file_location("auto", {str(script)!r})
+            auto = importlib.util.module_from_spec(spec)
+            sys.modules["auto"] = auto
+            spec.loader.exec_module(auto)
+            sys.argv = ["linode-autoscale.py", "run", "--backend", "edge_lab", "--stream", "1",
+                        "--sites", "london", "--controller-state", {str(work / "state.json")!r},
+                        "--events", {str(work / "events.jsonl")!r}, "--duration", "60",
+                        "--poll-s", "0.2", "--down-hold-s", "0", "--cooldown-s", "0",
+                        "--no-flap-s", "0", "--min-edges", "2"]
+            auto.main()
+        """)]
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
+        events = work / "events.jsonl"
+        deadline = time.time() + 20
+        while time.time() < deadline and not (events.is_file()
+                                              and '"drain_start"' in events.read_text()):
+            time.sleep(0.05)
+        os.kill(process.pid, signal.SIGINT)
+        try:
+            code = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            self.fail("the controller ignored SIGINT")
+        self.assertTrue(events.is_file())
+        kinds = [json.loads(line)["kind"] for line in events.read_text().splitlines()]
+        self.assertEqual(code, 130)
+        self.assertIn("drain_start", kinds)
+        self.assertEqual(kinds[-3:], ["resumed", "wound_down", "controller_stop"])
+        log = (work / "control.log").read_text().split()
+        self.assertEqual(log[1::2], ["/api/control/drain-node", "/api/control/resume-node"])
+
+
 class EdgeLabBackendTests(unittest.TestCase):
     def test_slots_are_created_by_a_marker_and_started_in_their_namespace(self):
         saved = {}
@@ -781,6 +869,32 @@ class EdgeLabBackendTests(unittest.TestCase):
         guard.delete("lon-edge-4", proof="drained-to-zero")
         self.assertNotIn("lon-edge-4", running)
         self.assertEqual(saved["slots-created.json"], [])
+
+    def test_a_control_command_answered_202_is_accepted(self):
+        # av-mesh queues drain-node and resume-node and answers 202 Accepted:
+        # the edge_lab backend must not take that as a failure (it did, so
+        # the controller could never drain an edge in the local lab).
+        calls = []
+
+        def http_json(name, path, method="GET", body=None):
+            calls.append((name, path, method, body))
+            return (202 if "control" in path else 500), {}
+
+        fake = argparse.Namespace(NODES=[], SLOT_NODES=(), load=lambda *a, **k: [],
+                                  save=lambda *a: None, http_json=http_json)
+        backend = auto.EdgeLabBackend(2001, lab=fake)
+        backend.drain("lon-edge-4")
+        backend.resume("lon-edge-4")
+        self.assertEqual([call[1] for call in calls],
+                         ["/api/control/drain-node", "/api/control/resume-node"])
+        self.assertEqual(calls[0][3], {"node_id": "lon-edge-4"})
+        failing = argparse.Namespace(NODES=[], SLOT_NODES=(), load=lambda *a, **k: [],
+                                     save=lambda *a: None,
+                                     http_json=lambda *a, **k: (503, {}))
+        with self.assertRaises(RuntimeError):
+            auto.EdgeLabBackend(2001, lab=failing).drain("lon-edge-4")
+        self.assertTrue(auto.control_accepted(200))
+        self.assertFalse(auto.control_accepted(None))
 
 
 if __name__ == "__main__":
