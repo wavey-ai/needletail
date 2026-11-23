@@ -1494,9 +1494,10 @@ def run(args, steps: dict) -> int:
     lines += edge_wake_lines(wake)
     if measured.get("stall"):
         result["stall"] = measured["stall"]
+        lines += ["", f"stall: {json.dumps(measured['stall'])}"]
     if measured.get("stall_node"):
         result["stall_node"] = measured["stall_node"]
-        lines += ["", f"stall: {json.dumps(measured['stall'])}"]
+        lines += ["", f"stalled node: {json.dumps(measured['stall_node'])}"]
     lines += video_summary_lines(video["source"] if regions else None, regions,
                                  video["frame_deadline_ms"])
     lines += node_summary_lines(measured.get("nodes"))

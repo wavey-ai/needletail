@@ -228,11 +228,13 @@ DEFAULT_SETTINGS = {
     "relay_demand_renditions": None,
     # Wave 8 stage 3. cache_mesh_fast_plane_video_push: av-mesh
     # --cache-mesh-fast-plane-video-push on the distributors, the same for a
-    # video stream: "secondary" (the binary's default: a distributor does not
-    # push a video stream to an edge that takes its sources from this
-    # distributor's fast plane; the edge's secondary, which feeds it repair
-    # only, keeps the push), "none" (no push of a fed pair), "all" (as before
-    # wave 8: an edge took 4K four ways). None renders nothing.
+    # video stream: "none" (the binary's default: no push of a video stream
+    # to an edge that the fast plane feeds it to; the edge's failover and
+    # hole repair cover a lost primary), "secondary" (the distributor that
+    # feeds the edge the sources does not push; the one that feeds it repair
+    # does), "all" (as before wave 8: an edge took 4K four ways, and every
+    # edge dropped at its cache-mesh video socket at 160 Mbit/s in the local
+    # lab). None renders nothing.
     "cache_mesh_fast_plane_video_push": None,
     # - relay_failover_promotion_backoff: av-mesh
     #   --relay-failover-promotion-backoff on every node with a failover
