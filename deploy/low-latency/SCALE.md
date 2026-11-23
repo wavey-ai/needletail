@@ -989,11 +989,19 @@ scenario's baseline shows whether the mesh came back.
   until AM item 10); the survivors' busiest core under 90%, CPU under 80%, tx
   under 80% of the cap; no rise in would-block, send-queue drops or
   refusals. Each scenario adds its own (F1, F2: each receiving edge's share
-  of the moves within 1.3x of its headroom-weighted share, headroom being
-  1,000 less its load_permille just before the fault, and the listeners per
-  receiving edge after the moves max/mean at most 1.15; the record keeps
-  the wave 8 figure, the moves' max/mean as if each should take an equal
-  share; F3, F4: no move, nothing missing; ...). A criterion the run cannot
+  of the fault's moves within 1.3x of its headroom-weighted share, and the
+  listeners per receiving edge after the moves max/mean at most 1.15. Since
+  the wave 9 review the moves judged are the fault's own (needletail-load's
+  `moves_in_by_reason`, every reason but `rebalance`), and the headroom is
+  to the level the movers fill the survivors to, as av-mesh apportions
+  them: 800 permille (the rebalance target), raised to where all the moves
+  fit at the region's cost of a listener (the median of load over UDP
+  subscribers among the edges with at least 4, before the fault) when they
+  do not fit under 800; an edge over the level is due none. The record
+  keeps the earlier figures: the headroom to 1,000 over the moves of every
+  reason, the wave 8 equal-share max/mean, and the net arrivals per
+  survivor (fault moves in, rebalances in and out); F3, F4: no move,
+  nothing missing; ...). A criterion the run cannot
   measure yet is reported open, with what it waits for, never passed.
 - **What gave out first** leaves out only the scenarios that fault a node
   (kill, crash, drain, stop, leave, remove), from the fault to the end of
@@ -1016,7 +1024,10 @@ scenario's baseline shows whether the mesh came back.
   lab tool; drains before it deletes (resume and no delete when the drain
   does not reach 0 in 60 s); scales up at a mean of 700 permille for 3
   samples, at one edge of 850 or more with the mean at 600 or more for 3
-  samples (wave 9 C3: a ramp fills the edges unevenly), or refusals in 2,
+  samples (wave 9 C3: a ramp fills the edges unevenly) when that edge's UDP
+  listeners, at the region's cost of a listener, account for its load over
+  800 (wave 9 review: an edge hot from its LL-HLS readers' CPU is not cooled
+  by a new edge), or refusals in 2,
   down when the load with one edge fewer stays at or under 450 for 300 s; one region at a time per 60 s, never an add and a
   remove within 5 min; at most 2 nodes an action; joining nodes counted;
   standby edges first, then drained slots inside their paid hour (the warm
@@ -1040,8 +1051,13 @@ scenario's baseline shows whether the mesh came back.
   receiver judged by the larger of its advertised load and its live
   subscribers at the region's cost of a listener, since the advertised load
   is a 10 s mean). The client asks the assignment again without the edge
-  (a mover goes to a cache under the target first, by headroom) and resumes
-  from its oldest hole. A listener admitted less than 10 s ago is not moved.
+  (wave 9 review: a rebalanced listener goes only to an edge that stays
+  under 725 with it counted, the share of each by its room to 725) and
+  resumes from its oldest hole. A listener admitted less than 10 s ago is
+  not moved. An edge whose rounds did not lower its load (one load window
+  after its last move, by less than half of what the moved listeners cost,
+  allowing for listeners that came) pauses its rebalance for 60 s
+  (`client_udp.rebalance_ineffective`).
   So a joined edge takes the excess that its region had before it joined,
   not only new arrivals. Rebalance moves are counted by reason in
   needletail-load and `client_udp.rebalance_moves` on the edge.

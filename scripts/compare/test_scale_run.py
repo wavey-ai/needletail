@@ -1073,8 +1073,24 @@ class Phases(unittest.TestCase):
         loads = {"lon-edge-2": 285, "lon-edge-3": 450, "lon-edge-4": 404}
         self.assertEqual(scale.spread(moves, list(loads)), 1.417)
         shares = scale.headroom_shares(moves, loads)
-        self.assertAlmostEqual(shares["lon-edge-2"]["expected"], 13.83, places=2)
+        # Wave 9 review: the headroom is to the rebalance target (800):
+        # 515 of 1,261 for lon-edge-2 (to 1,000: 13.83 of 36).
+        self.assertAlmostEqual(shares["lon-edge-2"]["expected"], 14.70, places=2)
         self.assertLess(scale.share_worst(shares), 1.3)
+        full = scale.headroom_shares(moves, loads, level=1000)
+        self.assertAlmostEqual(full["lon-edge-2"]["expected"], 13.83, places=2)
+        # A survivor over the level is due none; with a listener's cost the
+        # level rises to where the moves fit (36 x 40 over 285/450/404:
+        # 859.7).
+        busy = {"lon-edge-2": 285, "lon-edge-3": 820, "lon-edge-4": 404}
+        shares = scale.headroom_shares({"lon-edge-2": 20, "lon-edge-4": 16}, busy)
+        self.assertEqual(shares["lon-edge-3"]["expected"], 0)
+        self.assertIsNone(shares["lon-edge-3"]["ratio"])
+        raised = scale.headroom_shares(moves, loads, cost=40.0)
+        self.assertAlmostEqual(raised["lon-edge-2"]["level"], 859.7, places=1)
+        self.assertEqual(scale.listener_cost({"a": 600, "b": 300, "c": 100},
+                                             {"a": 40, "b": 30, "c": 2}), 15.0)
+        self.assertAlmostEqual(scale.fill_level([394, 553, 747], 658), 784.0)
         # All onto one edge: far off its share either way.
         piled = scale.headroom_shares({"lon-edge-2": 36}, loads)
         self.assertGreater(scale.share_worst(piled), 1.3)

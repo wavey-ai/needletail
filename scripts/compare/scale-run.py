@@ -1301,7 +1301,13 @@ def interval_rows(rows: list[dict]) -> list[dict]:
                      if isinstance(row.get(key), dict)), row)
         for edge, item in groups:
             _, moved = timing(item, "time_to_move") if isinstance(item, dict) else (None, None)
+            reasons_in = item.get("moves_in_by_reason") if isinstance(item, dict) else None
             out.append({"t": t, "edge": edge, "time_to_move": moved,
+                        # Wave 9 review: moves into the edge by the reason
+                        # the listener left its last one (None from a load
+                        # tool without it).
+                        "moves_in_by_reason": reasons_in if isinstance(reasons_in, dict)
+                        else None,
                         **{key: (pick(item, *names) if key in OPTIONAL_FIELDS
                                  else pick(item, *names, default=0) or 0)
                            for key, names in COUNT_FIELDS.items()},
@@ -2321,6 +2327,9 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
     moved: list[dict] = []
     listeners: dict[float, int] = {}
     by_edge: dict[str, int] = {}
+    # Wave 9 review: the moves of a fault's own reasons (every reason but a
+    # rebalance) per edge; None if a row lacks the reasons.
+    fault_by_edge: dict[str, int] | None = {}
     for row in rows:
         if row["edge"] is None or not start <= row["t"] < end or row["phase"] == "final":
             continue
@@ -2337,8 +2346,17 @@ def udp_window(rows: list[dict], start: float, end: float, edges: set[str] | Non
         if row.get("time_to_move"):
             moved.append(row["time_to_move"])
         by_edge[name] = by_edge.get(name, 0) + row["moves"]
+        reasons_in = row.get("moves_in_by_reason")
+        if fault_by_edge is not None:
+            if reasons_in is None and row["moves"]:
+                fault_by_edge = None
+            else:
+                fault_by_edge[name] = fault_by_edge.get(name, 0) + sum(
+                    count for reason, count in (reasons_in or {}).items()
+                    if reason != "rebalance")
         listeners[round(row["t"])] = listeners.get(round(row["t"]), 0) + row["listeners"]
     return {"parts": parts, "missing": missing, "moves": moves, "moves_by_edge": by_edge,
+            "fault_moves_by_edge": fault_by_edge,
             # Phase AM item 10: missing parts of listeners that moved, and
             # the time from a moving listener's last part on its old edge
             # to its first on the new one (booked on the new edge).
@@ -2362,23 +2380,63 @@ def spread(by_edge: dict[str, int], edges: list[str]) -> float | None:
     return round(max(counts) / (sum(counts) / len(counts)), 3)
 
 
-def headroom_shares(by_edge: dict[str, int], loads: dict[str, float | None]) -> dict | None:
+# The rebalance target (av-mesh --rebalance-target-permille): movers fill the
+# survivors up to it (wave 9 review).
+MOVE_LEVEL_PERMILLE = 800
+
+
+def fill_level(loads: list[float], amount: float) -> float:
+    """The level at which `amount` permille poured over loads `loads` fills
+    them evenly (av-mesh assignment::fill_level)."""
+    below = 0.0
+    ordered = sorted(loads)
+    for index, load in enumerate(ordered):
+        below += load
+        level = (amount + below) / (index + 1)
+        if index + 1 == len(ordered) or level <= ordered[index + 1]:
+            return level
+    return amount
+
+
+def listener_cost(loads: dict, subscribers: dict) -> float | None:
+    """What one UDP listener costs an edge (permille), as av-mesh reckons
+    it: the median of load over subscribers among the edges with >= 4."""
+    costs = sorted(loads[name] / subscribers[name] for name in loads
+                   if isinstance(loads.get(name), (int, float)) and loads[name] > 0
+                   and isinstance(subscribers.get(name), (int, float))
+                   and subscribers[name] >= 4)
+    return costs[len(costs) // 2] if costs else None
+
+
+def headroom_shares(by_edge: dict[str, int], loads: dict[str, float | None],
+                    cost: float | None = None,
+                    level: int = MOVE_LEVEL_PERMILLE) -> dict | None:
     """Wave 9 C4: each receiving edge's moves against its headroom-weighted
-    share (headroom = 1,000 less its load_permille just before the fault,
-    at least 1): `ratio` = moves / (all moves x headroom / all headroom).
-    None without moves or with an edge's load unknown."""
+    share: `ratio` = moves / (all moves x headroom / all headroom). Since
+    the wave 9 review the headroom is to the level the movers fill the
+    survivors to, as av-mesh apportions them: the rebalance target, raised
+    to where all the moves at `cost` permille each fit when they do not
+    under it; to 1,000 (at least 1) when no edge is under the level. None
+    without moves or with an edge's load unknown."""
     total = sum(by_edge.get(name, 0) for name in loads)
     if not total or not loads or any(not isinstance(load, (int, float))
                                      for load in loads.values()):
         return None
-    headroom = {name: max(1, 1000 - int(load)) for name, load in loads.items()}
+    at = float(level)
+    if cost:
+        at = max(at, fill_level([float(load) for load in loads.values()], total * cost))
+    headroom = {name: max(0.0, at - float(load)) for name, load in loads.items()}
+    if sum(headroom.values()) < 1:
+        headroom = {name: max(1.0, 1000.0 - float(load)) for name, load in loads.items()}
     whole = sum(headroom.values())
     out = {}
     for name, room in headroom.items():
         expected = total * room / whole
-        out[name] = {"load_permille": loads[name], "headroom": room,
-                     "expected": round(expected, 2), "moves": by_edge.get(name, 0),
-                     "ratio": round(by_edge.get(name, 0) / expected, 3)}
+        got = by_edge.get(name, 0)
+        out[name] = {"load_permille": loads[name], "headroom": round(room, 1),
+                     "level": round(at, 1), "expected": round(expected, 2), "moves": got,
+                     "ratio": (round(got / expected, 3) if expected
+                               else (None if got == 0 else float("inf")))}
     return out
 
 
@@ -2390,8 +2448,10 @@ def share_worst(shares: dict | None) -> float | None:
     worst = 1.0
     for item in shares.values():
         ratio = item["ratio"]
+        if ratio is None:
+            continue
         worst = max(worst, ratio, (1 / ratio) if ratio > 0 else float("inf"))
-    return round(worst, 3)
+    return round(worst, 3) if worst != float("inf") else worst
 
 
 def last_before(rows: list[dict], key: str, before: float):
@@ -2537,7 +2597,19 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
         # of the observation.
         loads = {edge: last_before(meshes.get(edge) or [], "load_permille", fault_t)
                  for edge in receiving}
-        shares = headroom_shares(during["unaffected"]["moves_by_edge"], loads)
+        # What a listener costs, from the receiving and the faulted edges
+        # before the fault, as av-mesh reckons it; the fault's own moves
+        # (wave 9 review: not the rebalances after them) when the load tool
+        # gives their reasons.
+        sampled = list(receiving) + sorted(targets)
+        cost = listener_cost(
+            {edge: last_before(meshes.get(edge) or [], "load_permille", fault_t)
+             for edge in sampled},
+            {edge: last_before(meshes.get(edge) or [], "client_udp.subscribers", fault_t)
+             for edge in sampled})
+        judged = during["unaffected"].get("fault_moves_by_edge") \
+            or during["unaffected"]["moves_by_edge"]
+        shares = headroom_shares(judged, loads, cost)
         held = {edge: last_before(meshes.get(edge) or [], "client_udp.subscribers",
                                   windows["during"][1]) for edge in receiving}
         result["moves"] = {"udp": during["unaffected"]["moves"] + during["faulted"]["moves"],
@@ -2545,8 +2617,15 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
                                            **during["faulted"]["moves_by_edge"]},
                            "udp_spread_max_over_mean": spread(
                                during["unaffected"]["moves_by_edge"], receiving),
+                           "udp_fault_moves_by_edge": during["unaffected"].get(
+                               "fault_moves_by_edge"),
+                           "udp_listener_cost_permille": round(cost, 2) if cost else None,
                            "udp_by_headroom": shares,
                            "udp_headroom_share_worst": share_worst(shares),
+                           # The figure before the review: every reason,
+                           # headroom to 1,000.
+                           "udp_headroom_to_full_share_worst": share_worst(headroom_shares(
+                               during["unaffected"]["moves_by_edge"], loads, level=1000)),
                            "listeners_after": held,
                            "listeners_after_max_over_mean": balance(held),
                            "hls": [move for move in moves if fault_t <= move["t"] < end_t]}

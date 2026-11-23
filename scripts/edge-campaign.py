@@ -2425,6 +2425,17 @@ def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None,
 
     moves = {names.get(edge, edge): (block or {}).get("moves", 0)
              for edge, block in per_edge.items() if edge != "unassigned"}
+    # Wave 9 review: the moves into each edge by the reason the listener
+    # left its last edge (needletail-load's moves_in_by_reason); a fault's
+    # spread is judged on the fault's own moves, not on the rebalances
+    # that followed them. None from a load tool without the field.
+    moves_in = {names.get(edge, edge): (block or {}).get("moves_in_by_reason")
+                for edge, block in per_edge.items() if edge != "unassigned"}
+    fault_moves = None
+    if moves and all(isinstance(value, dict) for value in moves_in.values()):
+        fault_moves = {name: sum(count for reason, count in value.items()
+                                 if reason != "rebalance")
+                       for name, value in moves_in.items()}
     rows = [row for row in job.intervals() if row.get("phase") != "final"]
     last = (rows[-1].get("total") or {}) if rows else {}
     stranded = None
@@ -2445,7 +2456,12 @@ def udp_report(ctx, job: UdpJob, edge_names: dict[str, str] | None = None,
     report = {"parts": total.get("parts"), "missing": missing,
               "startup_missing": startup_missing,
               "moves_by_edge": moves, "moves": sum(moves.values()),
+              "moves_in_by_reason_by_edge": moves_in,
+              "fault_moves_by_edge": fault_moves,
               "moves_out_by_edge": by_edge("moves_out"),
+              "moves_out_reasons_by_edge": {
+                  names.get(edge, edge): (block or {}).get("moves_by_reason") or {}
+                  for edge, block in per_edge.items() if edge != "unassigned"},
               "moves_by_reason": total.get("moves_by_reason") or {},
               "time_to_move_ms": quantiles(total.get("time_to_move_ms")),
               "left_lost_by_edge": left_lost, "move_lost": total.get("move_lost"),
@@ -2480,24 +2496,71 @@ MOVE_SHARE_LIMIT = 1.3
 BALANCE_AFTER_LIMIT = 1.15
 
 
-def headroom_shares(moves: dict[str, int], loads: dict[str, int | None]) -> dict | None:
-    """Wave 9 C4: each survivor's moves against its headroom-weighted share
-    (headroom = 1,000 less its load_permille just before the fault, at
-    least 1): `ratio` = moves / (all moves x headroom / all headroom).
-    None without moves or loads."""
+# The rebalance target (av-mesh --rebalance-target-permille): movers fill the
+# survivors up to it (wave 9 review).
+MOVE_LEVEL_PERMILLE = 800
+
+
+def fill_level(loads: list[float], amount: float) -> float:
+    """The level at which `amount` permille poured over loads `loads` fills
+    them evenly (av-mesh assignment::fill_level)."""
+    below = 0.0
+    ordered = sorted(loads)
+    for index, load in enumerate(ordered):
+        below += load
+        level = (amount + below) / (index + 1)
+        if index + 1 == len(ordered) or level <= ordered[index + 1]:
+            return level
+    return amount
+
+
+def listener_cost(loads: dict, subscribers: dict) -> float | None:
+    """What one UDP listener costs an edge (permille), as av-mesh reckons
+    it: the median of load over subscribers among the edges with >= 4."""
+    costs = sorted(loads[name] / subscribers[name] for name in loads
+                   if isinstance(loads.get(name), (int, float)) and loads[name] > 0
+                   and isinstance(subscribers.get(name), int) and subscribers[name] >= 4)
+    return costs[len(costs) // 2] if costs else None
+
+
+def headroom_shares(moves: dict[str, int], loads: dict[str, int | None],
+                    cost: float | None = None,
+                    level: int = MOVE_LEVEL_PERMILLE) -> dict | None:
+    """Wave 9 C4: each survivor's moves against its headroom-weighted share:
+    `ratio` = moves / (all moves x headroom / all headroom). Since the wave
+    9 review the headroom is to the level the movers fill the survivors to,
+    as av-mesh apportions them: the rebalance target, raised to where all
+    the moves at `cost` permille each fit when they do not under it; the
+    headroom to 1,000 (at least 1) when no survivor is under the level.
+    (To 1,000 alone, a survivor at 776 permille by its LL-HLS readers' CPU
+    was due a share that it then shed again as over its target.) None
+    without moves or loads."""
     total = sum(moves.get(name, 0) for name in loads)
     known = {name: load for name, load in loads.items() if isinstance(load, (int, float))}
     if not total or not known or len(known) != len(loads):
         return None
-    headroom = {name: max(1, 1000 - int(load)) for name, load in known.items()}
+    at = float(level)
+    if cost:
+        at = max(at, fill_level(list(known.values()), total * cost))
+    headroom = {name: max(0.0, at - float(load)) for name, load in known.items()}
+    if sum(headroom.values()) < 1:
+        headroom = {name: max(1.0, 1000.0 - float(load)) for name, load in known.items()}
     whole = sum(headroom.values())
     out = {}
     for name, room in headroom.items():
         expected = total * room / whole
-        out[name] = {"load_permille": known[name], "headroom": room,
-                     "expected": round(expected, 2), "moves": moves.get(name, 0),
-                     "ratio": round(moves.get(name, 0) / expected, 3) if expected else None}
+        got = moves.get(name, 0)
+        out[name] = {"load_permille": known[name], "headroom": round(room, 1),
+                     "level": round(at, 1), "expected": round(expected, 2), "moves": got,
+                     "ratio": (round(got / expected, 3) if expected
+                               else (None if got == 0 else float("inf")))}
     return out
+
+
+def headroom_shares_to_full(moves: dict[str, int], loads: dict[str, int | None]) -> dict | None:
+    """The wave 9 C4 figure before the review (headroom to 1,000), kept in
+    the record."""
+    return headroom_shares(moves, loads, level=1000)
 
 
 def headroom_share_worst(shares: dict | None) -> float | None:
@@ -2511,7 +2574,7 @@ def headroom_share_worst(shares: dict | None) -> float | None:
         if ratio is None:
             continue
         worst = max(worst, (1 / ratio) if ratio > 0 else float("inf"), ratio)
-    return round(worst, 3)
+    return round(worst, 3) if worst != float("inf") else worst
 
 
 def edge_p99(job: UdpJob, edges: list[str], begin: float, end: float) -> float | None:
@@ -2822,10 +2885,36 @@ def udp_fault(ctx, fault, label: str, targets: list[str], count: int = 160,
     before_fault = next((row for row in reversed(rows) if row["t"] <= fault_unix), None)
     loads = {name: (ops_value(before_fault, name, "gauges.load_permille")
                     if before_fault else None) for name in others}
-    shares = headroom_shares(report["moves_by_edge"], loads)
+    # What a listener costs, from every edge's load and subscribers before
+    # the fault (the faulted ones too), as av-mesh reckons it.
+    all_loads = {name: (ops_value(before_fault, name, "gauges.load_permille")
+                        if before_fault else None) for name in lab.edges()}
+    all_subs = {name: (ops_value(before_fault, name, "gauges.subscribers")
+                       if before_fault else None) for name in lab.edges()}
+    cost = listener_cost(all_loads, all_subs)
+    # Wave 9 review: the fault's own moves (not the rebalances after them)
+    # against the headroom to the level; moves of every reason and the
+    # headroom to 1,000 stay in the record.
+    judged = report.get("fault_moves_by_edge") or report["moves_by_edge"]
+    shares = headroom_shares(judged, loads, cost)
     share_worst = headroom_share_worst(shares)
+    ctx.measure("listener_cost_permille", round(cost, 2) if cost else None)
+    ctx.measure("moves_judged", "fault reasons" if report.get("fault_moves_by_edge")
+                else "every reason (load tool without moves_in_by_reason)")
     ctx.measure("moves_by_headroom", shares)
     ctx.measure("moves_headroom_share_worst", share_worst)
+    full = headroom_shares_to_full(report["moves_by_edge"], loads)
+    ctx.measure("moves_by_headroom_to_full_every_reason", full)
+    ctx.measure("moves_headroom_to_full_share_worst", headroom_share_worst(full))
+    # Net arrivals per survivor: the fault's moves in, the rebalances in
+    # and out.
+    reasons_in = report.get("moves_in_by_reason_by_edge") or {}
+    ctx.measure("net_arrivals_per_survivor", {
+        name: {"fault_in": (report.get("fault_moves_by_edge") or {}).get(name),
+               "rebalance_in": (reasons_in.get(name) or {}).get("rebalance", 0),
+               "rebalance_out": ((report.get("moves_out_reasons_by_edge") or {})
+                                 .get(name) or {}).get("rebalance", 0)}
+        for name in others})
     balance = None
     late = next((row for row in reversed(rows) if row["t"] <= (heal_unix or time.time()) - 1),
                 None)
