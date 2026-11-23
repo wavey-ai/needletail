@@ -753,6 +753,18 @@ impl RelayProgram {
         }
         // The standby's sockets, after every topology carrier's, so that a
         // child's receiver bind already in use is the standby's violation.
+        // The sender peer is each contributor's identity at the ingress, so
+        // the standby never sends from an address of the origin.
+        let origin_sender_peers = self
+            .carrier_links
+            .iter()
+            .filter(|link| {
+                nodes
+                    .get(link.parent_node_id.as_str())
+                    .is_some_and(|node| node.role == NodeRole::Origin)
+            })
+            .map(|link| link.sender_peer)
+            .collect::<HashSet<_>>();
         for (standby, link) in self.standby_links() {
             if link.sender_bind.port() == 0
                 || link.sender_peer.port() == 0
@@ -768,6 +780,12 @@ impl RelayProgram {
                 violations.push(format!(
                     "origin standby link {} -> {} requires an explicit sender IP",
                     standby.node_id, link.child_node_id
+                ));
+            }
+            if origin_sender_peers.contains(&link.sender_peer) {
+                violations.push(format!(
+                    "origin standby link {} -> {} sends from {}, an address of the origin",
+                    standby.node_id, link.child_node_id, link.sender_peer
                 ));
             }
             if !sender_binds.insert((standby.node_id.as_str(), link.sender_bind)) {
@@ -2453,5 +2471,37 @@ mod tests {
         let violations = program_violations(&program);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(violations[0].contains("node contrib-b reuses RelaySession sender bind"));
+    }
+
+    #[test]
+    fn the_standby_never_sends_from_an_address_of_the_origin() {
+        // The origin sends to f1 from 22301 and to f2 from 22302.
+        let origin_peers = merged_program()
+            .carrier_links
+            .iter()
+            .filter(|link| link.parent_node_id == "contrib")
+            .map(|link| (link.child_node_id.clone(), link.sender_peer))
+            .collect::<Vec<_>>();
+        assert_eq!(origin_peers.len(), 2, "{origin_peers:?}");
+        for (child, origin_peer) in origin_peers {
+            let mut program = two_contributor_program();
+            let link = standby_of(&mut program)
+                .carrier_links
+                .iter_mut()
+                .find(|link| link.child_node_id == child)
+                .expect("standby link to the child");
+            link.sender_bind = origin_peer;
+            link.sender_peer = origin_peer;
+            let violations = program_violations(&program);
+            assert_eq!(violations.len(), 1, "{child}: {violations:?}");
+            assert!(
+                violations[0].contains(&format!(
+                    "origin standby link contrib-b -> {child} sends from {origin_peer}, an address of the origin"
+                )),
+                "{violations:?}"
+            );
+        }
+        // The same port on an address of its own is the standby's.
+        assert!(two_contributor_program().compile().is_ok());
     }
 }
