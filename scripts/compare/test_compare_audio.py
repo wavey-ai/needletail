@@ -340,5 +340,55 @@ class Report(unittest.TestCase):
         self.assertEqual(old.lane("nt", "pcm"), "nt-pcm")
 
 
+class ChangeWindow(unittest.TestCase):
+    """change-window.py: units missing, longest silence and p99 in a window."""
+
+    cw = load("change_window", "change-window.py")
+    T0 = 1_800_000_000_000_000  # Unix microseconds
+
+    def frames(self, drop=(), stall=None):
+        # 30 s of 1 ms units, 3 ms mouth to ear. stall=(first, last, ms): units
+        # first..last are held and arrive together `ms` after the first was due.
+        lines = ["kind,index,latency_us,complete_unix_us,first_unix_us,bytes,key,packets,"
+                 "published_unix_us,cache_available_unix_us,edge_committed_unix_us,reply_unix_us,part"]
+        for n in range(30_000):
+            if n in drop:
+                continue
+            source = self.T0 + n * 1000
+            at = source + 3000
+            if stall and stall[0] <= n <= stall[1]:
+                at = self.T0 + stall[0] * 1000 + stall[2] * 1000
+            lines.append(f"a,{n % 1000},{at - source},{at},{n},80,0,1,,,,,{n}")
+        path = pathlib.Path(tempfile.mkdtemp()) / "f.csv"
+        path.write_text("\n".join(lines) + "\n")
+        return self.cw.load(str(path))
+
+    def window(self, rows):
+        return self.cw.score(rows, self.T0 + 15_000_000, self.T0 + 18_000_000, 5_000_000)
+
+    def test_clean_change_passes(self):
+        r = self.window(self.frames())
+        self.assertEqual(r["missing"], 0)
+        self.assertTrue(r["pass"], r)
+
+    def test_lost_units_fail(self):
+        r = self.window(self.frames(drop=range(16_000, 16_005)))
+        self.assertEqual(r["missing"], 5)
+        self.assertFalse(r["pass"])
+
+    def test_stall_fails_on_gap_and_p99(self):
+        r = self.window(self.frames(stall=(16_000, 16_299, 300)))
+        self.assertEqual(r["missing"], 0)
+        self.assertGreaterEqual(r["longest_gap_ms"], 290)
+        self.assertGreater(r["inside_ms"]["p99"], 100)
+        self.assertFalse(r["pass"])
+
+    def test_marks(self):
+        path = pathlib.Path(tempfile.mkdtemp()) / "marks.txt"
+        path.write_text("start 100.5 drain lon-edge-1\nend 103 drain lon-edge-1\nstart 200 kill ingress\nend 201 kill ingress\n")
+        w = self.cw.windows(type("A", (), {"window": None, "marks": str(path)})())
+        self.assertEqual(w, {"drain lon-edge-1": (100.5, 103.0), "kill ingress": (200.0, 201.0)})
+
+
 if __name__ == "__main__":
     unittest.main()
