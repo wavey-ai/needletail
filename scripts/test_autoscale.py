@@ -244,6 +244,22 @@ class Decide(Base):
         # 4 x 620 + 880 = 3,360 / 600 = 6 edges: one more.
         self.assertEqual(third[0]["targets"], [("lon-edge-6", "start")])
 
+    def test_an_edge_hot_from_load_no_rebalance_moves_adds_no_edge(self):
+        """Wave 9 review: an edge at 880 whose load is its LL-HLS readers'
+        CPU (3 UDP listeners, at 6.2 permille each 19 of the 80 over the
+        rebalance target) is not cooled by a new edge: none is added; its
+        UDP listeners' load is reported."""
+        controller = self.controller()
+        self.sim.set_load(620)
+        self.sim.set_load(880, ["lon-edge-1"])
+        self.sim.nodes["lon-edge-1"]["udp"] = 3
+        self.sim.nodes["lon-edge-1"]["hls"] = 4
+        decisions = self.ticks(controller, 4)
+        self.assertTrue(all(item[0]["action"] == "hold" for item in decisions), decisions)
+        self.assertEqual(self.mutating(), [])
+        self.assertEqual(decisions[-1][0]["inputs"]["hot_movable_permille"], 19)
+        self.assertEqual(decisions[-1][0]["inputs"]["hot_streak"], 0)
+
     def test_refusals_in_two_samples_add_one_edge(self):
         controller = self.controller()
         self.sim.set_load(500)

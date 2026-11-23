@@ -44,7 +44,8 @@ Safety, before anything else:
 * Nothing is pushed to a slot that the lab's Cloud Firewall does not
   cover (the lab tool deletes a slot whose firewall cannot be set).
 * Hysteresis (scale up at a mean of 700 permille for 3 samples, one edge
-  at 850 or more with the mean at 600 or more for 3 samples, or
+  at 850 or more with the mean at 600 or more for 3 samples when its UDP
+  listeners account for its load over the target (wave 9 review), or
   refusals in 2 samples; down only when the load with one edge fewer stays
   at or under 450 permille for 300 s), a cooldown per region (60 s), no
   add and remove within 5 min of each other in a region, at most 2 nodes
@@ -104,6 +105,9 @@ DENY = {"arch-us-east"}
 DEDICATED_PRICES = {"g6-dedicated-2": 0.054, "g6-dedicated-4": 0.108,
                     "g6-dedicated-8": 0.216}
 HTTP_PORT = 19444
+# av-mesh --rebalance-target-permille's default: an edge over it sends UDP
+# listeners to an edge with room (wave 9 C1).
+REBALANCE_TARGET_PERMILLE = 800
 
 
 def load_module(name: str, file: str):
@@ -751,9 +755,26 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
     high = mean is not None and mean >= config.up_permille
     region["high_streak"] = region.get("high_streak", 0) + 1 if high else 0
     hottest = max(loads.values(), default=None)
+    hot_name = max(loads, key=lambda name: loads[name]) if loads else None
+    # Wave 9 review: the hot edge's load must be load a new edge can take,
+    # its UDP listeners at what one costs (the median of load over
+    # subscribers among the edges with >= 4, as av-mesh reckons it) enough
+    # to bring it to the rebalance target (REBALANCE_TARGET_PERMILLE, above
+    # which an edge sends listeners to one with room); an edge hot from its
+    # LL-HLS readers' CPU, which no rebalance moves, is not cooled by a new
+    # edge.
+    costs = sorted(loads[name] / obs[name]["udp_subscribers"] for name in loads
+                   if loads[name] > 0
+                   and isinstance(obs.get(name, {}).get("udp_subscribers"), int)
+                   and obs[name]["udp_subscribers"] >= 4)
+    cost = costs[len(costs) // 2] if costs else None
+    hot_subscribers = obs.get(hot_name, {}).get("udp_subscribers") if hot_name else None
+    movable = (None if cost is None or not isinstance(hot_subscribers, int)
+               else round(hot_subscribers * cost))
     hot = (hottest is not None and config.up_max_permille > 0
            and hottest >= config.up_max_permille
-           and mean is not None and mean >= config.target_permille)
+           and mean is not None and mean >= config.target_permille
+           and (movable is None or movable >= hottest - REBALANCE_TARGET_PERMILLE))
     region["hot_streak"] = region.get("hot_streak", 0) + 1 if hot else 0
     region["refusal_streak"] = region.get("refusal_streak", 0) + 1 if refused else 0
     projected = total / (count - 1) if count > 1 else None
@@ -768,7 +789,8 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
               "projected_one_fewer": None if projected is None else round(projected, 1),
               "refusals": refused, "joining": joining, "draining": draining,
               "high_streak": region["high_streak"], "hot_streak": region["hot_streak"],
-              "max_permille": hottest, "refusal_streak": region["refusal_streak"],
+              "max_permille": hottest, "hot_movable_permille": movable,
+              "refusal_streak": region["refusal_streak"],
               "low_for_s": round(now - region["low_since_unix"], 1) if low else 0.0}
 
     def result(action: str, reason: str, targets=()) -> dict:
