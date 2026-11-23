@@ -79,6 +79,7 @@ class FakeApi:
                               "created": "2026-11-18T09:00:00", "ipv4": ["198.74.56.161"]}}
         self.configs: dict[int, list[dict]] = {}
         self.devices: list[dict] = []
+        self.firewalls: dict[int, dict] = {}
         self.event_pages: list[list[dict]] = [[]]
         self.rebuild_drops_vlan = False
         self.tag = tag
@@ -92,6 +93,9 @@ class FakeApi:
             return [dict(item) for item in self.configs.get(int(path.split("/")[3]), [])]
         if path.endswith("/devices"):
             return list(self.devices)
+        if path == "/networking/firewalls":
+            return [item for item in self.firewalls.values()
+                    if tag is None or tag in item.get("tags", [])]
         if "instances" in path:
             items = list(self.instances.values())
             return [item for item in items if tag is None or tag in item.get("tags", [])]
@@ -112,6 +116,9 @@ class FakeApi:
             self.configs[item["id"]] = [{"id": 700 + item["id"],
                                          "interfaces": body["interfaces"]}]
             return item
+        if method == "DELETE" and path.startswith("/networking/firewalls/"):
+            self.firewalls.pop(int(path.split("/")[3]), None)
+            return {}
         if method == "POST" and path.endswith("/devices"):
             self.devices.append({"id": len(self.devices) + 1,
                                  "entity": {"id": body["id"], "type": body["type"]}})
@@ -671,7 +678,10 @@ class Watchdog(Base):
             self.assertLessEqual(seconds, 5)
             now[0] += seconds
 
-        with redirect_stderr(io.StringIO()):
+        # Once `down` has removed the state, the account lists nothing with
+        # the run's tag: the loop returns.
+        with mock.patch.object(lab_tool, "Api", lambda public=False: FakeApi()), \
+                redirect_stderr(io.StringIO()):
             lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1",
                                       deadline, clock=lambda: now[0], sleep=sleep, down=down)
         self.assertEqual(len(downs), 2)
@@ -680,6 +690,83 @@ class Watchdog(Base):
         # The first instances, created 1 to 3 s after the lab, are gone by
         # the deadline: 6 billed hours, not 7.
         self.assertEqual(lab_tool.billed_hours(1_000_003, downs[-1] + 60), 6)
+
+    def test_a_lost_state_keeps_the_watchdog_to_its_deadline_by_the_tag(self):
+        """`cargo clean` (or a worktree removed) takes the state file two
+        hours into a lab: the unit keeps watching the run's tag, deletes
+        every tagged instance and firewall from WATCHDOG_LEAD_S before its
+        deadline, writes the ledger, and only then removes itself. An
+        unreadable state is the same, never a crash loop."""
+        self.ledger({"run_id": "before-23-nov", "billed_usd": 38.0, "removed_unix": 1})
+        for lose in ("removed", "unreadable", "another run's"):
+            api = FakeApi()
+            state = lab_state(self.tmp, api)
+            path = pathlib.Path(self.args.state)
+            deadline = state["watchdog_deadline_unix"]
+            api.firewalls[9] = {"id": 9, "tags": ["needletail-qualification", api.tag]}
+            api.firewalls[10] = {"id": 10, "tags": ["needletail-qualification",
+                                                    "needletail-small-mesh-o1"]}
+            edge = state["nodes"]["lon-edge-1"]["public_ipv4"]
+            lab_tool.KNOWN_HOSTS.write_text(f"{edge} ssh-ed25519 AAAAedge\n")
+            self.systemd.active.add(UNIT)
+            self.systemd.enabled.add(UNIT)
+            lab_tool.WATCHDOG_UNIT_DIR.mkdir(parents=True, exist_ok=True)
+            (lab_tool.WATCHDOG_UNIT_DIR / UNIT).write_text("unit")
+            now = [time.time()]
+            deletes = []
+            sleeps = []
+            real = api.call
+
+            def call(method, call_path, body=None, allow_404=False):
+                if method == "DELETE" and call_path.startswith("/linode/instances/"):
+                    deletes.append(now[0])
+                return real(method, call_path, body, allow_404)
+
+            api.call = call
+
+            def sleep(seconds):
+                if not sleeps:
+                    # The first poll read the lab; then its state is lost.
+                    if lose == "removed":
+                        path.unlink()
+                    elif lose == "unreadable":
+                        path.write_text("{")
+                    else:
+                        path.write_text(json.dumps({"run_id": "t2", "nodes": {}}))
+                sleeps.append(seconds)
+                # The unit is never removed while the lab lives.
+                self.assertIn(UNIT, self.systemd.enabled)
+                self.assertTrue((lab_tool.WATCHDOG_UNIT_DIR / UNIT).exists())
+                now[0] += seconds
+
+            watch = lab_tool.watch_until_down
+            args = argparse.Namespace(state=self.args.state, foreground=True, run_id="t1",
+                                      deadline_unix=deadline)
+            with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                    mock.patch.object(lab_tool, "watch_until_down",
+                                      lambda *a: watch(*a, clock=lambda: now[0], sleep=sleep)), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                lab_tool.command_watchdog(args)
+            self.assertTrue(deletes, lose)
+            self.assertGreaterEqual(min(deletes), deadline - lab_tool.WATCHDOG_LEAD_S, lose)
+            self.assertLess(max(deletes), deadline, lose)
+            # No poll of the account more often than the poll period, and
+            # not every 5 s for hours.
+            self.assertLess(len(sleeps), 3 * 3600 / 30, lose)
+            self.assertEqual(list(api.instances), [1], lose)  # only the dev box is left
+            self.assertEqual(list(api.firewalls), [10], lose)  # another lab's is kept
+            self.assertFalse(self.systemd.active, lose)
+            self.assertNotIn(UNIT, self.systemd.enabled)
+            self.assertFalse((lab_tool.WATCHDOG_UNIT_DIR / UNIT).exists())
+            line = lab_tool.read_ledger()[-1]
+            self.assertEqual((line["run_id"], line["source"]), ("t1", "watchdog"), lose)
+            # From the last state it read: 99 nodes, 1.5 h old, 2 hours each.
+            self.assertEqual(line["instance_hours"], 99 * 2, lose)
+            self.assertAlmostEqual(line["billed_usd"], 10.422 * 2, places=3)
+            self.assertEqual(lab_tool.KNOWN_HOSTS.read_text(), "")
+        # The three labs share a run id and their times: one lab to the
+        # ledger, written once.
+        self.assertEqual(len(lab_tool.read_ledger()), 2)
 
     def test_add_racing_down_leaves_no_instance_and_no_state(self):
         api = FakeApi()

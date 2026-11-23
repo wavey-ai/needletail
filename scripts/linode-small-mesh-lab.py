@@ -28,7 +28,9 @@ Cost controls are part of the tool, not an operator convention:
   bills an hour that the deadline does not. Nothing is created while the
   unit is not active (watchdog_problems), every command on a live lab
   starts a dead one again at the recorded deadline (watchdog_ensure), and
-  `down` removes it;
+  `down` removes it. A unit whose lab state file is lost (cargo clean, a
+  worktree removed) or unreadable does not stop: it asks the account for
+  the run's tag, and deletes what carries it at its own deadline;
 * every instance carries the tag needletail-deadline:<unix>, so another
   lab's budget prices this one to its deadline, not to now;
 * the ledger (NEEDLETAIL_LINODE_LEDGER, one file for every worktree, beside
@@ -128,6 +130,9 @@ ALLOWED_CLASSES = {"dedicated"}
 # this long before it (deleting in parallel), polling this often.
 WATCHDOG_LEAD_S = 300
 WATCHDOG_POLL_S = 5
+# A watchdog whose lab state is gone asks the account for the run's
+# instances this often until its deadline nears (watch_until_down).
+WATCHDOG_ORPHAN_POLL_S = 60
 # `add` creates nothing this close to the deadline: a create that retries
 # for minutes must never land after `down` has listed the lab.
 ADD_CUTOFF_S = 900
@@ -2425,8 +2430,9 @@ def command_watchdog(args: argparse.Namespace) -> None:
     what `up` recorded).
 
     `watchdog --foreground --run-id R --deadline-unix D` is the unit's own
-    form: it watches until the lab of run R is gone, then removes the
-    unit (Restart=always would start it again to watch nothing)."""
+    form: it watches until no instance carries run R's tag
+    (watch_until_down), then removes the unit (Restart=always would start
+    it again to watch nothing)."""
     state_path = pathlib.Path(args.state)
     if args.foreground:
         if not args.run_id or not args.deadline_unix:
@@ -2458,26 +2464,114 @@ def command_watchdog(args: argparse.Namespace) -> None:
 
 
 def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id: str,
-                     deadline: int, clock=time.time, sleep=time.sleep,
-                     down=None) -> None:
-    """The watchdog unit's loop: every WATCHDOG_POLL_S, read the deadline
-    from the state (a later `watchdog --hours` moves it), and from
-    WATCHDOG_LEAD_S before it run `down` until the state is gone; a `down`
-    that fails is run again at the next poll. It writes nothing to the
-    state, so a unit started again after a reboot keeps a moved deadline."""
+                     deadline: int, clock=None, sleep=None, down=None) -> None:
+    """The watchdog unit's loop. Returns once no instance carries the run's
+    tag; it never returns while one does.
+
+    While the state file is the run's: every WATCHDOG_POLL_S, read the
+    deadline from it (a later `watchdog --hours` moves it), and from
+    WATCHDOG_LEAD_S before it run `down`; a `down` that fails is run again
+    at the next poll. It writes nothing to the state, so a unit started
+    again after a reboot keeps a moved deadline.
+
+    When the state file is gone, unreadable or another run's (`cargo
+    clean`, `rm -rf target`, a worktree removed, or `down` finished), that
+    is not proof that the lab is gone: the account is asked for the
+    instances with the run's tag. None: the loop returns. Some: they are
+    watched to the unit's own deadline (`deadline`: watchdog_arm writes
+    every moved deadline into the unit) and deleted by the tag from
+    WATCHDOG_LEAD_S before it (down_by_tag, priced from the last state the
+    loop read)."""
+    clock = clock or time.time
+    sleep = sleep or time.sleep
     down = down or command_down
+    tag = f"needletail-small-mesh-{run_id}"
+    last: dict | None = None
+    api = None
+    said = False
     while True:
-        current = read_state(state_path)
-        if current is None or current.get("run_id") != run_id:
-            return
-        due = current.get("watchdog_deadline_unix", deadline) - WATCHDOG_LEAD_S
-        if clock() >= due:
-            try:
-                down(args)
-            except (Exception, SystemExit) as error:  # noqa: BLE001 - try again
-                print(f"watchdog: down failed ({error}); trying again", file=sys.stderr,
+        try:
+            current = read_state(state_path)
+            why = None if current is None else f"another run's ({current.get('run_id')})"
+        except (OSError, ValueError) as error:
+            current, why = None, f"unreadable ({error})"
+        if isinstance(current, dict) and current.get("run_id") == run_id:
+            last = current
+            due = current.get("watchdog_deadline_unix", deadline) - WATCHDOG_LEAD_S
+            if clock() >= due:
+                try:
+                    down(args)
+                except (Exception, SystemExit) as error:  # noqa: BLE001 - try again
+                    print(f"watchdog: down failed ({error}); trying again", file=sys.stderr,
+                          flush=True)
+            sleep(WATCHDOG_POLL_S)
+            continue
+        due = deadline - WATCHDOG_LEAD_S
+        try:
+            api = api or Api()
+            if not api.list_all("/linode/instances", tag):
+                return
+            if not said:
+                print(f"watchdog: the lab state {state_path} is {why or 'gone'}, and instances "
+                      f"still carry {tag}: deleting them by the tag "
+                      f"{max(0.0, due - clock()) / 60:.0f} min from now", file=sys.stderr,
                       flush=True)
-        sleep(WATCHDOG_POLL_S)
+                said = True
+            if clock() >= due:
+                down_by_tag(api, run_id, last)
+        except (Exception, SystemExit) as error:  # noqa: BLE001 - try again
+            print(f"watchdog: by the tag {tag}: {error}; trying again", file=sys.stderr,
+                  flush=True)
+        sleep(max(WATCHDOG_POLL_S, min(WATCHDOG_ORPHAN_POLL_S, due - clock())))
+
+
+def down_by_tag(api: "Api", run_id: str, last: dict | None) -> None:
+    """The watchdog's `down` for a lab whose state file it has lost: the
+    lab is what carries the run's tag. Deletes every instance and firewall
+    with the tag and the run's VLANs, sweeps the tag again, writes the
+    ledger line ("source": "watchdog": from `last`, the last state the
+    watchdog read, with any tagged instance it does not name; else from the
+    instances found) and takes their addresses out of known_hosts. Raises
+    when tagged instances remain."""
+    tag = f"needletail-small-mesh-{run_id}"
+    prices = plan_prices(api)
+    found = {item["id"]: item for item in api.list_all("/linode/instances", tag)}
+    delete_instances(api, set(found))
+    firewalls = api.list_all("/networking/firewalls", tag)
+    for firewall in firewalls:
+        api.call("DELETE", f"/networking/firewalls/{firewall['id']}", allow_404=True)
+    if api.list_all("/linode/instances", tag):
+        raise RuntimeError("tagged Linodes remain after their delete")
+    left = delete_vlans(api, run_id)
+    if left:
+        print(f"VLANs still attached, not deleted: {', '.join(left)}", file=sys.stderr)
+    late = {item["id"]: item for item in api.list_all("/linode/instances", tag)}
+    if late:
+        delete_instances(api, set(late))
+        found.update(late)
+        if api.list_all("/linode/instances", tag):
+            raise RuntimeError("tagged Linodes remain after their delete")
+    end = time.time()
+    state = dict(last or {"nodes": {}, "removed": []})
+    named = {node.get("id") for node in state.get("nodes", {}).values()}
+    state["removed"] = list(state.get("removed", [])) + [
+        {"name": item.get("label"), "hourly_usd": instance_price(prices, item),
+         "created_unix": created_unix(item, end), "deleted_unix": end}
+        for ident, item in sorted(found.items()) if ident not in named]
+    total = billed(state, end)
+    first = state.get("created_unix") or min(
+        [created_unix(item, end) for item in found.values()] or [end])
+    ledger_append([{"run_id": run_id, "tag": tag, "worktree": str(ROOT),
+                    "topology": state.get("topology_file"), "created_unix": int(first),
+                    "removed_unix": int(end), "billed_usd": total["usd"],
+                    "instance_hours": total["instance_hours"], "source": "watchdog"}],
+                  unless=ledger_holds)
+    addresses = {(item.get("ipv4") or [None])[0] for item in found.values()}
+    addresses |= {item.get("public_ipv4") for item in
+                  list(state.get("nodes", {}).values()) + state["removed"]}
+    forget_known_hosts(addresses - {None})
+    print(f"watchdog: deleted {len(found)} Linodes and {len(firewalls)} firewalls by the tag "
+          f"{tag} (${total['usd']:.2f} billed, in the ledger {LEDGER})", flush=True)
 
 
 def main() -> None:
