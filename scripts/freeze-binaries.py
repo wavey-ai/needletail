@@ -30,7 +30,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import edge_lab as lab  # noqa: E402
 import lab_guard  # noqa: E402
 
-SETS = lab.ROOT / "target" / "bin-sets"
+SETS = lab_guard.BIN_SETS
 UDP_CLIENT = pathlib.Path(os.environ.get(
     "NEEDLETAIL_UDP_CLIENT_BIN", str(lab.MESH_ROOT / "target" / "release" / "needletail-udp-client")))
 # Label, where it is built, the variable that the lab and the bench read.

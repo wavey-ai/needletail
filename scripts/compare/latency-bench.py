@@ -2101,13 +2101,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     guard.require_frozen(run_binaries(args, steps))
     with guard.hold(f"latency-bench.py --name {args.name}"):
+        if steps["lab_up"] is None:
+            # The lab runs already: what it runs is what its `up` took,
+            # checked once this pass holds it.
+            guard.require_frozen({}, running=guard.running_binaries())
         return run(args, steps)
 
 
 def run_binaries(args, steps: dict) -> dict:
-    """The binaries a pass runs: the lab's, the UDP client when a pass has
-    UDP listeners, the load tool when it has a crowd."""
-    out = guard.lab_binaries()
+    """The binaries a pass takes from the environment: the lab's when it
+    brings the lab up, the UDP client when a pass has UDP listeners, the
+    load tool when it has a crowd."""
+    out = guard.lab_binaries() if steps["lab_up"] is not None else {}
     if any(item["kind"] == "udp" for item in steps["video"]["viewers"] + steps["udp_clients"]):
         out["needletail-udp-client"] = pathlib.Path(args.udp_client)
     if args.load_listeners > 0 or args.load_ramp:

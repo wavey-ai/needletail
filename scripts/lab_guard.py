@@ -41,6 +41,8 @@ BIN_SET_SCHEMA = "needletail.bin-set.v1"
 # The player scenarios use fixed ports and browser profiles of the host: one
 # lab at a time.
 PLAYERS_LOCK = "players.lock"
+# The frozen sets of this worktree (freeze-binaries.py).
+BIN_SETS = lab.ROOT / "target" / "bin-sets"
 
 
 def lock_path(work: pathlib.Path | None = None) -> pathlib.Path:
@@ -191,12 +193,52 @@ def lab_binaries() -> dict[str, pathlib.Path]:
     return out
 
 
-def require_frozen(binaries: dict[str, pathlib.Path], environ=os.environ) -> None:
+def running_binaries() -> dict[str, pathlib.Path]:
+    """The binaries the running lab runs: the copies that its `up` took
+    into WORK/bin/<set> (edge_lab.snapshot_binaries), by label."""
+    out = {}
+    for build, paths in sorted(lab.load("binaries.json").items()):
+        for label, path in paths.items():
+            out[label if build == "a" else f"{label} (set {build})"] = pathlib.Path(path)
+    return out
+
+
+def recorded_sha256s() -> set[str]:
+    """The sha256 of every binary of a frozen set: the sets of this
+    worktree (target/bin-sets) and the sets that the environment's
+    binaries are in."""
+    directories = {*BIN_SETS.glob("*"),
+                   *(pathlib.Path(path).resolve().parent for path in lab_binaries().values())}
+    out = set()
+    for directory in directories:
+        try:
+            build = json.loads((directory / "build.json").read_text())
+            if build.get("schema") == BIN_SET_SCHEMA:
+                out.update(str(item["sha256"]) for item in build["binaries"].values())
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return out
+
+
+def require_frozen(binaries: dict[str, pathlib.Path], environ=os.environ,
+                   running: dict[str, pathlib.Path] | None = None) -> None:
     """Refuse a run whose binaries are not all in frozen sets, unless
-    NEEDLETAIL_ALLOW_LIVE=1."""
+    NEEDLETAIL_ALLOW_LIVE=1. `binaries` are the paths a run takes (from
+    the environment), each frozen where it lies; `running` are the copies a
+    running lab runs (running_binaries(): a run that does not `up` the lab),
+    each frozen when its bytes are a frozen set's."""
     if environ.get(ALLOW_LIVE_ENV) == "1":
         return
     live = [f"{label} {path}" for label, path in binaries.items() if not frozen(path)]
+    if running:
+        recorded = recorded_sha256s()
+        for label, path in running.items():
+            try:
+                if sha256(path) in recorded:
+                    continue
+            except OSError:
+                pass
+            live.append(f"{label} {path} (the running lab's: `up` it again from a frozen set)")
     if live:
         raise SystemExit(
             "these binaries are not in a frozen set (a build could change them during the "

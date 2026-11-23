@@ -9,6 +9,7 @@ import fcntl
 import importlib.util
 import os
 import io
+import hashlib
 import json
 import pathlib
 import shutil
@@ -891,6 +892,41 @@ class PerLab(unittest.TestCase):
             with mock.patch.object(bench, "run", return_value=0):
                 self.assertEqual(bench.main(["--name", "live", "--udp-clients", "0",
                                              "--udp-client", str(live)]), 0)
+
+    def test_a_pass_on_a_running_lab_checks_what_the_lab_runs(self):
+        """--no-up: the gate is the copies the lab's `up` took, not the
+        shell's exports."""
+        frozen_set = self.dir / "sets" / "w30"
+        frozen_set.mkdir(parents=True)
+        (frozen_set / "av-mesh").write_bytes(b"frozen build")
+        (frozen_set / "build.json").write_text(json.dumps(
+            {"schema": bench.guard.BIN_SET_SCHEMA, "label": "w30", "binaries": {"av-mesh": {
+                "sha256": hashlib.sha256(b"frozen build").hexdigest()}}}))
+        built = self.dir / "built"
+        built.mkdir()
+        (built / "av-mesh").write_bytes(b"live build")
+        running = self.dir / "lab" / "bin" / "a" / "av-mesh"
+        running.parent.mkdir(parents=True)
+        running.write_bytes(b"live build")
+        (self.dir / "lab" / "binaries.json").write_text(json.dumps({"a": {"av-mesh": str(running)}}))
+        arguments = ["--name", "x", "--no-up", "--udp-clients", "0"]
+        with mock.patch.object(bench.guard, "BIN_SETS", self.dir / "sets"), \
+                mock.patch.dict(os.environ):
+            os.environ.pop("NEEDLETAIL_ALLOW_LIVE", None)
+            # The shell exports a frozen set, but the lab was brought up
+            # from a live build: refused.
+            with mock.patch.object(bench, "run", side_effect=AssertionError("the pass ran")), \
+                    mock.patch.object(bench.guard, "lab_binaries",
+                                      return_value={"av-mesh": frozen_set / "av-mesh"}):
+                with self.assertRaisesRegex(SystemExit, r"av-mesh .*the running lab's"):
+                    bench.main(arguments)
+            # The lab runs a copy of a frozen binary: a shell without the
+            # exports passes.
+            running.write_bytes(b"frozen build")
+            with mock.patch.object(bench, "run", return_value=0), \
+                    mock.patch.object(bench.guard, "lab_binaries",
+                                      return_value={"av-mesh": built / "av-mesh"}):
+                self.assertEqual(bench.main(arguments), 0)
 
 
 if __name__ == "__main__":
