@@ -29,8 +29,9 @@ Safety, before anything else:
   touched: not started, stopped, drained, restarted, booted or rebuilt.
 * Before every create, a budget guard: this lab projected to its watchdog's
   deadline in whole billed hours, the new slots included, plus the other
-  labs' live needletail instances and what earlier labs spent, within
-  --budget-usd (required with the linode backend). It refuses when the
+  labs' live needletail instances and what earlier labs spent
+  (--spent-before-usd), within --budget-usd (both required with the linode
+  backend: unknown is not 0); it runs on the worker. It refuses when the
   watchdog is not armed, is less than 15 min ahead, or is set past
   --max-watchdog-hours (6.0) of the lab's life (the lab tool's
   watchdog_problems; `add` applies the same rule). A slot whose create
@@ -68,10 +69,13 @@ Safety, before anything else:
   slot that cannot be recovered is deleted by its recorded id (tag and
   label checked). A lost first forwarder is never touched: with
   --forwarders its region's slot joins until it is back.
-* Stopped from outside (SIGINT or SIGTERM), it resumes every drain in
-  flight before it exits. One change command or controller per lab: the ops
-  lock (`<lab state>.ops.lock`) is held for the controller's life and by
-  the `scale` verbs.
+* However it stops (SIGINT or SIGTERM, its --duration, its change, a
+  failure), it hands the worker nothing more, waits for the worker's job in
+  hand (up to 120 s, then ends that job's tool and names it), and resumes
+  every drain in flight before it exits. One change command or controller
+  per lab: the ops lock (`<lab state>.ops.lock`) is held for the
+  controller's life and by the `scale` verbs, and let go only after the
+  worker's job.
 * Nothing is pushed to a slot that the lab's Cloud Firewall does not
   cover (the lab tool deletes a slot whose firewall cannot be set).
 * Hysteresis (scale up at a mean of 700 permille for 3 samples, one edge
@@ -93,7 +97,9 @@ Safety, before anything else:
 
 One command per change, each printing its own two marks on stdout (`start
 <unix.ns> <label>`, `end ...`; the referee's change-window.py reads them)
-and nothing else there: `scale up|down --site S` takes the candidate or the
+and nothing else there (every other line of the process goes to stderr),
+after this host's clock was compared with one node of each region (over
+50 ms: refused): `scale up|down --site S` takes the candidate or the
 victim the controller would take and ends when the new node serves and the
 region's rebalance has been still for 5 s (at most 60 s after it serves), or
 when the drained node is stopped; `run --until join|stopped` lets the
@@ -133,15 +139,17 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
-from mesh_ops import (EMPTY_HOLD_S, HTTP_PORT, LIVE_MS, Http, Marks, Ops,  # noqa: E402
-                      OpsLock, Refused, address_of, control_accepted, control_body,
-                      forwarder_gate, gauge, http_post, status_of)
+from mesh_ops import (CLOCK_LIMIT_S, EMPTY_HOLD_S, HTTP_PORT, LIVE_MS, Http,  # noqa: E402
+                      Marks, Ops, OpsLock, Refused, address_of, control_accepted,
+                      control_body, forwarder_gate, gauge, http_post, signals_held,
+                      status_of)
 SCHEMA = "needletail.autoscale.v1"
 # Never touched, whatever a state file says.
 DENY = {"arch-us-east"}
@@ -170,6 +178,11 @@ RECOVER_TIMEOUT_S = 1800.0
 REBALANCE_STILL_S = 5.0
 # ... or this long after the new node serves.
 REBALANCE_BOUND_S = 60.0
+# A controller that stops waits this long for the worker's job in flight
+# (a create, a push, a rebuild) before it ends that job's tool and lets the
+# ops lock go: scale-run sends SIGINT, then SIGTERM 90 s later, then
+# SIGKILL 90 s after that.
+WIND_DOWN_WAIT_S = 120.0
 # Exit status of the change verbs (as mesh_ops): done, refused before
 # anything changed, the change failed, interrupted.
 EXIT_DONE, EXIT_REFUSED, EXIT_FAILED, EXIT_INTERRUPTED = 0, 2, 3, 130
@@ -218,7 +231,9 @@ class Config:
     lease_k: int = 12
     forwarder_cpu: float = 0.60
     budget_usd: float | None = None
-    spent_before_usd: float = 0.0
+    # What earlier labs of the work spent; required with the linode backend
+    # for any create (unknown is not 0).
+    spent_before_usd: float | None = None
     max_watchdog_hours: float = 6.0
     # Seconds between two "hold" decisions of a region written to the
     # events (every other decision is written when it is taken).
@@ -348,6 +363,20 @@ class Backend:
     def rebuild(self, name: str) -> None:
         raise NotImplementedError
 
+    def forget_host(self, name: str) -> None:
+        """Forget the node's ssh host key and close its kept connection
+        (a rebuilt host has a new key). Idempotent."""
+        raise NotImplementedError
+
+    def clock_offset(self, name: str) -> float | None:
+        """The node's clock minus this host's, in seconds; None when it
+        cannot be read."""
+        raise NotImplementedError
+
+    def terminate_children(self) -> None:
+        """End the tools this backend started that still run (the
+        controller stops and will not wait for them)."""
+
     def budget(self, new: list[str], offline: bool = False) -> tuple[bool, dict]:
         return True, {}
 
@@ -391,6 +420,12 @@ class Guarded(Backend):
     def probe(self, name):
         return self.inner.probe(name)
 
+    def clock_offset(self, name):
+        return self.inner.clock_offset(name)
+
+    def terminate_children(self) -> None:
+        self.inner.terminate_children()
+
     def adopt(self, record: bool = True) -> list[dict]:
         return self.inner.adopt(record and not self.dry_run)
 
@@ -413,12 +448,17 @@ class Guarded(Backend):
         getattr(self.inner, verb)(*args)
 
     def create(self, names: list[str]) -> None:
+        """Create slots, after the budget guard (on the worker: it reads
+        the account, which can take a minute of retries)."""
         for name in names:
             node = self.node(name)
             if not node.get("slot"):
                 raise Refused(f"create {name}: not an autoscale slot of the lab")
             if node.get("created"):
                 raise Refused(f"create {name}: it exists already")
+        ok, figures = self.budget(list(names))
+        if not ok:
+            raise Refused(f"budget: {json.dumps(figures)}")
         self.call("create", ",".join(names), list(names))
 
     def push(self, names: list[str]) -> None:
@@ -455,6 +495,10 @@ class Guarded(Backend):
         if step not in self.STEPS:
             raise Refused(f"{step} is not a step of the recovery ladder")
         self.call(step, name, name)
+
+    def forget_host(self, name: str) -> None:
+        self.node(name)
+        self.call("forget_host", name, name)
 
     def delete(self, name: str, proof: str | None = None) -> None:
         """Delete a slot. `proof` is why it may go: "drained-to-zero" (its
@@ -600,15 +644,27 @@ def merge_views(roster: dict[str, list[dict]], entries: dict[str, dict | None],
 
 
 def first_entry(nodes: list[dict], fetch) -> dict | None:
-    """The first created node of a site in service whose
-    `/api/assignment` answers with caches: the site's entry."""
-    for node in nodes:
-        if node.get("created") and not node.get("held"):
-            status, found = fetch(node)
-            if status == 200 and isinstance(found, dict) \
-                    and isinstance(found.get("caches"), list):
-                return found
-    return None
+    """The site's entry: the first created node in service, in roster
+    order, whose `/api/assignment` answers with caches. The first is asked
+    alone; when it does not answer, the rest are asked at once, so a dead
+    entry costs one timeout, not one per node before the one that
+    answers."""
+    candidates = [node for node in nodes if node.get("created") and not node.get("held")]
+
+    def answer(reply: tuple) -> dict | None:
+        status, found = reply
+        if status == 200 and isinstance(found, dict) and isinstance(found.get("caches"), list):
+            return found
+        return None
+
+    if not candidates:
+        return None
+    found = answer(fetch(candidates[0]))
+    if found is not None or len(candidates) == 1:
+        return found
+    with ThreadPoolExecutor(max_workers=len(candidates) - 1) as pool:
+        replies = list(pool.map(fetch, candidates[1:]))
+    return next((item for item in map(answer, replies) if item is not None), None)
 
 
 class LinodeBackend(Backend):
@@ -633,6 +689,8 @@ class LinodeBackend(Backend):
         self.http = http or Http()
         self.lock_env: dict = {}
         self._api = None
+        self._children: set = set()
+        self._children_lock = threading.Lock()
 
     def api(self):
         if self._api is None:
@@ -705,6 +763,9 @@ class LinodeBackend(Backend):
         return self.http.get(node["public_ipv4"], HTTP_PORT, path)
 
     def observe(self, roster):
+        """The regions' entries and every node's /api/node at once: a dead
+        node costs the tick one timeout, not one for its entry and another
+        for its status."""
         path = f"/api/assignment?stream={self.stream}"
 
         def fetch(node: dict) -> tuple:
@@ -712,22 +773,53 @@ class LinodeBackend(Backend):
                 else (None, None)
 
         sites = list(roster)
-        with ThreadPoolExecutor(max_workers=max(1, len(sites))) as pool:
-            entries = dict(zip(sites, pool.map(lambda site: first_entry(roster[site], fetch),
-                                               sites)))
         names = [node["name"] for nodes in roster.values() for node in nodes
                  if node.get("created")]
-        return merge_views(roster, entries, self.documents(names))
+        with ThreadPoolExecutor(max_workers=len(sites) + 1) as pool:
+            documents = pool.submit(self.documents, names)
+            entries = dict(zip(sites, pool.map(lambda site: first_entry(roster[site], fetch),
+                                               sites)))
+            return merge_views(roster, entries, documents.result())
 
     def subprocess_env(self) -> dict:
         return {**os.environ, "NEEDLETAIL_LINODE_LAB_STATE": str(self.state_path),
                 **self.lock_env}
 
+    def run_child(self, command: list[str], timeout: float) -> subprocess.CompletedProcess:
+        """A tool's process (deploy, lab replace), in its own process group
+        so that a controller that stops and will not wait for it can end it
+        (terminate_children) rather than leave it running under a lock that
+        is let go."""
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=self.subprocess_env(),
+                              start_new_session=True) as child:
+            with self._children_lock:
+                self._children.add(child)
+            try:
+                out, err = child.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(child.pid, signal.SIGTERM)
+                child.communicate()
+                raise RuntimeError(f"{' '.join(command[1:4])}: no result in {timeout:.0f} s; "
+                                   "ended") from None
+            finally:
+                with self._children_lock:
+                    self._children.discard(child)
+        return subprocess.CompletedProcess(command, child.returncode, out, err)
+
+    def terminate_children(self) -> None:
+        with self._children_lock:
+            children = list(self._children)
+        for child in children:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
     def deploy(self, verb: str, names: str) -> None:
         command = [sys.executable, str(HERE / "linode-small-mesh-deploy.py"), verb,
                    "--nodes", names]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=1800,
-                                env=self.subprocess_env())
+        result = self.run_child(command, 1800)
         if result.returncode != 0:
             raise RuntimeError(f"deploy {verb} --nodes {names}: {result.stderr[-1500:]}")
 
@@ -763,12 +855,17 @@ class LinodeBackend(Backend):
                 out.append({"id": item["id"], "label": item["label"], "name": name,
                             "adopted": False, "why": "dry run"})
                 continue
-            self.record_adopted(name, item, slots[name])
+            why = self.record_adopted(name, item, slots[name])
             out.append({"id": item["id"], "label": item["label"], "name": name,
-                        "adopted": True})
+                        "adopted": why is None, **({"why": why} if why else {})})
         return out
 
-    def record_adopted(self, name: str, item: dict, slot: dict) -> None:
+    def record_adopted(self, name: str, item: dict, slot: dict) -> str | None:
+        """Record the instance as the slot, as create_node records it, then
+        give it the lab firewall; one whose firewall cannot be set is
+        deleted at once, as add_nodes does (never pushed or served with
+        every port open, never left recorded without its firewall). None
+        when adopted, else why not."""
         state = self.lab.read_state(self.state_path)
         identity = self.identity()
         if state is None or state.get("run_id") != identity["run_id"] \
@@ -786,16 +883,26 @@ class LinodeBackend(Backend):
                                         for node in state["nodes"].values()), 4)
         self.lab.write_state(self.state_path, state)
         api = self.api()
-        api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
-                 self.lab.firewall_rules(state))
-        api.call("POST", f"/networking/firewalls/{state['firewall_id']}/devices",
-                 {"id": item["id"], "type": "linode"})
+        try:
+            api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
+                     self.lab.firewall_rules(state))
+            api.call("POST", f"/networking/firewalls/{state['firewall_id']}/devices",
+                     {"id": item["id"], "type": "linode"})
+        except Exception as error:  # noqa: BLE001 - no node serves without the firewall
+            try:
+                self.lab.remove_nodes(api, self.state_path, state, [name], slots_only=True,
+                                      refresh_firewall=False)
+            except (Exception, SystemExit) as again:  # noqa: BLE001
+                return (f"the lab firewall could not be set ({error}) and the instance could "
+                        f"not be deleted ({again}): run down")
+            return f"the lab firewall could not be set ({error}): deleted"
+        return None
 
     def create(self, names: list[str]) -> None:
+        """add_slots, after Guarded.create's budget guard; add_slots applies
+        the watchdog, the ceilings, the dedicated plans and the budget
+        again."""
         state = self.state()
-        ok, figures = self.budget(names)
-        if not ok:
-            raise Refused(f"budget: {json.dumps(figures)}")
         args = argparse.Namespace(state=str(self.state_path),
                                   ssh_public_key=self.ssh_public_key)
         other = self.lab.account_billed(self.api(), state["tag"])["usd"]
@@ -861,13 +968,37 @@ class LinodeBackend(Backend):
         status = live.get("status") if live else "gone"
         ssh = active = None
         if status == "running":
-            result = common.ssh(self.node(name), f"systemctl is-active {MESH_SERVICE}",
-                                check=False, timeout=30)
-            # ssh exits 255 when it could not reach the node or log in.
-            ssh = result.returncode != 255
-            if ssh:
-                active = result.stdout.decode(errors="replace").strip() == "active"
+            try:
+                result = common.ssh(self.node(name), f"systemctl is-active {MESH_SERVICE}",
+                                    check=False, timeout=30)
+            except subprocess.TimeoutExpired:
+                # A host that takes TCP and never finishes the handshake, or
+                # a stale kept connection: ssh does not answer.
+                ssh = False
+            else:
+                # ssh exits 255 when it could not reach the node or log in.
+                ssh = result.returncode != 255
+                if ssh:
+                    active = result.stdout.decode(errors="replace").strip() == "active"
         return {"ssh": ssh, "unit_active": active, "instance": status}
+
+    def clock_offset(self, name: str) -> float | None:
+        """The node's clock minus this host's, from the quickest of three
+        reads over the kept ssh connection (the midpoint of each), as the
+        deploy tool's LinodeOps reads it."""
+        import small_mesh_common as common  # noqa: PLC0415
+        node = self.node(name)
+        best = None
+        for _ in range(3):
+            began = time.time()
+            try:
+                remote = float(common.ssh_text(node, "date +%s.%N", timeout=30))
+            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError):
+                continue
+            ended = time.time()
+            if best is None or ended - began < best[0]:
+                best = (ended - began, remote - (began + ended) / 2)
+        return None if best is None else best[1]
 
     def restart(self, name: str) -> None:
         import small_mesh_common as common  # noqa: PLC0415
@@ -884,15 +1015,19 @@ class LinodeBackend(Backend):
         included; the instance, its id, both addresses and its billing
         continue), then the host's old key is forgotten: the rebuilt host
         has a new one."""
-        import small_mesh_common as common  # noqa: PLC0415
-        address = self.public(name)
         command = [sys.executable, str(HERE / "linode-small-mesh-lab.py"), "replace", name,
                    "--mode", "rebuild", "--ssh-public-key", self.ssh_public_key]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=3600,
-                                env=self.subprocess_env())
+        result = self.run_child(command, 3600)
         if result.returncode != 0:
             raise RuntimeError(f"lab replace {name} --mode rebuild: "
                                f"{(result.stderr or result.stdout)[-1500:]}")
+        self.forget_host(name)
+
+    def forget_host(self, name: str) -> None:
+        """The host's key out of the worktree's known_hosts and its kept
+        ssh connection closed (ssh refuses a host whose key changed)."""
+        import small_mesh_common as common  # noqa: PLC0415
+        address = self.public(name)
         subprocess.run(["ssh-keygen", "-R", address, "-f", str(common.KNOWN_HOSTS)],
                        capture_output=True, timeout=30)
         subprocess.run(["ssh", *common.ssh_base(), "-O", "exit", f"root@{address}"],
@@ -906,6 +1041,9 @@ class LinodeBackend(Backend):
         state = self.state()
         if self.config.budget_usd is None:
             return False, {"why": "no --budget-usd"}
+        if self.config.spent_before_usd is None:
+            return False, {"why": "no --spent-before-usd: what earlier labs of the work spent "
+                                  "is not known"}
         # The lab tool's own rule (add_slots applies it again): armed, at
         # least 15 min ahead, at most max_watchdog_hours into the lab's life.
         problems = self.lab.watchdog_problems(state, time.time(), self.config.max_watchdog_hours)
@@ -1057,6 +1195,13 @@ class EdgeLabBackend(Backend):
     def rebuild(self, name):
         raise Refused(f"rebuild {name}: the local lab has no instance to rebuild")
 
+    def forget_host(self, name):
+        """Nothing to forget: the local lab is not reached over ssh."""
+
+    def clock_offset(self, name):
+        """The namespaces share this host's clock."""
+        return 0.0
+
 
 # ------------------------------------------------------------------ worker
 
@@ -1069,7 +1214,9 @@ class Worker:
     other jobs one by one in order, and keeps each job's result for the tick
     (`take_all`). A job is {"id", "verb", "names", ...}: create, push,
     start, stop (with "gate": the forwarder gate first), delete (with its
-    "proof"), recover (with its "step": probe, restart, boot or rebuild)."""
+    "proof"), recover (with its "step": probe, restart, boot or rebuild),
+    forget_host. Once closed it starts nothing more: a job handed over and
+    not started gets a result that says it was dropped."""
 
     def __init__(self, backend: Backend, config: Config, clock=time.time):
         self.backend = backend
@@ -1116,10 +1263,27 @@ class Worker:
                 self.cond.wait(left)
         return True
 
-    def close(self) -> None:
+    @staticmethod
+    def dropped(job: dict) -> dict:
+        return {"ok": False, "refused": False, "dropped": True, "verb": job["verb"],
+                "names": job["names"], "error": "dropped: the controller stopped before it ran"}
+
+    def close(self, wait_s: float = 0.0) -> bool:
+        """Start nothing more (what is queued is dropped) and wait up to
+        `wait_s` for the job in hand. Whether the worker is idle."""
+        deadline = time.monotonic() + wait_s
         with self.cond:
             self.closed = True
+            for job in self.queue:
+                self.results[job["id"]] = self.dropped(job)
+            self.queue = []
             self.cond.notify_all()
+            while self.busy:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self.cond.wait(left)
+        return True
 
     def loop(self) -> None:
         while True:
@@ -1132,6 +1296,11 @@ class Worker:
                 self.busy = True
             try:
                 for verb, jobs in self.groups(batch):
+                    with self.cond:
+                        if self.closed:
+                            for job in jobs:
+                                self.results[job["id"]] = self.dropped(job)
+                            continue
                     self.run(verb, jobs)
             finally:
                 with self.cond:
@@ -1508,6 +1677,9 @@ class Controller:
         # `run --until`: "join" or "drain", the kind of the first action
         # to follow with marks.
         self.until: str | None = None
+        # How long a controller that stops waits for the worker's job.
+        self.stop_wait_s = WIND_DOWN_WAIT_S
+        self.closed = False
 
     # -- state
     def load(self) -> dict:
@@ -1543,7 +1715,19 @@ class Controller:
         self.events("failure", node=name, what=what, detail=detail[-500:])
 
     def close(self) -> None:
-        self.worker.close()
+        """Stop the worker: nothing queued is started, the job in hand is
+        waited for up to stop_wait_s, and if it is still running then, the
+        tool it runs is ended and named. The caller lets the ops lock go
+        only after this."""
+        if self.closed:
+            return
+        self.closed = True
+        if not self.worker.close(self.stop_wait_s):
+            self.events("worker_abandoned", wait_s=self.stop_wait_s,
+                        why="the worker's job was still running when the controller stopped: "
+                            "its tool was ended; a controller started again adopts or repeats "
+                            "it")
+            self.backend.terminate_children()
 
     # -- jobs
     def queue(self, holder: dict, verb: str, names: list[str], **extra) -> None:
@@ -1591,11 +1775,14 @@ class Controller:
         """One pass. `decide` False (a `scale` verb): only the actions in
         flight are carried on."""
         now = self.clock()
+        # The worker's results before the roster: every result this tick
+        # handles is older than the roster it reads (a create that finished
+        # during the observation is the next tick's).
+        self.finished.update(self.worker.take_all())
         roster = self.backend.roster()
         obs = self.backend.observe(roster)
         by_name = {node["name"]: node for nodes in roster.values() for node in nodes}
         self.obs = obs
-        self.finished.update(self.worker.take_all())
         self.watched = decide
         if decide:
             self.watch_lost(now, roster, obs, by_name)
@@ -1657,11 +1844,7 @@ class Controller:
         region["last_add_unix"] = now
         started = []
         for name, how in decision["targets"]:
-            if how == "create":
-                ok, figures = self.backend.budget([name])
-                if not ok:
-                    self.fail(name, "budget", json.dumps(figures))
-                    continue
+            # A create's budget guard runs on the worker (Guarded.create).
             timeout = (self.config.create_timeout_s if how == "create"
                        else self.config.join_timeout_s)
             self.state["warm"].pop(name, None)
@@ -1796,6 +1979,9 @@ class Controller:
                 self.events("serving", node=name, region=action["site"], how=action["how"],
                             trigger_to_fresh_s=round(now - action["trigger_unix"], 3))
                 self.done(name, "serving")
+                # Back in service after it was held out for its spare: a
+                # later loss of it brings a spare again.
+                self.state["replaced"].pop(name, None)
             elif now > action["deadline_unix"]:
                 self.fail(name, "join", "not serving (fresh, not draining, ready) before the "
                                         "deadline")
@@ -1888,40 +2074,68 @@ class Controller:
         """A join that failed: its node is stopped (a job), and a slot that
         exists is held out in the warm pool as never served, so that it is
         reused or deleted at the end of its paid hour rather than left to
-        bill until `down`."""
+        bill until `down`. The warm entry follows its stop (release_warm):
+        until the stop is done the slot is not yet held out."""
         if not node.get("created"):
             return
-        self.queue({}, "stop", [name])
         if node.get("slot"):
-            self.state["warm"][name] = {"since_unix": self.clock(), "proof": proof}
+            item = {"since_unix": self.clock(), "proof": proof, "stopping": True}
+            self.state["warm"][name] = item
+            self.queue(item, "stop", [name])
             self.events("parked", node=name, why="its join failed; held out in the warm pool")
+        else:
+            self.queue({}, "stop", [name])
 
     def wind_down(self) -> None:
-        """The controller is being stopped (a scale run's step ends early):
-        every drain it has sent and not finished with a stop is resumed, so
-        no edge stays draining with nobody to finish it. A join or a
-        recovery is left in the state as it is (a controller started again
-        adopts it or waits for it; `down` deletes the lab's slots in any
-        case), and named in the event."""
-        for name in sorted(self.state["actions"]):
-            action = self.state["actions"][name]
-            if action["kind"] != "drain":
-                continue
-            if action.get("drain_sent") and action["phase"] in ("drain", "stop"):
-                self.fail(name, "drain interrupted", "the controller was stopped: resumed")
-                self.resume_after_failure(name)
-            elif action["phase"] in ("stopping", "delete", "deleting") and \
-                    self.backend._roster.get(name, {}).get("slot"):
-                # Stopped or being stopped: kept stopped, released by the
-                # warm pool.
-                self.state["warm"][name] = {"since_unix": self.clock(),
-                                            "proof": "drained-to-zero"}
-            self.state["actions"].pop(name, None)
-        left = sorted(self.state["actions"])
-        self.events("wound_down", joins_left=left, warm=sorted(self.state["warm"]),
-                    why="stopped from outside; drains in flight resumed")
-        self.save()
-        self.flush()
+        """The controller stops (stopped from outside, its --duration or
+        its change over, or a failure): no new work is handed over (this
+        tick's jobs and the worker's queue are dropped; their phases are
+        saved, so a controller started again repeats or adopts them), the
+        worker's job in hand is waited for (close), and every drain it has
+        sent and not finished with a stop is resumed, so no node stays
+        draining with nobody to finish it. A join or a recovery is left in
+        the state as it is (a controller started again adopts it or waits
+        for it; `down` deletes the lab's slots in any case), and named in
+        the event. Signals wait until it is done."""
+        with signals_held():
+            for job in self.pending:
+                self.finished[job["id"]] = Worker.dropped(job)
+            dropped = [f"{job['verb']} {','.join(job['names'])}" for job in self.pending]
+            self.pending = []
+            self.close()
+            self.finished.update(self.worker.take_all())
+            for name in sorted(self.state["actions"]):
+                action = self.state["actions"][name]
+                if action["kind"] == "recover" and action["phase"] == "rebuilding" \
+                        and (self.finished.get(action.get("job")) or {}).get("dropped"):
+                    # Never started: nothing was done to the instance.
+                    action.pop("job")
+                    action.update(phase="probe", step=None)
+                if action["kind"] != "drain":
+                    continue
+                phase = action["phase"]
+                if phase in ("stopping", "deleting"):
+                    result = self.take(action)
+                    if result is None:
+                        continue  # still running: a controller started again finds it
+                    if phase == "stopping":
+                        phase = "stopped" if result["ok"] else "stop"
+                    else:
+                        phase = "deleted" if result["ok"] else "delete"
+                if phase in ("drain", "stop"):
+                    if action.get("drain_sent"):
+                        self.fail(name, "drain interrupted", "the controller stopped: resumed")
+                        self.resume_after_failure(name)
+                elif phase in ("stopped", "delete") \
+                        and self.backend._roster.get(name, {}).get("slot"):
+                    # Stopped: kept stopped, released by the warm pool.
+                    self.state["warm"][name] = {"since_unix": self.clock(),
+                                                "proof": "drained-to-zero"}
+                self.state["actions"].pop(name)
+            left = sorted(self.state["actions"])
+            self.events("wound_down", left=left, warm=sorted(self.state["warm"]),
+                        dropped=dropped, why="the controller stops; drains in flight resumed")
+            self.save()
 
     def resume_after_failure(self, name: str) -> None:
         try:
@@ -1940,6 +2154,9 @@ class Controller:
             if item.get("job"):
                 result = self.take(item)
                 if result is None:
+                    continue
+                if item.pop("stopping", False):
+                    self.parked_stop(name, item, result)
                     continue
                 if result["ok"]:
                     self.events("deleted", node=name, why="warm slot at the end of its paid hour",
@@ -1973,6 +2190,22 @@ class Controller:
                 continue
             item["hours"] = hours
             self.queue(item, "delete", [name], proof=item.get("proof", "warm"))
+
+    def parked_stop(self, name: str, item: dict, result: dict) -> None:
+        """The stop of a parked slot: done, it is held out and released at
+        the end of its paid hour; not run (its controller stopped), asked
+        again; failed five times, the slot is deleted with its proof."""
+        if result["ok"]:
+            return
+        if not (result.get("orphaned") or result.get("dropped")):
+            item["stop_errors"] = item.get("stop_errors", 0) + 1
+            self.events("error", node=name, phase="park stop", detail=result["error"][-500:])
+        if item.get("stop_errors", 0) >= 5:
+            self.fail(name, "park stop", "not stopped after five attempts: deleted")
+            self.queue(item, "delete", [name], proof=item.get("proof", "never-served"))
+            return
+        item["stopping"] = True
+        self.queue(item, "stop", [name])
 
     # -- lost nodes
     def lost_candidate(self, node: dict) -> bool:
@@ -2152,7 +2385,9 @@ class Controller:
         """The ladder (3.8), one step per probe: probe -> restart | boot |
         rebuilding -> pushing -> settle. A step is taken only while the node
         is silent this tick (no peer hears it, its site is not blind); a
-        node that answers ready is recovered."""
+        node that answers ready is recovered. A rebuild whose controller
+        died goes forget -> forgetting -> awaiting (probes until the
+        instance runs and ssh answers) -> pushing: never a second rebuild."""
         if view.get("answered") and view.get("ready") is True:
             self.events("recovered", node=name, how=action.get("step") or "by itself",
                         seconds=round(now - action["started_unix"], 3))
@@ -2184,7 +2419,20 @@ class Controller:
                 self.recover_failed(name, action, node, f"{action['step']} done, not ready "
                                                         f"within {RECOVER_SETTLE_S:.0f} s")
             return
+        if phase == "forget":
+            if now >= action.get("next_probe_unix", 0):
+                self.queue(action, "forget_host", [name])
+                action["phase"] = "forgetting"
+            return
         result = self.take(action)
+        if phase == "forgetting" and result is not None and not result.get("orphaned"):
+            if result["ok"]:
+                action["phase"] = "awaiting"
+            else:
+                self.events("error", node=name, phase="forget host",
+                            detail=result["error"][-500:])
+                action.update(phase="forget", next_probe_unix=now + PROBE_EVERY_S)
+            return
         if phase == "awaiting":
             # The rebuild of a controller that is gone: wait for the
             # instance, never rebuild again.
@@ -2213,7 +2461,11 @@ class Controller:
                 self.events("recover_wait", node=name,
                             why="a rebuild was in flight when the controller stopped: waiting "
                                 "for the instance, not rebuilding again")
-                action["phase"] = "awaiting"
+                # The rebuilt host has a new key, which that controller did
+                # not live to forget: forgotten first, or ssh refuses it.
+                action["phase"] = "forget"
+            elif phase == "forgetting":
+                action["phase"] = "forget"
             elif phase == "pushing":
                 self.queue(action, "push", [name])
             else:
@@ -2281,6 +2533,32 @@ class Controller:
                                             "reason": f"{spare} took its place"}, now)
 
     # -- a change with marks
+    def clock_check(self, roster: dict, obs: dict | None = None) -> None:
+        """Before the first mark (2.7): this host's clock against one node
+        of each region of the roster (a node that answered first; the next
+        when one cannot be read), refused above CLOCK_LIMIT_S. Marks are
+        stamped here and judged against probes stamped on the view hosts."""
+        offsets = {}
+        for site in sorted(roster):
+            nodes = sorted((node for node in roster[site]
+                            if node.get("created") and not node.get("held")),
+                           key=lambda node: not ((obs or {}).get(node["name"]) or {}).get(
+                               "answered"))
+            if not nodes:
+                continue
+            for node in nodes[:2]:
+                offset = self.backend.clock_offset(node["name"])
+                if offset is not None:
+                    break
+            if offset is None:
+                raise Refused(f"the clock of no node of {site} could be read "
+                              f"({', '.join(node['name'] for node in nodes[:2])})")
+            offsets[site] = {"node": node["name"], "offset_ms": round(offset * 1000, 3)}
+            if abs(offset) > CLOCK_LIMIT_S:
+                raise Refused(f"the clock of {node['name']} is {offset * 1000:.0f} ms from this "
+                              f"host's (at most {CLOCK_LIMIT_S * 1000:.0f} ms)")
+        self.events("clock_check", offsets=offsets)
+
     def open_change(self, label: str, kind: str, names: list[str], site: str) -> None:
         for name in names:
             self.outcomes.pop(name, None)
@@ -2342,27 +2620,39 @@ class Controller:
         self.marks = marks
         self.until = {"join": "join", "stopped": "drain", None: None}[until]
         self.begin()
+        if until:
+            self.clock_check(self.backend.roster())
         end = None if duration is None else self.clock() + duration
+        code = None
         try:
             while True:
                 began = self.clock()
                 self.tick()
                 if until and self.change and self.change["result"]:
                     self.finish_change()
-                    return EXIT_DONE if self.change["result"] == "done" else EXIT_FAILED
+                    code = EXIT_DONE if self.change["result"] == "done" else EXIT_FAILED
+                    break
                 if once or (end is not None and self.clock() >= end):
                     break
                 sleep(max(0.0, self.config.poll_s - (self.clock() - began)))
-        except KeyboardInterrupt:
-            # SIGINT, or SIGTERM (main turns it into this): stopped from
-            # outside, perhaps mid-action. Leave no node draining.
-            self.wind_down()
-            raise
+        except Exception as error:  # noqa: BLE001 - named, and nothing left draining
+            # SIGINT or SIGTERM (main turns it into KeyboardInterrupt) is
+            # not caught here: stopped from outside, it winds down below.
+            self.fail("controller", "tick", f"{type(error).__name__}: {error}")
+            self.events("error", node=None, phase="tick", detail=traceback.format_exc()[-1500:])
+            code = EXIT_FAILED
         finally:
-            if self.marks is not None:
-                self.marks.close()
-            self.events("controller_stop", actions=sorted(self.state["actions"]),
-                        warm=sorted(self.state["warm"]), dry_run=self.backend.dry_run)
+            # Whatever ends it (its duration, its change, a failure, an
+            # interrupt): no node left draining, the worker's job waited
+            # for, the marks closed.
+            with signals_held():
+                self.wind_down()
+                if self.marks is not None:
+                    self.marks.close()
+                self.events("controller_stop", actions=sorted(self.state["actions"]),
+                            warm=sorted(self.state["warm"]), dry_run=self.backend.dry_run)
+        if code is not None:
+            return code
         if until:
             self.events("change_end", label=None, result="failed",
                         why=f"no {until} of the controller within the duration")
@@ -2415,13 +2705,7 @@ def command_scale(controller: Controller, direction: str, site: str, tier: str,
             ok, figures = controller.backend.budget([name])
             if not ok:
                 raise Refused(f"budget: {json.dumps(figures)}")
-        controller.open_change(label, "join", [name], site)
-        started = controller.join(site, {"targets": [(name, how)], "reason": "scale up",
-                                         "tier": "forwarder" if tier != "edges" else "edge"},
-                                  now, by_name)
-        if not started:
-            controller.change["result"] = "failed"
-            marks.end(label)
+        targets, kind = [(name, how)], "join"
     else:
         serving = [node for node in members if (obs.get(node["name"]) or {}).get("advertised")
                    and not (obs.get(node["name"]) or {}).get("draining")
@@ -2438,26 +2722,36 @@ def command_scale(controller: Controller, direction: str, site: str, tier: str,
                      and (obs.get(node["name"]) or {}).get("cache_children") is not None][:1]
         if not found:
             raise Refused(f"no {role} of {site} that may be drained (live gauges, not first)")
-        controller.open_change(label, "drain", found, site)
-        controller.start_drain(site, {"targets": [(found[0], "drain")], "reason": "scale down",
-                                      "tier": "forwarder" if tier != "edges" else "edge"},
-                               now, by_name)
-    controller.save()
-    controller.flush()
+        targets, kind = [(found[0], "drain")], "drain"
+    controller.clock_check(roster, obs)
+    decision = {"targets": targets, "reason": f"scale {direction}",
+                "tier": "forwarder" if tier != "edges" else "edge"}
+    controller.open_change(label, kind, [targets[0][0]], site)
+    # From the start mark on, whatever goes wrong is a failed change (exit
+    # 3), never a refusal: the end is printed and no node is left draining.
     try:
+        if kind == "join":
+            controller.join(site, decision, now, by_name)
+        else:
+            controller.start_drain(site, decision, now, by_name)
+        controller.save()
+        controller.flush()
         while controller.change["result"] is None:
             sleep(controller.config.poll_s)
             controller.tick(decide=False)
         # A slot drained by `scale down` without the warm pool is deleted
         # after its stop: billing, carried on without a mark.
         controller.finish_change()
-    except KeyboardInterrupt:
-        controller.wind_down()
-        marks.close()
-        raise
+    except Exception as error:  # noqa: BLE001 - named; the change failed
+        controller.fail(targets[0][0], f"scale {direction}", f"{type(error).__name__}: {error}")
+        if controller.change["result"] is None:
+            controller.change["result"] = "failed"
     finally:
-        controller.events("controller_stop", actions=sorted(controller.state["actions"]),
-                          warm=sorted(controller.state["warm"]), dry_run=False)
+        with signals_held():
+            controller.wind_down()
+            marks.close()
+            controller.events("controller_stop", actions=sorted(controller.state["actions"]),
+                              warm=sorted(controller.state["warm"]), dry_run=False)
     return EXIT_DONE if controller.change["result"] == "done" else EXIT_FAILED
 
 
@@ -2504,9 +2798,10 @@ def make_backend(args: argparse.Namespace, config: Config, sites: list[str]) -> 
     if args.backend == "linode":
         # The controller may create at any time; a `scale` verb that would
         # create is refused at its budget check, before any mark.
-        if config.budget_usd is None and args.command == "run" and not args.dry_run:
-            raise Refused("the linode backend needs --budget-usd (and --spent-before-usd for "
-                          "what earlier labs of the work cost)")
+        if (config.budget_usd is None or config.spent_before_usd is None) \
+                and args.command == "run" and not args.dry_run:
+            raise Refused("the linode backend needs --budget-usd and --spent-before-usd (what "
+                          "earlier labs of the work cost)")
         if not args.state:
             import small_mesh_common as common  # noqa: PLC0415
             args.state = str(common.state_path())
@@ -2551,7 +2846,13 @@ def main(argv: list[str] | None = None) -> None:
         dry_run = args.dry_run
     install_stop_signals()
     lock = controller = None
-    marks = Marks(marks_file=args.marks)
+    # stdout is the change's two marks and nothing else (2.7): the marks
+    # keep the real stdout, and every other line printed in this process
+    # (the lab tool's own, from the worker thread) goes to stderr, so no
+    # other line can reach stdout or split a mark.
+    stdout = sys.stdout
+    marks = Marks(out=stdout, marks_file=args.marks)
+    sys.stdout = sys.stderr
     try:
         inner = make_backend(args, config, sites)
         backend = Guarded(inner, config, dry_run)
@@ -2572,12 +2873,17 @@ def main(argv: list[str] | None = None) -> None:
         code = EXIT_REFUSED
     except KeyboardInterrupt:
         code = EXIT_INTERRUPTED
+    except Exception:  # noqa: BLE001 - said on stderr; the marks are closed below
+        traceback.print_exc(file=sys.stderr)
+        code = EXIT_FAILED
     finally:
-        marks.close()
-        if controller is not None:
-            controller.close()
-        if lock is not None:
-            lock.release()
+        with signals_held():
+            marks.close()
+            if controller is not None:
+                controller.close()
+            if lock is not None:
+                lock.release()
+            sys.stdout = stdout
     sys.exit(code)
 
 

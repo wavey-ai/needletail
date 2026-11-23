@@ -9,11 +9,14 @@ then the warm pool, then a slot to create; the budget refusal; drain before
 delete, and a drain that times out resumed and never deleted; the warm pool
 released at the end of a paid hour; the forwarder gate before a forwarder
 slot stops; the CPU trigger; the worker (a create never blocks the tick, a
-create in flight adopted after a restart, a refused create backed off); the
+create in flight adopted after a restart, a refused create backed off, a
+create that finishes mid-tick or only in part still pushed); the
 lost rule (blind is not lost, a node its peers hear is not lost, a lost
 edge replaced once and recovered, a first forwarder never touched, a
 flapping node quarantined, a rebuild in flight awaited, a lost slot deleted
-only with its tag); the change verbs and their marks; a restart from the
+only with its tag); the change verbs and their marks; stopping (nothing
+new handed over, the job in hand waited for under the lock, drains resumed
+after any failure); main's stdout and clock check; a restart from the
 controller's state; the safety layer; a dry run that calls nothing; events
 with Unix-µs timestamps; the linode backend's roster, budget, observation
 and adoption from a lab state; the edge_lab backend from a fake lab.
@@ -66,7 +69,11 @@ class Sim(auto.Backend):
     nothing and its peers' and children's ages grow from its crash; an
     unreachable one runs but does not answer the operator. Every changing
     call is recorded; a node that is started advertises on the next
-    observation."""
+    observation. As on Linode, `held` is "held out by a stop" (the
+    deploy's standby_edges): a slot that was created and never pushed is
+    neither running nor held. Each host has an ssh key that ssh learns
+    once and a rebuild changes; until it is forgotten, ssh to the rebuilt
+    host fails."""
 
     name = "sim"
 
@@ -85,6 +92,15 @@ class Sim(auto.Backend):
         self.refuse_create: set[str] = set()
         self.budget_ok = True
         self.fail_create = False
+        # Creates the first slot of a batch and raises for the rest.
+        self.partial_create = False
+        # Prints as the lab tool does (its "Adding ..." and "created ...").
+        self.chatty = False
+        self.start_gate: threading.Event | None = None
+        self.stop_gate: threading.Event | None = None
+        self.known: dict[str, int] = {}            # host -> the key ssh learned
+        self.forgotten: list[str] = []
+        self.offset = 0.0                          # every node's clock minus ours, s
         self.lock = tempfile.mkdtemp()
         for index in range(1, 13):
             self.add(f"lon-edge-{index}", "london", "edge", slot=index > 10, running=index <= 5)
@@ -98,6 +114,7 @@ class Sim(auto.Backend):
 
     def add(self, name, site, role, slot, running):
         index = len(self.nodes) + 1
+        self.known[name] = 1  # ssh learned its key at the deploy
         self.nodes[name] = {
             "site": site, "role": role, "slot": slot, "created": not slot, "running": running,
             "load": 500 if role == "edge" else 0, "udp": 100 if role == "edge" else 0,
@@ -105,7 +122,7 @@ class Sim(auto.Backend):
             "created_unix": self.clock() - 1800, "lease": None, "cache": None, "cpu": None,
             "moves": 0, "ready": True, "crashed_unix": None, "reachable": True, "stale": False,
             "ssh": True, "instance": "running", "restartable": True, "pairs": [], "rows": None,
-            "listed": None, "restart_error": False,
+            "listed": None, "restart_error": False, "unpushed": False, "host_key": 1,
             "vlan": f"10.0.{0 if site == 'london' else 1}.{index}",
             "public": f"192.0.2.{index}"}
 
@@ -135,7 +152,8 @@ class Sim(auto.Backend):
         for name, node in self.nodes.items():
             out.setdefault(node["site"], []).append({
                 "name": name, "role": node["role"], "site": node["site"],
-                "created": node["created"], "held": node["created"] and not node["running"],
+                "created": node["created"],
+                "held": node["created"] and not node["running"] and not node["unpushed"],
                 "slot": node["slot"],
                 "first": node["role"] == "distributor" and not node["slot"],
                 "created_unix": node["created_unix"] if node["created"] else None,
@@ -228,6 +246,10 @@ class Sim(auto.Backend):
 
     def create(self, names):
         self.record("create", ",".join(names))
+        if self.chatty:
+            print(f"Adding {len(names)} slot(s) {', '.join(names)}: the lab will cost more",
+                  end="")
+            print()
         if self.create_gate is not None:
             self.create_gate.wait(30)
         if self.die_in_create:
@@ -237,23 +259,29 @@ class Sim(auto.Backend):
             raise auto.Refused(f"no capacity for {', '.join(refused)}")
         if self.fail_create:
             raise RuntimeError("API timeout")
-        for name in names:
-            self.nodes[name]["created"] = True
-            self.nodes[name]["created_unix"] = self.clock()
+        for index, name in enumerate(names):
+            if self.partial_create and index > 0:
+                raise RuntimeError(f"create {name}: 503 from the API")
+            self.nodes[name].update(created=True, created_unix=self.clock(), unpushed=True)
+            if self.chatty:
+                print(f"  created {name}")
 
     def push(self, names):
         self.record("push", ",".join(names))
         for name in names:
-            self.nodes[name].update(running=True, crashed_unix=None)
+            self.nodes[name].update(running=True, crashed_unix=None, unpushed=False)
 
     def start(self, name):
         self.record("start", name)
-        self.nodes[name]["running"] = True
+        if self.start_gate is not None:
+            self.start_gate.wait(30)
+        self.nodes[name].update(running=True, unpushed=False)
 
     def stop(self, name):
         self.record("stop", name)
-        self.nodes[name]["running"] = False
-        self.nodes[name]["draining"] = False
+        if self.stop_gate is not None:
+            self.stop_gate.wait(30)
+        self.nodes[name].update(running=False, draining=False, unpushed=False)
 
     def drain(self, name):
         self.record("drain", name)
@@ -270,9 +298,19 @@ class Sim(auto.Backend):
 
     def probe(self, name):
         node = self.nodes[name]
-        return {"ssh": node["ssh"],
-                "unit_active": node["ssh"] and node["crashed_unix"] is None,
-                "instance": node["instance"]}
+        ssh = node["ssh"]
+        if ssh and node["instance"] == "running":
+            # accept-new: a key is learned once; another key is refused.
+            ssh = self.known.setdefault(name, node["host_key"]) == node["host_key"]
+        return {"ssh": ssh, "unit_active": (ssh and node["crashed_unix"] is None) if ssh
+                else None, "instance": node["instance"]}
+
+    def forget_host(self, name):
+        self.forgotten.append(name)
+        self.known.pop(name, None)
+
+    def clock_offset(self, name):
+        return self.offset
 
     def restart(self, name):
         self.record("restart", name)
@@ -286,12 +324,16 @@ class Sim(auto.Backend):
         self.nodes[name].update(instance="running", crashed_unix=None)
 
     def rebuild(self, name):
+        """A new host key, whatever happens after; forgotten (as the
+        linode backend's rebuild does) only when the rebuild returns."""
         self.record("rebuild", name)
         self.nodes[name]["instance"] = "rebuilding"
+        self.nodes[name]["host_key"] += 1
         if self.rebuild_gate is not None:
             self.rebuild_gate.wait(30)
             raise RuntimeError("the controller died")
         self.nodes[name].update(instance="running", ssh=True)
+        self.forget_host(name)
 
     def adopt(self, record=True):
         out = []
@@ -328,6 +370,8 @@ class Base(unittest.TestCase):
         events = auto.Events(str(self.events_path), echo=False, clock=self.clock)
         controller = auto.Controller(backend, config or self.config, self.state_path, events,
                                      clock=self.clock)
+        # A test's gated job is not waited for at the end.
+        controller.stop_wait_s = 0.2
         self.addCleanup(controller.close)
         return controller
 
@@ -504,9 +548,13 @@ class Decide(Base):
         self.sim.budget_ok = False
         controller = self.controller()
         self.sim.set_load(950)
-        self.ticks(controller, 3)
+        self.ticks(controller, 4)
         self.assertEqual(self.mutating(), [])
-        self.assertEqual({item["what"] for item in self.of("failure")}, {"budget"})
+        # Refused on the worker by the budget guard, before the create.
+        failures = self.of("failure")
+        self.assertEqual({item["what"] for item in failures}, {"create"})
+        self.assertTrue(all("budget" in item["detail"] for item in failures))
+        self.assertEqual(len(controller.backend.calls), 0)
 
     def test_scale_down_waits_300_s_then_drains_the_edge_with_fewest_listeners(self):
         for index in range(6, 9):
@@ -722,6 +770,40 @@ class Drain(Base):
         self.assertNotIn("lon-edge-6", controller.state["warm"])
         self.assertEqual(controller.state["actions"], {})
 
+    def test_a_parked_slot_is_kept_while_its_stop_runs(self):
+        """A create whose push failed is parked: until its stop is done the
+        slot is created, not running and not yet held out (as on Linode,
+        where only the stop puts it in standby_edges). It is kept in the
+        warm pool all that time, never let go as "in service again" to
+        bill until down."""
+        for index in range(6, 11):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        controller = self.controller(config=auto.Config(max_per_action=1))
+
+        def failing_push(names):
+            self.sim.record("push", ",".join(names))
+            raise auto.Refused("bootstrap failed")
+
+        self.sim.push = failing_push
+        self.sim.set_load(950)
+        self.ticks(controller, 4)  # created, its push failed
+        self.sim.stop_gate = threading.Event()
+        self.addCleanup(self.sim.stop_gate.set)
+        self.ticks(controller, 1, wait=False)  # parked: its stop handed over
+        deadline = time.monotonic() + 5
+        while ("stop", "lon-edge-11") not in self.mutating() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn(("stop", "lon-edge-11"), self.mutating())
+        self.ticks(controller, 3, wait=False)  # the stop still runs
+        self.assertIn("lon-edge-11", controller.state["warm"])
+        self.assertNotIn("warm_left", self.kinds())
+        self.sim.stop_gate.set()
+        self.assertTrue(controller.worker.wait_idle(5))
+        self.ticks(controller, 2)
+        self.assertIn("lon-edge-11", controller.state["warm"])
+        self.assertNotIn("warm_left", self.kinds())
+        self.assertNotIn(("delete", "lon-edge-11"), self.mutating())
+
     def test_without_the_warm_pool_a_drained_slot_is_deleted_after_it_stops(self):
         self.sim.nodes["lon-edge-11"].update(created=True, running=True)
         config = auto.Config(warm_pool=False)
@@ -912,6 +994,64 @@ class Worker(Base):
                          [("create", "lon-edge-11"), ("create", "lon-edge-11")])
         self.assertIn("requeued", self.kinds())
         self.assertIn(("push", "lon-edge-11"), self.mutating())
+
+    def await_call(self, call) -> None:
+        deadline = time.monotonic() + 5
+        while call not in self.mutating() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn(call, self.mutating())
+
+    def finish_create_during_the_observation(self, controller) -> None:
+        """The create waits at its gate; it is let go during the next
+        tick's observation, and its result is in before that tick would
+        take results after observing."""
+        def release():
+            if self.sim.create_gate is not None and not self.sim.create_gate.is_set():
+                self.sim.create_gate.set()
+                self.assertTrue(controller.worker.wait_idle(5))
+
+        self.sim.on_observe.append(release)
+        self.ticks(controller, 1, wait=False)
+        self.assertTrue(controller.worker.wait_idle(5))
+
+    def test_a_create_that_finishes_during_the_observation_is_pushed(self):
+        """The result of a create that finished while a tick observed is
+        handled with a roster that already has the slot: it is pushed and
+        serves (the push is never refused as "not created")."""
+        for index in range(6, 11):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.set_load(950)
+        self.sim.create_gate = threading.Event()
+        self.addCleanup(self.sim.create_gate.set)
+        controller = self.controller(config=auto.Config(max_per_action=1))
+        self.ticks(controller, 3, wait=False)
+        self.await_call(("create", "lon-edge-11"))
+        self.finish_create_during_the_observation(controller)
+        self.ticks(controller, 3)
+        self.assertIn(("push", "lon-edge-11"), self.mutating())
+        self.assertIn("lon-edge-11", [item["node"] for item in self.of("serving")])
+        self.assertEqual(self.of("failure"), [])
+
+    def test_a_partial_create_pushes_the_slot_it_made(self):
+        """A batch whose create made one slot and failed for the other,
+        finishing while a tick observed: the slot that exists is pushed
+        and serves (never left created, unpushed and unheld to bill until
+        down); the other backs off."""
+        for index in range(6, 11):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.set_load(950)
+        self.sim.create_gate = threading.Event()
+        self.addCleanup(self.sim.create_gate.set)
+        self.sim.partial_create = True
+        controller = self.controller()
+        self.ticks(controller, 3, wait=False)
+        self.await_call(("create", "lon-edge-11,lon-edge-12"))
+        self.finish_create_during_the_observation(controller)
+        self.ticks(controller, 3)
+        self.assertIn(("push", "lon-edge-11"), self.mutating())
+        self.assertIn("lon-edge-11", [item["node"] for item in self.of("serving")])
+        self.assertEqual([item["node"] for item in self.of("backoff")], ["lon-edge-12"])
+        self.assertFalse(self.sim.nodes["lon-edge-12"]["created"])
 
     def test_a_refused_create_backs_off(self):
         """A slot whose create was refused (no capacity) is not asked again
@@ -1209,8 +1349,10 @@ class Lost(Base):
     def test_a_rebuild_in_flight_is_awaited_after_a_restart(self):
         """A slot whose instance runs and whose ssh is down for 60 s while
         it is still lost is rebuilt. The controller dies during the
-        rebuild; the one started again finds the phase, waits for the
-        instance (never a second rebuild), then pushes it: recovered."""
+        rebuild (the host has its new key; nobody forgot the old one); the
+        one started again finds the phase, forgets the host's key once,
+        waits for the instance (never a second rebuild), reaches it over
+        ssh, then pushes it: recovered."""
         node = self.sim.nodes["lon-edge-11"]
         node.update(created=True, running=True)
         first = self.controller()
@@ -1243,7 +1385,66 @@ class Lost(Base):
         self.ticks(again, 10)
         self.assertEqual(self.touching("lon-edge-11"), [("rebuild", "lon-edge-11"),
                                                         ("push", "lon-edge-11")])
+        self.assertEqual(self.sim.forgotten, ["lon-edge-11"])
         self.assertEqual(self.of("recovered")[0]["node"], "lon-edge-11")
+
+    def test_more_than_two_newly_silent_across_the_mesh_is_blind(self):
+        """One node silent in each of three sites in one tick: the mesh,
+        not three nodes, is in doubt (the operator's own path): blind
+        everywhere, nothing judged lost. Two across the mesh, one a site:
+        both lost."""
+        self.sim = Sim(self.clock, newyork=True)
+        self.addCleanup(shutil.rmtree, self.sim.lock, True)
+        for index in range(1, 5):
+            self.sim.add(f"tok-edge-{index}", "tokyo", "edge", slot=False, running=True)
+        for name in ("tok-dist-a", "tok-dist-b"):
+            self.sim.add(name, "tokyo", "distributor", slot=False, running=True)
+        controller = self.controller(config=auto.Config(replace_lost=False))
+        self.ticks(controller, 2)
+        for name in ("lon-edge-2", "new-edge-2", "tok-edge-2"):
+            self.crash(name)
+        self.ticks(controller, 20)
+        self.assertEqual(self.of("lost"), [])
+        self.assertEqual(self.mutating(), [])
+        blind = self.of("observer_blind")
+        self.assertEqual(sorted(item["region"] for item in blind),
+                         ["london", "newyork", "tokyo"])
+        self.assertTrue(all("would be lost in one tick" in item["why"] for item in blind))
+        self.sim.nodes["tok-edge-2"]["crashed_unix"] = None
+        for _ in range(6):
+            self.ticks(controller, 1)
+        self.assertEqual(sorted(item["node"] for item in self.of("lost")),
+                         ["lon-edge-2", "new-edge-2"])
+
+    def test_a_held_out_edge_back_in_service_gets_a_spare_when_lost_again(self):
+        """A base edge lost, replaced, recovered and held out as the
+        standby; later a scale-up takes it back into service. Lost again an
+        hour later, its region gets a spare again."""
+        controller = self.controller(config=auto.Config(max_per_action=1))
+        self.ticks(controller, 2)
+        self.crash("lon-edge-2")
+        self.lost_at(controller, "lon-edge-2")
+        self.ticks(controller, 3)
+        self.assertEqual(self.of("held_out")[0]["node"], "lon-edge-2")
+        self.sim.nodes["lon-edge-2"].update(udp=0, hls=0)
+        self.ticks(controller, 5)
+        self.assertIn(("stop", "lon-edge-2"), self.mutating())
+        self.assertIn("lon-edge-2", controller.state["replaced"])
+        self.clock.advance(400)
+        self.sim.set_load(950)
+        self.ticks(controller, 5)
+        self.assertIn(("start", "lon-edge-2"), self.mutating())
+        self.assertIn("lon-edge-2", [item["node"] for item in self.of("serving")
+                                     if item["how"] == "start"])
+        self.assertNotIn("lon-edge-2", controller.state["replaced"])
+        self.sim.set_load(500)
+        self.clock.advance(3600)
+        self.crash("lon-edge-2")
+        self.ticks(controller, 6)
+        self.assertEqual([item["node"] for item in self.of("lost")], ["lon-edge-2"] * 2)
+        self.assertEqual([item["node"] for item in self.of("replace_join")],
+                         ["lon-edge-2", "lon-edge-2"])
+        self.assertIsNotNone(self.of("replace_join")[1]["spare"])
 
     def test_a_lost_slot_is_deleted_only_with_its_tag(self):
         """A lost slot that its restart does not bring back is deleted with
@@ -1345,6 +1546,24 @@ class LinodeRecover(LinodeDelete):
                          {"ssh": None, "unit_active": None, "instance": "offline"})
         self.assertEqual(asked, [])
 
+    def test_a_probe_that_times_out_is_ssh_down(self):
+        """A host that takes TCP and never finishes the handshake: ssh times
+        out, which counts as ssh down (so 60 s of it can bring the
+        rebuild), not as a failed probe."""
+        import subprocess
+        import small_mesh_common
+        live = {"id": 4242, "label": "ntsm-t1-lon-edge-11", "tags": ["needletail-small-mesh-t1"],
+                "status": "running"}
+        api, _calls = self.api(live)
+        self.backend._api = api
+
+        def hang(node, command, **kwargs):
+            raise subprocess.TimeoutExpired(["ssh"], kwargs.get("timeout", 30))
+
+        with mock.patch.object(small_mesh_common, "ssh", hang):
+            self.assertEqual(self.backend.probe("lon-edge-11"),
+                             {"ssh": False, "unit_active": None, "instance": "running"})
+
     def test_only_an_offline_instance_of_the_run_is_booted(self):
         live = {"id": 4242, "label": "ntsm-t1-lon-edge-11", "tags": ["needletail-small-mesh-t1"],
                 "status": "running"}
@@ -1362,28 +1581,55 @@ class LinodeRecover(LinodeDelete):
         self.assertIn(("POST", "/linode/instances/4242/boot"), calls)
 
     def test_the_rebuild_is_the_lab_tools_replace_in_place(self):
-        runs = []
+        """The replace runs in its own process group with the lab state and
+        the lock's token; then the host's key is forgotten."""
+        runs, popens = [], []
+
+        class Popen:
+            def __init__(self, command, **kwargs):
+                popens.append((command, kwargs))
+                self.pid, self.returncode = 4321, 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def communicate(self, timeout=None):
+                return "", ""
 
         def run(command, **kwargs):
-            runs.append((command, kwargs.get("env") or {}))
+            runs.append(command)
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         self.backend.lock_env = {"NEEDLETAIL_OPS_LOCK_TOKEN": "t0ken"}
-        with mock.patch.object(auto.subprocess, "run", run):
+        with mock.patch.object(auto.subprocess, "Popen", Popen), \
+                mock.patch.object(auto.subprocess, "run", run):
             self.backend.rebuild("lon-edge-11")
-        command, env = runs[0]
+        command, kwargs = popens[0]
         self.assertEqual(pathlib.Path(command[1]).name, "linode-small-mesh-lab.py")
         self.assertEqual(command[2:6], ["replace", "lon-edge-11", "--mode", "rebuild"])
-        self.assertEqual(env["NEEDLETAIL_LINODE_LAB_STATE"], str(self.path))
-        self.assertEqual(env["NEEDLETAIL_OPS_LOCK_TOKEN"], "t0ken")
-        self.assertEqual(runs[1][0][:3], ["ssh-keygen", "-R", "192.0.2.50"])
+        self.assertEqual(kwargs["env"]["NEEDLETAIL_LINODE_LAB_STATE"], str(self.path))
+        self.assertEqual(kwargs["env"]["NEEDLETAIL_OPS_LOCK_TOKEN"], "t0ken")
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(runs[0][:3], ["ssh-keygen", "-R", "192.0.2.50"])
+        self.assertEqual(runs[1][-2:], ["exit", "root@192.0.2.50"])
 
-        def failing(command, **kwargs):
-            return types.SimpleNamespace(returncode=1, stdout="", stderr="watchdog not active")
+        class Failing(Popen):
+            def __init__(self, command, **kwargs):
+                super().__init__(command, **kwargs)
+                self.returncode = 1
 
-        with mock.patch.object(auto.subprocess, "run", failing), \
+            def communicate(self, timeout=None):
+                return "", "watchdog not active"
+
+        runs.clear()
+        with mock.patch.object(auto.subprocess, "Popen", Failing), \
+                mock.patch.object(auto.subprocess, "run", run), \
                 self.assertRaises(RuntimeError):
             self.backend.rebuild("lon-edge-11")
+        self.assertEqual(runs, [])  # nothing forgotten when the rebuild failed
 
 
 class Scale(Base):
@@ -1582,6 +1828,200 @@ class Stopping(Base):
         kinds = self.kinds()
         self.assertIn("wound_down", kinds)
         self.assertEqual(kinds[-1], "controller_stop")
+
+
+class Failing(Base):
+    def drain_in_flight(self, controller) -> None:
+        self.sim.nodes["lon-edge-11"].update(created=True, running=True)
+        controller.state["actions"]["lon-edge-11"] = {
+            "kind": "drain", "site": "london", "phase": "drain", "drain_sent": False,
+            "started_unix": self.clock(), "deadline_unix": self.clock() + 60, "reason": "test"}
+
+    def test_an_interrupt_drops_a_create_not_yet_handed_over(self):
+        """Interrupted after a tick queued a create and before it handed it
+        over: nothing is created by a controller that is stopping (it
+        could die mid-call and leave an instance outside the lab state).
+        The join stays `creating` in the state, and a controller started
+        again asks for it once."""
+        for index in range(6, 11):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.set_load(950)
+        controller = self.controller(config=auto.Config(max_per_action=1))
+        flush = controller.flush
+
+        def interrupted():
+            if any(job["verb"] == "create" for job in controller.pending):
+                raise KeyboardInterrupt
+            flush()
+
+        controller.flush = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            controller.run(duration=600, sleep=lambda seconds: (controller.worker.wait_idle(5),
+                                                                self.clock.advance(seconds)))
+        time.sleep(0.05)
+        self.assertEqual(self.mutating(), [])
+        self.assertEqual(self.of("wound_down")[0]["dropped"], ["create lon-edge-11"])
+        saved = json.loads(self.state_path.read_text())
+        self.assertEqual(saved["actions"]["lon-edge-11"]["phase"], "creating")
+        again = self.controller(config=auto.Config(max_per_action=1))
+        again.begin()
+        self.ticks(again, 3)
+        self.assertEqual([call for call in self.mutating() if call[0] == "create"],
+                         [("create", "lon-edge-11")])
+        self.assertIn("requeued", self.kinds())
+
+    def test_a_failure_mid_run_leaves_no_node_drained(self):
+        """The lab state cannot be read mid-run (or the account's API
+        fails): the controller ends with exit 3, names the failure, and
+        resumes the drain it had sent."""
+        controller = self.controller()
+        self.drain_in_flight(controller)
+        roster, reads = self.sim.roster, []
+
+        def failing():
+            reads.append(1)
+            if len(reads) == 3:
+                raise RuntimeError("GET /linode/instances: 503 after retries")
+            return roster()
+
+        self.sim.roster = failing
+        code = controller.run(duration=600, sleep=lambda seconds: self.clock.advance(seconds))
+        self.assertEqual(code, auto.EXIT_FAILED)
+        self.assertEqual(self.mutating(), [("drain", "lon-edge-11"), ("resume", "lon-edge-11")])
+        self.assertIn("RuntimeError", [item for item in self.of("failure")
+                                       if item["what"] == "tick"][0]["detail"])
+        self.assertEqual(json.loads(self.state_path.read_text())["actions"], {})
+        self.assertEqual(self.kinds()[-1], "controller_stop")
+
+    def test_a_scale_that_fails_after_its_start_is_exit_3_and_closed(self):
+        """`scale down` whose observation fails mid-drain, or whose lab
+        state is refused mid-drain: exit 3 (not 2: something changed), the
+        end mark printed, the drain resumed."""
+        for error in (RuntimeError("connection reset"), auto.Refused("no lab state")):
+            self.sim.calls.clear()
+            for index in range(6, 8):
+                self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+            self.sim.nodes["lon-edge-4"].update(udp=3, draining=False)
+            observe, seen = self.sim.observe, []
+
+            def failing(roster, observe=observe, seen=seen, error=error):
+                seen.append(1)
+                if len(seen) == 3:
+                    raise error
+                return observe(roster)
+
+            self.sim.observe = failing
+            controller = self.controller()
+            out = io.StringIO()
+
+            def sleep(seconds, controller=controller):
+                controller.worker.wait_idle(10)
+                self.clock.advance(seconds)
+
+            code = auto.command_scale(controller, "down", "london", "edges",
+                                      auto.Marks(out=out, err=io.StringIO()), sleep=sleep)
+            self.sim.observe = observe
+            self.assertEqual(code, auto.EXIT_FAILED, error)
+            self.assertEqual([line.split()[0] for line in out.getvalue().splitlines()],
+                             ["start", "end"])
+            self.assertEqual(self.mutating(), [("drain", "lon-edge-4"), ("resume", "lon-edge-4")])
+
+
+class Main(Base):
+    """The command as an operator or scale-run runs it (main), over the
+    simulated backend: stdout, the clock check, the ops lock."""
+
+    def main(self, argv: list[str]) -> tuple[int, str, str]:
+        import signal
+        for sig in (signal.SIGINT, signal.SIGTERM):  # main() installs its own
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(auto, "make_backend", lambda args, config, sites: self.sim), \
+                mock.patch.object(auto, "REBALANCE_STILL_S", 0.2), \
+                redirect_stdout(out), redirect_stderr(err):
+            with self.assertRaises(SystemExit) as exit_:
+                auto.main(argv + ["--backend", "edge_lab", "--controller-state",
+                                  str(self.state_path), "--events", str(self.events_path),
+                                  "--poll-s", "0.05"])
+            self.assertIs(sys.stdout, out)  # given back
+        return exit_.exception.code, out.getvalue(), err.getvalue()
+
+    def test_stdout_is_the_two_marks_even_when_the_lab_tool_prints(self):
+        """A scale-up that creates: the lab tool prints its own lines from
+        the worker thread while the main thread writes the marks. stdout
+        is exactly the two marks; the tool's lines are on stderr."""
+        for index in range(6, 11):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.chatty = True
+        code, out, err = self.main(["scale", "up", "--site", "london"])
+        self.assertEqual(code, 0, err[-2000:])
+        lines = out.splitlines()
+        self.assertEqual([line.split(maxsplit=2)[::2] for line in lines],
+                         [["start", "autoscale.up.london"], ["end", "autoscale.up.london"]])
+        self.assertTrue(all(len(line.split()) == 3 for line in lines))
+        self.assertIn("Adding 1 slot(s) lon-edge-11", err)
+        self.assertIn("  created lon-edge-11", err)
+
+    def test_the_clock_check_refuses_over_50_ms(self):
+        """Before the first mark: a node whose clock is 60 ms from this
+        host's (either way) refuses the change, exit 2, nothing on stdout,
+        nothing done; at 40 ms it goes ahead."""
+        for offset in (0.06, -0.06):
+            self.sim.offset = offset
+            code, out, err = self.main(["scale", "up", "--site", "london"])
+            self.assertEqual((code, out), (2, ""))
+            self.assertIn("ms from this host's", err)
+        self.assertEqual(self.mutating(), [])
+        controller = self.controller()
+        marks = io.StringIO()
+        with self.assertRaises(auto.Refused):
+            controller.run(duration=60, until="join", sleep=self.clock.advance,
+                           marks=auto.Marks(out=marks, err=io.StringIO()))
+        self.assertEqual(marks.getvalue(), "")
+        self.sim.offset = 0.04
+        code, out, err = self.main(["scale", "up", "--site", "london"])
+        self.assertEqual(code, 0, err[-2000:])
+        self.assertEqual(len(out.splitlines()), 2)
+        self.assertEqual(self.of("clock_check")[-1]["offsets"]["london"]["offset_ms"], 40.0)
+
+    def test_the_lock_is_held_until_the_job_in_hand_is_done(self):
+        """Interrupted while its worker runs a job (the standby's start): the
+        command waits for that job before it lets the ops lock go, so no
+        other change command can act while it still runs; the end mark is
+        printed, exit 130."""
+        import os
+        import signal
+        self.sim.start_gate = threading.Event()
+        self.addCleanup(self.sim.start_gate.set)
+        seen = {}
+
+        def interrupt():
+            self.await_call(("start", "lon-edge-6"))
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.3)
+            try:
+                auto.OpsLock(self.sim.lock_path()).acquire().release()
+                seen["held"] = False
+            except auto.Refused:
+                seen["held"] = True
+            seen["done"] = self.sim.nodes["lon-edge-6"]["running"]
+            self.sim.start_gate.set()
+
+        thread = threading.Thread(target=interrupt)
+        thread.start()
+        code, out, err = self.main(["scale", "up", "--site", "london"])
+        thread.join(10)
+        self.assertEqual(code, 130, err[-2000:])
+        self.assertEqual(seen, {"held": True, "done": False})
+        self.assertEqual([line.split()[0] for line in out.splitlines()], ["start", "end"])
+        self.assertTrue(self.sim.nodes["lon-edge-6"]["running"])  # the start ran whole
+        self.assertNotIn("worker_abandoned", self.kinds())
+        auto.OpsLock(self.sim.lock_path()).acquire().release()
+
+    def await_call(self, call) -> None:
+        deadline = time.monotonic() + 5
+        while call not in self.mutating() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
 
 class Restart(Base):
@@ -1785,6 +2225,23 @@ class LinodeBackendTests(unittest.TestCase):
         self.backend.config.budget_usd = None
         self.assertFalse(self.backend.budget(["lon-edge-11"], offline=True)[0])
 
+    def test_a_create_needs_what_earlier_labs_spent(self):
+        """Unknown is not 0: without --spent-before-usd the budget guard
+        refuses every create, and `run` with the linode backend is refused
+        before it starts."""
+        self.backend.config.spent_before_usd = None
+        ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
+        self.assertFalse(ok)
+        self.assertIn("--spent-before-usd", figures["why"])
+        args = argparse.Namespace(backend="linode", command="run", dry_run=False,
+                                  state=str(self.path), stream=4001, ssh_public_key="k")
+        with self.assertRaises(auto.Refused):
+            auto.make_backend(args, auto.Config(budget_usd=100.0), [])
+        guard = auto.Guarded(self.backend, self.backend.config)
+        guard.roster()
+        with self.assertRaises(auto.Refused):
+            guard.create(["lon-edge-11"])
+
     def test_nothing_is_pushed_to_a_slot_without_the_lab_firewall(self):
         deployed = []
         self.backend.deploy = lambda verb, names: deployed.append((verb, names))
@@ -1830,9 +2287,12 @@ class LinodeBackendTests(unittest.TestCase):
                 asked.append((addresses[host], path))
                 if addresses[host] == "lon-dist-a":
                     return None, None  # the first entry does not answer
+                # lon-dist-b's answer is the one taken: the first in roster
+                # order that answered.
+                load = 640 if addresses[host] == "lon-dist-b" else 999
                 return 200, {"caches": [
                     {"node_id": "lon-edge-1", "fresh": True, "draining": False,
-                     "load_permille": 640},
+                     "load_permille": load},
                     {"node_id": "lon-edge-3", "fresh": True, "draining": True,
                      "load_permille": 300}]}
 
@@ -1852,7 +2312,10 @@ class LinodeBackendTests(unittest.TestCase):
                                  "lon-edge-3", "lon-edge-11")]}
         obs = self.backend.observe(roster)
         entries = [name for name, path in asked if path.startswith("/api/assignment")]
-        self.assertEqual(entries, ["lon-dist-a", "lon-dist-b"])
+        # The first alone; it did not answer, so the rest in service at once.
+        self.assertEqual(entries[0], "lon-dist-a")
+        self.assertEqual(sorted(entries[1:]), ["lon-dist-b", "lon-edge-1", "lon-edge-2",
+                                               "lon-edge-3"])
         self.assertEqual(sorted(name for name, path in asked if path == "/api/node"),
                          ["lon-dist-a", "lon-dist-b", "lon-edge-1", "lon-edge-2", "lon-edge-3"])
         self.assertTrue(obs["lon-edge-1"]["advertised"])
@@ -1905,6 +2368,35 @@ class LinodeBackendTests(unittest.TestCase):
         self.assertIn(("PUT", "/networking/firewalls/1/rules"), calls)
         # Adopted once: it is the lab's now.
         self.assertEqual([item["id"] for item in self.backend.adopt()], [78])
+
+    def test_an_adopted_slot_whose_firewall_fails_is_deleted(self):
+        """As add_nodes does: a slot that cannot have the lab firewall is
+        deleted at once (by its recorded id, tag and label checked), never
+        left recorded where every push refuses it and it bills until
+        down."""
+        instance = {"id": 77, "label": "ntsm-t1-lon-edge-11", "tags": ["needletail-small-mesh-t1"],
+                    "ipv4": ["192.0.2.201"], "type": "g6-dedicated-2", "region": "gb-lon"}
+        calls = []
+
+        class Api:
+            def list_all(self, path, tag=None):
+                return [instance]
+
+            def call(self, method, path, body=None, allow_404=False):
+                calls.append((method, path))
+                if method == "POST" and path.endswith("/devices"):
+                    raise RuntimeError("firewall: 500")
+                return instance if method == "GET" else {}
+
+        self.backend._api = Api()
+        with redirect_stdout(io.StringIO()):
+            found = self.backend.adopt()
+        self.assertEqual([(item["id"], item["adopted"]) for item in found], [(77, False)])
+        self.assertIn("deleted", found[0]["why"])
+        self.assertIn(("DELETE", "/linode/instances/77"), calls)
+        saved = json.loads(self.path.read_text())
+        self.assertNotIn("lon-edge-11", saved["nodes"])
+        self.assertEqual([item["name"] for item in saved["removed"]], ["lon-edge-11"])
 
 
 class StopSignalTests(unittest.TestCase):
