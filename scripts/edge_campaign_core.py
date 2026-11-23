@@ -8,6 +8,7 @@ node did. `edge-campaign.py` holds the scenarios.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -19,8 +20,20 @@ import time
 import traceback
 
 import edge_lab as lab
+import lab_guard as guard
 
-RUNS = lab.ROOT / "target" / "edge-campaign"
+
+def runs_dir(ident: str | None = lab.LAB_ID) -> pathlib.Path:
+    """Where the campaign's runs and their `latest` link go: one directory
+    for each lab id (NEEDLETAIL_EDGE_LAB_ID), so that two labs' runs never
+    share a `latest`."""
+    return lab.ROOT / "target" / (f"edge-campaign-{ident}" if ident else "edge-campaign")
+
+
+RUNS = runs_dir()
+# Groups whose scenarios run a browser or a player of the host (fixed ports
+# and profiles): one lab of the host at a time.
+PLAYER_GROUPS = ("players", "ladder")
 SCHEMA = "needletail.edge-campaign.scenario.v1"
 VIDEO = lab.VIDEO_STREAM
 AUDIO = lab.AUDIO_STREAM
@@ -383,6 +396,11 @@ def counter_delta(before: dict, after: dict) -> dict:
 
 
 def run_scenario(item: Scenario, directory: pathlib.Path, sample: bool = True) -> dict:
+    with (guard.players_lock() if item.group in PLAYER_GROUPS else contextlib.nullcontext()):
+        return scenario_evidence(item, directory, sample)
+
+
+def scenario_evidence(item: Scenario, directory: pathlib.Path, sample: bool) -> dict:
     print(f"\n=== {item.name}  ({item.group})\n    Q: {item.question}", flush=True)
     ensure_lab(item.needs)
     context = Context(item, directory / item.name)

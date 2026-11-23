@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import pathlib
 import shlex
 import subprocess
@@ -49,7 +50,8 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-OUT_ROOT = ROOT / "target" / "latency-bench"
+# latency-bench.py writes a lab's passes under its id (NEEDLETAIL_EDGE_LAB_ID).
+OUT_ROOT = ROOT / "target" / "latency-bench" / os.environ.get("NEEDLETAIL_EDGE_LAB_ID", "")
 BENCH = HERE / "latency-bench.py"
 SAMPLE_RATE = 48_000
 DEFAULT_SIZES = "pcm:48,pcm:24,pcm:12,flac:48,flac:32,opus:120"
