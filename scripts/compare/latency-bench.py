@@ -600,7 +600,10 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
                               "--stream", str(VIDEO_STREAM), "--tls-ca", lab.ca_file(),
                               "--server-name", lab.SERVER_NAME,
                               "--duration-seconds", str(args.seconds),
-                              "--session", f"bench-{args.name}-{host}-udp-{index}"]})
+                              "--session", f"bench-{args.name}-{host}-udp-{index}",
+                              # Each 4K part's arrival, bytes and publication
+                              # time (wave 9 D: the loop points, the tail).
+                              "--arrivals", str(out / f"{host}.4k.udp{index}.arrivals.csv")]})
     return items
 
 
