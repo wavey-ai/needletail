@@ -26,7 +26,8 @@ the cgroups are scopes of the user's systemd manager.
 
   edge_lab.py up [key=value ...]        build the networks and start every service
   edge_lab.py down                      stop everything and remove the namespaces
-  edge_lab.py status                    one line for each node
+  edge_lab.py status                    the labs on this host, and one line for each
+                                        node: build set, build, state, drain reasons
   edge_lab.py sh <node> <command...>    run a command in the namespace of a node
   edge_lab.py net <node> <pub|vlan> <out|in|both> <netem spec | clear>
   edge_lab.py wan <site> <out|in|both> <netem spec | clear>
@@ -37,30 +38,67 @@ the cgroups are scopes of the user's systemd manager.
                                         service again)
   edge_lab.py drain <node>              POST /api/control/drain-node for that node
   edge_lab.py resume <node>             POST /api/control/resume-node for that node
+  edge_lab.py crash <node> [--restart-s 1]
+                                        SIGKILL a node's service and start it again
+                                        after the unit's RestartSec
+  edge_lab.py burn <node> <seconds>     busy loops in the node's own cgroup, on its CPUs
 
 Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
 peer list naming them, but does not start, as the large mesh's autoscale
-slots: lon-dist-c always (a third London forwarder, a fast-plane lease child
-of lon-dist-a and lon-dist-b and a cache-mesh parent of the edges, never a
-compiled relay child), and lon-edge-4 with `up slots=lon-edge-4`. A slot is
-in service once `start` (or the autoscaler's edge_lab backend) takes it in;
-until then edges() and distributors() leave it out, and restore() does not
-start it. Starting one restarts no other service: their arguments already
-name it.
+slots: lon-dist-c and new-dist-c always (a third forwarder of its site, a
+fast-plane lease child of the site's dist-a and dist-b and a cache-mesh
+parent of its edges, never a compiled relay child), and lon-edge-4 and
+new-edge-3 with `up slots=lon-edge-4,new-edge-3`. A slot is in service once
+`start` (or the autoscaler's edge_lab backend) takes it in; until then
+edges() and distributors() leave it out, and restore() does not start it.
+Starting one restarts no other service: their arguments already name it.
+
+Several labs on one host. A lab is its state directory. NEEDLETAIL_EDGE_LAB_ID
+(one to eight of a-z and 0-9) names it: the state directory is then
+target/elab-<id> (NEEDLETAIL_EDGE_LAB_WORK still overrides the directory).
+Networks, addresses and ports are inside each lab's own namespaces; the
+systemd units carry the state directory's name and a hash of its path. `up`
+writes the lab into a registry that every worktree of the host shares
+($XDG_RUNTIME_DIR/needletail-labs/<id>.json) and `down` removes it:
+- `up` on a running lab of another owner (NEEDLETAIL_EDGE_LAB_OWNER, by
+  default the id), or on an id that runs from another state directory, is
+  refused unless `up take=1`, which stops that lab first.
+- `up cpus=A-B` (or NEEDLETAIL_EDGE_LAB_CPUS=A-B) keeps everything the lab
+  runs on host CPUs A to B: the last max(2, N // 4) of them for the reader
+  hosts, the load tool, probes, senders and the lab's own commands, the
+  others for the nodes, each a window of as many CPUs as its limit, taken
+  round robin (nodes share CPUs when the range is short). A lab without a
+  range may run on every CPU. CPUs that a registered lab has are refused
+  unless `up cpus_overlap=1`. The standing layout of two labs on the 32 CPU
+  host: lab a on 2-15, lab b on 16-29.
+- `up node_cpus=FIRST` is the layout of one lab alone: each node its own
+  CPUs from FIRST on, the reader hosts on every other CPU of the host.
+- Whatever the lab runs beside a node's service is in one cgroup, the scope
+  needletail-lab-...-tools.scope, the process that drives the lab included,
+  so the lab's own CPU time can be read (scope_cpu_usec).
+
+Two builds in one lab. With NEEDLETAIL_AV_MESH_BIN_NEXT or
+NEEDLETAIL_AV_CONTRIB_BIN_NEXT, `up` keeps a second set of binaries (set b,
+beside set a) and renders it too, with its own binaries' flags; `up
+b.<setting>=<value>` gives set b a setting of its own. Every node starts on
+set a; start_service(name, build="b") starts one on set b.
 
 The fault campaign (`edge-campaign.py`) drives this module.
 
 Sibling checkouts are found under the workspace root. Override them with
-NEEDLETAIL_AV_MESH_ROOT, NEEDLETAIL_AV_CONTRIB_ROOT, NEEDLETAIL_PROBE_BIN and
-NEEDLETAIL_EDGE_LAB_WORK (the state directory, for a second lab on one host).
+NEEDLETAIL_AV_MESH_ROOT, NEEDLETAIL_AV_CONTRIB_ROOT and NEEDLETAIL_PROBE_BIN.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import importlib.util
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
@@ -69,8 +107,29 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKSPACE = ROOT.parent
-WORK = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_EDGE_LAB_WORK", str(ROOT / "target" / "edge-lab")))
+
+
+def lab_id(environ=os.environ) -> str | None:
+    """NEEDLETAIL_EDGE_LAB_ID: the name of this lab among the labs of the
+    host, one to eight of a-z and 0-9, or None."""
+    value = environ.get("NEEDLETAIL_EDGE_LAB_ID") or None
+    if value is not None and not re.fullmatch(r"[a-z0-9]{1,8}", value):
+        sys.exit(f"NEEDLETAIL_EDGE_LAB_ID={value!r}: a lab id is one to eight of a-z and 0-9")
+    return value
+
+
+def work_dir(environ=os.environ) -> pathlib.Path:
+    """The state directory: NEEDLETAIL_EDGE_LAB_WORK, else target/elab-<id>
+    of this checkout for a lab with an id, else target/edge-lab."""
+    ident = lab_id(environ)
+    given = environ.get("NEEDLETAIL_EDGE_LAB_WORK")
+    if given:
+        return pathlib.Path(given)
+    return ROOT / "target" / (f"elab-{ident}" if ident else "edge-lab")
+
+
+LAB_ID = lab_id()
+WORK = work_dir()
 MESH_ROOT = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_MESH_ROOT", str(WORKSPACE / "av-mesh-features")))
 AV_MESH = pathlib.Path(os.environ.get(
@@ -88,6 +147,12 @@ AV_CONTRIB = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_CONTRIB_BIN", str(CONTRIB_ROOT / "target" / "release" / "av-contrib")))
 PROBE = pathlib.Path(os.environ.get(
     "NEEDLETAIL_PROBE_BIN", str(CONTRIB_ROOT / "target" / "release" / "aep1-48k-probe")))
+# The second build set (set b) of a lab that runs two builds side by side:
+# the av-mesh and the av-contrib that a roll or an upgrade moves nodes to.
+AV_MESH_NEXT = (pathlib.Path(os.environ["NEEDLETAIL_AV_MESH_BIN_NEXT"])
+                if os.environ.get("NEEDLETAIL_AV_MESH_BIN_NEXT") else None)
+AV_CONTRIB_NEXT = (pathlib.Path(os.environ["NEEDLETAIL_AV_CONTRIB_BIN_NEXT"])
+                   if os.environ.get("NEEDLETAIL_AV_CONTRIB_BIN_NEXT") else None)
 VIDEO_CLIP = pathlib.Path(os.environ.get(
     "NEEDLETAIL_VIDEO_CLIP",
     str(pathlib.Path.home() / "media" / "4k-encodes" / "tos24-16m.ts")))
@@ -172,6 +237,10 @@ NODES = [
     ("new-dist-b", "distributor", "newyork", "us-east", "10.90.2.12", "10.77.2.12"),
     ("new-edge-1", "edge", "newyork", "us-east", "10.90.2.21", "10.77.2.21"),
     ("new-edge-2", "edge", "newyork", "us-east", "10.90.2.22", "10.77.2.22"),
+    # The far region's slot candidates: an edge and a third forwarder, so
+    # that the forwarder tier and a second region scale in the lab too.
+    ("new-edge-3", "edge", "newyork", "us-east", "10.90.2.23", "10.77.2.23"),
+    ("new-dist-c", "distributor", "newyork", "us-east", "10.90.2.13", "10.77.2.13"),
 ]
 # Reader hosts: a namespace on the public network of a site. They are not
 # mesh nodes and have no CPU or memory limit.
@@ -305,13 +374,13 @@ def service_names(role: str | None = None, site: str | None = None) -> list[str]
 
 
 # The nodes that can be slots, and those that are slots unless `up slots=`
-# names more: lon-dist-c is new and has no service unless taken in.
-SLOT_CANDIDATES = ("lon-edge-4", "lon-dist-c")
-DEFAULT_SLOTS = ("lon-dist-c",)
+# names more: a dist-c has no service unless taken in.
+SLOT_CANDIDATES = ("lon-edge-4", "lon-dist-c", "new-edge-3", "new-dist-c")
+DEFAULT_SLOTS = ("lon-dist-c", "new-dist-c")
 
 
 def slot_nodes() -> list[str]:
-    """The slots of this lab (`up slots=`), lon-dist-c always."""
+    """The slots of this lab (`up slots=`), the two dist-c always."""
     saved = load("slots.json", list(DEFAULT_SLOTS))
     return sorted(set(saved if isinstance(saved, list) else DEFAULT_SLOTS) | set(DEFAULT_SLOTS))
 
@@ -386,43 +455,301 @@ def ns_pid(name: str) -> int:
         raise LabError(f"no namespace for {name}")
 
 
-def enter(name: str | None) -> list[str]:
-    """Command prefix that runs a command in the namespace of a node, or in
-    the lab namespace (which holds the bridges) for `None`. With the lab's
-    CPU sets (`node_cpus`), a reader host's commands run on the CPUs that
-    no node has."""
+def nsenter(name: str | None) -> list[str]:
+    """Command prefix that enters the namespace of a node, or the lab
+    namespace (which holds the bridges) for `None`."""
     pid = lab_pid() if name is None else ns_pid(name)
-    prefix = ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
-    if name is not None and any(item == name for item, *_ in READER_HOSTS):
-        rest = load("cpus.json").get("_rest")
-        if rest:
-            prefix += ["taskset", "-c", ",".join(str(cpu) for cpu in rest)]
+    return ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
+
+
+def enter(name: str | None) -> list[str]:
+    """Command prefix that runs a command of the lab's own (a reader, the
+    load tool, a probe, a sender, tc, curl) in the namespace of a node, or
+    in the lab namespace for `None`. Such a command is in the lab's tools
+    scope with the process that starts it (join_tools) and, with the lab's
+    CPU sets (`cpus`, `node_cpus`), on the CPUs that are not the nodes'.
+    Only a node's service runs elsewhere: in its own scope, on its own CPUs
+    (start_service)."""
+    prefix = nsenter(name)
+    join_tools()
+    rest = load("cpus.json").get("_rest")
+    if rest:
+        prefix += ["taskset", "-c", cpu_list(rest)]
     return prefix
 
 
-def node_cpu_sets(first: int, names: list[str]) -> dict:
-    """`node_cpus=FIRST`: each node its own CPUs, as a Linode instance has
-    (a g6-dedicated-2 edge or distributor 2, the contributor 4), from host
-    CPU FIRST on in the order of NODES, and "_rest": the host's other CPUs
-    (the reader and load hosts). Without it every node shares every CPU of
-    the host under its CPU quota, and a pinned class thread
-    (--relay-class-cpus) of every node would land on the same host CPU."""
-    total = os.cpu_count() or 1
-    out, cpu = {}, first
-    for name, *_ in NODES:
-        if name not in names:
-            continue
-        count = max(1, default_limits(name)["cpu_percent"] // 100)
-        if cpu + count > total:
-            raise LabError(f"node_cpus={first}: the host has {total} CPUs, too few for "
-                           f"{name} ({count} from CPU {cpu})")
-        out[name] = list(range(cpu, cpu + count))
-        cpu += count
-    used = {cpu for cpus in out.values() for cpu in cpus}
-    out["_rest"] = [cpu for cpu in range(total) if cpu not in used]
-    if not out["_rest"]:
-        raise LabError(f"node_cpus={first}: no CPU is left for the reader hosts")
+# ------------------------------------------------------------------ the labs of the host
+
+def work_tag(work: pathlib.Path) -> str:
+    """What names a state directory in a unit: its basename and the first
+    eight hex digits of the sha1 of its absolute path, so that two
+    directories with one basename are two labs."""
+    path = pathlib.Path(work).resolve()
+    return f"{path.name}-{hashlib.sha1(str(path).encode()).hexdigest()[:8]}"
+
+
+def unit_name(name: str) -> str:
+    return f"needletail-lab-{work_tag(WORK)}-{name}.scope"
+
+
+def lab_key() -> str:
+    """The lab's name in the registry: its id, or without one the tag of
+    its state directory (never the shape of an id)."""
+    return LAB_ID or work_tag(WORK)
+
+
+def lab_owner() -> str:
+    """Who runs this lab: NEEDLETAIL_EDGE_LAB_OWNER, by default the lab's
+    own name."""
+    return os.environ.get("NEEDLETAIL_EDGE_LAB_OWNER") or lab_key()
+
+
+# One file for each running lab of the host, whichever worktree it is run
+# from: {"id", "owner", "pid", "worktree", "work", "cpus", "since_unix"}.
+REGISTRY = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR")
+                        or f"/run/user/{os.getuid()}") / "needletail-labs"
+
+
+@contextlib.contextmanager
+def registry_lock():
+    """Every read-change-write of the registry holds this lock."""
+    REGISTRY.mkdir(parents=True, exist_ok=True)
+    with open(REGISTRY / ".lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def cpu_list(cpus: list[int]) -> str:
+    return ",".join(str(cpu) for cpu in cpus)
+
+
+def cpu_ranges(cpus: list[int]) -> str:
+    """CPUs as a person reads them: 2-15, or 0-3,8."""
+    out, cpus = [], sorted(cpus)
+    for cpu in cpus:
+        if out and cpu == out[-1][1] + 1:
+            out[-1][1] = cpu
+        else:
+            out.append([cpu, cpu])
+    return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
+
+
+def pid_alive(pid) -> bool:
+    try:
+        return bool(pathlib.Path(f"/proc/{int(pid)}/cmdline").read_bytes())
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def lab_scopes(work: str) -> list[str]:
+    """The systemd scopes of the lab in state directory `work` that are
+    alive: its nodes' services and its tools."""
+    result = subprocess.run(
+        ["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--no-legend",
+         "--plain", f"needletail-lab-{work_tag(pathlib.Path(work))}-*.scope"],
+        capture_output=True, text=True)
+    return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+
+
+def live_entries() -> list[dict]:
+    """The registry's labs that run, read under registry_lock. An entry is
+    stale, and is dropped, when its process is gone and no scope of its lab
+    is alive."""
+    out = []
+    for path in sorted(REGISTRY.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text())
+            entry = {"id": str(entry["id"]), "owner": str(entry["owner"]),
+                     "pid": int(entry["pid"]), "worktree": str(entry["worktree"]),
+                     "work": str(entry["work"]), "cpus": [int(cpu) for cpu in entry["cpus"]],
+                     "since_unix": float(entry["since_unix"])}
+            alive = pid_alive(entry["pid"]) or bool(lab_scopes(entry["work"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            alive = False
+        if alive:
+            out.append(entry)
+        else:
+            path.unlink(missing_ok=True)
     return out
+
+
+def registered_labs() -> list[dict]:
+    """The labs that run on this host, from every worktree."""
+    with registry_lock():
+        return live_entries()
+
+
+def write_entry(entry: dict) -> None:
+    temporary = REGISTRY / f"{entry['id']}.json.tmp"
+    temporary.write_text(json.dumps(entry, indent=1))
+    temporary.replace(REGISTRY / f"{entry['id']}.json")
+
+
+def claim(cpus: list[int], take: bool = False, overlap: bool = False) -> None:
+    """`up`, before anything is stopped or started: make this lab the one
+    that the registry knows by its name and its state directory, on `cpus`.
+    Refused, with every running lab left as it is:
+    - when the lab runs for another owner, or under the same id from
+      another state directory (another worktree), unless `take`, which
+      stops that lab;
+    - when another lab has one of `cpus`, unless `overlap`.
+    Otherwise the lab that ran in this state directory is stopped, as `up`
+    always did, and the entry is written with this process as its pid until
+    the lab's namespace holder exists (register_holder)."""
+    key, owner, work = lab_key(), lab_owner(), str(WORK.resolve())
+    with registry_lock():
+        entries = live_entries()
+        same = [entry for entry in entries if entry["id"] == key or entry["work"] == work]
+        for entry in same:
+            where = (f"lab {entry['id']} of {entry['owner']} runs from {entry['work']} "
+                     f"(worktree {entry['worktree']}, CPUs {cpu_ranges(entry['cpus'])})")
+            if entry["owner"] != owner and not take:
+                raise LabError(f"{where}; you are {owner}. `up take=1` stops it and takes "
+                               "its place")
+            if entry["work"] != work and not take:
+                raise LabError(f"{where}, not from {work}. Take another "
+                               "NEEDLETAIL_EDGE_LAB_ID, or `up take=1` stops that lab")
+        if not overlap:
+            for entry in entries:
+                shared = sorted(set(entry["cpus"]) & set(cpus))
+                if entry not in same and shared:
+                    taken = sorted({cpu for item in entries if item not in same
+                                    for cpu in item["cpus"]})
+                    raise LabError(
+                        f"CPUs {cpu_ranges(shared)} are lab {entry['id']}'s ({entry['owner']}, "
+                        f"worktree {entry['worktree']}); CPUs {cpu_ranges(taken)} are taken on "
+                        "this host. Give `up cpus=A-B` (or NEEDLETAIL_EDGE_LAB_CPUS) a range "
+                        "outside them, or `up cpus_overlap=1`")
+        for entry in same:
+            if entry["work"] != work:
+                kill_lab(pathlib.Path(entry["work"]))
+            (REGISTRY / f"{entry['id']}.json").unlink(missing_ok=True)
+        kill_lab(WORK)
+        write_entry({"id": key, "owner": owner, "pid": os.getpid(), "worktree": str(ROOT),
+                     "work": work, "cpus": sorted(cpus), "since_unix": time.time()})
+
+
+def register_holder(pid: int) -> None:
+    """The lab's entry lives as long as its namespace holder (or one of its
+    scopes) does."""
+    with registry_lock():
+        path = REGISTRY / f"{lab_key()}.json"
+        entry = json.loads(path.read_text())
+        write_entry({**entry, "pid": pid})
+
+
+def unregister() -> None:
+    """Remove this lab's entry: only the one of this state directory (the
+    same id may run from another worktree)."""
+    work = str(WORK.resolve())
+    with registry_lock():
+        for path in REGISTRY.glob("*.json"):
+            try:
+                if json.loads(path.read_text()).get("work") == work:
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError, AttributeError):
+                pass
+
+
+# ------------------------------------------------------------------ CPUs
+
+def cpu_range(text: str) -> tuple[int, int]:
+    """`cpus=A-B`: host CPUs A to B, at least three (two for the reader
+    hosts and the lab's own commands, one for the nodes)."""
+    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", text)
+    total = os.cpu_count() or 1
+    if not match:
+        raise LabError(f"cpus={text}: give a range of host CPUs, A-B")
+    first, last = int(match.group(1)), int(match.group(2))
+    if last >= total:
+        raise LabError(f"cpus={text}: the host has CPUs 0-{total - 1}")
+    if last - first + 1 < 3:
+        raise LabError(f"cpus={text}: a lab needs at least three CPUs")
+    return first, last
+
+
+def take_window(sets: dict, name: str) -> list[int]:
+    """Give node `name` its CPUs in `sets` (changed in place), after the
+    nodes that have theirs. In a range: the next window of as many CPUs as
+    its limit on the ring of node CPUs, so nodes share when the ring is
+    short. With `node_cpus`: the next CPUs of the host, its own, taken from
+    "_rest"."""
+    count = max(1, default_limits(name)["cpu_percent"] // 100)
+    if "_range" in sets:
+        ring = sets["_node_cpus"]
+        count = min(count, len(ring))
+        window = [ring[(sets["_next"] + index) % len(ring)] for index in range(count)]
+        sets["_next"] = (sets["_next"] + count) % len(ring)
+    else:
+        window = list(range(sets["_next"], sets["_next"] + count))
+        rest = [cpu for cpu in sets["_rest"] if cpu not in window]
+        if window[-1] >= sets["_total"]:
+            raise LabError(f"node_cpus={sets['_first']}: the host has {sets['_total']} CPUs, "
+                           f"too few for {name} ({count} from CPU {window[0]})")
+        if not rest:
+            raise LabError(f"node_cpus={sets['_first']}: no CPU is left for the reader hosts")
+        sets["_next"] += count
+        sets["_rest"] = rest
+    sets[name] = window
+    return window
+
+
+def node_cpu_sets(names: list[str], first: int | None = None,
+                  cpus: tuple[int, int] | None = None) -> dict:
+    """The CPUs of the nodes `names` (in the order of NODES) and "_rest",
+    the CPUs of the reader and load hosts and of the lab's own commands.
+
+    `cpus=(A, B)` (`up cpus=A-B`): the lab stays on host CPUs A to B. The
+    last max(2, N // 4) of the N are "_rest"; the others are the node CPUs,
+    and each node has a window of them, as many as its limit (an edge or a
+    distributor 2, the contributor 4), taken round robin. A pinned class
+    thread (--relay-class-cpus) lands in its node's window.
+
+    `first` (`up node_cpus=FIRST`): each node its own CPUs, as a Linode
+    instance has, from host CPU FIRST on, and "_rest" is every other CPU of
+    the host: the layout of one lab alone.
+
+    A node that is not in `names` (a slot that is held out) has no CPUs
+    until its service is started (node_cpus). With neither layout: {}, and
+    every node shares every CPU of the host under its CPU quota."""
+    total = os.cpu_count() or 1
+    if cpus is not None:
+        low, high = cpus
+        count = high - low + 1
+        rest = max(2, count // 4)
+        out = {"_range": [low, high], "_node_cpus": list(range(low, high + 1 - rest)),
+               "_rest": list(range(high + 1 - rest, high + 1)), "_next": 0}
+    elif first is not None:
+        out = {"_first": first, "_total": total, "_rest": list(range(total)), "_next": first}
+    else:
+        return {}
+    for name, *_ in NODES:
+        if name in names:
+            take_window(out, name)
+    return out
+
+
+def node_cpus(name: str) -> list[int] | None:
+    """The CPUs of a node's service in this lab's layout, None without a
+    layout. A node that has none yet (a slot taken in, a backbone relay of
+    the legacy topology) takes its window now."""
+    sets = load("cpus.json")
+    if name in sets or not ("_range" in sets or "_first" in sets):
+        return sets.get(name)
+    window = take_window(sets, name)
+    save("cpus.json", sets)
+    return window
+
+
+def lab_cpus(sets: dict) -> list[int]:
+    """Every host CPU that a lab with the layout `sets` may use: its range;
+    with `node_cpus` the whole host; without a layout the CPUs that the
+    process which starts it may use."""
+    if "_range" in sets:
+        return list(range(sets["_range"][0], sets["_range"][1] + 1))
+    if "_first" in sets:
+        return list(range(sets["_total"]))
+    return sorted(os.sched_getaffinity(0))
 
 
 def node_class_cpus(name: str, value: str) -> str:
@@ -433,6 +760,100 @@ def node_class_cpus(name: str, value: str) -> str:
     if not cpus:
         return value
     return ",".join(str(cpus[int(item) % len(cpus)]) for item in value.split(",") if item)
+
+
+# ------------------------------------------------------------------ the tools scope
+
+def attach(unit: str, pid: int) -> None:
+    """Move a process into a scope of the user's systemd manager: what it
+    and its children use is counted, and limited, in that scope's cgroup
+    from then on. The scope must delegate (Delegate=yes)."""
+    result = subprocess.run(
+        ["busctl", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+         "org.freedesktop.systemd1.Manager", "AttachProcessesToUnit", "ssau", unit, "", "1",
+         str(pid)], capture_output=True, text=True)
+    if result.returncode != 0:
+        # The user's manager can move only a process of its own tree: one
+        # started from a login session's scope (a plain ssh shell) is not.
+        raise LabError(f"could not move process {pid} into {unit}: "
+                       f"{(result.stderr or result.stdout).strip()[:300]}. Run the lab's "
+                       "commands from a process of the user's systemd manager (a tmux pane, "
+                       "or under `systemd-run --user --scope`)")
+
+
+def cgroup_of(pid: int) -> pathlib.Path | None:
+    try:
+        path = pathlib.Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
+    except (OSError, IndexError):
+        return None
+    return pathlib.Path("/sys/fs/cgroup" + path)
+
+
+def start_tools() -> None:
+    """The lab's tools scope: one cgroup for everything the lab runs that is
+    not a node's service. A sleeping holder keeps it (and its CPU counter)
+    for the life of the lab; the processes that drive the lab join it."""
+    unit = unit_name("tools")
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+             "stderr": subprocess.DEVNULL, "start_new_session": True}
+    if subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0:
+        # A process of the lab that ran here before is still in it (this
+        # one, after a `down`): the new holder joins the scope that exists.
+        holder = subprocess.Popen(["sleep", "infinity"], **quiet)
+        attach(unit, holder.pid)
+    else:
+        subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True)
+        holder = subprocess.Popen(
+            ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
+             "-p", "Delegate=yes", "--", "sleep", "infinity"], **quiet)
+    deadline = time.time() + 5
+    while not str(cgroup_of(holder.pid) or "").endswith("/" + unit):
+        if time.time() > deadline or holder.poll() is not None:
+            raise LabError(f"the tools scope {unit} did not start")
+        time.sleep(0.05)
+    save("tools.json", {"pid": holder.pid, "unit": unit})
+
+
+_joined = threading.Lock(), set()
+
+
+def join_tools() -> None:
+    """Put this process into the lab's tools scope and, with the lab's CPU
+    sets, on the CPUs that are not the nodes': once for each lab instance
+    that this process drives. Its children are then there too: every reader,
+    probe, sender and command that it starts."""
+    lock, done = _joined
+    with lock:
+        tools = load("tools.json")
+        if not tools:
+            raise LabError("the lab has no tools scope: it is not up")
+        if tools["pid"] in done:
+            return
+        attach(tools["unit"], os.getpid())
+        rest = load("cpus.json").get("_rest")
+        for task in os.listdir("/proc/self/task") if rest else []:
+            try:
+                os.sched_setaffinity(int(task), rest)
+            except ProcessLookupError:
+                pass  # a thread that ended meanwhile
+            except OSError as error:
+                raise LabError(f"this process may not run on the lab's CPUs "
+                               f"{cpu_ranges(rest)}: {error}")
+        done.add(tools["pid"])
+
+
+def scope_cpu_usec() -> dict:
+    """CPU time, in microseconds, that each scope of the lab has used since
+    the scope began: {"tools": N, node: N for each running service}. A
+    restarted service's count begins again."""
+    out = {}
+    tools = load("tools.json").get("pid")
+    for name, directory in [("tools", cgroup_of(tools) if tools else None)] + [
+            (name, cgroup_dir(name)) for name, *_ in NODES]:
+        usage = read_cgroup(directory).get("usage_usec") if directory else None
+        if usage is not None:
+            out[name] = usage
+    return out
 
 
 def run_in(name: str | None, command: list[str], check: bool = True,
@@ -815,62 +1236,111 @@ def lab_state() -> dict:
                       for name in SLOT_CANDIDATES}}
 
 
+def build_sources() -> dict:
+    """The binaries of each build set, where they are built: set a always;
+    set b (the build that a roll or an upgrade moves nodes to) when
+    NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT is given,
+    with set a's binary for the service that has no other."""
+    out = {"a": {"av-mesh": AV_MESH, "needletail-reader": READER, "av-contrib": AV_CONTRIB,
+                 "aep1-48k-probe": PROBE, "needletail-load": LOAD_BIN}}
+    if AV_MESH_NEXT or AV_CONTRIB_NEXT:
+        out["b"] = {"av-mesh": AV_MESH_NEXT or AV_MESH,
+                    "av-contrib": AV_CONTRIB_NEXT or AV_CONTRIB}
+    return out
+
+
 def snapshot_binaries() -> dict:
-    """Copy the binaries into the state directory and run them from there,
-    so that a build during a long run does not change the lab under it."""
+    """Copy the binaries into the state directory, a directory for each
+    build set (bin/a, and bin/b for a second build), and run them from
+    there, so that a build during a long run does not change the lab under
+    it. `binaries.json` is {set: {label: path}}."""
     import shutil
-    directory = WORK / "bin"
-    directory.mkdir(parents=True, exist_ok=True)
     out = {}
-    for label, source in (("av-mesh", AV_MESH), ("needletail-reader", READER),
-                          ("av-contrib", AV_CONTRIB), ("aep1-48k-probe", PROBE),
-                          ("needletail-load", LOAD_BIN)):
-        if label == "needletail-load" and not source.is_file():
-            continue
-        target = directory / label
-        temporary = directory / (label + ".new")
-        shutil.copy2(source, temporary)
-        temporary.replace(target)
-        out[label] = str(target)
+    for build, sources in build_sources().items():
+        directory = WORK / "bin" / build
+        directory.mkdir(parents=True, exist_ok=True)
+        out[build] = {}
+        for label, source in sources.items():
+            if label == "needletail-load" and not source.is_file():
+                continue
+            target = directory / label
+            temporary = directory / (label + ".new")
+            shutil.copy2(source, temporary)
+            temporary.replace(target)
+            out[build][label] = str(target)
     save("binaries.json", out)
     return out
 
 
-def binary(label: str) -> str:
-    """Path of a binary of the running lab."""
-    paths = load("binaries.json")
+def build_sets() -> list[str]:
+    """The build sets of the running lab: ["a"], or ["a", "b"]."""
+    return sorted(load("binaries.json")) or ["a"]
+
+
+def binary(label: str, build: str = "a") -> str:
+    """Path of a binary of the running lab: the tools and, without `build`,
+    the services of set a."""
+    paths = load("binaries.json").get(build, {})
     if label in paths:
         return paths[label]
-    return str({"av-mesh": AV_MESH, "needletail-reader": READER, "av-contrib": AV_CONTRIB,
-                "aep1-48k-probe": PROBE, "needletail-load": LOAD_BIN}[label])
+    sources = build_sources()
+    if build not in sources:
+        raise LabError(f"this lab has no build set {build}: `up` it with "
+                       "NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT")
+    return str(sources[build][label])
 
 
-def render(overrides: list[str]) -> dict:
-    """Service arguments of every node, as the Linode deploy tool renders
-    them. Only the paths of the binaries and of the TLS files differ."""
+def set_file(stem: str, build: str) -> str:
+    """The state file of a build set: `rendered.json` and `settings.json`
+    are set a's (the shape every reader of them knows), `rendered-b.json`
+    and `settings-b.json` set b's."""
+    return f"{stem}.json" if build == "a" else f"{stem}-{build}.json"
+
+
+# Settings of the lab's render that the deploy tool does not have, each for
+# a proof that needs a build to misbehave. `relay_lease_children=false`: the
+# distributors feed no edge on the fast plane (--relay-lease-children false).
+LAB_RENDER_SETTINGS = ("relay_lease_children",)
+
+
+def render(overrides: list[str], build: str = "a") -> dict:
+    """Service arguments of every node on a build set, as the Linode deploy
+    tool renders them for that set's binaries (their flags). Only the paths
+    of the binaries and of the TLS files differ."""
+    lab_only, given = {}, []
+    for item in overrides:
+        key, _, value = item.partition("=")
+        if key not in LAB_RENDER_SETTINGS:
+            given.append(item)
+        elif value in ("true", "false"):
+            lab_only[key] = value == "true"
+        else:
+            raise LabError(f"{key}={value}: true or false")
     deploy = deploy_module()
     deploy.ensure_tls()
     (WORK / "artifacts" / "settings.json").unlink(missing_ok=True)
     merged = [f"{key}={json.dumps(value)}" for key, value in DEFAULT_OVERRIDES.items()]
-    settings = deploy.load_settings(merged + overrides)
+    settings = deploy.load_settings(merged + given)
     lon_ny_us = int(2000 * (SITE_DELAY_MS["london"] + SITE_DELAY_MS["newyork"]))
     routes = {"best_direct_rtt_us": lon_ny_us, "primary_rtt_us": lon_ny_us,
               "primary_jitter_us": 1000, "secondary_rtt_us": lon_ny_us + 6000,
               "secondary_jitter_us": 1000}
     state = lab_state()
     plan = deploy.compile_plan(deploy.build_program(state, settings, routes))
-    # The render looks at the flags of the binaries that the lab runs.
+    # The render looks at the flags of the binaries that this set runs.
     deploy.RENDER_BINARIES.clear()
-    deploy.RENDER_BINARIES.update({"av-mesh": AV_MESH, "av-contrib": AV_CONTRIB})
+    deploy.RENDER_BINARIES.update({"av-mesh": binary("av-mesh", build),
+                                   "av-contrib": binary("av-contrib", build)})
     rendered = deploy.render(state, settings, plan)
-    save("sysctls.json", deploy.node_sysctls(settings))
-    save("settings.json", settings)
+    if build == "a":
+        save("sysctls.json", deploy.node_sysctls(settings))
+    save(set_file("settings", build), settings)
     tls = WORK / "artifacts" / "tls"
     out = {}
     for name, item in rendered.items():
         args = list(item["args"])
         contributor = item["service"] == "needletail-contrib"
-        args[0] = binary("av-contrib" if contributor else "av-mesh")
+        args[0] = binary("av-contrib" if contributor else "av-mesh", build)
         fixed = []
         index = 0
         while index < len(args):
@@ -881,63 +1351,103 @@ def render(overrides: list[str]) -> dict:
             else:
                 fixed.append(arg)
                 index += 1
-        if "--relay-class-cpus" in fixed:
-            at = fixed.index("--relay-class-cpus") + 1
-            fixed[at] = node_class_cpus(name, fixed[at])
         if contributor:
             fixed += ["--srt-bind", "0.0.0.0:27001", "--srt-stream-id", str(VIDEO_STREAM)]
         elif node(name)["role"] == "edge" and "--fec-bind" not in fixed:
             # An edge on the cache mesh alone; one fed by the fast plane
             # (edge_fast_plane) has its relay parents' --fec-bind already.
             fixed += ["--fec-bind", "0.0.0.0:12001"]
+        if (lab_only.get("relay_lease_children") is False
+                and node(name)["role"] == "distributor" and "--relay-lease-children" in fixed):
+            fixed[fixed.index("--relay-lease-children") + 1] = "false"
         out[name] = {"args": fixed, "rust_log": item["rust_log"]}
-    save("rendered.json", out)
+    save(set_file("rendered", build), out)
     return out
 
 
-def unit_name(name: str) -> str:
-    return f"needletail-lab-{WORK.name}-{name}.scope"
+def node_build(name: str) -> str:
+    """The build set that a node's service runs, and starts on again."""
+    return load("node-build.json").get(name, "a")
 
 
-def start_service(name: str, limits: dict | None = None, env: dict | None = None,
-                  extra_args: list[str] | None = None) -> int:
-    """Start the service of a node in its namespace and in its own cgroup."""
-    item = load("rendered.json").get(name)
+def set_node_build(name: str, build: str) -> None:
+    """Install a build on one node: its service runs set `build` from its
+    next start (`node-build.json`). Nothing is stopped or started."""
+    if build not in build_sets():
+        raise LabError(f"this lab has no build set {build} (it has {', '.join(build_sets())})")
+    if name not in load(set_file("rendered", build)):
+        raise LabError(f"{name} has no service in build set {build}")
+    builds = load("node-build.json")
+    builds[name] = build
+    save("node-build.json", builds)
+
+
+def rendered_service(name: str, build: str) -> dict:
+    """What a build set's render holds for a node: {"args", "rust_log"}."""
+    item = load(set_file("rendered", build)).get(name)
     if item is None:
         raise LabError(f"{name} has no service in this lab's topology"
                        + (" (merged: no backbone relay; up topology=legacy)"
                           if node(name)["role"] == "backbone" else ""))
+    return item
+
+
+def service_args(name: str, build: str | None = None) -> list[str]:
+    """The command line of a node's service on a build set (without one,
+    the node's own): the set's render, with --relay-class-cpus in the
+    node's own CPUs once it has them (start_service gives a slot its CPUs
+    before it asks)."""
+    args = list(rendered_service(name, build or node_build(name))["args"])
+    if "--relay-class-cpus" in args:
+        at = args.index("--relay-class-cpus") + 1
+        args[at] = node_class_cpus(name, args[at])
+    return args
+
+
+def start_service(name: str, limits: dict | None = None, env: dict | None = None,
+                  extra_args: list[str] | None = None, build: str | None = None) -> int:
+    """Start the service of a node in its namespace and in its own cgroup,
+    on its build set, or on `build`, which is then the node's set."""
+    if build is not None:
+        set_node_build(name, build)
+    build = node_build(name)
+    rust_log = rendered_service(name, build)["rust_log"]
+    # The node's own CPUs (cpus, node_cpus), as an instance has.
+    cpus = node_cpus(name)
+    args = service_args(name, build)
+    settings = load(set_file("settings", build))
     limits = {**default_limits(name), **(limits or load("limits.json").get(name, {}))}
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
                    capture_output=True)
-    # The node's own CPUs (node_cpus), as an instance has.
-    cpus = load("cpus.json").get(name)
-    pin = ["taskset", "-c", ",".join(str(cpu) for cpu in cpus)] if cpus else []
+    pin = ["taskset", "-c", cpu_list(cpus)] if cpus else []
     command = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                "--unit", unit_name(name),
                "-p", f"CPUQuota={limits['cpu_percent']}%",
                "-p", f"MemoryMax={limits['memory_mb']}M",
                "-p", "MemorySwapMax=0",
-               "--", *enter(name), *pin, *item["args"], *(extra_args or [])]
+               # A process may be put into the node's cgroup (burn).
+               "-p", "Delegate=yes",
+               "--", *nsenter(name), *pin, *args, *(extra_args or [])]
     # A service on a Nanode sees one CPU and starts one worker thread. Here it
     # would see every CPU of the host, so it is told the number that its
     # limit stands for.
-    threads = load("settings.json").get("tokio_worker_threads") or max(
+    threads = settings.get("tokio_worker_threads") or max(
         1, limits["cpu_percent"] // 100)
     shim = ({"LD_PRELOAD": str(clock_shim()),
              "NEEDLETAIL_CLOCK_OFFSET_FILE": str(WORK / "clock" / name)}
             if clock_shim().is_file() else {})
     process = subprocess.Popen(
-        command, env={**os.environ, **shim, "RUST_LOG": item["rust_log"],
+        command, env={**os.environ, **shim, "RUST_LOG": rust_log,
                       "TOKIO_WORKER_THREADS": str(threads),
                       **{key: str(value) for key, value in
-                         (load("settings.json").get("node_env") or {}).items()},
+                         (settings.get("node_env") or {}).items()},
                       **(env or {})},
         stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    log.close()
     services = load("services.json")
-    services[name] = {"pid": process.pid, "started_unix": time.time(),
+    services[name] = {"pid": process.pid, "started_unix": time.time(), "build": build,
                       "starts": services.get(name, {}).get("starts", 0) + 1}
     save("services.json", services)
     return process.pid
@@ -956,13 +1466,7 @@ def service_pid(name: str) -> int | None:
 
 def cgroup_dir(name: str) -> pathlib.Path | None:
     pid = service_pid(name)
-    if pid is None:
-        return None
-    try:
-        path = pathlib.Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
-    except (OSError, IndexError):
-        return None
-    return pathlib.Path("/sys/fs/cgroup" + path)
+    return None if pid is None else cgroup_of(pid)
 
 
 def kill_service(name: str) -> None:
@@ -980,8 +1484,9 @@ def freeze_service(name: str, frozen: bool) -> None:
         os.kill(pid, signal.SIGSTOP if frozen else signal.SIGCONT)
 
 
-def terminate_service(name: str, wait: float = 10.0) -> None:
-    """Ask a service to stop, as `systemctl stop` does."""
+def terminate_service(name: str, wait: float = 15.0) -> None:
+    """Ask a service to stop, as `systemctl stop` does: SIGTERM, and SIGKILL
+    after the unit's TimeoutStopSec (15 s) if it is still there."""
     pid = service_pid(name)
     if not pid:
         return
@@ -1000,6 +1505,51 @@ def restart_service(name: str, **kwargs) -> int:
     return start_service(name, **kwargs)
 
 
+def crash_service(name: str, restart_s: float = 1.0) -> int:
+    """A crash of a node's service and its return: SIGKILL, and a start
+    `restart_s` after the process is gone, as systemd starts a unit again
+    after its RestartSec (1 s). The same build set, the same limits."""
+    if service_pid(name) is None:
+        raise LabError(f"{name} is not running")
+    kill_service(name)
+    deadline = time.time() + 5
+    while time.time() < deadline and service_pid(name):
+        time.sleep(0.02)
+    time.sleep(restart_s)
+    return start_service(name)
+
+
+def burn(name: str, seconds: float) -> None:
+    """Busy loops in the cgroup of a node's service for `seconds`, one for
+    each CPU of its limit, on its CPUs: they take the node's own CPU time
+    under its quota, as a noisy neighbour inside an instance does. Returns
+    when they end."""
+    if service_pid(name) is None:
+        raise LabError(f"{name} is not running")
+    cpus = load("cpus.json").get(name)
+    pin = ["taskset", "-c", cpu_list(cpus)] if cpus else []
+    # Each loop waits for a line, so that it is in the node's cgroup before
+    # it uses any CPU.
+    script = ("import sys, time\nsys.stdin.readline()\n"
+              "end = time.monotonic() + float(sys.argv[1])\n"
+              "while time.monotonic() < end:\n    pass\n")
+    loops = [subprocess.Popen([*pin, sys.executable, "-c", script, str(seconds)],
+                              stdin=subprocess.PIPE, start_new_session=True)
+             for _ in range(max(1, service_limits(name)["cpu_percent"] // 100))]
+    try:
+        for loop in loops:
+            attach(unit_name(name), loop.pid)
+        for loop in loops:
+            loop.stdin.write(b"\n")
+            loop.stdin.close()
+        for loop in loops:
+            loop.wait()
+    finally:
+        for loop in loops:
+            if loop.poll() is None:
+                loop.kill()
+
+
 def set_limits(name: str, cpu_percent: int | None = None,
                memory_mb: int | None = None) -> None:
     """Change the limits of a running service."""
@@ -1014,25 +1564,42 @@ def set_limits(name: str, cpu_percent: int | None = None,
         raise LabError(f"set-property {name}: {result.stderr.strip()}")
 
 
+def switch(key: str, value: str) -> bool:
+    """A lab setting that is on or off: `take=1`, `cpus_overlap=1`."""
+    if value not in ("0", "1"):
+        raise LabError(f"{key}={value}: 1 or 0")
+    return value == "1"
+
+
 def up(overrides: list[str], start: bool = True) -> dict:
-    for binary in (AV_MESH, READER, AV_CONTRIB, PROBE):
+    sources = build_sources()
+    for binary in (AV_MESH, READER, AV_CONTRIB, PROBE, *sources.get("b", {}).values()):
         if not binary.is_file():
             raise LabError(f"binary is missing: {binary}")
-    down(quiet=True)
-    (WORK / "logs").mkdir(parents=True, exist_ok=True)
-    for log in (WORK / "logs").glob("*"):
-        if log.is_file():
-            log.unlink()
     limits = {}
     plain = []
+    # Settings that set b alone renders with (`b.<setting>=<value>`).
+    next_only = []
     slots = set(DEFAULT_SLOTS)
     first_cpu = None
+    cpus = os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS") or None
+    take = overlap = False
     for item in overrides:
         key, _, value = item.partition("=")
         if key == "node_cpus":
             # A lab setting: each node its own host CPUs (node_cpu_sets).
             value = value.strip().strip('"')
             first_cpu = int(value) if value not in ("", "null", "none") else None
+            continue
+        if key == "cpus":
+            # A lab setting: the host CPUs that the lab stays on.
+            cpus = value.strip().strip('"') or None
+            continue
+        if key == "take":
+            take = switch(key, value)
+            continue
+        if key == "cpus_overlap":
+            overlap = switch(key, value)
             continue
         if key == "slots":
             given = {name for name in value.split(",") if name}
@@ -1046,17 +1613,50 @@ def up(overrides: list[str], start: bool = True) -> dict:
             # limit.<node>.cpu_percent=50, limit.<node>.memory_mb=512
             _, name, field = key.split(".", 2)
             limits.setdefault(name, {})[field] = int(value)
+        elif key.startswith("b."):
+            if "b" not in sources:
+                raise LabError(f"{item}: this lab has one build set; set b needs "
+                               "NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT")
+            if key[2:] in ("node_cpus", "cpus", "take", "cpus_overlap", "slots") \
+                    or key[2:].startswith(("limit.", "b.")):
+                raise LabError(f"{item}: {key[2:].split('.')[0]} is the lab's, not a build "
+                               "set's")
+            next_only.append(item[2:])
         else:
             plain.append(item)
+    if first_cpu is not None and cpus is not None:
+        raise LabError(f"node_cpus={first_cpu} is the layout of one lab on the whole host and "
+                       f"cpus={cpus} that of a lab in a range: give one")
+    # A slot that is held out has no CPUs until it is taken in.
+    sets = node_cpu_sets([name for name, role, *_ in NODES
+                          if role != "backbone" and name not in slots],
+                         first=first_cpu, cpus=None if cpus is None else cpu_range(cpus))
+    # Refused here, with nothing stopped yet, when the lab is another
+    # owner's or its CPUs are another lab's; else the lab that ran in this
+    # state directory is stopped.
+    claim(lab_cpus(sets), take=take, overlap=overlap)
+    (WORK / "logs").mkdir(parents=True, exist_ok=True)
+    for log in (WORK / "logs").glob("*"):
+        if log.is_file():
+            log.unlink()
     save("limits.json", limits)
-    save("cpus.json", {} if first_cpu is None else node_cpu_sets(
-        first_cpu, [name for name, role, *_ in NODES if role != "backbone"]))
+    save("cpus.json", sets)
     save("slots.json", sorted(slots))
     save("slots-created.json", [])
+    start_tools()
+    join_tools()
     build_networks()
+    register_holder(lab_pid())
     snapshot_binaries()
     build_clock_shim()
+    # Set a last: the deploy tool's files in the state directory are then
+    # those of the set that every node starts on.
+    for stem in ("rendered", "settings"):
+        (WORK / set_file(stem, "b")).unlink(missing_ok=True)
+    if "b" in sources:
+        render(plain + next_only, build="b")
     rendered = render(plain)
+    save("node-build.json", {name: "a" for name in rendered})
     # The kernel settings that the deploy tool gives a node.
     sysctls = load("sysctls.json")
     if sysctls:
@@ -1088,22 +1688,34 @@ def up(overrides: list[str], start: bool = True) -> dict:
     return rendered
 
 
-def down(quiet: bool = False) -> None:
-    for name, item in list(load("services.json").items()) + list(load("sources.json").items()):
-        pid = item["pid"] if isinstance(item, dict) else item
-        for target in (pid,):
-            try:
-                os.killpg(target, signal.SIGKILL)
-            except OSError:
-                pass
-    for _name, pid in load("namespaces.json").items():
+def kill_lab(work: pathlib.Path) -> None:
+    """Stop the lab whose state directory is `work`: every service, source
+    and namespace and the holder of its tools scope, and forget what ran."""
+    def saved(name: str) -> dict:
+        try:
+            found = json.loads((work / name).read_text())
+        except (OSError, ValueError):
+            return {}
+        return found if isinstance(found, dict) else {}
+
+    pids = [item["pid"] if isinstance(item, dict) else item
+            for item in list(saved("services.json").values())
+            + list(saved("sources.json").values())]
+    pids += list(saved("namespaces.json").values())
+    pids += [pid for pid in [saved("tools.json").get("pid")] if pid]
+    for pid in pids:
         try:
             os.killpg(pid, signal.SIGKILL)
         except OSError:
             pass
     for path in ("services.json", "namespaces.json", "sources.json", "links.json",
-                 "shaped.json", "qdisc.json", "cpus.json"):
-        (WORK / path).unlink(missing_ok=True)
+                 "shaped.json", "qdisc.json", "cpus.json", "tools.json"):
+        (work / path).unlink(missing_ok=True)
+
+
+def down(quiet: bool = False) -> None:
+    kill_lab(WORK)
+    unregister()
     if not quiet:
         print("down")
 
@@ -1602,8 +2214,29 @@ class Sampler:
 
 # ------------------------------------------------------------------ CLI
 
+def control(name: str, action: str) -> tuple[int, object]:
+    """POST /api/control/<action>-node (`drain`, `resume`, `close`) to the
+    node itself, naming it: av-mesh takes a request without a node as
+    global. Returns the HTTP status (202: accepted and queued) and the
+    answer."""
+    return http_json(name, f"/api/control/{action}-node", "POST", {"node_id": name})
+
+
+def node_status(name: str) -> dict:
+    """What a running mesh node says of itself (GET /api/node): its build,
+    state and drain reasons; {} from a node that does not answer it."""
+    code, body = http_json(name, "/api/node", timeout=2.0)
+    return body if code == 200 and isinstance(body, dict) else {}
+
+
 def status() -> None:
+    work = str(WORK.resolve())
+    for entry in registered_labs():
+        print(f"lab {entry['id']:<10} owner {entry['owner']:<10} "
+              f"CPUs {cpu_ranges(entry['cpus']):<8} {entry['work']}"
+              + (" (this lab)" if entry["work"] == work else ""))
     held = held_slots()
+    services = load("services.json")
     for name, role, site, *_ in NODES:
         pid = service_pid(name)
         if pid is None:
@@ -1615,9 +2248,15 @@ def status() -> None:
         directory = cgroup_dir(name)
         stats = read_cgroup(directory) if directory else {}
         line = (f"{name:16} {role:12} pid {pid:<8} "
+                f"set {services.get(name, {}).get('build', 'a')} "
                 f"mem {stats.get('memory_bytes', 0) / 1e6:6.0f} MB "
                 f"throttled {stats.get('throttled_usec', 0) / 1e6:6.1f} s")
         if role in ("edge", "distributor"):
+            own = node_status(name)
+            if own:
+                reasons = ",".join(own.get("drain_reasons") or []) or "none"
+                line += (f" build {(own.get('build') or {}).get('git')} "
+                         f"state {own.get('state')} drain {reasons}")
             try:
                 view = edge_view(name)
                 line += (f" holds {sorted(view['playlists'])} sessions {view['sessions']} "
@@ -1635,6 +2274,9 @@ def main() -> None:
         if command == "up":
             rendered = up(arguments)
             print(f"started {len(rendered)} services, each in its own namespace and cgroup")
+            print(f"lab {lab_key()} of {lab_owner()}, "
+                  f"CPUs {cpu_ranges(lab_cpus(load('cpus.json')))}, "
+                  f"build sets {', '.join(build_sets())}, state in {WORK}")
         elif command == "down":
             down()
         elif command == "status":
@@ -1663,16 +2305,27 @@ def main() -> None:
             print(f"{name} stopped")
         elif command in ("drain", "resume"):
             name = arguments[0]
-            # Always naming the node: av-mesh takes a request without one
-            # as global.
             # Not `status`: that name is the status command's function, and
             # binding it here made `edge_lab.py status` fail (UnboundLocalError).
-            code, body = http_json(name, f"/api/control/{command}-node", "POST",
-                                   {"node_id": name})
+            code, body = control(name, command)
             print(f"{command} {name}: HTTP {code} {json.dumps(body)[:200]}")
             # av-mesh answers a control command with 202 Accepted (queued).
             if not 200 <= code < 300:
                 sys.exit(1)
+        elif command == "crash":
+            name = arguments[0]
+            restart_s = 1.0
+            if arguments[1:]:
+                if len(arguments) != 3 or arguments[1] != "--restart-s":
+                    sys.exit("usage: edge_lab.py crash <node> [--restart-s SECONDS]")
+                restart_s = float(arguments[2])
+            pid = crash_service(name, restart_s)
+            print(f"{name} was killed and runs again (pid {pid})")
+        elif command == "burn":
+            if len(arguments) != 2:
+                sys.exit("usage: edge_lab.py burn <node> <seconds>")
+            burn(arguments[0], float(arguments[1]))
+            print(f"{arguments[0]} burned for {arguments[1]} s")
         else:
             sys.exit(__doc__)
     except LabError as error:

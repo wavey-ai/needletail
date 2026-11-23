@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Tests of the local lab's slot nodes and the scale-ops scenarios, offline
-(no namespace, no service started): lon-dist-c is a slot always and
-lon-edge-4 with `up slots=lon-edge-4`; a slot out of service is left out of
-edges(), distributors() and what restore starts; the deploy renders
-lon-dist-c as a lease child of lon-dist-a and lon-dist-b and never as a
-compiled relay child; `drain` names its node; the campaign's needletail-load
-command, UDP report and move spread; the scenarios are registered.
+"""Tests of the local lab's slot nodes, build sets and verbs and of the
+scale-ops scenarios, offline (no namespace, no service started): lon-dist-c
+and new-dist-c are slots always, lon-edge-4 and new-edge-3 with `up slots=`;
+a slot out of service is left out of edges(), distributors() and what
+restore starts; the deploy renders a dist-c as a lease child of its site's
+dist-a and dist-b and never as a compiled relay child; a second build set is
+kept beside the first, rendered with its own binaries' flags and settings,
+and a node starts on the set it is given; `drain` names its node; `crash`,
+`burn` and `status`; the campaign's needletail-load command, UDP report and
+move spread; the scenarios are registered.
 python3 -m unittest scripts/test_edge_lab_slots.py"""
 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import io
 import json
 import pathlib
@@ -35,16 +39,26 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.work = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.work, True)
-        patcher = mock.patch.object(lab, "WORK", self.work)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # The lab's state and the host's registry of labs: the test's own.
+        for name, value in (("WORK", self.work / "lab"), ("REGISTRY", self.work / "labs")):
+            patcher = mock.patch.object(lab, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.work = self.work / "lab"
+        self.work.mkdir()
 
 
 class Slots(Base):
     def test_lon_dist_c_is_a_slot_and_out_of_service_until_taken_in(self):
-        self.assertEqual(lab.slot_nodes(), ["lon-dist-c"])
+        self.assertEqual(lab.slot_nodes(), ["lon-dist-c", "new-dist-c"])
         self.assertNotIn("lon-dist-c", lab.distributors("london"))
         self.assertIn("lon-edge-4", lab.edges("london"))
+        # The far region has the same pair: a forwarder slot that is held
+        # out and an edge that is in service unless `up slots=` names it.
+        self.assertEqual(lab.distributors("newyork"), ["new-dist-a", "new-dist-b"])
+        self.assertEqual(lab.edges("newyork"), ["new-edge-1", "new-edge-2", "new-edge-3"])
+        self.assertEqual(lab.node("new-dist-c")["vlan_ipv4"], "10.77.2.13")
+        self.assertEqual(lab.node("new-edge-3")["public_ipv4"], "10.90.2.23")
         lab.save("rendered.json", {name: {"args": [], "rust_log": ""} for name in lab.names()
                                    if lab.node(name)["role"] != "backbone"})
         self.assertNotIn("lon-dist-c", lab.standing_services())
@@ -58,16 +72,29 @@ class Slots(Base):
 
     def test_up_slots_holds_lon_edge_4_out_too(self):
         lab.save("slots.json", ["lon-edge-4", "lon-dist-c"])
-        self.assertEqual(lab.slot_nodes(), ["lon-dist-c", "lon-edge-4"])
+        self.assertEqual(lab.slot_nodes(), ["lon-dist-c", "lon-edge-4", "new-dist-c"])
         self.assertEqual(lab.edges("london"), ["lon-edge-1", "lon-edge-2", "lon-edge-3"])
         lab.set_slot_in_service("lon-edge-4", True)
         self.assertIn("lon-edge-4", lab.edges("london"))
 
+    def test_the_far_region_has_slots_too(self):
+        lab.save("slots.json", ["new-edge-3"])
+        self.assertEqual(lab.slot_nodes(), ["lon-dist-c", "new-dist-c", "new-edge-3"])
+        self.assertEqual(lab.edges("newyork"), ["new-edge-1", "new-edge-2"])
+        for slot, listed in (("new-edge-3", lab.edges), ("new-dist-c", lab.distributors)):
+            lab.set_slot_in_service(slot, True)
+            self.assertIn(slot, listed("newyork"))
+            lab.set_slot_in_service(slot, False)
+            self.assertNotIn(slot, listed("newyork"))
+
     def test_the_lab_state_names_its_slots_for_the_deploy(self):
         state = lab.lab_state()
-        self.assertEqual(sorted(state["slots"]), ["lon-dist-c", "lon-edge-4"])
+        self.assertEqual(sorted(state["slots"]),
+                         ["lon-dist-c", "lon-edge-4", "new-dist-c", "new-edge-3"])
         self.assertEqual(state["slots"]["lon-dist-c"]["vlan_ipv4"], "10.77.1.13")
+        self.assertEqual(state["slots"]["new-dist-c"]["vlan_ipv4"], "10.77.2.13")
         self.assertIn("lon-dist-c", state["nodes"])
+        self.assertIn("new-edge-3", state["nodes"])
 
     def test_drain_names_its_node(self):
         calls = []
@@ -170,6 +197,288 @@ class Render(Base):
             (item["node_id"], json.dumps(item.get("primary_parent"), sort_keys=True))
             for item in services)
         self.assertEqual(ports(plan["services"]), ports(plain["services"]))
+        # The far region's slot is the same thing at its own site.
+        far = rendered["new-dist-c"]["args"]
+        value = lambda flag: far[far.index(flag) + 1] if flag in far else None  # noqa: E731
+        self.assertNotIn("new-dist-c", {item["node_id"] for item in plan["services"]})
+        self.assertEqual(value("--relay-primary-id"), "new-dist-a")
+        self.assertEqual(value("--relay-secondary-id"), "new-dist-b")
+        self.assertEqual(value("--relay-lease-bind"), "10.77.2.13:22901")
+        self.assertEqual(value("--cache-mesh-upstream-demand"), "true")
+        self.assertNotIn("--relay-forward", far)
+        edge = rendered["new-edge-3"]["args"]
+        peers = [edge[index + 1] for index, arg in enumerate(edge) if arg == "--peer"]
+        for parent in ("10.77.2.11:29101", "10.77.2.12:29101", "10.77.2.13:29101"):
+            self.assertIn(parent, peers)
+
+    def test_set_b_is_rendered_with_its_own_binary_s_flags(self):
+        import small_mesh_common
+        patcher = mock.patch.object(small_mesh_common, "ARTIFACT_DIR",
+                                    small_mesh_common.ARTIFACT_DIR)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Two builds that differ in what they take: set b's av-mesh reads no
+        # short compact header and its av-contrib has no epoch lane switch,
+        # so the deploy tool's render must tell set b's contributor so.
+        built = fake_builds(self.work.parent, {
+            "a-mesh": "--peer <ADDR>\n  --client-udp-compact-short-header <BOOL>",
+            "a-contrib": "--relay-compact-audio <BOOL>\n  --audio-epoch-mesh-lane <MODE>",
+            "b-mesh": "--peer <ADDR>",
+            "b-contrib": "--relay-compact-audio <BOOL>",
+            "tool": ""})
+        with mock.patch.multiple(lab, AV_MESH=built["a-mesh"], AV_CONTRIB=built["a-contrib"],
+                                 READER=built["tool"], PROBE=built["tool"],
+                                 LOAD_BIN=self.work / "none", AV_MESH_NEXT=built["b-mesh"],
+                                 AV_CONTRIB_NEXT=built["b-contrib"]), \
+                redirect_stderr(io.StringIO()):
+            lab.snapshot_binaries()
+            lab.render(["rust_log_mesh=debug", "relay_lease_children=false"], build="b")
+            lab.render([])
+        one, two = lab.load("rendered.json"), lab.load("rendered-b.json")
+        self.assertEqual(sorted(one), sorted(two))
+        contributor = lab.names("contributor")[0]
+        self.assertNotIn("--relay-compact-audio", one[contributor]["args"])
+        self.assertNotIn("--audio-epoch-ingress-target", one[contributor]["args"])
+        args = two[contributor]["args"]
+        self.assertEqual(args[args.index("--relay-compact-audio") + 1], "false")
+        self.assertIn("--audio-epoch-ingress-target", args)
+        # Each set runs its own copies.
+        for rendered, build in ((one, "a"), (two, "b")):
+            self.assertEqual(rendered[contributor]["args"][0],
+                             str(self.work / "bin" / build / "av-contrib"))
+            self.assertEqual(rendered["lon-edge-1"]["args"][0],
+                             str(self.work / "bin" / build / "av-mesh"))
+        # A setting of set b alone, the deploy tool's and the lab's own.
+        self.assertEqual(lab.load("settings.json")["rust_log_mesh"],
+                         "av_mesh=info,av_web_service=warn")
+        self.assertEqual(lab.load("settings-b.json")["rust_log_mesh"], "debug")
+        self.assertEqual(two["lon-edge-1"]["rust_log"], "debug")
+        lease = lambda rendered, name: rendered[name]["args"][  # noqa: E731
+            rendered[name]["args"].index("--relay-lease-children") + 1]
+        for name in lab.names("distributor"):
+            self.assertEqual(lease(two, name), "false", name)
+        self.assertEqual(lease(one, "lon-dist-a"), "true")
+        self.assertEqual(lease(one, "new-dist-b"), "true")
+        with self.assertRaises(lab.LabError):
+            lab.render(["relay_lease_children=maybe"])
+
+
+def fake_builds(directory: pathlib.Path, helps: dict) -> dict:
+    """Executables that answer --help with the given flags, as a build of
+    av-mesh or av-contrib does."""
+    out = {}
+    for name, text in helps.items():
+        path = directory / name
+        path.write_text(f"#!/bin/sh\nprintf '%b\\n' '  {text}'\n")
+        path.chmod(0o755)
+        out[name] = path
+    return out
+
+
+class BuildSets(Base):
+    """Two builds side by side in one lab."""
+
+    def builds(self, next_mesh: bool = True) -> dict:
+        built = fake_builds(self.work.parent, {name: f"--{name}" for name in (
+            "a-mesh", "a-contrib", "b-mesh", "reader", "probe")})
+        patcher = mock.patch.multiple(
+            lab, AV_MESH=built["a-mesh"], AV_CONTRIB=built["a-contrib"], READER=built["reader"],
+            PROBE=built["probe"], LOAD_BIN=self.work / "none",
+            AV_MESH_NEXT=built["b-mesh"] if next_mesh else None, AV_CONTRIB_NEXT=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return built
+
+    def test_set_b_is_kept_beside_set_a(self):
+        built = self.builds()
+        # Before the snapshot: the builds themselves.
+        self.assertEqual(lab.binary("av-mesh"), str(built["a-mesh"]))
+        self.assertEqual(lab.binary("av-mesh", "b"), str(built["b-mesh"]))
+        found = lab.snapshot_binaries()
+        directory = self.work / "bin"
+        self.assertEqual(found, {
+            "a": {label: str(directory / "a" / label) for label in (
+                "av-mesh", "needletail-reader", "av-contrib", "aep1-48k-probe")},
+            "b": {label: str(directory / "b" / label) for label in ("av-mesh", "av-contrib")}})
+        self.assertEqual(lab.load("binaries.json"), found)
+        self.assertEqual(lab.build_sets(), ["a", "b"])
+        same = lambda copy, source: (directory / copy).read_text() == source.read_text()  # noqa: E731
+        self.assertTrue(same("a/av-mesh", built["a-mesh"]))
+        self.assertTrue(same("b/av-mesh", built["b-mesh"]))
+        # No other av-contrib was given: set b runs set a's, its own copy.
+        self.assertTrue(same("b/av-contrib", built["a-contrib"]))
+        self.assertEqual(lab.binary("av-mesh"), str(directory / "a" / "av-mesh"))
+        self.assertEqual(lab.binary("av-mesh", "b"), str(directory / "b" / "av-mesh"))
+        # The tools are set a's.
+        self.assertEqual(lab.binary("needletail-reader"),
+                         str(directory / "a" / "needletail-reader"))
+
+    def test_a_lab_of_one_build_has_no_set_b(self):
+        self.builds(next_mesh=False)
+        self.assertEqual(sorted(lab.snapshot_binaries()), ["a"])
+        self.assertEqual(lab.build_sets(), ["a"])
+        with self.assertRaises(lab.LabError):
+            lab.binary("av-mesh", "b")
+        lab.save("rendered.json", {"lon-edge-1": {"args": ["/a/av-mesh"], "rust_log": ""}})
+        with mock.patch.object(lab.subprocess, "Popen") as popen, \
+                self.assertRaises(lab.LabError):
+            lab.start_service("lon-edge-1", build="b")
+        popen.assert_not_called()
+        self.assertEqual(lab.load("node-build.json"), {})
+
+    def test_a_node_starts_on_the_build_set_it_was_given(self):
+        lab.save("binaries.json", {"a": {}, "b": {}})
+        lab.save("rendered.json", {"lon-edge-1": {"args": ["/a/av-mesh", "--old"],
+                                                  "rust_log": "info"}})
+        lab.save("rendered-b.json", {"lon-edge-1": {"args": ["/b/av-mesh", "--new"],
+                                                    "rust_log": "debug"}})
+        lab.save("settings.json", {"tokio_worker_threads": None})
+        lab.save("settings-b.json", {"tokio_worker_threads": 1, "node_env": {"X": 1}})
+        lab.save("namespaces.json", {"lab": 100, "lon-edge-1": 101})
+        started = []
+
+        def start(build=None, **kwargs):
+            with mock.patch.object(lab.subprocess, "run"), \
+                    mock.patch.object(lab.subprocess, "Popen") as popen:
+                popen.return_value.pid = 4000 + len(started)
+                lab.start_service("lon-edge-1", build=build, **kwargs)
+            command, env = popen.call_args.args[0], popen.call_args.kwargs["env"]
+            started.append((command[command.index("101") + 1:], env["RUST_LOG"],
+                            env["TOKIO_WORKER_THREADS"], env.get("X")))
+            return command
+
+        command = start()
+        self.assertEqual(started[-1], (["/a/av-mesh", "--old"], "info", "2", None))
+        # Its own cgroup, which a process may be put into (burn).
+        self.assertEqual(command[command.index("--unit") + 1], lab.unit_name("lon-edge-1"))
+        self.assertIn("Delegate=yes", command)
+        self.assertEqual(lab.load("services.json")["lon-edge-1"]["build"], "a")
+        start(build="b", extra_args=["--more"])
+        self.assertEqual(started[-1], (["/b/av-mesh", "--new", "--more"], "debug", "1", "1"))
+        self.assertEqual(lab.load("node-build.json"), {"lon-edge-1": "b"})
+        self.assertEqual(lab.load("services.json")["lon-edge-1"]["build"], "b")
+        self.assertEqual(lab.load("services.json")["lon-edge-1"]["starts"], 2)
+        # A start without a set (a restart, the campaign's restore) keeps it.
+        start()
+        self.assertEqual(started[-1][0], ["/b/av-mesh", "--new"])
+        self.assertEqual(lab.service_args("lon-edge-1"), ["/b/av-mesh", "--new"])
+        self.assertEqual(lab.service_args("lon-edge-1", "a"), ["/a/av-mesh", "--old"])
+        # Installed, not started: its next start is on set a again.
+        lab.set_node_build("lon-edge-1", "a")
+        self.assertEqual(lab.node_build("lon-edge-1"), "a")
+        self.assertEqual(len(started), 3)
+        start()
+        self.assertEqual(started[-1][0], ["/a/av-mesh", "--old"])
+        for name, build in (("lon-edge-1", "c"), ("lon-edge-2", "b")):
+            with self.assertRaises(lab.LabError):
+                lab.set_node_build(name, build)
+
+
+class Verbs(Base):
+    def main(self, *arguments: str) -> str:
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["edge_lab.py", *arguments]), redirect_stdout(out):
+            lab.main()
+        return out.getvalue()
+
+    def test_crash_kills_a_node_and_starts_it_after_the_units_restart_time(self):
+        for arguments, restart_s in ((["new-dist-a"], 1.0),
+                                     (["new-dist-a", "--restart-s", "0.25"], 0.25)):
+            calls = []
+            running = {"new-dist-a": 10}
+            with mock.patch.object(lab, "service_pid", lambda name: running.get(name)), \
+                    mock.patch.object(lab, "kill_service", lambda name: (
+                        calls.append(("kill", name)), running.pop(name))), \
+                    mock.patch.object(lab.time, "sleep",
+                                      lambda seconds: calls.append(("sleep", seconds))), \
+                    mock.patch.object(lab, "start_service", lambda name: (
+                        calls.append(("start", name)), 11)[1]):
+                out = self.main("crash", *arguments)
+            self.assertEqual(calls, [("kill", "new-dist-a"), ("sleep", restart_s),
+                                     ("start", "new-dist-a")])
+            self.assertIn("pid 11", out)
+        with mock.patch.object(lab, "service_pid", lambda name: None), \
+                self.assertRaises(SystemExit) as stopped:
+            self.main("crash", "new-dist-a")
+        self.assertEqual(str(stopped.exception), "new-dist-a is not running")
+        with self.assertRaises(SystemExit):
+            self.main("crash", "new-dist-a", "--hold-s", "1")
+
+    def test_burn_is_in_the_nodes_cgroup_on_its_cpus(self):
+        lab.save("cpus.json", {"lon-edge-1": [10, 11], "_rest": [13, 14, 15]})
+        events = []
+
+        class Loop:
+            def __init__(self, command, **kwargs):
+                self.pid = 500 + len([item for item in events if item[0] == "loop"])
+                self.stdin = mock.Mock()
+                self.stdin.write = lambda data: events.append(("go", self.pid))
+                events.append(("loop", command, kwargs.get("start_new_session")))
+
+            def wait(self):
+                events.append(("wait", self.pid))
+
+            def poll(self):
+                return 0
+
+        with mock.patch.object(lab, "service_pid", lambda name: 9), \
+                mock.patch.object(lab.subprocess, "Popen", Loop), \
+                mock.patch.object(lab, "attach",
+                                  lambda unit, pid: events.append(("attach", unit, pid))):
+            self.main("burn", "lon-edge-1", "20")
+        loops = [item for item in events if item[0] == "loop"]
+        # One for each CPU of the node's limit, each pinned to the node's.
+        self.assertEqual(len(loops), 2)
+        for _kind, command, new_session in loops:
+            self.assertEqual(command[:4], ["taskset", "-c", "10,11", sys.executable])
+            self.assertEqual(command[-1], "20.0")
+            self.assertTrue(new_session)
+        # Each is in the node's cgroup before it is told to begin.
+        unit = lab.unit_name("lon-edge-1")
+        self.assertEqual(events[2:], [("attach", unit, 500), ("attach", unit, 501),
+                                      ("go", 500), ("go", 501), ("wait", 500), ("wait", 501)])
+        with mock.patch.object(lab, "service_pid", lambda name: None), \
+                self.assertRaises(SystemExit):
+            self.main("burn", "lon-edge-1", "20")
+
+    def test_stop_waits_as_long_as_the_unit_does(self):
+        self.assertEqual(inspect.signature(lab.terminate_service).parameters["wait"].default,
+                         15.0)
+
+    def test_status_names_the_labs_of_the_host_and_each_nodes_build(self):
+        mine = {"id": "b", "owner": "jo", "pid": lab.os.getpid(), "worktree": str(lab.ROOT),
+                "work": str(self.work.resolve()), "cpus": list(range(16, 30)), "since_unix": 1.0}
+        other = {**mine, "id": "a", "owner": "sam", "worktree": "/trees/one",
+                 "work": "/trees/one/target/elab-a", "cpus": list(range(2, 16))}
+        lab.REGISTRY.mkdir()
+        for entry in (mine, other):
+            (lab.REGISTRY / f"{entry['id']}.json").write_text(json.dumps(entry))
+        lab.save("services.json", {"lon-edge-1": {"pid": 7, "build": "b"},
+                                   "lon-edge-2": {"pid": 8, "build": "a"}})
+        own = {"build": {"git": "3f2a9c1d77e0"}, "state": "draining",
+               "drain_reasons": ["operator"]}
+
+        def http_json(name, path, method="GET", body=None, timeout=5.0):
+            # lon-edge-2 runs a build that has no /api/node.
+            return (200, own) if (name, path) == ("lon-edge-1", "/api/node") else (404, None)
+
+        def view(name):
+            raise lab.LabError("no view")
+
+        with mock.patch.object(lab, "service_pid", lambda name: {
+                "lon-edge-1": 7, "lon-edge-2": 8}.get(name)), \
+                mock.patch.object(lab, "cgroup_dir", lambda name: None), \
+                mock.patch.object(lab, "http_json", http_json), \
+                mock.patch.object(lab, "edge_view", view):
+            lines = self.main("status").splitlines()
+        self.assertRegex(lines[0], r"^lab a +owner sam +CPUs 2-15 +/trees/one/target/elab-a$")
+        self.assertRegex(lines[1], r"^lab b +owner jo +CPUs 16-29 .*\(this lab\)$")
+        first = next(line for line in lines if line.startswith("lon-edge-1"))
+        self.assertIn(" set b ", first)
+        self.assertIn("build 3f2a9c1d77e0 state draining drain operator", first)
+        second = next(line for line in lines if line.startswith("lon-edge-2"))
+        self.assertIn(" set a ", second)
+        self.assertNotIn("state", second)
 
 
 class Campaign(Base):
