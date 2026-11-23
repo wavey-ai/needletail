@@ -77,6 +77,8 @@ FANOUT = {1: {"lon": 1}, 10: {"lon": 3, "new": 3, "tok": 2, "syd": 2},
 LANES = ["nt", "cf", "whep", "lkregion", "lkmulti", "lkcloud"]
 SAMPLER = (
     "[ -f /var/tmp/compare-sampler.pid ] && kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
+    # A log not yet collected (a sampler started before the session) is kept.
+    "[ -f /var/tmp/compare-sampler.log ] && cat /var/tmp/compare-sampler.log >>/var/tmp/compare-sampler.carry; "
     "cat >/var/tmp/compare-sampler.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-sampler.pid\n"
     "while true; do\n"
@@ -95,6 +97,8 @@ SAMPLER = (
 # what triggers a change of load (wave 6's contributor output multiplied mid-step).
 STATS_SAMPLER = (
     "[ -f /var/tmp/compare-stats.pid ] && kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
+    # A log not yet collected (a sampler started before the session) is kept.
+    "[ -f /var/tmp/compare-stats.log ] && cat /var/tmp/compare-stats.log >>/var/tmp/compare-stats.carry; "
     "cat >/var/tmp/compare-stats.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-stats.pid\n"
     "while true; do\n"
@@ -118,7 +122,7 @@ def start_samplers(session: "Session") -> list[dict]:
     """Record the processor time of the services on every Needletail and
     LiveKit node, every five seconds, for the length of a session."""
     sampled = [item for item in session.nodes.values()
-               if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit")]
+               if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit", "load")]
     common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
     common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor", "edge")],
                     lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item)}, check=False))
@@ -130,12 +134,14 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
 
     def collect(item: dict) -> None:
         text = common.ssh_text(item, "kill $(cat /var/tmp/compare-sampler.pid) 2>/dev/null; "
-                                     "cat /var/tmp/compare-sampler.log", check=False)
+                                     "cat /var/tmp/compare-sampler.carry /var/tmp/compare-sampler.log 2>/dev/null; "
+                                     "rm -f /var/tmp/compare-sampler.carry /var/tmp/compare-sampler.log", check=False)
         # One file for each invocation: a session can be run in several parts.
         (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
         if item["role"] in ("contributor", "distributor", "edge"):
             stats = common.ssh_text(item, "kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
-                                          "cat /var/tmp/compare-stats.log", check=False)
+                                          "cat /var/tmp/compare-stats.carry /var/tmp/compare-stats.log 2>/dev/null; "
+                                          "rm -f /var/tmp/compare-stats.carry /var/tmp/compare-stats.log", check=False)
             (session.dir / "samplers" / f"{item['name']}.stats.{int(time.time())}.log").write_text(stats + "\n")
             # The node's own stop journal (per-CPU ticks, each stop classed as
             # stopped, starved or own work), on builds that serve it.
