@@ -31,6 +31,22 @@ the cgroups are scopes of the user's systemd manager.
   edge_lab.py net <node> <pub|vlan> <out|in|both> <netem spec | clear>
   edge_lab.py wan <site> <out|in|both> <netem spec | clear>
   edge_lab.py sources <seconds>         start the 4K video and the audio sources
+  edge_lab.py start <node>              start a node's service (a slot: take it into
+                                        service)
+  edge_lab.py stop <node>               stop a node's service (SIGTERM; a slot: out of
+                                        service again)
+  edge_lab.py drain <node>              POST /api/control/drain-node for that node
+  edge_lab.py resume <node>             POST /api/control/resume-node for that node
+
+Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
+peer list naming them, but does not start, as the large mesh's autoscale
+slots: lon-dist-c always (a third London forwarder, a fast-plane lease child
+of lon-dist-a and lon-dist-b and a cache-mesh parent of the edges, never a
+compiled relay child), and lon-edge-4 with `up slots=lon-edge-4`. A slot is
+in service once `start` (or the autoscaler's edge_lab backend) takes it in;
+until then edges() and distributors() leave it out, and restore() does not
+start it. Starting one restarts no other service: their arguments already
+name it.
 
 The fault campaign (`edge-campaign.py`) drives this module.
 
@@ -61,6 +77,11 @@ AV_MESH = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_MESH_BIN", str(MESH_ROOT / "target" / "release" / "av-mesh")))
 READER = pathlib.Path(os.environ.get(
     "NEEDLETAIL_READER_BIN", str(MESH_ROOT / "target" / "release" / "needletail-reader")))
+# The UDP listener crowds of the scale scenarios (av-mesh low-latency, where
+# scale-load is merged).
+# Optional: a lab without it runs every scenario but those.
+LOAD_BIN = pathlib.Path(os.environ.get(
+    "NEEDLETAIL_LOAD_BIN", str(MESH_ROOT / "target" / "release" / "needletail-load")))
 CONTRIB_ROOT = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_CONTRIB_ROOT", str(WORKSPACE / "av-contrib-features")))
 AV_CONTRIB = pathlib.Path(os.environ.get(
@@ -95,10 +116,22 @@ AUDIO_PCM = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AUDIO_PCM",
     str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
         / "daw-nexus-album-1-track-pcm-300s" / "source-track-00.s24le")))
+def newest_build(*paths: pathlib.Path) -> pathlib.Path:
+    """The most recently built of `paths` that exists (else the first): a
+    native build and a cross build (zigbuild, for Linode) of one checkout
+    sit in different target directories, and the older one can lack the
+    options the lab passes (a cross build of 19 Nov has no
+    --opus-frame-samples, so the DAW source refused to start)."""
+    found = [path for path in paths if path.is_file()]
+    return max(found, key=lambda path: path.stat().st_mtime) if found else paths[0]
+
+
 DAW_SOURCE = pathlib.Path(os.environ.get(
     "NEEDLETAIL_DAW_SOURCE_BIN",
-    str(WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
-        / "daw-test-source")))
+    str(newest_build(
+        WORKSPACE / "daw-nexus" / "target" / "release" / "daw-test-source",
+        WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
+        / "daw-test-source"))))
 DAW_TRACKS = pathlib.Path(os.environ.get(
     "NEEDLETAIL_DAW_TRACKS",
     str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
@@ -133,6 +166,8 @@ NODES = [
     ("lon-edge-2", "edge", "london", "gb-lon", "10.90.0.22", "10.77.1.22"),
     ("lon-edge-3", "edge", "london", "gb-lon", "10.90.0.23", "10.77.1.23"),
     ("lon-edge-4", "edge", "london", "gb-lon", "10.90.0.24", "10.77.1.24"),
+    # A slot (SLOT_CANDIDATES): rendered, never started by `up`.
+    ("lon-dist-c", "distributor", "london", "gb-lon", "10.90.0.13", "10.77.1.13"),
     ("new-dist-a", "distributor", "newyork", "us-east", "10.90.2.11", "10.77.2.11"),
     ("new-dist-b", "distributor", "newyork", "us-east", "10.90.2.12", "10.77.2.12"),
     ("new-edge-1", "edge", "newyork", "us-east", "10.90.2.21", "10.77.2.21"),
@@ -144,6 +179,9 @@ READER_HOSTS = [
     ("lon-readers", "london", "10.90.0.101"),
     ("lon-readers-2", "london", "10.90.0.102"),
     ("new-readers", "newyork", "10.90.2.101"),
+    # The New York load host (latency-bench --load-sites newyork): a crowd
+    # off the measuring clients' link, as lon-readers-2 is in London.
+    ("new-readers-2", "newyork", "10.90.2.102"),
 ]
 SITE_VLAN = {"london": "10.77.1", "newyork": "10.77.2"}
 SITE_PUBLIC = {"london": "10.90.0", "amsterdam": "10.90.1", "newyork": "10.90.2"}
@@ -152,6 +190,25 @@ SITE_PUBLIC = {"london": "10.90.0", "amsterdam": "10.90.1", "newyork": "10.90.2"
 # London to New York is 37 ms each way (a 74 ms round trip), London to
 # Amsterdam 7 ms. Two nodes of one site are 1 ms apart on the public network.
 SITE_DELAY_MS = {"london": 2.0, "amsterdam": 4.0, "newyork": 34.0}
+
+
+def site_delays(text: str | None, base: dict[str, float]) -> dict[str, float]:
+    """`base` with the delays of NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS
+    (`site=ms[,site=ms]`) put in. `newyork=101` puts the second region as far
+    from London as Tokyo is (104.5 ms one way with the access links), for
+    the long-haul hop; the rendered route RTTs follow."""
+    out = dict(base)
+    for item in (text or "").split(","):
+        if not item.strip():
+            continue
+        site, _, ms = item.partition("=")
+        site = site.strip()
+        if site not in out:
+            raise LabError(f"NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS: unknown site {site!r}")
+        out[site] = float(ms)
+    return out
+
+
 ACCESS_DELAY_MS = 0.5
 VLAN_DELAY_MS = 0.15
 # The limits of a node. The tiny node of the design is the smallest
@@ -218,6 +275,9 @@ class LabError(RuntimeError):
     pass
 
 
+SITE_DELAY_MS = site_delays(os.environ.get("NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS"), SITE_DELAY_MS)
+
+
 def node(name: str) -> dict:
     for item, role, site, region, public, vlan in NODES:
         if item == name:
@@ -244,12 +304,52 @@ def service_names(role: str | None = None, site: str | None = None) -> list[str]
     return [name for name in names(role, site) if name in rendered]
 
 
+# The nodes that can be slots, and those that are slots unless `up slots=`
+# names more: lon-dist-c is new and has no service unless taken in.
+SLOT_CANDIDATES = ("lon-edge-4", "lon-dist-c")
+DEFAULT_SLOTS = ("lon-dist-c",)
+
+
+def slot_nodes() -> list[str]:
+    """The slots of this lab (`up slots=`), lon-dist-c always."""
+    saved = load("slots.json", list(DEFAULT_SLOTS))
+    return sorted(set(saved if isinstance(saved, list) else DEFAULT_SLOTS) | set(DEFAULT_SLOTS))
+
+
+def slots_in_service() -> set[str]:
+    """Slots taken into service (`start`, or the autoscaler's create)."""
+    saved = load("slots-created.json", [])
+    return set(saved) if isinstance(saved, list) else set()
+
+
+def held_slots() -> set[str]:
+    return set(slot_nodes()) - slots_in_service()
+
+
+def set_slot_in_service(name: str, in_service: bool) -> None:
+    if name not in SLOT_CANDIDATES:
+        raise LabError(f"{name} is not a slot of this lab")
+    made = slots_in_service()
+    made = made | {name} if in_service else made - {name}
+    save("slots-created.json", sorted(made))
+
+
 def edges(site: str = "london") -> list[str]:
-    return names("edge", site)
+    """The edges of a site in service: a slot only once it is taken in."""
+    held = held_slots()
+    return [name for name in names("edge", site) if name not in held]
 
 
 def distributors(site: str = "london") -> list[str]:
-    return names("distributor", site)
+    held = held_slots()
+    return [name for name in names("distributor", site) if name not in held]
+
+
+def standing_services(role: str | None = None, site: str | None = None) -> list[str]:
+    """service_names without the slots that are not in service: what `up`
+    starts and restore() brings back."""
+    held = held_slots()
+    return [name for name in service_names(role, site) if name not in held]
 
 
 def base_url(name: str) -> str:
@@ -288,9 +388,51 @@ def ns_pid(name: str) -> int:
 
 def enter(name: str | None) -> list[str]:
     """Command prefix that runs a command in the namespace of a node, or in
-    the lab namespace (which holds the bridges) for `None`."""
+    the lab namespace (which holds the bridges) for `None`. With the lab's
+    CPU sets (`node_cpus`), a reader host's commands run on the CPUs that
+    no node has."""
     pid = lab_pid() if name is None else ns_pid(name)
-    return ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
+    prefix = ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
+    if name is not None and any(item == name for item, *_ in READER_HOSTS):
+        rest = load("cpus.json").get("_rest")
+        if rest:
+            prefix += ["taskset", "-c", ",".join(str(cpu) for cpu in rest)]
+    return prefix
+
+
+def node_cpu_sets(first: int, names: list[str]) -> dict:
+    """`node_cpus=FIRST`: each node its own CPUs, as a Linode instance has
+    (a g6-dedicated-2 edge or distributor 2, the contributor 4), from host
+    CPU FIRST on in the order of NODES, and "_rest": the host's other CPUs
+    (the reader and load hosts). Without it every node shares every CPU of
+    the host under its CPU quota, and a pinned class thread
+    (--relay-class-cpus) of every node would land on the same host CPU."""
+    total = os.cpu_count() or 1
+    out, cpu = {}, first
+    for name, *_ in NODES:
+        if name not in names:
+            continue
+        count = max(1, default_limits(name)["cpu_percent"] // 100)
+        if cpu + count > total:
+            raise LabError(f"node_cpus={first}: the host has {total} CPUs, too few for "
+                           f"{name} ({count} from CPU {cpu})")
+        out[name] = list(range(cpu, cpu + count))
+        cpu += count
+    used = {cpu for cpus in out.values() for cpu in cpus}
+    out["_rest"] = [cpu for cpu in range(total) if cpu not in used]
+    if not out["_rest"]:
+        raise LabError(f"node_cpus={first}: no CPU is left for the reader hosts")
+    return out
+
+
+def node_class_cpus(name: str, value: str) -> str:
+    """--relay-class-cpus of a node with a CPU set: the rendered CPUs are
+    its own CPUs by index (0,1: the first two of its set), as the deploy's
+    "0,1" pins the audio and video threads of an instance."""
+    cpus = load("cpus.json").get(name)
+    if not cpus:
+        return value
+    return ",".join(str(cpus[int(item) % len(cpus)]) for item in value.split(",") if item)
 
 
 def run_in(name: str | None, command: list[str], check: bool = True,
@@ -664,8 +806,13 @@ def deploy_module():
 
 
 def lab_state() -> dict:
+    """The lab as the deploy tool's state. Its "slots" are the slot
+    candidates: the deploy renders them into every peer list, and a
+    distributor slot is a lease child, never a compiled relay child."""
     return {"run_id": "edge-lab", "hourly_usd": 0.0,
-            "nodes": {name: {**node(name), "type": "local"} for name, *_ in NODES}}
+            "nodes": {name: {**node(name), "type": "local"} for name, *_ in NODES},
+            "slots": {name: {**node(name), "type": "local", "slot": True}
+                      for name in SLOT_CANDIDATES}}
 
 
 def snapshot_binaries() -> dict:
@@ -676,7 +823,10 @@ def snapshot_binaries() -> dict:
     directory.mkdir(parents=True, exist_ok=True)
     out = {}
     for label, source in (("av-mesh", AV_MESH), ("needletail-reader", READER),
-                          ("av-contrib", AV_CONTRIB), ("aep1-48k-probe", PROBE)):
+                          ("av-contrib", AV_CONTRIB), ("aep1-48k-probe", PROBE),
+                          ("needletail-load", LOAD_BIN)):
+        if label == "needletail-load" and not source.is_file():
+            continue
         target = directory / label
         temporary = directory / (label + ".new")
         shutil.copy2(source, temporary)
@@ -692,7 +842,7 @@ def binary(label: str) -> str:
     if label in paths:
         return paths[label]
     return str({"av-mesh": AV_MESH, "needletail-reader": READER, "av-contrib": AV_CONTRIB,
-                "aep1-48k-probe": PROBE}[label])
+                "aep1-48k-probe": PROBE, "needletail-load": LOAD_BIN}[label])
 
 
 def render(overrides: list[str]) -> dict:
@@ -731,6 +881,9 @@ def render(overrides: list[str]) -> dict:
             else:
                 fixed.append(arg)
                 index += 1
+        if "--relay-class-cpus" in fixed:
+            at = fixed.index("--relay-class-cpus") + 1
+            fixed[at] = node_class_cpus(name, fixed[at])
         if contributor:
             fixed += ["--srt-bind", "0.0.0.0:27001", "--srt-stream-id", str(VIDEO_STREAM)]
         elif node(name)["role"] == "edge" and "--fec-bind" not in fixed:
@@ -759,12 +912,15 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
                    capture_output=True)
+    # The node's own CPUs (node_cpus), as an instance has.
+    cpus = load("cpus.json").get(name)
+    pin = ["taskset", "-c", ",".join(str(cpu) for cpu in cpus)] if cpus else []
     command = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                "--unit", unit_name(name),
                "-p", f"CPUQuota={limits['cpu_percent']}%",
                "-p", f"MemoryMax={limits['memory_mb']}M",
                "-p", "MemorySwapMax=0",
-               "--", *enter(name), *item["args"], *(extra_args or [])]
+               "--", *enter(name), *pin, *item["args"], *(extra_args or [])]
     # A service on a Nanode sees one CPU and starts one worker thread. Here it
     # would see every CPU of the host, so it is told the number that its
     # limit stands for.
@@ -869,8 +1025,23 @@ def up(overrides: list[str], start: bool = True) -> dict:
             log.unlink()
     limits = {}
     plain = []
+    slots = set(DEFAULT_SLOTS)
+    first_cpu = None
     for item in overrides:
         key, _, value = item.partition("=")
+        if key == "node_cpus":
+            # A lab setting: each node its own host CPUs (node_cpu_sets).
+            value = value.strip().strip('"')
+            first_cpu = int(value) if value not in ("", "null", "none") else None
+            continue
+        if key == "slots":
+            given = {name for name in value.split(",") if name}
+            unknown = sorted(given - set(SLOT_CANDIDATES))
+            if unknown:
+                raise LabError(f"slots: {unknown} are not slot candidates "
+                               f"({', '.join(SLOT_CANDIDATES)})")
+            slots |= given
+            continue
         if key.startswith("limit."):
             # limit.<node>.cpu_percent=50, limit.<node>.memory_mb=512
             _, name, field = key.split(".", 2)
@@ -878,6 +1049,10 @@ def up(overrides: list[str], start: bool = True) -> dict:
         else:
             plain.append(item)
     save("limits.json", limits)
+    save("cpus.json", {} if first_cpu is None else node_cpu_sets(
+        first_cpu, [name for name, role, *_ in NODES if role != "backbone"]))
+    save("slots.json", sorted(slots))
+    save("slots-created.json", [])
     build_networks()
     snapshot_binaries()
     build_clock_shim()
@@ -899,12 +1074,13 @@ def up(overrides: list[str], start: bool = True) -> dict:
     if not start:
         return rendered
     for role in ("backbone", "distributor", "edge", "contributor"):
-        # The merged topology renders no backbone relay.
-        for name in service_names(role):
+        # The merged topology renders no backbone relay; a slot stays down.
+        for name in standing_services(role):
             start_service(name)
         time.sleep(1.0)
     time.sleep(1.0)
-    dead = [name for name in rendered if service_pid(name) is None]
+    held = held_slots()
+    dead = [name for name in rendered if service_pid(name) is None and name not in held]
     if dead:
         tails = "\n".join(f"--- {name}\n" + (WORK / "logs" / f"{name}.log").read_text()[-1200:]
                           for name in dead)
@@ -926,7 +1102,7 @@ def down(quiet: bool = False) -> None:
         except OSError:
             pass
     for path in ("services.json", "namespaces.json", "sources.json", "links.json",
-                 "shaped.json", "qdisc.json"):
+                 "shaped.json", "qdisc.json", "cpus.json"):
         (WORK / path).unlink(missing_ok=True)
     if not quiet:
         print("down")
@@ -977,6 +1153,10 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         process = subprocess.Popen(
             enter("contrib-lon") + [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
+                # A 4K clip of 120 Mbit/s or more holds its first audio
+                # packet past the default 5 MB probe: without a longer one
+                # ffmpeg finds no sample rate and sends nothing.
+                "-probesize", "64M", "-analyzeduration", "10000000",
                 "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP), "-t", str(seconds),
                 "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-muxdelay", "0",
                 "-muxpreload", "0", "-f", "mpegts",
@@ -992,6 +1172,10 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 # 320 kb/s by default.
                 "--opus-frame-samples", str(probe_epoch_samples("opus")),
                 "--opus-bitrate", str(opus_bitrate()),
+                # The lab's lossless lane is FLAC (the contributor's
+                # daw_hls_formats "flac,opus"); daw-nexus now sends PCM
+                # unless told, and the contributor then made no stream 2001.
+                "--lossless-payload", "flac",
                 "127.0.0.1:27100", str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),
@@ -1208,6 +1392,55 @@ def read_netdev(pid: int) -> dict:
     return out
 
 
+def read_udp_sockets(pid: int) -> dict:
+    """Per-socket UDP receive drops and receive-queue bytes of the namespace
+    of `pid` (/proc/PID/net/udp and udp6: the kernel's `drops` column, a
+    socket whose receive queue was full, as `ss -uamn` shows it in skmem
+    `d`), keyed by local port (sockets of one port summed; the queue is the
+    largest): `udp_socket_drops`, `udp_socket_rx_queue`. The node-wide
+    RcvbufErrors cannot tell which socket overflowed (wave 8 stage 3: the
+    referee's 4K losses were at one socket of each node)."""
+    drops: dict[str, int] = {}
+    queue: dict[str, int] = {}
+    for table in ("udp", "udp6"):
+        try:
+            text = pathlib.Path(f"/proc/{pid}/net/{table}").read_text()
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 13:
+                continue
+            try:
+                port = str(int(fields[1].rsplit(":", 1)[1], 16))
+                rx_queue = int(fields[4].split(":")[1], 16)
+                dropped = int(fields[-1])
+            except (ValueError, IndexError):
+                continue
+            drops[port] = drops.get(port, 0) + dropped
+            queue[port] = max(queue.get(port, 0), rx_queue)
+    if not drops:
+        return {}
+    return {"udp_socket_drops": drops, "udp_socket_rx_queue": queue}
+
+
+def socket_drop_deltas(running: list[dict]) -> dict:
+    """What each port's sockets dropped over the samples (ports with a drop
+    only), and each port's largest receive queue seen (bytes)."""
+    have = [item["udp_socket_drops"] for item in running if "udp_socket_drops" in item]
+    if len(have) < 2:
+        return {}
+    first, last = have[0], have[-1]
+    drops = {port: last[port] - first.get(port, 0) for port in last
+             if last[port] - first.get(port, 0) > 0}
+    queues: dict[str, int] = {}
+    for item in running:
+        for port, size in item.get("udp_socket_rx_queue", {}).items():
+            queues[port] = max(queues.get(port, 0), size)
+    return {"udp_socket_drops": dict(sorted(drops.items(), key=lambda kv: -kv[1])),
+            "udp_socket_rx_queue_max": {port: size for port, size in queues.items() if size > 0}}
+
+
 def netdev_rates(running: list[dict]) -> dict:
     """Per-second packets and Mbit/s of each interface over the samples
     that have the counters: `eth0_tx_pps`, `eth0_tx_mbps`, `eth0_rx_pps`,
@@ -1297,7 +1530,7 @@ class Sampler:
                 continue
             directory = cgroup_dir(name)
             item = {"at": now, "running": True, **(read_cgroup(directory) if directory else {}),
-                    **read_process(pid), **read_netdev(pid)}
+                    **read_process(pid), **read_netdev(pid), **read_udp_sockets(pid)}
             if tick % 5 == 0:
                 item.update(read_netstat(name))
             out[name] = item
@@ -1362,6 +1595,7 @@ class Sampler:
                 "udp_out": delta("udp_out"),
                 "udp_in": delta("udp_in"),
                 **netdev_rates(running),
+                **socket_drop_deltas(running),
             }
         return out
 
@@ -1369,11 +1603,13 @@ class Sampler:
 # ------------------------------------------------------------------ CLI
 
 def status() -> None:
+    held = held_slots()
     for name, role, site, *_ in NODES:
         pid = service_pid(name)
         if pid is None:
             unused = role == "backbone" and name not in load("rendered.json")
             print(f"{name:16} {role:12} " + ("not used by the topology" if unused
+                                             else "slot, not in service" if name in held
                                              else "not running"))
             continue
         directory = cgroup_dir(name)
@@ -1413,6 +1649,30 @@ def main() -> None:
             set_wan(arguments[0], arguments[1], " ".join(arguments[2:]) or None)
         elif command == "sources":
             start_sources(int(arguments[0]) if arguments else 600)
+        elif command == "start":
+            name = arguments[0]
+            if name in SLOT_CANDIDATES:
+                set_slot_in_service(name, True)
+            pid = service_pid(name) or start_service(name)
+            print(f"{name} runs (pid {pid}); no other service was restarted")
+        elif command == "stop":
+            name = arguments[0]
+            terminate_service(name)
+            if name in slot_nodes():
+                set_slot_in_service(name, False)
+            print(f"{name} stopped")
+        elif command in ("drain", "resume"):
+            name = arguments[0]
+            # Always naming the node: av-mesh takes a request without one
+            # as global.
+            # Not `status`: that name is the status command's function, and
+            # binding it here made `edge_lab.py status` fail (UnboundLocalError).
+            code, body = http_json(name, f"/api/control/{command}-node", "POST",
+                                   {"node_id": name})
+            print(f"{command} {name}: HTTP {code} {json.dumps(body)[:200]}")
+            # av-mesh answers a control command with 202 Accepted (queued).
+            if not 200 <= code < 300:
+                sys.exit(1)
         else:
             sys.exit(__doc__)
     except LabError as error:

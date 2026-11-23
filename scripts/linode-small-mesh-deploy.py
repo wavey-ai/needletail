@@ -18,10 +18,27 @@ Subcommands:
   plan      measure routes, generate the relay program, compile it, and render
             one argument file per service under the artifact directory
   push      bootstrap hosts, install binaries, TLS, the host qdisc and
-            services, then restart
+            services, then restart (--nodes a,b: only those nodes)
   restart   re-render arguments and the host qdisc from current settings and
             restart services
+  start     --nodes a,b: take held-out nodes (standby edges, autoscale
+            slots) into service and start them, and nothing else
+  stop      --nodes a,b: hold nodes out and stop their service, and nothing
+            else
   status    show service state, clock offset, and cache-mesh role per node
+
+Joining without a restart (low-latency ops, D3). Every peer list is
+rendered from the lab's roster, not from the nodes in service: every edge
+and distributor of the lab, the standby edges, and the autoscale slots of
+the topology (lab state "slots"), created or not. A node that is held out
+or not created yet is a peer that is down: telemetry peers retry every
+second and the cache mesh ignores a peer not heard within 2 s. So the
+arguments of every node are the same whichever of the roster serve, and
+`start --nodes` (or `push --nodes` for a node just created) starts the one
+node and restarts nothing. An autoscale slot of role distributor (dist-c)
+is a fast-plane lease child of its site's first two distributors and a
+cache-mesh parent of its edges; it is never a compiled relay child, so no
+other node's relay ports move.
 
 Tuning knobs live in the settings file and can be changed with
 `--set key=value` on plan, push, or restart.
@@ -74,7 +91,13 @@ DEFAULT_SETTINGS = {
     "part_ms": None,
     "parts_per_segment": None,
     "window_parts": None,
-    "slot_kb": 2048,
+    # The largest part a cache slot takes (av-mesh --slot-kb). A larger part
+    # is refused by every cache: never in a playlist, never answered to a
+    # NACK, and a UDP client gets it from the fast lane alone. Wave 9 D: 8 MiB
+    # (2048 before): the first frame of a 4K encode at 160-300 Mbit/s is
+    # 4.6-5.9 MB (the lab's 4K clips lost their loop point's parts 0-3 at
+    # every cache). A limit, not an allocation.
+    "slot_kb": 8192,
     # Playlists that a node holds at one time: the streams of a region for a
     # relay and a distributor. An edge holds one less for its readers.
     "playlist_slots": 16,
@@ -89,6 +112,10 @@ DEFAULT_SETTINGS = {
     "mesh_symbol_size": 1316,
     "mesh_max_symbol_size": 0,
     "cache_mesh_max_parents": 2,
+    # Edges that one distributor serves in a sync tick (av-mesh
+    # --cache-mesh-max-children truncates its peers to this many). A
+    # distributor is rendered with at least the number of edges of its site,
+    # so a site of more edges is never silently cut short.
     "cache_mesh_max_children": 8,
     # Regional cache features: a distributor pushes a playlist to an edge only
     # while the edge has readers for it ("demand"), or always ("all").
@@ -96,11 +123,30 @@ DEFAULT_SETTINGS = {
     "cache_mesh_lease_ms": 5000,
     "cache_mesh_demand_idle_ms": 30000,
     "cache_mesh_warm_parts": 0,
+    # The warm-up of a new copy as a length of time (low-latency ops D6): a
+    # listener that moves onto a cold edge resumes from the part after its
+    # last, which is up to the silence detection (1 s) plus the move behind
+    # the head. None: cache_mesh_warm_parts as given. A number of ms: the
+    # warm-up window in parts of the shortest audio part (so every stream
+    # gets at least that long; one of longer parts gets more).
+    "cache_mesh_warm_ms": None,
     "cache_mesh_warm_kbps": 20000,
     "cache_mesh_socket_buffer_bytes": 0,
     # Limits of one edge. They are what admission and assignment enforce.
     "edge_egress_capacity_bps": None,
     "edge_session_limit": 0,
+    # Client UDP subscriptions that a node takes at most
+    # (--client-udp-max-subscribers; None: the binary's default, 4096). The
+    # scale run raises it so that what gives out is the edge, not its cap.
+    "client_udp_max_subscribers": None,
+    # Nodes that are held out of service: no service (push and restart stop
+    # one that runs; `stop --nodes` adds to this list, `start --nodes` takes
+    # from it). They stay in every peer list, the fast-plane feed and the
+    # telemetry peers (a peer that is down), so a node taken into service
+    # with `start --nodes` restarts nothing else. Standby edges and created
+    # autoscale slots; the scale plan's second curve starts its edges with
+    # `start --nodes`.
+    "standby_edges": [],
     # RaptorQ FEC UDP to clients, on every distributor and edge (0: off).
     # The assignment API of a node names this port.
     "client_udp_port": 19446,
@@ -186,6 +232,23 @@ DEFAULT_SETTINGS = {
     "relay_audio_copies": None,
     "cache_mesh_fast_plane_push": None,
     "relay_demand_renditions": None,
+    # Wave 8 stage 3. cache_mesh_fast_plane_video_push: av-mesh
+    # --cache-mesh-fast-plane-video-push on the distributors, the same for a
+    # video stream: "none" (the binary's default: no push of a video stream
+    # to an edge that the fast plane feeds it to; the edge's failover and
+    # hole repair cover a lost primary), "secondary" (the distributor that
+    # feeds the edge the sources does not push; the one that feeds it repair
+    # does), "all" (as before wave 8: an edge took 4K four ways, and every
+    # edge dropped at its cache-mesh video socket at 160 Mbit/s in the local
+    # lab). None renders nothing.
+    "cache_mesh_fast_plane_video_push": None,
+    # - relay_failover_promotion_backoff: av-mesh
+    #   --relay-failover-promotion-backoff on every node with a failover
+    #   controller (the edges): each promotion of the warm secondary within
+    #   30 s doubles the primary silence the next one needs (S6: no switch,
+    #   and no doubled video, for each short stall of a loaded forwarder).
+    #   None renders nothing (the binary's default, on); false is the A/B.
+    "relay_failover_promotion_backoff": None,
     # Wave 7 items 3 and 9. None renders nothing: the binaries' defaults (on)
     # hold; false is the A/B against wave 7.
     # - relay_compact_audio: av-contrib --relay-compact-audio, a 1 ms audio
@@ -206,6 +269,144 @@ DEFAULT_SETTINGS = {
     # needletail-udp-client asks an older edge with the long form again.
     "relay_compact_audio": None,
     "client_udp_compact_short_header": None,
+    # Wave 8 stage 2, the nodes that serve UDP clients (--client-udp-bind).
+    # None renders nothing (the binaries' defaults); false is the A/B.
+    # - client_udp_repair_thread: the real-time class thread takes no lock
+    #   that ordinary tasks hold (window repair on a repair thread, NACK
+    #   answers sent after the subscriber table is released; S1).
+    # - client_udp_batched_admission: a subscribe spike rebuilds the fast
+    #   lane's client snapshot once a batch (S3).
+    # - client_udp_resume_from_request: a client that moved here resumes at
+    #   the part it names while the cache holds it (S2).
+    # - client_udp_fanout_inline_shard: the class thread sends one shard of
+    #   a handed-off batch itself (B4).
+    "client_udp_repair_thread": None,
+    "client_udp_batched_admission": None,
+    "client_udp_resume_from_request": None,
+    "client_udp_fanout_inline_shard": None,
+    # Wave 8 stage 4 (Phase AM 8, 9, 11), the nodes that serve UDP clients.
+    # None renders nothing (the binaries' defaults, all on); false or 0 is
+    # the A/B.
+    # - client_udp_egress_load: the client UDP lanes' bytes count in the
+    #   advertised load_permille and free capacity (AM 8; the autoscaler's
+    #   trigger and assignment see UDP load).
+    # - client_udp_admit_by_load: an overloaded edge refuses a new UDP
+    #   subscription (edge-busy) but takes a client that moves to it (AM 8).
+    # - client_udp_drain_spread_ms: a draining edge sends its UDP clients
+    #   MOVE draining spread over this long (AM 9; av-mesh default 2000).
+    # - client_udp_region_hold_ms: a region-wide silence this long, with a
+    #   --failover-entry region fresh, sends the UDP clients there (AM 11;
+    #   default 2000; needs region_failover).
+    "client_udp_egress_load": None,
+    "client_udp_admit_by_load": None,
+    "client_udp_drain_spread_ms": None,
+    "client_udp_region_hold_ms": None,
+    # Wave 8 stage 5 (Phase AM 12): a distributor slot (dist-c) is a
+    # fast-plane lease child of its site's first two distributors AND a
+    # lease parent of the site's edges: it feeds them on its class threads
+    # (--relay-lease-bind), subscribes at its two forwarders to every
+    # playlist its children lease from it (--cache-mesh-upstream-demand),
+    # and it and they list each other as cache-mesh peers. The edges rank
+    # the live distributors of their site per playlist and the first two
+    # feed them (--relay-lease-ranked, --relay-ranked-parents in av-mesh).
+    # False: the slot feeds no lease child, as before.
+    "forwarder_slot_feeds_edges": True,
+    # Wave 8 stage 5 (AM 12, 13) on every mesh node. None renders nothing
+    # (the binaries' defaults, all on; the total warm-up cap 40,000 kbit/s);
+    # false or 0 is the A/B.
+    # - relay_lease_ranked: a lease's rank decides primary or secondary.
+    # - relay_ranked_parents: an edge admits every distributor of its site.
+    # - cache_mesh_subscribe_rank: Subscribe frames carry the rank.
+    # - cache_mesh_release_unranked_parents: a parent that leaves a
+    #   playlist's ranked set is released at once.
+    # - cache_mesh_avoid_draining_parents: a draining distributor ranks last.
+    # - cache_mesh_warm_total_kbps: a distributor's warm-up windows together.
+    "relay_lease_ranked": None,
+    "relay_ranked_parents": None,
+    "cache_mesh_subscribe_rank": None,
+    "cache_mesh_release_unranked_parents": None,
+    "cache_mesh_avoid_draining_parents": None,
+    "cache_mesh_warm_total_kbps": None,
+    # Wave 8 review fixes. None renders nothing (the binaries' defaults);
+    # a value is the A/B.
+    # - client_udp_keepalive_ms (nodes that serve UDP clients): WAIT to the
+    #   subscribers of a quiet stream this often (av-mesh default 80, under
+    #   the clients' 200 ms move silence; 0: 300 ms, before).
+    # - client_udp_datagram_capacity (same): client datagrams a second that
+    #   make an edge full; each counts in the load as at least capacity / 8
+    #   / this many bytes (0: bytes alone, the default). scale-run settings
+    #   --datagram-capacity sets it for the autoscale phases.
+    # - client_udp_region_head_check (same): a failover region is fresh for
+    #   MOVE region-lost only with parts newer than this region's head.
+    # - cache_mesh_warm_second_parent (every mesh node): with a slot among
+    #   the live distributors, the second parent warms a new copy too.
+    # - relay_demand_report_lease_parents (relay nodes): edges and slots send
+    #   RLD1 to their lease parents too (false by default: F-I1).
+    # - relay_lease_drain_inbound (forwarders with --relay-lease-bind): read
+    #   and count what arrives on the lease sockets.
+    # - relay_class_fallback_nice (relay nodes): the nice step of the other
+    #   threads where SCHED_FIFO is refused (av-mesh default 0, off).
+    "client_udp_keepalive_ms": None,
+    "client_udp_datagram_capacity": None,
+    "client_udp_region_head_check": None,
+    "cache_mesh_warm_second_parent": None,
+    "relay_demand_report_lease_parents": None,
+    "relay_lease_drain_inbound": None,
+    "relay_class_fallback_nice": None,
+    # Wave 8 local proofs: assignment_udp_in_region (every mesh node, the
+    # entry points of /api/assignment): a UDP client that no cache has room
+    # for by the entry point's estimate spills within its region rather than
+    # being sent to the failover region (av-mesh default true; false: before).
+    "assignment_udp_in_region": None,
+    # Wave 9 (cold start), each the av-mesh flag of the same name (None: the
+    # binary's default): mlock_all (every mesh node; av-mesh default false
+    # since the wave 9 review, its memory cost on a g6-dedicated-2 being
+    # unmeasured; only mlock_all=true gives the unit LimitMEMLOCK=infinity,
+    # since av-mesh locks only without a limit), malloc_tune and prefault
+    # (every mesh node, default true), and
+    # client_udp_prompt_sender (nodes that serve UDP clients: the stream's
+    # sender does not wait for a playable copy), relay_lease_descriptors
+    # (forwarders with --relay-lease-bind: a new lease child gets the
+    # stream's descriptor before its first compact part).
+    "mlock_all": None,
+    "malloc_tune": None,
+    "prefault": None,
+    "client_udp_prompt_sender": None,
+    # Wave 9 B (time to first audio under loss): the nodes that serve UDP
+    # clients answer a client's UDP ASSIGN at their client UDP port with the
+    # /api/assignment answer (av-mesh --client-udp-assign, default true; None:
+    # the binary's default). needletail-udp-client asks its entry point there
+    # (its --assignment-udp-port, default 19446 = client_udp_port) and over
+    # HTTPS 50 ms later, and takes the first answer.
+    "client_udp_assign": None,
+    "relay_lease_descriptors": None,
+    # Wave 9 D (4K): relay_video_gro, the av-mesh flag --relay-video-gro on
+    # the relays, distributors and edges with class threads (None: the
+    # binary's default, true): their video sockets take UDP GRO, so a
+    # parent's GSO burst is one receive message, not one per symbol.
+    "relay_video_gro": None,
+    # cache_mesh_video_warm_parts, av-mesh --cache-mesh-video-warm-parts on
+    # every mesh node (None: the binary's default, 0): the warm-up window a
+    # distributor sends a new copy of a video playlist, in parts, or
+    # "window" for the audio window as before.
+    "cache_mesh_video_warm_parts": None,
+    # Wave 9 C (autoscaling and redistribution), each the av-mesh flag of the
+    # same name (None: the binary's default). Every mesh node: cpu_load (an
+    # edge's load_permille is at least its process's CPU over its CPUs, full
+    # at cpu_load_full_percent, default 85), assignment_move_headroom (a
+    # moving UDP client is assigned by the caches' headroom, those under
+    # rebalance_target_permille first), rebalance_target_permille (default
+    # 800). The nodes that serve UDP clients: client_udp_rebalance (an edge
+    # over the target sends listeners to edges of its region with room,
+    # MOVE rebalance), client_udp_rebalance_margin_permille (150) and
+    # client_udp_rebalance_interval_ms (3000).
+    "cpu_load": None,
+    "cpu_load_full_percent": None,
+    "assignment_move_headroom": None,
+    "rebalance_target_permille": None,
+    "client_udp_rebalance": None,
+    "client_udp_rebalance_margin_permille": None,
+    "client_udp_rebalance_interval_ms": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -455,6 +656,24 @@ LEASE_PORT = 22901
 LEASE_FAILOVER_PORT = 22902
 EDGE_FAILOVER_PORT = 22903
 EDGE_RELAY_PORTS = (22001, 22002)
+# Relay children (the distributors of the other sites, merged; every
+# distributor, legacy) that the port plan holds: child i takes 22200/22201 +
+# 10i, its parents send from 22401/22402 + 10i and listen for its failover
+# controller on 22502 + 10i, so child 40 would take LEASE_FAILOVER_PORT
+# (22902 = 22502 + 400) on its secondary parent and child 50 LEASE_PORT.
+MAX_RELAY_CHILDREN = 40
+# Kernel settings of a host of simulated listeners (a load node whose
+# purpose is "listeners"): thousands of UDP sockets and TCP connections of
+# their own, each with a port of its own (a socket per listener), and the
+# bootstrap's 8 MB default receive buffer would let them hold gigabytes.
+LISTENER_SYSCTLS = {
+    "net.ipv4.ip_local_port_range": "1024 65000",
+    "net.core.rmem_default": "1048576",
+    "net.core.netdev_max_backlog": "65536",
+    "net.ipv4.tcp_tw_reuse": "1",
+    "fs.file-max": "4194304",
+    "fs.nr_open": "4194304",
+}
 
 
 TOPOLOGIES = ("legacy", "merged")
@@ -482,11 +701,85 @@ def edges_per_forwarder(settings: dict) -> int:
     return edges
 
 
+def standby_edges(settings: dict) -> list[str]:
+    """The `standby_edges` setting, checked: a list of names."""
+    value = settings.get("standby_edges") or []
+    if isinstance(value, str):
+        value = [name for name in value.split(",") if name]
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        raise ValueError("standby_edges is not a list of edge names")
+    return sorted(set(value))
+
+
+def lab_slots(state: dict) -> dict[str, dict]:
+    """The autoscale slots of the lab: {name: node} with the VLAN address
+    and no public one for a slot not created yet. From the lab state
+    ("slots", which `up` records), else from its topology file."""
+    slots = state.get("slots")
+    if slots is None:
+        path = pathlib.Path(state.get("topology_file") or "")
+        slots = {}
+        if path.is_file():
+            topology = json.loads(path.read_text())
+            named = set(topology.get("autoscale_slots") or [])
+            for node in topology["nodes"]:
+                if node.get("slot") or node["name"] in named:
+                    slots[node["name"]] = {
+                        **{key: node[key] for key in ("name", "role", "site", "region", "type")},
+                        "vlan_ipv4": (node.get("vlan_ipv4") or "").split("/")[0] or None,
+                        "slot": True}
+    out = {}
+    for name, node in slots.items():
+        if node.get("role") not in ("edge", "distributor") or not node.get("vlan_ipv4"):
+            sys.exit(f"slot {name}: only an edge or a distributor with a VLAN address")
+        out[name] = {**node, "vlan_ipv4": str(node["vlan_ipv4"]).split("/")[0],
+                     "public_ipv4": None, "slot": True}
+    return out
+
+
+def roster(state: dict) -> dict[str, dict]:
+    """Every node that the peer lists name: the "roster" of a planned state
+    (active_state), else its nodes."""
+    return state.get("roster") or state["nodes"]
+
+
+def slot_names(state: dict) -> set[str]:
+    if "slot_names" in state:
+        return set(state["slot_names"])
+    return set(lab_slots(state))
+
+
+def active_state(state: dict, settings: dict) -> dict:
+    """The lab state that the services are planned for. "nodes": the nodes
+    in service, every node of the lab but those held out (standby_edges);
+    "roster": every edge and distributor the peer lists name, those held out
+    and the autoscale slots (created or not) included, with the rest of the
+    lab; "slot_names": the slots. Exits when a held-out name is neither an
+    edge of the lab nor an autoscale slot."""
+    standby = standby_edges(settings)
+    slots = lab_slots(state)
+    for name in standby:
+        node = state["nodes"].get(name)
+        if name in slots:
+            continue
+        if node is None or node["role"] != "edge":
+            sys.exit(f"standby_edges: {name} is not an edge or an autoscale slot of the lab")
+    full_roster = {**{name: node for name, node in slots.items()}, **state["nodes"]}
+    for name in state["nodes"]:
+        if name in slots:
+            full_roster[name] = {**state["nodes"][name], "slot": True}
+    serving = {name: node for name, node in state["nodes"].items() if name not in standby}
+    return {**state, "nodes": serving, "roster": full_roster, "slot_names": sorted(slots)}
+
+
 def check_settings(settings: dict) -> None:
     """Raise ValueError for settings the services cannot run with: the part
     settings (part_plan), the topology, contributor_direct_region and the
     class isolation settings (class_plan)."""
     part_plan(settings)
+    standby_edges(settings)
+    if settings.get("client_udp_max_subscribers") is not None:
+        whole(settings["client_udp_max_subscribers"], "client_udp_max_subscribers")
     mode = topology_mode(settings)
     if mode == "merged" and settings.get("contributor_direct_region"):
         raise ValueError("contributor_direct_region is the legacy topology's direct lane; the "
@@ -534,6 +827,7 @@ def class_plan(settings: dict) -> dict:
         "relay_repair_both_lanes": switch("relay_repair_both_lanes"),
         "relay_class_realtime": bool(settings.get("relay_class_realtime", True)),
         "relay_video_gso": switch("relay_video_gso"),
+        "relay_video_gro": settings.get("relay_video_gro"),
         "service_capabilities": switch("service_capabilities"),
         "client_udp_fast_lane": switch("client_udp_fast_lane"),
     }
@@ -922,7 +1216,12 @@ def relay_tree(state: dict, settings: dict) -> dict:
     if len(contributors) != 1:
         sys.exit("the lab needs exactly one contributor")
     contrib = contributors[0]
-    distributors = common.nodes_by_role(state, "distributor")
+    # An autoscale slot (dist-c) is a fast-plane lease child, never a
+    # compiled relay child: a child of its own would take an index and move
+    # the ports of every child after it.
+    slots = slot_names(state)
+    distributors = [node for node in common.nodes_by_role(state, "distributor")
+                    if node["name"] not in slots]
     if not distributors:
         sys.exit("the lab needs at least one distributor")
     if mode == "legacy":
@@ -956,8 +1255,9 @@ def check_edge_fanout(state: dict, settings: dict) -> None:
     site feeds every edge of it, and the level of regional relays that
     would split them is not built yet."""
     limit = edges_per_forwarder(settings)
-    for site in sorted({node["site"] for node in common.nodes_by_role(state, "distributor")}):
-        edges = [node for node in common.nodes_by_role(state, "edge") if node["site"] == site]
+    every = {"nodes": roster(state)}
+    for site in sorted({node["site"] for node in common.nodes_by_role(every, "distributor")}):
+        edges = [node for node in common.nodes_by_role(every, "edge") if node["site"] == site]
         if len(edges) > limit:
             sys.exit(f"site {site} has {len(edges)} edges; a forwarder of the merged topology "
                      f"feeds at most max_edges_per_forwarder={limit}, and the level of "
@@ -967,11 +1267,16 @@ def check_edge_fanout(state: dict, settings: dict) -> None:
 def build_program(state: dict, settings: dict, routes: dict) -> dict:
     tree = relay_tree(state, settings)
     merged = tree["mode"] == "merged"
+    if len(tree["children"]) > MAX_RELAY_CHILDREN:
+        sys.exit(f"{len(tree['children'])} relay children; the port plan holds "
+                 f"{MAX_RELAY_CHILDREN} (22200 + 10 x index, 22502 + 10 x index below the "
+                 "lease ports)")
     if merged:
         check_edge_fanout(state, settings)
     contrib = tree["contrib"]
     primary, secondary = tree["first"]
-    distributors = common.nodes_by_role(state, "distributor")
+    distributors = [node for node in common.nodes_by_role(state, "distributor")
+                    if node["name"] not in slot_names(state)]
 
     def domain(node: dict) -> dict:
         return {"provider": "linode", "region": node["region"], "asn": 63949,
@@ -1369,8 +1674,10 @@ def geo_args(node: dict) -> list[str]:
 
 
 def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
+    # Every site mate of the roster, held out or not created yet included:
+    # a telemetry peer that is down is retried every second.
     site_mates = [
-        other for other in state["nodes"].values()
+        other for other in roster(state).values()
         if other["site"] == node["site"] and other["name"] != node["name"]
         and other["role"] in ("distributor", "edge")
     ]
@@ -1402,6 +1709,10 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     args += ["--egress-capacity-bps", str(capacity)]
     if node["role"] in ("distributor", "edge") and settings.get("client_udp_port"):
         args += ["--client-udp-bind", f"0.0.0.0:{settings['client_udp_port']}"]
+        if settings.get("client_udp_max_subscribers") is not None:
+            args += ["--client-udp-max-subscribers",
+                     str(whole(settings["client_udp_max_subscribers"],
+                               "client_udp_max_subscribers"))]
     if node["role"] in ("distributor", "edge"):
         # Every node of a region can be an entry point for its readers.
         args += [
@@ -1414,8 +1725,10 @@ def common_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
             args += ["--hls-rendition", rendition]
         if settings.get("region_failover"):
             neighbours = {}
+            slots = slot_names(state)
             for other in sorted(state["nodes"].values(), key=lambda item: item["name"]):
-                if other["role"] == "distributor" and other["site"] != node["site"]:
+                if (other["role"] == "distributor" and other["site"] != node["site"]
+                        and other["name"] not in slots):
                     neighbours.setdefault(other["region"], other)
             for region, other in sorted(neighbours.items()):
                 args += ["--failover-entry",
@@ -1433,12 +1746,16 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
     """Regional cache plane: distributors push to edges over the site VLAN."""
     if not node.get("vlan_ipv4"):
         return ["--mesh-bind", f"0.0.0.0:{MESH_PORT}"]
+    peers = mesh_peer_nodes(node, settings, state)
+    children = int(settings["cache_mesh_max_children"])
+    if node["role"] == "distributor":
+        children = max(children, len(peers))
     args = [
         "--mesh-bind", f"{node['vlan_ipv4']}:{MESH_PORT}",
         "--cache-mesh-role", node["role"],
         "--cache-mesh-region", f"{node['region']}-cache",
         "--cache-mesh-max-parents", str(settings["cache_mesh_max_parents"]),
-        "--cache-mesh-max-children", str(settings["cache_mesh_max_children"]),
+        "--cache-mesh-max-children", str(children),
         "--mesh-sync-interval-ms", str(settings["mesh_sync_interval_ms"]),
         "--mesh-repair-ratio", str(settings["mesh_repair_ratio"]),
         "--mesh-repair-symbols", str(settings["mesh_repair_symbols"]),
@@ -1448,17 +1765,50 @@ def cache_mesh_args(node: dict, settings: dict, state: dict) -> list[str]:
         "--cache-mesh-replication", settings["cache_mesh_replication"],
         "--cache-mesh-lease-ms", str(settings["cache_mesh_lease_ms"]),
         "--cache-mesh-demand-idle-ms", str(settings["cache_mesh_demand_idle_ms"]),
-        "--cache-mesh-warm-parts", str(settings["cache_mesh_warm_parts"]),
+        "--cache-mesh-warm-parts", str(warm_parts(settings)),
         "--cache-mesh-warm-kbps", str(settings["cache_mesh_warm_kbps"]),
         "--cache-mesh-socket-buffer-bytes",
         str(settings["cache_mesh_socket_buffer_bytes"]),
     ]
-    peer_role = "edge" if node["role"] == "distributor" else "distributor"
-    for peer in sorted(state["nodes"].values(), key=lambda item: item["name"]):
-        if (peer["site"] == node["site"] and peer["role"] == peer_role
-                and peer.get("vlan_ipv4")):
-            args += ["--peer", f"{peer['vlan_ipv4']}:{MESH_PORT}"]
+    for peer in peers:
+        args += ["--peer", f"{peer['vlan_ipv4']}:{MESH_PORT}"]
     return args
+
+
+def mesh_peer_nodes(node: dict, settings: dict, state: dict) -> list[dict]:
+    """The cache-mesh peers of an edge or distributor (its --peer list): its
+    site's nodes of the other role (a distributor lists its edges, an edge
+    its distributors), and with forwarder_slot_feeds_edges a distributor
+    slot and its site's first two distributors (its lease parents) list each
+    other: the slot subscribes at them for its children's leases (AM 12).
+    The roster: edges and distributors held out, and autoscale slots not
+    created yet, are peers that are down until they start."""
+    peer_role = "edge" if node["role"] == "distributor" else "distributor"
+    every = sorted(roster(state).values(), key=lambda item: item["name"])
+    peers = [peer for peer in every
+             if peer["site"] == node["site"] and peer["role"] == peer_role
+             and peer.get("vlan_ipv4")]
+    if node["role"] == "distributor" and settings.get("forwarder_slot_feeds_edges"):
+        slots = slot_names(state)
+        site_forwarders = [peer for peer in every
+                           if peer["site"] == node["site"] and peer["role"] == "distributor"
+                           and peer.get("vlan_ipv4")]
+        parents = [peer for peer in site_forwarders if peer["name"] not in slots][:2]
+        if node["name"] in slots:
+            peers += parents
+        elif node["name"] in {peer["name"] for peer in parents}:
+            peers += [peer for peer in site_forwarders if peer["name"] in slots]
+    return peers
+
+
+def warm_parts(settings: dict) -> int:
+    """--cache-mesh-warm-parts: cache_mesh_warm_ms in parts of the shortest
+    audio part when it is given, else cache_mesh_warm_parts."""
+    warm_ms = settings.get("cache_mesh_warm_ms")
+    if not warm_ms:
+        return int(settings["cache_mesh_warm_parts"])
+    smallest = part_plan(settings)["smallest_part_us"]
+    return int(-(-whole(warm_ms, "cache_mesh_warm_ms") * 1000 // smallest))
 
 
 def relay_args(service: dict) -> list[str]:
@@ -1669,14 +2019,102 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
         return out
     if "--relay-controlled-local" in node_args and renditions is not None:
         out += ["--relay-demand-renditions", renditions]
-    if ("--relay-lease-bind" in node_args
+    # Every forwarder (a distributor of the cache mesh), the slots that feed
+    # no lease child yet included: inert where there is none (wave 7 review
+    # C5: a slot renders the wave 7 settings exactly like the others).
+    if ((flag_value(node_args, "--cache-mesh-role") == "distributor"
+         or "--relay-lease-bind" in node_args)
             and settings.get("cache_mesh_fast_plane_push") is not None):
         out += ["--cache-mesh-fast-plane-push", str(settings["cache_mesh_fast_plane_push"])]
+    if ("--relay-failover-controller" in node_args
+            and settings.get("relay_failover_promotion_backoff") is not None):
+        out += ["--relay-failover-promotion-backoff",
+                flag(bool(settings["relay_failover_promotion_backoff"]))]
+    if ((flag_value(node_args, "--cache-mesh-role") == "distributor"
+         or "--relay-lease-bind" in node_args)
+            and settings.get("cache_mesh_fast_plane_video_push") is not None):
+        out += ["--cache-mesh-fast-plane-video-push",
+                str(settings["cache_mesh_fast_plane_video_push"])]
     if ("--client-udp-bind" in node_args
             and settings.get("client_udp_compact_short_header") is not None):
         out += ["--client-udp-compact-short-header",
                 flag(bool(settings["client_udp_compact_short_header"]))]
+    if "--mesh-bind" in node_args:
+        for key in AM_MESH_BOOL + PROOF_MESH_BOOL + COLD_MESH_BOOL + SCALE_MESH_BOOL:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+        for key in SCALE_MESH_COUNT:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
+        if settings.get("cache_mesh_warm_total_kbps") is not None:
+            total = settings["cache_mesh_warm_total_kbps"]
+            out += ["--cache-mesh-warm-total-kbps",
+                    "0" if float(total) == 0 else str(whole(total, "cache_mesh_warm_total_kbps"))]
+    if "--client-udp-bind" in node_args:
+        for key in (WAVE8_CLIENT_UDP + AM_CLIENT_UDP_BOOL + REVIEW_CLIENT_UDP_BOOL
+                    + COLD_CLIENT_UDP_BOOL + SCALE_CLIENT_UDP_BOOL):
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+        for key in SCALE_CLIENT_UDP_COUNT:
+            if settings.get(key) is not None:
+                out += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
+        for key in AM_CLIENT_UDP_MS + REVIEW_CLIENT_UDP_COUNT:
+            if settings.get(key) is not None:
+                # 0 is the behaviour of before (no spread, no region move).
+                value = 0 if float(settings[key]) == 0 else whole(settings[key], key)
+                out += ["--" + key.replace("_", "-"), str(value)]
+    if "--mesh-bind" in node_args and settings.get("cache_mesh_video_warm_parts") is not None:
+        value = str(settings["cache_mesh_video_warm_parts"]).strip().lower()
+        if value != "window":
+            # 0 (no warm-up) is a value here.
+            value = "0" if value in ("0", "0.0") else str(
+                whole(settings["cache_mesh_video_warm_parts"], "cache_mesh_video_warm_parts"))
+        out += ["--cache-mesh-video-warm-parts", value]
+    if "--mesh-bind" in node_args and settings.get("cache_mesh_warm_second_parent") is not None:
+        out += ["--cache-mesh-warm-second-parent",
+                flag(bool(settings["cache_mesh_warm_second_parent"]))]
+    if "--relay-controlled-local" in node_args:
+        if settings.get("relay_demand_report_lease_parents") is not None:
+            out += ["--relay-demand-report-lease-parents",
+                    flag(bool(settings["relay_demand_report_lease_parents"]))]
+        if settings.get("relay_class_fallback_nice") is not None:
+            out += ["--relay-class-fallback-nice",
+                    str(whole(settings["relay_class_fallback_nice"], "relay_class_fallback_nice")
+                        if float(settings["relay_class_fallback_nice"]) else 0)]
+    if "--relay-lease-bind" in node_args and settings.get("relay_lease_drain_inbound") is not None:
+        out += ["--relay-lease-drain-inbound", flag(bool(settings["relay_lease_drain_inbound"]))]
+    if "--relay-lease-bind" in node_args and settings.get("relay_lease_descriptors") is not None:
+        out += ["--relay-lease-descriptors", flag(bool(settings["relay_lease_descriptors"]))]
     return out
+
+
+# Wave 8 stage 2's settings of the nodes that serve UDP clients: each is the
+# av-mesh flag of the same name.
+WAVE8_CLIENT_UDP = ("client_udp_repair_thread", "client_udp_batched_admission",
+                    "client_udp_resume_from_request", "client_udp_fanout_inline_shard")
+# Wave 8 stage 5 (Phase AM 12, 13): on every mesh node, the av-mesh flag of
+# the same name.
+AM_MESH_BOOL = ("relay_lease_ranked", "relay_ranked_parents", "cache_mesh_subscribe_rank",
+                "cache_mesh_release_unranked_parents", "cache_mesh_avoid_draining_parents")
+# Wave 8 stage 4 (Phase AM 8, 9, 11): the same, on/off and in ms.
+AM_CLIENT_UDP_BOOL = ("client_udp_egress_load", "client_udp_admit_by_load")
+AM_CLIENT_UDP_MS = ("client_udp_drain_spread_ms", "client_udp_region_hold_ms")
+# The wave 8 review's settings of the nodes that serve UDP clients.
+REVIEW_CLIENT_UDP_BOOL = ("client_udp_region_head_check",)
+REVIEW_CLIENT_UDP_COUNT = ("client_udp_keepalive_ms", "client_udp_datagram_capacity")
+# Wave 8 local proofs: on every mesh node, the av-mesh flag of the same name.
+PROOF_MESH_BOOL = ("assignment_udp_in_region",)
+# Wave 9 (cold start): on every mesh node, and on the nodes that serve UDP
+# clients, the av-mesh flag of the same name.
+COLD_MESH_BOOL = ("mlock_all", "malloc_tune", "prefault")
+COLD_CLIENT_UDP_BOOL = ("client_udp_prompt_sender", "client_udp_assign")
+# Wave 9 C (autoscaling and redistribution): on every mesh node, and on the
+# nodes that serve UDP clients, the av-mesh flag of the same name.
+SCALE_MESH_BOOL = ("cpu_load", "assignment_move_headroom")
+SCALE_MESH_COUNT = ("cpu_load_full_percent", "rebalance_target_permille")
+SCALE_CLIENT_UDP_BOOL = ("client_udp_rebalance",)
+SCALE_CLIENT_UDP_COUNT = ("client_udp_rebalance_margin_permille",
+                          "client_udp_rebalance_interval_ms")
 
 
 def is_contributor_args(args: list[str]) -> bool:
@@ -1720,6 +2158,8 @@ def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
             out += ["--relay-class-realtime", flag(plan["relay_class_realtime"]),
                     "--relay-video-gso", flag(plan.get("relay_video_gso", True)),
                     "--relay-burst-copy-ms", str(plan.get("relay_burst_copy_ms", 0))]
+            if plan.get("relay_video_gro") is not None:
+                out += ["--relay-video-gro", flag(bool(plan["relay_video_gro"]))]
             cpus = relay_class_cpus(node, plan)
             if cpus:
                 out += ["--relay-class-cpus", cpus]
@@ -1817,7 +2257,8 @@ REMOVED_MESH_FLAGS = {
 }
 
 
-def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
+def check_cache_mesh_peers(state: dict, rendered: dict[str, dict],
+                           settings: dict | None = None) -> None:
     """Raise ValueError when an av-mesh service would not start or its cache
     mesh would refuse a peer: a flag that av-mesh no longer has
     (REMOVED_MESH_FLAGS), or a --peer that does not list its node back. The
@@ -1825,7 +2266,14 @@ def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
     or discovery's add_peer) and learns no child from its hello, so a
     distributor must list its edges and an edge its distributors. A peer's
     class socket (its --mesh-bind port plus --cache-mesh-class-port-offset)
-    is authorized with its main address, so a --peer covers both sockets."""
+    is authorized with its main address, so a --peer covers both sockets.
+
+    A peer that is a node of the roster held out of this render (a standby
+    edge, an autoscale slot not in service: down until it starts) is
+    checked by the rule that renders its own list when it starts (its
+    site's nodes of the other cache-mesh role, and a distributor slot's
+    pairing with its lease parents: mesh_peer_nodes)."""
+    settings = settings if settings is not None else DEFAULT_SETTINGS
     problems = []
     for name, item in sorted(rendered.items()):
         if item["service"] != "needletail-mesh":
@@ -1841,9 +2289,19 @@ def check_cache_mesh_peers(state: dict, rendered: dict[str, dict]) -> None:
         if node["name"] in peers and bind and not bind.startswith("0.0.0.0:"):
             address[bind] = node["name"]
     own = {name: bind for bind, name in address.items()}
+    held = {f"{node['vlan_ipv4']}:{MESH_PORT}": node for node in roster(state).values()
+            if node["name"] not in rendered and node.get("vlan_ipv4")
+            and node["role"] in ("edge", "distributor")}
     for name, listed in sorted(peers.items()):
         for peer in listed:
             other = address.get(peer)
+            if other is None and peer in held:
+                node, down = state["nodes"].get(name) or roster(state)[name], held[peer]
+                if node["name"] not in {item["name"] for item in
+                                        mesh_peer_nodes(down, settings, state)}:
+                    problems.append(f"{name} lists {down['name']} ({peer}), which would "
+                                    f"not list {name} when it starts")
+                continue
             if other is None:
                 problems.append(f"{name}: --peer {peer} is no node's cache-mesh address")
             elif own.get(name) not in peers.get(other, []):
@@ -1952,6 +2410,11 @@ def check_merged(state: dict, rendered: dict[str, dict]) -> None:
                 if parent is not None and parent["role"] != "distributor":
                     problems.append(f"{name}: an edge takes the {parent['role']} "
                                     f"{parent['name']} as its {lane} relay parent")
+        elif node["role"] == "distributor" and name in slot_names(state):
+            # A slot forwarder takes its site's distributors on the fast
+            # plane (check_fast_plane), never a compiled relay parent.
+            if "--relay-forward" in flag_names(args):
+                problems.append(f"{name}: an autoscale slot is rendered as a compiled relay")
         elif node["role"] == "distributor" and relay_node_id(node) not in first:
             parents = [flag_value(args, "--relay-primary-id"),
                        flag_value(args, "--relay-secondary-id")]
@@ -2026,25 +2489,41 @@ def fast_plane_feed(state: dict, plan: dict) -> dict:
     - "forwarders": {distributor name: {"node", "primary_children": [VLAN
       addresses of the edges it is primary for], "children": [every edge it
       feeds]}}.
+    - "slot_forwarders": {distributor name: {"node", "primary",
+      "secondary", "rank"}}: an autoscale slot of role distributor
+      (dist-c) is a lease child of its site's two first distributors, as an
+      edge is (primary the first), with the next rank after the edges'.
     Empty when the setting is off (or the relay class split is). An edge
     or a distributor without a VLAN address takes no part: the lease child
-    is the edge's cache-mesh address, which is its VLAN address."""
-    out: dict = {"edges": {}, "forwarders": {}}
+    is the edge's cache-mesh address, which is its VLAN address. Built from
+    the roster (active_state): an edge held out or not created yet keeps
+    its rank and its place in its forwarders' lists, so that no node's
+    arguments change when it starts."""
+    out: dict = {"edges": {}, "forwarders": {}, "slot_forwarders": {}}
     if not plan.get("edge_fast_plane"):
         return out
     by_name = lambda item: item["name"]  # noqa: E731
-    for site in sorted({node["site"] for node in common.nodes_by_role(state, "edge")}):
-        parents = sorted((node for node in common.nodes_by_role(state, "distributor")
-                          if node["site"] == site and node.get("vlan_ipv4")), key=by_name)[:2]
+    every = {"nodes": roster(state)}
+    slots = slot_names(state)
+    for site in sorted({node["site"] for node in common.nodes_by_role(every, "edge")}):
+        parents = sorted((node for node in common.nodes_by_role(every, "distributor")
+                          if node["site"] == site and node.get("vlan_ipv4")
+                          and node["name"] not in slots), key=by_name)[:2]
         if not parents:
             continue
-        edges = sorted((node for node in common.nodes_by_role(state, "edge")
+        edges = sorted((node for node in common.nodes_by_role(every, "edge")
                         if node["site"] == site and node.get("vlan_ipv4")), key=by_name)
-        for rank, edge in enumerate(edges):
-            primary = parents[rank % len(parents)]
-            secondary = parents[(rank + 1) % len(parents)] if len(parents) > 1 else None
-            out["edges"][edge["name"]] = {"node": edge, "primary": primary,
-                                          "secondary": secondary, "rank": rank}
+        children = [(edge, "edges") for edge in edges] + [
+            (node, "slot_forwarders") for node in sorted(
+                (item for item in common.nodes_by_role(every, "distributor")
+                 if item["site"] == site and item.get("vlan_ipv4") and item["name"] in slots),
+                key=by_name)]
+        for rank, (edge, kind) in enumerate(children):
+            turn = rank if kind == "edges" else 0
+            primary = parents[turn % len(parents)]
+            secondary = parents[(turn + 1) % len(parents)] if len(parents) > 1 else None
+            out[kind][edge["name"]] = {"node": edge, "primary": primary,
+                                       "secondary": secondary, "rank": rank}
             for parent in (primary, secondary):
                 if parent is None:
                     continue
@@ -2102,6 +2581,20 @@ def fast_edge_args(feed: dict, services: dict, settings: dict) -> tuple[list[str
     return switches, pairs
 
 
+def slot_forwarder_feed(node: dict, state: dict, feed: dict, settings: dict) -> dict | None:
+    """The forwarder entry of a distributor slot that feeds its site's edges
+    (forwarder_slot_feeds_edges, AM 12): every edge of its site, none named
+    a primary child (the edges' ranks decide); None when it feeds none."""
+    if not settings.get("forwarder_slot_feeds_edges") or not feed.get("edges"):
+        return None
+    every = {"nodes": roster(state)}
+    children = sorted(edge["name"] for edge in common.nodes_by_role(every, "edge")
+                      if edge["site"] == node["site"] and edge["name"] in feed["edges"])
+    if not children:
+        return None
+    return {"node": node, "children": children, "primary_children": []}
+
+
 def fast_forwarder_args(forwarder: dict | None, settings: dict) -> list[str]:
     """`--flag value` pairs of a distributor that feeds edges on the fast
     plane (`forwarder`, an entry of fast_plane_feed's "forwarders"), or
@@ -2136,7 +2629,8 @@ def check_fast_plane(state: dict, rendered: dict[str, dict]) -> None:
     for name, item in sorted(rendered.items()):
         node = state["nodes"][name]
         args = item["args"]
-        if node["role"] != "edge" or "--relay-controlled-local" not in args:
+        lease_child = node["role"] == "edge" or name in slot_names(state)
+        if not lease_child or "--relay-controlled-local" not in args:
             continue
         address = node.get("vlan_ipv4") or node["public_ipv4"]
         rank = flag_value(args, "--client-udp-edge-rank") or "0"
@@ -2207,10 +2701,11 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
         service = services.get(("av_mesh", relay_node_id(node)))
         if role == "backbone" and service is None:
             continue  # the merged topology uses no backbone relay
-        if role == "distributor" and service is None:
+        slot_forwarder = role == "distributor" and node["name"] in slot_names(state)
+        if role == "distributor" and service is None and not slot_forwarder:
             raise ValueError(f"{node['name']}: the compiled plan has no relay service for it")
         args = common_mesh_args(node, settings, state)
-        if role in ("backbone", "distributor"):
+        if role in ("backbone", "distributor") and not slot_forwarder:
             args += relay_args(service)
             # The contributor sends repair on its primary lane too: the
             # backbone at the end of that lane admits it.
@@ -2220,7 +2715,29 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
                         args + list(settings[f"extra_{role}_args"]))):
                 args.append("--relay-primary-promoted")
             args += direct_mesh.get(node["name"], [])
-        if role == "backbone":
+        if slot_forwarder:
+            # dist-c: a cache-mesh parent of its site's edges, fed as a
+            # fast-plane lease child of its site's first two distributors.
+            # With forwarder_slot_feeds_edges (AM 12) it feeds the edges that
+            # rank it among their first two parents of a playlist, as a lease
+            # parent, and subscribes at its forwarders for their leases;
+            # otherwise it feeds no lease child of its own.
+            args += cache_mesh_args(node, settings, state)
+            args += ["--edge-webtransport"]
+            extra = list(settings["extra_distributor_args"])
+            args += yield_to(extra, gap_hold_args(node, settings, state))
+            feed_item = feed["slot_forwarders"].get(node["name"])
+            if feed_item is not None:
+                switches, pairs = fast_edge_args(feed_item, services, settings)
+                given = flag_names(extra)
+                args += [switch for switch in switches if switch not in given]
+                args += yield_to(extra, pairs)
+            if classes["relay_class_split"]:
+                args += yield_to(extra, fast_forwarder_args(
+                    slot_forwarder_feed(node, state, feed, settings), settings))
+                if feed_item is not None and slot_forwarder_feed(node, state, feed, settings):
+                    args += yield_to(extra, ["--cache-mesh-upstream-demand", "true"])
+        elif role == "backbone":
             args += ["--mesh-bind", f"0.0.0.0:{MESH_PORT}", "--edge-webtransport"]
             extra = list(settings["extra_backbone_args"])
         elif role == "distributor":
@@ -2240,6 +2757,9 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
                 given = flag_names(extra)
                 args += [switch for switch in switches if switch not in given]
                 args += yield_to(extra, pairs)
+        # The tail of every av-mesh service, slot forwarders included (wave 7
+        # review C5: a slot rendered without the wave 7 flags would run the
+        # binaries' defaults while the other forwarders run the settings).
         if "--client-udp-bind" in args:
             args += yield_to(extra, ["--client-udp-fast-lane",
                                      flag(classes["client_udp_fast_lane"])])
@@ -2249,7 +2769,7 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
-    check_cache_mesh_peers(state, rendered)
+    check_cache_mesh_peers(state, rendered, settings)
     check_class_ports(rendered, classes)
     check_fast_plane(state, rendered)
     if topology_mode(settings) == "merged":
@@ -2351,6 +2871,11 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
         # threads; socket buffers beyond rmem_max (SO_RCVBUFFORCE). The
         # service is still the needletail user, and NoNewPrivileges holds.
         thread_line += "AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN\n"
+    if service != "needletail-contrib" and settings.get("mlock_all") is True:
+        # Wave 9 (cold start): av-mesh locks its memory (mlockall) only
+        # where it may without a limit; the default 8 MB would refuse it.
+        # Only when asked (wave 9 review: off until measured on a deploy).
+        thread_line += "LimitMEMLOCK=infinity\n"
     return f"""[Unit]
 Description={description} (small-mesh lab)
 After=network-online.target
@@ -2374,7 +2899,7 @@ WantedBy=multi-user.target
 """
 
 
-def binaries_for(role: str) -> list[pathlib.Path]:
+def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
     target = "target/x86_64-unknown-linux-gnu/release"
     # NEEDLETAIL_AV_MESH_ROOT selects another av-mesh checkout, such as a worktree
     # that carries a candidate patch.
@@ -2390,11 +2915,16 @@ def binaries_for(role: str) -> list[pathlib.Path]:
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
-        return [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
-                daw / "daw-test-source",
-                common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
-                common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
-                / target / "soundkit-part-check"]
+        tools = [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
+                 daw / "daw-test-source",
+                 common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
+                 common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
+                 / target / "soundkit-part-check"]
+        if node is not None and common.load_purpose(node) == "listeners":
+            # The simulated listeners of the scale run: needletail-load (UDP,
+            # from av-mesh) and ntcmp (LL-HLS crowds, scripts/compare/gobuild.sh).
+            tools += [mesh / "needletail-load", common.ROOT / "target" / "ntcmp"]
+        return tools
     checker = (common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                / target / "soundkit-part-check")
     return [mesh / "av-mesh", probe, checker]
@@ -2508,7 +3038,7 @@ def apply_host_qdisc(node: dict, settings: dict, clear: tuple[str, ...] = ()) ->
 
 def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
     if binaries:
-        sources = [str(path) for path in binaries_for(node["role"])]
+        sources = [str(path) for path in binaries_for(node["role"], node)]
         for source in sources:
             if not pathlib.Path(source).is_file():
                 raise RuntimeError(f"binary is missing: {source}")
@@ -2532,10 +3062,17 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
             f"cat >/etc/sysctl.d/90-needletail.conf <<'SYSCTL'\n{lines}\nSYSCTL",
             "sysctl -q -p /etc/sysctl.d/90-needletail.conf",
         ]
+    if common.load_purpose(node) == "listeners":
+        lines = "\n".join(f"{key} = {value}" for key, value in LISTENER_SYSCTLS.items())
+        commands += [
+            f"cat >/etc/sysctl.d/91-needletail-listeners.conf <<'SYSCTL'\n{lines}\nSYSCTL",
+            "sysctl -q -p /etc/sysctl.d/91-needletail-listeners.conf",
+        ]
     item = rendered.get(node["name"])
-    if not item and node["role"] == "backbone":
+    if not item and node["role"] in ("backbone", "edge"):
         # The merged topology uses no backbone relay: one left running from
-        # a legacy deploy would still send to the distributors.
+        # a legacy deploy would still send to the distributors. A standby
+        # edge (standby_edges) is out of the mesh until it is restarted in.
         commands.append("systemctl disable --now needletail-mesh.service >/dev/null 2>&1 || true")
     if item:
         apply_host_qdisc(node, settings)
@@ -2556,8 +3093,12 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
 
 
 def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
-    state = common.load_state()
+    """Plan and render the services of every node but the standby edges;
+    returns the whole lab state (push installs the tools on every node and
+    stops the service of a standby edge), the settings and the render."""
+    full = common.load_state()
     settings = load_settings(args.set)
+    state = active_state(full, settings)
     routes_path = common.ARTIFACT_DIR / "routes.json"
     routes = json.loads(routes_path.read_text()) if routes_path.is_file() else None
     # Routes measured over the other topology's relays seed the controller
@@ -2578,13 +3119,47 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
           f"topology); rendered {len(rendered)} service argument files; primary route "
           f"{routes['primary_rtt_us']} us, secondary {routes['secondary_rtt_us']} us"
           + (f"; backbone relays not used (stopped by push and restart): "
-             f"{', '.join(node['name'] for node in unused)}" if unused else ""))
-    return state, settings, rendered
+             f"{', '.join(node['name'] for node in unused)}" if unused else "")
+          + (f"; standby edges (stopped): {', '.join(standby_edges(settings))}"
+             if standby_edges(settings) else ""))
+    return full, settings, rendered
+
+
+def named_nodes(state: dict, text: str | None) -> list[str] | None:
+    """The names of --nodes (comma-separated), each a created node of the
+    lab; None when --nodes is not given."""
+    if not text:
+        return None
+    names = [name for name in text.split(",") if name]
+    missing = [name for name in names if name not in state["nodes"]]
+    if missing:
+        slots = lab_slots(state)
+        sys.exit("--nodes: not created in the lab: " + ", ".join(
+            f"{name}{' (an autoscale slot: lab add first)' if name in slots else ''}"
+            for name in missing))
+    return names
+
+
+def held_out_after(settings: dict, start: list[str] = (), stop: list[str] = ()) -> list[str]:
+    """standby_edges without `start` and with `stop`."""
+    held = [name for name in standby_edges(settings) if name not in start]
+    return sorted(set(held) | set(stop))
 
 
 def command_push(args: argparse.Namespace) -> None:
     state = common.load_state()
-    nodes = list(state["nodes"].values())
+    only = named_nodes(state, getattr(args, "nodes", None))
+    if only is not None:
+        # A node pushed by name is taken into service (it may have been
+        # held out); its peers already name it, so nothing else restarts.
+        saved = load_settings(list(args.set))
+        args.set = list(args.set) + [
+            f"standby_edges={json.dumps(held_out_after(saved, start=only))}"]
+    nodes = [node for node in state["nodes"].values() if only is None or node["name"] in only]
+    if only is not None and (args.remeasure
+                             or not (common.ARTIFACT_DIR / "routes.json").is_file()):
+        sys.exit("push --nodes keeps the routes of the last whole push (measuring them "
+                 "would reach other nodes): push the whole lab first, and no --remeasure")
     ensure_tls()
     if not args.skip_bootstrap:
         interfaces = common.parallel(
@@ -2601,7 +3176,8 @@ def command_push(args: argparse.Namespace) -> None:
     # Parents first so children find a listening relay when they start.
     order = ["backbone", "distributor", "edge", "contributor", "load"]
     for role in order:
-        group = common.nodes_by_role(state, role)
+        group = [node for node in common.nodes_by_role(state, role)
+                 if only is None or node["name"] in only]
         if group:
             common.parallel(
                 group,
@@ -2622,6 +3198,56 @@ def command_restart(args: argparse.Namespace) -> None:
             common.parallel(
                 group, lambda node: install_node(node, rendered, settings, False))
             print(f"restarted {len(group)} {role} node(s)")
+
+
+def checked_for_start_stop(state: dict, names: list[str], verb: str) -> None:
+    """Exit unless every name is an edge of the lab or an autoscale slot: a
+    contributor or a site's first distributors are never started or stopped
+    by name (they are not held out; the relay DAG needs them)."""
+    slots = lab_slots(state)
+    for name in names:
+        node = state["nodes"][name]
+        if node["role"] != "edge" and name not in slots:
+            sys.exit(f"{verb} --nodes: {name} is a {node['role']}; only edges and autoscale "
+                     "slots are taken in and out of service by name")
+
+
+def command_start(args: argparse.Namespace) -> None:
+    """Take held-out nodes into service and start them: render every node
+    (their peers name them already, so no other node's arguments change)
+    and install and start the named ones only. A node just created (lab
+    add) needs `push --nodes`, which also bootstraps it and installs the
+    binaries."""
+    full = common.load_state()
+    names = named_nodes(full, args.nodes)
+    checked_for_start_stop(full, names, "start")
+    saved = load_settings(list(args.set))
+    args.set = list(args.set) + [
+        f"standby_edges={json.dumps(held_out_after(saved, start=names))}"]
+    args.remeasure = False
+    state, settings, rendered = command_plan(args)
+    group = [state["nodes"][name] for name in names]
+    missing = [node["name"] for node in group if node["name"] not in rendered]
+    if missing:
+        sys.exit(f"start: no service rendered for {', '.join(missing)}")
+    common.parallel(group, lambda node: install_node(node, rendered, settings, False))
+    print(f"started {', '.join(names)}; no other node was restarted")
+
+
+def command_stop(args: argparse.Namespace) -> None:
+    """Hold nodes out of service and stop their service, and nothing else.
+    Their peers keep naming them (a peer that is down)."""
+    full = common.load_state()
+    names = named_nodes(full, args.nodes)
+    checked_for_start_stop(full, names, "stop")
+    saved = load_settings(list(args.set))
+    load_settings(list(args.set) + [
+        f"standby_edges={json.dumps(held_out_after(saved, stop=names))}"])
+    common.parallel([full["nodes"][name] for name in names], lambda node: common.ssh_text(
+        node, "systemctl disable --now needletail-mesh.service >/dev/null 2>&1 || true; "
+              "systemctl is-active needletail-mesh.service || true"))
+    print(f"stopped {', '.join(names)} and held them out (standby_edges); no other node "
+          "was touched")
 
 
 def command_status(args: argparse.Namespace) -> None:
@@ -2678,7 +3304,18 @@ def main() -> None:
     push.add_argument("--remeasure", action="store_true")
     push.add_argument("--skip-bootstrap", action="store_true")
     push.add_argument("--skip-binaries", action="store_true")
+    push.add_argument("--nodes", default=None,
+                      help="comma-separated: bootstrap, install and start only these (taken "
+                           "into service); every other node is left as it runs")
     push.set_defaults(handler=command_push)
+    start = sub.add_parser("start", help="take held-out nodes into service, nothing else")
+    start.add_argument("--nodes", required=True)
+    start.add_argument("--set", action="append", default=[])
+    start.set_defaults(handler=command_start)
+    stop = sub.add_parser("stop", help="hold nodes out and stop them, nothing else")
+    stop.add_argument("--nodes", required=True)
+    stop.add_argument("--set", action="append", default=[])
+    stop.set_defaults(handler=command_stop)
     restart = sub.add_parser("restart")
     restart.add_argument("--set", action="append", default=[])
     restart.add_argument("--roles", default="")

@@ -355,6 +355,23 @@ class Host(unittest.TestCase):
                                 {**deploy.DEFAULT_SETTINGS, "service_capabilities": False})
         self.assertNotIn("AmbientCapabilities", unit)
 
+    def test_a_mesh_node_may_lock_its_memory_only_when_mlock_all_is_true(self):
+        """Wave 9 (cold start): av-mesh locks its memory only without a
+        limit, so a mesh unit that asks for it lifts the limit; by default
+        (wave 9 review: unmeasured on a deploy) none does, nor does the
+        contributor's."""
+        unit = deploy.unit_text("needletail-mesh", "info", dict(deploy.DEFAULT_SETTINGS))
+        self.assertNotIn("LimitMEMLOCK", unit)
+        unit = deploy.unit_text("needletail-mesh", "info",
+                                {**deploy.DEFAULT_SETTINGS, "mlock_all": True})
+        self.assertIn("LimitMEMLOCK=infinity\n", unit)
+        unit = deploy.unit_text("needletail-mesh", "info",
+                                {**deploy.DEFAULT_SETTINGS, "mlock_all": False})
+        self.assertNotIn("LimitMEMLOCK", unit)
+        unit = deploy.unit_text("needletail-contrib", "info",
+                                {**deploy.DEFAULT_SETTINGS, "mlock_all": True})
+        self.assertNotIn("LimitMEMLOCK", unit)
+
     PRIO = """== eth0
 qdisc prio 1: root refcnt 3 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
  Sent 1 bytes 1 pkt (dropped 0, overlimits 0 requeues 0)

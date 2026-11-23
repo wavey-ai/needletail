@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -39,6 +40,38 @@ def nodes_by_role(state: dict, role: str) -> list[dict]:
         (node for node in state["nodes"].values() if node["role"] == role),
         key=lambda node: node["name"],
     )
+
+
+LOAD_PURPOSES = ("source", "view", "listeners")
+
+
+def load_purpose(node: dict) -> str | None:
+    """What a node of role load is for: "source" (sends the media into the
+    systems: lon-src), "view" (the full probes and players of a region:
+    *-view, *-nano, and the single *-load host of the older labs, such as
+    topology-core.json's lon-load, which is their source and probe host) or
+    "listeners" (simulated listeners, needletail-load and ntcmp crowds:
+    *-load-N). The topology names it (`purpose`); a state saved before it
+    did is read from the name. None for any other role."""
+    if node.get("role") != "load":
+        return None
+    purpose = node.get("purpose")
+    if purpose:
+        if purpose not in LOAD_PURPOSES:
+            raise ValueError(f"{node.get('name')}: purpose {purpose!r} is not one of "
+                             f"{', '.join(LOAD_PURPOSES)}")
+        return purpose
+    name = str(node.get("name") or "")
+    if name.endswith("-src"):
+        return "source"
+    if re.search(r"-load-[0-9]+$", name):
+        return "listeners"
+    return "view"
+
+
+def nodes_for(state: dict, purpose: str) -> list[dict]:
+    """The load nodes of one purpose, by name."""
+    return [node for node in nodes_by_role(state, "load") if load_purpose(node) == purpose]
 
 
 def ssh_base() -> list[str]:

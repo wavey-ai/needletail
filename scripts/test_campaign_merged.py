@@ -95,8 +95,13 @@ class Restore(Base):
         started, limited, ensure, out = self.run_restore(pid=None)
         ensure.assert_not_called()
         self.assertNotIn("did not recover", out)
-        self.assertEqual(started, names)
-        self.assertEqual(limited, names)
+        # A slot that is not in service (lon-dist-c) stays down.
+        standing = [name for name in names if name not in lab.DEFAULT_SLOTS]
+        self.assertEqual(started, standing)
+        self.assertEqual(limited, standing)
+        lab.set_slot_in_service("lon-dist-c", True)
+        started, _limited, _ensure, _out = self.run_restore(pid=None)
+        self.assertIn("lon-dist-c", started)
         self.assertFalse(BACKBONES & set(started) or BACKBONES & set(limited))
 
     def test_legacy_restore_starts_the_relays(self):
@@ -104,7 +109,8 @@ class Restore(Base):
         started, limited, ensure, _ = self.run_restore(pid=None)
         ensure.assert_not_called()
         self.assertTrue(BACKBONES <= set(started))
-        self.assertEqual(limited, lab.names())
+        self.assertEqual(limited, [name for name in lab.names()
+                                   if name not in lab.DEFAULT_SLOTS])
 
     def test_running_services_are_not_started_again(self):
         self.merged()

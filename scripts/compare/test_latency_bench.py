@@ -149,6 +149,15 @@ class Arguments(unittest.TestCase):
         self.assertEqual(plan["hops"]["source_start_ns"], start * 10**9)
         self.assertIn("loss random 5.0%", plan["reader_netem"])
 
+    def test_the_start_up_counts_with_skip_seconds_0(self):
+        """Wave 9 (cold start): --skip-seconds 0 keeps the first seconds in
+        every figure (the readers' and the window's); 5 by default."""
+        for given, expected in ((None, "5"), ("0", "0"), ("2", "2")):
+            plan = dry_run(*(["--skip-seconds", given] if given else []))
+            h2 = plan["readers"][0]["command"]
+            self.assertEqual(h2[h2.index("--skip-seconds") + 1], expected)
+            self.assertEqual(plan["hops"]["skip_seconds"], int(expected))
+
     def test_no_up_refuses_service_flags(self):
         with self.assertRaises(SystemExit):
             bench.main(["--name", "t", "--dry-run", "--no-up", "--mesh-args", "--a b"])
@@ -629,6 +638,119 @@ class Video(unittest.TestCase):
                                  capture_output=True, text=True).stdout
         self.assertIn("video,3840,2160", streams)
         self.assertIn("audio", streams)
+
+
+class EdgeLoad(unittest.TestCase):
+    """Wave 8: needletail-load crowds on the edges, the edges' counters and
+    their class threads' wake."""
+
+    def test_the_load_ramp_is_per_edge(self):
+        self.assertEqual(bench.load_ramp("32@0,96@20", 4), "128@0,384@20")
+        with self.assertRaises(SystemExit):
+            bench.load_ramp("32", 4)
+
+    def test_a_crowd_for_each_site_over_its_edges(self):
+        args = parse("--load-listeners", "64", "--load-sites", "london,newyork",
+                     "--load-args=--silence-nack false", "--payload", "opus")
+        edges = {"london": ["lon-edge-1", "lon-edge-2"], "newyork": ["new-edge-1"]}
+        with mock.patch.object(bench.lab, "edges", side_effect=lambda site: edges[site]):
+            items = bench.load_commands(args, pathlib.Path("/x"))
+        self.assertEqual([item["host"] for item in items], ["lon-readers-2", "new-readers-2"])
+        london = items[0]["command"]
+        self.assertEqual(london[london.index("--listeners") + 1], "128")
+        self.assertEqual(london[london.index("--ramp") + 1], "128@0")
+        self.assertEqual(london[london.index("--edges") + 1],
+                         "10.90.0.21:19446,10.90.0.22:19446")
+        self.assertEqual(london[-2:], ["--silence-nack", "false"])
+        self.assertEqual(bench.load_commands(parse(), pathlib.Path("/x")), [])
+
+    def test_a_crowd_through_the_assignment_and_the_gauges(self):
+        """Phase AM 10: --load-assign gives needletail-load every distributor
+        and edge of the site as entry points; AM 8: the gauge lines."""
+        args = parse("--load-listeners", "8", "--load-assign")
+        with mock.patch.object(bench.lab, "edges", return_value=["lon-edge-1"]), \
+                mock.patch.object(bench.lab, "distributors", return_value=["lon-dist-a"]):
+            command = bench.load_commands(args, pathlib.Path("/x"))[0]["command"]
+        entries = command[command.index("--entry") + 1].split(",")
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(all(entry.startswith("https://") and entry.endswith(":19444")
+                            for entry in entries), entries)
+        self.assertEqual(command[command.index("--tls-ca") + 1], bench.lab.ca_file())
+        rows = [{"t": 1.0, "lon-edge-1": {"subscribers": 64, "load_permille": 700,
+                                          "egress_observed_bps": 70e6,
+                                          "advertised_free_bps": 15e6}},
+                {"t": 2.0, "lon-edge-1": {"subscribers": 64, "load_permille": 800,
+                                          "egress_observed_bps": 80e6,
+                                          "advertised_free_bps": 5e6}}]
+        lines = bench.gauge_lines(rows)
+        self.assertIn("lon-edge-1: 64, 800/750, 80.0/75.0, 5.0", lines[-1])
+
+    def test_node_events_parse_in_time_order(self):
+        events = bench.parse_node_events("kill:lon-dist-c:30,start:lon-dist-c:12,drain:lon-edge-1:20")
+        self.assertEqual(events, [(12.0, "start", "lon-dist-c"), (20.0, "drain", "lon-edge-1"),
+                                  (30.0, "kill", "lon-dist-c")])
+        with self.assertRaises(SystemExit):
+            bench.parse_node_events("explode:lon-dist-c:3")
+        self.assertTrue(parse("--node-events", "start:lon-dist-c:12", "--sample-forwarders")
+                        .sample_forwarders)
+
+    def test_the_forwarders_and_the_first_parent_changes(self):
+        """Phase AM 12: a slot joins; one edge's first parent of the stream
+        moves to it."""
+        def row(t, slot_served, a_served):
+            return {"t": t,
+                    "lon-dist-a": {"fast_plane": {"lease_children": 3},
+                                   "cache_mesh": {"children": 3, "first_parent_pairs": 2,
+                                                  "warm_parts_sent": 0,
+                                                  "watermark_stall_max_us": 2500},
+                                   "served": a_served},
+                    **({"lon-dist-c": {"fast_plane": {"lease_children": len(slot_served)},
+                                       "cache_mesh": {"children": len(slot_served),
+                                                      "first_parent_pairs": len(slot_served)},
+                                       "served": slot_served}} if slot_served is not None
+                       else {})}
+        rows = [row(0.0, None, [["10.0.0.21:29101", 3001, 0], ["10.0.0.22:29101", 3001, 0]]),
+                row(1.0, [["10.0.0.22:29101", 3001, 0]], [["10.0.0.21:29101", 3001, 0],
+                                                          ["10.0.0.22:29101", 3001, 1]])]
+        lines, report = bench.forwarder_lines(rows, [{"action": "start", "node": "lon-dist-c",
+                                                      "second": 1.0}], 3001)
+        self.assertEqual(report["pairs"], 2)
+        self.assertEqual(report["first_parent_changes"],
+                         [{"t": 1.0, "child": "10.0.0.22", "from": "lon-dist-a",
+                           "to": "lon-dist-c"}])
+        self.assertIn("lon-dist-c: 1/1, 1/1, 1", "\n".join(lines))
+        self.assertIn("start lon-dist-c at 1.0 s", lines[-1])
+
+    def test_the_edges_counters_over_the_window(self):
+        before = {"lon-edge-1": {"nack_parts": 10, "subscriptions": 1,
+                                 "fast_lane": {"fanout_shed": 3, "class_repair_max_us": 5}}}
+        after = {"lon-edge-1": {"nack_parts": 25, "subscriptions": 65,
+                                "fast_lane": {"fanout_shed": 7, "clients": 65,
+                                              "class_repair_max_us": 900}}}
+        delta = bench.edge_stats_delta(before, after)["lon-edge-1"]
+        self.assertEqual(delta["nack_parts"], 15)
+        self.assertEqual(delta["subscriptions"], 64)
+        self.assertEqual(delta["fast"]["fanout_shed"], 4)
+        self.assertEqual(delta["fast"]["class_repair_max_us"], 900)
+        self.assertEqual(delta["fast_clients"], 65)
+        self.assertIn("nack parts 15", "\n".join(bench.edge_stats_lines({"lon-edge-1": delta})))
+
+    def test_the_class_thread_wake_of_each_edge(self):
+        events = []
+        for seq in range(100):
+            rx = 1_000_000 + seq * 1_000
+            events += [{"_node": "lon-edge-1", "stage": "relay_first", "seq": seq, "t_us": rx},
+                       {"_node": "lon-edge-1", "stage": "relay_woken", "seq": seq,
+                        "t_us": rx + (2_000 if seq == 50 else 50)},
+                       {"_node": "lon-edge-1", "stage": "udp_sent", "seq": seq,
+                        "t_us": rx + (2_100 if seq == 50 else 150)},
+                       {"_node": "lon-dist-a", "stage": "relay_first", "seq": seq, "t_us": rx}]
+        report = bench.edge_wake_report(events, None, None)
+        self.assertEqual(list(report), ["lon-edge-1"])
+        self.assertEqual(report["lon-edge-1"]["wake_over_1ms"], 1)
+        self.assertEqual(report["lon-edge-1"]["wake_ms"]["max"], 2.0)
+        self.assertEqual(report["lon-edge-1"]["woken_to_sent_ms"]["p50"], 0.1)
+        self.assertIn("1 over 1 ms", "\n".join(bench.edge_wake_lines(report)))
 
 
 class UnreadPayloads(unittest.TestCase):

@@ -91,9 +91,13 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir, True)
+        # The lab's state directory too: a running lab (`up slots=lon-edge-4`)
+        # holds lon-edge-4 out of edges() and the peer lists, and the render
+        # tests are of the default lab.
         for target, name, value in ((deploy, "SETTINGS_FILE", self.dir / "settings.json"),
                                     (deploy, "HUNT_FILE", self.dir / "ecmp-ports.json"),
-                                    (deploy.common, "ARTIFACT_DIR", self.dir)):
+                                    (deploy.common, "ARTIFACT_DIR", self.dir),
+                                    (lab, "WORK", self.dir / "edge-lab")):
             patcher = mock.patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -213,9 +217,11 @@ class Render(Base):
             self.assertEqual(args[name].count("--relay-primary-promoted"), 1, name)
         # distributor -> edge: the cache mesh of the site, and the fast plane
         # from the same two distributors (edge_fast_plane).
+        # The edges also peer the forwarder slot lon-dist-c (a peer that is
+        # down until it is taken into service).
         for edge in lab.edges("london"):
             self.assertEqual(values_of(args[edge], "--peer"),
-                             ["10.77.1.11:29101", "10.77.1.12:29101"], edge)
+                             ["10.77.1.11:29101", "10.77.1.12:29101", "10.77.1.13:29101"], edge)
             self.assertEqual({value_of(args[edge], "--relay-primary-id"),
                               value_of(args[edge], "--relay-secondary-id")},
                              {"lon-dist-a", "lon-dist-b"}, edge)
@@ -290,6 +296,300 @@ class Render(Base):
                          "5001,6001,7001")
         self.assertEqual(value_of(args["new-dist-a"], "--relay-demand-renditions"),
                          "5001,6001,7001")
+
+    def test_the_video_push_setting_reaches_every_forwarder_only_when_given(self):
+        """Wave 8 stage 3: cache_mesh_fast_plane_video_push renders
+        --cache-mesh-fast-plane-video-push on every forwarder (the slot
+        included) and on nothing else, only when given."""
+        flag = "--cache-mesh-fast-plane-video-push"
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render(['cache_mesh_fast_plane_video_push="all"'])
+        for name in ("lon-dist-a", "lon-dist-b", "lon-dist-c", "new-dist-a"):
+            self.assertEqual(value_of(args[name], flag), "all", name)
+            self.assertEqual(args[name].count(flag), 1, name)
+        for name in ("lon-edge-1", "contrib-lon"):
+            self.assertNotIn(flag, args[name], name)
+
+    def test_the_promotion_backoff_setting_reaches_the_failover_controllers(self):
+        """Wave 8 stage 3 (S6): relay_failover_promotion_backoff renders
+        --relay-failover-promotion-backoff on every node with a failover
+        controller (the edges), only when given."""
+        flag = "--relay-failover-promotion-backoff"
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render(["relay_failover_promotion_backoff=false"])
+        controllers = [name for name, node_args in args.items()
+                       if "--relay-failover-controller" in node_args]
+        self.assertIn("lon-edge-1", controllers)
+        for name, node_args in args.items():
+            if name in controllers:
+                self.assertEqual(value_of(node_args, flag), "false", name)
+            else:
+                self.assertNotIn(flag, node_args, name)
+
+    def test_the_phase_am_mesh_settings_reach_every_mesh_node(self):
+        """Wave 8 stage 5 (Phase AM 12, 13): each setting renders its av-mesh
+        flag on every node with a cache mesh, only when given."""
+        flags = ("--relay-lease-ranked", "--relay-ranked-parents",
+                 "--cache-mesh-subscribe-rank", "--cache-mesh-release-unranked-parents",
+                 "--cache-mesh-avoid-draining-parents", "--cache-mesh-warm-total-kbps")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "relay_lease_ranked=false", "relay_ranked_parents=false",
+            "cache_mesh_subscribe_rank=false", "cache_mesh_release_unranked_parents=false",
+            "cache_mesh_avoid_draining_parents=false", "cache_mesh_warm_total_kbps=0"])
+        meshed = 0
+        for name, node_args in args.items():
+            if "--mesh-bind" not in node_args:
+                for flag in flags:
+                    self.assertNotIn(flag, node_args, name)
+                continue
+            meshed += 1
+            for flag in flags[:-1]:
+                self.assertEqual(value_of(node_args, flag), "false", (name, flag))
+            self.assertEqual(value_of(node_args, "--cache-mesh-warm-total-kbps"), "0")
+        self.assertGreater(meshed, 0)
+        _program, _plan, args = self.render(["cache_mesh_warm_total_kbps=60000"])
+        self.assertEqual(value_of(args["lon-dist-a"], "--cache-mesh-warm-total-kbps"), "60000")
+
+    def test_the_review_settings_reach_their_nodes_only_when_given(self):
+        """Wave 8 review fixes: keepalive, datagram capacity and the region
+        head check on the nodes that serve UDP clients; the second parent's
+        warm-up on every mesh node; RLD1 to lease parents and the fallback
+        nice on relay nodes; the lease sockets' drain on forwarders."""
+        flags = {"--client-udp-keepalive-ms": "--client-udp-bind",
+                 "--client-udp-datagram-capacity": "--client-udp-bind",
+                 "--client-udp-region-head-check": "--client-udp-bind",
+                 "--cache-mesh-warm-second-parent": "--mesh-bind",
+                 "--relay-demand-report-lease-parents": "--relay-controlled-local",
+                 "--relay-class-fallback-nice": "--relay-controlled-local",
+                 "--relay-lease-drain-inbound": "--relay-lease-bind",
+                 "--assignment-udp-in-region": "--mesh-bind"}
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "client_udp_keepalive_ms=0", "client_udp_datagram_capacity=400000",
+            "client_udp_region_head_check=false", "cache_mesh_warm_second_parent=false",
+            "relay_demand_report_lease_parents=true", "relay_class_fallback_nice=5",
+            "relay_lease_drain_inbound=false", "assignment_udp_in_region=false"])
+        want = {"--assignment-udp-in-region": "false","--client-udp-keepalive-ms": "0", "--client-udp-datagram-capacity": "400000",
+                "--client-udp-region-head-check": "false",
+                "--cache-mesh-warm-second-parent": "false",
+                "--relay-demand-report-lease-parents": "true",
+                "--relay-class-fallback-nice": "5", "--relay-lease-drain-inbound": "false"}
+        seen = {flag: 0 for flag in flags}
+        for name, node_args in args.items():
+            for flag, where in flags.items():
+                if where in node_args:
+                    self.assertEqual(value_of(node_args, flag), want[flag], (name, flag))
+                    seen[flag] += 1
+                else:
+                    self.assertNotIn(flag, node_args, (name, flag))
+        for flag, count in seen.items():
+            self.assertGreater(count, 0, flag)
+        self.assertIn("--client-udp-datagram-capacity", args["lon-edge-1"])
+        self.assertIn("--relay-lease-drain-inbound", args["lon-dist-a"])
+
+    def test_the_phase_am_client_udp_settings_reach_the_nodes_that_serve_clients(self):
+        """Wave 8 stage 4 (Phase AM 8, 9, 11): each setting renders its av-mesh
+        flag on every node with --client-udp-bind, only when given."""
+        flags = ("--client-udp-egress-load", "--client-udp-admit-by-load",
+                 "--client-udp-drain-spread-ms", "--client-udp-region-hold-ms")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "client_udp_egress_load=false", "client_udp_admit_by_load=false",
+            "client_udp_drain_spread_ms=0", "client_udp_region_hold_ms=5000"])
+        served = 0
+        for name, node_args in args.items():
+            if "--client-udp-bind" not in node_args:
+                for flag in flags:
+                    self.assertNotIn(flag, node_args, name)
+                continue
+            served += 1
+            self.assertEqual(value_of(node_args, "--client-udp-egress-load"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-admit-by-load"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-drain-spread-ms"), "0")
+            self.assertEqual(value_of(node_args, "--client-udp-region-hold-ms"), "5000")
+        self.assertGreater(served, 0)
+
+    def test_the_wave8_client_udp_settings_reach_the_nodes_that_serve_clients(self):
+        """Wave 8 stage 2: each setting renders its av-mesh flag on every node
+        with --client-udp-bind, only when given."""
+        flags = ("--client-udp-repair-thread", "--client-udp-batched-admission",
+                 "--client-udp-resume-from-request", "--client-udp-fanout-inline-shard")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "client_udp_repair_thread=false", "client_udp_batched_admission=false",
+            "client_udp_resume_from_request=false", "client_udp_fanout_inline_shard=true"])
+        for name, node_args in args.items():
+            if "--client-udp-bind" not in node_args:
+                for flag in flags:
+                    self.assertNotIn(flag, node_args, name)
+                continue
+            self.assertEqual(value_of(node_args, "--client-udp-repair-thread"), "false", name)
+            self.assertEqual(value_of(node_args, "--client-udp-batched-admission"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-resume-from-request"), "false")
+            self.assertEqual(value_of(node_args, "--client-udp-fanout-inline-shard"), "true")
+        self.assertIn("--client-udp-repair-thread", args["lon-edge-1"])
+
+    def test_the_wave9_cold_start_settings_reach_their_nodes_only_when_given(self):
+        """Wave 9 (cold start): mlock_all, malloc_tune and prefault render on
+        every mesh node, client_udp_prompt_sender on the nodes that serve UDP
+        clients, each only when given."""
+        mesh = ("--mlock-all", "--malloc-tune", "--prefault")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in mesh + ("--client-udp-prompt-sender",):
+                self.assertNotIn(flag, node_args, name)
+        _program, _plan, args = self.render([
+            "mlock_all=false", "malloc_tune=false", "prefault=false",
+            "client_udp_prompt_sender=false"])
+        for name, node_args in args.items():
+            if "--mesh-bind" in node_args:
+                for flag in mesh:
+                    self.assertEqual(value_of(node_args, flag), "false", (name, flag))
+            if "--client-udp-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--client-udp-prompt-sender"), "false", name)
+            else:
+                self.assertNotIn("--client-udp-prompt-sender", node_args, name)
+        self.assertEqual(value_of(args["lon-edge-1"], "--client-udp-prompt-sender"), "false")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn("--relay-lease-descriptors", node_args, name)
+        _program, _plan, args = self.render(["relay_lease_descriptors=false"])
+        for name, node_args in args.items():
+            if "--relay-lease-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--relay-lease-descriptors"), "false", name)
+            else:
+                self.assertNotIn("--relay-lease-descriptors", node_args, name)
+        self.assertIn("--relay-lease-descriptors", args["lon-dist-a"])
+
+    def test_the_wave9_udp_assignment_setting_reaches_client_udp_nodes_only_when_given(self):
+        """Wave 9 B: client_udp_assign renders --client-udp-assign on the
+        nodes that serve UDP clients (where needletail-udp-client asks its
+        entry point over UDP), only when given."""
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn("--client-udp-assign", node_args, name)
+        _program, _plan, args = self.render(["client_udp_assign=false"])
+        for name, node_args in args.items():
+            if "--client-udp-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--client-udp-assign"), "false", name)
+            else:
+                self.assertNotIn("--client-udp-assign", node_args, name)
+        # The entry points (each region's first distributor) serve UDP
+        # clients: their client UDP port answers ASSIGN.
+        self.assertIn("--client-udp-bind", args["lon-dist-a"])
+
+    def test_the_wave9_4k_settings_reach_the_class_threads(self):
+        """Wave 9 D: every mesh node takes parts of up to 8 MiB (slot_kb
+        8192: the first frame of a 4K encode at 160-300 Mbit/s is 4.6-5.9 MB),
+        and relay_video_gro renders --relay-video-gro on the nodes with class
+        threads, only when given."""
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            if "--slot-kb" in node_args:
+                self.assertEqual(value_of(node_args, "--slot-kb"), "8192", name)
+            self.assertNotIn("--relay-video-gro", node_args, name)
+        _program, _plan, args = self.render(["relay_video_gro=false", "slot_kb=2048"])
+        seen = 0
+        for name, node_args in args.items():
+            if "--slot-kb" in node_args:
+                self.assertEqual(value_of(node_args, "--slot-kb"), "2048", name)
+            if value_of(node_args, "--relay-class-threads") == "true":
+                self.assertEqual(value_of(node_args, "--relay-video-gro"), "false", name)
+                seen += 1
+            else:
+                self.assertNotIn("--relay-video-gro", node_args, name)
+        self.assertGreater(seen, 0)
+        for given, rendered in (("window", "window"), ("4", "4")):
+            _program, _plan, args = self.render([f"cache_mesh_video_warm_parts={given}"])
+            for name, node_args in args.items():
+                if "--mesh-bind" in node_args:
+                    self.assertEqual(value_of(node_args, "--cache-mesh-video-warm-parts"),
+                                     rendered, name)
+                else:
+                    self.assertNotIn("--cache-mesh-video-warm-parts", node_args, name)
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn("--cache-mesh-video-warm-parts", node_args, name)
+
+    def test_the_wave9_scale_settings_reach_their_nodes_only_when_given(self):
+        """Wave 9 C: cpu_load, cpu_load_full_percent, assignment_move_headroom
+        and rebalance_target_permille render on every mesh node, and
+        client_udp_rebalance with its margin and interval on the nodes that
+        serve UDP clients, only when given."""
+        flags = ("--cpu-load", "--cpu-load-full-percent", "--assignment-move-headroom",
+                 "--rebalance-target-permille", "--client-udp-rebalance",
+                 "--client-udp-rebalance-margin-permille",
+                 "--client-udp-rebalance-interval-ms")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            for flag in flags:
+                self.assertNotIn(flag, node_args, (name, flag))
+        _program, _plan, args = self.render([
+            "cpu_load=false", "cpu_load_full_percent=70", "assignment_move_headroom=false",
+            "rebalance_target_permille=750", "client_udp_rebalance=false",
+            "client_udp_rebalance_margin_permille=100",
+            "client_udp_rebalance_interval_ms=2000"])
+        seen_udp = False
+        for name, node_args in args.items():
+            if "--mesh-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--cpu-load"), "false", name)
+                self.assertEqual(value_of(node_args, "--cpu-load-full-percent"), "70", name)
+                self.assertEqual(value_of(node_args, "--assignment-move-headroom"), "false", name)
+                self.assertEqual(value_of(node_args, "--rebalance-target-permille"), "750", name)
+            if "--client-udp-bind" in node_args:
+                seen_udp = True
+                self.assertEqual(value_of(node_args, "--client-udp-rebalance"), "false", name)
+                self.assertEqual(
+                    value_of(node_args, "--client-udp-rebalance-margin-permille"), "100", name)
+                self.assertEqual(
+                    value_of(node_args, "--client-udp-rebalance-interval-ms"), "2000", name)
+            else:
+                self.assertNotIn("--client-udp-rebalance", node_args, name)
+        self.assertTrue(seen_udp)
+
+    def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
+        """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of
+        lon-dist-a/b, rendered on its own path) takes every wave 7 setting
+        that the other forwarders take, with the same value, and none when
+        none is given."""
+        wave7 = ("--relay-audio-copies", "--cache-mesh-fast-plane-push",
+                 "--relay-demand-renditions", "--relay-compact-audio",
+                 "--client-udp-compact-short-header")
+        _program, _plan, args = self.render()
+        self.assertIn("lon-dist-c", args)
+        for flag in wave7:
+            self.assertNotIn(flag, args["lon-dist-c"], flag)
+        _program, _plan, args = self.render([
+            'relay_audio_copies="policy"', 'cache_mesh_fast_plane_push="secondary"',
+            'relay_demand_renditions="auto"', "relay_compact_audio=false",
+            "client_udp_compact_short_header=false"])
+        given = {flag: value_of(args["lon-dist-a"], flag) for flag in wave7
+                 if flag in args["lon-dist-a"]}
+        self.assertEqual(sorted(given), ["--cache-mesh-fast-plane-push",
+                                         "--client-udp-compact-short-header",
+                                         "--relay-demand-renditions"])
+        for name in ("lon-dist-b", "lon-dist-c", "new-dist-a"):
+            self.assertEqual({flag: value_of(args[name], flag) for flag in wave7
+                              if flag in args[name]}, given, name)
+            for flag in given:
+                self.assertEqual(args[name].count(flag), 1, (name, flag))
 
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
         program, plan, _args = self.render()
@@ -399,10 +699,20 @@ class Render(Base):
         edges = sorted(binds[edge] for edge in lab.edges("london"))
         distributors = sorted({peer for edge in lab.edges("london")
                                for peer in values_of(args[edge], "--peer")})
-        self.assertEqual(distributors, ["10.77.1.11:29101", "10.77.1.12:29101"])
+        # lon-dist-a, lon-dist-b and the forwarder slot lon-dist-c (the
+        # scale work: a slot is in every peer list from the first push).
+        self.assertEqual(distributors,
+                         ["10.77.1.11:29101", "10.77.1.12:29101", "10.77.1.13:29101"])
+        # Each distributor lists its site's edges; the slot lon-dist-c and its
+        # lease parents lon-dist-a and lon-dist-b also list each other
+        # (forwarder_slot_feeds_edges, AM 12), but never dist-a and dist-b.
+        pairs = {"10.77.1.11:29101": ["10.77.1.13:29101"],
+                 "10.77.1.12:29101": ["10.77.1.13:29101"],
+                 "10.77.1.13:29101": ["10.77.1.11:29101", "10.77.1.12:29101"]}
         for name, bind in binds.items():
             if bind in distributors:
-                self.assertEqual(sorted(values_of(args[name], "--peer")), edges, name)
+                self.assertEqual(sorted(values_of(args[name], "--peer")),
+                                 sorted(edges + pairs[bind]), name)
         with self.assertRaises(ValueError) as caught:
             self.render(['extra_edge_args=["--mesh-sync-on-publish","false"]'])
         self.assertIn("--mesh-sync-on-publish", str(caught.exception))
