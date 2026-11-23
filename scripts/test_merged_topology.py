@@ -495,6 +495,39 @@ class Render(Base):
         # clients: their client UDP port answers ASSIGN.
         self.assertIn("--client-udp-bind", args["lon-dist-a"])
 
+    def test_the_wave9_4k_settings_reach_the_class_threads(self):
+        """Wave 9 D: every mesh node takes parts of up to 8 MiB (slot_kb
+        8192: the first frame of a 4K encode at 160-300 Mbit/s is 4.6-5.9 MB),
+        and relay_video_gro renders --relay-video-gro on the nodes with class
+        threads, only when given."""
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            if "--slot-kb" in node_args:
+                self.assertEqual(value_of(node_args, "--slot-kb"), "8192", name)
+            self.assertNotIn("--relay-video-gro", node_args, name)
+        _program, _plan, args = self.render(["relay_video_gro=false", "slot_kb=2048"])
+        seen = 0
+        for name, node_args in args.items():
+            if "--slot-kb" in node_args:
+                self.assertEqual(value_of(node_args, "--slot-kb"), "2048", name)
+            if value_of(node_args, "--relay-class-threads") == "true":
+                self.assertEqual(value_of(node_args, "--relay-video-gro"), "false", name)
+                seen += 1
+            else:
+                self.assertNotIn("--relay-video-gro", node_args, name)
+        self.assertGreater(seen, 0)
+        for given, rendered in (("window", "window"), ("4", "4")):
+            _program, _plan, args = self.render([f"cache_mesh_video_warm_parts={given}"])
+            for name, node_args in args.items():
+                if "--mesh-bind" in node_args:
+                    self.assertEqual(value_of(node_args, "--cache-mesh-video-warm-parts"),
+                                     rendered, name)
+                else:
+                    self.assertNotIn("--cache-mesh-video-warm-parts", node_args, name)
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn("--cache-mesh-video-warm-parts", node_args, name)
+
     def test_the_wave9_scale_settings_reach_their_nodes_only_when_given(self):
         """Wave 9 C: cpu_load, cpu_load_full_percent, assignment_move_headroom
         and rebalance_target_permille render on every mesh node, and

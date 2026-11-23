@@ -91,7 +91,13 @@ DEFAULT_SETTINGS = {
     "part_ms": None,
     "parts_per_segment": None,
     "window_parts": None,
-    "slot_kb": 2048,
+    # The largest part a cache slot takes (av-mesh --slot-kb). A larger part
+    # is refused by every cache: never in a playlist, never answered to a
+    # NACK, and a UDP client gets it from the fast lane alone. Wave 9 D: 8 MiB
+    # (2048 before): the first frame of a 4K encode at 160-300 Mbit/s is
+    # 4.6-5.9 MB (the lab's 4K clips lost their loop point's parts 0-3 at
+    # every cache). A limit, not an allocation.
+    "slot_kb": 8192,
     # Playlists that a node holds at one time: the streams of a region for a
     # relay and a distributor. An edge holds one less for its readers.
     "playlist_slots": 16,
@@ -372,6 +378,16 @@ DEFAULT_SETTINGS = {
     # HTTPS 50 ms later, and takes the first answer.
     "client_udp_assign": None,
     "relay_lease_descriptors": None,
+    # Wave 9 D (4K): relay_video_gro, the av-mesh flag --relay-video-gro on
+    # the relays, distributors and edges with class threads (None: the
+    # binary's default, true): their video sockets take UDP GRO, so a
+    # parent's GSO burst is one receive message, not one per symbol.
+    "relay_video_gro": None,
+    # cache_mesh_video_warm_parts, av-mesh --cache-mesh-video-warm-parts on
+    # every mesh node (None: the binary's default, 0): the warm-up window a
+    # distributor sends a new copy of a video playlist, in parts, or
+    # "window" for the audio window as before.
+    "cache_mesh_video_warm_parts": None,
     # Wave 9 C (autoscaling and redistribution), each the av-mesh flag of the
     # same name (None: the binary's default). Every mesh node: cpu_load (an
     # edge's load_permille is at least its process's CPU over its CPUs, full
@@ -809,6 +825,7 @@ def class_plan(settings: dict) -> dict:
         "relay_repair_both_lanes": switch("relay_repair_both_lanes"),
         "relay_class_realtime": bool(settings.get("relay_class_realtime", True)),
         "relay_video_gso": switch("relay_video_gso"),
+        "relay_video_gro": settings.get("relay_video_gro"),
         "service_capabilities": switch("service_capabilities"),
         "client_udp_fast_lane": switch("client_udp_fast_lane"),
     }
@@ -2044,6 +2061,13 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
                 # 0 is the behaviour of before (no spread, no region move).
                 value = 0 if float(settings[key]) == 0 else whole(settings[key], key)
                 out += ["--" + key.replace("_", "-"), str(value)]
+    if "--mesh-bind" in node_args and settings.get("cache_mesh_video_warm_parts") is not None:
+        value = str(settings["cache_mesh_video_warm_parts"]).strip().lower()
+        if value != "window":
+            # 0 (no warm-up) is a value here.
+            value = "0" if value in ("0", "0.0") else str(
+                whole(settings["cache_mesh_video_warm_parts"], "cache_mesh_video_warm_parts"))
+        out += ["--cache-mesh-video-warm-parts", value]
     if "--mesh-bind" in node_args and settings.get("cache_mesh_warm_second_parent") is not None:
         out += ["--cache-mesh-warm-second-parent",
                 flag(bool(settings["cache_mesh_warm_second_parent"]))]
@@ -2132,6 +2156,8 @@ def mesh_class_args(node: dict, args: list[str], plan: dict) -> list[str]:
             out += ["--relay-class-realtime", flag(plan["relay_class_realtime"]),
                     "--relay-video-gso", flag(plan.get("relay_video_gso", True)),
                     "--relay-burst-copy-ms", str(plan.get("relay_burst_copy_ms", 0))]
+            if plan.get("relay_video_gro") is not None:
+                out += ["--relay-video-gro", flag(bool(plan["relay_video_gro"]))]
             cpus = relay_class_cpus(node, plan)
             if cpus:
                 out += ["--relay-class-cpus", cpus]
