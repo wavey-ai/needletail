@@ -1,39 +1,26 @@
 #!/usr/bin/env python3
-"""Keep a run's raw data in the archive (owner, 23 Nov: "make sure we keep all
-this data so we can create detailed reports and graphs").
+"""Keep a referee run's raw data in the archive (owner, 23 Nov: "make sure we
+keep all this data so we can create detailed reports and graphs"), through
+the shared writer scripts/run_archive.py (one manifest schema with the lead's
+runs; docs: needletail docs/run-archive.md).
 
-    archive-run.py collect-nodes RUN_ID        # before `down`: every node's journals
-    archive-run.py store RUN_ID --sessions a,b [--cost-usd X] [--heads repo=sha,...]
-                   [--settings FILE] [--log FILE ...] [--extra DIR ...]
+    archive-run.py create RUN_ID [--topology FILE] [--code PATH ...] [--settings FILE]
+    archive-run.py collect-nodes RUN_ID      # before `down`; marks the run collected
+    archive-run.py store RUN_ID --sessions a,b [--log FILE ...] [--extra DIR ...]
+    archive-run.py lab RUN_ID [--hours-billed H] [--cost-usd X] [--deleted]
+    archive-run.py finish RUN_ID [--status complete|failed] [--reason TEXT]
+    archive-run.py adopt RUN_ID --kind legacy [--note TEXT]   # an old directory, in place
 
-The archive is NEEDLETAIL_DATA_ROOT (default ~/needletail-data), one directory
-per run id (the lab's run id, e.g. cmpd5), never inside a repository or a
-build directory. Nothing in it is ever deleted: `store` copies with rsync and
-never removes, so it can be run again as a run goes on.
-
-  <run>/sessions/<session>/            the harness's run directory, verbatim:
-      <step>/meta.json                 step settings, lanes, impairment
-      <step>/<host>/<lane>.probe.csv   one line per unit received (latency_us,
-                                       complete_unix_us, unit number, ...)
-      <step>/<host>/<lane>.probe.json  the probe's summary and histograms
-      <step>/<host>/*.arrivals.csv     UDP client: every datagram's arrival
-      samplers/<node>.<t>.log          5 s: /proc/stat, /proc/net/dev, service
-                                       CPU ticks and RSS (raw)
-      samplers/<node>.stats.<t>.log    1 s: /api/stats, UDP errors, socket drops
-      samplers/<node>.stalls.<t>.json  the node's stop journal (/api/stalls)
-      samplers/hosts.<t>.txt           physical host of every node
-  <run>/sessions/<session>/samplers-csv/<node>.cpu-net.csv
-                                       the 5 s samples as CSV, units in names
-  <run>/sessions/<session>/samplers-csv/<node>.stats.ndjson
-                                       the 1 s samples as NDJSON
-  <run>/nodes/<node>/journal.txt.gz    every service's journal since boot
-  <run>/nodes/<node>/api-stats.json, api-stalls.json
-  <run>/lab/                           lab state, topology, settings, cost
-  <run>/logs/                          the run's driver logs
-  <run>/lead/                          files the lead's tools add (listed)
-  <run>/manifest.json                  run id, times, heads, settings, topology,
-                                       regions, listener counts per step, cost,
-                                       and every file with what it holds
+The run id is the lab's (e.g. cmpd5). Nothing is ever deleted or written over.
+Layout of a run:
+  sessions/<session>/...               the harness's run directory, verbatim
+      <step>/meta.json, <step>/<host>/<lane>.probe.csv|.probe.json|.join-NN.json,
+      *.arrivals.csv, *.uc.json, samplers/<node>.<t>.log, .stats.<t>.log,
+      .stalls.<t>.json, hosts.<t>.txt, session.json
+  sessions/<session>/samplers-csv/     the samplers as CSV / NDJSON, units in names
+  nodes/<node>/journal.<t>.txt.gz, api-stats.<t>.json, api-stalls.<t>.json
+  lab/state.<t>.json, lab/hosts.<t>.txt
+  logs/, extra/, lead/ (the lead's tools), topology/, manifest.json
 """
 from __future__ import annotations
 
@@ -43,68 +30,71 @@ import json
 import os
 import pathlib
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE.parent))
+import run_archive as ra  # noqa: E402
+
 RUNS = ROOT / "target" / "compare" / "runs"
-DATA = pathlib.Path(os.environ.get("NEEDLETAIL_DATA_ROOT", pathlib.Path.home() / "needletail-data"))
+TOOL = "compare-archive"
+SITE_REGION = {"lon": "gb-lon", "new": "us-east", "tok": "ap-northeast", "syd": "ap-southeast"}
 
 WHAT = [
-    (r"/meta\.json$", "step settings: lanes, listeners, impairment, renditions"),
-    (r"\.probe(-\d+)?\.csv$", "per-unit records of one listener: kind,index,latency_us,complete_unix_us,"
-                              "number,bytes,key,packets,server timestamps (us)"),
-    (r"\.probe(-\d+)?\.json$", "one listener's probe summary: counts, latency histograms (ms), first audio (ms)"),
-    (r"\.join-\d+\.json$", "one new listener's time to first audio (ms)"),
-    (r"\.arrivals\.csv$", "UDP client: every datagram's arrival (unix us)"),
-    (r"\.uc\.json$", "UDP client report: fast lane, FEC, repair counters"),
-    (r"\.udp\.json$", "UDP client report"),
-    (r"analysis\.json$", "cached analysis of the step (analysis_version inside)"),
-    (r"samplers/[^/]+\.stats\.\d+\.log$", "1 s raw: unix_s | UDP errors | socket drops | /api/stats JSON"),
-    (r"samplers/[^/]+\.stalls\.\d+\.json$", "the node's stop journal (/api/stalls)"),
-    (r"samplers/hosts\.\d+\.txt$", "physical Linode host of every node"),
-    (r"samplers/[^/]+\.\d+\.log$", "5 s raw: unix_s, /proc/stat cpu ticks, /proc/net/dev bytes, service ticks and RSS (kB)"),
-    (r"samplers-csv/.*\.cpu-net\.csv$", "5 s samples as CSV (ticks are USER_HZ 100/s; bytes cumulative)"),
-    (r"samplers-csv/.*\.stats\.ndjson$", "1 s samples as NDJSON"),
-    (r"session\.json$", "the session's steps, lanes, phases, times, LiveKit Cloud egress"),
-    (r"nodes/.*/journal\.txt\.gz$", "the node's service journals since boot (gzip)"),
-    (r"nodes/.*/api-.*\.json$", "the node's API at collection time"),
-    (r"lab/", "lab state, topology, settings, cost"),
-    (r"logs/", "driver logs of the run"),
-    (r"lead/", "files added by the lead's tools"),
-    (r"\.ndjson$", "hop journal or other per-event records"),
-    (r"errors\.log$", "the host's command errors for the step"),
-    (r"\.(ingest\.log|err|log)$", "a client's or tool's own log"),
-    (r"\.player\.json$", "Chrome player's report (WebRTC stats, latency)"),
+    (r"/meta\.json$", "step", "step settings: lanes, listeners, impairment, renditions", None),
+    (r"\.probe(-\d+)?\.csv$", "samples", "per-unit records of one listener",
+     {"latency_us": "us", "complete_unix_us": "us", "first_unix_us": "unit number (audio)",
+      "bytes": "bytes", "published_unix_us": "us", "cache_available_unix_us": "us",
+      "edge_committed_unix_us": "us", "reply_unix_us": "us"}),
+    (r"\.probe(-\d+)?\.json$", "summary", "one listener's probe summary and latency histograms", "ms"),
+    (r"\.join-\d+\.json$", "summary", "one new listener's time to first audio", "ms"),
+    (r"\.arrivals\.csv$", "samples", "UDP client: every datagram's arrival", "us"),
+    (r"\.(uc|udp)\.json$", "summary", "UDP client report: fast lane, FEC, repair counters", None),
+    (r"analysis\.json$", "analysis", "cached analysis of the step (analysis_version inside)", "ms"),
+    (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors | socket drops | /api/stats", None),
+    (r"samplers/[^/]+\.stalls\.\d+\.json$", "node-logs", "the node's stop journal (/api/stalls)", None),
+    (r"samplers/hosts\.\d+\.txt$", "lab", "physical Linode host of every node", None),
+    (r"samplers/[^/]+\.\d+\.log$", "samples", "5 s raw: /proc/stat ticks, /proc/net/dev bytes, service ticks, RSS", None),
+    (r"samplers-csv/.*\.cpu-net\.csv$", "samples", "5 s samples as CSV (ticks at 100/s, bytes cumulative)",
+     {"unix_s": "s", "*_ticks": "1/100 s", "*_bytes": "bytes", "*_rss_kb": "kB"}),
+    (r"samplers-csv/.*\.ndjson$", "samples", "1 s samples as NDJSON", {"unix_s": "s"}),
+    (r"session\.json$", "session", "the session's steps, times, LiveKit Cloud egress", None),
+    (r"\.player\.json$", "summary", "Chrome player's report (WebRTC stats, latency)", "ms"),
+    (r"\.ndjson$", "node-logs", "hop journal or other per-event records", "us"),
+    (r"(errors\.log|\.err|\.log)$", "log", "a host's, client's or tool's log", None),
 ]
 
 
-def describe(rel: str) -> str:
-    for pattern, text in WHAT:
-        if re.search(pattern, rel):
-            return text
-    return ""
+def describe(rel: str):
+    for pattern, kind, text, units in WHAT:
+        if re.search(pattern, "/" + rel):
+            return kind, text, units
+    return "raw", "", None
 
 
-LINK_DEST: pathlib.Path | None = None   # an earlier verbatim copy: identical files are hard-linked
-
-
-def rsync(src: pathlib.Path, dst: pathlib.Path, link: pathlib.Path | None = None) -> None:
-    (dst if src.is_dir() else dst.parent).mkdir(parents=True, exist_ok=True)
-    subprocess.run(["rsync", "-a"] + ([f"--link-dest={link}"] if link and link.is_dir() else []) + [f"{src}/" if src.is_dir() else str(src),
-                    f"{dst}/" if src.is_dir() else str(dst)], check=True)
+def add_tree_described(run: ra.RunArchive, src: pathlib.Path, dest: str) -> int:
+    """add_tree, then give each added file its kind, description and units."""
+    added = set(run.add_tree(src, dest, kind="raw")["added"])
+    with run._update() as manifest:
+        for entry in manifest["files"]:
+            if entry["path"] in added:
+                kind, text, units = describe(entry["path"])
+                entry.update(kind=kind, description=text, units=units)
+    return len(added)
 
 
 CPU = ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice"]
 
 
-def convert_samplers(session_dir: pathlib.Path) -> None:
-    out = session_dir / "samplers-csv"
-    out.mkdir(exist_ok=True)
-    for path in sorted((session_dir / "samplers").glob("*.log")):
+def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    for path in sorted(samplers.glob("*.log")):
         name = path.name
         if ".stats." in name:
             lines = []
@@ -112,7 +102,10 @@ def convert_samplers(session_dir: pathlib.Path) -> None:
                 parts = [p.strip() for p in line.split("|")]
                 if len(parts) < 2:
                     continue
-                rec: dict = {"unix_s": float(parts[0]) if parts[0] else None}
+                try:
+                    rec: dict = {"unix_s": float(parts[0])}
+                except ValueError:
+                    continue
                 for part in parts[1:]:
                     if part.startswith("sockdrops"):
                         rec["socket_drops_total"] = {k: int(v) for k, v in
@@ -142,8 +135,9 @@ def convert_samplers(session_dir: pathlib.Path) -> None:
                 fields = part.split()
                 if fields and fields[0] == "net":
                     for item in fields[1:]:
-                        iface, rx, tx = item.split(":")
-                        row[f"net_{iface}_rx_bytes"], row[f"net_{iface}_tx_bytes"] = rx, tx
+                        bits = item.split(":")
+                        if len(bits) == 3:
+                            row[f"net_{bits[0]}_rx_bytes"], row[f"net_{bits[0]}_tx_bytes"] = bits[1], bits[2]
                 elif len(fields) == 4:
                     service, _pid, ticks, rss = fields
                     row[f"{service}_cpu_ticks"], row[f"{service}_rss_kb"] = ticks, rss
@@ -151,23 +145,42 @@ def convert_samplers(session_dir: pathlib.Path) -> None:
                 if key not in columns:
                     columns.append(key)
             rows.append(row)
-        text = ",".join(columns) + "\n" + "".join(",".join(str(r.get(c, "")) for c in columns) + "\n" for r in rows)
-        (out / (name[:-4] + ".cpu-net.csv")).write_text(text)
+        (out / (name[:-4] + ".cpu-net.csv")).write_text(
+            ",".join(columns) + "\n" + "".join(",".join(str(r.get(c, "")) for c in columns) + "\n" for r in rows))
 
 
-def collect_nodes(run_id: str) -> None:
+def iso(unix: float | None) -> str | None:
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(unix)) if unix else None
+
+
+def cmd_create(args) -> None:
+    run = ra.RunArchive.create(args.run_id, "linode-lab", tool=TOOL,
+                               code_paths=[pathlib.Path(p).expanduser() for p in args.code or []],
+                               deploy_settings=json.loads(pathlib.Path(args.settings).read_text())
+                               if args.settings else None,
+                               topology=args.topology)
+    if args.settings:
+        run.add_file(args.settings, f"lab/{pathlib.Path(args.settings).name}", "settings", "deploy settings")
+    print(run.path)
+
+
+def cmd_collect(args) -> None:
     import small_mesh_common as common
     state = common.load_state()
-    if state.get("run_id") != run_id:
-        sys.exit(f"the active lab is {state.get('run_id')}, not {run_id}")
-    base = DATA / run_id / "nodes"
+    if state.get("run_id") != args.run_id:
+        sys.exit(f"the active lab is {state.get('run_id')}, not {args.run_id}")
+    run = ra.RunArchive.open(args.run_id, tool=TOOL)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    stage = pathlib.Path(tempfile.mkdtemp(prefix=f"collect-{args.run_id}-"))
+    failed = []
 
     def one(item: dict) -> None:
-        d = base / item["name"]
+        d = stage / item["name"]
         d.mkdir(parents=True, exist_ok=True)
-        text = common.ssh_text(item, "journalctl -b --no-pager -o short-iso-precise 2>/dev/null | tail -n 2000000",
-                               check=False, timeout=600)
-        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        text = common.ssh_text(item, "journalctl -b --no-pager -o short-iso-precise 2>/dev/null",
+                               check=False, timeout=900)
+        if not text.strip():
+            failed.append(item["name"])
         with gzip.open(d / f"journal.{stamp}.txt.gz", "wt") as f:
             f.write(text)
         if item["role"] in ("contributor", "distributor", "edge", "backbone"):
@@ -178,107 +191,152 @@ def collect_nodes(run_id: str) -> None:
                 (d / f"api-{api}.{stamp}.json").write_text(t + "\n")
 
     common.parallel(list(state["nodes"].values()), one)
-    lab = DATA / run_id / "lab"
-    lab.mkdir(parents=True, exist_ok=True)
-    (lab / f"state.{int(time.time())}.json").write_text(json.dumps(state, indent=1) + "\n")
+    for d in sorted(stage.iterdir()):
+        run.add_tree(d, f"nodes/{d.name}", kind="node-logs",
+                     description="the node's journal since boot (gzip) and its API at collection", move=True)
+    labdir = stage / "_lab"
+    labdir.mkdir()
+    (labdir / f"state.{stamp}.json").write_text(json.dumps(state, indent=1) + "\n")
     hosts = subprocess.run([sys.executable, str(ROOT / "scripts" / "linode-small-mesh-lab.py"), "hosts"],
                            capture_output=True, text=True, check=False)
-    (lab / f"hosts.{int(time.time())}.txt").write_text(hosts.stdout + hosts.stderr)
-    print(f"collected {len(state['nodes'])} nodes into {base}")
+    (labdir / f"hosts.{stamp}.txt").write_text(hosts.stdout + hosts.stderr)
+    run.add_tree(labdir, "lab", kind="lab", description="lab state and the physical host of every node", move=True)
+    shutil.rmtree(stage, ignore_errors=True)   # the staging dir, outside the archive, emptied by the moves
+    instances = [{"label": f"ntsm-{state['run_id']}-{n}", "id": v.get("id"), "plan": v.get("type"),
+                  "region": v.get("region"), "role": v.get("role")} for n, v in sorted(state["nodes"].items())]
+    run.set_lab(run_tag=f"needletail-small-mesh-{state['run_id']}", instances=instances,
+                created_at_utc=iso(state.get("created_unix")))
+    run.mark_collected(not failed, failed)
+    print(f"collected {len(state['nodes'])} nodes; missing: {failed or 'none'}")
 
 
-def store(args) -> None:
-    run = DATA / args.run_id
-    run.mkdir(parents=True, exist_ok=True)
-    sessions = [s for s in args.sessions.split(",") if s]
-    for name in sessions:
-        rsync(RUNS / name, run / "sessions" / name,
-              pathlib.Path(args.link_dest) / name if args.link_dest else None)
-        if (run / "sessions" / name / "samplers").is_dir():
-            convert_samplers(run / "sessions" / name)
-    for path in args.log or []:
-        rsync(pathlib.Path(path), run / "logs" / pathlib.Path(path).name)
-    for path in args.extra or []:
-        p = pathlib.Path(path)
-        rsync(p, run / "extra" / p.name)
-    lab = run / "lab"
-    lab.mkdir(exist_ok=True)
-    if args.settings:
-        rsync(pathlib.Path(args.settings), lab / pathlib.Path(args.settings).name)
-    removed = ROOT / "target" / "linode-qualification" / f"small-mesh-lab-{args.run_id}.removed.json"
-    for p in (removed, ROOT / "target" / "linode-qualification" / f"small-mesh-watchdog-{args.run_id}.log"):
-        if p.is_file():
-            rsync(p, lab / p.name)
-    manifest_path = run / "manifest.json"
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
-    states = sorted(lab.glob("state.*.json")) + ([lab / removed.name] if (lab / removed.name).is_file() else [])
-    topology = {}
-    if states:
-        st = json.loads(states[-1].read_text())
-        topology = {n: {k: v.get(k) for k in ("role", "region", "type", "site", "host_uuid", "id")}
-                    for n, v in (st.get("nodes") or {}).items()}
-    steps, started, ended = [], [], []
-    for name in sessions:
-        sj = run / "sessions" / name / "session.json"
-        for record in (json.loads(sj.read_text()) if sj.is_file() else []):
-            started.append(record.get("started_unix"))
-            ended.append(record.get("ended_unix"))
-        for meta in sorted((run / "sessions" / name).glob("*/meta.json")):
-            m = json.loads(meta.read_text())
-            per_lane: dict = {}
-            for report in meta.parent.glob("*/*.json"):
+def cmd_store(args) -> None:
+    run = ra.RunArchive.open(args.run_id, tool=TOOL)
+    for name in [s for s in args.sessions.split(",") if s]:
+        src = RUNS / name
+        n = add_tree_described(run, src, f"sessions/{name}")
+        if (src / "samplers").is_dir():
+            stage = pathlib.Path(tempfile.mkdtemp(prefix=f"samplers-{name}-"))
+            convert_samplers(src / "samplers", stage)
+            add_tree_described(run, stage, f"sessions/{name}/samplers-csv")
+            shutil.rmtree(stage, ignore_errors=True)
+        steps = 0
+        for meta_path in sorted(src.glob("*/meta.json")):
+            meta = json.loads(meta_path.read_text())
+            per: dict = {}
+            for report in meta_path.parent.glob("*/*.json"):
                 hit = re.match(r"(.+?)\.(probe(-\d+)?|join-\d+)\.json$", report.name)
                 if hit:
-                    per_lane[hit.group(1)] = per_lane.get(hit.group(1), 0) + 1
-            steps.append({"session": name, "step": meta.parent.name, "started_unix_s": m.get("started_unix"),
-                          "seconds": m.get("seconds"), "lanes": m.get("lanes"), "netem": m.get("netem"),
-                          "listeners_per_lane": per_lane})
-    files = []
-    for p in sorted(run.rglob("*")):
-        if p.is_file() and p.name != "manifest.json":
-            rel = str(p.relative_to(run))
-            files.append({"path": rel, "bytes": p.stat().st_size, "holds": describe("/" + rel)})
-    heads = dict(manifest.get("code_heads") or {})
-    for item in (args.heads or "").split(","):
-        if "=" in item:
-            k, v = item.split("=", 1)
-            heads[k] = v
-    manifest.update({
-        "run_id": args.run_id, "archive_root": str(DATA), "written_unix_s": time.time(),
-        "sessions": sorted(set((manifest.get("sessions") or []) + sessions)),
-        "started_unix_s": min([t for t in started if t] or [None]) if any(started) else manifest.get("started_unix_s"),
-        "ended_unix_s": max([t for t in ended if t] or [None]) if any(ended) else manifest.get("ended_unix_s"),
-        "code_heads": heads,
-        "deploy_settings_file": args.settings and str(pathlib.Path("lab") / pathlib.Path(args.settings).name),
-        "topology": topology or manifest.get("topology"),
-        "regions": sorted({v.get("region") for v in (topology or {}).values() if v.get("region")}),
-        "steps": steps,
-        "lab_cost_usd": args.cost_usd if args.cost_usd is not None else manifest.get("lab_cost_usd"),
-        "files": files,
-    })
-    manifest_path.write_text(json.dumps(manifest, indent=1) + "\n")
-    print(f"{run}: {len(files)} files, {sum(f['bytes'] for f in files) / 1e9:.2f} GB")
+                    region = SITE_REGION.get(report.parent.name.split("-")[0], report.parent.name)
+                    per.setdefault(hit.group(1), {}).setdefault(region, 0)
+                    per[hit.group(1)][region] += 1
+            for lane, by_region in sorted(per.items()):
+                run.record_step(f"{name}/{meta_path.parent.name}", lane, sum(by_region.values()), by_region, 1,
+                                at_utc=iso(meta.get("started_unix")), seconds=meta.get("seconds"),
+                                netem=meta.get("netem"))
+                steps += 1
+        print(f"{name}: {n} files, {steps} listener steps")
+    for path in args.log or []:
+        run.add_file(path, f"logs/{pathlib.Path(path).name}", "log", "driver log of the run")
+    for path in args.extra or []:
+        p = pathlib.Path(path)
+        if p.is_dir():
+            add_tree_described(run, p, f"extra/{p.name}")
+        else:
+            kind, text, units = describe(p.name)
+            run.add_file(p, f"extra/{p.name}", kind, text, units=units)
+
+
+def cmd_lab(args) -> None:
+    run = ra.RunArchive.open(args.run_id, tool=TOOL)
+    lab = run.set_lab(hours_billed=args.hours_billed, cost_usd=args.cost_usd,
+                      deleted_at_utc=ra.utc_now() if args.deleted else None)
+    print(json.dumps({k: v for k, v in lab.items() if k != "instances"}))
+
+
+def cmd_finish(args) -> None:
+    print(ra.RunArchive.open(args.run_id, tool=TOOL).finish(args.status, args.reason))
+
+
+def cmd_adopt(args) -> None:
+    """Give a directory made before the shared writer (23 Nov) the shared
+    manifest, in place: every file listed with its hash. An earlier manifest
+    of this tool's first format is kept, renamed manifest.archive-run-v0.json."""
+    path = ra._check_run_id(args.run_id, ra.data_root())
+    old = path / ra.MANIFEST
+    v0 = path / "manifest.archive-run-v0.json"
+    data = {}
+    if old.is_file():
+        data = json.loads(old.read_text())
+        if data.get("schema_version"):
+            sys.exit(f"{args.run_id} already has a shared manifest")
+        if v0.exists():
+            sys.exit(f"{v0} exists")
+        old.rename(v0)
+    run = ra.RunArchive(args.run_id)
+    run.tool = TOOL
+    with run._locked():
+        now = ra.utc_now()
+        argv = ra.scrub_argv(sys.argv)
+        manifest = ra._manifest_skeleton(args.run_id, args.kind)
+        manifest.update(started_at_utc=iso(data.get("started_unix_s")) or now,
+                        ended_at_utc=iso(data.get("ended_unix_s")) or now,
+                        tool=TOOL, command=argv, host=socket.gethostname())
+        manifest["invocations"].append({"tool": TOOL, "command": argv, "host": manifest["host"],
+                                        "pid": os.getpid(), "at_utc": now, "via": "adopt"})
+        manifest["regions"] = data.get("regions") or []
+        manifest["topology"] = {"file": None, "nodes": [
+            {"name": n, "plan": v.get("type"), "region": v.get("region"), "role": v.get("role"),
+             "site": v.get("site")} for n, v in sorted((data.get("topology") or {}).items())]}
+        manifest["lab"]["cost_usd"] = data.get("lab_cost_usd")
+        manifest["lab"]["run_tag"] = f"needletail-small-mesh-{args.run_id}" if data.get("topology") else None
+        for s in data.get("steps") or []:
+            for lane, count in sorted((s.get("listeners_per_lane") or {}).items()):
+                manifest["listener_steps"].append({
+                    "step": f"{s['session']}/{s['step']}", "lane": lane, "listeners_total": count,
+                    "listeners_by_region": {}, "paths_per_listener": 1,
+                    "at_utc": iso(s.get("started_unix_s")), "seconds": s.get("seconds")})
+        for p in sorted(path.rglob("*")):
+            if not p.is_file() or p.name in (ra.MANIFEST, ra.LOCK):
+                continue
+            rel = p.relative_to(path).as_posix()
+            size, digest = ra._hash_file(p, ra.HASH_LIMIT_BYTES)
+            kind, text, units = describe(rel)
+            if rel == v0.name:
+                kind, text = "manifest", "this run's manifest in archive-run.py's first format (23 Nov)"
+            manifest["files"].append(ra.RunArchive._entry(rel, size, digest, kind, text, units, str(p), TOOL))
+        manifest["collected"] = {"complete": True, "at_utc": now, "missing": []}
+        manifest["status"] = "complete"
+        manifest["status_reason"] = "; ".join(x for x in (
+            "imported after the lab was gone: node journals were not collected then",
+            data.get("lab_cost_note"), data.get("note"), data.get("what"), args.note) if x)
+        run._write(manifest)
+    print(f"{args.run_id}: {len(manifest['files'])} files")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="command", required=True)
+    c = sub.add_parser("create")
+    c.add_argument("run_id"); c.add_argument("--topology"); c.add_argument("--code", action="append")
+    c.add_argument("--settings")
     c = sub.add_parser("collect-nodes")
     c.add_argument("run_id")
-    s = sub.add_parser("store")
-    s.add_argument("run_id")
-    s.add_argument("--sessions", default="")
-    s.add_argument("--cost-usd", type=float)
-    s.add_argument("--heads", default="")
-    s.add_argument("--settings")
-    s.add_argument("--log", action="append")
-    s.add_argument("--extra", action="append")
-    s.add_argument("--link-dest", help="a verbatim copy of target/compare/runs: identical files are hard-linked")
+    c = sub.add_parser("store")
+    c.add_argument("run_id"); c.add_argument("--sessions", default="")
+    c.add_argument("--log", action="append"); c.add_argument("--extra", action="append")
+    c = sub.add_parser("lab")
+    c.add_argument("run_id"); c.add_argument("--hours-billed", type=float)
+    c.add_argument("--cost-usd", type=float); c.add_argument("--deleted", action="store_true")
+    c = sub.add_parser("finish")
+    c.add_argument("run_id"); c.add_argument("--status", default="complete", choices=["complete", "failed"])
+    c.add_argument("--reason")
+    c = sub.add_parser("adopt")
+    c.add_argument("run_id"); c.add_argument("--kind", default="legacy", choices=ra.KINDS)
+    c.add_argument("--note")
     args = ap.parse_args()
-    if args.command == "collect-nodes":
-        collect_nodes(args.run_id)
-    else:
-        store(args)
+    {"create": cmd_create, "collect-nodes": cmd_collect, "store": cmd_store, "lab": cmd_lab,
+     "finish": cmd_finish, "adopt": cmd_adopt}[args.command](args)
 
 
 if __name__ == "__main__":
