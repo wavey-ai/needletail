@@ -2,10 +2,13 @@
 """Tests of hunt-report.py (D-hunt.md 7.4, 7.5), offline on synthetic hunt
 records: the join of a silence to its cause in the fixed order and the
 unexplained rest; nodes grouped by physical host and their stops at one
-instant against chance; one synthetic input for each rule R1 to R6; a
-whole report from a synthetic run; and, when the referee's wave 7 files
-are on this machine, E1's table of edge commit gaps and the first of two
-edges per region.
+instant against chance (a stop of a whole node counted once); one
+synthetic input for each rule R1 to R6, R1 the same whatever the nodes are
+called; a run whose /api/hops pull fell inside a session is refused; a
+node with unpinned tick threads has its scope marked untrusted; the first
+of two edges for every pair of a region's edges; a whole report from a
+synthetic run; and, when the referee's wave 7 files are on this machine,
+E1's table of edge commit gaps and the first of two edges per region.
 python3 -m unittest test_hunt_report.py (in scripts/compare)"""
 
 from __future__ import annotations
@@ -151,8 +154,24 @@ class Hosts(unittest.TestCase):
         self.assertEqual(pairs[("lon-dist-a", "lon-dist-b")]["observed"], 0)
         self.assertFalse(pairs[("lon-dist-a", "lon-dist-b")]["above_chance"])
         self.assertTrue(found["above_chance"])
-        # Five stops each in 600 s: 0.004 coincidences within 50 ms by chance.
-        self.assertAlmostEqual(pairs[("lon-edge-1", "lon-edge-2")]["expected"], 0.0042, places=3)
+        # Five stops of 40 ms each in 600 s: 0.0075 coincidences within
+        # 50 ms by chance (5 x 5 x (100 + 40 + 40) ms / 600 s).
+        self.assertAlmostEqual(pairs[("lon-edge-1", "lon-edge-2")]["expected"], 0.0075, places=4)
+
+    def test_a_stop_of_a_whole_node_is_one_stop(self):
+        """Two co-hosted 2-CPU nodes stop once together: one tick per CPU
+        each. That is one coincidence, not above chance."""
+        at = T + 300_000_000
+        stops = {"a": sr.stops([tick(0, at, 40 * MS), tick(1, at, 40 * MS)]),
+                 "b": sr.stops([tick(0, at + 4 * MS, 40 * MS), tick(1, at + 4 * MS, 40 * MS)])}
+        self.assertEqual(stops["a"], [(at - 40 * MS, at)])
+        found = report.simultaneity(stops, [("a", "b")], 600)[0]
+        self.assertEqual(found["observed"], 1)
+        self.assertFalse(found["above_chance"])
+        # Overlapping ticks of different CPUs merge; apart ones stay two.
+        merged = sr.stops([tick(0, at, 40 * MS), tick(1, at + 30 * MS, 40 * MS),
+                           tick(0, at + 500 * MS, 25 * MS)])
+        self.assertEqual(merged, [(at - 40 * MS, at + 30 * MS), (at + 475 * MS, at + 500 * MS)])
 
 
 class Rules(unittest.TestCase):
@@ -165,9 +184,12 @@ class Rules(unittest.TestCase):
         frozen = {name: 10.0 for name in names}
         frozen["n3"] = 400.0
         fires = report.rule_r1(self.figures(frozen, {"n3": 30.0, "n1": 1.0},
-                                            {"n3": 50.0, "n0": 2.0}), {}, [], {})
+                                            {"n3": 50.0, "n1": 2.0}), {}, [], {})
         self.assertTrue(fires["fires"], fires["line"])
-        self.assertEqual(fires["worst"], ["n3", "n0"])
+        # The quarter is n3 and one of the seven tied at 10 ms.
+        self.assertEqual(fires["worst"], ["n3"])
+        self.assertEqual(fires["tied"], ["n0", "n1", "n2", "n4", "n5", "n6", "n7"])
+        self.assertIn("n3 and 1 of n0, n1", fires["line"])
         spread = report.rule_r1(self.figures({name: 10.0 for name in names}, {"n3": 30.0},
                                              {"n3": 50.0}), {}, [], {})
         self.assertFalse(spread["fires"])
@@ -182,6 +204,25 @@ class Rules(unittest.TestCase):
             {"n3": (40.0, 35.0)})
         self.assertIn("platform matter", same_host["line"])
         self.assertIn("host rule of 2.10", same_host["line"])
+
+    def test_r1_does_not_depend_on_names(self):
+        """The review's case: n7 is the bad instance (soak F 30, session F
+        50, 400 frozen ms); one other node has soak F 1 and session F 0.
+        Whatever that node is called, the verdict is the same."""
+        names = [f"n{index}" for index in range(8)]
+        verdicts = set()
+        for other in names[:-1]:
+            frozen = {name: 0.0 for name in names}
+            frozen["n7"] = 400.0
+            figures = self.figures(frozen, {"n7": 30.0, other: 1.0}, {"n7": 50.0})
+            verdicts.add(report.rule_r1(figures, {}, [], {})["fires"])
+        self.assertEqual(verdicts, {False})
+        # Nodes of equal value share the worst rank of their tie, and a node
+        # at 0 is in no worst set.
+        ranked = report.ranks({"a": 5.0, "b": 0.0, "c": 0.0, "d": 2.0})
+        self.assertEqual(ranked, {"a": 1, "b": 4, "c": 4, "d": 2})
+        self.assertEqual(report.worst_quarter({"a": 0.0, "b": 0.0, "c": 0.0, "d": 0.0})["worst"],
+                         [])
 
     def touch_run(self, fresh_stops: dict[str, int], s1_f: dict[str, float]) -> Builder:
         nodes = {"lon-bare-1": {"role": "bare"}, "lon-bare-2": {"role": "bare"},
@@ -257,17 +298,22 @@ class Rules(unittest.TestCase):
     def test_r5_the_guest_kernel(self):
         built = Builder({"lon-edge-1": {"role": "edge"}}, [])
         try:
+            # A sec line is written at the end of the second it covers: the
+            # starved tick at 1.5 s is in the line of 2 s (kernel, with
+            # compaction), not in the line of 1 s; the tick at 5.5 s is in
+            # the line of 6 s (none), not in the kernel line of 5 s.
             built.node("lon-edge-1", "watch.ndjson", [
-                sec(0, T + 1_000_000, compact_stall=3, allocstall=0),
-                sec(1, T + 1_000_000, system=80),
+                sec(0, T + 1_000_000), sec(1, T + 1_000_000),
+                sec(0, T + 2_000_000, compact_stall=3, allocstall=0),
+                sec(1, T + 2_000_000, system=80),
                 tick(1, T + 1_500_000, 30 * MS, run_delay_us=29_000),
-                sec(1, T + 5_000_000, system=80),
+                sec(0, T + 5_000_000, compact_stall=3), sec(1, T + 5_000_000, system=80),
                 tick(1, T + 5_500_000, 30 * MS, run_delay_us=29_000)])
             fires = report.rule_r5(built.run())
         finally:
             built.close()
         self.assertTrue(fires["fires"])
-        self.assertEqual(len(fires["events"]), 1)
+        self.assertEqual([event["t_us"] for event in fires["events"]], [T + 1_500_000])
 
     def test_r6_nothing(self):
         def run_with(stop_ms: float):
@@ -284,6 +330,67 @@ class Rules(unittest.TestCase):
         self.assertTrue(quiet["fires"], quiet["line"])
         loud = run_with(400)
         self.assertFalse(loud["fires"])
+
+
+class Guards(unittest.TestCase):
+    def test_a_hops_pull_inside_a_session_is_refused(self):
+        built = Builder({"lon-edge-1": {"role": "edge"}},
+                        [period("S1", "session", 0, 70), period("S2", "session", 100, 170)],
+                        sessions=[{"name": "S1", "hops_pull": {"from_unix": S + 75,
+                                                               "to_unix": S + 80}},
+                                  {"name": "S2", "hops_pull": {"from_unix": S + 160,
+                                                               "to_unix": S + 190}}])
+        try:
+            run = built.run()
+            self.assertEqual(len(report.hops_inside_sessions(run)), 1)
+            with self.assertRaises(report.Refused) as refused:
+                report.build(run, [8])
+        finally:
+            built.close()
+        self.assertIn("after S2", str(refused.exception))
+        self.assertIn("inside S2", str(refused.exception))
+
+    def test_unpinned_tick_threads_make_the_scope_untrusted(self):
+        built = Builder({"lon-edge-1": {"role": "edge"}, "lon-edge-2": {"role": "edge"}},
+                        [period("soak-1", "soak", 0, 60), period("S1", "session", 100, 170)])
+        try:
+            for name in ("lon-edge-1", "lon-edge-2"):
+                built.node(name, "watch.ndjson", seconds_of(T, T + 200 * 1_000_000)
+                           + [tick(0, T + 120_000_000, 30 * MS)])
+            built.node("lon-edge-1", "mesh-local.ndjson", [
+                {"unix": S + 1, "body": {"stall": {"tick_threads": 2, "tick_pinned": 2}}},
+                {"unix": S + 6, "body": {"stall": {"tick_threads": 2, "tick_pinned": 1}}}])
+            built.node("lon-edge-2", "mesh-local.ndjson", [
+                {"unix": S + 1, "body": {"stall": {"tick_threads": 2, "tick_pinned": 2}}}])
+            rows = report.node_periods(built.run())
+        finally:
+            built.close()
+        trusted = {(row["node"], row["scope_trusted"]) for row in rows}
+        self.assertEqual(trusted, {("lon-edge-1", False), ("lon-edge-2", True)})
+        # The time between the soak and the session is a period of its own.
+        periods = [row["period"] for row in rows if row["node"] == "lon-edge-1"]
+        self.assertEqual(periods, ["soak-1", "after soak-1", "S1", "run"])
+
+    def test_the_first_of_two_for_every_pair_of_edges(self):
+        """Three edges of a region in the probes: each pair is reported; a
+        stop of one edge is hidden in the pairs that hold another."""
+        published = {part: T + part * MS for part in range(100)}
+        commits = {edge: {part: at + 300 for part, at in published.items()}
+                   for edge in ("lon-edge-1", "lon-edge-2", "lon-edge-3")}
+        for part in range(40, 60):
+            commits["lon-edge-1"][part] = T + 60 * MS + 300
+        pairs = report.first_of_pairs(commits, published, None, None)
+        self.assertEqual(sorted(pairs["lon"]), ["lon-edge-1+lon-edge-2", "lon-edge-1+lon-edge-3",
+                                                "lon-edge-2+lon-edge-3"])
+        self.assertEqual({pair: figure["max_ms"] for pair, figure in pairs["lon"].items()},
+                         {"lon-edge-1+lon-edge-2": 0.3, "lon-edge-1+lon-edge-3": 0.3,
+                          "lon-edge-2+lon-edge-3": 0.3})
+        self.assertEqual({pair: figure["parts"] for pair, figure in pairs["lon"].items()},
+                         {pair: 100 for pair in pairs["lon"]})
+        # One edge alone has no pair.
+        alone = report.first_of_pairs({"tok-edge-1": commits["lon-edge-1"]}, published,
+                                         None, None)
+        self.assertEqual(alone, {"tok": {}})
 
 
 class WholeReport(unittest.TestCase):

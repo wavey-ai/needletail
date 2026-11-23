@@ -164,6 +164,19 @@ def stopped_ticks(events: list[dict], min_ms: float = STOP_MS) -> list[dict]:
             if tick_cause(event) == "stopped" and int(event.get("dur_us") or 0) >= min_ms * 1000]
 
 
+def stops(events: list[dict], min_ms: float = STOP_MS) -> list[tuple[int, int]]:
+    """A node's stops: the union of the intervals of its stopped ticks of
+    `min_ms` or more, over all its CPUs (a stop of the whole node is one
+    tick per CPU, and one stop). [(start_us, end_us)], oldest first."""
+    merged: list[list[int]] = []
+    for begin, end in sorted(interval(event) for event in stopped_ticks(events, min_ms)):
+        if merged and begin <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([begin, end])
+    return [(begin, end) for begin, end in merged]
+
+
 def tick_scope(event: dict, events: list[dict], cpus: list[int] | None = None) -> str:
     """`all` when every other CPU has a stopped tick over half of this one
     or more, else `one`: the journal's own word, else the rule of 2.1."""
@@ -327,7 +340,14 @@ def source_sides(sender: list[dict], contributor: list[dict], source_watch: list
     """The sides of a delay before publish, in the order they are asked:
     a node that was not run (listed apart), the sender's pacer or encode,
     the link (an epoch arrived late at the contributor with the sender on
-    time), the contributor's read and its publish."""
+    time), the contributor's read and its publish.
+
+    A departure from the order of D-hunt.md 7.4.4 (the sender's `late`
+    lines first): a stopped source host or contributor comes before the
+    sender's lines. A host that is not run makes the pacer wake late too,
+    so its `late` lines are the stop's effect, not a second cause; 3.1
+    lists such episodes apart, and they can only be listed apart if they
+    are asked for first."""
     sides: list[tuple[str, list[dict]]] = [
         (f"stopped ({source_name})", stopped_ticks(source_watch, 0)),
         (f"stopped ({contributor_name})", stopped_ticks(contributor, 0))]

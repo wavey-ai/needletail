@@ -12,37 +12,48 @@ replaced instance's records under before-replace/), sessions/<S>/<host>/
 (the probes, the sender's lateness journal and source.start).
 
 It prints, in this order:
- 1. per node and period (soak rounds, sessions, the whole run): stops of
-    20 ms and of 100 ms or more by scope and cause, F (stopped ms a node-
-    minute, the hunt's measure) from the watch and from the service's own
-    journal (they must agree within 10 %), starved ms, steal, the share of
-    seconds that were mostly the guest kernel's;
- 2. by physical host: the nodes that share one, and their stops within
-    50 ms of each other against the count expected by chance;
+ 1. per node and period (soak rounds, sessions, the time between two of
+    them, the whole run): stops of 20 ms and of 100 ms or more by scope and
+    cause, F (stopped ms a node-minute, the hunt's measure) from the watch
+    and from the service's own journal (they must agree within 10 %),
+    starved ms, steal, the share of seconds that were mostly the guest
+    kernel's; a node whose service could not pin every tick thread
+    (`tick_pinned` below `tick_threads` in its /api/mesh/local) has its
+    scope marked untrusted (D-hunt.md 4);
+ 2. by physical host: the nodes that share one, and their stops (a node's
+    stopped ticks merged, all CPUs together) within 50 ms of each other
+    against the count expected by chance;
  3. the share of all frozen time on the worst quarter of the instances,
-    and each node's rank by soak against its rank by session;
+    and each node's rank by soak against its rank by session (a node with
+    nothing is in no worst set, and a tie takes the worst rank of the tie:
+    names never decide);
  4. per session and listener, every arrival silence of 3 ms or more (two
     unit spacings on the 2.5 ms lane) joined, in this order, to a node that
     was not run (the source host, the contributor), the sender's pacer or
     encode, the link, the contributor's read, its publish, the stall
     events of the nodes on the listener's path and the listener host's
     watch; the count and summed ms per cause and the unexplained rest;
- 5. per region, the first of two edges per part (publish to commit) and
-    each edge's commit gaps of 100 ms or more;
+ 5. per region and pair of edges seen, the first of the two per part
+    (publish to commit: what a listener held on those two gets) and each
+    edge's commit gaps of 100 ms or more;
  6. the null of every probe (scripts/compare/null-window.py, the referee's
     arithmetic), on the listener's stamp, the kernel's and publish to
     kernel;
  7. per session, E3's episodes before publish (0.5, 1 and 2 ms over the
     median) with the side of each, and the 2.5 ms lane's split (7.7);
  8. one line per rule R1 to R6, the wave 7 control, and 3.1's acceptance.
-Exit 0: a report.
+It refuses (exit 1, no report) a run whose /api/hops pull fell inside a
+session (D-hunt.md 2.5 and 4: the pull first-touches about 100 MB on the
+node). Exit 0: a report.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import importlib.util
+import itertools
 import json
 import math
 import pathlib
@@ -149,6 +160,39 @@ class Run:
     def arms(self) -> dict:
         return self.record.get("arms") or {}
 
+    def unpinned(self) -> dict[str, str]:
+        """{node: "pinned of threads"} for the nodes whose service ran a
+        tick thread it could not pin, at any poll of /api/mesh/local."""
+        out = {}
+        for name in self.mesh():
+            for item in sr.read_ndjson(self.node_dir(name) / "mesh-local.ndjson"):
+                stall = (item.get("body") or {}).get("stall") or {}
+                threads, pinned = stall.get("tick_threads"), stall.get("tick_pinned")
+                if threads is not None and pinned is not None and int(pinned) < int(threads):
+                    out[name] = f"{pinned} of {threads}"
+        return out
+
+
+class Refused(Exception):
+    """The run's record breaks a rule of the hunt: no report is made of it."""
+
+
+def hops_inside_sessions(run: Run) -> list[str]:
+    """Every /api/hops pull whose time meets a session's (D-hunt.md 4)."""
+    sessions = run.periods_of("session")
+    out = []
+    for item in run.record.get("sessions") or []:
+        pull = item.get("hops_pull") or {}
+        if pull.get("from_unix") is None:
+            continue
+        start = int(pull["from_unix"] * 1e6)
+        end = int((pull.get("to_unix") or pull["from_unix"]) * 1e6)
+        for name, begin, finish in sessions:
+            if start <= finish and end >= begin:
+                out.append(f"the /api/hops pull after {item.get('name')} "
+                           f"({pull['from_unix']} to {pull.get('to_unix')}) is inside {name}")
+    return out
+
 
 def f_over(events: list[dict], spans: list[tuple[int, int]], cpus: int) -> float | None:
     """F (stopped ms a node-minute) over several periods together."""
@@ -170,13 +214,21 @@ def agree(a: float | None, b: float | None) -> bool | None:
     return abs(a - b) <= AGREE_SHARE * max(a, b)
 
 
+def between(periods: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """The time between two consecutive periods: ("after <name>", from, to)."""
+    ordered = sorted(periods, key=lambda item: item[1])
+    return [(f"after {a[0]}", a[2], b[1]) for a, b in zip(ordered, ordered[1:]) if b[1] > a[2]]
+
+
 def node_periods(run: Run) -> list[dict]:
     span = run.span_us()
     if span is None:
         return []
     periods = [(item["name"], int(item["from_unix"] * 1e6), int(item["to_unix"] * 1e6))
                for item in run.periods if item.get("kind") in ("soak", "session")]
+    periods = sorted(periods + between(periods), key=lambda item: item[1])
     periods.append(("run", span[0], span[1] + 1))
+    unpinned = run.unpinned()
     rows = []
     for name in sorted(run.nodes):
         watch, journal, cpus = run.watch(name), run.journal(name), run.cpus(name)
@@ -186,6 +238,7 @@ def node_periods(run: Run) -> list[dict]:
             f_journal = f_over(journal, [(start, end)], cpus) if journal else None
             rows.append({
                 "node": name, "period": label, "stops": sr.stop_counts(watch, start, end),
+                "scope_trusted": name not in unpinned, "tick_pinned": unpinned.get(name),
                 "f_watch": f_watch, "f_journal": f_journal, "agree": agree(f_watch, f_journal),
                 "steal_permille": sr.steal_permille(watch, start, end),
                 "kernel_share": round(sum(1 for line in lines if sr.kernel_second(line))
@@ -214,18 +267,25 @@ def poisson_tail(observed: int, expected: float) -> float:
     return max(0.0, 1.0 - below)
 
 
-def simultaneity(stops: dict[str, list[int]], pairs: list[tuple[str, str]], seconds: float,
-                 within_us: int = COHOST_WITHIN_US) -> list[dict]:
-    """Per pair, stops of the two (their ends) within `within_us` of each
-    other against the count two independent records would give by chance
-    (n_a n_b 2w / T)."""
+def simultaneity(stops: dict[str, list[tuple[int, int]]], pairs: list[tuple[str, str]],
+                 seconds: float, within_us: int = COHOST_WITHIN_US) -> list[dict]:
+    """Per pair, the stops of the first (each node's stopped ticks merged
+    into stops, `stall_records.stops`: a stop of a whole 2-CPU node is one
+    stop, not two) that come within `within_us` of a stop of the second,
+    against the count two independent records would give by chance:
+    n_a n_b (2w + mean length a + mean length b) / T."""
     out = []
     for a, b in pairs:
-        ends_b = sorted(stops.get(b, []))
-        observed = sum(1 for end in stops.get(a, [])
-                       if any(abs(end - other) <= within_us for other in ends_b))
-        expected = (len(stops.get(a, [])) * len(ends_b) * 2 * within_us / 1e6 / seconds
-                    if seconds > 0 else 0.0)
+        mine, theirs = stops.get(a, []), stops.get(b, [])
+        observed = sum(1 for start, end in mine
+                       if any(max(start, other_start) - min(end, other_end) <= within_us
+                              for other_start, other_end in theirs))
+
+        def mean_us(items: list[tuple[int, int]]) -> float:
+            return sum(end - start for start, end in items) / len(items) if items else 0.0
+
+        reach_s = (2 * within_us + mean_us(mine) + mean_us(theirs)) / 1e6
+        expected = len(mine) * len(theirs) * reach_s / seconds if seconds > 0 else 0.0
         p = poisson_tail(observed, expected)
         out.append({"pair": [a, b], "observed": observed, "expected": round(expected, 4),
                     "p": round(p, 6), "above_chance": observed >= 2 and p < CHANCE_P})
@@ -236,8 +296,7 @@ def cohosting(run: Run) -> dict:
     groups = host_groups(run)
     span = run.span_us()
     seconds = (span[1] - span[0]) / 1e6 if span else 0
-    stops = {name: [int(event["t_us"]) for event in sr.stopped_ticks(run.watch(name))]
-             for name in run.nodes}
+    stops = {name: sr.stops(run.watch(name)) for name in run.nodes}
     pairs = [(names[i], names[j]) for names in groups.values()
              for i in range(len(names)) for j in range(i + 1, len(names))]
     found = simultaneity(stops, pairs, seconds)
@@ -247,20 +306,34 @@ def cohosting(run: Run) -> dict:
 
 # ------------------------------------------------- 3. where the time went
 
-def worst_quarter(frozen: dict[str, float]) -> dict:
-    """The quarter or fewer of the instances with the most frozen time, and
-    their share of all of it."""
-    total = sum(frozen.values())
-    count = max(1, len(frozen) // 4)
-    worst = sorted(frozen, key=lambda name: (-frozen[name], name))[:count]
-    return {"worst": worst, "share": round(sum(frozen[name] for name in worst) / total, 4)
-            if total > 0 else None, "total_ms": round(total, 3)}
+def worst_quarter(values: dict[str, float]) -> dict:
+    """The quarter or fewer of the instances with the most of a value, and
+    their share of all of it. A node with nothing is in no worst set. The
+    share is the quarter's largest values', whoever holds them; `worst`
+    names the nodes above the quarter's last value, and `tied` the nodes
+    of a tie that the quarter's cut runs through (so that no name decides
+    who is in it)."""
+    total = sum(values.values())
+    count = max(1, len(values) // 4)
+    top = sorted((value for value in values.values() if value > 0), reverse=True)[:count]
+    if not top:
+        return {"worst": [], "tied": [], "tied_places": 0, "share": None,
+                "total_ms": round(total, 3)}
+    cut = top[-1]
+    above = sorted((name for name, value in values.items() if value > cut),
+                   key=lambda name: (-values[name], name))
+    at_cut = sorted(name for name, value in values.items() if value == cut)
+    fits = len(above) + len(at_cut) <= count
+    return {"worst": above + (at_cut if fits else []), "tied": [] if fits else at_cut,
+            "tied_places": 0 if fits else count - len(above),
+            "share": round(sum(top) / total, 4), "total_ms": round(total, 3)}
 
 
 def ranks(values: dict[str, float]) -> dict[str, int]:
-    """1 for the worst (largest) value."""
-    return {name: rank for rank, name in
-            enumerate(sorted(values, key=lambda name: (-values[name], name)), 1)}
+    """1 for the worst (largest) value; nodes of equal value all take the
+    worst (largest) rank of their tie."""
+    return {name: sum(1 for other in values.values() if other >= value)
+            for name, value in values.items()}
 
 
 def node_figures(run: Run) -> dict:
@@ -452,8 +525,8 @@ def pct(values: list[float], p: float) -> float | None:
 def first_of_two(commits: dict[str, dict[int, int]], published: dict[int, int],
                  edges: list[str], since_us: int | None = None,
                  until_us: int | None = None) -> dict:
-    """Per part that both edges committed, the earlier commit's distance
-    from publish (ms): what a two-path listener gets from the region."""
+    """Per part that both edges of a pair committed, the earlier commit's
+    distance from publish (ms): what a listener held on those two gets."""
     if len(edges) != 2 or any(edge not in commits for edge in edges):
         return {"parts": 0}
     both = set(commits[edges[0]]) & set(commits[edges[1]])
@@ -480,17 +553,25 @@ def hls_probes(paths: list[pathlib.Path]) -> list[tuple[str, list[dict]]]:
     return out
 
 
+def first_of_pairs(commits: dict[str, dict[int, int]], published: dict[int, int],
+                   since_us: int | None, until_us: int | None) -> dict:
+    """Per region (an edge's name up to its first dash), the first of two
+    for every pair of the region's edges seen: {region: {"a+b": figure}};
+    a region with one edge seen has no pair."""
+    regions: dict[str, list[str]] = {}
+    for edge in commits:
+        regions.setdefault(edge.split("-")[0], []).append(edge)
+    return {region: {f"{a}+{b}": first_of_two(commits, published, [a, b], since_us, until_us)
+                     for a, b in itertools.combinations(sorted(edges), 2)}
+            for region, edges in sorted(regions.items())}
+
+
 def edges_table(run: Run) -> dict:
     out = {}
     for name, start, end in run.periods_of("session"):
         commits, published = edge_commits(hls_probes(session_probes(run, name)))
-        regions: dict[str, list[str]] = {}
-        for edge in commits:
-            regions.setdefault(edge.split("-")[0], []).append(edge)
-        out[name] = {
-            "gaps": commit_gaps(commits, since_us=start, until_us=end),
-            "first_of_two": {region: first_of_two(commits, published, sorted(edges), start, end)
-                             for region, edges in sorted(regions.items())}}
+        out[name] = {"gaps": commit_gaps(commits, since_us=start, until_us=end),
+                     "first_of_two": first_of_pairs(commits, published, start, end)}
     return out
 
 
@@ -617,10 +698,11 @@ def rule_r1(figures: dict, cohost: dict, replaced: list[dict], replaced_f: dict)
     if not quarter["share"]:
         return {"fires": False, "line": "R1 (host): no frozen time on any node"}
     soak = worst_quarter({name: item["soak_f"] for name, item in figures.items()})
-    soak_worst = soak["worst"] if soak["share"] else []
+    # A soak that found no stop cannot name the bad instances; of a tie at
+    # the quarter's cut, every node must be in the worst half.
+    soak_worst = soak["worst"] + soak["tied"]
     session_rank = ranks({name: item["session_f"] for name, item in figures.items()})
     half = math.ceil(len(figures) / 2)
-    # A soak that found no stop cannot name the bad instances.
     consistent = bool(soak_worst) and all(session_rank[name] <= half for name in soak_worst)
     concentrated = quarter["share"] >= 0.5
     fires = concentrated and consistent
@@ -639,13 +721,22 @@ def rule_r1(figures: dict, cohost: dict, replaced: list[dict], replaced_f: dict)
             notes.append(f"{name}: replaced, host {'unchanged' if before == after else 'changed'}, "
                          f"F before {old}, after {new}")
     line = (f"R1 (host): {100 * quarter['share']:.0f}% of the frozen time on "
-            f"{', '.join(quarter['worst'])}; the worst by soak "
+            f"{quarter_names(quarter)}; the worst by soak "
             f"{'are' if consistent else 'are not'} in the worst half by session: "
             + ("FIRES: the boot check (node_check_seconds, limits from this record) with "
                "D12's replace-once" if fires else "does not fire"))
     return {"fires": fires, "share": quarter["share"], "worst": quarter["worst"],
+            "tied": quarter["tied"],
             "soak_worst": soak_worst, "consistent": consistent, "notes": notes,
             "line": line + ("; " + "; ".join(notes) if notes else "")}
+
+
+def quarter_names(quarter: dict) -> str:
+    named = ", ".join(quarter["worst"])
+    if not quarter["tied"]:
+        return named
+    tied = f"{quarter['tied_places']} of {', '.join(quarter['tied'])} (tied at the cut)"
+    return f"{named} and {tied}" if named else tied
 
 
 def ratio(a: float | None, b: float | None) -> float | None:
@@ -757,14 +848,26 @@ def rule_r5(run: Run) -> dict:
     found = []
     for name in sorted(run.nodes):
         watch = run.watch(name)
-        lines = {(int(line.get("cpu", -1)), int(line["t_us"]) // 1_000_000): line
-                 for line in sr.seconds(watch)}
+        by_cpu: dict[int, list[dict]] = {}
+        for line in sorted(sr.seconds(watch), key=lambda item: int(item["t_us"])):
+            by_cpu.setdefault(int(line.get("cpu", -1)), []).append(line)
+        ends = {cpu: [int(line["t_us"]) for line in lines] for cpu, lines in by_cpu.items()}
+
+        def covering(cpu: int, at_us: int) -> dict | None:
+            """The sec line of `cpu` whose second holds `at_us`: a line is
+            written at the end of the time it covers, [t_us - span_us, t_us]."""
+            lines = by_cpu.get(cpu) or []
+            index = bisect.bisect_left(ends.get(cpu) or [], at_us)
+            if index < len(lines) and int(lines[index]["t_us"]) \
+                    - int(lines[index].get("span_us") or 1_000_000) <= at_us:
+                return lines[index]
+            return None
+
         for event in sr.ticks(watch):
             if sr.tick_cause(event) != "starved":
                 continue
-            second = int(event["t_us"]) // 1_000_000
-            line = lines.get((int(event.get("cpu", -1)), second))
-            vm = lines.get((0, second)) or {}
+            line = covering(int(event.get("cpu", -1)), int(event["t_us"]))
+            vm = covering(0, int(event["t_us"])) or {}
             if line and sr.kernel_second(line) and (int(vm.get("compact_stall") or 0)
                                                     or int(vm.get("allocstall") or 0)):
                 found.append({"node": name, "t_us": event["t_us"], "dur_us": event["dur_us"],
@@ -847,6 +950,9 @@ def acceptance(null: dict, source: dict) -> list[str]:
 # ---------------------------------------------------------------- the report
 
 def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
+    inside = hops_inside_sessions(run)
+    if inside:
+        raise Refused("; ".join(inside))
     figures = node_figures(run)
     cohost = cohosting(run)
     null = null_table(run, lengths, null_window)
@@ -856,7 +962,7 @@ def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
              "R2": rule_r2(run), "R3": rule_r3(run), "R4": rule_r4(run),
              "R5": rule_r5(run), "R6": rule_r6(run)}
     return {"schema": "needletail.hunt-report.v1", "run_id": run.record.get("run_id"),
-            "periods": node_periods(run), "hosts": cohost,
+            "periods": node_periods(run), "unpinned": run.unpinned(), "hosts": cohost,
             "concentration": {**worst_quarter({name: item["frozen_ms"]
                                                for name, item in figures.items()}),
                               "figures": figures,
@@ -884,7 +990,9 @@ def format_report(report: dict) -> str:
             f"({row['stops']['starved_ms']} ms); F {fmt(row['f_watch'])} / {fmt(row['f_journal'])}"
             + ("" if row["agree"] is not False else " DISAGREE")
             + f"; steal {fmt(row['steal_permille'], 1)} permille; kernel seconds "
-            f"{fmt(row['kernel_share'], 3)}")
+            f"{fmt(row['kernel_share'], 3)}"
+            + ("" if row["scope_trusted"] else
+               f"; scope untrusted (tick threads pinned {row['tick_pinned']})"))
     lines += ["", "2. physical hosts"]
     for uuid, names in sorted(report["hosts"]["groups"].items()):
         lines.append(f"  {uuid}: {', '.join(names)}")
@@ -896,7 +1004,7 @@ def format_report(report: dict) -> str:
         lines.append("  no two nodes share a host")
     concentration = report["concentration"]
     lines += ["", f"3. {fmt(100 * concentration['share'] if concentration['share'] else None, 0)}% "
-              f"of {concentration['total_ms']} frozen ms on {', '.join(concentration['worst'])}"]
+              f"of {concentration['total_ms']} frozen ms on {quarter_names(concentration)}"]
     for name in sorted(concentration["figures"]):
         lines.append(f"  {name:<12} soak rank {concentration['soak_rank'][name]:>2}, session rank "
                      f"{concentration['session_rank'][name]:>2}")
@@ -909,10 +1017,14 @@ def format_report(report: dict) -> str:
                          f"{causes or 'none'}")
     lines += ["", "5. the first of two edges, and commit gaps of 100 ms or more"]
     for session, item in report["edges"].items():
-        for region, figure in item["first_of_two"].items():
-            lines.append(f"  {session} {region}: {figure['parts']} parts, publish to first commit "
-                         f"p50 {fmt(figure.get('p50_ms'))} p99 {fmt(figure.get('p99_ms'))} max "
-                         f"{fmt(figure.get('max_ms'))} ms, late on both {figure.get('late_on_both')}")
+        for region, pairs in item["first_of_two"].items():
+            if not pairs:
+                lines.append(f"  {session} {region}: one edge seen, no pair")
+            for pair, figure in pairs.items():
+                lines.append(f"  {session} {region} {pair}: {figure['parts']} parts, publish to "
+                             f"first commit p50 {fmt(figure.get('p50_ms'))} p99 "
+                             f"{fmt(figure.get('p99_ms'))} max {fmt(figure.get('max_ms'))} ms, "
+                             f"late on both {figure.get('late_on_both')}")
         for edge, gaps in sorted(item["gaps"].items()):
             if gaps:
                 lines.append(f"  {session} {edge}: " + ", ".join(
@@ -970,7 +1082,10 @@ def main() -> None:
     args = parser.parse_args()
     if not (pathlib.Path(args.dir) / "hunt.json").is_file():
         sys.exit(f"{args.dir}/hunt.json is missing: not a hunt run's directory")
-    report = build(Run(args.dir), [int(item) for item in args.lengths.split(",") if item])
+    try:
+        report = build(Run(args.dir), [int(item) for item in args.lengths.split(",") if item])
+    except Refused as refused:
+        sys.exit(f"no report of {args.dir}: {refused}")
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(report, indent=1, default=str) + "\n")
     print(format_report(report))
