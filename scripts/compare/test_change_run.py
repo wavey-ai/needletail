@@ -9,12 +9,15 @@ import csv
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -27,6 +30,8 @@ lab = cr.lab
 bench = cr.bench
 
 T0 = 1_763_900_000 * 1_000_000_000
+# The real test of a command, before the fakes replace it.
+RUNNABLE = cr.runnable
 
 
 def parse(*argv: str):
@@ -49,9 +54,14 @@ class Clock:
 class FakeLab:
     """The lab, the clients, the change command and the referee's tools, faked.
 
-    `outcomes` is what CW says of each run in turn (True, False or None);
-    `command` is how the change command behaves: its duration and the mark
-    lines it prints (with {start} and {end} for its own times)."""
+    `outcomes` is what CW says of each run in turn (True, False, None or
+    "error"); `command` is how the change command behaves: its duration, the
+    mark lines it prints (with {start} and {end} for its own times), its exit,
+    and `behaviour`: None (it ends by itself), "hang" (it runs until it gets
+    SIGINT, then prints its end and exits 130) or "sigterm" (the runner gets
+    SIGTERM while it waits for it, then as "hang"). `hang` names the binaries
+    of the probes and listeners that do not end by themselves. Every signal
+    is recorded in `signals` and reaches no real process."""
 
     def __init__(self, case: unittest.TestCase, directory: pathlib.Path):
         self.dir = directory
@@ -63,6 +73,9 @@ class FakeLab:
         self.command = {"seconds": 20.0, "lines": ["start {start} roll.edges",
                                                    "end {end} roll.edges"], "exit": 0}
         self.share = 1.0
+        self.hang: set = set()
+        self.signals: list = []
+        self.by_pid: dict = {}
         tools = directory / "tools"
         tools.mkdir()
         for name in ("ntcmp", "change-window.py", "needletail-udp-client", "needletail-load"):
@@ -71,24 +84,58 @@ class FakeLab:
 
         class Process:
             def __init__(self, command, stdout=None, stderr=None, **_kwargs):
-                self.pid = 4242
+                self.pid = 5000 + len(fake.by_pid)
+                fake.by_pid[self.pid] = self
                 self.returncode = 0
+                self.signalled = False
+                self.behaviour = None
                 fake.started.append(command)
                 # A command in a host's namespace is ["@host", ...] here.
                 body = command[1:] if command[0].startswith("@") else command
                 if body[:2] == ["bash", "-c"]:
                     fake.probe(body[2])
+                    if any(name in body[2] for name in fake.hang):
+                        self.returncode = None
                 elif body[:1] == ["engine"] or body[:1] == ["sleep"]:
-                    self.returncode = fake.change(stdout, marks=body[0] == "engine")
+                    self.stdout = stdout
+                    self.behaviour = fake.command.get("behaviour")
+                    if self.behaviour:
+                        self.returncode = None
+                        stdout.write(f"start {cr.unix_ns_text(fake.clock.t)} roll.edges\n"
+                                     .encode())
+                        stdout.flush()
+                    else:
+                        self.returncode = fake.change(stdout, marks=body[0] == "engine")
+                elif any(name in " ".join(body) for name in fake.hang):
+                    self.returncode = None
 
             def wait(self, timeout=None):
+                if self.behaviour == "sigterm" and not self.signalled:
+                    self.signalled = True
+                    # Never the default action: that would end the tests.
+                    assert signal.getsignal(signal.SIGTERM) not in (signal.SIG_DFL,
+                                                                    signal.SIG_IGN)
+                    signal.raise_signal(signal.SIGTERM)
+                if self.returncode is None:
+                    fake.clock.sleep(timeout)
+                    raise subprocess.TimeoutExpired("fake", timeout)
                 return self.returncode
 
             def poll(self):
                 return self.returncode
 
-            def kill(self):
-                pass
+            def signal(self, signum):
+                fake.signals.append((self.pid, signum))
+                if self.returncode is not None:
+                    return
+                if signum == signal.SIGINT and self.behaviour:
+                    # The engine closes what it opened.
+                    self.stdout.write(f"end {cr.unix_ns_text(fake.clock.t)} roll.edges\n"
+                                      .encode())
+                    self.stdout.flush()
+                    self.returncode = 130
+                elif signum == signal.SIGKILL:
+                    self.returncode = -9
 
         class Interference:
             def __init__(self, cpus):
@@ -110,11 +157,16 @@ class FakeLab:
             mock.patch.object(cr, "Interference", Interference),
             mock.patch.object(cr, "FLOOR_FILE", directory / "floor.json"),
             mock.patch.object(cr.subprocess, "Popen", Process),
+            mock.patch.object(cr.os, "killpg", lambda pid, signum: fake.by_pid[pid].signal(signum)),
+            mock.patch.object(cr, "runnable", lambda program: program != "missing"),
             mock.patch.object(cr.subprocess, "run", self.run),
             mock.patch.object(bench, "UDP_CLIENT", tools / "needletail-udp-client"),
             mock.patch.object(bench, "LOAD_BIN", tools / "needletail-load"),
             mock.patch.object(bench, "loop_start", lambda now: int(now) + 8),
-            mock.patch.object(bench, "stop_sender", lambda process: None),
+            mock.patch.object(bench, "stop_sender",
+                              lambda process: fake.ran.append(("stop_sender", process.pid))),
+            mock.patch.object(bench, "os_kill_group",
+                              lambda pid: fake.by_pid[pid].signal(signal.SIGKILL)),
             mock.patch.object(lab, "up", lambda overrides: fake.ran.append(("up", overrides))),
             mock.patch.object(lab, "down", lambda quiet=False: fake.ran.append(("down",))),
             mock.patch.object(lab, "join_tools", lambda: fake.ran.append(("join_tools",))),
@@ -166,11 +218,17 @@ class FakeLab:
         marks = pathlib.Path(command[command.index("--marks") + 1]).read_text().split("\n")
         labels = sorted({line.split()[2] for line in marks if line})
         outcome = self.outcomes.pop(0) if self.outcomes else True
-        verdict = {label: {path: {"pass": outcome, "change": {"missing": 0, "gap_ms": 3.0,
-                                                               "p99_ms": 7.0},
-                                  "gap_bar_ms": 4.0, "p99_bar_ms": 8.0, "null_fail_rate": 0.07,
-                                  "null_windows": 250}
-                           for path in frames} for label in labels}
+        if outcome == "error":
+            result = {"error": "no audio units"}
+        elif outcome is None:
+            result = {"pass": None, "change": {"missing": 0, "gap_ms": 3.0, "p99_ms": 7.0},
+                      "null_windows": 80,
+                      "note": "null too short: 80 no-change windows of this length, 120 needed"}
+        else:
+            result = {"pass": outcome, "change": {"missing": 0, "gap_ms": 3.0, "p99_ms": 7.0},
+                      "gap_bar_ms": 4.0, "p99_bar_ms": 8.0, "null_fail_rate": 0.07,
+                      "null_windows": 250}
+        verdict = {label: {path: dict(result) for path in frames} for label in labels}
         pathlib.Path(command[command.index("--json") + 1]).write_text(json.dumps(verdict))
         return subprocess.CompletedProcess(command, 0 if outcome is True else 1)
 
@@ -193,7 +251,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(cr.lab_overrides(args),
                          ["daw_hls_formats=opus,pcm", "opus_epoch_samples=48",
                           "pcm_epoch_samples=48", "daw_hls_formats=flac,opus,pcm"])
-        senders = cr.sender_commands(cr.lanes_of(args.lanes), 1_763_900_032)
+        senders = cr.sender_commands(cr.lanes_of(args.lanes), 1_763_900_032, 1500)
         self.assertEqual([command[command.index("--payload") + 1] for command in senders],
                          ["opus", "pcm"])
         # The Opus sender's session is the loop start plus one epoch exactly:
@@ -204,6 +262,13 @@ class Commands(unittest.TestCase):
                          "1763900032001000001")
         self.assertEqual(senders[0][senders[0].index("--pcm-s24le-file") + 1],
                          str(cr.compare_root() / "target/compare-media/audio/audio.s24le"))
+        self.assertEqual(senders[0][senders[0].index("--duration-seconds") + 1], "1500")
+        # The senders' bound: to START (8 s), 60 s of waiting to be live for
+        # each lane and site, then each repeat's probes (360 s), their grace
+        # (90 s), the command's stop (30 s) and the scoring (300 s).
+        args.repeat = 2
+        self.assertEqual(cr.sender_seconds(args, 2, int(cr.now()) + 8),
+                         8 + 4 * 60 + 2 * (360 + 90 + 30 + 300))
         probes = cr.probe_items(args, "roll-edges", self.dir)
         self.assertEqual([item["key"] for item in probes],
                          ["opus-1@lon-readers", "pcm-1@lon-readers",
@@ -244,6 +309,8 @@ class Commands(unittest.TestCase):
         self.assertEqual([command[i + 1] for i, item in enumerate(command) if item == "--entry"],
                          ["https://10.90.0.11:19444", "https://10.90.0.12:19444"])
         self.assertEqual(command[command.index("--readers") + 1], "4")
+        # Steered: the readers follow the region's Content Steering.
+        self.assertIn("--steering", command)
         crowds = cr.crowd_items(args, "x", self.dir)
         self.assertEqual([item["site"] for item in crowds], ["london"])
         self.assertEqual(crowds[0]["command"][crowds[0]["command"].index("--listeners") + 1],
@@ -260,11 +327,17 @@ class Commands(unittest.TestCase):
 
 
 class Arguments(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(cr, "runnable", lambda program: program != "missing")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_short_probes_and_early_changes_are_refused(self):
         for argv in (("--seconds", "300"), ("--at", "5"), ("--lanes", "opus-1,opus-2.5"),
                      ("--lanes", "flac-1"), ("--dry", "--", "sleep", "3"), ("--name", "a b"),
-                     ("--clients", "0"), ("--no-up", "--set", "x=1"), ("--hosts", "nowhere")):
-            command = [] if "sleep" in argv else ["--", "engine"]
+                     ("--clients", "0"), ("--no-up", "--set", "x=1"), ("--hosts", "nowhere"),
+                     ("--", "missing", "roll")):
+            command = [] if "sleep" in argv or "missing" in argv else ["--", "engine"]
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 cr.check(parse(*argv, *command))
         with self.assertRaises(SystemExit):
@@ -279,6 +352,19 @@ class Arguments(unittest.TestCase):
         self.assertEqual(cr.kind_of(parse("--", "/usr/bin/sleep", "3")), "null")
         self.assertEqual(cr.kind_of(parse("--", "scripts/edge_lab.py", "crash", "x")), "change")
         self.assertEqual(cr.lanes_of("pcm-1,opus-1,pcm-1"), ["opus-1", "pcm-1"])
+        # The engine's refusal scenarios name their exit; a sleep exits 0.
+        self.assertEqual(cr.expected_exit(parse("--expect-exit", "3", "--dry", "--", "engine")), 3)
+        self.assertEqual(cr.expected_exit(parse("--expect-exit", "3", "--", "sleep", "20")), 0)
+
+    def test_a_command_that_is_not_executable_is_refused_before_anything_starts(self):
+        script = pathlib.Path(tempfile.mkdtemp()) / "edge_lab.py"
+        script.write_text("print('x')\n")
+        script.chmod(0o644)
+        with mock.patch.object(cr, "runnable", RUNNABLE):
+            with self.assertRaises(SystemExit) as refused:
+                cr.check(parse("--", str(script), "kill", "contrib-lon"))
+            self.assertIn("python3 SCRIPT", str(refused.exception))
+            cr.check(parse("--", sys.executable, str(script), "kill", "contrib-lon"))
 
 
 class Marks(unittest.TestCase):
@@ -390,7 +476,9 @@ class Runs(unittest.TestCase):
         self.assertIn("roll.edges opus-1@lon-readers: FAIL missing 0 gap 3/4 ms p99 7/8 ms "
                       "null fail rate 0.07", out)
         record = json.loads((self.scenario / "summary.json").read_text())
-        self.assertEqual(record["tally"], {"host": {"change": [2, 3], "null": [2, 2]}})
+        self.assertEqual(record["tally"], {"host": {
+            "change": {"pass": 2, "fail": 1, "void": 0, "unscored": 0, "interrupted": 0},
+            "null": {"pass": 2, "fail": 0, "void": 0, "unscored": 0, "interrupted": 0}}})
         run = json.loads((self.scenario / "change-02" / "run.json").read_text())
         self.assertEqual(run["status"], "fail")
         self.assertEqual(run["kind"], "change")
@@ -431,13 +519,87 @@ class Runs(unittest.TestCase):
 
     def test_a_dead_command_is_scored_with_its_label_closed(self):
         self.fake.command = {"seconds": 5.0, "lines": ["start {start} roll.edges"], "exit": -9}
-        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll")
-        self.assertEqual(code, 0)
+        code, out = self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll")
+        # CW scored the window (its label closed), and passed it; but the
+        # change died: the run fails.
+        self.assertEqual(code, 1)
         run = json.loads((self.scenario / "change-01" / "run.json").read_text())
         self.assertEqual(run["command_exit"], -9)
+        self.assertEqual(run["status"], "fail")
+        self.assertIn("the command exited -9; the scenario expects 0 (--expect-exit)",
+                      run["reasons"])
+        self.assertTrue(all(result["pass"] for result in run["labels"]["roll.edges"].values()))
         self.assertEqual(run["events"][0]["event"], "aborted")
         self.assertEqual((self.scenario / "change-01" / "marks.txt").read_text().split()[0::3],
                          ["start", "end"])
+        self.assertIn("roll-edges: change 0 of 1 pass", out)
+
+    def test_a_refusal_passes_on_its_own_exit_and_a_refused_change_fails(self):
+        # A gate that refuses (exit 3) changes nothing, and CW passes the
+        # window: as a change it is no proof.
+        self.fake.command["exit"] = 3
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll")
+        self.assertEqual(code, 1)
+        self.assertIn("the command exited 3; the scenario expects 0 (--expect-exit)",
+                      json.loads((self.scenario / "change-01" / "run.json").read_text())
+                      ["reasons"])
+        # gate-refuses-dead expects it, and its dry null refuses too.
+        for dry in ((), ("--dry",)):
+            code, _out = self.fake.main("run", "--name", "gate-refuses-dead", "--expect-exit", "3",
+                                        *dry, "--", "engine", "roll", "forwarders")
+            self.assertEqual(code, 0)
+        self.fake.command["exit"] = 0
+        code, _out = self.fake.main("run", "--name", "gate-refuses-dead", "--expect-exit", "3",
+                                    "--", "engine", "roll", "forwarders")
+        self.assertEqual(code, 1)
+        # The expected exit is part of the scenario.
+        with self.assertRaises(SystemExit):
+            self.fake.main("run", "--name", "gate-refuses-dead", "--", "engine", "roll",
+                           "forwarders")
+
+    def test_an_error_of_the_referee_is_a_failure(self):
+        self.fake.outcomes = ["error"]
+        code, out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads((self.scenario / "change-01" / "run.json").read_text())
+                         ["status"], "fail")
+        self.assertIn("FAIL missing - gap -/- ms p99 -/- ms null fail rate - (no audio units)", out)
+
+    def test_only_scored_runs_count_and_ten_of_each_prove(self):
+        # Ten changes and ten nulls pass; a void change, an unscored null and
+        # an interrupted run count neither way.
+        self.fake.main("run", "--name", "roll-edges", "--repeat", "10", "--", "engine")
+        code, out = self.fake.main("run", "--name", "roll-edges", "--repeat", "9", "--dry",
+                                   "--", "engine")
+        self.assertNotIn("proved locally", out)
+        self.fake.outcomes = [True, None]
+        self.fake.main("run", "--name", "roll-edges", "--repeat", "2", "--dry", "--", "engine")
+        self.fake.share = 9.0
+        (self.dir / "floor.json").write_text(json.dumps({"outside_share_pct": 1.0,
+                                                          "layout": "host"}))
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        # A runner killed in its run leaves a run.json with no status.
+        killed = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        for key in ("status", "complete"):
+            killed.pop(key)
+        (self.scenario / "change-12").mkdir()
+        (self.scenario / "change-12" / "run.json").write_text(json.dumps(killed))
+        record, lines = cr.summary(self.scenario)
+        self.assertEqual(record["tally"]["host"]["change"],
+                         {"pass": 10, "fail": 0, "void": 1, "unscored": 0, "interrupted": 1})
+        self.assertEqual(record["tally"]["host"]["null"],
+                         {"pass": 10, "fail": 0, "void": 0, "unscored": 1, "interrupted": 0})
+        self.assertEqual(lines, ["roll-edges (host): change 10 of 10 pass (not scored: 1 void, "
+                                 "1 interrupted); null 10 of 10 pass (not scored: 1 unscored); "
+                                 "proved locally"])
+        self.assertEqual(record["proved"], {"host": True})
+        # A void or unscored null is no failed null: no warning. A failed one is.
+        self.fake.share = 1.0
+        self.fake.outcomes = [False]
+        _code, out = self.fake.main("run", "--name", "roll-edges", "--dry", "--", "engine")
+        self.assertIn("null 10 of 11 pass", out)
+        self.assertIn("WARNING: the null failed 1 of 11", out)
+        self.assertNotIn("proved locally", out)
 
     def test_a_name_holds_one_scenario(self):
         self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll", "edges")
@@ -473,22 +635,39 @@ class Runs(unittest.TestCase):
         self.fake.share = 6.0
         code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
         self.assertEqual(code, 0)
-        (self.dir / "floor.json").write_text(json.dumps({"outside_share_pct": 3.5}))
+        # A floor measured on another CPU range does not apply.
+        (self.dir / "floor.json").write_text(json.dumps({"outside_share_pct": 0.5,
+                                                          "layout": "cpus=2-15"}))
+        code, _out = self.fake.main("score", str(self.scenario / "change-01"))
+        self.assertEqual(code, 0)
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        self.assertIsNone(run["floor_pct"])
+        self.assertIn("no floor for host (it was measured on cpus=2-15)", run["floor_note"])
+        (self.dir / "floor.json").write_text(json.dumps({"outside_share_pct": 3.5,
+                                                          "layout": "host"}))
         code, out = self.fake.main("score", str(self.scenario / "change-01"))
         self.assertEqual(code, 1)
         self.assertIn("change-01: void", out)
         run = json.loads((self.scenario / "change-01" / "run.json").read_text())
         self.assertEqual(run["status"], "void")
-        (self.dir / "floor.json").write_text(json.dumps({"outside_share_pct": 4.0}))
+        (self.dir / "floor.json").write_text(json.dumps({"outside_share_pct": 4.0,
+                                                          "layout": "host"}))
         code, _out = self.fake.main("score", str(self.scenario))
         self.assertEqual(code, 0)
 
     def test_score_ingests_and_scores_again(self):
         self.fake.outcomes = [None]
-        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.fake.command["seconds"] = 100.0
+        code, out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
         self.assertEqual(code, 1)
         run = json.loads((self.scenario / "change-01" / "run.json").read_text())
         self.assertEqual(run["status"], "unscored")
+        # The change ran from 45 s to 145 s of the probe: CW's windows after
+        # it need 145 + 100 + 14 + 120 s, and 10 spare.
+        self.assertEqual(run["hints"], [
+            "roll.edges: the change took 100 s, too long for CW's 120 no-change windows: give "
+            "--seconds 390 or more, under a new --name (the length is part of the scenario)"])
+        self.assertIn("give --seconds 390", out)
         before = len(self.fake.started)
         code, _out = self.fake.main("score", str(self.scenario / "change-01"))
         self.assertEqual(code, 0)
@@ -503,6 +682,117 @@ class Runs(unittest.TestCase):
         senders = [command for command in self.fake.started if command[:1] == ["@contrib-lon"]]
         self.assertEqual(len(senders), 2)
         self.assertEqual(self.fake.store["sources.json"], {})
+        self.assertEqual(len([item for item in self.fake.ran if item[0] == "stop_sender"]), 2)
+
+    def test_sigterm_during_the_change_cleans_up(self):
+        self.fake.command["behaviour"] = "sigterm"
+        before = signal.getsignal(signal.SIGTERM)
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--wan-loss",
+                                    "newyork=loss 1%", "--client-loss", "loss 1%",
+                                    "--", "engine", "roll", "edges")
+        self.assertEqual(code, 128 + signal.SIGTERM)
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+        # The command got SIGINT and closed its own mark; the probes and
+        # listeners were killed.
+        engine = [process for process in self.fake.by_pid.values() if process.behaviour]
+        self.assertEqual(self.fake.signals[0], (engine[0].pid, signal.SIGINT))
+        self.assertTrue(all(process.returncode is not None
+                            for process in self.fake.by_pid.values()))
+        directory = self.scenario / "change-01"
+        marks = (directory / "marks.txt").read_text().split()
+        self.assertEqual(marks[0::3], ["start", "end"])
+        run = json.loads((directory / "run.json").read_text())
+        self.assertEqual(run["status"], "interrupted")
+        self.assertEqual(run["command_exit"], 130)
+        self.assertEqual(run["events"], [])
+        self.assertEqual(run["reasons"], ["interrupted (Stopped: SIGTERM)"])
+        # The shaping came off, the senders stopped and the lab went down.
+        nets = [item for item in self.fake.ran if item[0] in ("net", "wan", "per_packet")]
+        self.assertEqual([item[-1] for item in nets[-4:]], [None, None, None, False])
+        self.assertEqual(len([item for item in self.fake.ran if item[0] == "stop_sender"]), 2)
+        self.assertEqual(self.fake.ran[-1], ("down",))
+        self.assertEqual(self.fake.store["sources.json"], {})
+        # Scored again, it stays interrupted: no ingest, no CW.
+        before = len(self.fake.started)
+        code, out = self.fake.main("score", str(self.scenario))
+        self.assertEqual(code, 1)
+        self.assertEqual(self.fake.started[before:], [])
+        self.assertIn("change 0 of 0 pass (not scored: 1 interrupted)", out)
+
+    def test_a_failing_clean_up_step_does_not_stop_the_next(self):
+        def broken(site, direction, spec):
+            self.fake.ran.append(("wan", site, direction, spec))
+            if spec is None:
+                raise lab.LabError("namespace gone")
+        with mock.patch.object(lab, "set_wan", broken):
+            code, out = self.fake.main("run", "--name", "roll-edges", "--wan-loss",
+                                       "newyork=loss 1%", "--", "engine")
+        self.assertEqual(code, 1)
+        self.assertIn("clean-up failed: take the impairment off newyork's wide-area link: "
+                      "namespace gone", out)
+        self.assertEqual(len([item for item in self.fake.ran if item[0] == "stop_sender"]), 2)
+        self.assertEqual(self.fake.ran[-1], ("down",))
+
+    def test_a_command_that_outlives_the_probes_is_stopped(self):
+        self.fake.command["behaviour"] = "hang"
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.assertEqual(code, 1)
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        self.assertEqual(run["command_exit"], 130)
+        self.assertIn("the command was still running when the probes ended: it was stopped "
+                      "(SIGINT, then killed)", run["reasons"])
+        self.assertTrue(any("probe too short" in reason for reason in run["reasons"]))
+
+    def test_a_listener_that_outlives_its_duration_is_killed(self):
+        self.fake.hang = {"needletail-reader"}
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.assertEqual(code, 1)
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        readers = [pid for pid, process in self.fake.by_pid.items()
+                   if (pid, signal.SIGKILL) in self.fake.signals]
+        self.assertEqual(len(readers), 2)
+        self.assertEqual(len([reason for reason in run["reasons"]
+                              if "outlived its duration and was killed" in reason]), 2)
+
+    def test_a_run_whose_runner_died_is_not_scored(self):
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        path = self.scenario / "change-01" / "run.json"
+        run = json.loads(path.read_text())
+        for key in ("complete", "status"):
+            run.pop(key)
+        path.write_text(json.dumps(run))
+        before = len(self.fake.started)
+        code, _out = self.fake.main("score", str(self.scenario))
+        self.assertEqual(code, 1)
+        self.assertEqual(self.fake.started[before:], [])
+        self.assertEqual(json.loads(path.read_text())["status"], "interrupted")
+
+
+class Sampler(unittest.TestCase):
+    def test_the_sampler_reads_the_cpus_and_scopes_while_the_probes_run(self):
+        # Two CPUs half busy, the lab's scopes 20% of them: 30% from outside.
+        clock = os.sysconf("SC_CLK_TCK")
+        calls = []
+
+        def cpu_times(cpus):
+            calls.append(cpus)
+            t = time.monotonic()
+            return {cpu: (t * clock * 0.5, t * clock * 0.01) for cpu in cpus}
+        with mock.patch.object(cr, "read_cpu_times", cpu_times), \
+                mock.patch.object(cr, "SAMPLE_INTERVAL_S", 0.01), \
+                mock.patch.object(lab, "scope_cpu_usec",
+                                  lambda: {"lon-edge-1": time.monotonic() * 1e6 * 0.4}):
+            sampler = cr.Interference([2, 3]).start()
+            time.sleep(0.3)
+            share = sampler.stop()
+        self.assertFalse(sampler.thread.is_alive())
+        self.assertGreater(len(sampler.samples), 5)
+        self.assertEqual(calls[0], [2, 3])
+        self.assertEqual(share["cpus"], 2)
+        self.assertAlmostEqual(share["busy_pct"], 50.0, delta=1.0)
+        self.assertAlmostEqual(share["lab_pct"], 20.0, delta=1.0)
+        self.assertAlmostEqual(share["outside_share_pct"], 30.0, delta=1.5)
+        self.assertAlmostEqual(share["steal_pct"], 1.0, delta=0.2)
 
 
 @unittest.skipUnless(cr.change_window().is_file(), "needs the referee's change-window.py")
@@ -531,6 +821,32 @@ class Referee(unittest.TestCase):
         self.assertIsNotNone(result["null_fail_rate"])
         self.assertGreaterEqual(result["null_windows"], 120)
         self.assertEqual(done.returncode == 0, result["pass"] is True)
+
+    def test_the_seconds_a_long_change_needs_are_enough_for_the_referee(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        span = (T0 + 45 * 10**9, T0 + 145 * 10**9)
+        needed = cr.seconds_needed(span, T0)
+        self.assertEqual(needed, 390)
+        marks, _events = cr.close_marks([("start", span[0], "c"), ("end", span[1], "c")],
+                                        0, 0, "c")
+        (directory / "marks.txt").write_text(cr.marks_text(marks))
+        windows = {}
+        for seconds in (needed, needed - 20):
+            frames = directory / f"f{seconds}.csv"
+            with frames.open("w", newline="") as handle:
+                out = csv.writer(handle)
+                out.writerow(["kind", "index", "latency_us", "complete_unix_us",
+                              "first_unix_us"])
+                for n in range(seconds * 100):
+                    source = T0 // 1000 + n * 10_000
+                    out.writerow(["a", n, 7000 + (n * 37) % 500, source + 7000 + (n * 37) % 500, n])
+            item = {"key": "k", "files": {"probe.csv": str(frames)}}
+            subprocess.run(cr.score_command([item], directory), capture_output=True)
+            result = cr.verdict_of(json.loads((directory / "verdict.json").read_text()),
+                                   [item])["c"]["k"]
+            windows[seconds] = result["null_windows"]
+        self.assertGreaterEqual(windows[needed], cr.MIN_NULL_WINDOWS)
+        self.assertLess(windows[needed - 20], cr.MIN_NULL_WINDOWS)
 
 
 if __name__ == "__main__":

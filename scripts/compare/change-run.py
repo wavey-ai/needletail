@@ -4,7 +4,8 @@
   change-run.py run --name N [--lanes opus-1,pcm-1] [--seconds 360] [--at 45]
         [--hosts lon-readers,new-readers] [--clients 1] [--load-listeners 40]
         [--readers 4] [--client-loss "loss 1%"] [--wan-loss newyork="loss 1%"]
-        [--repeat 1] [--dry] [--no-up] [--keep-up] [--set k=v ...] -- COMMAND...
+        [--expect-exit 0] [--repeat 1] [--dry] [--no-up] [--keep-up]
+        [--set k=v ...] -- COMMAND...
   change-run.py score DIR     ingest and score again (a run, or a scenario's runs)
 
 The lab is the one of NEEDLETAIL_EDGE_LAB_ID (scripts/edge_lab.py). A run:
@@ -23,7 +24,11 @@ The lab is the one of NEEDLETAIL_EDGE_LAB_ID (scripts/edge_lab.py). A run:
    --name; a label that the command opened and did not close (it died) is
    closed when the command is reaped, and an `aborted` event is kept. The run
    fails when the last end + 6 s is past the probes' end (the referee's
-   window ends 5 s after the change, and its silence is measured 1 s more);
+   window ends 5 s after the change, and its silence is measured 1 s more),
+   when the command is still running when the probes end (it is stopped as
+   an interrupt stops it), and when the command's exit status is not
+   --expect-exit (0; a refusal scenario names its own): a change that did not
+   happen proves nothing. A `sleep` null is expected to exit 0;
 4. after the probes exit, ingests each with the referee's
    `ntcmp udp-ingest` and scores the marks on every probe with the referee's
    `change-window.py`, both called by path in $NEEDLETAIL_COMPARE_ROOT
@@ -43,13 +48,23 @@ command: gates and marks, no restart); a COMMAND that is `sleep S` is the
 null of a plain kill or crash. Both are kept as null runs of the scenario. A
 scenario is proved locally when 10 of 10 changes pass and its null passes 10
 of 10 in the same layout; a null that fails at all goes to the referee with
-its figures before any change is claimed.
+its figures before any change is claimed. Only scored runs (pass or fail)
+count: a void, unscored or interrupted run is reported on its own and is no
+evidence either way.
+
+SIGINT, SIGTERM and SIGHUP stop a run cleanly: the command gets SIGINT (the
+engine resumes a drained node and prints its end) and is killed after 30 s,
+the probes are stopped, the links' impairments are taken off, the senders
+stopped and the lab taken down (unless --keep-up or --no-up); the run is kept
+as `interrupted`, and the runner exits 128 + the signal.
 
 Outside interference (C 2.12). Over the probes' time the run reads the busy
 time (user, nice, system) of the lab's CPUs from /proc/stat, less the CPU
 time of the lab's own scopes, as a share of the CPUs, and their steal. The
 run is void when that share is more than 2 points above the floor that
-lab-parity.py measured (target/lab-parity/floor.json).
+lab-parity.py measured (target/lab-parity/floor.json), in the layout it was
+measured in (the lab's CPU range); in another layout there is no floor and
+nothing is void.
 
 Results: target/change-run/[ID/]NAME/change-NN or null-NN: run.json (the
 plan and the result), marks.txt, command.out, command.err, verdict.json,
@@ -62,10 +77,12 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import pathlib
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -108,7 +125,24 @@ FLOOR_FILE = ROOT / "target" / "lab-parity" / "floor.json"
 SAMPLE_INTERVAL_S = 1.0
 PROBE_GRACE_S = 90
 COMMAND_STOP_S = 30
+LIVE_TIMEOUT_S = 60
+# Ingest and score of one run, for the senders' bound.
+SCORE_MARGIN_S = 300
 PROVED_RUNS = 10
+# CW scores a change only with this many no-change windows of its length.
+MIN_NULL_WINDOWS = 120
+SCORED = ("pass", "fail")
+STATUSES = ("pass", "fail", "void", "unscored", "interrupted")
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+class Stopped(BaseException):
+    """SIGTERM or SIGHUP: unwinds a run as SIGINT does, so that its
+    clean-up runs."""
+
+    def __init__(self, signum: int):
+        super().__init__(signal.Signals(signum).name)
+        self.signum = signum
 
 
 def log(text: str) -> None:
@@ -185,6 +219,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--wan-loss", action="append", default=[], metavar="SITE=SPEC",
                      help="netem impairment of a site's wide-area link, both directions, on top "
                           "of its delay (e.g. newyork=\"loss 1%%\"); repeat")
+    run.add_argument("--expect-exit", type=int, default=0, metavar="N",
+                     help="COMMAND's exit status when the change happened as the scenario "
+                          "means (a refusal scenario's 3 or 4); another fails the run")
     run.add_argument("--repeat", type=int, default=1, help="runs, one after another")
     run.add_argument("--dry", action="store_true",
                      help="the scenario's null: COMMAND with --dry-marks")
@@ -255,11 +292,24 @@ def kind_of(args) -> str:
     return "null" if args.dry or is_sleep(command_of(args)) else "change"
 
 
+def expected_exit(args) -> int:
+    """The exit status a run's command must have: --expect-exit for the
+    change and its dry null (the gates run in both), 0 for a `sleep`."""
+    return 0 if is_sleep(command_of(args)) else args.expect_exit
+
+
+def runnable(program: str) -> bool:
+    return shutil.which(program) is not None
+
+
 def check(args) -> None:
     if not NAME.fullmatch(args.name):
         raise SystemExit("--name is a label: letters, digits, '.', '_' and '-'")
     if not command_of(args):
         raise SystemExit("give the change as -- COMMAND...")
+    if not runnable(command_of(args)[0]):
+        raise SystemExit(f"{command_of(args)[0]} is not an executable command (a script that "
+                         "is not executable runs as `python3 SCRIPT ...`)")
     if args.seconds < MIN_SECONDS:
         raise SystemExit(f"--seconds {args.seconds}: the referee's rule needs {MIN_SECONDS} s "
                          "or more of probe (about 300 s of no-change windows around a change)")
@@ -296,7 +346,7 @@ def scenario_of(args) -> dict:
             "hosts": hosts_of(args), "clients": args.clients,
             "load_listeners": args.load_listeners, "readers": args.readers,
             "client_loss": args.client_loss or None, "wan_loss": wan_losses(args.wan_loss),
-            "set": list(args.set)}
+            "set": list(args.set), "expect_exit": args.expect_exit}
 
 
 # ------------------------------------------------------------------ the lab
@@ -311,7 +361,17 @@ def lab_overrides(args) -> list[str]:
     return settings + list(args.set)
 
 
-def sender_commands(lanes: list[str], start: int) -> list[list[str]]:
+def sender_seconds(args, sites: int, start: int) -> int:
+    """How long the senders may run: to START, the streams' wait to be live,
+    then every repeat's probes, their grace, the command's stop and the
+    scoring. They are stopped at the end of the run; the bound holds if the
+    runner itself is killed."""
+    live = LIVE_TIMEOUT_S * len(lanes_of(args.lanes)) * sites
+    per_run = args.seconds + PROBE_GRACE_S + COMMAND_STOP_S + SCORE_MARGIN_S
+    return math.ceil(max(0.0, start - now()) + live + args.repeat * per_run)
+
+
+def sender_commands(lanes: list[str], start: int, seconds: int) -> list[list[str]]:
     """One AEP1 sender per lane, as the referee's (compare-audio.py
     aep1_command): it sends epoch k when its last sample has been spoken, so
     the session id is START plus one epoch; a second lane's id is one ns more
@@ -324,7 +384,7 @@ def sender_commands(lanes: list[str], start: int) -> list[list[str]]:
         out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
                     "--session-id", str(session), "--group-id", "0",
                     # Stopped at the end of the run (and by the lab's `down`).
-                    "--duration-seconds", "86400",
+                    "--duration-seconds", str(seconds),
                     "--payload", item["payload"], "--epoch-samples", str(item["epoch_samples"]),
                     "--channels", "2", "--group-channels", "8", "--pcm-s24le-file", loop,
                     "--repair-percent", "12", "--min-repair-symbols", "1"])
@@ -374,7 +434,10 @@ def reader_items(args, name: str, directory: pathlib.Path) -> list[dict]:
         for entry in lab.distributors(site):
             command += ["--entry", lab.base_url(entry)]
         report = directory / f"{host}.reader.json"
-        command += ["--stream", str(stream), "--session", f"change-{name}-{host}-reader",
+        # --steering: the reader follows the region's Content Steering, as a
+        # player does, and not only a draining edge's redirect.
+        command += ["--steering", "--stream", str(stream),
+                    "--session", f"change-{name}-{host}-reader",
                     "--readers", str(args.readers), "--duration-seconds", str(args.seconds),
                     "--tls-ca", lab.ca_file(), "--server-name", lab.SERVER_NAME,
                     "--report", str(report)]
@@ -564,12 +627,28 @@ class Interference:
         return outside_share(self.samples, os.sysconf("SC_CLK_TCK"))
 
 
-def floor() -> float | None:
-    """The accounting floor of lab-parity.py's layout Q1, or None."""
+def floor() -> dict | None:
+    """The accounting floor of lab-parity.py's layout Q1, {outside_share_pct,
+    layout}, or None."""
     try:
-        return float(json.loads(FLOOR_FILE.read_text())["outside_share_pct"])
+        record = json.loads(FLOOR_FILE.read_text())
+        return {"outside_share_pct": float(record["outside_share_pct"]),
+                "layout": str(record["layout"])}
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def floor_for(where: str) -> tuple[float | None, str | None]:
+    """The floor that applies to a run in layout `where`, or None and why: a
+    floor is the outside share of one CPU range, and means nothing for
+    another (node_cpus=0 spreads a lab over the whole host)."""
+    record = floor()
+    if record is None:
+        return None, "no floor measured (lab-parity.py): no run is void"
+    if record["layout"] != where:
+        return None, (f"no floor for {where} (it was measured on {record['layout']}): "
+                      "no run is void")
+    return record["outside_share_pct"], None
 
 
 def void_reason(interference: dict, floor_pct: float | None) -> str | None:
@@ -602,22 +681,74 @@ def verdict_of(verdict: dict | None, items: list[dict]) -> dict:
 
 
 def status_of(labels: dict, reasons: list[str], cw_exit: int | None) -> str:
+    """void (no evidence), fail, unscored (CW's null too short) or pass. A
+    probe that CW could not score at all (`error`: no audio, or the probe
+    does not cover the window) is a failure, not a short null."""
     if any(reason.startswith("void") for reason in reasons):
         return "void"
     results = [result for per in labels.values() for result in per.values()]
-    if reasons or cw_exit is None or not results or any(r["pass"] is False for r in results):
+    if (reasons or cw_exit is None or not results
+            or any(r["pass"] is False or "error" in r for r in results)):
         return "fail"
     if any(r["pass"] is not True for r in results):
         return "unscored"
     return "pass" if cw_exit == 0 else "fail"
 
 
+def label_spans(marks: list[tuple[str, int, str]]) -> dict[str, tuple[int, int]]:
+    """{label: (earliest start, latest end)} in unix ns, as CW reads them."""
+    spans: dict[str, list] = {}
+    for kind, t, label in marks:
+        span = spans.setdefault(label, [None, None])
+        if kind == "start":
+            span[0] = t if span[0] is None else min(span[0], t)
+        else:
+            span[1] = t if span[1] is None else max(span[1], t)
+    return {label: (s, e) for label, (s, e) in spans.items() if s is not None and e is not None}
+
+
+def seconds_needed(span: tuple[int, int], launch_ns: int) -> int:
+    """The --seconds that leaves CW its 120 no-change windows after a change
+    of this span (its windows are the change's length + 7 s, clear of the
+    change and its 1 s tail), counting none before it, with 10 s spare."""
+    length_s = (span[1] - span[0]) / 1e9
+    end_s = (span[1] - launch_ns) / 1e9
+    return 10 * math.ceil((end_s + length_s + 14 + MIN_NULL_WINDOWS + 10) / 10)
+
+
+def null_hints(labels: dict, marks: list[tuple[str, int, str]],
+               launch_ns: int | None) -> list[str]:
+    """For a label CW did not score (null too short): the --seconds it needs."""
+    spans = label_spans(marks)
+    out = []
+    for label, per in labels.items():
+        short = any(str(result.get("note", "")).startswith("null too short")
+                    for result in per.values())
+        if short and label in spans and launch_ns is not None:
+            span = spans[label]
+            out.append(f"{label}: the change took {(span[1] - span[0]) / 1e9:.0f} s, too long "
+                       f"for CW's {MIN_NULL_WINDOWS} no-change windows: give --seconds "
+                       f"{seconds_needed(span, launch_ns)} or more, under a new --name (the "
+                       "length is part of the scenario)")
+    return out
+
+
 def score(directory: pathlib.Path) -> dict:
     """Ingest the probes of a run with ntcmp and score its marks with CW;
-    the result is written into run.json."""
+    the result is written into run.json. A run that did not finish (it was
+    interrupted, or the runner died) stays `interrupted` and is not scored."""
     run = json.loads((directory / "run.json").read_text())
+    if run.get("status") == "interrupted" or not run.get("complete"):
+        run.update({"status": "interrupted",
+                    "reasons": run.get("reasons") or ["the run did not finish: not scored"]})
+        (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
+        return run
     items = run["probes"]
     reasons = list(run["run_reasons"])
+    expected = run["expect_exit"]
+    if run["command_exit"] != expected:
+        reasons.append(f"the command exited {run['command_exit']}; the scenario expects "
+                       f"{expected} (--expect-exit)")
     for item in items:
         for name in ("probe.csv", "probe.json"):
             pathlib.Path(item["files"][name]).unlink(missing_ok=True)
@@ -639,13 +770,18 @@ def score(directory: pathlib.Path) -> dict:
         verdict = None
         reasons.append(f"change-window.py exited {cw.returncode} with no verdict: "
                        + (directory / "cw.log").read_text(errors="replace")[-300:].strip())
-    floor_pct = floor()
+    floor_pct, floor_note = floor_for(run["layout"])
     void = void_reason(run.get("interference") or {}, floor_pct)
     if void:
         reasons.append(void)
     labels = verdict_of(verdict, items)
+    launches = [float(pathlib.Path(item["files"]["launch"]).read_text()) for item in items
+                if pathlib.Path(item["files"]["launch"]).is_file()]
+    marks = marks_of((directory / "marks.txt").read_text())
     run.update({"labels": labels, "cw_exit": cw.returncode, "floor_pct": floor_pct,
-                "reasons": reasons,
+                "floor_note": floor_note, "reasons": reasons,
+                "hints": null_hints(labels, marks,
+                                    int(min(launches) * 1e9) if launches else None),
                 "status": status_of(labels, reasons, cw.returncode if verdict else None)})
     (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
     return run
@@ -664,8 +800,8 @@ def runs_of(scenario: pathlib.Path) -> list[dict]:
 
 
 def check_scenario(scenario: pathlib.Path, plan: dict) -> None:
-    """A name holds one scenario: its runs share the probes and the change's
-    place, and its changes and dry nulls one command."""
+    """A name holds one scenario: its runs share the probes, the change's
+    place and the expected exit, and its changes and dry nulls one command."""
     for run in runs_of(scenario):
         if run["scenario"] != plan["scenario"]:
             raise SystemExit(f"{scenario} holds runs of another set-up "
@@ -682,38 +818,50 @@ def next_directory(scenario: pathlib.Path, kind: str) -> pathlib.Path:
 
 
 def tally(runs: list[dict]) -> dict:
-    """Passes of each kind in each layout."""
+    """Runs of each kind in each layout, by status. A run.json with no
+    status (its runner was killed) is an interrupted run."""
     out: dict[str, dict] = {}
     for run in runs:
-        if "status" not in run:
-            continue
-        layout_tally = out.setdefault(run["layout"], {"change": [0, 0], "null": [0, 0]})
-        counts = layout_tally[run["kind"]]
-        counts[1] += 1
-        counts[0] += run["status"] == "pass"
+        counts = out.setdefault(run["layout"], {kind: dict.fromkeys(STATUSES, 0)
+                                                for kind in ("change", "null")})
+        counts[run["kind"]][run.get("status") or "interrupted"] += 1
     return out
 
 
+def scored(counts: dict) -> int:
+    return sum(counts[status] for status in SCORED)
+
+
+def count_text(kind: str, counts: dict) -> str:
+    """"change 9 of 10 pass (1 void)": passes of the scored runs, and the runs
+    that were not scored, which count neither way."""
+    rest = [f"{counts[status]} {status}" for status in STATUSES
+            if status not in SCORED and counts[status]]
+    return (f"{kind} {counts['pass']} of {scored(counts)} pass"
+            + (f" (not scored: {', '.join(rest)})" if rest else ""))
+
+
 def summary(scenario: pathlib.Path) -> tuple[dict, list[str]]:
-    """Each change beside its null: passes of N of both kinds in each layout
-    and whether the scenario is proved locally (summary.json keeps every
+    """Each change beside its null: passes of the scored runs of both kinds
+    in each layout, and whether the scenario is proved locally: 10 or more
+    scored runs of each kind, every one a pass (summary.json keeps every
     run's figures)."""
     runs = runs_of(scenario)
     tallies = tally(runs)
     lines = []
     proved = {}
     for where, counts in sorted(tallies.items()):
-        (change_pass, changes), (null_pass, nulls) = counts["change"], counts["null"]
-        proved[where] = (changes >= PROVED_RUNS and change_pass == changes
-                         and nulls >= PROVED_RUNS and null_pass == nulls)
-        lines.append(f"{scenario.name} ({where}): change {change_pass} of {changes} pass; "
-                     + (f"null {null_pass} of {nulls} pass" if nulls
+        change, null = counts["change"], counts["null"]
+        proved[where] = all(scored(item) >= PROVED_RUNS and item["fail"] == 0
+                            for item in (change, null))
+        lines.append(f"{scenario.name} ({where}): {count_text('change', change)}; "
+                     + (count_text("null", null) if any(null.values())
                         else "null not run (--dry, or -- sleep S for a plain kind)")
                      + ("; proved locally" if proved[where] else ""))
-        if nulls and null_pass < nulls:
-            lines.append(f"  WARNING: the null failed {nulls - null_pass} of {nulls}: the lab or "
-                         "the statistic is at fault; report it to the referee with the figures "
-                         "below before any change is claimed")
+        if null["fail"]:
+            lines.append(f"  WARNING: the null failed {null['fail']} of {scored(null)}: the lab "
+                         "or the statistic is at fault; report it to the referee with the "
+                         "figures below before any change is claimed")
     record = {"scenario": scenario.name, "tally": tallies, "proved": proved,
               "runs": [{key: run.get(key) for key in ("directory", "kind", "layout", "status",
                                                       "reasons", "command_exit", "labels",
@@ -729,12 +877,15 @@ def run_lines(run: dict) -> list[str]:
              f" (command exit {run.get('command_exit')}, outside share "
              f"{'-' if share is None else f'{share:.2f}%'})"]
     lines += [f"    {reason}" for reason in run.get("reasons") or []]
+    lines += [f"    {hint}" for hint in run.get("hints") or []]
 
     def ms(value) -> str:
         return "-" if value is None else f"{value:g}"
     for label, per in (run.get("labels") or {}).items():
         for key, result in per.items():
             verdict = {True: "pass", False: "FAIL", None: "unscored"}[result["pass"]]
+            if "error" in result:
+                verdict = "FAIL"
             lines.append(f"    {label} {key}: {verdict} missing {ms(result['missing'])} "
                          f"gap {ms(result['gap_ms'])}/{ms(result['gap_bar_ms'])} ms "
                          f"p99 {ms(result['p99_ms'])}/{ms(result['p99_bar_ms'])} ms "
@@ -744,6 +895,49 @@ def run_lines(run: dict) -> list[str]:
     return lines
 
 
+# ------------------------------------------------------------------ stopping cleanly
+
+def install_stops() -> dict:
+    """SIGINT, SIGTERM and SIGHUP unwind the run (KeyboardInterrupt or
+    Stopped), once: a second one while it cleans up is only logged, so the
+    clean-up finishes (SIGKILL still stops the runner at once). Returns the
+    handlers to put back; none off the main thread, where Python takes no
+    handler."""
+    if threading.current_thread() is not threading.main_thread():
+        return {}
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, *STOP_SIGNALS)}
+
+    def later(signum, _frame) -> None:
+        log(f"{signal.Signals(signum).name}: the run is cleaning up (SIGKILL stops it now and "
+            "leaves the lab, its shaping and its senders as they are)")
+
+    def first(signum, _frame) -> None:
+        for item in previous:
+            signal.signal(item, later)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise Stopped(signum)
+
+    for signum in previous:
+        signal.signal(signum, first)
+    return previous
+
+
+def restore_stops(previous: dict) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
+def attempt(failures: list[str], what: str, action, *args) -> object:
+    """One step of a clean-up: a failure is recorded and the next step runs."""
+    try:
+        return action(*args)
+    except Exception as error:  # noqa: BLE001 - every step runs whatever the last did
+        failures.append(f"{what}: {error}")
+        log(f"clean-up: {what} failed: {error}")
+        return None
+
+
 # ------------------------------------------------------------------ a run
 
 def popen(host: str | None, command: list[str], stdout, stderr) -> subprocess.Popen:
@@ -751,20 +945,38 @@ def popen(host: str | None, command: list[str], stdout, stderr) -> subprocess.Po
                             stdin=subprocess.DEVNULL, start_new_session=True)
 
 
-def stop_command(process: subprocess.Popen) -> None:
-    """An interrupted run lets the command close what it opened (the engine
-    resumes a drained node and prints its end), then kills it."""
+def stop_command(process: subprocess.Popen) -> int | None:
+    """A stopped run lets the command close what it opened (the engine
+    resumes a drained node and prints its end), then kills it. Its exit
+    status, or None if it could not be reaped."""
     if process.poll() is not None:
-        return
+        return process.returncode
     try:
         os.killpg(process.pid, signal.SIGINT)
-        process.wait(timeout=COMMAND_STOP_S)
+        return process.wait(timeout=COMMAND_STOP_S)
     except (OSError, subprocess.TimeoutExpired):
         bench.os_kill_group(process.pid)
+    try:
+        return process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def write_marks(directory: pathlib.Path, started_ns: int, reaped_ns: int,
+                label: str) -> tuple[list, list]:
+    """marks.txt from the command's output, its open labels closed at the
+    time it was reaped."""
+    marks, events = close_marks(
+        marks_of((directory / "command.out").read_text(errors="replace")),
+        started_ns, reaped_ns, label)
+    (directory / "marks.txt").write_text(marks_text(marks))
+    return marks, events
 
 
 def run_once(args, plan: dict, directory: pathlib.Path) -> dict:
-    """One pass of the scenario: probes, the change, ingest and score."""
+    """One pass of the scenario: probes, the change, ingest and score. An
+    interrupt stops the command, the probes and the listeners, keeps the
+    marks and leaves the run `interrupted`."""
     directory.mkdir(parents=True)
     probes = probe_items(args, args.name, directory)
     readers = reader_items(args, args.name, directory)
@@ -774,74 +986,97 @@ def run_once(args, plan: dict, directory: pathlib.Path) -> dict:
     (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
     (directory / "nodes-before.json").write_text(json.dumps(nodes_status(), indent=1) + "\n")
     handles, processes = [], []
-    command_process = None
+    command = {"process": None, "started_ns": None, "marks": None}
     interference = Interference(lab.lab_cpus(lab.load("cpus.json"))).start()
     try:
-        for item in crowds:
-            pathlib.Path(item["out"]).mkdir(parents=True, exist_ok=True)
-            handle = open(pathlib.Path(item["out"]) / "load.log", "ab")
-            handles.append(handle)
-            processes.append(popen(item["host"], item["command"], handle, handle))
-        for item in readers:
-            handle = open(item["log"], "ab")
-            handles.append(handle)
-            processes.append(popen(item["host"], item["command"], handle, handle))
-        started = now()
-        for item in probes:
-            processes.append(popen(item["host"], item["command"], subprocess.DEVNULL,
-                                   subprocess.DEVNULL))
-        log(f"{args.name}: {len(probes)} probes for {args.seconds} s; the change at {args.at:g} s")
-        sleep(max(0.0, started + args.at - now()))
-        command = plan["command"]
-        out_handle = open(directory / "command.out", "wb")
-        err_handle = open(directory / "command.err", "wb")
-        handles += [out_handle, err_handle]
-        started_ns = now_ns()
-        log(f"{args.name}: {shlex.join(command)}")
-        command_process = subprocess.Popen(command, stdout=out_handle, stderr=err_handle,
-                                           stdin=subprocess.DEVNULL, start_new_session=True)
-        run["command_exit"] = command_process.wait()
-        ended_ns = now_ns()
-        marks, events = close_marks(
-            marks_of((directory / "command.out").read_text(errors="replace")),
-            started_ns, ended_ns, args.name)
-        (directory / "marks.txt").write_text(marks_text(marks))
-        run["events"] += events
-        for process in processes:
+        try:
+            for item in crowds:
+                pathlib.Path(item["out"]).mkdir(parents=True, exist_ok=True)
+                handle = open(pathlib.Path(item["out"]) / "load.log", "ab")
+                handles.append(handle)
+                processes.append(popen(item["host"], item["command"], handle, handle))
+            for item in readers:
+                handle = open(item["log"], "ab")
+                handles.append(handle)
+                processes.append(popen(item["host"], item["command"], handle, handle))
+            started = now()
+            for item in probes:
+                processes.append(popen(item["host"], item["command"], subprocess.DEVNULL,
+                                       subprocess.DEVNULL))
+            log(f"{args.name}: {len(probes)} probes for {args.seconds} s; the change at "
+                f"{args.at:g} s")
+            sleep(max(0.0, started + args.at - now()))
+            out_handle = open(directory / "command.out", "wb")
+            err_handle = open(directory / "command.err", "wb")
+            handles += [out_handle, err_handle]
+            log(f"{args.name}: {shlex.join(plan['command'])}")
+            command["started_ns"] = now_ns()
+            command["process"] = subprocess.Popen(plan["command"], stdout=out_handle,
+                                                  stderr=err_handle, stdin=subprocess.DEVNULL,
+                                                  start_new_session=True)
             try:
-                process.wait(timeout=max(1.0, started + args.seconds + PROBE_GRACE_S - now()))
+                run["command_exit"] = command["process"].wait(
+                    timeout=max(0.0, started + args.seconds - now()))
             except subprocess.TimeoutExpired:
-                bench.os_kill_group(process.pid)
-                run["run_reasons"].append(f"a probe or listener (pid {process.pid}) outlived its "
-                                      "duration and was killed")
-    finally:
-        if command_process is not None:
-            stop_command(command_process)
-        for process in processes:
-            if process.poll() is None:
-                bench.os_kill_group(process.pid)
-        for handle in handles:
-            handle.close()
-        run["interference"] = interference.stop()
+                run["command_exit"] = stop_command(command["process"])
+                run["run_reasons"].append("the command was still running when the probes "
+                                          "ended: it was stopped (SIGINT, then killed)")
+            command["marks"], events = write_marks(directory, command["started_ns"], now_ns(),
+                                                   args.name)
+            run["events"] += events
+            for process in processes:
+                try:
+                    process.wait(timeout=max(1.0, started + args.seconds + PROBE_GRACE_S - now()))
+                except subprocess.TimeoutExpired:
+                    bench.os_kill_group(process.pid)
+                    run["run_reasons"].append(f"a probe or listener (pid {process.pid}) outlived "
+                                              "its duration and was killed")
+        finally:
+            failures: list[str] = []
+            if command["process"] is not None and command["marks"] is None:
+                run["command_exit"] = attempt(failures, "stop the command", stop_command,
+                                              command["process"])
+                marked = attempt(failures, "close the marks", write_marks, directory,
+                                 command["started_ns"], now_ns(), args.name)
+                if marked:
+                    command["marks"] = marked[0]
+                    run["events"] += marked[1]
+            for process in processes:
+                if process.poll() is None:
+                    attempt(failures, f"kill pid {process.pid}", bench.os_kill_group, process.pid)
+            for handle in handles:
+                attempt(failures, f"close {handle.name}", handle.close)
+            run["interference"] = attempt(failures, "read the outside share",
+                                          interference.stop) or {}
+            run["run_reasons"] += [f"clean-up: {item}" for item in failures]
+    except BaseException as error:
+        run.update({"status": "interrupted",
+                    "reasons": [f"interrupted ({type(error).__name__}"
+                                + (f": {error}" if str(error) else "") + ")"]})
+        (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
+        raise
     launches = [float(pathlib.Path(item["files"]["launch"]).read_text())
                 for item in probes if pathlib.Path(item["files"]["launch"]).is_file()]
     if launches:
-        short = probe_too_short(marks, int((min(launches) + args.seconds) * 1e9))
+        short = probe_too_short(command["marks"], int((min(launches) + args.seconds) * 1e9))
         if short:
             run["run_reasons"].append(short)
     (directory / "nodes-after.json").write_text(json.dumps(nodes_status(), indent=1) + "\n")
     run["crowd_report"] = bench.load_report(crowds)
+    run["complete"] = True
     (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
     return score(directory)
 
 
-def start_senders(lanes: list[str], directory: pathlib.Path) -> tuple[list, int]:
+def start_senders(args, lanes: list[str], directory: pathlib.Path) -> tuple[list, int]:
     """The senders of the lanes, from the contributor's host, recorded in the
-    lab's sources so that its `down` stops them."""
+    lab's sources so that its `down` stops them, and bounded in time."""
     start = bench.loop_start(now())
+    sites = {lab.node(host)["site"] for host in hosts_of(args)}
     senders = []
     sources = lab.load("sources.json")
-    for lane, command in zip(lanes, sender_commands(lanes, start)):
+    for lane, command in zip(lanes, sender_commands(lanes, start,
+                                                    sender_seconds(args, len(sites), start))):
         handle = open(directory / f"sender-{lane}.log", "ab")
         process = popen("contrib-lon", command, handle, handle)
         handle.close()
@@ -871,7 +1106,7 @@ def run(args) -> int:
     lanes = lanes_of(args.lanes)
     kind = kind_of(args)
     plan = {"name": args.name, "kind": kind, "scenario": scenario_of(args),
-            "command": change_command(args),
+            "command": change_command(args), "expect_exit": expected_exit(args),
             "base_command": None if is_sleep(command_of(args)) else command_of(args),
             "lab_id": lab.LAB_ID, "lab_up": None if args.no_up else lab_overrides(args)}
     scenario = out_root() / args.name
@@ -880,49 +1115,60 @@ def run(args) -> int:
     if args.no_up and not lab.load("services.json"):
         raise SystemExit("--no-up: the lab is not running")
     results, senders, shaped, per_packet = [], [], [], False
+    failures: list[str] = []
+    previous = install_stops()
     try:
-        if args.no_up:
-            lab.join_tools()
-        else:
-            log(f"lab up: {' '.join(plan['lab_up'])}")
-            lab.up(plan["lab_up"])
-        senders, start = start_senders(lanes, scenario)
-        plan["loop_start_unix"] = start
-        log(f"senders start at {start} ({start - now():.1f} s)")
-        sleep(max(0.0, start - now()))
-        for lane in lanes:
-            for site in sorted({lab.node(host)["site"] for host in hosts_of(args)}):
-                lab.wait_live(LANES[lane]["stream"], site, timeout=60)
-        if args.client_loss:
-            lab.set_tcp_per_packet(True)
-            per_packet = True
-            for host in hosts_of(args):
-                shaped.append(("host", host))
-                lab.set_net(host, "pub", "both", bench.client_loss_spec(args.client_loss))
-        for site, spec in wan_losses(args.wan_loss).items():
-            shaped.append(("wan", site))
-            lab.set_wan(site, "both", spec)
-        for _ in range(args.repeat):
-            result = run_once(args, plan, next_directory(scenario, kind))
-            results.append(result)
-            for line in run_lines(result):
-                print(line, flush=True)
-    finally:
-        for what, name in shaped:
-            if what == "host":
-                lab.set_net(name, "pub", "both", None)
+        try:
+            if args.no_up:
+                lab.join_tools()
             else:
-                lab.set_wan(name, "both", None)
-        if per_packet:
-            lab.set_tcp_per_packet(False)
-        stop_senders(lanes, senders)
-        if not args.keep_up and not args.no_up:
-            lab.down(quiet=True)
-    passes = sum(result["status"] == "pass" for result in results)
-    print(f"{args.name}: {kind} {passes} of {len(results)} pass", flush=True)
+                log(f"lab up: {' '.join(plan['lab_up'])}")
+                lab.up(plan["lab_up"])
+            senders, start = start_senders(args, lanes, scenario)
+            plan["loop_start_unix"] = start
+            log(f"senders start at {start} ({start - now():.1f} s)")
+            sleep(max(0.0, start - now()))
+            for lane in lanes:
+                for site in sorted({lab.node(host)["site"] for host in hosts_of(args)}):
+                    lab.wait_live(LANES[lane]["stream"], site, timeout=LIVE_TIMEOUT_S)
+            if args.client_loss:
+                per_packet = True
+                lab.set_tcp_per_packet(True)
+                for host in hosts_of(args):
+                    shaped.append(("host", host))
+                    lab.set_net(host, "pub", "both", bench.client_loss_spec(args.client_loss))
+            for site, spec in wan_losses(args.wan_loss).items():
+                shaped.append(("wan", site))
+                lab.set_wan(site, "both", spec)
+            for _ in range(args.repeat):
+                result = run_once(args, plan, next_directory(scenario, kind))
+                results.append(result)
+                for line in run_lines(result):
+                    print(line, flush=True)
+        finally:
+            for what, name in shaped:
+                if what == "host":
+                    attempt(failures, f"take the impairment off {name}", lab.set_net, name,
+                            "pub", "both", None)
+                else:
+                    attempt(failures, f"take the impairment off {name}'s wide-area link",
+                            lab.set_wan, name, "both", None)
+            if per_packet:
+                attempt(failures, "TCP per packet off", lab.set_tcp_per_packet, False)
+            attempt(failures, "stop the senders", stop_senders, lanes, senders)
+            if not args.keep_up and not args.no_up:
+                attempt(failures, "take the lab down", lambda: lab.down(quiet=True))
+    finally:
+        restore_stops(previous)
+    counts = dict.fromkeys(STATUSES, 0)
+    for result in results:
+        counts[result["status"]] += 1
+    print(f"{args.name}: {count_text(kind, counts)}", flush=True)
     _record, lines = summary(scenario)
     print("\n".join(lines), flush=True)
-    return 0 if passes == len(results) else 1
+    for item in failures:
+        print(f"clean-up failed: {item}: check the lab (edge_lab.py status, down)", flush=True)
+    return 0 if counts["pass"] == len(results) and not failures else 1
 
 
 def rescore(directory: pathlib.Path) -> int:
@@ -942,7 +1188,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.verb == "score":
         return rescore(pathlib.Path(args.directory))
-    return run(args)
+    try:
+        return run(args)
+    except Stopped as stop:
+        log(f"{stop}: the run was stopped and its lab cleaned up")
+        return 128 + stop.signum
+    except KeyboardInterrupt:
+        log("SIGINT: the run was stopped and its lab cleaned up")
+        return 128 + signal.SIGINT
 
 
 if __name__ == "__main__":
