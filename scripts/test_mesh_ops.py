@@ -181,6 +181,19 @@ class Sim(mesh_ops.Ops):
                 "rebalance_moves": 0, "parents_lost": False, "single_legs": node["single"],
                 "legs_by_other": by_other}
 
+    def move_legs(self, name: str) -> None:
+        """A drained edge's legs move to the other serving edges of its
+        region that are not drained (B's make-before-break moves)."""
+        node = self.nodes_[name]
+        targets = [other for other in self.edges(node["site"])
+                   if other != name and not self.nodes_[other]["drained"]]
+        if node["role"] != "edge" or not targets or not node["legs"]:
+            return
+        share, rest = divmod(node["legs"], len(targets))
+        for index, other in enumerate(targets):
+            self.nodes_[other]["legs"] += share + (1 if index < rest else 0)
+        node["legs"] = 0
+
     def edges(self, site: str) -> list[str]:
         return sorted(name for name, node in self.nodes_.items()
                       if node["role"] == "edge" and node["site"] == site and node["serving"]
@@ -251,7 +264,8 @@ class Sim(mesh_ops.Ops):
     def nodes(self):
         return [{"name": name, "role": node["role"], "site": node["site"], "vlan": node["vlan"],
                  "public": node["public"], "serving": node["serving"] and node["running"],
-                 "slot": node["slot"], "standby": node["standby"], "primary": node["primary"],
+                 "slot": node["slot"], "standby": node["standby"],
+                 "created": node.get("created", False), "primary": node["primary"],
                  "secondary": node["secondary"]} for name, node in self.nodes_.items()]
 
     def status(self, name):
@@ -273,6 +287,7 @@ class Sim(mesh_ops.Ops):
         if not self.up(name):
             return None
         if path.endswith("drain-node"):
+            self.move_legs(name)
             self.nodes_[name]["drained"] = True
         elif path.endswith("resume-node"):
             self.nodes_[name]["drained"] = False
@@ -311,8 +326,8 @@ class Sim(mesh_ops.Ops):
             raise OSError("ssh: connection reset before the script ran")
         node = self.nodes_[name]
         if rollback:
+            # The script copies .args.prev to .args and keeps .args.prev.
             target = node["prev"]
-            node["prev"] = node["build"]
         else:
             target = node["staged"]
             node["prev"] = node["build"]
@@ -337,13 +352,19 @@ class Sim(mesh_ops.Ops):
                       and not node["running"])
 
     def start_node(self, name):
+        """Starts on what is staged (put in force as an activation does)."""
         self.calls.append(("start", name))
+        self._maybe_fail("start", name)
         node = self.nodes_[name]
-        node.update(serving=True, standby=False, staged=NEW)
-        self.restart(name, NEW)
+        if node["staged"] != node["build"]:
+            node["prev"] = node["build"]
+        node.update(serving=True, standby=False)
+        self.restart(name, node["staged"])
 
-    def stop_node(self, name):
+    def stop_node(self, name, not_after_ms=None):
         self.calls.append(("stop", name))
+        if not_after_ms is not None and self.clock() * 1000 > not_after_ms:
+            raise mesh_ops.Refused("late")
         node = self.nodes_[name]
         node["running"] = False
         if node["role"] == "edge":
@@ -358,6 +379,8 @@ class Sim(mesh_ops.Ops):
         self.calls.append(("rebuild", name, mode))
         self._maybe_fail("rebuild", name)
         self.nodes_[name].update(running=False, drained=False)
+        if mode == "new":
+            self.nodes_[name]["public"] = "192.0.9." + self.nodes_[name]["public"].rsplit(".", 1)[1]
 
     def push(self, name):
         self.calls.append(("push", name))
@@ -371,12 +394,14 @@ class Sim(mesh_ops.Ops):
     def add_slot(self, name):
         self.calls.append(("add_slot", name))
         self._maybe_fail("add_slot", name)
+        self.nodes_[name]["created"] = True
+        self._maybe_fail("add_slot_push", name)
         self.nodes_[name].update(serving=True)
         self.restart(name, OLD)
 
     def remove_slot(self, name):
         self.calls.append(("remove_slot", name))
-        self.nodes_[name].update(serving=False, running=False)
+        self.nodes_[name].update(serving=False, running=False, created=False)
 
     # ---------------------------------------------------------------- views
     def activations(self):
@@ -418,6 +443,23 @@ class Base(unittest.TestCase):
     def journals(self):
         return [json.loads(path.read_text())
                 for path in sorted(self.sim.evidence_dir.glob("*.state.json"))]
+
+    def interrupt_after(self, method: str, node: str, signum=signal.SIGINT, when=None):
+        """Send a signal to this process once, right after the Sim's
+        `method` acted on `node` (and `when(args)` holds)."""
+        original = getattr(self.sim, method)
+        armed = {"on": True}
+
+        def wrapper(name, *args, **kwargs):
+            result = original(name, *args, **kwargs)
+            if armed["on"] and name == node and (when is None or when(args)):
+                armed["on"] = False
+                os.kill(os.getpid(), signum)
+            return result
+        setattr(self.sim, method, wrapper)
+
+    def unfinished(self, command=None):
+        return mesh_ops.Journal.unfinished(self.sim.evidence_dir, command)
 
 
 def fake_rules(calls: list | None = None, gate_ok=True, ready_ok=True):
@@ -1179,6 +1221,184 @@ class Roll(Base):
         self.assertIn("new-edge-3 (draining)", self.err.getvalue())
         self.assertEqual(self.sim.changing(), [])
 
+    def test_an_interrupt_before_a_forwarder_s_rollback_names_it_and_resume_makes_it(self):
+        self.sim.broken[("new-dist-b", NEW[0])] = "threads"
+        original, calls = mesh_ops.forwarder_gate, []
+
+        def gate(*args, **kwargs):
+            calls.append(args[1])
+            if len(calls) == 2:
+                os.kill(os.getpid(), signal.SIGINT)
+            return original(*args, **kwargs)
+        with mock.patch.object(mesh_ops, "forwarder_gate", gate):
+            code = self.roll("forwarders", options=self.options(ready_timeout_s=5))
+        self.assertEqual(code, 130, self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [("new-dist-b", False)])
+        self.assertIn("new-dist-b runs the build that failed; it was not rolled back (roll "
+                      "forwarders --resume makes the rollback)", self.err.getvalue())
+        hand = self.unfinished("roll")[0].data["in_hand"]
+        self.assertEqual((hand["node"], hand["phase"]), ("new-dist-b", "rollback-gate"))
+        self.clock.sleep(30)
+        self.assertEqual(self.roll("forwarders", resume=True), 4, self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [("new-dist-b", False), ("new-dist-b", True)])
+        self.assertEqual(self.sim.nodes_["new-dist-b"]["build"], OLD)
+        self.assertEqual(self.unfinished(), [])
+
+    def test_rollback_all_keeps_the_node_that_failed_in_the_journal(self):
+        self.sim.broken[("lon-edge-2", NEW[0])] = "cold"
+        code = self.roll("edges", sites=["london"],
+                         options=self.options(on_failure="rollback-all", ready_timeout_s=5,
+                                              gate_timeout_s=3))
+        # lon-edge-2 is not warm (not the build's: no rollback) and stays
+        # drained; rolling lon-edge-1 back is refused because lon-edge-2 is
+        # not ready.
+        self.assertEqual(code, 3, self.err.getvalue())
+        self.assertTrue(self.sim.nodes_["lon-edge-2"]["drained"])
+        journal = self.unfinished("roll")[0].data
+        self.assertFalse(journal["finished"])
+        self.assertEqual(journal["left"]["lon-edge-2"]["phase"], "activated")
+        self.assertIn("left: lon-edge-2 is in phase activated and stays drained",
+                      self.err.getvalue())
+        # The operator's rollback of that one node works on it although it is
+        # not ready, and closes the roll's journal.
+        self.sim.calls.clear()
+        self.assertEqual(mesh_ops.restart_nodes(
+            self.sim, ["lon-edge-2"], options=self.options(rollback=True), out=self.out,
+            err=self.err, clock=self.clock, sleep=self.clock.sleep), 0, self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [("lon-edge-2", True)])
+        self.assertEqual(self.sim.nodes_["lon-edge-2"]["build"], OLD)
+        self.assertFalse(self.sim.nodes_["lon-edge-2"]["drained"])
+        self.assertEqual(self.unfinished(), [])
+
+    def test_a_refusal_after_the_change_began_is_exit_3(self):
+        self.sim.nodes_["new-edge-3"].update(serving=False, running=False, standby=True, legs=0)
+        self.sim.fail[("start", "new-edge-3")] = mesh_ops.Refused("budget: 61.2 > 60")
+        code = self.roll("edges")
+        self.assertEqual(code, 3, self.err.getvalue())
+        self.assertEqual([name for name, _ in self.sim.activations()],
+                         ["lon-edge-1", "lon-edge-2", "lon-edge-3"])
+        self.assertIn("the surge edge new-edge-3 was not started (budget: 61.2 > 60)",
+                      self.err.getvalue())
+        journal = self.journals()[-1]
+        self.assertTrue(journal["finished"])
+        self.assertEqual((journal["exit"], journal["surge"]), (3, {}))
+        # Any other Refused once the change began: exit 3, not 2.
+        self.sim.calls.clear()
+        self.sim.hooks[("post", "lon-edge-2")] = lambda: (_ for _ in ()).throw(
+            mesh_ops.Refused("a rule"))
+        self.assertEqual(self.roll("edges", sites=["london"],
+                                   options=self.options(force=True)), 3)
+        self.assertIn("refused after the change began: a rule; lon-edge-2 is in phase drain",
+                      self.err.getvalue())
+
+    def test_two_rolls_in_a_row_through_the_surge_edge(self):
+        self.sim.nodes_["new-edge-3"].update(serving=False, running=False, standby=True, legs=0)
+        self.assertEqual(self.roll("edges", sites=["newyork"]), 0, self.err.getvalue())
+        # It was staged and started on the target build, and its leave
+        # drained it (the drain survives its stop).
+        self.assertEqual(self.sim.nodes_["new-edge-3"]["build"], NEW)
+        self.assertTrue(self.sim.nodes_["new-edge-3"]["drained"])
+        self.assertIn(("stage", ("new-edge-3",)), self.sim.calls)
+        self.clock.sleep(30)
+        self.sim.calls.clear()
+        self.assertEqual(self.roll("edges", sites=["newyork"], options=self.options(force=True)),
+                         0, self.err.getvalue())
+        posts = [call[1:] for call in self.sim.calls if call[0] == "post"]
+        self.assertEqual(posts[0], ("new-edge-3", "resume-node"))
+        self.assertTrue(self.sim.nodes_["new-edge-3"]["standby"])
+
+    def test_the_surge_edge_leaves_after_the_single_legs_wait_and_its_gate(self):
+        self.sim.nodes_["new-edge-3"].update(serving=False, running=False, standby=True, legs=0)
+        seen = {}
+        original = self.sim.post
+
+        def post(name, path, body):
+            code = original(name, path, body)
+            if path.endswith("resume-node") and name == "new-edge-2":
+                seen["resumed"] = self.clock()
+                self.sim.nodes_["new-edge-1"]["single"] = 30
+            if path.endswith("drain-node") and name == "new-edge-3":
+                seen["leave"] = self.clock()
+            return code
+        self.sim.post = post
+        original_doc = self.sim.doc
+
+        def doc(name):
+            if seen.get("resumed") and self.clock() - seen["resumed"] > 6:
+                self.sim.nodes_["new-edge-1"]["single"] = 0
+            return original_doc(name)
+        self.sim.doc = doc
+        self.assertEqual(self.roll("edges", sites=["newyork"]), 0, self.err.getvalue())
+        self.assertGreater(seen["leave"] - seen["resumed"], 6)
+        # Its gate refuses (another edge is not ready): it is left serving.
+        self.sim.calls.clear()
+        self.sim.doc = original_doc
+        self.sim.hooks[("post", "new-edge-2")] = lambda: self.sim.hooks.update(
+            {("post", "new-edge-2"): lambda: self.sim.broken.update(
+                {("new-edge-1", NEW[0]): "threads"})})
+        self.clock.sleep(30)
+        self.assertEqual(self.roll("edges", sites=["newyork"],
+                                   options=self.options(force=True, gate_timeout_s=2)), 3)
+        self.assertIn("the surge edge new-edge-3 may not leave newyork", self.err.getvalue())
+        self.assertNotIn(("post", "new-edge-3", "drain-node"), self.sim.calls)
+        self.assertTrue(self.sim.nodes_["new-edge-3"]["running"])
+
+    def test_an_edge_refused_as_late_twice_is_resumed(self):
+        original = self.sim.activate
+
+        def ahead(name, not_after_ms, rollback=False):
+            self.clock.sleep(2.0)  # the node's clock runs ahead: always late
+            return original(name, not_after_ms, rollback)
+        self.sim.activate = ahead
+        self.assertEqual(self.roll("edges", sites=["london"]), 3)
+        self.assertIn("lon-edge-1 was not activated twice (late); it runs as before and was "
+                      "resumed", self.err.getvalue())
+        self.assertFalse(self.sim.nodes_["lon-edge-1"]["drained"])
+        self.assertEqual(self.sim.nodes_["lon-edge-1"]["build"], OLD)
+        self.assertTrue(self.journals()[-1]["finished"])
+
+    def test_an_interrupt_resumes_an_edge_only_with_its_new_arguments_seen(self):
+        def wrong_args():
+            self.sim.patch["lon-edge-1"] = lambda doc: {
+                **doc, "process": {**doc["process"], "args_sha256": "args-other"}}
+            os.kill(os.getpid(), signal.SIGTERM)
+        self.sim.hooks[("activate", "lon-edge-1")] = wrong_args
+        self.assertEqual(self.roll("edges", sites=["london"]), 130)
+        self.assertTrue(self.sim.nodes_["lon-edge-1"]["drained"])
+        self.assertIn("args_sha256 differs", self.err.getvalue())
+        self.assertEqual(self.unfinished("roll")[0].data["in_hand"]["node"], "lon-edge-1")
+
+    def test_an_edge_that_will_not_empty_for_its_rollback_stays_drained(self):
+        self.sim.broken[("lon-edge-1", NEW[0])] = "threads"
+        # The failed build's client_udp has no gauges: it is never "empty".
+        self.sim.hooks[("activate", "lon-edge-1")] = lambda: self.sim.patch.update(
+            {"lon-edge-1": lambda doc: {**doc, "client_udp": {}}})
+        code = self.roll("edges", sites=["london"],
+                         options=self.options(ready_timeout_s=3, drain_timeout_s=3))
+        self.assertEqual(code, 3, self.err.getvalue())
+        self.assertIn("lon-edge-1 did not empty in 3 s", self.err.getvalue())
+        self.assertIn("it stays drained", self.err.getvalue())
+        self.assertNotIn(("post", "lon-edge-1", "resume-node"), self.sim.calls)
+        self.assertTrue(self.sim.nodes_["lon-edge-1"]["drained"])
+        self.assertEqual(self.unfinished("roll")[0].data["in_hand"]["phase"], "rollback-gate")
+
+    def test_a_new_roll_closes_an_older_journal_whose_node_is_ready_again(self):
+        class Killed(BaseException):
+            pass
+
+        def kill():
+            raise Killed()
+        self.sim.hooks[("post", "lon-edge-1")] = kill
+        with self.assertRaises(Killed):
+            self.roll("edges", sites=["london"])
+        # The operator resumed lon-edge-1 by hand; a plain roll runs.
+        self.sim.nodes_["lon-edge-1"]["drained"] = False
+        self.clock.sleep(5)
+        self.assertEqual(self.roll("edges", sites=["london"]), 0, self.err.getvalue())
+        self.assertIn("lon-edge-1 ready now", self.err.getvalue())
+        self.assertEqual(self.roll("edges", resume=True), 2)
+        self.assertIn("no unfinished roll", self.err.getvalue())
+
     def test_a_contributor_with_video_refuses_unless_accepted(self):
         def video(doc):
             doc["streams"].append({"stream_id": 4100, "class": "video", "publishing": True})
@@ -1283,7 +1503,8 @@ class Restart(Base):
     def test_hold_keeps_the_node_stopped_that_long(self):
         stopped = {}
         original = self.sim.stop_node
-        self.sim.stop_node = lambda name: (stopped.setdefault(name, self.clock()), original(name))
+        self.sim.stop_node = lambda name, **bound: (stopped.setdefault(name, self.clock()),
+                                                    original(name, **bound))
         original_activate = self.sim.activate
 
         def activate(name, not_after_ms, rollback=False):
@@ -1292,6 +1513,81 @@ class Restart(Base):
         self.sim.activate = activate
         self.assertEqual(self.restart(["new-dist-b"], hold_s=20), 0, self.err.getvalue())
         self.assertGreaterEqual(stopped["activated"] - stopped["new-dist-b"], 20)
+
+    def test_hold_with_a_late_first_activation_tries_the_activation_alone(self):
+        original = self.sim.activate
+        late = {"count": 0}
+
+        def slow(name, not_after_ms, rollback=False):
+            if late["count"] < 1:
+                late["count"] += 1
+                self.clock.sleep(2.0)
+            return original(name, not_after_ms, rollback)
+        self.sim.activate = slow
+        gates = []
+        original_gate = mesh_ops.forwarder_gate
+        with mock.patch.object(mesh_ops, "forwarder_gate",
+                               lambda *a, **k: gates.append(a[1]) or original_gate(*a, **k)):
+            self.assertEqual(self.restart(["new-dist-b"], hold_s=5), 0, self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [("new-dist-b", False), ("new-dist-b", False)])
+        self.assertEqual(gates, ["new-dist-b"])
+
+    def test_the_hold_s_stop_is_bound_by_its_gate(self):
+        original = self.sim.stop_node
+
+        def slow(name, not_after_ms=None):
+            self.clock.sleep(2.0)  # ssh slow: the stop lands after its deadline
+            return original(name, not_after_ms=not_after_ms)
+        self.sim.stop_node = slow
+        self.assertEqual(self.restart(["lon-edge-2"], hold_s=5), 3)
+        self.assertIn("the hold's stop was refused (late); it runs as before; resumed",
+                      self.err.getvalue())
+        self.assertTrue(self.sim.nodes_["lon-edge-2"]["running"])
+        self.assertFalse(self.sim.nodes_["lon-edge-2"]["drained"])
+        self.assertEqual(self.sim.activations(), [])
+
+    def test_an_interrupt_while_held_starts_the_node_and_resume_finishes_it(self):
+        self.interrupt_after("stop_node", "new-dist-b")
+        self.assertEqual(self.restart(["new-dist-b", "new-dist-a"], hold_s=20), 130)
+        self.assertTrue(self.sim.nodes_["new-dist-b"]["running"])
+        self.assertIn("new-dist-b was held stopped and is started again", self.err.getvalue())
+        self.assertIn("restart --nodes new-dist-b,new-dist-a --resume", self.err.getvalue())
+        hand = self.unfinished("restart")[0].data["in_hand"]
+        self.assertEqual((hand["node"], hand["phase"]), ("new-dist-b", "activated"))
+        self.sim.calls.clear()
+        self.clock.sleep(30)
+        self.assertEqual(mesh_ops.restart_nodes(
+            self.sim, ["new-dist-b", "new-dist-a"], options=self.options(hold_s=1), resume=True,
+            out=self.out, err=self.err, clock=self.clock, sleep=self.clock.sleep), 0,
+            self.err.getvalue())
+        # new-dist-b's readiness is seen, then new-dist-a goes through.
+        self.assertEqual(self.sim.activations(), [("new-dist-a", False)])
+        self.assertEqual(self.unfinished(), [])
+
+    def test_an_edge_interrupted_while_held_is_started_warmed_and_resumed(self):
+        self.interrupt_after("stop_node", "lon-edge-2")
+        self.assertEqual(self.restart(["lon-edge-2"], hold_s=20), 130)
+        self.assertTrue(self.sim.nodes_["lon-edge-2"]["running"])
+        self.assertFalse(self.sim.nodes_["lon-edge-2"]["drained"])
+        self.assertIn("lon-edge-2 is warm and resumed", self.err.getvalue())
+        self.assertTrue(self.journals()[-1]["finished"])
+
+    def test_a_restart_rollback_that_fails_is_not_rolled_back_again(self):
+        self.sim.nodes_["new-dist-b"]["prev"] = ("cccccccccccc", 500)
+        self.sim.broken[("new-dist-b", "cccccccccccc")] = "threads"
+        self.assertEqual(self.restart(["new-dist-b"], rollback=True, ready_timeout_s=3), 4)
+        self.assertEqual(self.sim.activations(), [("new-dist-b", True)])
+        self.assertIn("new-dist-b is not ready on its previous arguments either",
+                      self.err.getvalue())
+        self.assertNotIn("rolled back to", self.err.getvalue())
+
+    def test_restart_of_an_edge_brings_the_surge_edge(self):
+        self.sim.nodes_["new-edge-3"].update(serving=False, running=False, standby=True, legs=0)
+        self.assertEqual(self.restart(["new-edge-1"]), 0, self.err.getvalue())
+        self.assertEqual([call[:2] for call in self.sim.calls if call[0] in
+                          ("start", "stop", "activate")],
+                         [("start", "new-edge-3"), ("activate", "new-edge-1"),
+                          ("stop", "new-edge-3")])
 
     def test_rollback_puts_the_previous_arguments_in_force_without_staging(self):
         self.sim.nodes_["new-dist-b"]["prev"] = ("cccccccccccc", 500)
@@ -1319,8 +1615,8 @@ class Replace(Base):
     def test_replace_of_a_forwarder_goes_through_its_slot(self):
         self.assertEqual(self.replace("lon-dist-b"), 0, self.err.getvalue())
         self.assertEqual([call for call in self.sim.calls if call[0] != "check"], [
-            ("add_slot", "lon-dist-c"), ("post", "lon-dist-b", "drain-node"),
-            ("stop", "lon-dist-b"), ("rebuild", "lon-dist-b", "rebuild"), ("push", "lon-dist-b"),
+            ("add_slot", "lon-dist-c"), ("post", "lon-dist-c", "resume-node"),
+            ("post", "lon-dist-b", "drain-node"), ("stop", "lon-dist-b"), ("rebuild", "lon-dist-b", "rebuild"), ("push", "lon-dist-b"),
             ("post", "lon-dist-b", "resume-node"), ("post", "lon-dist-c", "drain-node"),
             ("stop", "lon-dist-c"), ("remove_slot", "lon-dist-c")])
         self.assertFalse(self.sim.nodes_["lon-dist-b"]["drained"])
@@ -1331,6 +1627,61 @@ class Replace(Base):
         self.assertEqual([call for call in self.sim.calls if call[0] != "check"],
                          [("add_slot", "lon-dist-c")])
         self.assertIn("lon-dist-b is untouched", self.err.getvalue())
+
+    def test_an_interrupted_forwarder_replace_names_what_it_left_and_resume_finishes_it(self):
+        cases = {
+            "after the slot's create": ("add_slot", "lon-dist-c", None),
+            "after the drain of X": ("post", "lon-dist-b",
+                                     lambda args: args[0].endswith("drain-node")),
+            "during X's push": ("push", "lon-dist-b", None),
+            "after the slot's drain": ("post", "lon-dist-c",
+                                       lambda args: args[0].endswith("drain-node")),
+        }
+        for case, (method, node, when) in cases.items():
+            with self.subTest(case):
+                self.setUp()
+                self.interrupt_after(method, node, when=when)
+                self.assertEqual(self.replace("lon-dist-b"), 130, self.err.getvalue())
+                journal = self.unfinished("replace")
+                self.assertEqual(len(journal), 1, self.err.getvalue())
+                self.assertIn("replace --nodes lon-dist-b --resume", self.err.getvalue())
+                self.assertTrue(self.sim.nodes_["lon-dist-c"]["running"])
+                self.clock.sleep(30)
+                self.assertEqual(self.replace("lon-dist-b", resume=True), 0, self.err.getvalue())
+                self.assertEqual(self.unfinished(), [])
+                self.assertFalse(self.sim.nodes_["lon-dist-b"]["drained"])
+                self.assertTrue(self.sim.nodes_["lon-dist-b"]["running"])
+                self.assertFalse(self.sim.nodes_["lon-dist-c"]["running"])
+                self.assertFalse(self.sim.nodes_["lon-dist-c"]["created"])
+
+    def test_a_slot_that_fails_after_its_create_is_named_and_resume_deletes_it(self):
+        self.sim.fail[("add_slot_push", "lon-dist-c")] = OSError("apt: 503")
+        self.assertEqual(self.replace("lon-dist-b"), 3)
+        self.assertIn("the slot lon-dist-c failed part-way (apt: 503); lon-dist-b is untouched",
+                      self.err.getvalue())
+        self.assertIn("left: the slot lon-dist-c may exist and bill", self.err.getvalue())
+        self.assertEqual(self.unfinished("replace")[0].data["left"]["lon-dist-c"]["phase"],
+                         "slot-creating")
+        self.sim.calls.clear()
+        self.assertEqual(self.replace("lon-dist-b", resume=True), 0, self.err.getvalue())
+        changes = [call[:2] for call in self.sim.calls if call[0] in ("add_slot", "remove_slot")]
+        self.assertEqual(changes, [("remove_slot", "lon-dist-c"), ("add_slot", "lon-dist-c"),
+                                   ("remove_slot", "lon-dist-c")])
+
+    def test_a_kept_slot_is_started_by_the_next_replace(self):
+        self.assertEqual(self.replace("lon-dist-b", keep_slot=True), 0, self.err.getvalue())
+        self.assertTrue(self.sim.nodes_["lon-dist-c"]["created"])
+        self.assertFalse(self.sim.nodes_["lon-dist-c"]["running"])
+        self.sim.calls.clear()
+        self.clock.sleep(30)
+        self.assertEqual(self.replace("lon-dist-a"), 0, self.err.getvalue())
+        self.assertEqual([call[:2] for call in self.sim.calls if call[0] in
+                          ("add_slot", "start", "remove_slot")],
+                         [("start", "lon-dist-c"), ("remove_slot", "lon-dist-c")])
+
+    def test_replace_with_a_new_instance_takes_its_new_addresses(self):
+        self.assertEqual(self.replace("lon-dist-a", mode="new"), 0, self.err.getvalue())
+        self.assertEqual(self.sim.nodes_["lon-dist-a"]["public"], "192.0.9.11")
 
     def test_a_failed_push_is_named_and_replace_resume_goes_on(self):
         self.sim.fail[("push", "lon-edge-1")] = OSError("apt: 503")
@@ -1429,6 +1780,18 @@ class Plumbing(unittest.TestCase):
         polled = client.poll({"a": ("10.0.0.1", 19444, "/api/node"),
                               "b": ("10.0.0.1", 19444, "/api/node")})
         self.assertEqual(polled, {"a": (200, {"ok": True}), "b": (200, {"ok": True})})
+
+    def test_a_mark_and_its_label_are_never_split_by_a_signal(self):
+        seen = []
+        previous = signal.signal(signal.SIGHUP, lambda *_: seen.append("handled"))
+        try:
+            with mesh_ops.signals_held():
+                os.kill(os.getpid(), signal.SIGHUP)
+                seen.append("inside")
+            seen.append("after")
+        finally:
+            signal.signal(signal.SIGHUP, previous)
+        self.assertEqual(seen, ["inside", "handled", "after"])
 
     def test_a_control_request_must_name_its_node(self):
         with self.assertRaises(mesh_ops.Refused):

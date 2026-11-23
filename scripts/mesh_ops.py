@@ -110,8 +110,15 @@ ROLE_TIER = {"edge": "edges", "distributor": "forwarders", "backbone": "forwarde
 LEVEL_REASONS = {"edges": ("class_threads", "no parent heard", "parents lost"),
                  "forwarders": ("class_threads", "peers not admitted")}
 OPERATOR_DRAIN = "draining: operator"
-# Phases of a node in hand that leave nothing to undo.
-CLEAN_PHASES = ("gate", "resumed")
+# The phases of a node in hand (journalled before each step). Only these
+# leave nothing to undo or to finish: before any change, after the node was
+# given back, and the dry mode's (nothing is changed).
+CLEAN_PHASES = ("gate", "resumed", "dry-drain", "dry-activate")
+# Drained by the command and not activated: resume-node undoes it.
+DRAINED_PHASES = ("drain", "drained")
+# The node may run what was put in force (an activation, a surge edge's
+# start, an edge being resumed): its readiness is what is left to see.
+STARTED_PHASES = ("activating", "activated", "rolled-back", "surge-start", "resume")
 
 
 class Refused(Exception):
@@ -446,9 +453,10 @@ class Ops:
     distributor, backbone, contributor), "site", "vlan", "public" (addresses
     or None), "serving" (in service now: an edge not held out, a slot that
     exists and runs, every other node), "slot" (an autoscale slot),
-    "standby" (an edge held out that may be started), "primary",
-    "secondary" (the names of a level-2 forwarder's compiled parents, the
-    secondary being its repair lane; None elsewhere)}."""
+    "standby" (an edge held out that may be started), "created" (a slot
+    whose instance exists, running or stopped), "primary", "secondary" (the
+    names of a level-2 forwarder's compiled parents, the secondary being
+    its repair lane; None elsewhere)}."""
 
     #: <lab state>.ops.lock
     lock_path: pathlib.Path
@@ -523,10 +531,16 @@ class Ops:
         raise NotImplementedError
 
     def start_node(self, node: str) -> None:
+        """Start a standby edge or a stopped slot and count it in service.
+        It runs its staged arguments (`.args.next` put in force as the
+        activation script does) when something is staged, else those in
+        force. Refused: nothing was started."""
         raise NotImplementedError
 
-    def stop_node(self, node: str) -> None:
-        """A graceful stop; an edge goes back to the standby edges."""
+    def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
+        """A graceful stop; an edge goes back to the standby edges. With
+        `not_after_ms` the stop is bound as an activation is: when the
+        node's clock is past it, Refused and nothing stopped."""
         raise NotImplementedError
 
     def rebuild(self, node: str, mode: str) -> None:
@@ -539,11 +553,13 @@ class Ops:
         raise NotImplementedError
 
     def add_slot(self, node: str) -> None:
-        """Create (the lab tool's `add`, with the budget) and push a slot."""
+        """Create (the lab tool's `add`, with the budget) and push a slot.
+        Refused: nothing was created; any other error: it may exist."""
         raise NotImplementedError
 
     def remove_slot(self, node: str) -> None:
-        """Delete a stopped slot by its recorded id."""
+        """Delete a slot by its recorded id, whatever state it is in (one
+        created part-way included); nothing to delete is not an error."""
         raise NotImplementedError
 
 
@@ -553,6 +569,15 @@ class Lab:
     def __init__(self, records: list[dict]):
         self.records = {record["name"]: dict(record) for record in records}
         self.order = [record["name"] for record in records]
+        self.readdress([])
+
+    def readdress(self, records: list[dict]) -> None:
+        """Take the addresses of `records` (`replace --mode new` gives a
+        node new ones)."""
+        for record in records:
+            if record["name"] in self.records:
+                for key in ("vlan", "public"):
+                    self.records[record["name"]][key] = record.get(key)
         self.by_address = {}
         for name, record in self.records.items():
             for key in ("vlan", "public"):
@@ -652,6 +677,23 @@ def plan_order(lab: Lab, tier: str, nodes=None, sites=None) -> list[str]:
 
 # ------------------------------------------------------------ marks, journal
 
+@contextlib.contextmanager
+def signals_held():
+    """SIGINT, SIGTERM and SIGHUP wait (blocked in the kernel) while a mark is
+    written and its label recorded as open or closed, so an interrupt never
+    falls between the two: a label is open exactly when its start was
+    written, and `close` writes every end once."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK,
+                                      {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 class Marks:
     """`start <unix seconds, nine decimals> <label>` and `end ...`: the
     change's two on stdout (flushed) and in `--marks FILE`; per-node marks in
@@ -693,20 +735,24 @@ class Marks:
         self._append(self.node_marks_file, text)
 
     def start(self, label: str) -> None:
-        self._change("start", label)
-        self.open.append(label)
+        with signals_held():
+            self._change("start", label)
+            self.open.append(label)
 
     def end(self, label: str) -> None:
-        self._change("end", label)
-        self.open.remove(label)
+        with signals_held():
+            self._change("end", label)
+            self.open.remove(label)
 
     def node_start(self, label: str) -> None:
-        self._node("start", label)
-        self.node_open.append(label)
+        with signals_held():
+            self._node("start", label)
+            self.node_open.append(label)
 
     def node_end(self, label: str) -> None:
-        self._node("end", label)
-        self.node_open.remove(label)
+        with signals_held():
+            self._node("end", label)
+            self.node_open.remove(label)
 
     def close(self) -> None:
         """Every label still open gets its end: per-node ones, then the
@@ -719,9 +765,12 @@ class Marks:
 
 class Journal:
     """`rolls/<command>-<unix>.state.json`: the plan, the nodes done (with
-    what they ran before), the node in hand and its phase, the surge edges,
-    the open label, and whether the command finished. Written whole and
-    renamed into place on every change."""
+    what they ran before), the node in hand and its phase (`in_hand`), the
+    other nodes the command left in a phase that is not clean (`left`: a
+    node that failed before a rollback-all, a replace's slot), the surge
+    edges, the open label, and whether the command finished: `finished` is
+    true only when no node is left. Written whole and renamed into place on
+    every change."""
 
     def __init__(self, path: pathlib.Path, data: dict):
         self.path = pathlib.Path(path)
@@ -737,7 +786,8 @@ class Journal:
             path = directory / f"{command}-{unix}-{suffix}.state.json"
             suffix += 1
         journal = cls(path, {"command": command, "unix": unix, "finished": False, "done": [],
-                             "before": {}, "in_hand": None, "surge": {}, **fields})
+                             "before": {}, "in_hand": None, "left": {}, "surge": {},
+                             **fields})
         journal.write()
         return journal
 
@@ -767,6 +817,12 @@ class Journal:
                 out.append(Journal(path, data))
         return sorted(out, key=lambda journal: (journal.data.get("unix", 0), journal.path.name),
                       reverse=True)
+
+    @staticmethod
+    def hands(data: dict) -> list[dict]:
+        """Every node a journal names: the node in hand, then those left."""
+        return ([data["in_hand"]] if data.get("in_hand") else []) + \
+            list((data.get("left") or {}).values())
 
 
 class OpsLock:
@@ -1440,7 +1496,14 @@ def typical_times(directory, tier: str) -> dict:
 
 class Engine:
     """One change command: `roll`, `restart_nodes` or `replace`. The
-    module's functions of those names make one and run it."""
+    module's functions of those names make one and run it.
+
+    Bookkeeping: `hand` is the node in hand and its phase, journalled
+    before each step. Taking another node in hand moves a hand that is not
+    in a clean phase to `left`; the command is finished (its journal
+    `finished`) only when no node is in hand or left outside a clean phase.
+    Every node left is named on stderr at the end, with the command that
+    finishes it (`resume_command`)."""
 
     def __init__(self, ops: Ops, command: str, options: Options, out=None, err=None,
                  clock=time.time, sleep=time.sleep):
@@ -1461,13 +1524,17 @@ class Engine:
         self.costs: dict[str, float | None] = {}
         self.single_baseline: dict[str, int] = {}
         self.surge: dict[str, str] = {}
+        self.surge_staged: dict[str, str] = {}
         self.hand: dict | None = None
+        self.left: dict[str, dict] = {}
         self.before: dict[str, dict] = {}
         self.done: list[str] = []
+        self.seen_ready: set[str] = set()
         self.cleaning = False
         self.hurry = False
-        # A node in hand of a killed roll: finished before the others, so
-        # not held to the readiness precondition.
+        self.resume_command = command
+        # Nodes a resumed command finishes first, or a restart --rollback
+        # names: not held to the readiness precondition.
         self.excluded: set[str] = set()
 
     # ---------------------------------------------------------- plumbing
@@ -1489,14 +1556,42 @@ class Engine:
         return self.evidence["nodes"].setdefault(name, {"tier": self.lab.tier(name), "phases": {},
                                                         "events": []})
 
+    @staticmethod
+    def unclean(hand: dict | None) -> bool:
+        return hand is not None and hand.get("phase") not in CLEAN_PHASES
+
+    def is_clean(self) -> bool:
+        return not self.unclean(self.hand) and not self.left
+
+    def write_journal(self) -> None:
+        if self.journal:
+            self.journal.update(in_hand=self.hand, left=self.left, done=self.done,
+                                before=self.before, surge=self.surge)
+
     def phase(self, name: str, phase: str, **fields) -> None:
-        """The node in hand and its phase, in the journal before the step."""
-        hand = dict(self.hand) if self.hand and self.hand.get("node") == name else {}
+        """The node in hand and its phase, in the journal before the step. A
+        node that was in hand in a phase that is not clean is kept in
+        `left`."""
+        current = self.hand
+        if current is not None and current.get("node") == name:
+            hand = dict(current)
+        else:
+            if self.unclean(current):
+                self.left[current["node"]] = current
+            hand = dict(self.left.pop(name, None) or {})
         hand.update(fields, node=name, tier=self.lab.tier(name), phase=phase)
         self.hand = hand
         self.record(name)["events"].append([round(self.clock(), 3), phase])
-        if self.journal:
-            self.journal.update(in_hand=self.hand)
+        self.write_journal()
+
+    def hold(self, name: str, phase: str, **fields) -> None:
+        """A node the command leaves in a state while it works on another
+        (a replace's slot): named in `left` until released."""
+        entry = dict(self.left.get(name) or {})
+        entry.update(fields, node=name, tier=self.lab.tier(name), phase=phase)
+        self.left[name] = entry
+        self.record(name)["events"].append([round(self.clock(), 3), phase])
+        self.write_journal()
 
     def timed(self, name: str, phase: str, began: float) -> None:
         phases = self.record(name)["phases"]
@@ -1504,9 +1599,10 @@ class Engine:
 
     def release_hand(self, name: str, result: str) -> None:
         self.record(name)["result"] = result
-        self.hand = None
-        if self.journal:
-            self.journal.update(in_hand=None, done=self.done, before=self.before)
+        if self.hand is not None and self.hand.get("node") == name:
+            self.hand = None
+        self.left.pop(name, None)
+        self.write_journal()
 
     def snapshot(self, status: Status) -> dict:
         return {"boot_id": status.boot_id, "git": status.build_git, "unix": status.build_unix,
@@ -1559,6 +1655,7 @@ class Engine:
                for name, status in statuses.items() if status is None or status.ready is not True]
         if bad:
             raise Refused(f"not every node is ready: {', '.join(bad)}")
+        self.seen_ready.update(statuses)
         return statuses
 
     def video_rule(self, statuses: dict, scope) -> None:
@@ -1591,19 +1688,14 @@ class Engine:
         self.video_rule(statuses, scope)
         for name in scope:
             if name not in self.excluded:
-                self.before[name] = self.snapshot(statuses[name])
+                self.before.setdefault(name, self.snapshot(statuses[name]))
         for site in self.lab.sites():
             self.costs[site] = leg_cost(self.lab, site, statuses)
         if not self.options.dry and not self.options.rollback:
             for tier in TIERS:
                 names = [name for name in scope if self.lab.tier(name) == tier]
                 if names:
-                    try:
-                        self.ops.stage(names, builds.get(tier))
-                    except Refused:
-                        raise
-                    except Exception as error:  # noqa: BLE001 - staging writes files only
-                        raise Refused(f"staging failed: {error}") from None
+                    self.stage(names, builds.get(tier))
         if self.options.dry:
             # Nothing is staged: a node is on the target when it runs the
             # target build with the arguments it runs.
@@ -1612,6 +1704,14 @@ class Engine:
                            "args_sha256": (self.before.get(name) or {}).get("args_sha256")}
                     for name in scope}
         return {name: self.ops.expected(name, rollback=self.options.rollback) for name in scope}
+
+    def stage(self, names: list[str], build: dict | None) -> None:
+        try:
+            self.ops.stage(names, build)
+        except Refused:
+            raise
+        except Exception as error:  # noqa: BLE001 - staging writes files only
+            raise Refused(f"staging {', '.join(names)} failed: {error}") from None
 
     def on_target(self, name: str, expected: dict) -> bool:
         before = self.before.get(name) or {}
@@ -1627,6 +1727,8 @@ class Engine:
             seconds = sum(typical_times(self.ops.evidence_dir, self.lab.tier(name)).values())
             total += seconds
             self.say(f"plan: {name} ({self.lab.tier(name)}, about {seconds:.0f} s)")
+        for site, name in sorted(self.surge_staged.items()):
+            self.say(f"plan: {name} joins {site} as its surge edge and leaves after its last edge")
         self.say(f"plan: {len(order) - len(skipped)} node(s), about {total:.0f} s"
                  + (" (dry: gates only, nothing restarted)" if self.options.dry else ""))
 
@@ -1641,16 +1743,26 @@ class Engine:
         try:
             code = self.ops.post(name, "/api/control/resume-node", control_body(name))
         except Exception as error:  # noqa: BLE001
-            self.say(f"{name}: resume-node failed: {error}; it stays drained (resume-node {name})")
+            self.say(f"{name}: resume-node failed: {error}")
             return False
         if not control_accepted(code):
-            self.say(f"{name}: resume-node answered {code}; it stays drained (resume-node {name})")
+            self.say(f"{name}: resume-node answered {code}")
             return False
         return True
 
-    def wait_empty(self, name: str) -> float:
+    def give_back(self, name: str) -> bool:
+        """resume-node for a node this command drained and did not activate;
+        its phase becomes `resumed` when the node accepted it."""
+        if self.resume_node(name):
+            self.phase(name, "resumed")
+            return True
+        return False
+
+    def wait_empty(self, name: str, give_back: bool = True) -> float:
         """The four gauges at 0 on polls spanning a second (3.5 step 3); the
-        time of the last poll. On timeout: resume the node, stop (exit 3)."""
+        time of the last poll. On timeout: stop (exit 3), the node given back
+        (resume-node), except inside a rollback (`give_back` False), where
+        it runs the failed build and stays drained."""
         deadline = self.clock() + self.options.drain_timeout_s
         zero_since = None
         while True:
@@ -1666,11 +1778,11 @@ class Engine:
             else:
                 zero_since = None
             if now >= deadline:
-                if self.resume_node(name):
-                    self.phase(name, "resumed")
-                raise Stop(EXIT_STOPPED, f"{name} did not empty in "
-                                         f"{self.options.drain_timeout_s:.0f} s ({values}); "
-                                         "resumed")
+                why = f"{name} did not empty in {self.options.drain_timeout_s:.0f} s ({values})"
+                if not give_back:
+                    raise Stop(EXIT_STOPPED, f"{why}; it stays drained")
+                raise Stop(EXIT_STOPPED, f"{why}; " + ("resumed" if self.give_back(name) else
+                                                      f"it stays drained (resume-node {name})"))
             self.sleep(max(0.0, self.options.poll_s - (now - began)))
 
     def boot_changed(self, name: str, before_boot: int | None, since_us: int,
@@ -1691,19 +1803,23 @@ class Engine:
             return False
         return self.ops.boot_changed(name, since_us // 1000)
 
-    def activate(self, name: str, not_after: float, rollback: bool,
-                 regate) -> tuple[int, int | None]:
+    def activate(self, name: str, not_after: float, rollback: bool, regate,
+                 expected: dict) -> tuple[int, int | None]:
         """Activation with its deadline (3.5): (activation start in µs, the
         unit's NRestarts after it). A refusal as late gates again and tries
         once more; after any other error the boot id decides: changed, go on;
         unchanged, gate again and try once more; never a second restart on a
-        guess."""
+        guess. A node that was not activated keeps the phase it had (drained,
+        held, rollback-gate), and after the second try it is given back or
+        named (`not_activated`)."""
+        entry = self.hand["phase"] if self.hand and self.hand.get("node") == name else "gate"
         status = self.status(name)
         before_boot = status.boot_id if status else (self.before.get(name) or {}).get("boot_id")
         for attempt in (1, 2):
             start_us = self.now_us()
             self.phase(name, "activating", activation_us=start_us, rollback=rollback,
-                       not_after=not_after)
+                       not_after=not_after, before_boot=before_boot, expected=expected,
+                       entry=entry)
             began = self.clock()
             try:
                 result = self.ops.activate(name, int(not_after * 1000), rollback)
@@ -1724,12 +1840,20 @@ class Engine:
             if changed is True or changed is None:
                 self.phase(name, "activated")
                 return start_us, self.ops.unit_restarts(name)
+            self.phase(name, entry)
             if attempt == 2:
-                raise Stop(EXIT_STOPPED, f"{name} was not activated twice ({why}); it runs as "
-                                         "before")
-            self.phase(name, "gate")
+                raise Stop(EXIT_STOPPED, self.not_activated(name, entry, why))
             not_after = regate() + NOT_AFTER_S
         raise AssertionError("unreachable")
+
+    def not_activated(self, name: str, entry: str, why: str) -> str:
+        text = f"{name} was not activated twice ({why})"
+        if entry in DRAINED_PHASES:
+            return text + ("; it runs as before and was resumed" if self.give_back(name) else
+                           f"; it runs as before and stays drained (resume-node {name})")
+        if entry in ("held", "rollback-gate"):
+            return f"{text}; {self.left_message(self.hand)}"
+        return text + "; it runs as before"
 
     def wait_serving(self, name: str) -> None:
         """R7: the node `ready`, and an entry of its region that is not in
@@ -1755,8 +1879,9 @@ class Engine:
             self.sleep(self.options.poll_s)
 
     def wait_single_legs(self, site: str) -> None:
-        """B's rule between two edges of a region: the region's single_legs
-        back at its value before the previous step, or 20 s."""
+        """B's rule before the next drain of a region (the surge edge's
+        leave included): the region's single_legs back at its value before
+        the previous step, or 20 s."""
         baseline = self.single_baseline.get(site)
         if baseline is None:
             return
@@ -1823,8 +1948,8 @@ class Engine:
     def change_node(self, name: str, expected: dict, *, rollback: bool = False,
                     undo: bool = False) -> None:
         """Gate, (drain,) activate, readiness, (resume) for one node of any
-        tier. `undo`: this is a rollback-all step; a failed readiness is not
-        rolled back a second time."""
+        tier. `undo`: this activation is itself the way back (rollback-all,
+        `restart --rollback`); a failed readiness is not rolled back again."""
         tier = self.lab.tier(name)
         label = f"{self.command}.{tier}.{name}" if self.command == "roll" else \
             f"{self.command}.{name}"
@@ -1832,10 +1957,9 @@ class Engine:
         status = self.status(name)
         if status is None:
             raise Stop(EXIT_STOPPED, f"{name} does not answer /api/node; nothing done to it")
-        if not undo:
-            self.before.setdefault(name, self.snapshot(status))
+        self.before.setdefault(name, self.snapshot(status))
         before_boot = status.boot_id
-        self.phase(name, "gate", before=self.before.get(name))
+        self.phase(name, "gate", before=self.before.get(name), undo=undo)
         dry = self.options.dry
         typical = typical_times(self.ops.evidence_dir, tier) if dry else {}
         pairs = []
@@ -1890,21 +2014,24 @@ class Engine:
             self.marks.node_end(label)
             return
         if self.options.hold_s > 0:
-            self.phase(name, "held")
-            self.ops.stop_node(name)
-            self.sleep(self.options.hold_s)
-            last = self.clock()
-        activation_us, restarts = self.activate(name, last + NOT_AFTER_S, rollback, regate)
+            last = self.hold_stopped(name, last, expected, rollback)
+            # A stopped node only needs to start: no gate asks it anything.
+            regate = self.clock
+        activation_us, restarts = self.activate(name, last + NOT_AFTER_S, rollback, regate,
+                                                expected)
         result = self.ready(name, expected, before_boot, activation_us, restarts, pairs)
         if not result.ok:
-            if result.cause == "build" and not undo:
-                self.roll_back(name, result)
+            drained = "; it stays drained" if tier == "edges" else ""
             if undo:
-                raise Stop(EXIT_ROLLED_BACK, f"{name} failed after its rollback: "
-                                             f"{'; '.join(result.problems)}")
+                if not result.answered:
+                    raise Stop(EXIT_NO_ANSWER, f"{name} does not answer /api/node after its "
+                                               f"rollback{drained}")
+                raise Stop(EXIT_ROLLED_BACK, f"{name} is not ready on its previous arguments "
+                                             f"either: {'; '.join(result.problems)}{drained}")
+            if result.cause == "build":
+                self.roll_back(name, result)
             raise Stop(EXIT_STOPPED, f"{name} runs the new build and is not ready, not for the "
-                                     f"build's reasons: {'; '.join(result.problems)}"
-                                     + ("; it stays drained" if tier == "edges" else ""))
+                                     f"build's reasons: {'; '.join(result.problems)}{drained}")
         if tier == "edges":
             began = self.clock()
             self.phase(name, "resume")
@@ -1912,9 +2039,30 @@ class Engine:
                 raise Stop(EXIT_STOPPED, f"{name} is ready and stays drained: resume-node failed")
             self.wait_serving(name)
             self.timed(name, "ready", began)
-        self.done.append(name)
+        if name not in self.done:
+            self.done.append(name)
         self.release_hand(name, "done")
         self.marks.node_end(label)
+
+    def hold_stopped(self, name: str, last: float, expected: dict, rollback: bool) -> float:
+        """`--hold-s`: stop the node within its gate's deadline (as an
+        activation is bound) and keep it stopped; the time to activate
+        from."""
+        entry = self.hand["phase"]
+        status = self.status(name)
+        self.phase(name, "held", entry=entry, before_boot=status.boot_id if status else None,
+                   expected=expected, rollback=rollback)
+        try:
+            self.ops.stop_node(name, not_after_ms=int((last + NOT_AFTER_S) * 1000))
+        except Refused as refused:
+            self.phase(name, entry)
+            text = f"{name}: the hold's stop was refused ({refused}); it runs as before"
+            if entry in DRAINED_PHASES:
+                text += "; resumed" if self.give_back(name) else \
+                    f"; it stays drained (resume-node {name})"
+            raise Stop(EXIT_STOPPED, text) from None
+        self.sleep(self.options.hold_s)
+        return self.clock()
 
     def roll_back(self, name: str, failed: Ready) -> None:
         """A node that failed R1, R2 or R4 (3.5): back to `.args.prev`,
@@ -1922,31 +2070,39 @@ class Engine:
         tier = self.lab.tier(name)
         before = self.before[name]
         what = "; ".join(failed.problems)
-        self.phase(name, "rollback-gate")
+        self.phase(name, "rollback-gate", failed=what)
         if tier == "edges":
             # Still drained by the roll (the drain survives the restart) and
-            # empty; one that answers and holds anyone is emptied first.
+            # empty; one that answers and holds anyone is emptied first. A
+            # drain that does not empty leaves it drained on the failed
+            # build: it is never given back to listeners from here.
             status = self.status(name)
             if status is not None and any(status.udp(item) != 0 for item in DRAIN_GAUGES):
                 self.control(name, "drain-node")
-                self.wait_empty(name)
+                self.wait_empty(name, give_back=False)
             last = self.clock()
-            regate = lambda: self.wait_empty(name)  # noqa: E731
+            regate = lambda: self.wait_empty(name, give_back=False)  # noqa: E731
         elif tier == "forwarders":
             gate = self.gate_forwarder(name)
             if not gate.ok:
                 raise Stop(EXIT_STOPPED, f"{name} failed ({what}); the rollback was not made: the "
                                          f"gate refuses ({'; '.join(gate.problems)}); {name} is "
-                                         "left as it is")
+                                         f"left as it is ({self.resume_command} makes the "
+                                         "rollback once the gate passes)")
             last = gate.last_poll
 
             def regate():
                 again = self.gate_forwarder(name)
                 if not again.ok:
-                    raise Stop(EXIT_STOPPED, f"{name}: the rollback's gate refuses")
+                    raise Stop(EXIT_STOPPED, f"{name}: the rollback's gate refuses: "
+                                             f"{'; '.join(again.problems)}")
                 return again.last_poll
         else:
-            self.gate_contributor(name)
+            try:
+                self.gate_contributor(name)
+            except Stop as stop:
+                raise Stop(EXIT_STOPPED, f"{name} failed ({what}); the rollback was not made: "
+                                         f"{stop.why}") from None
             last = self.clock()
 
             def regate():
@@ -1954,11 +2110,12 @@ class Engine:
                 return self.clock()
         status = self.status(name)
         boot = status.boot_id if status and status.boot_id else before["boot_id"]
-        activation_us, restarts = self.activate(name, last + NOT_AFTER_S, True, regate)
-        self.phase(name, "rolled-back")
         previous = {"git": before["git"], "unix": before["unix"],
                     "args_sha256": before["args_sha256"]}
+        activation_us, restarts = self.activate(name, last + NOT_AFTER_S, True, regate, previous)
+        self.phase(name, "rolled-back")
         result = self.ready(name, previous, boot, activation_us, restarts)
+        drained = "; it stays drained" if tier == "edges" else ""
         if not result.ok:
             if not result.answered and not failed.answered:
                 raise Stop(EXIT_NO_ANSWER, f"{name} answers /api/node on neither build; "
@@ -1966,9 +2123,13 @@ class Engine:
             raise Stop(EXIT_ROLLED_BACK, f"{name} failed ({what}) and, rolled back to "
                                          f"{before['git']}, fails again "
                                          f"({'; '.join(result.problems)}): the condition is not "
-                                         "the build's")
+                                         f"the build's{drained}")
         if tier == "edges":
-            self.resume_node(name)
+            self.phase(name, "resume")
+            if not self.resume_node(name):
+                raise Stop(EXIT_ROLLED_BACK, f"{name} failed ({what}), was rolled back to "
+                                             f"{before['git']} and stays drained: resume-node "
+                                             "failed")
             self.wait_serving(name)
         self.release_hand(name, "rolled-back")
         raise Stop(EXIT_ROLLED_BACK, f"{name} failed its readiness on the new build ({what}) and "
@@ -1979,138 +2140,237 @@ class Engine:
         return not self.options.dry and self.options.surge != "never" and \
             site not in self.surge and len(self.lab.edges(site)) < 3
 
-    def surge_possible(self, scope) -> None:
+    def surge_prepare(self, scope, build: dict | None) -> None:
         """Before the first node: every region whose edges the command
-        drains and that serves fewer than three edges has an edge to start."""
-        for site in {self.lab.site(name) for name in scope if self.lab.tier(name) == "edges"}:
-            if self.surge_needed(site) and not self.ops.surge_candidates(site):
+        drains and that serves fewer than three edges has an edge to start,
+        and that edge's files are staged (`build`: the target; None, the
+        tier's recorded build), so that it starts on them."""
+        for site in sorted({self.lab.site(name) for name in scope
+                            if self.lab.tier(name) == "edges"}):
+            if not self.surge_needed(site):
+                continue
+            candidates = self.ops.surge_candidates(site)
+            if not candidates:
                 raise Refused(f"{site} serves {len(self.lab.edges(site))} edges and has no standby "
                               "edge or slot to start; --surge never rolls with each listener on "
                               "one path while its edge restarts")
+            self.stage([candidates[0]], build)
+            self.surge_staged[site] = candidates[0]
 
     def surge_join(self, site: str) -> None:
+        """Step 0 (3.5): start the staged surge edge, wait R1, R2, R6, give it
+        listeners (resume-node: a standby edge keeps the drain of its last
+        leave) and wait R7."""
         if not self.surge_needed(site):
             return
-        candidates = self.ops.surge_candidates(site)
-        if not candidates:
-            raise Stop(EXIT_STOPPED, f"{site} has no standby edge or slot to start any more")
-        name = candidates[0]
+        name = self.surge_staged[site]
         label = f"{self.command}.edges.join.{name}"
         self.marks.node_start(label)
         status = self.status(name)
-        before_boot = status.boot_id if status else 0
+        before_boot = status.boot_id if status and status.boot_id else 0
+        expected = self.ops.expected(name)
         start_us = self.now_us()
         self.surge[site] = name
-        if self.journal:
-            self.journal.update(surge=self.surge)
-        self.ops.start_node(name)
+        self.phase(name, "surge-start", activation_us=start_us, before_boot=before_boot,
+                   expected=expected)
+        try:
+            self.ops.start_node(name)
+        except Refused as refused:
+            self.surge.pop(site)
+            self.release_hand(name, "not started")
+            raise Stop(EXIT_STOPPED, f"the surge edge {name} was not started ({refused}); "
+                                     f"no edge of {site} was touched") from None
+        except Exception as error:  # noqa: BLE001 - it may be running: named
+            raise Stop(EXIT_STOPPED, f"the surge edge {name} failed to start ({error}); it may "
+                                     "be running") from None
         self.lab.records[name]["serving"] = True
-        expected = self.ops.expected(name)
-        result = wait_ready(self.ops, name, expected=expected, before_boot=before_boot or 0,
-                            activation_us=start_us, lab=self.lab,
-                            restarts_before=self.ops.unit_restarts(name),
-                            timeout_s=self.options.ready_timeout_s, poll_s=self.options.poll_s,
-                            clock=self.clock, sleep=self.sleep)
-        if not result.ok or result.status is None or result.status.state != "ready":
+        result = self.ready(name, expected, before_boot, start_us, self.ops.unit_restarts(name))
+        if not result.ok:
             raise Stop(EXIT_STOPPED, f"the surge edge {name} did not become ready: "
                                      f"{'; '.join(result.problems)}; it is left as it is")
+        self.phase(name, "resume")
+        if not self.resume_node(name):
+            raise Stop(EXIT_STOPPED, f"the surge edge {name} is ready and stays drained: "
+                                     "resume-node failed")
         self.wait_serving(name)
+        self.release_hand(name, "surge")
         self.marks.node_end(label)
 
     def surge_leave(self, site: str) -> None:
-        name = self.surge.pop(site, None)
+        """The surge edge leaves after its region's last edge, as any edge
+        is drained: B's single_legs wait, the capacity gate, drain, empty,
+        stop. Refused: it is left serving (exit 3)."""
+        name = self.surge.get(site)
         if name is None:
             return
         label = f"{self.command}.edges.leave.{name}"
         self.marks.node_start(label)
+        self.phase(name, "gate")
+        self.wait_single_legs(site)
+        gate = self.gate_edge(name)
+        if not gate.ok:
+            raise Stop(EXIT_STOPPED, f"the surge edge {name} may not leave {site}: the capacity "
+                                     f"gate refuses ({'; '.join(gate.problems)}); it is left "
+                                     "serving")
+        self.phase(name, "drain")
         self.control(name, "drain-node")
+        self.phase(name, "drained")
         self.wait_empty(name)
+        self.phase(name, "stop")
         self.ops.stop_node(name)
         self.lab.records[name]["serving"] = False
-        if self.journal:
-            self.journal.update(surge=self.surge)
+        self.surge.pop(site)
+        self.release_hand(name, "left")
         self.marks.node_end(label)
 
     def surge_finish(self, code: int) -> None:
         """Exit 0: drained and stopped (done per region already). 3 and 130:
         left serving and named. 4 and 5: drained, awaited and stopped."""
         for site in list(self.surge):
-            if code in (EXIT_ROLLED_BACK, EXIT_NO_ANSWER):
-                try:
-                    self.surge_leave(site)
-                except Stop as stop:
-                    self.say(f"surge edge {self.surge.get(site)}: {stop.why}; it is left serving")
-            else:
-                self.say(f"the surge edge {self.surge[site]} of {site} is left serving")
+            name = self.surge[site]
+            if code not in (EXIT_ROLLED_BACK, EXIT_NO_ANSWER):
+                self.say(f"the surge edge {name} of {site} is left serving")
+                continue
+            try:
+                self.surge_leave(site)
+            except Stop as stop:
+                self.say(f"surge edge {name}: {stop.why}")
+            except Exception as error:  # noqa: BLE001 - named, never raised past the end
+                self.say(f"the surge edge {name} of {site}: {error!r}; it is left as it is")
 
     # ---------------------------------------------------------- interrupts
-    def interrupted(self) -> bool:
-        """Clean up the node in hand after a signal (3.5). True when nothing
-        is left drained by this command."""
-        hand = self.hand
-        if hand is None or self.options.dry:
-            return True
+    def left_message(self, hand: dict) -> str:
+        """What a node left in a phase that is not clean is, and what
+        finishes it."""
         name, phase = hand["node"], hand["phase"]
-        if phase == "replacing":
-            self.say(f"interrupted while {name} is being replaced: it is left stopped or "
-                     f"half-installed; replace --nodes {name} --resume goes on")
-            return False
+        drained = " and stays drained" if hand.get("tier") == "edges" else ""
+        resume = self.resume_command
+        if phase in DRAINED_PHASES:
+            return f"{name} is drained and was not activated (resume-node {name})"
         if phase == "held":
-            self.say(f"interrupted while {name} is held stopped: it is left stopped")
-            return False
-        if hand["tier"] != "edges":
-            activated = phase in ("activating", "activated", "rolled-back")
-            self.say(f"interrupted with {name} in phase {phase}"
-                     + ("; its readiness was not seen (roll --resume)" if activated else ""))
-            return not activated
-        if phase == "gate":
-            return True
+            return f"{name} is stopped by the hold ({resume} starts it)"
         if phase == "rollback-gate":
-            self.say(f"interrupted before {name}'s rollback: it runs the failed build and stays "
-                     f"drained (restart --nodes {name} --rollback)")
-            return False
-        if phase in ("drain", "drained"):
-            resumed = self.resume_node(name)
+            return (f"{name} runs the build that failed{drained}; it was not rolled back "
+                    f"({resume} makes the rollback)")
+        if phase in STARTED_PHASES:
+            return f"{name} is in phase {phase}{drained}; its readiness was not seen ({resume})"
+        if phase == "replacing":
+            return f"{name} is left stopped or half-installed ({resume} goes on)"
+        if phase == "pushed":
+            return f"{name} runs its new install; its readiness was not seen ({resume} goes on)"
+        if phase == "slot-creating":
+            return (f"the slot {name} may exist and bill ({resume} deletes it and goes on; the "
+                    "lab's down deletes it)")
+        if phase in ("slot-serving", "slot-drain"):
+            return f"the slot {name} is serving ({resume} goes on and removes it)"
+        return f"{name} was left in phase {phase} ({resume})"
+
+    def interrupted(self) -> None:
+        """After a signal (3.5): give back the node in hand where that is
+        quick and certain, and say what is left. A drained node that was not
+        activated is resumed; a node held stopped is started again; an edge
+        that was activated gets 15 s for R1 and warm and is resumed; anything
+        else is named and left to its resume."""
+        hand = self.hand
+        if not self.unclean(hand) or self.options.dry:
+            return
+        name, phase = hand["node"], hand["phase"]
+        if phase in DRAINED_PHASES:
+            resumed = self.give_back(name)
             self.say(f"interrupted: {name} was drained and not activated; "
-                     + ("resumed" if resumed else "it stays drained"))
-            return resumed
-        before_boot = (hand.get("before") or {}).get("boot_id")
+                     + ("resumed" if resumed else f"it stays drained (resume-node {name})"))
+            return
+        if phase == "slot-drain":
+            self.resume_node(name)
+            self.phase(name, "slot-serving")
+            return
+        if phase == "held":
+            hand = self.restart_held(name, hand)
+            if hand is None:
+                return
+            phase = hand["phase"]
+        if phase in STARTED_PHASES and hand.get("tier") == "edges":
+            self.warm_then_resume(name, hand)
+            return
+        self.say(f"interrupted: {self.left_message(hand)}")
+
+    def restart_held(self, name: str, hand: dict) -> dict | None:
+        """An interrupt while a node is held stopped: start it again (its
+        activation; starting harms nobody). None when nothing is left to do."""
+        if self.status(name) is not None:
+            # The hold's stop has not landed: the node runs as before.
+            entry = hand.get("entry") or "gate"
+            self.phase(name, entry)
+            if entry in DRAINED_PHASES:
+                self.say(f"interrupted: {name} was not stopped yet; "
+                         + ("resumed" if self.give_back(name) else
+                            f"it stays drained (resume-node {name})"))
+            return None
+        start_us = self.now_us()
+        try:
+            result = self.ops.activate(name, int((self.clock() + NOT_AFTER_S) * 1000),
+                                       bool(hand.get("rollback")))
+        except Exception as error:  # noqa: BLE001
+            result = {"ok": False, "why": f"error: {error}"}
+        if not result.get("ok"):
+            self.say(f"interrupted: starting {name} failed ({result.get('why')}); "
+                     f"{self.left_message(hand)}")
+            return None
+        self.phase(name, "activated", activation_us=start_us)
+        self.say(f"interrupted: {name} was held stopped and is started again")
+        return self.hand
+
+    def warm_then_resume(self, name: str, hand: dict) -> None:
+        """Up to 15 s for R1 (the build and arguments it was given) and
+        `warm`, then resume-node; else it stays drained and is named."""
+        expected = hand.get("expected") or {}
         deadline = self.clock() + INTERRUPT_WAIT_S
         while not self.hurry:
             status = self.status(name)
-            changed = status is not None and status.boot_id is not None and \
-                status.boot_id != before_boot
-            if changed and status.warm is True and status.threads == status.threads_expected:
-                break
-            if not changed and status is not None and \
-                    self.clock() > hand.get("not_after", 0) + UNIT_TIMEOUT_STOP_S:
+            r1 = readiness_check(self.lab, name, {name: status}, expected=expected,
+                                 before_boot=hand.get("before_boot") or 0,
+                                 activation_us=hand.get("activation_us") or 0)["R1"]
+            if not r1 and status is not None and status.warm is True:
                 break
             if self.clock() >= deadline:
-                self.say(f"interrupted: {name} was activated and is not warm in "
-                         f"{INTERRUPT_WAIT_S:.0f} s; it stays drained (resume-node {name})")
-                return False
+                self.say(f"interrupted: {name} is not warm with its new arguments in "
+                         f"{INTERRUPT_WAIT_S:.0f} s ({'; '.join(r1) or 'not warm'}); "
+                         f"{self.left_message(hand)}")
+                return
             self.sleep(self.options.poll_s)
         if self.hurry:
-            self.say(f"interrupted twice: {name} stays drained (resume-node {name})")
-            return False
-        resumed = self.resume_node(name)
-        self.say(f"interrupted: {name} " + ("resumed" if resumed else "stays drained"))
-        return resumed
+            self.say(f"interrupted twice: {self.left_message(hand)}")
+            return
+        self.phase(name, "resume")
+        if self.resume_node(name):
+            self.phase(name, "resumed")
+            self.say(f"interrupted: {name} is warm and resumed")
+        else:
+            self.say(f"interrupted: {self.left_message(self.hand)}")
 
     # ---------------------------------------------------------- the commands
-    def finish(self, code: int, why: str, clean: bool) -> int:
+    def finish(self, code: int, why: str) -> int:
         self.cleaning = True
         self.marks.close()
-        self.evidence.update(exit=code, why=why, done=self.done)
+        clean = self.is_clean()
+        if not self.unclean(self.hand):
+            self.hand = None
+        self.evidence.update(exit=code, why=why, done=self.done, left=list(self.left))
         if self.journal:
             self.journal.update(finished=clean, exit=code, why=why, done=self.done,
-                                in_hand=self.hand if not clean else None, surge=self.surge)
+                                in_hand=self.hand, left=self.left, surge=self.surge)
+            if clean and self.command in ("roll", "restart"):
+                supersede_stale(self)
         self.write_evidence()
         if why:
             self.say(why)
+        if not clean:
+            for hand in Journal.hands({"in_hand": self.hand, "left": self.left}):
+                self.say(f"left: {self.left_message(hand)}")
+            self.say(f"the journal {self.journal.path} names them")
         return code
 
-    def run(self, label: str, scope: list[str], body, open_journal=None) -> int:
+    def run(self, label: str, body, open_journal) -> int:
         """The frame of every command: lock, signals, preparation (exit 2),
         the change's marks, the body, and every way out."""
         lock = OpsLock(self.ops.lock_path)
@@ -2129,46 +2389,48 @@ class Engine:
                 except Interrupted:
                     self.say("interrupted before the change began; nothing was done")
                     return EXIT_INTERRUPTED
-                self.journal = open_journal() if open_journal else Journal.create(
-                    self.ops.evidence_dir, self.command, int(self.clock()), label=label, plan=scope)
-                code, why, clean = EXIT_DONE, "", True
+                self.journal = open_journal()
+                self.write_journal()
+                code, why = EXIT_DONE, ""
                 try:
                     self.marks.start(label)
                     try:
                         body("run")
                     except Stop as stop:
                         code, why = stop.code, stop.why
-                        if self.options.on_failure == "rollback-all" and code in (
-                                EXIT_STOPPED, EXIT_ROLLED_BACK, EXIT_NO_ANSWER):
-                            code, why = self.rollback_all(code, why)
+                    except Refused as refused:
+                        # A rule refused after the change began: not exit 2.
+                        hand = self.hand or {}
+                        code, why = EXIT_STOPPED, f"refused after the change began: {refused}" + (
+                            f"; {hand['node']} is in phase {hand['phase']}" if hand else "")
+                    if code in (EXIT_STOPPED, EXIT_ROLLED_BACK, EXIT_NO_ANSWER) and \
+                            self.options.on_failure == "rollback-all":
+                        code, why = self.rollback_all(code, why)
                     self.cleaning = True
-                    clean = self.hand is None or self.hand.get("phase") in CLEAN_PHASES
                     self.surge_finish(code)
                 except Interrupted as caught:
                     self.cleaning = True
                     code, why = EXIT_INTERRUPTED, f"interrupted ({caught})"
-                    clean = self.interrupted()
-                    if clean:
-                        self.hand = None
+                    try:
+                        self.interrupted()
+                    except Exception as error:  # noqa: BLE001 - named below
+                        self.say(f"interrupted: the clean-up failed: {error!r}")
                     self.surge_finish(code)
-                except Refused as refused:
-                    code, why = EXIT_REFUSED, str(refused)
                 except Exception as error:  # noqa: BLE001 - a backend failed mid-change
                     self.cleaning = True
                     hand = self.hand or {}
                     code = EXIT_STOPPED
                     why = (f"stopped by an error: {error!r}"
-                           + (f"; {hand['node']} is in phase {hand['phase']} (the journal "
-                              f"{self.journal.path} says where it stood)" if hand else ""))
-                    clean = not hand or hand.get("phase") in CLEAN_PHASES
+                           + (f"; {hand['node']} is in phase {hand['phase']}" if hand else ""))
                     self.surge_finish(code)
-                return self.finish(code, why, clean)
+                return self.finish(code, why)
         finally:
             lock.release()
 
     def rollback_all(self, code: int, why: str) -> tuple[int, str]:
         """--on-failure rollback-all: the nodes already rolled, in reverse
-        order, through the same gates."""
+        order, through the same gates. The node that failed stays named in
+        the journal (`left`) while it is not clean."""
         for name in reversed(list(self.done)):
             before = self.before[name]
             try:
@@ -2177,9 +2439,167 @@ class Engine:
                                         "args_sha256": before["args_sha256"]},
                                  rollback=True, undo=True)
                 self.done.remove(name)
+                self.write_journal()
             except Stop as stop:
                 return stop.code, f"{why}; rollback-all stopped at {name}: {stop.why}"
         return code, why
+
+
+def supersede_stale(engine: Engine) -> None:
+    """Older unfinished `roll` and `restart` journals whose every named node
+    this command saw `ready` or finished itself are closed (superseded by
+    this one) and named on stderr: a stale journal must not be resumed
+    later, nor shown as a node in hand."""
+    own = engine.journal
+    for journal in Journal.unfinished(engine.ops.evidence_dir):
+        if journal.path == own.path or journal.data.get("command") not in ("roll", "restart") \
+                or journal.data.get("unix", 0) > own.data.get("unix", 0):
+            continue
+        names = [hand["node"] for hand in Journal.hands(journal.data)
+                 if hand.get("phase") not in CLEAN_PHASES]
+        if all(name in engine.seen_ready or name in engine.done for name in names):
+            journal.update(finished=True, superseded_by=str(own.path))
+            engine.say(f"closed {journal.path.name}: "
+                       + (f"{', '.join(names)} ready now" if names else "nothing in hand")
+                       + "".join(f"; its surge edge {name} of {site} was left serving"
+                                 for site, name in sorted((journal.data.get("surge") or {}).items())))
+
+
+def take_over(engine: Engine, label: str | None = None) -> tuple[Journal, list[dict]]:
+    """`--resume`, before the preconditions: the newest unfinished journal
+    of the command (with this label, when given). A node it left drained and
+    not activated is resumed now; every other node it names is left out of
+    the readiness precondition and finished first (`finish_node`)."""
+    journals = [journal for journal in Journal.unfinished(engine.ops.evidence_dir, engine.command)
+                if label is None or journal.data.get("label") == label]
+    if not journals:
+        raise Refused(f"no unfinished {engine.command} to resume"
+                      + (f" ({label})" if label else ""))
+    journal = journals[0]
+    for site, name in (journal.data.get("surge") or {}).items():
+        if name in engine.lab.records:
+            engine.surge[site] = name
+            engine.lab.records[name]["serving"] = True
+    engine.done = list(journal.data.get("done") or [])
+    engine.before.update(journal.data.get("before") or {})
+    to_finish = []
+    for hand in Journal.hands(journal.data):
+        name, phase = hand["node"], hand.get("phase")
+        if phase in CLEAN_PHASES:
+            continue
+        if name not in engine.lab.records:
+            raise Refused(f"the journal {journal.path} names {name}, which is not a node of the "
+                          "lab any more")
+        if phase in DRAINED_PHASES:
+            if not engine.resume_node(name):
+                raise Refused(f"resume: {name} was drained and not activated, and resume-node "
+                              "failed")
+            engine.say(f"resume: {name} was drained and not activated; resumed")
+            continue
+        engine.excluded.add(name)
+        to_finish.append(hand)
+    return journal, to_finish
+
+
+def open_change(engine: Engine, label: str, plan: list[str], previous: Journal | None,
+                to_finish: list[dict], **fields) -> Journal:
+    """The journal of a roll or a restart. A resumed command takes over the
+    nodes its predecessor left (they are `left` until finished) and closes
+    it; older unfinished journals whose nodes are ready again are closed."""
+    journal = Journal.create(engine.ops.evidence_dir, engine.command, int(engine.clock()),
+                             label=label, plan=plan, **fields)
+    engine.journal = journal
+    if previous is not None:
+        engine.left.update({hand["node"]: hand for hand in to_finish})
+        journal.update(resumed_from=str(previous.path))
+        previous.update(finished=True, superseded_by=str(journal.path))
+    engine.write_journal()
+    supersede_stale(engine)
+    return journal
+
+
+def activation_ran(engine: Engine, name: str, hand: dict) -> bool:
+    """For a node left `activating`: whether the activation ran. Unknown is
+    taken as ran (its readiness decides), except for a node that was held
+    stopped, which is started."""
+    status = engine.status(name)
+    if status is not None and status.boot_id is not None:
+        return hand.get("before_boot") is None or status.boot_id != hand["before_boot"]
+    ran = engine.ops.boot_changed(name, (hand.get("activation_us") or 0) // 1000)
+    if ran is None:
+        return hand.get("entry") != "held"
+    return ran
+
+
+def finish_node(engine: Engine, hand: dict) -> None:
+    """`--resume`, after the preconditions: finish one node a cut-off
+    command left, by its phase. Held stopped: start it. Activating: if the
+    activation did not run, the node is as it was (the command comes to it
+    again). Activated, rolled back, a surge edge started or an edge being
+    resumed: its readiness, then resume and R7 for an edge. Before its
+    rollback: the rollback, through the gate."""
+    name, phase = hand["node"], hand["phase"]
+    engine.before.setdefault(name, hand.get("before") or {})
+    engine.phase(name, phase, **{key: value for key, value in hand.items()
+                                 if key not in ("node", "tier", "phase")})
+    engine.say(f"resume: finishing {name} (phase {phase})")
+    tier = engine.lab.tier(name)
+    if phase == "activating":
+        if activation_ran(engine, name, hand):
+            phase = "rolled-back" if hand.get("entry") == "rollback-gate" else "activated"
+        else:
+            phase = hand.get("entry") or "gate"
+            engine.say(f"resume: {name} was not activated")
+        engine.phase(name, phase)
+    if phase in DRAINED_PHASES:
+        if not engine.give_back(name):
+            raise Stop(EXIT_STOPPED, f"resume: {name} stays drained: resume-node failed")
+        engine.release_hand(name, "resumed")
+        return
+    if phase == "gate":
+        engine.release_hand(name, "untouched")
+        return
+    if phase == "held":
+        engine.activate(name, engine.clock() + NOT_AFTER_S, bool(hand.get("rollback")),
+                        engine.clock, hand.get("expected") or
+                        engine.ops.expected(name, rollback=bool(hand.get("rollback"))))
+        phase = "activated"
+    if phase == "rollback-gate":
+        engine.roll_back(name, Ready(False, "build", [hand.get("failed") or
+                                                      "its readiness failed"], True, None))
+    if phase not in STARTED_PHASES:
+        raise Stop(EXIT_STOPPED, f"resume: {name} is in phase {phase}, which a resume does not "
+                                 "finish")
+    current = engine.hand
+    before = engine.before.get(name) or {}
+    if phase == "rolled-back":
+        expected = {key: before.get(key) for key in ("git", "unix", "args_sha256")}
+    else:
+        expected = current.get("expected") or engine.ops.expected(
+            name, rollback=bool(current.get("rollback")))
+    result = engine.ready(name, expected, current.get("before_boot") or 0,
+                          current.get("activation_us") or 0, engine.ops.unit_restarts(name))
+    if not result.ok:
+        if result.cause == "build" and phase == "activated" and not current.get("undo"):
+            engine.roll_back(name, result)
+        raise Stop(EXIT_ROLLED_BACK if phase == "rolled-back" else EXIT_STOPPED,
+                   f"{name} is not ready: {'; '.join(result.problems)}"
+                   + ("; it stays drained" if tier == "edges" else ""))
+    if tier == "edges":
+        engine.phase(name, "resume")
+        if not engine.resume_node(name):
+            raise Stop(EXIT_STOPPED, f"{name} is ready and stays drained: resume-node failed")
+        engine.wait_serving(name)
+    if phase == "rolled-back":
+        engine.release_hand(name, "rolled-back")
+        raise Stop(EXIT_ROLLED_BACK, f"{name} was rolled back by the command that was cut off; "
+                                     "it does not go on")
+    if phase == "surge-start":
+        engine.release_hand(name, "surge")
+        return
+    if name not in engine.done:
+        engine.done.append(name)
+    engine.release_hand(name, "done")
 
 
 def _builds(ops: Ops, lab: Lab, scope: list[str]) -> dict:
@@ -2192,31 +2612,32 @@ def roll(ops: Ops, tier: str, *, nodes=None, sites=None, options: Options | None
     """`roll edges|forwarders|contributors|all` (3.5): one node at a time,
     in tier order, each gated, activated, made ready; nodes already on the
     target build skipped unless `options.force`. `resume`: first finish or
-    undo the node in hand of the newest unfinished roll."""
+    undo every node the newest unfinished roll left."""
     options = options or Options()
     engine = Engine(ops, "roll", options, out, err, clock, sleep)
+    engine.resume_command = f"roll {tier} --resume"
     label = f"roll.{tier}"
-    state: dict = {}
+    state: dict = {"previous": None, "finish": []}
 
     def body(step: str):
         if step == "prepare":
             engine.lab = Lab(ops.nodes())
             if resume:
-                state["previous"] = engine_take_over(engine)
+                state["previous"], state["finish"] = take_over(engine)
             state["order"] = plan_order(engine.lab, tier, nodes, sites)
             if not state["order"]:
                 raise Refused(f"no serving node of the {tier} tier in scope")
-            state["expected"] = engine.prepare(state["order"],
-                                               _builds(ops, engine.lab, state["order"]))
+            builds = _builds(ops, engine.lab, state["order"])
+            state["expected"] = engine.prepare(state["order"], builds)
             skipped = [] if options.force else [
                 name for name in state["order"] if engine.on_target(name, state["expected"][name])]
             state["skipped"] = skipped
-            engine.surge_possible([name for name in state["order"] if name not in skipped])
+            engine.surge_prepare([name for name in state["order"] if name not in skipped],
+                                 builds.get("edges"))
             engine.print_plan(state["order"], skipped)
-            return True
-        previous = state.get("previous")
-        if previous is not None:
-            finish_in_hand(engine, previous)
+            return
+        for hand in state["finish"]:
+            finish_node(engine, hand)
         order = state["order"]
         for index, name in enumerate(order):
             if name in state["skipped"] or name in engine.done:
@@ -2233,93 +2654,28 @@ def roll(ops: Ops, tier: str, *, nodes=None, sites=None, options: Options | None
                 engine.surge_leave(site)
 
     def open_journal():
-        journal = Journal.create(ops.evidence_dir, "roll", int(clock()), label=label, tier=tier,
-                                 plan=state["order"])
-        previous = state.get("previous")
-        if previous is not None:
-            journal.update(resumed_from=str(previous.path), done=previous.data.get("done", []))
-            engine.done = list(previous.data.get("done", []))
-            engine.before.update(previous.data.get("before") or {})
-            engine.surge.update(previous.data.get("surge") or {})
-            previous.update(finished=True, superseded_by=str(journal.path))
-        return journal
+        return open_change(engine, label, state["order"], state["previous"], state["finish"],
+                           tier=tier)
 
-    return engine.run(label, [], body, open_journal)
+    return engine.run(label, body, open_journal)
 
 
-def engine_take_over(engine: Engine) -> Journal:
-    """The newest unfinished roll's journal, for `roll --resume`. Its node
-    in hand is handled before the readiness precondition (a drained edge is
-    not ready)."""
-    journals = Journal.unfinished(engine.ops.evidence_dir, "roll")
-    if not journals:
-        raise Refused("no unfinished roll to resume")
-    journal = journals[0]
-    for site, name in (journal.data.get("surge") or {}).items():
-        if name in engine.lab.records:
-            engine.lab.records[name]["serving"] = True
-    hand = journal.data.get("in_hand")
-    if hand and hand.get("phase") in ("activating", "activated", "rolled-back"):
-        engine.excluded.add(hand["node"])
-    if hand and hand.get("tier") == "edges" and hand.get("phase") in ("drain", "drained"):
-        # Undo: the edge was drained and not activated.
-        engine.resume_node(hand["node"])
-        engine.say(f"resume: {hand['node']} was drained and not activated; resumed")
-        journal.update(in_hand=None)
-    return journal
-
-
-def finish_in_hand(engine: Engine, journal: Journal) -> None:
-    """`roll --resume`, after the preconditions: an activated node in hand is
-    finished (readiness, resume); one whose boot id did not change is left to
-    the roll, which comes to it again (it is not on the target build)."""
-    hand = journal.data.get("in_hand")
-    if not hand or hand.get("phase") not in ("activating", "activated", "rolled-back"):
-        return
-    name = hand["node"]
-    before = hand.get("before") or engine.before.get(name) or {}
-    engine.before[name] = before
-    status = engine.status(name)
-    if status is not None and status.boot_id == before.get("boot_id"):
-        engine.say(f"resume: {name} was not activated; the roll comes to it again")
-        if hand["tier"] == "edges":
-            engine.resume_node(name)
-        return
-    engine.say(f"resume: finishing {name} (phase {hand['phase']})")
-    engine.phase(name, hand["phase"], **{key: value for key, value in hand.items()
-                                         if key not in ("node", "tier", "phase")})
-    if hand.get("phase") == "rolled-back":
-        expected = {"git": before.get("git"), "unix": before.get("unix"),
-                    "args_sha256": before.get("args_sha256")}
-    else:
-        expected = engine.ops.expected(name, rollback=bool(hand.get("rollback")))
-    result = engine.ready(name, expected, before.get("boot_id") or 0,
-                          hand.get("activation_us") or 0, engine.ops.unit_restarts(name))
-    if not result.ok:
-        if result.cause == "build" and hand.get("phase") != "rolled-back":
-            engine.roll_back(name, result)
-        raise Stop(EXIT_STOPPED, f"{name} is not ready: {'; '.join(result.problems)}")
-    if hand["tier"] == "edges":
-        engine.resume_node(name)
-        engine.wait_serving(name)
-    if hand.get("phase") == "rolled-back":
-        engine.release_hand(name, "rolled-back")
-        raise Stop(EXIT_ROLLED_BACK, f"{name} was rolled back by the roll that was killed; "
-                                     "the roll does not go on")
-    engine.done.append(name)
-    engine.release_hand(name, "done")
-
-
-def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None, out=None,
-                  err=None, clock=time.time, sleep=time.sleep) -> int:
-    """`restart --nodes a,b` (2.6): the roll's gates and readiness, one node
-    at a time in the order given, on each node's recorded build (`stage`
-    with no build); `options.hold_s` holds each node stopped that long;
-    `options.rollback` puts `.args.prev` in force."""
+def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None,
+                  resume: bool = False, out=None, err=None, clock=time.time,
+                  sleep=time.sleep) -> int:
+    """`restart --nodes a,b` (2.6): the roll's gates and readiness (the
+    surge edge included), one node at a time in the order given, on each
+    node's recorded build (`stage` with no build); `options.hold_s` holds
+    each node stopped that long; `options.rollback` puts `.args.prev` in
+    force, the operator's rollback of a node an earlier command left (that
+    node need not be ready, and its rollback is not rolled back again).
+    `resume`: finish what the newest unfinished restart of these nodes
+    left, then go on."""
     options = options or Options()
     engine = Engine(ops, "restart", options, out, err, clock, sleep)
     label = "restart." + ",".join(names)
-    state: dict = {}
+    engine.resume_command = f"restart --nodes {','.join(names)} --resume"
+    state: dict = {"previous": None, "finish": []}
 
     def body(step: str):
         if step == "prepare":
@@ -2328,13 +2684,33 @@ def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None,
                        or not engine.lab.records[name].get("serving")]
             if unknown:
                 raise Refused(f"not serving nodes of the lab: {', '.join(unknown)}")
+            if resume:
+                state["previous"], state["finish"] = take_over(engine, label)
+            if options.rollback:
+                engine.excluded.update(names)
             state["expected"] = engine.prepare(list(names), {tier: None for tier in TIERS})
-            engine.print_plan(list(names), [])
-            return True
-        for name in names:
-            engine.change_node(name, state["expected"][name], rollback=options.rollback)
+            engine.surge_prepare([name for name in names if name not in engine.done], None)
+            engine.print_plan(list(names), [name for name in names if name in engine.done])
+            return
+        for hand in state["finish"]:
+            finish_node(engine, hand)
+        for index, name in enumerate(names):
+            if name in engine.done:
+                continue
+            site = engine.lab.site(name)
+            edge = engine.lab.tier(name) == "edges"
+            if edge:
+                engine.surge_join(site)
+            engine.change_node(name, state["expected"][name], rollback=options.rollback,
+                               undo=options.rollback)
+            if edge and not any(engine.lab.tier(other) == "edges" and engine.lab.site(other) == site
+                                for other in names[index + 1:]):
+                engine.surge_leave(site)
 
-    return engine.run(label, list(names), body)
+    def open_journal():
+        return open_change(engine, label, list(names), state["previous"], state["finish"])
+
+    return engine.run(label, body, open_journal)
 
 
 def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False,
@@ -2342,30 +2718,32 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
             out=None, err=None, clock=time.time, sleep=time.sleep) -> int:
     """`replace --nodes X` (3.7): an edge emptied, stopped, rebuilt, pushed
     and resumed; a forwarder through its region's slot; a contributor
-    through workstream A's gate and readiness. Each step done is journalled;
-    `resume` goes on after the last step done of the newest unfinished
-    replace of X (a node left stopped or half-installed is named and is
-    resumed this way)."""
+    through workstream A's gate and readiness. Each step done is journalled,
+    and the slot with its state (creating, serving, kept); a node or slot
+    left by a failure or an interrupt is named, and `resume` goes on after
+    the last step done of the newest unfinished replace of X (a slot whose
+    create failed part-way is deleted first)."""
     options = options or Options()
     engine = Engine(ops, "replace", options, out, err, clock, sleep)
+    engine.resume_command = f"replace --nodes {name} --resume"
     label = f"replace.{name}"
-    context: dict = {"done_steps": [], "slot": None, "slot_created": False, "pairs": []}
+    context: dict = {"done_steps": [], "slot": None, "slot_state": None, "slot_created": False,
+                     "slot_began_us": None, "push_began_us": None, "pairs": []}
     state: dict = {}
+
+    def save() -> None:
+        engine.journal.update(context=context)
 
     def step_done(step: str) -> None:
         context["done_steps"].append(step)
-        engine.journal.update(context=context)
+        save()
 
-    def ready_after_push(node: str, before_boot: int, began_us: int, pairs=()):
+    def ready_after_push(node: str, began_us: int, pairs=()):
         expected = ops.expected(node)
-        result = engine.ready(node, expected, before_boot, began_us, ops.unit_restarts(node), pairs)
+        result = engine.ready(node, expected, 0, began_us, ops.unit_restarts(node), pairs)
         if not result.ok:
             raise Stop(EXIT_STOPPED, f"{node} is not ready after its replacement: "
                                      f"{'; '.join(result.problems)}")
-
-    def empty_out(node: str) -> None:
-        engine.control(node, "drain-node")
-        engine.wait_empty(node)
 
     def pairs_zero(node: str) -> None:
         deadline = clock() + options.drain_timeout_s
@@ -2387,20 +2765,103 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
 
     def rebuild_and_push(node: str) -> int:
         """Stop, rebuild, push, each journalled; the time the push began."""
-        began_us = engine.now_us()
         steps = (("stop", ops.stop_node), ("rebuild", lambda each: ops.rebuild(each, mode)),
                  ("push", ops.push))
         for step, action in steps:
             if step in context["done_steps"]:
                 continue
+            if step == "push":
+                context["push_began_us"] = engine.now_us()
+                save()
             try:
                 action(node)
-            except Exception as error:  # noqa: BLE001 - the node may be down: say so
+            except Exception as error:  # noqa: BLE001 - the node may be down: named
                 raise Stop(EXIT_NO_ANSWER, f"{node}'s {step} failed ({error}): it is left stopped "
-                                           f"or half-installed; replace --nodes {node} --resume "
-                                           "goes on") from None
+                                           f"or half-installed; {engine.resume_command} goes "
+                                           "on") from None
             step_done(step)
-        return began_us
+            if step == "rebuild" and mode == "new":
+                engine.lab.readdress(ops.nodes())
+        return context["push_began_us"]
+
+    def give_back_x(stop: Stop, slot: str | None) -> Stop:
+        resumed = engine.give_back(name)
+        return Stop(EXIT_STOPPED, f"{stop.why}; {name} " + ("resumed" if resumed else
+                                                            f"stays drained (resume-node {name})")
+                    + (f"; the slot {slot} is left serving" if slot else ""))
+
+    def make_slot(slot: str) -> None:
+        """Create (or start, when it exists stopped) the region's slot and
+        wait it ready; X is untouched whatever happens here."""
+        record = engine.lab.records[slot]
+        if context["slot_state"] == "creating":
+            engine.say(f"the slot {slot} of the replace that was cut off may exist: deleting it")
+            ops.remove_slot(slot)
+            context["slot_state"] = None
+            save()
+            engine.release_hand(slot, "removed")
+            record.update(serving=False, created=False)
+        if not record.get("serving"):
+            gate(name)
+            context.update(slot_state="creating", slot_began_us=engine.now_us())
+            save()
+            engine.hold(slot, "slot-creating")
+            try:
+                if record.get("created"):
+                    ops.start_node(slot)
+                else:
+                    ops.add_slot(slot)
+            except Refused as refused:
+                context["slot_state"] = None
+                save()
+                engine.release_hand(slot, "refused")
+                raise Stop(EXIT_STOPPED, f"the slot {slot} was refused ({refused}); {name} is "
+                                         "untouched") from None
+            except Exception as error:  # noqa: BLE001 - it may exist: named
+                raise Stop(EXIT_STOPPED, f"the slot {slot} failed part-way ({error}); {name} is "
+                                         "untouched") from None
+            context.update(slot_state="serving", slot_created=True)
+            save()
+            engine.hold(slot, "slot-serving")
+            record["serving"] = True
+            # A kept slot keeps the drain of its last leave; resume-node
+            # removes only that (its hellos say draining until it is warm).
+            if not engine.resume_node(slot):
+                raise Stop(EXIT_STOPPED, f"the slot {slot} stays drained: resume-node failed; "
+                                         f"{name} is untouched")
+        if context["slot_created"]:
+            result = wait_ready(ops, slot, expected=ops.expected(slot), before_boot=0,
+                                activation_us=context["slot_began_us"], lab=engine.lab,
+                                restarts_before=ops.unit_restarts(slot),
+                                timeout_s=options.ready_timeout_s, poll_s=options.poll_s,
+                                clock=clock, sleep=sleep)
+            if not result.ok:
+                raise Stop(EXIT_STOPPED, f"the slot {slot} is not ready "
+                                         f"({'; '.join(result.problems)}); {name} is untouched")
+
+    def remove_slot(slot: str) -> None:
+        """Drain the slot, its pairs to 0, the gate, stop, delete (or keep
+        it stopped). Refused at any step: it is resumed and left serving."""
+        if engine.lab.records[slot].get("serving"):
+            engine.phase(slot, "slot-drain")
+            engine.control(slot, "drain-node")
+            try:
+                pairs_zero(slot)
+                gate(slot)
+            except Stop as stop:
+                resumed = engine.resume_node(slot)
+                engine.phase(slot, "slot-serving")
+                raise Stop(EXIT_STOPPED, f"{stop.why}; the slot {slot} "
+                                         + ("is resumed" if resumed else "stays drained")
+                                         + " and left serving") from None
+            engine.phase(slot, "slot-stop")
+            ops.stop_node(slot)
+            engine.lab.records[slot]["serving"] = False
+        if not keep_slot:
+            ops.remove_slot(slot)
+        context["slot_state"] = "kept" if keep_slot else None
+        step_done("slot-gone")
+        engine.release_hand(slot, "kept stopped" if keep_slot else "removed")
 
     def body(step: str):
         if step == "prepare":
@@ -2411,8 +2872,6 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
             tier = engine.lab.tier(name)
             if tier == "contributors":
                 engine.rules = contributor_rules()
-            if tier == "edges":
-                engine.surge_possible([name])
             engine.clock_check()
             if resume:
                 journals = [journal for journal in Journal.unfinished(ops.evidence_dir, "replace")
@@ -2421,6 +2880,7 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
                     raise Refused(f"no unfinished replace of {name} to resume")
                 state["previous"] = journals[0]
                 context.update(journals[0].data.get("context") or {})
+                engine.surge.update(journals[0].data.get("surge") or {})
             if tier == "forwarders" and not no_slot and context["slot"] is None:
                 slots = [node for node, record in engine.lab.records.items()
                          if record["site"] == engine.lab.site(name) and record.get("slot")
@@ -2428,57 +2888,58 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
                 if not slots:
                     raise Refused(f"{engine.lab.site(name)} has no forwarder slot (--no-slot)")
                 context["slot"] = sorted(slots, key=natural)[0]
-            if resume:
-                engine.surge.update(state["previous"].data.get("surge") or {})
+            if tier == "edges" and "empty" not in context["done_steps"]:
+                engine.surge_prepare([name], None)
             status = engine.status(name)
             if status is not None:
                 engine.before[name] = engine.snapshot(status)
             for site in engine.lab.sites():
                 engine.costs[site] = leg_cost(engine.lab, site, engine.poll(engine.lab.edges(site)))
-            return True
+            return
         tier = engine.lab.tier(name)
-        engine.marks.node_start(f"replace.{tier}.{name}")
-        engine.phase(name, "replace", before=engine.before.get(name))
+        site = engine.lab.site(name)
+        node_label = f"replace.{tier}.{name}"
+        engine.marks.node_start(node_label)
         done = context["done_steps"]
+        slot = context["slot"]
+        if slot and context["slot_state"] in ("creating", "serving") and "slot-gone" not in done:
+            engine.hold(slot, f"slot-{context['slot_state']}")
+        # Where a cut-off replace left X.
+        if "push" in done:
+            first, fields = "pushed", {"activation_us": context["push_began_us"]}
+        elif "stop" in done:
+            first, fields = "replacing", {}
+        elif "empty" in done or (slot and "drained" in done):
+            first, fields = "drained", {}
+        else:
+            first, fields = "gate", {}
+        engine.phase(name, first, before=engine.before.get(name), **fields)
         if tier == "edges":
             if "empty" not in done:
-                engine.surge_join(engine.lab.site(name))
+                engine.surge_join(site)
+                engine.phase(name, "gate")
                 found = engine.gate_edge(name)
                 if not found.ok:
                     raise Stop(EXIT_STOPPED, f"{name}: the capacity gate refuses: "
                                              f"{'; '.join(found.problems)}")
                 engine.phase(name, "drain")
-                empty_out(name)
+                engine.control(name, "drain-node")
+                engine.phase(name, "drained")
+                engine.wait_empty(name)
                 step_done("empty")
             engine.phase(name, "replacing")
             began_us = rebuild_and_push(name)
-            ready_after_push(name, 0, began_us)
-            engine.resume_node(name)
+            engine.phase(name, "pushed", activation_us=began_us)
+            ready_after_push(name, began_us)
+            engine.phase(name, "resume")
+            if not engine.resume_node(name):
+                raise Stop(EXIT_STOPPED, f"{name} is ready and stays drained: resume-node failed")
             engine.wait_serving(name)
-            engine.surge_leave(engine.lab.site(name))
+            engine.phase(name, "resumed")
+            engine.surge_leave(site)
         elif tier == "forwarders":
-            slot = context["slot"]
             if slot and "slot-ready" not in done:
-                record = engine.lab.records[slot]
-                if not record.get("serving"):
-                    gate(name)
-                    slot_began_us = engine.now_us()
-                    try:
-                        ops.add_slot(slot)
-                    except Exception as error:  # noqa: BLE001 - X untouched
-                        raise Stop(EXIT_STOPPED, f"the slot {slot} could not be created "
-                                                 f"({error}); {name} is untouched") from None
-                    context["slot_created"] = True
-                    record["serving"] = True
-                    result = wait_ready(ops, slot, expected=ops.expected(slot), before_boot=0,
-                                        activation_us=slot_began_us, lab=engine.lab,
-                                        restarts_before=ops.unit_restarts(slot),
-                                        timeout_s=options.ready_timeout_s, poll_s=options.poll_s,
-                                        clock=clock, sleep=sleep)
-                    if not result.ok:
-                        raise Stop(EXIT_STOPPED, f"the slot {slot} is not ready "
-                                                 f"({'; '.join(result.problems)}); {name} is "
-                                                 f"untouched; {slot} is left as it is")
+                make_slot(slot)
                 step_done("slot-ready")
             if "drained" not in done:
                 if slot:
@@ -2487,42 +2948,45 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
                     try:
                         pairs_zero(name)
                     except Stop as stop:
-                        engine.resume_node(name)
-                        raise Stop(EXIT_STOPPED, f"{stop.why}; {name} resumed"
-                                                 + (f"; the slot {slot} is left serving"
-                                                    if slot else "")) from None
+                        raise give_back_x(stop, slot) from None
+                    engine.phase(name, "drained")
                 step_done("drained")
             if "stop" not in done:
-                context["pairs"] = gate(name).pairs
-                engine.journal.update(context=context)
+                try:
+                    context["pairs"] = gate(name).pairs
+                except Stop as stop:
+                    if slot:
+                        raise give_back_x(stop, slot) from None
+                    raise
+                save()
             engine.phase(name, "replacing")
             began_us = rebuild_and_push(name)
-            ready_after_push(name, 0, began_us, [tuple(pair) for pair in context["pairs"]])
-            engine.resume_node(name)
+            engine.phase(name, "pushed", activation_us=began_us)
+            ready_after_push(name, began_us, [tuple(pair) for pair in context["pairs"]])
+            engine.phase(name, "resume")
+            if not engine.resume_node(name):
+                raise Stop(EXIT_STOPPED, f"{name} is ready and stays drained: resume-node failed")
+            engine.phase(name, "resumed")
             if slot and context["slot_created"] and "slot-gone" not in done:
-                engine.control(slot, "drain-node")
-                pairs_zero(slot)
-                gate(slot)
-                ops.stop_node(slot)
-                engine.lab.records[slot]["serving"] = False
-                if not keep_slot:
-                    ops.remove_slot(slot)
-                step_done("slot-gone")
+                remove_slot(slot)
         else:
             if "stop" not in done:
                 engine.gate_contributor(name)
             engine.phase(name, "replacing")
             began_us = rebuild_and_push(name)
-            ready_after_push(name, 0, began_us)
+            engine.phase(name, "pushed", activation_us=began_us)
+            ready_after_push(name, began_us)
         engine.release_hand(name, "done")
-        engine.marks.node_end(f"replace.{tier}.{name}")
+        engine.marks.node_end(node_label)
 
     def open_journal():
         journal = Journal.create(ops.evidence_dir, "replace", int(clock()), label=label,
                                  plan=[name], context=context)
+        engine.journal = journal
         previous = state.get("previous")
         if previous is not None:
+            journal.update(resumed_from=str(previous.path))
             previous.update(finished=True, superseded_by=str(journal.path))
         return journal
 
-    return engine.run(label, [name], body, open_journal)
+    return engine.run(label, body, open_journal)
