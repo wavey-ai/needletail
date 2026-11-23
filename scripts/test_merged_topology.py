@@ -467,6 +467,16 @@ class Render(Base):
             else:
                 self.assertNotIn("--client-udp-prompt-sender", node_args, name)
         self.assertEqual(value_of(args["lon-edge-1"], "--client-udp-prompt-sender"), "false")
+        _program, _plan, args = self.render()
+        for name, node_args in args.items():
+            self.assertNotIn("--relay-lease-descriptors", node_args, name)
+        _program, _plan, args = self.render(["relay_lease_descriptors=false"])
+        for name, node_args in args.items():
+            if "--relay-lease-bind" in node_args:
+                self.assertEqual(value_of(node_args, "--relay-lease-descriptors"), "false", name)
+            else:
+                self.assertNotIn("--relay-lease-descriptors", node_args, name)
+        self.assertIn("--relay-lease-descriptors", args["lon-dist-a"])
 
     def test_a_slot_forwarder_renders_the_wave7_settings_like_the_others(self):
         """Wave 7 review C5: the forwarder slot lon-dist-c (a lease child of

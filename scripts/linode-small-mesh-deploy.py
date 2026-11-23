@@ -357,11 +357,14 @@ DEFAULT_SETTINGS = {
     # LimitMEMLOCK=infinity unless it is false, since av-mesh locks only
     # without a limit), malloc_tune and prefault (every mesh node), and
     # client_udp_prompt_sender (nodes that serve UDP clients: the stream's
-    # sender does not wait for a playable copy).
+    # sender does not wait for a playable copy), relay_lease_descriptors
+    # (forwarders with --relay-lease-bind: a new lease child gets the
+    # stream's descriptor before its first compact part).
     "mlock_all": None,
     "malloc_tune": None,
     "prefault": None,
     "client_udp_prompt_sender": None,
+    "relay_lease_descriptors": None,
     "relay_min_repair_symbols": 0,
     # Send each part from the contributor straight to the distributors of its
     # own site too, one hop less than through a backbone relay (av-contrib
@@ -2024,6 +2027,8 @@ def wave7_args(node_args: list[str], settings: dict) -> list[str]:
                         if float(settings["relay_class_fallback_nice"]) else 0)]
     if "--relay-lease-bind" in node_args and settings.get("relay_lease_drain_inbound") is not None:
         out += ["--relay-lease-drain-inbound", flag(bool(settings["relay_lease_drain_inbound"]))]
+    if "--relay-lease-bind" in node_args and settings.get("relay_lease_descriptors") is not None:
+        out += ["--relay-lease-descriptors", flag(bool(settings["relay_lease_descriptors"]))]
     return out
 
 
