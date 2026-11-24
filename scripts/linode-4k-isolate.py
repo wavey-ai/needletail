@@ -1608,6 +1608,29 @@ def existing(args: argparse.Namespace) -> Iso:
     return iso
 
 
+def command_cells(args: argparse.Namespace) -> None:
+    """Named cells of the plan on the lab that is up, again, each under
+    its name plus `--suffix` (a cell whose run went wrong keeps its record):
+    no up, no push, no collect, no down. The samplers that `run` started
+    are still running."""
+    iso = existing(args)
+    iso.up_started = float(iso.record.get("up_started_unix") or iso.record.get("created_unix")
+                           or time.time())
+    if not args.dry:
+        iso.referee = hunt_module().referee_samplers(compare_root())
+    module = iso.referee or load_by_path(
+        "iso_referee_run", compare_root() / "scripts" / "compare" / "compare-run.py")
+    iso.lane = referee_lane(iso.nodes["lon-dist-a"]["public_ipv4"], module)
+    by_name = {item["name"]: item for item in schedule()}
+    for name in args.names.split(","):
+        if name not in by_name:
+            sys.exit(f"no cell {name} in the plan: " + ", ".join(by_name))
+        item = {**by_name[name], "name": name + (f"-{args.suffix}" if args.suffix else "")}
+        iso.try_cell(item)
+    iso.join_pending()
+    iso.save()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1625,6 +1648,12 @@ def main() -> None:
                      help="go on with the lab of this run id that is up (no `up`): a run cut "
                           "before its cells")
     run.set_defaults(handler=command_run)
+    cells = sub.add_parser("cells", help="named cells again on the lab that is up (no up, push, "
+                                         "collect or down)")
+    cells.add_argument("--names", required=True, help="cells of the plan, comma-separated")
+    cells.add_argument("--suffix", default="", help="appended to each cell's name")
+    cells.add_argument("--dry", action="store_true")
+    cells.set_defaults(handler=command_cells)
     for name, handler, text in (("collect", lambda args: existing(args).collect(),
                                  "fetch the records of the lab that is up"),
                                 ("down", lambda args: existing(args).down(),
