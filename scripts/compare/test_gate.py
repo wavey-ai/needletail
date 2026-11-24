@@ -8,6 +8,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("gate", HERE / "gate.py")
@@ -209,7 +210,43 @@ class Verdict(unittest.TestCase):
         self.assertEqual(gate.verdict(run, THRESHOLDS, BASELINE, host="box")["verdict"], "PASS")
 
     def test_no_checks_is_not_a_pass(self):
-        self.assertEqual(gate.verdict([], THRESHOLDS, BASELINE, host="box")["verdict"], "FAIL")
+        judged = gate.verdict([], THRESHOLDS, BASELINE, host="box")
+        self.assertEqual(judged["verdict"], gate.COULD_NOT_RUN)
+        self.assertEqual(gate.exit_code(judged), 2)
+
+    def crashed(self, name):
+        return {**figures(name), "bench_exit": 1, "error": "no figures: no hops.json",
+                "could_not_run": "FileNotFoundError: [Errno 2] No such file or directory: "
+                                 "'/x/source-track-00.s24le'"}
+
+    def test_every_pass_crashed_is_could_not_run_not_fail(self):
+        # Local proof 2, gate-lp2-20261124: every bench died on a missing
+        # audio file and the gate said FAIL.
+        run = [self.crashed(name) for name in ("opus1-clean", "pcm1-loss5", "4k-247")]
+        judged = gate.verdict(run, THRESHOLDS, BASELINE, host="box")
+        self.assertEqual(judged["verdict"], gate.COULD_NOT_RUN)
+        self.assertEqual(gate.exit_code(judged), gate.EXIT_COULD_NOT_RUN)
+        self.assertEqual(sorted(judged["could_not_run"]), ["4k-247", "opus1-clean", "pcm1-loss5"])
+        self.assertIn("source-track-00.s24le", judged["could_not_run"]["opus1-clean"])
+        text = gate.summary_markdown("g", run, judged, {})
+        self.assertIn("# Gate g: COULD NOT RUN", text)
+        self.assertIn("no baseline may be recorded", text)
+        # A pass whose bench failed but left figures ran.
+        ran = {**figures("opus1-clean", audio=[client("london", 2.5, 5.2)]), "bench_exit": 1}
+        self.assertIsNone(gate.could_not_run(ran))
+
+    def test_one_pass_that_could_not_run_beside_others_fails_and_names_its_cause(self):
+        run = self.good_run() + [self.crashed("pcm1-loss5")]
+        judged = gate.verdict(run, THRESHOLDS, BASELINE, host="box")
+        self.assertEqual(judged["verdict"], "FAIL")
+        self.assertEqual([c["check"] for c in judged["failed"]], ["pcm1-loss5: could not run"])
+        self.assertIn("source-track-00", judged["failed"][0]["note"])
+        self.assertEqual(gate.exit_code(judged), 1)
+
+    def test_the_cause_is_the_last_line_of_the_bench_s_output(self):
+        text = "pass\nTraceback (most recent call last):\n  File x\nFileNotFoundError: gone\n\n"
+        self.assertEqual(gate.crash_cause(text), "FileNotFoundError: gone")
+        self.assertEqual(gate.crash_cause(""), "no output")
 
 
 class Plan(unittest.TestCase):
@@ -245,6 +282,64 @@ class Plan(unittest.TestCase):
 
 
 class Baseline(unittest.TestCase):
+
+    def archived(self, root: pathlib.Path, run_id: str, crashed: list[str], ran: list[str]):
+        """A gate run in the archive's shape: a pass that crashed has its
+        gate-figures.json and gate-bench.log and no hops.json."""
+        base = root / run_id
+        for name in crashed:
+            (base / name).mkdir(parents=True)
+            (base / name / "gate-figures.json").write_text(json.dumps(
+                {"name": name, "error": "no figures: no hops.json", "bench_exit": 1}))
+            (base / name / "gate-bench.log").write_text(
+                "Traceback (most recent call last):\nFileNotFoundError: [Errno 2] No such file "
+                "or directory: '/rm/needletail/target/linode-qualification/media/x.s24le'\n")
+        for name in ran:
+            (base / name).mkdir(parents=True)
+            (base / name / "hops.json").write_text("{}")
+            (base / name / "gate-figures.json").write_text(json.dumps({"bench_exit": 0}))
+        (base / "gate-plan.json").write_text(json.dumps(
+            {"passes": [{"name": name} for name in crashed + ran]}))
+
+    def run_tool(self, root, *argv):
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(root)}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = gate.main(list(argv))
+        return code, err.getvalue()
+
+    def test_a_run_that_could_not_run_is_never_a_baseline(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = pathlib.Path(root)
+            self.archived(root, "gate-crashed", ["opus1-clean", "pcm1-loss5"], [])
+            baseline = root / "baseline.json"
+            baseline.write_text(json.dumps({"hosts": {}}))
+            code, err = self.run_tool(root, "baseline", "gate-crashed", "--baseline",
+                                      str(baseline), "--host", "box")
+            self.assertEqual(code, gate.EXIT_COULD_NOT_RUN)
+            self.assertIn("could not run", err)
+            self.assertIn("x.s24le", err)
+            self.assertEqual(json.loads(baseline.read_text()), {"hosts": {}})
+            # Judged again offline: could not run, exit 2.
+            code, _err = self.run_tool(root, "verdict", "gate-crashed", "--host", "box")
+            self.assertEqual(code, gate.EXIT_COULD_NOT_RUN)
+
+    def test_a_run_with_one_pass_that_could_not_run_is_not_a_baseline_either(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = pathlib.Path(root)
+            self.archived(root, "gate-part", ["pcm1-loss5"], ["opus1-clean"])
+            baseline = root / "baseline.json"
+            with unittest.mock.patch.object(gate, "analyze", lambda directory: figures(
+                    "opus1-clean", audio=[client("london", 2.5, 5.0)])):
+                code, err = self.run_tool(root, "baseline", "gate-part", "--baseline",
+                                          str(baseline), "--host", "box")
+            self.assertEqual(code, gate.EXIT_COULD_NOT_RUN)
+            self.assertIn("pcm1-loss5", err)
+            self.assertFalse(baseline.exists())
 
     def test_the_baseline_is_the_median_client_of_each_site(self):
         run = [figures("opus1-clean", audio=[client("london", 2.5, 5.0), client("london", 2.7, 6.0),

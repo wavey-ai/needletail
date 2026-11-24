@@ -81,6 +81,9 @@ class ContribSim(Sim):
                              "canonical_conflicts": 0, "wide_hole_releases": 0,
                              "skipped_parts": 0} for name in FIRSTS}
         self.rising: set[tuple[str, str]] = set()
+        self.local_reads: list[str] = []
+        # Forwarders whose build serves no relay_counters.
+        self.unserved: set[str] = set()
 
     def contributor(self, name: str) -> bool:
         return self.nodes_.get(name, {}).get("role") == "contributor"
@@ -107,9 +110,24 @@ class ContribSim(Sim):
         return [{"first_part": w * 256, "parts": 256, "present": 256,
                  "xor": self.xor.get(name, f"{w:016x}")} for w in closed[-8:]]
 
+    def relay_counters(self, name) -> dict:
+        """A first forwarder's counters as av-mesh's /api/node
+        `relay_counters` serves them (integration 4); `rising` ones grow at
+        every read."""
+        counters = self.plane[name]
+        for forwarder, key in self.rising:
+            if forwarder == name:
+                counters[key] += 1
+        return dict(counters)
+
     def doc(self, name):
         if not self.contributor(name):
-            return super().doc(name)
+            document = super().doc(name)
+            if document is not None and name in self.unserved:
+                document.pop("relay_counters", None)
+            elif document is not None and name in self.plane:
+                document["relay_counters"] = self.relay_counters(name)
+            return document
         if not self.up(name) or name in self.frozen:
             return None
         node = self.nodes_[name]
@@ -146,6 +164,9 @@ class ContribSim(Sim):
         return document
 
     def get(self, name, path):
+        if path == "/api/mesh/local":
+            # No gate reads it any more (integration 4).
+            self.local_reads.append(name)
         if path == "/api/mesh/local" and name in self.plane:
             if not self.up(name):
                 return None, None
@@ -166,7 +187,9 @@ class ContribSim(Sim):
                                         "overflow": 0}},
                     "canonical_conflicts": counters["canonical_conflicts"],
                     "wide_hole_releases": counters["wide_hole_releases"]},
-                "canonical_gap_skip": {"skipped_parts": counters["skipped_parts"]}}
+                "canonical_gap_skip": {"skipped_parts": counters["skipped_parts"]},
+                # av-mesh's mesh_api_snapshot: the node's /api/node.
+                "status": self.doc(name)}
         return super().get(name, path)
 
     # ------------------------------------------------- A's backend methods
@@ -220,7 +243,7 @@ class Base(unittest.TestCase):
         return {name: mesh_ops.status_of(self.sim.doc(name)) for name in names}
 
     def planes(self) -> dict:
-        return {name: cc.plane_counters(self.sim.get(name, "/api/mesh/local")[1])
+        return {name: cc.node_planes(mesh_ops.status_of(self.sim.doc(name)))
                 for name in FIRSTS}
 
     def lab(self) -> mesh_ops.Lab:
@@ -414,11 +437,12 @@ class GateTable(Base):
         self.sim.plane["lon-dist-a"]["duplicate_mismatch"] = 2
         self.assertEqual(self.check(previous=before)[1],
                          ["K3: duplicate_mismatch grew at lon-dist-a (0 to 2)"])
-        # A counter that is not served is not read as 0.
-        self.sim.patch["lon-dist-a"] = lambda doc: doc
-        with mock.patch.object(self.sim, "get", lambda name, path: (200, {})):
-            self.assertIn("K3: parity unknown: lon-dist-a's duplicate_mismatch",
-                          self.check(previous=before)[1])
+        # A counter that is not served (a build without /api/node
+        # relay_counters) is not read as 0, nor read from /api/mesh/local.
+        self.sim.unserved.add("lon-dist-a")
+        self.assertIn("K3: parity unknown: lon-dist-a's duplicate_mismatch",
+                      self.check(previous=before)[1])
+        self.sim.unserved.clear()
         self.sim.plane["lon-dist-a"]["duplicate_mismatch"] = 0
         # Equal fingerprints: windows with equal present must have equal xor.
         self.sim.xor["contrib-lon-b"] = "00000000deadbeef"
@@ -581,6 +605,9 @@ class Kill(Base):
         ready = json.loads(sorted(self.sim.evidence_dir.glob("return-*.json"))[-1].read_text())
         self.assertTrue(ready["ready"]["ok"])
         self.assertIsNotNone(ready["contributor_ready"]["last"]["windows"]["3001"])
+        # Integration 4: the counters came from /api/node relay_counters;
+        # no gate asked for /api/mesh/local.
+        self.assertEqual(self.sim.local_reads, [])
 
     def test_a_returned_contributor_with_other_bytes_is_not_ready(self):
         self.assertEqual(self.change("kill", "--node", "contrib-lon-b"), 0)
@@ -604,6 +631,38 @@ class Kill(Base):
         self.assertEqual([line.split()[2] for line in self.marks()],
                          ["kill.lon-dist-a", "kill.lon-dist-a", "return.lon-dist-a",
                           "return.lon-dist-a"])
+
+    def test_an_ingress_kill_runs_beside_ordinary_lane_skips(self):
+        # Local proof 2, scenario e: every child's row for lon-dist-b skipped
+        # 1 to 4 objects in 10 s (lane loss its copies repaired) and the
+        # gate refused; lon-dist-b's own lanes skipped too (LG4).
+        skips = {"lon-edge-1": 4, "lon-edge-2": 4, "lon-edge-3": 3, "new-dist-a": 3,
+                 "new-dist-b": 2}
+        for child, count in skips.items():
+            self.sim.row[(child, "lon-dist-b")] = {"skipped_10s": count}
+            self.sim.row[(child, "lon-dist-a")] = {"skipped_10s": 1}
+        self.sim.row[("lon-dist-b", "contrib-lon")] = {"skipped_10s": 2}
+        code = self.change("kill", "--node", "lon-dist-a")
+        self.assertEqual(code, 0, self.err.getvalue())
+        self.assertFalse(self.sim.nodes_["lon-dist-a"]["running"])
+        # The gate says how it judged (c): the children's own figure of
+        # objects every parent skipped (integration 4), 0 here.
+        self.assertIn("gate note: LG2 lon-edge-1 <- lon-dist-b: P2 (c) for stream 3001",
+                      self.err.getvalue())
+        self.assertIn("gate note: CG2 new-dist-a <- lon-dist-b: P2 (c) for stream 3001",
+                      self.err.getvalue())
+        self.assertIn("0 skipped by every parent", self.err.getvalue())
+        record = json.loads(sorted(self.sim.evidence_dir.glob("kill-*.json"))[-1].read_text())
+        self.assertTrue(record["gate"]["notes"])
+
+    def test_an_ingress_kill_is_refused_when_a_child_missed_a_part(self):
+        self.sim.row[("lon-edge-2", "lon-dist-b")] = {"skipped_10s": 2}
+        self.sim.gaps["lon-edge-2"] = 1
+        self.assertEqual(self.change("kill", "--node", "lon-dist-a", "--gate-timeout-s", "2"),
+                         mesh_ops.EXIT_REFUSED)
+        self.assertIn("the child missed 1 parts of stream 3001 in the last 10 s",
+                      self.err.getvalue())
+        self.assertEqual(self.touched(), [])
 
     def test_an_ingress_whose_sibling_misses_a_contributor_is_not_killed(self):
         self.sim.row[("lon-dist-b", "contrib-lon-b")] = {"source_age_ms": 900}
@@ -845,7 +904,7 @@ class Engine(Base):
     def test_a_quiet_roll_stops_at_the_second_contributor(self):
         self.sim.hears.update({"contrib-lon": False, "contrib-lon-b": False})
         self.sim.ids[NEW[0]] = identity("1111111111117777", envelope="ffff")
-        code = self.roll(gate_timeout_s=3)
+        code = self.roll(gate_timeout_s=6)
         self.assertEqual(code, mesh_ops.EXIT_STOPPED, self.err.getvalue())
         self.assertEqual(self.sim.activations(), [("contrib-lon-b", False)])
         self.assertEqual(self.sim.nodes_["contrib-lon-b"]["build"], NEW)

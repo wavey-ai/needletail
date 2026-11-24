@@ -122,6 +122,9 @@ DEFAULT_OVERRIDES = {
     # A small edge: 100 Mbit/s of egress, admission at 85 Mbit/s.
     "edge_egress_capacity_bps": 100_000_000,
     "steering_ttl_seconds": 1,
+    # No warm pass at boot (no check unit here; the nodes share the dev
+    # box's memory): see edge_lab.py's DEFAULT_OVERRIDES.
+    "node_warm": False,
 }
 CACHE_LOSS_PPM = 2000
 NETEM_CACHE_MESH = "delay 1ms 0.2ms loss 0.2%"

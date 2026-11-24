@@ -66,8 +66,18 @@ HTTP_PORT = 19444
 # av-mesh's --rebalance-target-permille default: an edge over it sends UDP
 # legs to an edge with room (the capacity gate's ceiling).
 REBALANCE_TARGET_PERMILLE = 800
-# Polls are this far apart, or one round trip of the farthest node.
-POLL_S = 0.2
+# Polls are this far apart, or one round trip of the farthest node (local
+# proof 2, F3: polls 200 ms apart, each a curl process and a TLS handshake
+# per node in the local lab, moved the probes' p99 by 2.5 to 3.4 ms while a
+# gate refused for 30 s and changed nothing). A gate that keeps refusing
+# backs off to POLL_MAX_S; a node is asked at most once a POLL_S whatever
+# asks it (`Paced`).
+POLL_S = 1.0
+POLL_MAX_S = 4.0
+POLL_BACKOFF = 1.5
+# The tools' own priority (`renice`, `--nice`): below the lab's probes,
+# senders and nodes when they share CPUs.
+NICE = 10
 # The operator's clock against one node of each region (2.7).
 CLOCK_LIMIT_S = 0.05
 # An activation must start within this of the last passing poll (3.5).
@@ -90,8 +100,75 @@ SINGLE_LEGS_WAIT_S = 20.0
 SERVING_TIMEOUT_S = 15.0
 # On an interrupt after an activation: how long to wait for R1 and warm.
 INTERRUPT_WAIT_S = 15.0
+# The warm pass at boot (integration 4; .resilient/reports/hunt-lab.md (c)):
+# `needletail-nodecheck boot --warm` writes one byte in every page of
+# MemAvailable minus 300 MB once, before the service starts, and the node is
+# not ready until it is complete. The hunt lab took 43 to 79 s for 2.3 to
+# 2.5 GB on a 4 GB guest; the lab of 24 Nov evening 83 to 95 s on 4 GB
+# nodes and more than 240 s on one Tokyo edge. The pass's own bound is
+# WARM_SECONDS_PER_4GB for every 4 GB of the plan's memory (never less than
+# that; --warm-max-seconds), and every wait for a node's readiness after a
+# boot (push, roll, replace, the autoscaler's join and recovery) has longer
+# than that on top: the bound and WARM_MARGIN_S (warm_allowance_seconds).
+WARM_SECONDS_PER_4GB = 300
+# Beyond the pass's bound: needletail-nodecheck's start, its unmapping of
+# what it touched and its record (the check unit's TimeoutStartSec margin).
+WARM_MARGIN_S = 70
+# GB of memory of a Linode plan (GET /linode/types). A g6-dedicated-N not
+# listed has 2N GB, a g6-standard-N or g6-nanode-N is never a lab plan.
+LINODE_MEMORY_GB = {
+    "g6-nanode-1": 1, "g6-standard-1": 2, "g6-standard-2": 4, "g6-standard-4": 8,
+    "g6-standard-6": 16, "g6-standard-8": 32, "g6-standard-16": 64, "g6-standard-20": 96,
+    "g6-standard-24": 128, "g6-standard-32": 192,
+    "g6-dedicated-2": 4, "g6-dedicated-4": 8, "g6-dedicated-8": 16, "g6-dedicated-16": 32,
+    "g6-dedicated-32": 64, "g6-dedicated-48": 96, "g6-dedicated-50": 128,
+    "g6-dedicated-56": 256, "g6-dedicated-64": 512,
+}
+
+
+def plan_memory_gb(kind) -> int | None:
+    """GB of memory of a Linode plan; None for anything else (a node of the
+    namespace lab has no plan)."""
+    kind = str(kind or "")
+    if kind in LINODE_MEMORY_GB:
+        return LINODE_MEMORY_GB[kind]
+    match = re.match(r"^g[0-9]+-dedicated-([0-9]+)$", kind)
+    return 2 * int(match.group(1)) if match else None
+
+
+def warm_seconds(kind, per_4gb: float = WARM_SECONDS_PER_4GB) -> int | None:
+    """The bound of the boot warm pass of a host of plan `kind`: `per_4gb`
+    for every 4 GB of its memory, at least `per_4gb` (g6-dedicated-2: 300,
+    -4: 600, -8: 1200); None when the plan is not known."""
+    memory = plan_memory_gb(kind)
+    if memory is None:
+        return None
+    return int(max(per_4gb, -(-memory * per_4gb // 4)))
+
+
+def warm_allowance_seconds(kind, per_4gb: float = WARM_SECONDS_PER_4GB) -> int | None:
+    """What a wait for readiness after a boot adds for a host of plan
+    `kind`: longer than its pass's bound (warm_seconds + WARM_MARGIN_S:
+    g6-dedicated-2 370 s); None when the plan is not known."""
+    bound = warm_seconds(kind, per_4gb)
+    return None if bound is None else bound + WARM_MARGIN_S
+
+
+def warm_allowance(ops, name: str) -> float:
+    """What a readiness wait of `name` adds for its boot warm pass: the
+    backend's `warm_allowance_s` (0 for a backend that has none)."""
+    allowance = getattr(ops, "warm_allowance_s", None)
+    try:
+        return float(allowance(name)) if allowance is not None else 0.0
+    except (KeyError, TypeError, ValueError):
+        return 0.0
 # A capacity cost is taken from edges carrying at least this many legs.
 COST_MIN_LEGS = 10
+# A surge edge has taken its share when the region's rebalance moves have
+# been still this long (3.8's `end`), or it holds a fair share of the
+# region's legs; it is waited for at most SURGE_SETTLE_S.
+SURGE_STILL_S = 5.0
+SURGE_SETTLE_S = 20.0
 # The dry mode's sleeps when no real roll left evidence (3.5).
 DRY_TYPICAL_S = {"edges": {"drain": 4.0, "activate": 2.0, "ready": 5.0},
                  "forwarders": {"activate": 2.0, "ready": 6.0},
@@ -138,6 +215,93 @@ class Interrupted(BaseException):
 
 def natural(name: str) -> list:
     return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", name)]
+
+
+# ------------------------------------------------------- the tools' own cost
+
+def renice(level: int = NICE, nice=os.nice) -> int:
+    """Lower this process's priority to nice `level` (never raise it: an
+    unprivileged process cannot, and a lower level asked later keeps the
+    higher one). The niceness after."""
+    current = nice(0)
+    if level > current:
+        current = nice(level - current)
+    return current
+
+
+class Backoff:
+    """The wait before a gate's next poll: `base` after a poll that passed,
+    growing by POLL_BACKOFF after each that failed, at most `ceiling`."""
+
+    def __init__(self, base: float = POLL_S, ceiling: float = POLL_MAX_S):
+        self.base = base
+        self.ceiling = max(base, ceiling)
+        self.current = base
+
+    def next(self, passed: bool) -> float:
+        self.current = self.base if passed else min(self.ceiling, self.current * POLL_BACKOFF)
+        return self.current
+
+
+class Paced:
+    """An Ops whose reads of one node are at least `poll_s` apart: a read
+    that comes sooner waits for its turn (a poll of several nodes waits
+    once, for the latest of them). Control requests (POST) are not paced.
+    `recent(node, age)` is the last answer of a node read within `age`
+    seconds, so a step that follows a poll need not ask again."""
+
+    def __init__(self, inner, poll_s: float = POLL_S, clock=time.time, sleep=time.sleep):
+        self.inner = inner
+        self.poll_s = poll_s
+        self.clock = clock
+        self.sleep = sleep
+        self.asked: dict[str, float] = {}
+        self.answers: dict[str, tuple[float, object]] = {}
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def _turn(self, nodes) -> None:
+        now = self.clock()
+        wait = max([self.asked[node] + self.poll_s - now for node in nodes
+                    if node in self.asked] or [0.0])
+        if wait > 0:
+            self.sleep(wait)
+        now = self.clock()
+        for node in nodes:
+            self.asked[node] = now
+
+    def status(self, node):
+        self._turn([node])
+        document = self.inner.status(node)
+        self.answers[node] = (self.clock(), document)
+        return document
+
+    def statuses(self, nodes) -> dict:
+        nodes = list(nodes)
+        self._turn(nodes)
+        out = self.inner.statuses(nodes)
+        now = self.clock()
+        for node, document in out.items():
+            self.answers[node] = (now, document)
+        return out
+
+    def get(self, node, path):
+        self._turn([node])
+        return self.inner.get(node, path)
+
+    def recent(self, node: str, age: float) -> tuple[bool, object]:
+        """(read within `age`, its answer: None when the node did not
+        answer)."""
+        at, document = self.answers.get(node, (None, None))
+        if at is not None and self.clock() - at <= age:
+            return True, document
+        return False, None
+
+
+def paced(ops, poll_s: float = POLL_S, clock=time.time, sleep=time.sleep):
+    """`ops` paced (Paced), once: an Ops already paced is returned as it is."""
+    return ops if isinstance(ops, Paced) else Paced(ops, poll_s, clock, sleep)
 
 
 # ------------------------------------------------------- HTTP (moved from AUT)
@@ -291,7 +455,11 @@ NODE_READS = (
     "parents[]/streams[]/skipped_10s", "parents[]/streams[]/resets_10s",
     "parents[]/streams[]/multi_symbol_10s", "parents[]/streams[]/slack_mean_us_10s",
     "parents[]/streams[]/slack_min_us_10s",
-    "streams[]/stream_id", "streams[]/class",
+    "streams[]/stream_id", "streams[]/class", "streams[]/head_part", "streams[]/first_part",
+    "streams[]/window_parts", "streams[]/missed_10s", "streams[]/skipped_by_every_parent_10s",
+    "relay_counters/duplicate_mismatch", "relay_counters/not_admitted",
+    "relay_counters/stale_media", "relay_counters/canonical_conflicts",
+    "relay_counters/wide_hole_releases", "relay_counters/skipped_parts",
     "children/compiled[]/target",
     "children/lease/children", "children/lease/pairs",
     "children/lease/pairs_list[]/child", "children/lease/pairs_list[]/stream_id",
@@ -310,7 +478,10 @@ NODE_READS_NOT_IN_CONTRACT = tuple(path for path in NODE_READS if path not in (
     "state", "not_ready", "drain_reasons", "build/git", "build/built_unix", "process/boot_id",
     "process/args_sha256", "fast_plane/threads", "fast_plane/threads_expected",
     "ingest/audio_deadline_drops", "client_udp/subscribers", "client_udp/single_legs",
-    "client_udp/legs_by_other", "client_udp/rebalance_moves", "client_udp/load_permille"))
+    "client_udp/legs_by_other", "client_udp/rebalance_moves", "client_udp/load_permille",
+    "relay_counters/duplicate_mismatch", "relay_counters/not_admitted",
+    "relay_counters/stale_media", "relay_counters/canonical_conflicts",
+    "relay_counters/wide_hole_releases", "relay_counters/skipped_parts"))
 
 def _num(item, path: str):
     value = item
@@ -621,6 +792,15 @@ class Ops:
         """Delete a slot by its recorded id, whatever state it is in (one
         created part-way included); nothing to delete is not an error."""
         raise NotImplementedError
+
+    def warm_allowance_s(self, node: str) -> float:
+        """Seconds a readiness wait of `node` adds to `ready_timeout_s` for
+        the node's warm pass at boot (longer than its bound:
+        WARM_SECONDS_PER_4GB scaled by its plan's memory, its check's watch
+        and WARM_MARGIN_S): after a push of a new
+        instance, a rebuild or a boot the node is not ready before the pass
+        is complete. 0: a backend with no warm pass (the local lab)."""
+        return 0.0
 
 
 class Lab:
@@ -949,16 +1129,72 @@ def contributor_rules():
 
 PARENT_FIELDS = ("source_age_ms", "window_s", "skipped_10s", "resets_10s", "objects_10s",
                  "slack_mean_us_10s", "slack_min_us_10s")
-LEAVING_FIELDS = ("objects_1s", "objects_10s", "slack_mean_us_10s", "slack_min_us_10s")
+LEAVING_FIELDS = ("objects_1s", "objects_10s", "skipped_10s", "slack_mean_us_10s",
+                  "slack_min_us_10s")
+# P2 (a): the skips of the other parent's lane that are ordinary, repaired
+# loss. A skip (av-mesh ParentFeeds) is an advance of that lane's head by
+# more than one object: every object whose first datagram on the lane came
+# after a later object's, whether it was lost there and its 20 ms burst
+# copy, the other parent or the cache mesh delivered it, or it was only
+# reordered. A healthy lab lane shows 0 to 4 in 10 s of 10,000 objects
+# (local proof 2, skips.ndjson). At most max(2, 0.1 % of the objects).
+SKIP_FLOOR = 2
+SKIP_FRACTION = 0.001
+# P2 (b) and (c) as av-mesh serves them on the child's /api/node (integration
+# 4): `streams[].missed_10s`, the parts of the stream the child's watermark
+# passed without them in the last 10 s; `streams[].skipped_by_every_parent_10s`,
+# the objects every parent delivering it skipped in the last 10 s (null:
+# unknown, a lane skipped more than av-mesh's record keeps).
+MISSED_FIELD = "missed_10s"
+BOTH_FIELD = "skipped_by_every_parent_10s"
+
+
+def skip_allowance(objects: int | float) -> int:
+    """P2 (a): the skips allowed on a lane of `objects` objects in 10 s."""
+    return max(SKIP_FLOOR, int(SKIP_FRACTION * max(0, objects)))
+
+
+def window_gaps(status: Status | None, stream_id: int) -> tuple[int | None, int | None]:
+    """The parts of `stream_id` missing from the node's retained window
+    (`streams[]`: head_part - first_part + 1 - window_parts; about 12 s of
+    1 ms parts), and the parts it spans. (None, None) when a figure is
+    missing. P2 (b) was read from it before av-mesh served `missed_10s`;
+    kept for the evidence."""
+    row = ((status.streams if status else None) or {}).get(stream_id)
+    if row is None:
+        return None, None
+    head, first, held = (_num(row, "head_part"), _num(row, "first_part"),
+                         _num(row, "window_parts"))
+    if head is None or first is None or held is None:
+        return None, None
+    span = int(head) - int(first) + 1
+    return max(0, span - int(held)), span
+
+
+def stream_figure(status: Status | None, stream_id: int, field: str):
+    """A number of the node's `streams[]` row of `stream_id`; None when the
+    row or the figure is missing (or null)."""
+    row = ((status.streams if status else None) or {}).get(stream_id)
+    return None if row is None else _num(row, field)
 
 
 def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_ms: float = 1.0,
-                repair_lane: bool = False) -> list[str]:
+                repair_lane: bool = False, notes: list | None = None) -> list[str]:
     """P1 to P4 of 3.3 on the child's own record: may the parent at
     `leaving` (addresses) go, with the parent at `staying` left to feed
     `stream_id` to this child? [] passes; every problem is named, a missing
     figure as "parity unknown". `repair_lane`: the staying parent feeds the
-    child on a repair lane (a compiled child's secondary)."""
+    child on a repair lane (a compiled child's secondary).
+
+    P2 refuses when stopping the leaving parent would leave the child
+    without something it gets today, not for a lane's ordinary repaired
+    loss (lead's decision of 24 Nov): it passes when, over the last 10 s,
+    (a) the other parent skipped at most `skip_allowance` objects, (b) the
+    child itself missed nothing of the stream (its `streams[].missed_10s`
+    is 0), and (c) no object was skipped by both parents: proved when one
+    of the two skipped none, else read from the child's
+    `streams[].skipped_by_every_parent_10s` (0 passes; null is unknown and
+    fails). A missing figure fails ("parity unknown")."""
     if child is None:
         return ["parity unknown: the child does not answer"]
     x = parent_row(child, set(leaving), stream_id)
@@ -971,6 +1207,13 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
     missing += [f"leaving.{name}" for name in LEAVING_FIELDS if _num(x, name) is None]
     if repair_lane and _num(x, "multi_symbol_10s") is None:
         missing.append("leaving.multi_symbol_10s")
+    missed = stream_figure(child, stream_id, MISSED_FIELD)
+    if missed is None:
+        missing.append(f"the child's streams[].{MISSED_FIELD}")
+    both_skipped = bool(_num(p, "skipped_10s")) and bool(_num(x, "skipped_10s"))
+    both = stream_figure(child, stream_id, BOTH_FIELD)
+    if both_skipped and both is None:
+        missing.append(f"the child's streams[].{BOTH_FIELD} (both parents skipped)")
     if missing:
         return [f"parity unknown: {', '.join(missing)} (stream {stream_id})"]
     problems = []
@@ -978,8 +1221,22 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
         problems.append(f"P1 live: the other parent's last source is {p['source_age_ms']} ms old")
     if p["window_s"] < WINDOW_S:
         problems.append(f"P2 complete: {p['window_s']} s of record, {WINDOW_S} wanted")
-    if p["skipped_10s"] != 0:
-        problems.append(f"P2 complete: the other parent skipped {p['skipped_10s']} objects in 10 s")
+    objects = max(p["objects_10s"] + p["skipped_10s"], x["objects_10s"])
+    allowed = skip_allowance(objects)
+    if p["skipped_10s"] > allowed:
+        problems.append(f"P2 complete: the other parent skipped {p['skipped_10s']} objects in "
+                        f"10 s, more than the {allowed} of ordinary loss (max({SKIP_FLOOR}, "
+                        f"{SKIP_FRACTION:.1%} of {objects}))")
+    if missed:
+        problems.append(f"P2 complete: the child missed {int(missed)} parts of stream "
+                        f"{stream_id} in the last 10 s")
+    if both_skipped and both:
+        problems.append(f"P2 complete: {int(both)} objects of stream {stream_id} were skipped "
+                        "by both parents in the last 10 s")
+    if both_skipped and notes is not None:
+        notes.append(f"P2 (c) for stream {stream_id}: the other parent skipped "
+                     f"{p['skipped_10s']} and the leaving one {x['skipped_10s']} objects in 10 s; "
+                     f"{int(both)} skipped by every parent (the child's {BOTH_FIELD})")
     if p["resets_10s"] != 0:
         problems.append(f"P2 complete: the other parent's feed reset {p['resets_10s']} times")
     behind = x["objects_10s"] - x["objects_1s"] / 10
@@ -1041,7 +1298,8 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
     the evidence as not fed. A row for X without objects_1s is "parity
     unknown"."""
     problems: list[str] = []
-    evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": []}
+    notes: list[str] = []
+    evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": [], "notes": notes}
     pairs: list = []
     sx = statuses.get(x)
     if sx is None:
@@ -1112,8 +1370,11 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
             sp = statuses.get(other)
             failed = []
             if not light:
+                said: list = []
                 failed += [f"LG2 {child} <- {other} {stream_id}: {item}" for item in
-                           feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms)]
+                           feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms,
+                                       notes=said)]
+                notes += [f"LG2 {child} <- {other}: {item}" for item in said]
             if sp is None:
                 failed.append(f"LG3: {other} does not answer /api/node")
             elif sp.ready is not True:
@@ -1129,9 +1390,15 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                     failed.append(f"LG3: {other} fed {stream_id} {fed} ms ago")
                 fed_rows = [parent.rows.get((stream_id, "audio")) for parent in sp.parents or []]
                 fed_rows = [row for row in fed_rows if row is not None]
+                # Complete as P2 (a) reads it: ordinary repaired loss of
+                # the other parent's own lanes is no refusal.
                 if not any(_num(row, "source_age_ms") is not None
                            and row["source_age_ms"] <= LIVE_MS
-                           and _num(row, "skipped_10s") == 0 for row in fed_rows):
+                           and _num(row, "skipped_10s") is not None
+                           and _num(row, "objects_10s") is not None
+                           and row["skipped_10s"] <= skip_allowance(
+                               row["objects_10s"] + row["skipped_10s"])
+                           for row in fed_rows):
                     failed.append(f"LG4: {other} is not itself fed {stream_id} live and complete")
                 if sp.audio_deadline_drops is None:
                     failed.append(f"LG4: parity unknown: {other}'s audio_deadline_drops")
@@ -1177,8 +1444,10 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                     continue
                 repair = lab.records[child].get("secondary") == other
                 staying = lab.addresses(other) if other else set()
+                said = []
                 failed = feed_parity(sd, stream_id, x_addresses, staying, parity_ms,
-                                     repair_lane=repair)
+                                     repair_lane=repair, notes=said)
+                notes += [f"CG2 {child} <- {other}: {item}" for item in said]
                 entry["streams"].append({"stream_id": stream_id, "problems": failed})
                 problems += [f"CG2 {child} <- {other} {stream_id}: {item}" for item in failed]
         sy = statuses.get(other) if other else None
@@ -1201,9 +1470,26 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
         if running != set(children):
             problems.append(f"CG3: {x} forwards to {sorted(running)}, the tree names {children}")
 
-    # The site's entry.
+    # The site's entry: the sibling lists at least as many fresh caches as
+    # X, from each one's /api/node (`entry.caches_fresh`, what its
+    # /api/assignment picks from), so that the gate asks a node once a
+    # poll; `assignments` ({name: (status, JSON)} of /api/assignment) is
+    # read instead when a caller gives it.
     firsts = lab.first_distributors(lab.site(x))
-    if firsts and firsts[0] == x and len(firsts) > 1:
+    if firsts and firsts[0] == x and len(firsts) > 1 and assignments is None:
+        sibling = firsts[1]
+        sibling_status = statuses.get(sibling)
+        theirs = sibling_status.caches_fresh if sibling_status else None
+        if sibling_status is None:
+            problems.append(f"entry: {sibling} does not answer /api/node")
+        elif theirs is None:
+            problems.append(f"entry: parity unknown: {sibling}'s entry.caches_fresh")
+        elif sx.caches_fresh is None:
+            problems.append(f"entry: parity unknown: {x}'s entry.caches_fresh")
+        elif theirs < sx.caches_fresh:
+            problems.append(f"entry: {sibling} lists {theirs} fresh caches, {x} "
+                            f"{sx.caches_fresh}")
+    elif firsts and firsts[0] == x and len(firsts) > 1:
         sibling = firsts[1]
         code, document = (assignments or {}).get(sibling, (None, None))
         mine = _fresh_caches((assignments or {}).get(x, (None, None))[1])
@@ -1226,6 +1512,9 @@ class Gate:
     pairs: list
     last_poll: float
     polls: int
+    #: What the gate could not read exactly and how it judged instead
+    #: (P2's notes), once each, from its last poll.
+    notes: list = dataclasses.field(default_factory=list)
 
 
 def _poll_statuses(ops: Ops, names) -> dict:
@@ -1234,30 +1523,34 @@ def _poll_statuses(ops: Ops, names) -> dict:
 
 def forwarder_gate(ops: Ops, x: str, *, lab: Lab | None = None, timeout_s: float = 30.0,
                    parity_ms: float = 1.0, poll_s: float = POLL_S, clock=time.time,
-                   sleep=time.sleep) -> Gate:
+                   sleep=time.sleep, extra=None) -> Gate:
     """May forwarder X stop now (3.3): passes on two polls in a row that both
-    pass, fails after `timeout_s` with the last poll's problems."""
+    pass, fails after `timeout_s` with the last poll's problems. One
+    /api/node of each node of `forwarder_scope` a poll, `poll_s` apart,
+    backing off while it refuses (Backoff). `extra(statuses)`: more
+    problems read from the same poll (the ingress gate's)."""
+    ops = paced(ops, poll_s, clock, sleep)
     lab = lab or Lab(ops.nodes())
     scope = forwarder_scope(lab, x)
-    firsts = lab.first_distributors(lab.site(x))
-    entry = firsts[:2] if firsts and firsts[0] == x else []
     deadline = clock() + timeout_s
     previous, previous_ok, polls = None, False, 0
+    backoff = Backoff(poll_s)
     while True:
         began = clock()
         statuses = _poll_statuses(ops, scope)
-        assignments = {name: ops.get(name, "/api/assignment") for name in entry}
         polls += 1
-        problems, evidence, pairs = forwarder_check(lab, x, statuses, previous, assignments,
-                                                    parity_ms)
+        problems, evidence, pairs = forwarder_check(lab, x, statuses, previous, None, parity_ms)
+        if extra is not None:
+            problems = list(extra(statuses)) + problems
+        notes = list(dict.fromkeys(evidence.get("notes") or []))
         now = clock()
         if not problems and previous_ok:
-            return Gate(True, [], evidence, pairs, now, polls)
+            return Gate(True, [], evidence, pairs, now, polls, notes)
         previous_ok, previous = not problems, statuses
         if now >= deadline:
             return Gate(False, problems or ["the gate did not pass twice in a row"], evidence,
-                        pairs, now, polls)
-        sleep(max(0.0, poll_s - (now - began)))
+                        pairs, now, polls, notes)
+        sleep(max(0.0, min(backoff.next(not problems), deadline - now) - (now - began)))
 
 
 def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
@@ -1275,7 +1568,7 @@ def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
 
 
 def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
-                   one_path: bool = False):
+                   one_path: bool = False, extra_room: dict | None = None):
     """One poll of the edge capacity gate (3.5 with B's seam): every other
     serving edge is ready; the others together have room for X's legs; and
     for every other edge E, the edges other than X and E have room for the
@@ -1285,7 +1578,9 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
     path, and only X's single legs (`client_udp.single_legs`: no other leg)
     and its legs whose other leg is on a node the region does not advertise
     (av-mesh's `legs_by_other[""]`: draining, gone, or unknown; that leg is
-    no path to count on) need room. (problems, evidence)."""
+    no path to count on) need room. `extra_room` {edge: legs}: an edge
+    that is not serving counted as if it were (the dry mode's surge edge,
+    empty). (problems, evidence)."""
     site = lab.site(x)
     others = [name for name in lab.edges(site) if name != x]
     problems = []
@@ -1319,8 +1614,14 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
         room[name] = None if cost is None else (REBALANCE_TARGET_PERMILLE - held * cost) / cost
     if not single_known:
         problems.append(f"capacity unknown: client_udp.single_legs in {site}")
+    if cost is not None:
+        for name, legs_room in (extra_room or {}).items():
+            if name != x and name not in room:
+                room[name] = legs_room
+                others.append(name)
     evidence = {"legs": legs, "legs_by_other": by_other, "cost": cost, "room": room,
-                "single_legs": single if single_known else None}
+                "single_legs": single if single_known else None,
+                **({"counted_as_serving": sorted(extra_room)} if extra_room else {})}
     if one_path:
         own_single = sx.udp("single_legs")
         unadvertised = by_other.get("", 0)
@@ -1355,8 +1656,11 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
 
 def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = None,
               one_path: bool = False, timeout_s: float = 30.0, poll_s: float = POLL_S,
-              clock=time.time, sleep=time.sleep) -> Gate:
-    """May edge X be drained now: `capacity_check` on two polls in a row."""
+              clock=time.time, sleep=time.sleep, extra_room: dict | None = None) -> Gate:
+    """May edge X be drained now: `capacity_check` on two polls in a row,
+    backing off while it refuses."""
+    ops = paced(ops, poll_s, clock, sleep)
+    backoff = Backoff(poll_s)
     lab = lab or Lab(ops.nodes())
     scope = lab.edges(lab.site(x))
     if x not in scope:
@@ -1367,7 +1671,7 @@ def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = 
         began = clock()
         statuses = _poll_statuses(ops, scope)
         polls += 1
-        problems, evidence = capacity_check(lab, x, statuses, cost, one_path)
+        problems, evidence = capacity_check(lab, x, statuses, cost, one_path, extra_room)
         now = clock()
         if not problems and previous_ok:
             return Gate(True, [], evidence, [], now, polls)
@@ -1375,7 +1679,7 @@ def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = 
         if now >= deadline:
             return Gate(False, problems or ["the gate did not pass twice in a row"], evidence,
                         [], now, polls)
-        sleep(max(0.0, poll_s - (now - began)))
+        sleep(max(0.0, min(backoff.next(not problems), deadline - now) - (now - began)))
 
 
 @dataclasses.dataclass
@@ -1491,6 +1795,7 @@ def wait_ready(ops: Ops, name: str, *, expected: dict, before_boot: int, activat
     cause: "build" when R1, R2 or R4 fails, "other" otherwise. An NRestarts
     the backend cannot read is no evidence against the build: it fails the
     wait as "unit", cause "other"."""
+    ops = paced(ops, poll_s, clock, sleep)
     lab = lab or Lab(ops.nodes())
     scope = forwarder_scope(lab, name) if lab.tier(name) == "forwarders" else [name]
     deadline = clock() + timeout_s
@@ -1576,7 +1881,9 @@ class Engine:
 
     def __init__(self, ops: Ops, command: str, options: Options, out=None, err=None,
                  clock=time.time, sleep=time.sleep):
-        self.ops = ops
+        # Every read of a node at least a poll interval after the last
+        # (local proof 2, F3), whoever asks.
+        self.ops = paced(ops, options.poll_s, clock, sleep)
         self.command = command
         self.options = options
         self.out = out or sys.stdout
@@ -1594,6 +1901,12 @@ class Engine:
         self.single_baseline: dict[str, int] = {}
         self.surge: dict[str, str] = {}
         self.surge_staged: dict[str, str] = {}
+        self.surge_build: dict | None = None
+        # Why each region's surge edge joined, and how it settled (journal).
+        self.surge_why: dict[str, dict] = {}
+        # The dry mode's surge edges: counted by the capacity gate as empty
+        # serving edges, never started.
+        self.virtual_surge: dict[str, str] = {}
         self.hand: dict | None = None
         self.left: dict[str, dict] = {}
         self.before: dict[str, dict] = {}
@@ -1635,7 +1948,7 @@ class Engine:
     def write_journal(self) -> None:
         if self.journal:
             self.journal.update(in_hand=self.hand, left=self.left, done=self.done,
-                                before=self.before, surge=self.surge)
+                                before=self.before, surge=self.surge, surge_why=self.surge_why)
 
     def phase(self, name: str, phase: str, **fields) -> None:
         """The node in hand and its phase, in the journal before the step. A
@@ -1888,7 +2201,12 @@ class Engine:
         held, rollback-gate), and after the second try it is given back or
         named (`not_activated`)."""
         entry = self.hand["phase"] if self.hand and self.hand.get("node") == name else "gate"
-        status = self.status(name)
+        # The gate's or the drain's last poll read the node a moment ago:
+        # its answer is taken rather than asked again (and waited for)
+        # inside the activation's deadline.
+        found, recent = self.ops.recent(name, self.options.poll_s) \
+            if isinstance(self.ops, Paced) else (False, None)
+        status = status_of(recent) if found else self.status(name)
         before_boot = status.boot_id if status else (self.before.get(name) or {}).get("boot_id")
         for attempt in (1, 2):
             start_us = self.now_us()
@@ -1911,7 +2229,8 @@ class Engine:
             else:
                 self.say(f"{name}: activation: {why}; reading its boot id")
                 changed = self.boot_changed(name, before_boot, start_us,
-                                            not_after + UNIT_TIMEOUT_STOP_S)
+                                            not_after + UNIT_TIMEOUT_STOP_S
+                                            + warm_allowance(self.ops, name))
             if changed is True or changed is None:
                 self.phase(name, "activated")
                 return start_us, self.ops.unit_restarts(name)
@@ -1977,13 +2296,20 @@ class Engine:
                               parity_ms=self.options.parity_ms, poll_s=self.options.poll_s,
                               clock=self.clock, sleep=self.sleep)
         self.record(name)["gate"] = gate.evidence
+        for note in gate.notes:
+            self.say(f"{name}: gate note: {note}")
         return gate
 
     def gate_edge(self, name: str) -> Gate:
-        gate = edge_gate(self.ops, name, lab=self.lab, cost=self.costs.get(self.lab.site(name)),
+        site = self.lab.site(name)
+        cost = self.costs.get(site)
+        virtual = self.virtual_surge.get(site)
+        extra = {virtual: REBALANCE_TARGET_PERMILLE / cost} \
+            if virtual and virtual != name and cost else None
+        gate = edge_gate(self.ops, name, lab=self.lab, cost=cost,
                          one_path=self.options.surge == "never",
                          timeout_s=self.options.gate_timeout_s, poll_s=self.options.poll_s,
-                         clock=self.clock, sleep=self.sleep)
+                         clock=self.clock, sleep=self.sleep, extra_room=extra)
         self.record(name)["gate"] = gate.evidence
         return gate
 
@@ -1996,18 +2322,25 @@ class Engine:
         if not ok:
             raise Stop(EXIT_STOPPED, f"{name}: the contributor gate refuses: {why}")
 
+    def ready_timeout_s(self, name: str) -> float:
+        """--ready-timeout-s plus the node's warm allowance (warm_allowance)."""
+        return self.options.ready_timeout_s + warm_allowance(self.ops, name)
+
     def ready(self, name: str, expected: dict, before_boot: int, activation_us: int,
               restarts: int | None, gate_pairs=()) -> Ready:
         began = self.clock()
+        # A node whose activation booted its warm pass (a new instance, a
+        # rebuild, the first activation after the check unit was installed)
+        # is not ready before the pass is complete: its allowance on top.
         result = wait_ready(self.ops, name, expected=expected, before_boot=before_boot or 0,
                             activation_us=activation_us, lab=self.lab, before=self.before.get(name),
                             gate_pairs=gate_pairs, restarts_before=restarts,
-                            timeout_s=self.options.ready_timeout_s, poll_s=self.options.poll_s,
+                            timeout_s=self.ready_timeout_s(name), poll_s=self.options.poll_s,
                             clock=self.clock, sleep=self.sleep)
         if result.ok and self.lab.tier(name) == "contributors":
             _gate, contrib_ready = self.rules
             ok, why, evidence = contrib_ready(self.ops, name,
-                                              timeout_s=self.options.ready_timeout_s,
+                                              timeout_s=self.ready_timeout_s(name),
                                               poll_s=self.options.poll_s, clock=self.clock,
                                               sleep=self.sleep)
             self.record(name)["contributor_ready"] = evidence
@@ -2155,6 +2488,7 @@ class Engine:
             if status is not None and any(status.udp(item) != 0 for item in DRAIN_GAUGES):
                 self.control(name, "drain-node")
                 self.wait_empty(name, give_back=False)
+                status = self.status(name)
             last = self.clock()
             regate = lambda: self.wait_empty(name, give_back=False)  # noqa: E731
         elif tier == "forwarders":
@@ -2183,7 +2517,9 @@ class Engine:
             def regate():
                 self.gate_contributor(name)
                 return self.clock()
-        status = self.status(name)
+        found, recent = self.ops.recent(name, self.options.poll_s) \
+            if isinstance(self.ops, Paced) else (False, None)
+        status = status_of(recent) if found else self.status(name)
         boot = status.boot_id if status and status.boot_id else before["boot_id"]
         previous = {"git": before["git"], "unix": before["unix"],
                     "args_sha256": before["args_sha256"]}
@@ -2211,36 +2547,97 @@ class Engine:
                                      f"was rolled back to {before['git']}")
 
     # ---------------------------------------------------------- surge
-    def surge_needed(self, site: str) -> bool:
-        return not self.options.dry and self.options.surge != "never" and \
-            site not in self.surge and len(self.lab.edges(site)) < 3
+    def site_cost(self, site: str) -> float | None:
+        if site not in self.costs:
+            self.costs[site] = leg_cost(self.lab, site, self.poll(self.lab.edges(site)))
+        return self.costs[site]
+
+    def surge_reason(self, site: str, name: str | None = None) -> str | None:
+        """Why the region needs its surge edge before edge `name` is
+        drained (3.5 step 0, F5 of local proof 2), or None: fewer than three
+        edges serve, or the capacity gate would refuse `name` without one
+        (one poll of `capacity_check`; a refusal for room, not for a figure
+        that is missing or an edge that is not ready)."""
+        if self.options.surge == "never" or site in self.surge or site in self.virtual_surge:
+            return None
+        serving = self.lab.edges(site)
+        if len(serving) < 3:
+            return f"{site} serves {len(serving)} edges, fewer than three"
+        if name is None:
+            return None
+        statuses = self.poll(sorted(set(serving) | {name}, key=natural))
+        problems, _evidence = capacity_check(self.lab, name, statuses, self.site_cost(site))
+        short = [item for item in problems if item.startswith("capacity: ")]
+        if short:
+            return f"without it the capacity gate refuses {name}: {short[0]}"
+        return None
 
     def surge_prepare(self, scope, build: dict | None) -> None:
         """Before the first node: every region whose edges the command
-        drains and that serves fewer than three edges has an edge to start,
-        and that edge's files are staged (`build`: the target; None, the
-        tier's recorded build), so that it starts on them."""
+        drains and that serves fewer than three edges has an edge to start
+        (else the command refuses), and that edge's files are staged
+        (`build`: the target; None, the tier's recorded build), so that it
+        starts on them. A region of three or more whose capacity gate would
+        refuse one of the edges in scope now has its candidate staged too;
+        one without a candidate is named, and the gate decides later."""
+        self.surge_build = build
         for site in sorted({self.lab.site(name) for name in scope
                             if self.lab.tier(name) == "edges"}):
-            if not self.surge_needed(site):
+            reason = self.surge_reason(site)
+            if reason is None:
+                for name in scope:
+                    if self.lab.tier(name) == "edges" and self.lab.site(name) == site:
+                        reason = self.surge_reason(site, name)
+                        if reason:
+                            break
+            if reason is None:
                 continue
             candidates = self.ops.surge_candidates(site)
             if not candidates:
-                raise Refused(f"{site} serves {len(self.lab.edges(site))} edges and has no standby "
-                              "edge or slot to start; --surge never rolls with each listener on "
-                              "one path while its edge restarts")
-            self.stage([candidates[0]], build)
+                if len(self.lab.edges(site)) < 3:
+                    raise Refused(f"{site} serves {len(self.lab.edges(site))} edges and has no "
+                                  "standby edge or slot to start; --surge never rolls with each "
+                                  "listener on one path while its edge restarts")
+                self.say(f"{site}: {reason}; it has no standby edge or slot to start")
+                continue
+            if not self.options.dry:
+                self.stage([candidates[0]], build)
             self.surge_staged[site] = candidates[0]
 
-    def surge_join(self, site: str) -> None:
-        """Step 0 (3.5): start the staged surge edge, wait R1, R2, R6, give it
-        listeners (resume-node: a standby edge keeps the drain of its last
-        leave) and wait R7."""
-        if not self.surge_needed(site):
+    def surge_join(self, site: str, name: str | None = None) -> None:
+        """Step 0 (3.5) before edge `name` is drained, when `surge_reason`
+        gives one: start the staged surge edge (a candidate is staged now if
+        none was), wait R1, R2, R6, give it listeners (resume-node: a
+        standby edge keeps the drain of its last leave), wait R7 and its
+        share (`surge_settle`). The dry mode starts nothing: it prints the
+        same marks and its capacity gates count the edge as an empty
+        serving one."""
+        reason = self.surge_reason(site, name)
+        if reason is None:
             return
-        name = self.surge_staged[site]
-        label = f"{self.command}.edges.join.{name}"
+        surge = self.surge_staged.get(site)
+        if surge is None:
+            candidates = self.ops.surge_candidates(site)
+            if not candidates:
+                self.say(f"{site}: {reason}; it has no standby edge or slot to start")
+                return
+            surge = candidates[0]
+            if not self.options.dry:
+                self.stage([surge], self.surge_build)
+            self.surge_staged[site] = surge
+        self.surge_why[site] = {"node": surge, "before": name, "why": reason,
+                                "joined_unix": round(self.clock(), 3)}
+        self.say(f"{site}: the surge edge {surge} joins ({reason})")
+        label = f"{self.command}.edges.join.{surge}"
         self.marks.node_start(label)
+        if self.options.dry:
+            self.virtual_surge[site] = surge
+            self.surge_why[site]["dry"] = True
+            self.write_journal()
+            self.sleep(typical_times(self.ops.evidence_dir, "edges")["ready"])
+            self.marks.node_end(label)
+            return
+        name = surge
         status = self.status(name)
         before_boot = status.boot_id if status and status.boot_id else 0
         expected = self.ops.expected(name)
@@ -2268,13 +2665,52 @@ class Engine:
             raise Stop(EXIT_STOPPED, f"the surge edge {name} is ready and stays drained: "
                                      "resume-node failed")
         self.wait_serving(name)
+        self.surge_settle(site, name)
         self.release_hand(name, "surge")
         self.marks.node_end(label)
+
+    def surge_settle(self, site: str, name: str) -> None:
+        """After the surge edge serves: until it holds a fair share of the
+        region's legs (the region's legs over its serving edges), or the
+        region's rebalance moves have been still SURGE_STILL_S, or
+        SURGE_SETTLE_S. What it took is journalled."""
+        began = self.clock()
+        moves, still_since, why = None, began, "bound"
+        while True:
+            statuses = self.poll(self.lab.edges(site))
+            legs = [status.udp("subscribers") for status in statuses.values() if status]
+            held = statuses.get(name).udp("subscribers") if statuses.get(name) else None
+            total = sum(value for value in legs if value is not None)
+            now_moves = sum(status.udp("rebalance_moves") or 0
+                            for status in statuses.values() if status)
+            now = self.clock()
+            if now_moves != moves:
+                moves, still_since = now_moves, now
+            share = total // max(1, len(statuses))
+            if held is not None and held >= share:
+                why = "its share"
+                break
+            if now - still_since >= SURGE_STILL_S:
+                why = "rebalance still"
+                break
+            if now - began >= SURGE_SETTLE_S:
+                break
+            self.sleep(self.options.poll_s)
+        self.surge_why[site].update(settled_s=round(self.clock() - began, 3), settled_on=why,
+                                    legs=held, region_legs=total)
+        self.write_journal()
 
     def surge_leave(self, site: str) -> None:
         """The surge edge leaves after its region's last edge, as any edge
         is drained: B's single_legs wait, the capacity gate, drain, empty,
         stop. Refused: it is left serving (exit 3)."""
+        virtual = self.virtual_surge.pop(site, None)
+        if virtual is not None:
+            label = f"{self.command}.edges.leave.{virtual}"
+            self.marks.node_start(label)
+            self.sleep(typical_times(self.ops.evidence_dir, "edges")["drain"])
+            self.marks.node_end(label)
+            return
         name = self.surge.get(site)
         if name is None:
             return
@@ -2295,6 +2731,8 @@ class Engine:
         self.ops.stop_node(name)
         self.lab.records[name]["serving"] = False
         self.surge.pop(site)
+        if site in self.surge_why:
+            self.surge_why[site]["left_unix"] = round(self.clock(), 3)
         self.release_hand(name, "left")
         self.marks.node_end(label)
 
@@ -2430,10 +2868,12 @@ class Engine:
         clean = self.is_clean()
         if not self.unclean(self.hand):
             self.hand = None
-        self.evidence.update(exit=code, why=why, done=self.done, left=list(self.left))
+        self.evidence.update(exit=code, why=why, done=self.done, left=list(self.left),
+                             surge=self.surge_why)
         if self.journal:
             self.journal.update(finished=clean, exit=code, why=why, done=self.done,
-                                in_hand=self.hand, left=self.left, surge=self.surge)
+                                in_hand=self.hand, left=self.left, surge=self.surge,
+                                surge_why=self.surge_why)
             if clean and self.command in ("roll", "restart"):
                 supersede_stale(self)
         self.write_evidence()
@@ -2719,7 +3159,7 @@ def roll(ops: Ops, tier: str, *, nodes=None, sites=None, options: Options | None
                 continue
             site = engine.lab.site(name)
             if engine.lab.tier(name) == "edges":
-                engine.surge_join(site)
+                engine.surge_join(site, name)
             engine.change_node(name, state["expected"][name])
             last_of_site = not any(engine.lab.tier(other) == "edges"
                                    and engine.lab.site(other) == site
@@ -2775,7 +3215,7 @@ def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None,
             site = engine.lab.site(name)
             edge = engine.lab.tier(name) == "edges"
             if edge:
-                engine.surge_join(site)
+                engine.surge_join(site, name)
             engine.change_node(name, state["expected"][name], rollback=options.rollback,
                                undo=options.rollback)
             if edge and not any(engine.lab.tier(other) == "edges" and engine.lab.site(other) == site
@@ -2908,7 +3348,7 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
             result = wait_ready(ops, slot, expected=ops.expected(slot), before_boot=0,
                                 activation_us=context["slot_began_us"], lab=engine.lab,
                                 restarts_before=ops.unit_restarts(slot),
-                                timeout_s=options.ready_timeout_s, poll_s=options.poll_s,
+                                timeout_s=engine.ready_timeout_s(slot), poll_s=options.poll_s,
                                 clock=clock, sleep=sleep)
             if not result.ok:
                 raise Stop(EXIT_STOPPED, f"the slot {slot} is not ready "
@@ -2991,7 +3431,7 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
         engine.phase(name, first, before=engine.before.get(name), **fields)
         if tier == "edges":
             if "empty" not in done:
-                engine.surge_join(site)
+                engine.surge_join(site, name)
                 engine.phase(name, "gate")
                 found = engine.gate_edge(name)
                 if not found.ok:
