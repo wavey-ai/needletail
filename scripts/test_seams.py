@@ -415,6 +415,43 @@ class ContributorChanges(unittest.TestCase):
                 function, arguments, keywords = cleanup
                 function(*arguments, **keywords)
 
+    def test_the_engine_s_forwarder_gate_reads_av_mesh_s_rows(self):
+        """The engine's gates (C) on av-mesh's own parents[] rows (track
+        "opaque-audio", class "audio"; nt36's fake serves them as av-mesh
+        d718b6d does): the London edges' lease pairs are fed by lon-dist-a
+        and the compiled children's audio is audio, so the forwarder gate,
+        which an ingress kill runs, judges them rather than passing on
+        nothing."""
+        import mesh_ops  # noqa: PLC0415
+        import test_contributor_changes as tcc  # noqa: PLC0415
+        case = tcc.Base("setUp")
+        case.setUp()
+        try:
+            row = case.sim.doc("lon-edge-1")["parents"][0]["streams"][0]
+            self.assertEqual((row["track"], row["class"]), ("opaque-audio", "audio"))
+            gate = mesh_ops.forwarder_gate(case.sim, "lon-dist-a", timeout_s=5,
+                                           clock=case.clock, sleep=case.clock.sleep)
+            self.assertTrue(gate.ok, gate.problems)
+            self.assertEqual((gate.evidence["not_fed"], gate.evidence["video"]), ([], []))
+            self.assertTrue(gate.pairs and all(fed for *_rest, fed in gate.pairs), gate.pairs)
+            status = mesh_ops.status_of(case.sim.doc("lon-edge-1"))
+            address = status.parents[0].address
+            self.assertEqual(mesh_ops.parent_row(status, {address}, 3001), row)
+        finally:
+            for function, arguments, keywords in reversed(case._cleanups):
+                function(*arguments, **keywords)
+
+    def test_of_several_rows_of_one_stream_and_class_the_freshest_counts(self):
+        import mesh_ops  # noqa: PLC0415
+        document = {"role": "edge", "parents": [{"address": "10.0.0.1:22301", "streams": [
+            {"stream_id": 3001, "track": "opaque-audio", "class": "audio", "source_age_ms": 900},
+            {"stream_id": 3001, "track": "compact-audio", "class": "audio", "source_age_ms": 2},
+            {"stream_id": 3001, "track": "video", "class": "video", "source_age_ms": 1}]}]}
+        status = mesh_ops.status_of(document)
+        rows = status.parents[0].rows
+        self.assertEqual(rows[(3001, "audio")]["source_age_ms"], 2)
+        self.assertEqual(rows[(3001, "video")]["track"], "video")
+
 
 if __name__ == "__main__":
     unittest.main()

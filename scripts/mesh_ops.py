@@ -378,9 +378,21 @@ def status_of(document) -> Status | None:
                 continue
             rows = {}
             for row in entry.get("streams") or []:
-                stream_id, track = _num(row, "stream_id"), _str(row, "track")
-                if stream_id is not None and track is not None:
-                    rows[(int(stream_id), track)] = row
+                # Keyed by the row's class ("audio", "video"): av-mesh names
+                # the track of an audio row "opaque-audio" (its compact and
+                # opaque lanes alike) and gives the class beside it; a row
+                # without a class is keyed by its track. Of several rows of
+                # one stream and class, the freshest counts.
+                stream_id = _num(row, "stream_id")
+                kind = _str(row, "class") or _str(row, "track")
+                if stream_id is None or kind is None:
+                    continue
+                key = (int(stream_id), kind)
+                kept = rows.get(key)
+                if kept is None or (_num(row, "source_age_ms") is not None and (
+                        _num(kept, "source_age_ms") is None
+                        or row["source_age_ms"] < kept["source_age_ms"])):
+                    rows[key] = row
             parents.append(Parent(address_of(entry["address"]), _str(entry, "id"),
                                   _str(entry, "path"), rows))
     streams = None
