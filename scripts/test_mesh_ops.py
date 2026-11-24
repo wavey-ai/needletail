@@ -183,7 +183,10 @@ class Sim(mesh_ops.Ops):
         legs = 0 if node["drained"] else node["legs"]
         single = min(node["single"], legs) if legs else node["single"]
         paired = max(0, legs - single)
-        others = [other for other in self.edges(node["site"]) if other != name]
+        # A listener's other leg is on an edge that holds legs: a surge
+        # edge that just joined holds none of them.
+        others = [other for other in self.edges(node["site"]) if other != name
+                  and not self.nodes_[other]["drained"] and self.nodes_[other]["legs"]]
         by_other = {other: paired // len(others) for other in others} if others and paired else {}
         return {"subscribers": legs, "hls_sessions": 0, "hls_moved_active": 0,
                 "hls_requests_in_flight": 0, "refusals": 0, "load_permille": legs * 5,
@@ -1571,6 +1574,91 @@ class Roll(Base):
         self.assertEqual(labels[:2], ["roll.edges.join.new-edge-3"] * 2)
         self.assertEqual(labels[-2:], ["roll.edges.leave.new-edge-3"] * 2)
         self.assertTrue(self.sim.nodes_["new-edge-3"]["standby"])
+
+    def busy_london(self, legs=150):
+        """Three serving London edges, each at 750 permille: the others have
+        room for 10 legs each, so no edge can be drained without a surge."""
+        for index in (1, 2, 3):
+            self.sim.nodes_[f"lon-edge-{index}"]["legs"] = legs
+
+    def test_three_busy_edges_surge_when_the_capacity_gate_would_refuse(self):
+        # Local proof 2, F5: three serving edges at load; the roll refused.
+        self.busy_london()
+        node_marks = self.tmp / "node-marks.txt"
+        code = self.roll("edges", sites=["london"],
+                         options=self.options(node_marks_file=str(node_marks)))
+        self.assertEqual(code, 0, self.err.getvalue())
+        changes = [call[:2] for call in self.sim.calls if call[0] in ("start", "stop", "activate")]
+        self.assertEqual(changes, [("start", "lon-edge-4"), ("activate", "lon-edge-1"),
+                                   ("activate", "lon-edge-2"), ("activate", "lon-edge-3"),
+                                   ("stop", "lon-edge-4")])
+        # Staged with the target before it started, and back on standby.
+        self.assertIn(("stage", ("lon-edge-4",)), self.sim.calls)
+        self.assertEqual(self.sim.nodes_["lon-edge-4"]["build"], NEW)
+        self.assertTrue(self.sim.nodes_["lon-edge-4"]["standby"])
+        labels = [line.split()[2] for line in node_marks.read_text().splitlines()]
+        self.assertEqual(labels[:2], ["roll.edges.join.lon-edge-4"] * 2)
+        self.assertEqual(labels[-2:], ["roll.edges.leave.lon-edge-4"] * 2)
+        self.assertIn("the surge edge lon-edge-4 joins (without it the capacity gate refuses "
+                      "lon-edge-1: capacity:", self.err.getvalue())
+        # The journal and the evidence say why it joined and how it settled.
+        journal = self.journals()[-1]
+        why = journal["surge_why"]["london"]
+        self.assertEqual((why["node"], why["before"]), ("lon-edge-4", "lon-edge-1"))
+        self.assertTrue(why["why"].startswith("without it the capacity gate refuses"))
+        self.assertIn(why["settled_on"], ("its share", "rebalance still", "bound"))
+        self.assertIn("left_unix", why)
+        self.assertTrue(journal["finished"])
+
+    def test_three_edges_at_ordinary_load_roll_without_a_surge(self):
+        self.assertEqual(self.roll("edges", sites=["london"]), 0, self.err.getvalue())
+        self.assertNotIn("start", [call[0] for call in self.sim.calls])
+        self.assertFalse(self.sim.nodes_["lon-edge-4"]["running"])
+        self.assertEqual(self.journals()[-1]["surge_why"], {})
+
+    def test_the_dry_null_counts_the_surge_edge_and_starts_nothing(self):
+        self.busy_london()
+        node_marks = self.tmp / "node-marks.txt"
+        code = self.roll("edges", sites=["london"],
+                         options=self.options(dry=True, node_marks_file=str(node_marks)))
+        self.assertEqual(code, 0, self.err.getvalue())
+        self.assertEqual([call for call in self.sim.calls
+                          if call[0] in ("start", "stop", "activate", "stage", "post")], [])
+        labels = [line.split()[2] for line in node_marks.read_text().splitlines()]
+        self.assertEqual(labels[:2], ["roll.edges.join.lon-edge-4"] * 2)
+        self.assertEqual(labels[-2:], ["roll.edges.leave.lon-edge-4"] * 2)
+        evidence = json.loads(sorted(path for path in self.sim.evidence_dir.glob("*.json")
+                                     if not path.name.endswith(".state.json"))[-1].read_text())
+        gate = evidence["nodes"]["lon-edge-1"]["gate"]
+        self.assertEqual(gate["counted_as_serving"], ["lon-edge-4"])
+        self.assertTrue(evidence["surge"]["london"]["dry"])
+
+    def test_three_busy_edges_without_a_candidate_are_refused_by_the_gate(self):
+        self.busy_london()
+        self.sim.nodes_["lon-edge-4"].update(standby=False)
+        code = self.roll("edges", sites=["london"], options=self.options(gate_timeout_s=2))
+        self.assertEqual(code, 3)
+        self.assertIn("london: without it the capacity gate refuses lon-edge-1", self.err.getvalue())
+        self.assertIn("no standby edge or slot to start", self.err.getvalue())
+        self.assertIn("lon-edge-1: the capacity gate refuses", self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [])
+
+    def test_a_surge_edge_that_never_takes_its_share_is_waited_for_at_most_the_bound(self):
+        self.busy_london()
+        moves = {"n": 0}
+        original = self.sim.edge_udp
+
+        def edge_udp(name):
+            # The region keeps rebalancing and the surge edge takes nothing.
+            moves["n"] += 1
+            return {**original(name), "rebalance_moves": moves["n"]}
+        self.sim.edge_udp = edge_udp
+        engine_began = self.clock()
+        self.assertEqual(self.roll("edges", sites=["london"]), 0, self.err.getvalue())
+        why = self.journals()[-1]["surge_why"]["london"]
+        self.assertEqual(why["settled_on"], "bound")
+        self.assertGreaterEqual(why["settled_s"], mesh_ops.SURGE_SETTLE_S)
+        self.assertGreater(self.clock() - engine_began, mesh_ops.SURGE_SETTLE_S)
 
     def test_without_a_surge_candidate_the_roll_refuses_and_names_surge_never(self):
         for name in ("new-edge-3", "new-edge-4"):

@@ -92,6 +92,11 @@ SERVING_TIMEOUT_S = 15.0
 INTERRUPT_WAIT_S = 15.0
 # A capacity cost is taken from edges carrying at least this many legs.
 COST_MIN_LEGS = 10
+# A surge edge has taken its share when the region's rebalance moves have
+# been still this long (3.8's `end`), or it holds a fair share of the
+# region's legs; it is waited for at most SURGE_SETTLE_S.
+SURGE_STILL_S = 5.0
+SURGE_SETTLE_S = 20.0
 # The dry mode's sleeps when no real roll left evidence (3.5).
 DRY_TYPICAL_S = {"edges": {"drain": 4.0, "activate": 2.0, "ready": 5.0},
                  "forwarders": {"activate": 2.0, "ready": 6.0},
@@ -1362,7 +1367,7 @@ def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
 
 
 def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
-                   one_path: bool = False):
+                   one_path: bool = False, extra_room: dict | None = None):
     """One poll of the edge capacity gate (3.5 with B's seam): every other
     serving edge is ready; the others together have room for X's legs; and
     for every other edge E, the edges other than X and E have room for the
@@ -1372,7 +1377,9 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
     path, and only X's single legs (`client_udp.single_legs`: no other leg)
     and its legs whose other leg is on a node the region does not advertise
     (av-mesh's `legs_by_other[""]`: draining, gone, or unknown; that leg is
-    no path to count on) need room. (problems, evidence)."""
+    no path to count on) need room. `extra_room` {edge: legs}: an edge
+    that is not serving counted as if it were (the dry mode's surge edge,
+    empty). (problems, evidence)."""
     site = lab.site(x)
     others = [name for name in lab.edges(site) if name != x]
     problems = []
@@ -1406,8 +1413,14 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
         room[name] = None if cost is None else (REBALANCE_TARGET_PERMILLE - held * cost) / cost
     if not single_known:
         problems.append(f"capacity unknown: client_udp.single_legs in {site}")
+    if cost is not None:
+        for name, legs_room in (extra_room or {}).items():
+            if name != x and name not in room:
+                room[name] = legs_room
+                others.append(name)
     evidence = {"legs": legs, "legs_by_other": by_other, "cost": cost, "room": room,
-                "single_legs": single if single_known else None}
+                "single_legs": single if single_known else None,
+                **({"counted_as_serving": sorted(extra_room)} if extra_room else {})}
     if one_path:
         own_single = sx.udp("single_legs")
         unadvertised = by_other.get("", 0)
@@ -1442,7 +1455,7 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
 
 def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = None,
               one_path: bool = False, timeout_s: float = 30.0, poll_s: float = POLL_S,
-              clock=time.time, sleep=time.sleep) -> Gate:
+              clock=time.time, sleep=time.sleep, extra_room: dict | None = None) -> Gate:
     """May edge X be drained now: `capacity_check` on two polls in a row."""
     lab = lab or Lab(ops.nodes())
     scope = lab.edges(lab.site(x))
@@ -1454,7 +1467,7 @@ def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = 
         began = clock()
         statuses = _poll_statuses(ops, scope)
         polls += 1
-        problems, evidence = capacity_check(lab, x, statuses, cost, one_path)
+        problems, evidence = capacity_check(lab, x, statuses, cost, one_path, extra_room)
         now = clock()
         if not problems and previous_ok:
             return Gate(True, [], evidence, [], now, polls)
@@ -1681,6 +1694,12 @@ class Engine:
         self.single_baseline: dict[str, int] = {}
         self.surge: dict[str, str] = {}
         self.surge_staged: dict[str, str] = {}
+        self.surge_build: dict | None = None
+        # Why each region's surge edge joined, and how it settled (journal).
+        self.surge_why: dict[str, dict] = {}
+        # The dry mode's surge edges: counted by the capacity gate as empty
+        # serving edges, never started.
+        self.virtual_surge: dict[str, str] = {}
         self.hand: dict | None = None
         self.left: dict[str, dict] = {}
         self.before: dict[str, dict] = {}
@@ -1722,7 +1741,7 @@ class Engine:
     def write_journal(self) -> None:
         if self.journal:
             self.journal.update(in_hand=self.hand, left=self.left, done=self.done,
-                                before=self.before, surge=self.surge)
+                                before=self.before, surge=self.surge, surge_why=self.surge_why)
 
     def phase(self, name: str, phase: str, **fields) -> None:
         """The node in hand and its phase, in the journal before the step. A
@@ -2069,10 +2088,15 @@ class Engine:
         return gate
 
     def gate_edge(self, name: str) -> Gate:
-        gate = edge_gate(self.ops, name, lab=self.lab, cost=self.costs.get(self.lab.site(name)),
+        site = self.lab.site(name)
+        cost = self.costs.get(site)
+        virtual = self.virtual_surge.get(site)
+        extra = {virtual: REBALANCE_TARGET_PERMILLE / cost} \
+            if virtual and virtual != name and cost else None
+        gate = edge_gate(self.ops, name, lab=self.lab, cost=cost,
                          one_path=self.options.surge == "never",
                          timeout_s=self.options.gate_timeout_s, poll_s=self.options.poll_s,
-                         clock=self.clock, sleep=self.sleep)
+                         clock=self.clock, sleep=self.sleep, extra_room=extra)
         self.record(name)["gate"] = gate.evidence
         return gate
 
@@ -2300,36 +2324,97 @@ class Engine:
                                      f"was rolled back to {before['git']}")
 
     # ---------------------------------------------------------- surge
-    def surge_needed(self, site: str) -> bool:
-        return not self.options.dry and self.options.surge != "never" and \
-            site not in self.surge and len(self.lab.edges(site)) < 3
+    def site_cost(self, site: str) -> float | None:
+        if site not in self.costs:
+            self.costs[site] = leg_cost(self.lab, site, self.poll(self.lab.edges(site)))
+        return self.costs[site]
+
+    def surge_reason(self, site: str, name: str | None = None) -> str | None:
+        """Why the region needs its surge edge before edge `name` is
+        drained (3.5 step 0, F5 of local proof 2), or None: fewer than three
+        edges serve, or the capacity gate would refuse `name` without one
+        (one poll of `capacity_check`; a refusal for room, not for a figure
+        that is missing or an edge that is not ready)."""
+        if self.options.surge == "never" or site in self.surge or site in self.virtual_surge:
+            return None
+        serving = self.lab.edges(site)
+        if len(serving) < 3:
+            return f"{site} serves {len(serving)} edges, fewer than three"
+        if name is None:
+            return None
+        statuses = self.poll(sorted(set(serving) | {name}, key=natural))
+        problems, _evidence = capacity_check(self.lab, name, statuses, self.site_cost(site))
+        short = [item for item in problems if item.startswith("capacity: ")]
+        if short:
+            return f"without it the capacity gate refuses {name}: {short[0]}"
+        return None
 
     def surge_prepare(self, scope, build: dict | None) -> None:
         """Before the first node: every region whose edges the command
-        drains and that serves fewer than three edges has an edge to start,
-        and that edge's files are staged (`build`: the target; None, the
-        tier's recorded build), so that it starts on them."""
+        drains and that serves fewer than three edges has an edge to start
+        (else the command refuses), and that edge's files are staged
+        (`build`: the target; None, the tier's recorded build), so that it
+        starts on them. A region of three or more whose capacity gate would
+        refuse one of the edges in scope now has its candidate staged too;
+        one without a candidate is named, and the gate decides later."""
+        self.surge_build = build
         for site in sorted({self.lab.site(name) for name in scope
                             if self.lab.tier(name) == "edges"}):
-            if not self.surge_needed(site):
+            reason = self.surge_reason(site)
+            if reason is None:
+                for name in scope:
+                    if self.lab.tier(name) == "edges" and self.lab.site(name) == site:
+                        reason = self.surge_reason(site, name)
+                        if reason:
+                            break
+            if reason is None:
                 continue
             candidates = self.ops.surge_candidates(site)
             if not candidates:
-                raise Refused(f"{site} serves {len(self.lab.edges(site))} edges and has no standby "
-                              "edge or slot to start; --surge never rolls with each listener on "
-                              "one path while its edge restarts")
-            self.stage([candidates[0]], build)
+                if len(self.lab.edges(site)) < 3:
+                    raise Refused(f"{site} serves {len(self.lab.edges(site))} edges and has no "
+                                  "standby edge or slot to start; --surge never rolls with each "
+                                  "listener on one path while its edge restarts")
+                self.say(f"{site}: {reason}; it has no standby edge or slot to start")
+                continue
+            if not self.options.dry:
+                self.stage([candidates[0]], build)
             self.surge_staged[site] = candidates[0]
 
-    def surge_join(self, site: str) -> None:
-        """Step 0 (3.5): start the staged surge edge, wait R1, R2, R6, give it
-        listeners (resume-node: a standby edge keeps the drain of its last
-        leave) and wait R7."""
-        if not self.surge_needed(site):
+    def surge_join(self, site: str, name: str | None = None) -> None:
+        """Step 0 (3.5) before edge `name` is drained, when `surge_reason`
+        gives one: start the staged surge edge (a candidate is staged now if
+        none was), wait R1, R2, R6, give it listeners (resume-node: a
+        standby edge keeps the drain of its last leave), wait R7 and its
+        share (`surge_settle`). The dry mode starts nothing: it prints the
+        same marks and its capacity gates count the edge as an empty
+        serving one."""
+        reason = self.surge_reason(site, name)
+        if reason is None:
             return
-        name = self.surge_staged[site]
-        label = f"{self.command}.edges.join.{name}"
+        surge = self.surge_staged.get(site)
+        if surge is None:
+            candidates = self.ops.surge_candidates(site)
+            if not candidates:
+                self.say(f"{site}: {reason}; it has no standby edge or slot to start")
+                return
+            surge = candidates[0]
+            if not self.options.dry:
+                self.stage([surge], self.surge_build)
+            self.surge_staged[site] = surge
+        self.surge_why[site] = {"node": surge, "before": name, "why": reason,
+                                "joined_unix": round(self.clock(), 3)}
+        self.say(f"{site}: the surge edge {surge} joins ({reason})")
+        label = f"{self.command}.edges.join.{surge}"
         self.marks.node_start(label)
+        if self.options.dry:
+            self.virtual_surge[site] = surge
+            self.surge_why[site]["dry"] = True
+            self.write_journal()
+            self.sleep(typical_times(self.ops.evidence_dir, "edges")["ready"])
+            self.marks.node_end(label)
+            return
+        name = surge
         status = self.status(name)
         before_boot = status.boot_id if status and status.boot_id else 0
         expected = self.ops.expected(name)
@@ -2357,13 +2442,52 @@ class Engine:
             raise Stop(EXIT_STOPPED, f"the surge edge {name} is ready and stays drained: "
                                      "resume-node failed")
         self.wait_serving(name)
+        self.surge_settle(site, name)
         self.release_hand(name, "surge")
         self.marks.node_end(label)
+
+    def surge_settle(self, site: str, name: str) -> None:
+        """After the surge edge serves: until it holds a fair share of the
+        region's legs (the region's legs over its serving edges), or the
+        region's rebalance moves have been still SURGE_STILL_S, or
+        SURGE_SETTLE_S. What it took is journalled."""
+        began = self.clock()
+        moves, still_since, why = None, began, "bound"
+        while True:
+            statuses = self.poll(self.lab.edges(site))
+            legs = [status.udp("subscribers") for status in statuses.values() if status]
+            held = statuses.get(name).udp("subscribers") if statuses.get(name) else None
+            total = sum(value for value in legs if value is not None)
+            now_moves = sum(status.udp("rebalance_moves") or 0
+                            for status in statuses.values() if status)
+            now = self.clock()
+            if now_moves != moves:
+                moves, still_since = now_moves, now
+            share = total // max(1, len(statuses))
+            if held is not None and held >= share:
+                why = "its share"
+                break
+            if now - still_since >= SURGE_STILL_S:
+                why = "rebalance still"
+                break
+            if now - began >= SURGE_SETTLE_S:
+                break
+            self.sleep(self.options.poll_s)
+        self.surge_why[site].update(settled_s=round(self.clock() - began, 3), settled_on=why,
+                                    legs=held, region_legs=total)
+        self.write_journal()
 
     def surge_leave(self, site: str) -> None:
         """The surge edge leaves after its region's last edge, as any edge
         is drained: B's single_legs wait, the capacity gate, drain, empty,
         stop. Refused: it is left serving (exit 3)."""
+        virtual = self.virtual_surge.pop(site, None)
+        if virtual is not None:
+            label = f"{self.command}.edges.leave.{virtual}"
+            self.marks.node_start(label)
+            self.sleep(typical_times(self.ops.evidence_dir, "edges")["drain"])
+            self.marks.node_end(label)
+            return
         name = self.surge.get(site)
         if name is None:
             return
@@ -2384,6 +2508,8 @@ class Engine:
         self.ops.stop_node(name)
         self.lab.records[name]["serving"] = False
         self.surge.pop(site)
+        if site in self.surge_why:
+            self.surge_why[site]["left_unix"] = round(self.clock(), 3)
         self.release_hand(name, "left")
         self.marks.node_end(label)
 
@@ -2519,10 +2645,12 @@ class Engine:
         clean = self.is_clean()
         if not self.unclean(self.hand):
             self.hand = None
-        self.evidence.update(exit=code, why=why, done=self.done, left=list(self.left))
+        self.evidence.update(exit=code, why=why, done=self.done, left=list(self.left),
+                             surge=self.surge_why)
         if self.journal:
             self.journal.update(finished=clean, exit=code, why=why, done=self.done,
-                                in_hand=self.hand, left=self.left, surge=self.surge)
+                                in_hand=self.hand, left=self.left, surge=self.surge,
+                                surge_why=self.surge_why)
             if clean and self.command in ("roll", "restart"):
                 supersede_stale(self)
         self.write_evidence()
@@ -2808,7 +2936,7 @@ def roll(ops: Ops, tier: str, *, nodes=None, sites=None, options: Options | None
                 continue
             site = engine.lab.site(name)
             if engine.lab.tier(name) == "edges":
-                engine.surge_join(site)
+                engine.surge_join(site, name)
             engine.change_node(name, state["expected"][name])
             last_of_site = not any(engine.lab.tier(other) == "edges"
                                    and engine.lab.site(other) == site
@@ -2864,7 +2992,7 @@ def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None,
             site = engine.lab.site(name)
             edge = engine.lab.tier(name) == "edges"
             if edge:
-                engine.surge_join(site)
+                engine.surge_join(site, name)
             engine.change_node(name, state["expected"][name], rollback=options.rollback,
                                undo=options.rollback)
             if edge and not any(engine.lab.tier(other) == "edges" and engine.lab.site(other) == site
@@ -3080,7 +3208,7 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
         engine.phase(name, first, before=engine.before.get(name), **fields)
         if tier == "edges":
             if "empty" not in done:
-                engine.surge_join(site)
+                engine.surge_join(site, name)
                 engine.phase(name, "gate")
                 found = engine.gate_edge(name)
                 if not found.ok:

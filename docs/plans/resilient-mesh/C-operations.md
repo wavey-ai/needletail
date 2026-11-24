@@ -977,7 +977,7 @@ Edges, one at a time, region by region:
 
 | Step | What | Bound | Typical |
 | --- | --- | --- | --- |
-| 0 | Surge (`--surge auto`): if fewer than three edges of the region serve, start a standby edge or a created slot on the target build and wait R1, R2, R6, R7. With no such edge the roll refuses (exit 2) and names `--surge never`, which rolls with each listener on one path while its edge restarts | 60 s | 6 s |
+| 0 | Surge (`--surge auto`): if fewer than three edges of the region serve, or the capacity gate (step 1) would refuse X without it, start a standby edge or a created slot on the target build and wait R1, R2, R6, R7, then until it holds its share of the region's legs or the region's `rebalance_moves` have been still 5 s (at most 20 s). The reason and how it settled go into the journal (`surge_why`). With fewer than three edges and no such edge the roll refuses (exit 2) and names `--surge never`, which rolls with each listener on one path while its edge restarts; with three or more and no such edge the capacity gate decides. `--dry-marks` starts nothing: it prints the join and leave marks and its capacity gates count the surge edge as an empty serving edge (amended 24 Nov, local proof 2 F5: three serving edges at ordinary load were refused) | 60 s + 20 s | 6 s |
 | 1 | Capacity gate (below), on two polls | 30 s | 0.5 s |
 | 2 | `POST /api/control/drain-node {"node_id": X}` to X: reason `operator`, kept across the restart | | |
 | 3 | Wait until `subscribers`, `hls_sessions`, `hls_moved_active` and `hls_requests_in_flight` are all 0 on polls spanning 1 s. On timeout: `resume-node`, stop the roll, exit 3 | 30 s | 3 s + 4 r (B) + 1 s |
