@@ -180,3 +180,7 @@ The manifest records the heads of the five worktrees in use
 listener steps that apply. A run ends failed when an exception ends it or when a
 write into the archive failed. A run that the tool did not make is not ended by
 it: the tool's outcome goes to `outcomes.ndjson` under its prefix.
+
+| Tool | Run id | What it keeps |
+| --- | --- | --- |
+| `edge-campaign.py run [--run-id ID]` | `edge-campaign-<t>` | `scenarios/<name>/`: the scenario's directory (evidence, the readers' reports and logs, `nodes.ndjson` with each node every second, the controller's events), `node-logs/` (what each node's log gained in the scenario), `hops.raw.ndjson` (every node's hop journal since the scenario began), `stalls/<node>.ndjson`. Also `node-logs/before-up-NN/` (the logs written between scenarios, before the lab's `up` deletes them), `node-logs/after-scenarios/`, and `summary.json`. Each reader job is a listener step. |

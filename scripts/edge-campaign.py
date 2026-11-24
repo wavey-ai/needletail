@@ -9,7 +9,7 @@ contributor), and what every node did (CPU, throttling, memory, descriptors,
 sockets, drops).
 
   edge-campaign.py list [group ...]
-  edge-campaign.py run [--out DIR] [--no-slow] [group or scenario ...]
+  edge-campaign.py run [--out DIR] [--run-id ID] [--no-slow] [group or scenario ...]
   edge-campaign.py summary [DIR]
   edge-campaign.py down [--force]
 
@@ -22,6 +22,13 @@ it waits while another run holds it) and refuses binaries outside a frozen
 set (scripts/freeze-binaries.py) unless NEEDLETAIL_ALLOW_LIVE=1. `down`
 does not wait for a run that holds the lab: it refuses at once and names
 the holder, and --force tears the lab down anyway.
+
+A run also keeps all its raw data in the run archive as each scenario ends
+(~/needletail-data/<run id>/, NEEDLETAIL_DATA_ROOT overrides; run id
+--run-id, else edge-campaign-<UTC time>): every scenario's directory, the
+slice of each node's log it wrote, every node's hop and stop journals since
+it began, its readers as listener steps; the node logs between scenarios;
+the summary (scripts/edge_campaign_core.py, CampaignRecord).
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import edge_campaign_core as core  # noqa: E402
 from edge_campaign_core import AUDIO, HQ, VIDEO, scenario  # noqa: E402,F401
@@ -3443,12 +3451,16 @@ def main() -> None:
             print(f"{item.name:32} {item.group:20} {item.question}")
     elif command == "run":
         out = None
+        run_id = None
         slow = True
         rest = []
         index = 0
         while index < len(arguments):
             if arguments[index] == "--out":
                 out = pathlib.Path(arguments[index + 1])
+                index += 2
+            elif arguments[index] == "--run-id":
+                run_id = arguments[index + 1]
                 index += 2
             elif arguments[index] == "--no-slow":
                 slow = False
@@ -3467,12 +3479,16 @@ def main() -> None:
                 (core.RUNS / "latest").symlink_to(directory.resolve())
             except OSError:
                 pass
-            for item in items:
-                core.run_scenario(item, directory)
-                try:
-                    core.restore()
-                except lab.LabError as error:
-                    print(f"  (restore failed: {error})")
+            with core.archived(run_id or archived_run.default_run_id("edge-campaign"),
+                               [item.name for item in items]) as record:
+                record.directory = directory
+                print(f"run archive: {record.run.path}", flush=True)
+                for item in items:
+                    core.run_scenario(item, directory)
+                    try:
+                        core.restore()
+                    except lab.LabError as error:
+                        print(f"  (restore failed: {error})")
         print()
         print_summary(directory)
         print(f"evidence: {directory}")
