@@ -1349,22 +1349,30 @@ def host_check(nodes: dict[str, dict]) -> dict:
     different hosts: one stall of a shared host stops both at once. A
     conflict: two distributors or backbones of a region on one host, two
     contributors on one host, or a region's edges (two or more) all on one
-    host. Edges that share a host while their region has another are listed
-    apart ("shared_edges"); a node with no known host is listed ("unknown")
-    and judged by nothing."""
+    host; and a node of such a pair whose host is not known (its pair
+    cannot be judged). Edges that share a host while their region has
+    another are listed apart ("shared_edges"); every node with no known
+    host is listed ("unknown")."""
     regions: dict[str, dict[str, list[str]]] = {}
     roles: dict[str, dict[str, dict[str, list[str]]]] = {}
+    members: dict[tuple[str, str], list[str]] = {}
     unknown = []
     for name in sorted(nodes):
         node = nodes[name]
+        kind = {"backbone": "relay", "distributor": "relay"}.get(node["role"], node["role"])
+        members.setdefault((kind, node["region"]), []).append(name)
         host = node.get("host_uuid")
         if not host:
             unknown.append(name)
             continue
         regions.setdefault(node["region"], {}).setdefault(host, []).append(name)
-        kind = {"backbone": "relay", "distributor": "relay"}.get(node["role"], node["role"])
         roles.setdefault(kind, {}).setdefault(node["region"], {}).setdefault(host, []).append(name)
     conflicts, shared_edges = [], []
+    for (kind, region), names in sorted(members.items()):
+        blind = [name for name in names if name in unknown]
+        if kind in ("relay", "contributor", "edge") and len(names) > 1 and blind:
+            conflicts.append(f"HOST UNKNOWN in {region}: {', '.join(blind)}; their pair "
+                             "cannot be judged")
     for kind, what in (("relay", "distributors and backbones"), ("contributor", "contributors")):
         for region, hosts in sorted(roles.get(kind, {}).items()):
             for host, names in sorted(hosts.items()):
@@ -1389,20 +1397,42 @@ def host_check(nodes: dict[str, dict]) -> dict:
             "unknown": unknown}
 
 
+def record_hosts(current: dict, found: dict[str, tuple[int, str | None]]) -> None:
+    """Set `host_uuid` from `found` ({name: (instance id, host_uuid)}) on
+    the nodes of `current` that are still the instance that was read; a
+    node removed or replaced meanwhile is left as it is."""
+    for name, (instance, host) in found.items():
+        node = current["nodes"].get(name)
+        if node is not None and node.get("id") == instance:
+            node["host_uuid"] = host
+
+
 def command_hosts(args: argparse.Namespace) -> None:
     """Record the physical host of every node (`host_uuid`, which the deploy
     renders as each av-mesh's --host-tag) and check the failure domains
     (host_check). Exits with status 1 on a conflict. Run after `up`, `add`,
-    `grow` and `replace`, and before `push`."""
-    state = read_state(pathlib.Path(args.state))
+    `grow` and `replace`, and before `push`.
+
+    The GETs can take minutes, so the hosts are recorded on the state as it
+    is on disk afterwards (record_hosts), never by writing back the copy
+    read before them: what a push, a grow or the autoscaler wrote meanwhile
+    is kept, and a lab that `down` removed is not made again."""
+    path = pathlib.Path(args.state)
+    state = read_state(path)
     if state is None:
         sys.exit("No active Needletail small-mesh lab")
     api = Api()
+    found = {}
     for name in sorted(state["nodes"]):
         node = state["nodes"][name]
         live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
-        node["host_uuid"] = live.get("host_uuid")
-    write_state(pathlib.Path(args.state), state)
+        found[name] = (node["id"], live.get("host_uuid"))
+    current = read_state(path)
+    if current is None or current.get("run_id") != state.get("run_id"):
+        sys.exit("the lab was taken down while its hosts were read; nothing recorded")
+    record_hosts(current, found)
+    write_state(path, current)
+    state = current
     check = host_check(state["nodes"])
     if args.json:
         print(json.dumps({**check, "nodes": {
@@ -1417,7 +1447,7 @@ def command_hosts(args: argparse.Namespace) -> None:
             print(f"host unknown: {', '.join(check['unknown'])}")
         for line in check["shared_edges"] + check["conflicts"]:
             print(line)
-        if not check["conflicts"]:
+        if not check["conflicts"] and not check["unknown"]:
             print("every pair that backs each other up is on two hosts")
     if check["conflicts"]:
         sys.exit(1)

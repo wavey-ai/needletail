@@ -339,12 +339,24 @@ class Hosts(unittest.TestCase):
                                                 "tok-edge-2": "t4"}))
         self.assertEqual(len(check["conflicts"]), 1)
         self.assertIn("distributors and backbones lon-dist-a, lon-dist-b", check["conflicts"][0])
-        # A node with no known host is listed and judged by nothing.
-        check = lab_tool.host_check(self.nodes({"contrib-lon-b": None, "tok-edge-2": None}))
+        # A node with no known host is listed; one of a pair is a conflict,
+        # since its pair cannot be judged; a lone one (Sydney's one edge, a
+        # load host) is not.
+        fine = {"contrib-lon-b": "h9", "tok-edge-2": "t4"}
+        check = lab_tool.host_check(self.nodes({**fine, "syd-edge-1": None,
+                                                "lon-load-1": None}))
         self.assertEqual((check["conflicts"], check["unknown"]),
-                         ([], ["contrib-lon-b", "tok-edge-2"]))
+                         ([], ["lon-load-1", "syd-edge-1"]))
+        check = lab_tool.host_check(self.nodes({**fine, "lon-dist-b": None,
+                                                "tok-edge-2": None}))
+        self.assertEqual(check["unknown"], ["lon-dist-b", "tok-edge-2"])
+        self.assertEqual(sorted(check["conflicts"]), [
+            "HOST UNKNOWN in ap-northeast: tok-edge-2; their pair cannot be judged",
+            "HOST UNKNOWN in gb-lon: lon-dist-b; their pair cannot be judged"])
 
-    def command(self, hosts: dict, json_out: bool) -> tuple[int, str, dict]:
+    def command(self, hosts: dict, json_out: bool, meanwhile=None) -> tuple[int, str, dict]:
+        """`hosts` on a fake API; `meanwhile(path)` runs after the first GET,
+        as another command that writes the state during the GETs would."""
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         path = directory / "lab.json"
@@ -361,6 +373,8 @@ class Hosts(unittest.TestCase):
             def call(self, method, api_path, body=None, allow_404=False):
                 self.calls.append((method, api_path))
                 assert method == "GET", method
+                if meanwhile is not None and len(self.calls) == 1:
+                    meanwhile(path)
                 return {"host_uuid": live[int(api_path.rsplit("/", 1)[1])]}
 
         out = io.StringIO()
@@ -371,7 +385,35 @@ class Hosts(unittest.TestCase):
             except SystemExit as exit_:
                 code = exit_.code
         self.assertTrue(all(method == "GET" for method, _path in FakeApi.calls))
-        return code, out.getvalue(), json.loads(path.read_text())
+        return code, out.getvalue(), json.loads(path.read_text()) if path.is_file() else None
+
+    def test_hosts_keeps_what_another_command_wrote_during_its_reads(self):
+        """A push's record, a grow and a replace written while `hosts` reads
+        the API are kept; a node that went is not brought back, and a node
+        rebuilt as another instance is not given the old one's host."""
+        def meanwhile(path):
+            state = json.loads(path.read_text())
+            state["deployed"] = {"nodes": {"lon-edge-1": {"build": "b"}}}
+            state["nodes"]["lon-edge-9"] = {"name": "lon-edge-9", "id": 999, "role": "edge",
+                                            "region": "gb-lon"}
+            del state["nodes"]["lon-load-1"]
+            state["nodes"]["lon-edge-3"]["id"] = 555
+            path.write_text(json.dumps(state))
+
+        fine = {"contrib-lon-b": "h9", "tok-edge-2": "t4"}
+        _code, _text, state = self.command(fine, json_out=True, meanwhile=meanwhile)
+        self.assertEqual(state["deployed"], {"nodes": {"lon-edge-1": {"build": "b"}}})
+        self.assertNotIn("lon-load-1", state["nodes"])
+        self.assertNotIn("host_uuid", state["nodes"]["lon-edge-9"])
+        self.assertNotIn("host_uuid", state["nodes"]["lon-edge-3"])
+        self.assertEqual(state["nodes"]["lon-edge-1"]["host_uuid"], "h4")
+
+    def test_hosts_does_not_make_again_a_lab_taken_down_during_its_reads(self):
+        code, text, state = self.command({}, json_out=False,
+                                         meanwhile=lambda path: path.unlink())
+        self.assertIn("taken down", str(code))
+        self.assertIsNone(state)
+        self.assertEqual(text, "")
 
     def test_hosts_records_host_uuid_and_exits_1_on_a_conflict(self):
         code, text, state = self.command({}, json_out=False)
