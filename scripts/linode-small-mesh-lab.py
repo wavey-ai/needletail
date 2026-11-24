@@ -787,8 +787,9 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
        a capacity refusal stops only that region's plan; a transient one
        only that host. The hosts not created are recorded in
        `listeners_missing` with why, and scale-run.py fits its ramp to the
-       hosts that exist. An optional site left with no listener host is
-       deleted (its edges would carry no listener).
+       hosts that exist. An optional site whose topology gives it listener
+       hosts and that is left with none of them is deleted (its edges would
+       carry no listener); a site planned without listener hosts is kept.
     A transient refusal (create_node's and Api.call's retries spent) stops
     nothing: the stage tries its node once more at its end (attempt), and
     only a second refusal counts (in the core, it deletes the lab). Every
@@ -897,8 +898,13 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
                 stopped = cause
         for item in result["skipped"]:
             missing.append(missing_entry(item, "not attempted", item["after"]))
-    for site in first:
+    for site, site_nodes in first.items():
         if site in state.get("sites_left_out", []):
+            continue
+        # The rule holds only where the topology gives the site listener
+        # hosts: a site planned with none (a comparison lab's Sydney) has
+        # none to wait for, and what was created for it is kept.
+        if not any(is_listener_host(node) for node in site_nodes):
             continue
         if not any(node["site"] == site and is_listener_host(node)
                    for node in state["nodes"].values()):

@@ -2527,6 +2527,28 @@ class StagedUp(unittest.TestCase):
                               if item["name"].startswith("syd-")]), 14)
         self.assertIn("left out", err)
 
+    def test_an_optional_site_planned_without_listener_hosts_is_kept(self):
+        """The referee's cmpd5 (23 Nov): a topology with no listener hosts
+        at all (topology-dedicated-syd2.json) and `up --optional-sites
+        sydney`. Every Sydney node was created and then deleted as "none of
+        its listener hosts was created", a rule that could not be met. The
+        rule now holds only where the topology gives the site listener
+        hosts: nothing created is deleted, and nothing is missing."""
+        self.nodes = [node for node in self.nodes if not lab_tool.is_listener_host(node)]
+        sydney = sorted(node["name"] for node in self.nodes if node["site"] == "sydney")
+        self.assertTrue(sydney)
+        code, err, state = self.run_up(lambda node, made: None)
+        self.assertIsNone(code)
+        self.assertEqual(state["sites_left_out"], [])
+        self.assertEqual(sorted(name for name in state["nodes"] if name.startswith("syd-")),
+                         sydney)
+        self.assertEqual(state["removed"], [])
+        self.assertEqual(self.deleted, [])
+        self.assertEqual(state["listeners_missing"], [])
+        self.assertNotIn("left out", err)
+        # Where the topology does give the site listener hosts, a site left
+        # with none of them still goes (test_a_capacity_refusal_stops_...).
+
     def test_a_transient_refusal_in_the_core_is_tried_again_not_rolled_back(self):
         tried: list[str] = []
 
