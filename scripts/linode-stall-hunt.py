@@ -29,7 +29,11 @@ at 1 s (per-CPU /proc/stat, interrupts, softirqs, softnet_stat, each
 av-mesh and av-contrib thread's raw stat), NODE.heartbeat.T.log (a
 SCHED_FIFO 99 heartbeat pinned to each vCPU, its late wakes), NODE.nic.T.txt
 (ethtool), NODE.meshlocal.T.log (/api/mesh/local each second) and the rest
-of the referee's files, in the run's samplers/.
+of the referee's files, in the run's samplers/. Beside them the hunt's
+extra sampler (EXTRA_SAMPLER) takes what they do not: tc -s qdisc and the
+Udp counters each second, and the kernel stacks of av-mesh's and
+av-contrib's threads when a heartbeat is late, with
+kernel.watchdog_thresh=1 and journalctl -k at collect.
 scripts/compare/hunt-report.py reads what `collect` leaves in
 target/stall-hunt/<run id>/ and applies the decision rules, which are fixed
 before the run.
@@ -73,15 +77,19 @@ Timeline, minutes after `up` returns:
   28  S3 listener churn on every edge: 3 rounds of 50 s, 12 s apart
   35  the edge that was not run most is replaced (remove, grow, hosts,
       watch, push --nodes, the referee's samplers)
-  44  M1, 57 M2, 70 M3, 83 M4: the GSO/GRO matrix, the defaults first (M1
-      sender GSO on, receiver GRO on; M2 GSO off; M3 GRO off; M4 both off).
-      Each: `deploy push` with relay_video_gso and client_udp_gso (the
-      senders) and relay_video_gro (the receivers) set, which restarts
-      every mesh node; the first audio session of those processes (Opus
-      Custom 1 ms, 120 s, the UDP probes with needletail-udp-client --gro
-      as the combination says); then 4K at 25 and at 80 Mbit/s, 120 s
-      each (the referee's clip over RTMP to the contributor, one HTTP/3
-      LL-HLS probe a view host through its site's entry)
+  44  M1, then M2, M3, M4 each as the one before ends: the GSO/GRO
+      matrix, the defaults first (M1 sender GSO on, receiver GRO on; M2
+      GSO off; M3 GRO off; M4 both off). Each: `deploy push` with
+      relay_video_gso and client_udp_gso (the senders), relay_video_gro
+      (the receivers) and relay_class_realtime set, which restarts every
+      mesh node (each process's age is recorded: `fresh`); the first
+      audio session of those processes (Opus Custom 1 ms, 120 s, the UDP
+      probes with needletail-udp-client --gro as the combination says);
+      then 4K at 25 and at 80 Mbit/s, 120 s each (the referee's clip over
+      RTMP to the contributor, one HTTP/3 LL-HLS probe a view host through
+      its site's entry). At worst M4 ends at 94.5.
+      M5, if it starts by 96.8 minutes after `up` began: the defaults with
+      relay_class_realtime false, 4K only (8.2 min at worst)
   96  collect (the referee's samplers collected, the watches stopped; the
       deploy tool's collect too: every node's journal since boot, its API
       and samplers into the run archive); `lab hosts` again
@@ -190,12 +198,36 @@ SESSIONS = (
 # sockets, needletail-udp-client --gro at the listeners), the defaults
 # first, then each one off, then both: a push that restarts every mesh
 # node, the first audio session of those processes, then 4K at each rung.
+#
+# Each combination starts at minute 44 or as the one before it ends: the
+# worst case is as with fixed slots (13 min apart), and the usual case
+# leaves room for M5. Each push restarts every mesh node (the deploy's
+# activate ends in `systemctl restart`), so every combination runs on
+# freshly restarted processes (reports/4k.md: the cmpd6 GSO-off step was
+# the only one on restarted nodes); `fresh` records each mesh process's age
+# after the push.
+#
+# M5 (reports/4k.md, "what only Linode can settle"): the defaults with
+# relay_class_realtime false (no SCHED_FIFO class thread pinned to a vCPU:
+# whether the stops need a guest with no spare vCPU), 4K only. It runs only
+# when it, collect and down end by OPTIONAL_END_MINUTE after `up` began
+# (inside the second billed hour and before the watchdog's bounded
+# collect); otherwise it is recorded as left out. It costs nothing more.
 MATRIX = (
     {"name": "M1", "minute": 44, "gso": True, "gro": True},
-    {"name": "M2", "minute": 57, "gso": False, "gro": True},
-    {"name": "M3", "minute": 70, "gso": True, "gro": False},
-    {"name": "M4", "minute": 83, "gso": False, "gro": False},
+    {"name": "M2", "minute": 44, "gso": False, "gro": True},
+    {"name": "M3", "minute": 44, "gso": True, "gro": False},
+    {"name": "M4", "minute": 44, "gso": False, "gro": False},
+    {"name": "M5", "minute": 44, "gso": True, "gro": True, "realtime": False, "audio": False,
+     "optional": True},
 )
+# M5's limit, in minutes from the start of `up` (the first create; the
+# watchdog is armed then): 120 billed less 8, and under the watchdog's
+# 117 less its 4-minute bounded collect.
+OPTIONAL_END_MINUTE = 112
+# What collect and down take at most after the last combination
+# (COLLECT_MINUTE to DOWN_MINUTE, and down itself).
+COLLECT_AND_DOWN_S = (5 + 2) * 60
 MATRIX_SECONDS = 120
 MATRIX_AUDIO = "opus-1"
 VIDEO_RUNGS = ("2160p25", "2160p80")
@@ -259,6 +291,99 @@ SENDER_FLAGS = ("--lateness-journal",)
 # The touched edges hold their memory until it is given back just before
 # the first session.
 TOUCH_FLAGS = ("--hold",)
+
+# What the referee's samplers do not take and the 4K run asks of Linode
+# (reports/4k.md, "what only Linode can settle"), sampled by the hunt itself
+# beside them on every node they take, into REMOTE/extra.log (fetched with
+# the node's records): once a second `tc -s qdisc show` and the Udp lines of
+# /proc/net/snmp (SndbufErrors, RcvbufErrors, InErrors); and when one of the
+# referee's heartbeats (/var/tmp/compare-heartbeat.CPU.log) is
+# EXTRA_LATE_MS or more late, every av-mesh and av-contrib thread's kernel
+# stack (/proc/PID/task/*/stack), state and wchan, at most one dump each
+# EXTRA_DUMP_GAP_S and EXTRA_DUMPS in all. Before it starts it sets
+# kernel.watchdog_thresh=1 (a soft lockup over 2 s goes to the kernel log
+# with the stuck CPU's stack; the value before is kept in
+# watchdog_thresh.before); collect saves `journalctl -k` as kernel.log.
+EXTRA_LATE_MS = 50
+EXTRA_DUMP_GAP_S = 0.5
+EXTRA_DUMPS = 600
+EXTRA_PY = r'''
+import glob, os, subprocess, sys, time
+out = open(sys.argv[1], "a", buffering=1)
+late_ms, gap_s, limit = float(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4])
+def write(kind, text):
+    out.write(f"{time.time():.6f} X {kind} {text}\n")
+def ours():
+    found = []
+    for path in glob.glob("/proc/[0-9]*/comm"):
+        try:
+            if open(path).read().strip() in ("av-mesh", "av-contrib"):
+                found.append(path.split("/")[2])
+        except OSError:
+            pass
+    return found
+def dump(reason):
+    for pid in ours():
+        for task in glob.glob(f"/proc/{pid}/task/*"):
+            try:
+                stat = open(f"{task}/stat").read()
+                wchan = open(f"{task}/wchan").read().strip() or "0"
+                frames = [line.split()[-1] for line in open(f"{task}/stack").read().splitlines() if line.split()]
+            except OSError:
+                continue
+            comm = stat[stat.index("(") + 1:stat.rindex(")")].replace(" ", "_")
+            state = stat[stat.rindex(")") + 2]
+            write("stack", f"{reason} {pid} {task.rsplit('/', 1)[1]} {comm} {state} {wchan} {';'.join(frames) or '-'}")
+offsets, first, dumps, last_dump, next_second = {}, True, 0, 0.0, 0.0
+while True:
+    now = time.time()
+    if now >= next_second:
+        next_second = now + 1
+        try:
+            for line in open("/proc/net/snmp").read().splitlines():
+                if line.startswith(("Udp:", "UdpLite:")):
+                    write("snmp", line)
+        except OSError:
+            pass
+        qdisc = subprocess.run(["tc", "-s", "qdisc", "show"], capture_output=True, text=True)
+        write("qdisc", qdisc.stdout.strip().replace("\n", " | "))
+    for path in glob.glob("/var/tmp/compare-heartbeat.*.log"):
+        try:
+            size = os.path.getsize(path)
+            at = offsets.get(path, size if first else 0)
+            if size < at:
+                at = 0
+            with open(path) as beats:
+                beats.seek(at)
+                text = beats.read()
+        except OSError:
+            offsets.pop(path, None)
+            continue
+        whole = text.rfind("\n") + 1
+        offsets[path] = at + whole
+        for line in text[:whole].splitlines():
+            parts = line.split()
+            if len(parts) < 6 or parts[0] != "HB" or not parts[5].lstrip("-").isdigit():
+                continue
+            late = int(parts[5]) / 1e6
+            if late >= late_ms:
+                write("late", f"cpu {parts[1]} late_ms {late:.1f} realtime_ns {parts[3]}")
+                if dumps < limit and time.time() - last_dump >= gap_s:
+                    dumps += 1
+                    last_dump = time.time()
+                    dump(f"hb{parts[1]}:{late:.0f}ms")
+    first = False
+    time.sleep(0.1)
+'''
+EXTRA_SAMPLER = (
+    f"mkdir -p {REMOTE}; [ -f {REMOTE}/extra.pid ] && kill $(cat {REMOTE}/extra.pid) 2>/dev/null; "
+    f"sysctl -n kernel.watchdog_thresh >{REMOTE}/watchdog_thresh.before 2>&1; "
+    "sysctl -qw kernel.watchdog_thresh=1; "
+    "cat >/var/tmp/hunt-extra.py <<'EOS'\n" + EXTRA_PY + "EOS\n"
+    f"(setsid nohup python3 /var/tmp/hunt-extra.py {REMOTE}/extra.log {EXTRA_LATE_MS} "
+    f"{EXTRA_DUMP_GAP_S} {EXTRA_DUMPS} >{REMOTE}/extra.err 2>&1 </dev/null & "
+    f"echo $! >{REMOTE}/extra.pid)")
+KERNEL_LOG = f"journalctl -k -o short-iso-precise --no-pager >{REMOTE}/kernel.log 2>&1"
 
 BURN = (
     "a=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8+$9, $9}' /proc/stat); "
@@ -356,7 +481,8 @@ def matrix_audio(combination: dict) -> dict:
 
 
 def combination_of(combination: dict) -> dict:
-    return {"name": combination["name"], "gso": combination["gso"], "gro": combination["gro"]}
+    return {"name": combination["name"], "gso": combination["gso"], "gro": combination["gro"],
+            **({"realtime": False} if combination.get("realtime") is False else {})}
 
 
 def video_seconds() -> float:
@@ -366,17 +492,32 @@ def video_seconds() -> float:
 
 
 def combination_seconds(combination: dict) -> float:
-    return (APPLY_S + session_seconds(matrix_audio(combination))
-            + len(VIDEO_RUNGS) * video_seconds())
+    audio = session_seconds(matrix_audio(combination)) if combination.get("audio", True) else 0
+    return APPLY_S + audio + len(VIDEO_RUNGS) * video_seconds()
 
 
 def matrix_end_minute() -> float:
-    """When the last combination has ended at worst (each at its minute
-    or when the one before it ended)."""
+    """When the last combination that always runs has ended at worst (each
+    at its minute or when the one before it ended)."""
     end = sessions_end_minute()
     for combination in MATRIX:
+        if combination.get("optional"):
+            continue
         end = max(end, combination["minute"]) + combination_seconds(combination) / 60
     return round(end, 2)
+
+
+def optional_fits(combination: dict, elapsed_s: float) -> bool:
+    """Whether an optional combination, started `elapsed_s` after `up`
+    began, ends with collect and down by OPTIONAL_END_MINUTE."""
+    return (elapsed_s + combination_seconds(combination) + COLLECT_AND_DOWN_S
+            <= OPTIONAL_END_MINUTE * 60)
+
+
+def optional_latest_start_minute(combination: dict) -> float:
+    """The latest start, in minutes after `up` began, at which it runs."""
+    latest = OPTIONAL_END_MINUTE - (combination_seconds(combination) + COLLECT_AND_DOWN_S) / 60
+    return int(latest * 100) / 100
 
 
 def combination_settings(combination: dict) -> list[str]:
@@ -386,10 +527,15 @@ def combination_settings(combination: dict) -> list[str]:
     on = {True: "true", False: "false"}
     return [f"relay_video_gso={on[combination['gso']]}",
             f"client_udp_gso={on[combination['gso']]}",
-            f"relay_video_gro={on[combination['gro']]}"]
+            f"relay_video_gro={on[combination['gro']]}",
+            f"relay_class_realtime={on[combination.get('realtime', True)]}"]
 
 
 def describe(combination: dict) -> str:
+    if combination.get("realtime") is False:
+        return (f"{combination['name']}: the defaults with the class threads not real-time"
+                + (", 4K only" if combination.get("audio") is False else "")
+                + (", if it fits" if combination.get("optional") else ""))
     return (f"{combination['name']}: sender GSO {'on' if combination['gso'] else 'off'}, "
             f"receiver GRO {'on' if combination['gro'] else 'off'}"
             + (" (the defaults)" if combination["gso"] and combination["gro"] else ""))
@@ -780,6 +926,7 @@ class Hunt:
         self.spent_before_usd = spent_before_usd
         self.clock, self.sleep = clock, sleep
         self.t0: float | None = None
+        self.up_started: float | None = None
         self.survey_dirs: list[pathlib.Path] = []
         self.interrupted = False
         hunt = topology["hunt"]
@@ -911,6 +1058,8 @@ class Hunt:
                 else "<budget>"]
         if self.spent_before_usd is not None:
             args += ["--spent-before-usd", f"{self.spent_before_usd:g}"]
+        self.up_started = self.clock()
+        self.record["up_started_unix"] = round(self.up_started, 3)
         status, _ = self.lab(*args)
         if self.runner.dry:
             return
@@ -1010,11 +1159,17 @@ class Hunt:
             self.runner.say(f"# the referee's samplers: {relative(compare_root() / REFEREE_RUN)}"
                             f" start_samplers on {', '.join(names)} (sys, heartbeat, stats, "
                             "meshlocal; nic now) into samplers/")
-            return
-        module = referee_samplers()
-        sampled = module.start_samplers(self.referee_session(names))
-        self.runner.journal("referee-samplers", action="start",
-                            nodes=[item["name"] for item in sampled])
+        else:
+            module = referee_samplers()
+            sampled = module.start_samplers(self.referee_session(names))
+            self.runner.journal("referee-samplers", action="start",
+                                nodes=[item["name"] for item in sampled])
+        # Beside them, what they do not take (EXTRA_SAMPLER).
+        self.runner.each(names, lambda name: self.runner.ssh(
+            name, EXTRA_SAMPLER, what=(
+                "kernel.watchdog_thresh=1; the extra sampler of the hunt: tc -s qdisc and Udp "
+                "SndbufErrors/RcvbufErrors at 1 s, kernel stacks of the av-mesh and av-contrib "
+                f"threads on a heartbeat {EXTRA_LATE_MS} ms late >extra.log")))
 
     def collect_samplers(self, names: list[str] | None = None) -> None:
         """The referee's collect_samplers: each node's samplers stopped and
@@ -1330,6 +1485,7 @@ class Hunt:
         try:
             self.collect_samplers([name])
             self.stop_recorders([name])
+            self.runner.ssh(name, KERNEL_LOG, check=False, what="journalctl -k >kernel.log")
             self.runner.fetch_directory(name, REMOTE, self.out() / "nodes" / name / "before-replace")
         except Exception as error:  # noqa: BLE001 - a timeout too; the replace goes on
             self.runner.say(f"{name}: its records could not be fetched before the replace: {error}")
@@ -1379,7 +1535,24 @@ class Hunt:
         """One combination of the senders' GSO and the receivers' GRO: the
         push that sets them (every mesh node staged and activated: new
         processes), the first audio session of those processes, then 4K at
-        each rung. A part that fails is recorded and the next goes on."""
+        each rung. A part that fails is recorded and the next goes on. An
+        optional one (M5) runs only if it fits (OPTIONAL_END_MINUTE)."""
+        if combination.get("optional"):
+            latest = optional_latest_start_minute(combination)
+            if self.runner.dry:
+                self.runner.say(f"# {combination['name']} runs only if it starts by minute "
+                                f"{latest:g} after `up` began (then it, collect and down end "
+                                f"by {OPTIONAL_END_MINUTE}); else it is left out")
+            else:
+                elapsed = self.clock() - (self.up_started or self.t0 or self.clock())
+                if not optional_fits(combination, elapsed):
+                    self.record.setdefault("left_out", []).append(
+                        {"name": combination["name"], "elapsed_min": round(elapsed / 60, 2),
+                         "latest_start_min": latest})
+                    self.save()
+                    self.runner.say(f"{combination['name']} left out: {elapsed / 60:.1f} min "
+                                    f"after up began, later than {latest:g}")
+                    return
         started = self.clock()
         status = self.deploy("push", "--skip-bootstrap", "--skip-binaries",
                              *[item for setting in combination_settings(combination)
@@ -1389,8 +1562,11 @@ class Hunt:
         if status != 0:
             raise RuntimeError(f"{combination['name']}: deploy push failed: the combination "
                                "is not measured")
+        self.fresh(combination, started)
         failures = []
-        for part, run in [("audio", lambda: self.session(matrix_audio(combination)))] + [
+        audio = ([("audio", lambda: self.session(matrix_audio(combination)))]
+                 if combination.get("audio", True) else [])
+        for part, run in audio + [
                 (rung, lambda rung=rung: self.video(combination, rung)) for rung in VIDEO_RUNGS]:
             try:
                 run()
@@ -1398,6 +1574,33 @@ class Hunt:
                 failures.append(f"{part}: {str(error)[-300:]}")
         if failures:
             raise RuntimeError(f"{combination['name']}: " + "; ".join(failures))
+
+    def fresh(self, combination: dict, pushed_from: float) -> None:
+        """Each mesh process's age after a combination's push (`ps -o
+        etimes`): a process older than the push did not restart."""
+        command = ("for p in $(pgrep -x av-mesh) $(pgrep -x av-contrib); do "
+                   "echo $(cat /proc/$p/comm) $(ps -o etimes= -p $p); done")
+        if self.runner.dry:
+            self.runner.say(f"# {combination['name']}: the age of each mesh process "
+                            f"(every one restarted by the push): ssh <mesh> {shlex.quote(command)}")
+            return
+        ages = {}
+        try:
+            for name, text in self.runner.each(self.present(self.mesh()), lambda name: self.runner.ssh(
+                    name, command, check=False, timeout=60)).items():
+                ages[name] = [int(line.split()[1]) for line in str(text).splitlines()
+                              if len(line.split()) == 2 and line.split()[1].isdigit()]
+        except Exception as error:  # noqa: BLE001 - a record, not a step
+            self.runner.say(f"{combination['name']}: process ages not read: {error}")
+        since = self.clock() - pushed_from
+        stale = sorted(name for name, values in ages.items()
+                       if not values or max(values) > since + 5)
+        self.record.setdefault("fresh", []).append(
+            {"name": combination["name"], "ages_s": ages, "push_s_ago": round(since, 1),
+             "not_restarted": stale})
+        self.save()
+        if stale:
+            self.runner.say(f"{combination['name']}: not restarted by the push: {', '.join(stale)}")
 
     def video(self, combination: dict, rung: str) -> None:
         """4K at one rung for MATRIX_SECONDS: the contributor restarted (as
@@ -1438,7 +1641,8 @@ class Hunt:
         """Every directory the sessions and the matrix leave on the hosts."""
         return ([session["name"] for session in SESSIONS]
                 + [name for combination in MATRIX for name in (
-                    [matrix_audio(combination)["name"]]
+                    ([matrix_audio(combination)["name"]] if combination.get("audio", True)
+                     else [])
                     + [f"{combination['name']}-V{rung.removeprefix('2160p')}"
                        for rung in VIDEO_RUNGS])])
 
@@ -1449,7 +1653,7 @@ class Hunt:
         waited for up to 15 s, so that its file is whole when fetched (the
         referee's samplers are stopped by collect_samplers)."""
         self.runner.each(names, lambda name: self.runner.ssh(name, (
-            f"cd {REMOTE} 2>/dev/null && P=$(cat watch.pid 2>/dev/null); "
+            f"cd {REMOTE} 2>/dev/null && P=$(cat watch.pid extra.pid 2>/dev/null); "
             "kill $P 2>/dev/null; n=0; while [ $n -lt 150 ]; do a=; for p in $P; do "
             "kill -0 $p 2>/dev/null && a=1; done; [ -z \"$a\" ] && break; sleep 0.1; "
             "n=$((n + 1)); done; true"),
@@ -1462,8 +1666,9 @@ class Hunt:
 
         def records(name: str) -> None:
             self.runner.ssh(name, f"mkdir -p {REMOTE} && ( {SYSTEM_FACTS} ) "
-                                  f">{REMOTE}/system.txt 2>&1", check=False,
-                            what="the node's system facts >system.txt")
+                                  f">{REMOTE}/system.txt 2>&1; {KERNEL_LOG}", check=False,
+                            what="the node's system facts >system.txt; journalctl -k "
+                                 ">kernel.log")
             self.runner.fetch_directory(name, REMOTE, nodes_dir / name,
                                         exclude=tuple(self.session_names()))
 
@@ -1782,15 +1987,24 @@ def print_plan(topology: dict) -> None:
           f"{DOWN_MINUTE}, the watchdog at minute {WATCHDOG_HOURS * 60:.0f}")
     regions = sorted({node["site"] for node in topology["nodes"]
                       if node["role"] in ("distributor", "edge")})
-    print(f"the GSO/GRO matrix, the defaults first, on the mesh in {', '.join(regions)}: "
-          + "; ".join(f"minute {combination['minute']} {describe(combination)}"
-                      for combination in MATRIX))
+    print(f"the GSO/GRO matrix, the defaults first, on the mesh in {', '.join(regions)}, from "
+          f"minute {MATRIX[0]['minute']}, each as the one before ends: "
+          + "; ".join(describe(combination) for combination in MATRIX))
     print(f"  each: deploy push --set {' --set '.join(combination_settings(MATRIX[0]))} (as "
-          f"set), the first audio session ({MATRIX_AUDIO}, {MATRIX_SECONDS} s, "
-          "needletail-udp-client --gro as set), 4K "
+          f"set; it restarts every mesh node), the first audio session ({MATRIX_AUDIO}, "
+          f"{MATRIX_SECONDS} s, needletail-udp-client --gro as set), 4K "
           + " and ".join(f"{rung.removeprefix('2160p')} Mbit/s" for rung in VIDEO_RUNGS)
           + f" ({MATRIX_SECONDS} s each), the referee's samplers running; at worst "
           f"{combination_seconds(MATRIX[0]) / 60:.1f} min")
+    for combination in MATRIX:
+        if combination.get("optional"):
+            print(f"  {combination['name']}: 4K only, at worst "
+                  f"{combination_seconds(combination) / 60:.1f} min; it runs only if it starts "
+                  f"by minute {optional_latest_start_minute(combination):g} after `up` began "
+                  f"(it, collect and down by {OPTIONAL_END_MINUTE}); no extra cost")
+    print(f"  beside the referee's samplers: kernel.watchdog_thresh=1, tc -s qdisc and Udp "
+          f"Snd/RcvbufErrors at 1 s, kernel stacks on a heartbeat {EXTRA_LATE_MS} ms late "
+          "(extra.log); journalctl -k at collect (kernel.log)")
 
 
 def command_plan(args: argparse.Namespace) -> None:

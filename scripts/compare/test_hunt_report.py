@@ -753,6 +753,23 @@ class RefereeSamplers(unittest.TestCase):
             "new-dist-a": {"eth0 rx-udp-gro-forwarding": "on"}})
         self.assertIn("NIC offloads differ: eth0 rx-udp-gro-forwarding off but new-dist-a on",
                       differ["line"])
+        # M5, the defaults with the class threads not real-time: apart from
+        # the GSO/GRO verdict, compared with M1.
+        for m1_stops, m5_stops, said in ((True, False, "NOT REAL-TIME IS CLEAN"),
+                                         (True, True, "not real-time stops too"),
+                                         (False, False, "not real-time clean, as the defaults")):
+            table = matrix({(True, True)} if m1_stops else set())
+            stops = [{"node": "new-dist-a", "ms": 900.0, "class": "not run"}] if m5_stops else []
+            table["M5"] = {"gso": True, "gro": True, "realtime": False, "parts": {"2160p25": {
+                "stops": stops, "by_site": {"newyork": {"n": 1, "ms": 900.0}} if stops else {},
+                "video": {}}}}
+            found = report.rule_gso_gro(table)
+            self.assertIn(said, found["realtime_off"])
+            self.assertIn("M5 (", found["line"])
+            # The GSO/GRO verdict is the one without M5.
+            self.assertEqual(found["verdict"], report.rule_gso_gro(
+                matrix({(True, True)} if m1_stops else set()))["verdict"])
+            self.assertEqual(found["state"]["gso=True,gro=True"], m1_stops)
 
     def test_the_matrix_table_from_a_run(self):
         """A combination's 4K rung: a 2 s stop of both vCPUs of a New York

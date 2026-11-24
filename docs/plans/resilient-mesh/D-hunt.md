@@ -779,10 +779,9 @@ acceptance and the 2.5 ms lane) and the restart at minute 44 make way for the GS
 | 24 | S2, PCM 1 ms, 70 s (the referee's second session) |
 | 28 | S3, listener churn on every edge: the listeners of S1 join together for 50 s, leave, and join again 12 s later, three rounds (`rounds.txt` holds each round's start; the sender runs 15 s a round longer than the rounds, as each ends only when its probes have) |
 | 35 | the edge not run most in S1 to S3 (the watch's stopped ms that ended in a session plus its vCPUs' heartbeats late by 50 ms or more in a session, the most of any vCPU; never the deploy, the burn or the touch, which would choose a touched edge for its arm) is replaced: its records and the referee's samplers collected, `remove`, `grow`, `hosts`, watch, `push --nodes`, the referee's samplers (its VLAN address is kept, so no peer is re-rendered). None if no edge was not run |
-| 44 | M1, the defaults (GSO on, GRO on): push, the first audio session `M1-A` (Opus Custom 1 ms, 120 s), 4K `M1-V25`, `M1-V80` (120 s each). Every forwarder and edge restarts with the push: new processes on guests that have run a session, and on the new guest of the replaced edge |
-| 57 | M2, sender GSO off, receiver GRO on: the same |
-| 70 | M3, sender GSO on, receiver GRO off: the same |
-| 83 | M4, both off: the same (at worst it ends at minute 95.6) |
+| 44 | M1, the defaults (GSO on, GRO on): push, the first audio session `M1-A` (Opus Custom 1 ms, 120 s), 4K `M1-V25`, `M1-V80` (120 s each). Every forwarder and edge restarts with the push (the deploy's activate ends in `systemctl restart`): new processes on guests that have run a session, and on the new guest of the replaced edge; each mesh process's age after the push is recorded (`fresh` in hunt.json), so every combination is on freshly restarted nodes (4K report, 24 Nov) |
+| then | M2, sender GSO off, receiver GRO on; M3, sender GSO on, receiver GRO off; M4, both off: the same, each as the one before ends (integration 3: no fixed slots; at worst M4 ends at minute 94.5, as before) |
+| then | M5, if it starts by 96.8 minutes after `up` began (it, collect and down then end by 112, inside the second billed hour and before the watchdog's bounded collect; otherwise recorded in `left_out`): the defaults with `relay_class_realtime=false` (no FIFO class thread pinned to a vCPU), 4K at 25 and 80 only, 8.2 min at worst. No extra cost. H8 compares it with M1 apart from the GSO/GRO verdict |
 | 96 | collect: the referee's samplers collected and the watches stopped, every node's records, the sessions, the survey, `lab hosts`; into the run archive |
 | 101 | `down` (the watchdog is at 1.95 h: 117 minutes from `up`'s start) |
 
@@ -809,6 +808,13 @@ acceptance and the 2.5 ms lane) and the restart at minute 44 make way for the GS
   `/proc/vmstat` is taken at the touch (`vmstat-touch.txt`) and after S1 (`vmstat-after-first.txt`), since these
   samplers take no swap counters. Nothing is polled from the dev box. (`scripts/hunt-sampler.sh`, the hunt's own
   sampler before the 4K run, stays for the local lab's first session: `compare/first-session.py`.)
+- **The hunt's extra sampler** (integration 3, from the 4K report's "what only Linode can settle"), started beside the
+  referee's samplers on the same nodes, into `extra.log` in the node's records: `tc -s qdisc show` and the `Udp:` lines
+  of `/proc/net/snmp` (SndbufErrors, RcvbufErrors, InErrors) each second; when a referee heartbeat is 50 ms or more
+  late, every av-mesh and av-contrib thread's `/proc/PID/task/TID/stack`, state and wchan (at most one dump each
+  0.5 s, 600 in all). It sets `kernel.watchdog_thresh=1` first (a soft lockup over 2 s goes to the kernel log with
+  the stuck CPU's stack; the value before is in `watchdog_thresh.before`), and collect saves `journalctl -k` as
+  `kernel.log` (also on the replaced edge before its `remove`). hunt-report does not read these files yet.
 - `needletail-nodecheck watch` on every node from minute 0 (`watch.ndjson`); the touch files; `system.txt` (THP
   setting, the balloon and its feature bits, clocksource, swap, `chronyc tracking`).
 - Per session and view host: the UDP probes (arrivals, frames, `uc.json` with the caches each used), the LL-HLS probe

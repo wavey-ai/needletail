@@ -1277,7 +1277,8 @@ def matrix_table(run: Run) -> dict:
         if not combination or item.get("kind") not in ("session", "video"):
             continue
         entry = out.setdefault(combination["name"], {
-            "gso": combination["gso"], "gro": combination["gro"], "parts": {}})
+            "gso": combination["gso"], "gro": combination["gro"],
+            "realtime": combination.get("realtime", True), "parts": {}})
         part = "audio" if item["kind"] == "session" else item.get("rung") or item["name"]
         start, end = int(item["from_unix"] * 1e6), int(item["to_unix"] * 1e6)
         stops = [stop for name in run.mesh() if run.has_referee(name)
@@ -1299,13 +1300,18 @@ def rule_gso_gro(matrix: dict, nics: dict[str, dict] | None = None) -> dict:
     has a heartbeat stop or a sampler gap of 100 ms or more in any of its
     parts. GSO is the cause when both combinations with it on stop and
     both without it do not; GRO the same; both when only the one with
-    both off is clean; neither when every combination stops."""
+    both off is clean; neither when every combination stops. A
+    combination with the class threads not real-time (M5) is left out of
+    that verdict and compared with the defaults on its own."""
     if not matrix:
         return {"fires": False, "line": "H8 (GSO and GRO): no GSO/GRO matrix in the record"}
 
     def stopped(entry: dict) -> bool:
         return any(part["stops"] for part in entry["parts"].values())
 
+    realtime_off = {name: entry for name, entry in matrix.items()
+                    if entry.get("realtime", True) is False}
+    matrix = {name: entry for name, entry in matrix.items() if name not in realtime_off}
     state = {(entry["gso"], entry["gro"]): stopped(entry) for entry in matrix.values()}
     shown = "; ".join(
         f"{name} GSO {'on' if entry['gso'] else 'off'} GRO {'on' if entry['gro'] else 'off'}: "
@@ -1345,12 +1351,28 @@ def rule_gso_gro(matrix: dict, nics: dict[str, dict] | None = None) -> dict:
                     for part in entry["parts"].values() for stop in part["stops"]})
     line = f"H8 (GSO and GRO): {verdict}" + (f" ({', '.join(kinds)})" if kinds else "") + \
         f": {shown}"
+    realtime = None
+    for name, entry in realtime_off.items():
+        defaults = state.get((entry["gso"], entry["gro"]))
+        off = stopped(entry)
+        realtime = (
+            "NOT REAL-TIME IS CLEAN: the stops go with the class threads' FIFO pinning"
+            if defaults and not off else
+            "not real-time stops too: not the class threads' scheduling" if off else
+            "not real-time clean, as the defaults" if defaults is False else
+            "not real-time clean (no defaults to compare)")
+        line += (f"; {name} ({realtime}): "
+                 + ", ".join(f"{part} " + (", ".join(
+                     f"{site} {slot['n']} ({slot['ms']:.0f} ms)"
+                     for site, slot in sorted(item["by_site"].items())) or "clean")
+                     for part, item in entry["parts"].items()))
     differ = nic_differences(nics or {})
     if differ:
         line += "; NIC offloads differ: " + "; ".join(differ)
     return {"fires": any(state.values()), "state": {f"gso={k[0]},gro={k[1]}": v
                                                      for k, v in state.items()},
-            "verdict": verdict, "line": line}
+            "verdict": verdict, "line": line,
+            **({"realtime_off": realtime} if realtime else {})}
 
 
 def nic_differences(nics: dict[str, dict]) -> list[str]:

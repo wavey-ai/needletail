@@ -134,7 +134,9 @@ class Timeline(unittest.TestCase):
         self.assertEqual(minutes, sorted(minutes))
         at = dict(zip(names, minutes))
         self.assertEqual([at[f"S{index}"] for index in range(1, 4)], [20, 24, 28])
-        self.assertEqual([at[name] for name in matrix], [44, 57, 70, 83])
+        # The matrix from minute 44, each combination as the one before
+        # ends (no fixed slots: room for M5 in the usual case).
+        self.assertEqual([at[name] for name in matrix], [44] * 5)
         self.assertEqual((at["touch the touched edges"], at["burn"],
                           at["give the touched memory back"]), (15, 18, 19.5))
         self.assertEqual((at["collect"], at["down"]), (96, 101))
@@ -145,15 +147,23 @@ class Timeline(unittest.TestCase):
         self.assertEqual(hunt_tool.listening_seconds(hunt_tool.SESSIONS[2]), 3 * 50 + 2 * 12)
         # The matrix: the defaults first, then each of the two off, then
         # both; each 120 s of the first audio session and of 4K at 25 and
-        # 80 Mbit/s.
-        self.assertEqual([(item["gso"], item["gro"]) for item in hunt_tool.MATRIX],
-                         [(True, True), (False, True), (True, False), (False, False)])
+        # 80 Mbit/s. Then M5, the defaults with the class threads not
+        # real-time, 4K only, if it fits.
+        self.assertEqual([(item["gso"], item["gro"], item.get("realtime", True))
+                          for item in hunt_tool.MATRIX],
+                         [(True, True, True), (False, True, True), (True, False, True),
+                          (False, False, True), (True, True, False)])
+        self.assertEqual([item["name"] for item in hunt_tool.MATRIX if item.get("optional")],
+                         ["M5"])
         self.assertEqual(hunt_tool.VIDEO_RUNGS, ("2160p25", "2160p80"))
         self.assertEqual(hunt_tool.MATRIX_SECONDS, 120)
         self.assertEqual(hunt_tool.matrix_audio(hunt_tool.MATRIX[2])["gro"], False)
         self.assertEqual(hunt_tool.combination_settings(hunt_tool.MATRIX[3]),
                          ["relay_video_gso=false", "client_udp_gso=false",
-                          "relay_video_gro=false"])
+                          "relay_video_gro=false", "relay_class_realtime=true"])
+        self.assertEqual(hunt_tool.combination_settings(hunt_tool.MATRIX[4]),
+                         ["relay_video_gso=true", "client_udp_gso=true",
+                          "relay_video_gro=true", "relay_class_realtime=false"])
         # At worst the sessions end before the matrix, the matrix before
         # collect, and down comes inside the second billed hour and before
         # the watchdog's deadline less the latest start.
@@ -163,6 +173,21 @@ class Timeline(unittest.TestCase):
         self.assertLess(at["down"] * 60, hunt_tool.WATCHDOG_HOURS * 3600
                         - hunt_tool.LATEST_START_BEFORE_DEADLINE_S)
         self.assertLessEqual(hunt_tool.WATCHDOG_HOURS, 2.0)
+        # M5 runs only when it, collect and down end inside the second
+        # billed hour and before the watchdog's bounded collect; at worst
+        # (the matrix ending at its worst after an `up` of 15 min) it is
+        # left out, and it never adds a billed hour.
+        m5 = hunt_tool.MATRIX[4]
+        self.assertLessEqual(hunt_tool.OPTIONAL_END_MINUTE,
+                             min(120 - 5, hunt_tool.WATCHDOG_HOURS * 60
+                                 - hunt_tool.COLLECT_TIMEOUT_S / 60))
+        latest = hunt_tool.optional_latest_start_minute(m5)
+        self.assertTrue(hunt_tool.optional_fits(m5, latest * 60))
+        self.assertFalse(hunt_tool.optional_fits(m5, latest * 60 + 1))
+        self.assertFalse(hunt_tool.optional_fits(m5, (hunt_tool.matrix_end_minute() + 15) * 60))
+        self.assertTrue(hunt_tool.optional_fits(m5, (hunt_tool.matrix_end_minute() - 2) * 60))
+        self.assertLess(hunt_tool.combination_seconds(m5), hunt_tool.combination_seconds(
+            hunt_tool.MATRIX[0]))
 
     def test_the_arms_and_the_per_node_settings(self):
         topology = hunt_tool.load_topology()
@@ -238,15 +263,21 @@ class DryRun(unittest.TestCase):
         # mesh node activated: new processes).
         applied = self.commands("linode-small-mesh-deploy.py push --skip-bootstrap "
                                 "--skip-binaries")
-        self.assertEqual(len(applied), 4)
+        self.assertEqual(len(applied), 5)
         for line, combination in zip(applied, hunt_tool.MATRIX):
             for setting in hunt_tool.combination_settings(combination):
                 self.assertIn(f"--set {setting}", line)
         self.assertFalse(self.commands("restart --roles"))
+        self.assertIn("--set relay_class_realtime=false", applied[4])
+        self.assertEqual(len(self.commands("runs only if it starts by minute")), 1)
+        # Each push restarts every mesh node: the processes' ages after it.
+        self.assertEqual(len(self.commands("the age of each mesh process")), 5)
         # The referee's samplers on every node they take (the mesh, the
         # source and view hosts; no bare node), and on the replaced edge;
-        # collected from the replaced edge and from all at collect. No
-        # sampler of the hunt's own.
+        # collected from the replaced edge and from all at collect. Beside
+        # them on the same nodes the hunt's extra sampler (what they do not
+        # take: tc, Udp errors, kernel stacks on a late heartbeat, with
+        # kernel.watchdog_thresh=1), and journalctl -k at collect.
         started = self.commands("start_samplers on ")
         self.assertEqual(len(started), 2)
         sampled = [node["name"] for node in topology["nodes"]
@@ -258,6 +289,12 @@ class DryRun(unittest.TestCase):
         self.assertIn("compare-run.py", started[0])
         self.assertEqual(len(self.commands("collect_samplers on ")), 2)
         self.assertFalse(self.commands("sampler.sh"))
+        extra = self.commands("the extra sampler of the hunt")
+        self.assertEqual(len(extra), len(sampled) + 1)
+        self.assertEqual(sorted({line.split()[1] for line in extra
+                                 if not line.split()[1].startswith("<")}), sorted(sampled))
+        self.assertTrue(all("kernel.watchdog_thresh=1" in line for line in extra))
+        self.assertEqual(len(self.commands("journalctl -k >kernel.log")), len(names) + 1)
         self.assertEqual(len(self.commands("linode-route-survey.py start")), 1)
         touched = topology["hunt"]["touched"]
         touch = self.commands("needletail-nodecheck touch --mb $MB")
@@ -266,23 +303,24 @@ class DryRun(unittest.TestCase):
         release = self.commands('echo "released')
         self.assertEqual(sorted(line.split()[1] for line in release), sorted(touched))
         # S1 to S3, each combination's audio session and its two rungs.
-        self.assertEqual(len(self.commands("systemctl restart needletail-contrib")), 3 + 4 * 3)
+        self.assertEqual(len(self.commands("systemctl restart needletail-contrib")),
+                         3 + 4 * 3 + 2)
         senders = self.commands("aep1-48k-probe send")
         self.assertEqual(len(senders), 3 + 4)
         self.assertTrue(all("--lateness-journal" in line for line in senders))
         views = len(topology["hunt"]["listeners"])
-        self.assertEqual(len(self.commands("cat >run.sh")), (3 + 4 + 4 * 2) * views)
+        self.assertEqual(len(self.commands("cat >run.sh")), (3 + 4 + 5 * 2) * views)
         # 4K: the referee's clip over RTMP into the contributor, a probe a
         # view host through its site's entry, at each rung of each
         # combination.
         feeds = self.commands("ntcmp flv --clip")
-        self.assertEqual(len(feeds), 4 * 2)
+        self.assertEqual(len(feeds), 5 * 2)
         self.assertTrue(all("rtmp://10.78.1.5:19350/live/needletail-lab" in line
                             for line in feeds))
         self.assertTrue(all("pkill -f" not in line for line in feeds))
-        self.assertEqual(sum("2160p80" in line for line in feeds), 4)
+        self.assertEqual(sum("2160p80" in line for line in feeds), 5)
         probes = self.commands("/live/1/master.m3u8")
-        self.assertEqual(len(probes), 4 * 2 * views)
+        self.assertEqual(len(probes), 5 * 2 * views)
         self.assertTrue(any("<public:new-dist-a>" in line for line in probes))
         # Receiver GRO off: the UDP probes of M3 and M4 without it.
         self.assertEqual(len(self.commands("--gro false")), 2 * 8)
@@ -718,8 +756,11 @@ class RefereeSamplers(unittest.TestCase):
             loaded.append(real(root_))
             return loaded[-1]
 
+        sent = []
         with mock.patch.dict(os.environ, {"NEEDLETAIL_COMPARE_ROOT": str(root)}), \
-                mock.patch.object(hunt_tool, "referee_samplers", load):
+                mock.patch.object(hunt_tool, "referee_samplers", load), \
+                mock.patch.object(hunt.runner, "ssh",
+                                  lambda name, command, **_: sent.append((name, command))):
             hunt.sample()
             hunt.collect_samplers(["lon-edge-1", "lon-bare-3"])
         self.assertEqual(sys.path, path)
@@ -728,6 +769,9 @@ class RefereeSamplers(unittest.TestCase):
                          if node["role"] not in ("bare",))
         self.assertEqual(calls[0], ("start", sampled, str(out)))
         self.assertEqual(calls[1], ("collect", ["lon-edge-1"], ["lon-edge-1"]))
+        # The hunt's extra sampler on the same nodes.
+        self.assertEqual(sorted(name for name, command in sent
+                                if command == hunt_tool.EXTRA_SAMPLER), sampled)
         journal = [json.loads(line) for line in (out / "journal.ndjson").read_text().splitlines()]
         self.assertEqual([item["action"] for item in journal], ["start", "collect"])
 
