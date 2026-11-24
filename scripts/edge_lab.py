@@ -164,6 +164,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -238,6 +239,28 @@ LADDER = [
     (13, LADDER_DIR / "tos24-360p-700k.ts", 1_100_000, 950_000, "640x360", 24_000),
 ]
 RTMP_PORT = 19350
+# ntcmp of the referee's harness (needletail-compare), which sends a clip of
+# its prepare-media to a contributor (`ntcmp flv`).
+NTCMP = pathlib.Path(os.environ.get(
+    "NEEDLETAIL_NTCMP_BIN", str(WORKSPACE / "needletail-compare" / "target" / "ntcmp")))
+
+
+def referee_clip(path: pathlib.Path) -> dict | None:
+    """A clip directory of needletail-compare's prepare-media (DIR/video.h264,
+    its media.json beside DIR): {"rung", "fps", "kbps"}, else None."""
+    path = pathlib.Path(path)
+    if not (path.is_dir() and (path / "video.h264").is_file()):
+        return None
+    out = {"rung": path.name, "fps": 24, "kbps": None}
+    for media in (path.parent / "media.json", path.parent.parent / "clips6" / "media.json"):
+        try:
+            data = json.loads(media.read_text())
+        except (OSError, ValueError):
+            continue
+        out["fps"] = int(data.get("fps") or 24)
+        out["kbps"] = ((data.get("rungs") or {}).get(path.name) or {}).get("kbps")
+        break
+    return out
 # The source host's 4K feed loop (A 3.6): one contributor at a time.
 VIDEO_FEED = pathlib.Path(__file__).resolve().parent / "video-feed.sh"
 
@@ -2305,6 +2328,21 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
             command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
                         "-f", "flv", f"rtmp://{{host}}:{RTMP_PORT}/live/{stream}"]
         process = subprocess.Popen(source_prefix() + feed + command, stdout=log, stderr=log,
+                                   stdin=subprocess.DEVNULL, start_new_session=True)
+        sources["video"] = process.pid
+        log.close()
+    if video and "video" not in sources and clip is not None and referee_clip(clip):
+        # A clip of the referee's (needletail-compare prepare-media: DIR/video.h264,
+        # Annex B, constant bit rate with filler): sent as the referee sends it to
+        # a Needletail contributor, `ntcmp flv` (frames paced at the clip's rate,
+        # filler dropped, no audio) into ffmpeg and RTMP.
+        log = open(WORK / "logs" / "source-video.log", "ab")
+        command = (f"{shlex.quote(str(NTCMP))} flv --clip {shlex.quote(str(clip))} --no-audio "
+                   f"--fps {referee_clip(clip)['fps']} | "
+                   + shlex.join(feed + ["-hide_banner", "-loglevel", "error", "-f", "flv",
+                                        "-i", "pipe:0", "-c", "copy", "-f", "flv",
+                                        f"rtmp://{{host}}:{RTMP_PORT}/live/needletail-lab"]))
+        process = subprocess.Popen(source_prefix() + ["sh", "-c", command], stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()

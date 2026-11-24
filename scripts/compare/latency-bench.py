@@ -535,6 +535,13 @@ def video_source(args) -> dict | None:
                                              args.video_clip_seconds)}
     if args.video_clip:
         given = pathlib.Path(args.video_clip).expanduser()
+        referee = lab.referee_clip(given)
+        if referee:
+            # A clip directory of the referee's (prepare-media): sent as the
+            # referee sends it, ntcmp flv over RTMP (edge_lab.start_sources).
+            return {"label": f"referee {referee['rung']}", "path": str(given), "synthetic": False,
+                    "referee": True, "fps": referee["fps"],
+                    "video_mbps": round(referee["kbps"] / 1000, 2) if referee.get("kbps") else None}
         path = given if given.suffix or given.is_file() else CLIPS / f"{args.video_clip}.ts"
         return {"label": path.stem, "path": str(path), "synthetic": False}
     if args.video:
@@ -565,6 +572,8 @@ def prepare_video(item: dict | None) -> dict | None:
                 log(f"encoding the synthetic 4K clip {path.name}")
                 subprocess.run(["nice", "-n", "10", *item["prepare"]], check=True)
                 pathlib.Path(str(path) + ".part").replace(path)
+    if item.get("referee"):
+        return item
     if not path.is_file():
         raise SystemExit(f"no 4K clip at {path} (clips: {', '.join(sorted(p.stem for p in CLIPS.glob('*.ts')))})")
     item.update(probe_clip(path))
@@ -2105,7 +2114,8 @@ def main(argv: list[str] | None = None) -> int:
         client_loss_spec(args.client_loss)
     steps = plan(args)
     source = steps["video"]["source"]
-    if source and not source["synthetic"] and not pathlib.Path(source["path"]).is_file():
+    if source and not source["synthetic"] and not source.get("referee") \
+            and not pathlib.Path(source["path"]).is_file():
         raise SystemExit(f"no 4K clip at {source['path']} (clips in {CLIPS}: "
                          f"{', '.join(sorted(path.stem for path in CLIPS.glob('*.ts'))) or 'none'})")
     if args.dry_run:
