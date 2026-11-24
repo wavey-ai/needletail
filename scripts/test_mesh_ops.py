@@ -79,6 +79,8 @@ class Sim(mesh_ops.Ops):
         self.drops_rise: set[str] = set()
         # Parts missing from a node's retained window (P2 (b)).
         self.gaps: dict[str, int] = {}
+        # Objects every parent skipped (streams[].skipped_by_every_parent_10s).
+        self.both: dict[str, int | None] = {}
         started = clock() - 3600
 
         def add(name, role, site, number, **extra):
@@ -247,7 +249,12 @@ class Sim(mesh_ops.Ops):
                 "streams": [{"stream_id": 3001, "class": "audio", "seen_age_ms": 0,
                              "decoded": True, "head_part": 5_123_456,
                              "first_part": 5_123_456 - 11_999,
-                             "window_parts": 12_000 - self.gaps.get(name, 0)}],
+                             "window_parts": 12_000 - self.gaps.get(name, 0),
+                             "missed_10s": self.gaps.get(name, 0),
+                             "skipped_by_every_parent_10s": self.both.get(name, 0)}],
+                "relay_counters": {"duplicate_mismatch": 0, "not_admitted": 0,
+                                   "stale_media": 0, "canonical_conflicts": 0,
+                                   "wide_hole_releases": 0, "skipped_parts": 0},
                 "children": {"compiled": [], "lease": {"children": 0, "pairs": 0,
                                                        "pairs_list": [], "streams": []}},
                 "cache_mesh": {"parent_heard_age_ms": 0, "parents_live": 1, "pending_release": 0,
@@ -512,19 +519,23 @@ class Parity(unittest.TestCase):
     LEAVING = {"10.77.1.11"}
     STAYING = {"10.77.1.12"}
 
-    def child(self, leaving=None, staying=None, held=12_000):
+    def child(self, leaving=None, staying=None, held=12_000, both=0):
+        # `held`: the retained window; the parts it lacks are what the
+        # child missed in the last 10 s (missed_10s). `both`: objects every
+        # parent skipped (skipped_by_every_parent_10s; None: unknown).
         document = {"role": "edge", "parents": [
             {"address": "10.77.1.11", "id": "lon-dist-a", "path": "primary",
              "streams": [good_row(**(leaving or {}))]},
             {"address": "10.77.1.12", "id": "lon-dist-b", "path": "primary",
              "streams": [good_row(**(staying or {}))]}],
             "streams": [{"stream_id": 3001, "class": "audio", "head_part": 412_000,
-                         "first_part": 400_001, "window_parts": held}]}
+                         "first_part": 400_001, "window_parts": held,
+                         "missed_10s": 12_000 - held, "skipped_by_every_parent_10s": both}]}
         return mesh_ops.status_of(document)
 
-    def parity(self, leaving=None, staying=None, held=12_000, **kwargs):
-        return mesh_ops.feed_parity(self.child(leaving, staying, held), 3001, self.LEAVING,
-                                    self.STAYING, **kwargs)
+    def parity(self, leaving=None, staying=None, held=12_000, both=0, **kwargs):
+        return mesh_ops.feed_parity(self.child(leaving, staying, held, both), 3001,
+                                    self.LEAVING, self.STAYING, **kwargs)
 
     def test_two_equal_parents_pass(self):
         self.assertEqual(self.parity(), [])
@@ -569,9 +580,10 @@ class Parity(unittest.TestCase):
         for staying in ({}, {"skipped_10s": 2}):
             problems = self.parity(staying=staying, held=11_999)
             self.assertEqual(len(problems), 1, staying)
-            self.assertIn("the child misses 1 of the last 12000 parts of stream 3001",
+            self.assertIn("the child missed 1 parts of stream 3001 in the last 10 s",
                           problems[0])
-        # The figures of (b) missing: parity unknown, never a pass.
+        # The figure of (b) missing (av-mesh before integration 4): parity
+        # unknown, never a pass.
         document = {"role": "edge", "parents": [
             {"address": "10.77.1.11", "streams": [good_row()]},
             {"address": "10.77.1.12", "streams": [good_row()]}],
@@ -580,27 +592,32 @@ class Parity(unittest.TestCase):
                                         self.STAYING)
         self.assertEqual(len(problems), 1)
         self.assertIn("parity unknown", problems[0])
-        self.assertIn("first_part", problems[0])
+        self.assertIn("missed_10s", problems[0])
         self.assertEqual(mesh_ops.window_gaps(mesh_ops.status_of({"streams": []}), 3001),
                          (None, None))
 
-    def test_p2c_skips_of_both_parents_are_noted_and_judged_on_a_and_b(self):
+    def test_p2c_an_object_skipped_by_both_parents_is_refused(self):
         # Only the other parent skipped: no object can have been skipped by
-        # both, (c) holds; the note says (b) was read from the window.
+        # both, (c) holds whatever the child's figure says.
         notes: list = []
-        self.assertEqual(self.parity(staying={"skipped_10s": 2}, notes=notes), [])
+        self.assertEqual(self.parity(staying={"skipped_10s": 2}, both=None, notes=notes), [])
         self.assertFalse(any("(c)" in note for note in notes), notes)
-        self.assertTrue(any("P2 (b)" in note and "missed_10s" in note for note in notes), notes)
-        # Both skipped: av-mesh cannot say whether one object was skipped by
-        # both. Not refused for that, noted with the field it needs.
+        # Both skipped: the child's skipped_by_every_parent_10s decides.
         notes = []
         self.assertEqual(self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 3},
                                      notes=notes), [])
-        both = [note for note in notes if "P2 (c) not proved" in note]
-        self.assertEqual(len(both), 1, notes)
-        self.assertIn("skipped_by_every_parent_10s", both[0])
-        self.assertIn("refused on (a) and (b) only", both[0])
-        # ... but (a) and (b) still refuse.
+        self.assertEqual([note for note in notes if "P2 (c)" in note and
+                          "0 skipped by every parent" in note], notes)
+        problems = self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 3}, both=1)
+        self.assertEqual(problems, ["P2 complete: 1 objects of stream 3001 were skipped by "
+                                    "both parents in the last 10 s"])
+        # Unknown (a lane skipped more than av-mesh's record keeps): fails.
+        problems = self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 3},
+                               both=None)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("parity unknown", problems[0])
+        self.assertIn("skipped_by_every_parent_10s", problems[0])
+        # ... and (a) and (b) still refuse.
         self.assertEqual(len(self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 11})),
                          1)
         self.assertEqual(len(self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 3},
@@ -682,7 +699,8 @@ class StatusOf(unittest.TestCase):
                          "audio_age_ms": 0, "video_age_ms": None, "streams": [good_row()]}],
             "streams": [{"stream_id": 3001, "class": "audio", "seen_age_ms": 0, "decoded": True,
                          "ingest_age_ms": 1, "head_part": 5123456, "first_part": 5111456,
-                         "window_parts": 12001, "warm_parts": 4500}],
+                         "window_parts": 12001, "warm_parts": 4500, "missed_10s": 0,
+                         "skipped_by_every_parent_10s": 0}],
             "children": {
                 "compiled": [{"target": "139.162.1.5:22200", "lane": "source", "class": "audio",
                               "promoted": False}],
@@ -766,14 +784,21 @@ class ForwarderGate(Base):
         self.sim.row[("new-edge-2", "new-dist-a")] = {"skipped_10s": 2}
         gate = self.gate("new-dist-b")
         self.assertTrue(gate.ok, gate.problems)
-        self.assertTrue(any(note.startswith("LG2 new-edge-2 <- new-dist-a: P2 (b)")
-                            for note in gate.notes), gate.notes)
+        self.assertFalse(any("P2" in note for note in gate.notes), gate.notes)
+        # Both parents skipped: the child's skipped_by_every_parent_10s
+        # decides (integration 4).
+        self.sim.row[("new-edge-2", "new-dist-b")] = {"skipped_10s": 1}
+        self.assertTrue(self.gate("new-dist-b").ok)
+        self.sim.both["new-edge-2"] = 1
+        self.assert_refused("new-dist-b", "were skipped by both parents", timeout_s=2)
+        self.sim.both.clear()
+        del self.sim.row[("new-edge-2", "new-dist-b")]
         self.sim.row[("new-edge-2", "new-dist-a")] = {"skipped_10s": 11}
         self.assert_refused("new-dist-b", "P2 complete", timeout_s=2)
         self.sim.row.clear()
         self.sim.gaps["new-edge-2"] = 3
         self.assert_refused("new-dist-b", "LG2 new-edge-2 <- new-dist-a 3001: P2 complete: the "
-                            "child misses 3", timeout_s=2)
+                            "child missed 3", timeout_s=2)
 
     def test_lg1_a_child_that_is_stopping_or_silent(self):
         self.sim.patch["new-edge-1"] = lambda doc: {**doc, "state": "stopping"}

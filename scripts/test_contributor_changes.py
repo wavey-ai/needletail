@@ -81,6 +81,9 @@ class ContribSim(Sim):
                              "canonical_conflicts": 0, "wide_hole_releases": 0,
                              "skipped_parts": 0} for name in FIRSTS}
         self.rising: set[tuple[str, str]] = set()
+        self.local_reads: list[str] = []
+        # Forwarders whose build serves no relay_counters.
+        self.unserved: set[str] = set()
 
     def contributor(self, name: str) -> bool:
         return self.nodes_.get(name, {}).get("role") == "contributor"
@@ -107,9 +110,22 @@ class ContribSim(Sim):
         return [{"first_part": w * 256, "parts": 256, "present": 256,
                  "xor": self.xor.get(name, f"{w:016x}")} for w in closed[-8:]]
 
+    def relay_counters(self, name) -> dict:
+        """A first forwarder's counters as av-mesh's /api/node
+        `relay_counters` serves them (integration 4); `rising` ones grow at
+        every read."""
+        counters = self.plane[name]
+        for forwarder, key in self.rising:
+            if forwarder == name:
+                counters[key] += 1
+        return dict(counters)
+
     def doc(self, name):
         if not self.contributor(name):
-            return super().doc(name)
+            document = super().doc(name)
+            if document is not None and name in self.plane and name not in self.unserved:
+                document["relay_counters"] = self.relay_counters(name)
+            return document
         if not self.up(name) or name in self.frozen:
             return None
         node = self.nodes_[name]
@@ -146,6 +162,9 @@ class ContribSim(Sim):
         return document
 
     def get(self, name, path):
+        if path == "/api/mesh/local":
+            # No gate reads it any more (integration 4).
+            self.local_reads.append(name)
         if path == "/api/mesh/local" and name in self.plane:
             if not self.up(name):
                 return None, None
@@ -222,7 +241,7 @@ class Base(unittest.TestCase):
         return {name: mesh_ops.status_of(self.sim.doc(name)) for name in names}
 
     def planes(self) -> dict:
-        return {name: cc.plane_counters(self.sim.get(name, "/api/mesh/local")[1])
+        return {name: cc.node_planes(mesh_ops.status_of(self.sim.doc(name)))
                 for name in FIRSTS}
 
     def lab(self) -> mesh_ops.Lab:
@@ -416,11 +435,12 @@ class GateTable(Base):
         self.sim.plane["lon-dist-a"]["duplicate_mismatch"] = 2
         self.assertEqual(self.check(previous=before)[1],
                          ["K3: duplicate_mismatch grew at lon-dist-a (0 to 2)"])
-        # A counter that is not served is not read as 0.
-        self.sim.patch["lon-dist-a"] = lambda doc: doc
-        with mock.patch.object(self.sim, "get", lambda name, path: (200, {})):
-            self.assertIn("K3: parity unknown: lon-dist-a's duplicate_mismatch",
-                          self.check(previous=before)[1])
+        # A counter that is not served (a build without /api/node
+        # relay_counters) is not read as 0, nor read from /api/mesh/local.
+        self.sim.unserved.add("lon-dist-a")
+        self.assertIn("K3: parity unknown: lon-dist-a's duplicate_mismatch",
+                      self.check(previous=before)[1])
+        self.sim.unserved.clear()
         self.sim.plane["lon-dist-a"]["duplicate_mismatch"] = 0
         # Equal fingerprints: windows with equal present must have equal xor.
         self.sim.xor["contrib-lon-b"] = "00000000deadbeef"
@@ -583,6 +603,9 @@ class Kill(Base):
         ready = json.loads(sorted(self.sim.evidence_dir.glob("return-*.json"))[-1].read_text())
         self.assertTrue(ready["ready"]["ok"])
         self.assertIsNotNone(ready["contributor_ready"]["last"]["windows"]["3001"])
+        # Integration 4: the counters came from /api/node relay_counters;
+        # no gate asked for /api/mesh/local.
+        self.assertEqual(self.sim.local_reads, [])
 
     def test_a_returned_contributor_with_other_bytes_is_not_ready(self):
         self.assertEqual(self.change("kill", "--node", "contrib-lon-b"), 0)

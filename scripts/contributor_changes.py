@@ -32,14 +32,12 @@ source), `identity` (fingerprint and the digests `numbering`, `envelope`,
 lanes that do not carry). What a first forwarder serves: av-mesh's
 `/api/node` `parents[]` (C's ParentFeeds: per sending address and stream,
 `source_age_ms`, a row of audio by its `class`, its `track` being the
-object key's, "opaque-audio"; per address `audio_age_ms`) and
-`/api/mesh/local`
-`relay_session.fast_plane.parent_lanes[].duplicate_mismatch`,
-`relay_session.fast_plane.not_admitted`,
-`relay_session.fast_plane.media_clock.stale_media`,
-`relay_session.canonical_conflicts`, `relay_session.wide_hole_releases` and
-`canonical_gap_skip.skipped_parts`. A figure that is missing fails a check
-("parity unknown"); it is never read as 0.
+object key's, "opaque-audio"; per address `audio_age_ms`) and the same
+document's `relay_counters` {duplicate_mismatch (summed over the parent
+lanes), not_admitted, stale_media, canonical_conflicts, wide_hole_releases,
+skipped_parts} (av-mesh integration 4; the gates no longer read
+/api/mesh/local). A figure that is missing fails a check ("parity
+unknown"); it is never read as 0.
 
 Exit status of the commands (C's): 0 done; 2 refused before anything was
 changed; 3 stopped: the change was made and its end was not seen, or the
@@ -316,13 +314,13 @@ def _statuses(ops, names) -> dict:
     return {name: mesh_ops.status_of(document) for name, document in ops.statuses(names).items()}
 
 
-#: The counters of `plane_counters` as av-mesh is asked to serve them on
-#: `GET /api/node` (F3 of local proof 2): {duplicate_mismatch (the sum over
-#: the parent lanes), not_admitted, stale_media, canonical_conflicts,
-#: wide_hole_releases, skipped_parts}, the same counters as
-#: /api/mesh/local's. Read there when a node serves it; until then the
-#: tools read /api/mesh/local (about 53 kB and a replica plan on the node)
-#: on the polls that need the counters, and nowhere else.
+#: The counters of `plane_counters` as av-mesh serves them on `GET
+#: /api/node` (asked for after F3 of local proof 2, served from av-mesh
+#: integration 4): {duplicate_mismatch (the sum over the parent lanes),
+#: not_admitted, stale_media, canonical_conflicts, wide_hole_releases,
+#: skipped_parts}, the same counters as /api/mesh/local's. The gates read
+#: them there and nowhere else: a node that does not serve them has its
+#: counters unknown (a gate refuses), never read from /api/mesh/local.
 NODE_COUNTERS = "relay_counters"
 PLANE_KEYS = ("duplicate_mismatch", "not_admitted", "stale_media", "canonical_conflicts",
               "wide_hole_releases", "skipped_parts")
@@ -338,31 +336,20 @@ def node_planes(status: mesh_ops.Status | None) -> dict | None:
 
 
 def _read(ops, names, firsts, want_planes: bool, carries: dict) -> tuple[dict, dict]:
-    """One poll, one request a node: /api/node of `names`; and with
-    `want_planes` the first forwarders' counters, from their /api/node when
-    it carries them (`carries`, learnt on the way), else from their
-    /api/mesh/local in place of their /api/node (its `status` is the node's
-    /api/node; a node of before without it is asked both). (statuses,
+    """One poll, one request a node: /api/node of `names` and of `firsts`;
+    with `want_planes` the first forwarders' counters from their /api/node
+    `relay_counters` (integration 4: never /api/mesh/local). (statuses,
     planes): planes {} when not wanted; a forwarder whose counters could not
-    be read maps to None."""
-    names = [name for name in dict.fromkeys(names) if name]
-    local = [name for name in firsts if want_planes and not carries.get(name)]
-    statuses = _statuses(ops, [name for name in names if name not in local])
+    be read (no answer, or a build that does not serve them) maps to None.
+    `carries` records, per forwarder, whether its /api/node served them."""
+    names = [name for name in dict.fromkeys([*names, *firsts]) if name]
+    statuses = _statuses(ops, names)
     planes: dict = {}
-    for name in local:
-        code, document = ops.get(name, "/api/mesh/local")
-        planes[name] = plane_counters(document) if code == 200 else None
-        inner = document.get("status") if code == 200 and isinstance(document, dict) else None
-        status = mesh_ops.status_of(inner) if isinstance(inner, dict) else None
-        if status is None and name in names:
-            status = mesh_ops.status_of(ops.status(name))
-        statuses[name] = status
-        if status is not None:
-            carries[name] = node_planes(status) is not None
     if want_planes:
         for name in firsts:
-            if name not in local:
-                planes[name] = node_planes(statuses.get(name))
+            planes[name] = node_planes(statuses.get(name))
+            if statuses.get(name) is not None:
+                carries[name] = planes[name] is not None
     return statuses, planes
 
 

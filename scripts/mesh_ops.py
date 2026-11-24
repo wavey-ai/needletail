@@ -394,7 +394,10 @@ NODE_READS = (
     "parents[]/streams[]/multi_symbol_10s", "parents[]/streams[]/slack_mean_us_10s",
     "parents[]/streams[]/slack_min_us_10s",
     "streams[]/stream_id", "streams[]/class", "streams[]/head_part", "streams[]/first_part",
-    "streams[]/window_parts",
+    "streams[]/window_parts", "streams[]/missed_10s", "streams[]/skipped_by_every_parent_10s",
+    "relay_counters/duplicate_mismatch", "relay_counters/not_admitted",
+    "relay_counters/stale_media", "relay_counters/canonical_conflicts",
+    "relay_counters/wide_hole_releases", "relay_counters/skipped_parts",
     "children/compiled[]/target",
     "children/lease/children", "children/lease/pairs",
     "children/lease/pairs_list[]/child", "children/lease/pairs_list[]/stream_id",
@@ -413,7 +416,10 @@ NODE_READS_NOT_IN_CONTRACT = tuple(path for path in NODE_READS if path not in (
     "state", "not_ready", "drain_reasons", "build/git", "build/built_unix", "process/boot_id",
     "process/args_sha256", "fast_plane/threads", "fast_plane/threads_expected",
     "ingest/audio_deadline_drops", "client_udp/subscribers", "client_udp/single_legs",
-    "client_udp/legs_by_other", "client_udp/rebalance_moves", "client_udp/load_permille"))
+    "client_udp/legs_by_other", "client_udp/rebalance_moves", "client_udp/load_permille",
+    "relay_counters/duplicate_mismatch", "relay_counters/not_admitted",
+    "relay_counters/stale_media", "relay_counters/canonical_conflicts",
+    "relay_counters/wide_hole_releases", "relay_counters/skipped_parts"))
 
 def _num(item, path: str):
     value = item
@@ -1063,14 +1069,13 @@ LEAVING_FIELDS = ("objects_1s", "objects_10s", "skipped_10s", "slack_mean_us_10s
 # (local proof 2, skips.ndjson). At most max(2, 0.1 % of the objects).
 SKIP_FLOOR = 2
 SKIP_FRACTION = 0.001
-# P2 (b): what av-mesh would have to serve for the rule to be read exactly,
-# not through a proxy (named in the gate's notes).
-WANTED_MISSED = ("streams[].missed_10s: parts of the stream that this node did not commit "
-                 "(released past as a gap, or still missing at the hole distance's second "
-                 "look), counted over the last 10 s")
-WANTED_BOTH = ("streams[].skipped_by_every_parent_10s: objects of the stream in the last 10 s "
-               "that every parent delivering it skipped (no parent's lane carried a datagram "
-               "of the object before moving past it)")
+# P2 (b) and (c) as av-mesh serves them on the child's /api/node (integration
+# 4): `streams[].missed_10s`, the parts of the stream the child's watermark
+# passed without them in the last 10 s; `streams[].skipped_by_every_parent_10s`,
+# the objects every parent delivering it skipped in the last 10 s (null:
+# unknown, a lane skipped more than av-mesh's record keeps).
+MISSED_FIELD = "missed_10s"
+BOTH_FIELD = "skipped_by_every_parent_10s"
 
 
 def skip_allowance(objects: int | float) -> int:
@@ -1079,12 +1084,11 @@ def skip_allowance(objects: int | float) -> int:
 
 
 def window_gaps(status: Status | None, stream_id: int) -> tuple[int | None, int | None]:
-    """P2 (b) as av-mesh serves it today: the parts of `stream_id` missing
-    from the node's retained window (`streams[]`: head_part - first_part + 1
-    - window_parts; the window is the stream's, about 12 s of 1 ms parts),
-    and the parts it spans. (None, None) when a figure is missing. A part
-    that arrives late or is being repaired counts while it is missing, so a
-    gate reads it on two polls."""
+    """The parts of `stream_id` missing from the node's retained window
+    (`streams[]`: head_part - first_part + 1 - window_parts; about 12 s of
+    1 ms parts), and the parts it spans. (None, None) when a figure is
+    missing. P2 (b) was read from it before av-mesh served `missed_10s`;
+    kept for the evidence."""
     row = ((status.streams if status else None) or {}).get(stream_id)
     if row is None:
         return None, None
@@ -1094,6 +1098,13 @@ def window_gaps(status: Status | None, stream_id: int) -> tuple[int | None, int 
         return None, None
     span = int(head) - int(first) + 1
     return max(0, span - int(held)), span
+
+
+def stream_figure(status: Status | None, stream_id: int, field: str):
+    """A number of the node's `streams[]` row of `stream_id`; None when the
+    row or the figure is missing (or null)."""
+    row = ((status.streams if status else None) or {}).get(stream_id)
+    return None if row is None else _num(row, field)
 
 
 def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_ms: float = 1.0,
@@ -1108,12 +1119,11 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
     without something it gets today, not for a lane's ordinary repaired
     loss (lead's decision of 24 Nov): it passes when, over the last 10 s,
     (a) the other parent skipped at most `skip_allowance` objects, (b) the
-    child itself missed nothing of the stream (its own retained window,
-    `window_gaps`), and (c) no object was skipped by both parents. av-mesh
-    does not say which objects were skipped, so (c) is proved only when
-    one of the two skipped none; otherwise it is noted in `notes` (with
-    the field av-mesh would need, WANTED_BOTH) and the rule refuses on (a)
-    and (b) alone. A missing figure still fails."""
+    child itself missed nothing of the stream (its `streams[].missed_10s`
+    is 0), and (c) no object was skipped by both parents: proved when one
+    of the two skipped none, else read from the child's
+    `streams[].skipped_by_every_parent_10s` (0 passes; null is unknown and
+    fails). A missing figure fails ("parity unknown")."""
     if child is None:
         return ["parity unknown: the child does not answer"]
     x = parent_row(child, set(leaving), stream_id)
@@ -1126,9 +1136,13 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
     missing += [f"leaving.{name}" for name in LEAVING_FIELDS if _num(x, name) is None]
     if repair_lane and _num(x, "multi_symbol_10s") is None:
         missing.append("leaving.multi_symbol_10s")
-    gaps, span = window_gaps(child, stream_id)
-    if gaps is None:
-        missing.append("the child's streams[].head_part, first_part, window_parts")
+    missed = stream_figure(child, stream_id, MISSED_FIELD)
+    if missed is None:
+        missing.append(f"the child's streams[].{MISSED_FIELD}")
+    both_skipped = bool(_num(p, "skipped_10s")) and bool(_num(x, "skipped_10s"))
+    both = stream_figure(child, stream_id, BOTH_FIELD)
+    if both_skipped and both is None:
+        missing.append(f"the child's streams[].{BOTH_FIELD} (both parents skipped)")
     if missing:
         return [f"parity unknown: {', '.join(missing)} (stream {stream_id})"]
     problems = []
@@ -1142,17 +1156,16 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
         problems.append(f"P2 complete: the other parent skipped {p['skipped_10s']} objects in "
                         f"10 s, more than the {allowed} of ordinary loss (max({SKIP_FLOOR}, "
                         f"{SKIP_FRACTION:.1%} of {objects}))")
-    if gaps:
-        problems.append(f"P2 complete: the child misses {gaps} of the last {span} parts of "
-                        f"stream {stream_id}")
-    if p["skipped_10s"] and x["skipped_10s"] and notes is not None:
-        notes.append(f"P2 (c) not proved for stream {stream_id}: the other parent skipped "
-                     f"{p['skipped_10s']} and the leaving one {x['skipped_10s']} objects in 10 s, "
-                     "and av-mesh does not say whether one was skipped by both; refused on (a) "
-                     f"and (b) only (av-mesh would need {WANTED_BOTH})")
-    if p["skipped_10s"] and notes is not None:
-        notes.append(f"P2 (b) for stream {stream_id} read from the child's retained window "
-                     f"({span} parts), not a 10 s figure (av-mesh would need {WANTED_MISSED})")
+    if missed:
+        problems.append(f"P2 complete: the child missed {int(missed)} parts of stream "
+                        f"{stream_id} in the last 10 s")
+    if both_skipped and both:
+        problems.append(f"P2 complete: {int(both)} objects of stream {stream_id} were skipped "
+                        "by both parents in the last 10 s")
+    if both_skipped and notes is not None:
+        notes.append(f"P2 (c) for stream {stream_id}: the other parent skipped "
+                     f"{p['skipped_10s']} and the leaving one {x['skipped_10s']} objects in 10 s; "
+                     f"{int(both)} skipped by every parent (the child's {BOTH_FIELD})")
     if p["resets_10s"] != 0:
         problems.append(f"P2 complete: the other parent's feed reset {p['resets_10s']} times")
     behind = x["objects_10s"] - x["objects_1s"] / 10
