@@ -112,6 +112,41 @@ logged; see the workspace's AGENTS.md). The tools read it from `LINODE_TOKEN`,
 | `NEEDLETAIL_LINODE_LEDGER` | `needletail-linode-ledger.jsonl` beside the token file | what each finished lab cost |
 | `NEEDLETAIL_LINODE_SSH_KEY` | `~/.ssh/id_ed25519` | the key the lab's hosts take |
 
+### The warm pass at boot (every host of a measurement)
+
+Fresh Linode guests are not run for up to seconds while the host backs their
+memory on first touch (hunt11241537, `.resilient/reports/hunt-lab.md` (c)).
+Every host of a measured window must have written its free memory once
+before the window starts.
+
+- **Hosts the deploy tool manages** (`linode-small-mesh-deploy.py push`,
+  setting `node_warm`, on by default): edges, forwarders and distributors
+  and the contributor through `needletail-node-check.service` before their
+  service starts (av-mesh is not ready until the record is complete; the
+  contributor's service starts after it); standby edges are warmed at push
+  while held out; load hosts (the source `lon-src`, the `*-view` hosts, the
+  `*-load-N` listener hosts) and self-hosted LiveKit hosts (`*-lk`,
+  `lk-redis`: the deploy bootstraps them, the referee installs their SFU)
+  get the same unit, warm only, enabled at every boot and run once by push.
+  The record is `/run/needletail/node-warm.json` on each host;
+  `linode-small-mesh-deploy.py status` shows it per host (`[warm ok 88.2s
+  worst 41ms]`, `warm missing`, `SLOW HOST ...`), `deployed["warm"]` in the
+  lab state keeps each host's duration and worst page write, and `collect`
+  archives the file. `--set node_warm=false` turns it off everywhere. The
+  local labs (`edge_lab.py`, `local-region-lab.py`) run none: their nodes
+  share the dev box's one kernel and memory.
+- **Hosts the deploy does not manage** (bootstrapped by the referee's
+  tools, or any other guest that sits in a measurement): one command, as
+  root, before the window. With av-mesh's binary on the host:
+  `needletail-nodecheck warm --leave-mb 300` (one JSON line with
+  `slow_host`). Without it: `scripts/warm-host.sh [--leave-mb 300]` from
+  this repository (POSIX sh, awk and GNU dd only: one read of `/dev/zero`
+  into a dd buffer of MemAvailable minus 300 MB, anonymous memory that is
+  gone when dd exits; safe to kill, holds nothing, quick on a warm guest;
+  no per-page timing). The referee has its own
+  (`needletail-compare scripts/compare/compare_lab.py warm`, warm-guest.py)
+  for the hosts it owns.
+
 ## Runners and campaigns
 
 | Variable | Default | What |

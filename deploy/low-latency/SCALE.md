@@ -389,6 +389,27 @@ else) for the ramps.
 
 ## Cost and duration
 
+**The warm pass at boot** (the deploy's `node_warm`, on by default since
+the stall lab of 24 Nov, `.resilient/reports/hunt-lab.md`): on a fresh
+instance `push` waits for each host to write its free memory once before
+its service starts, the hosts of a role in parallel. The pass is bounded at
+300 s for every 4 GB of the plan (`node_warm_max_seconds_per_4gb`; 300 s on
+a g6-dedicated-2, 600 s on a -4, 1,200 s on a -8); measured 83 to 95 s on 4
+GB nodes, one Tokyo edge over 240 s (24 Nov). push takes the roles one
+after another (forwarders, edges, the contributor, the load hosts, the
+LiveKit hosts), each role's hosts in parallel, so the first `push` of a lab
+takes the sum of each role's largest pass: at about 90 s for every 4 GB,
+90 + 90 + 180 (g6-dedicated-4) + 360 (the listener hosts' g6-dedicated-8)
++ 90 s, about 13.5 minutes more, and at most the bounds, 300 + 300 + 600 +
+1,200 + 300 s (45 minutes). `push --nodes` of a created slot, `replace` (its
+push) and the autoscaler's join of a new instance take one host's pass more. A
+roll or a restart does not repeat it (once a boot). A host whose pass says
+`slow_host` (longer than 180 s for every 4 GB, or one page write of a
+second) is replaced once by push when it is an edge, and only reported
+otherwise. Every measured window starts only once every host of the lab
+reports warm (`linode-small-mesh-deploy.py status`: `warm pass: complete on
+all N host(s)`).
+
 Each step takes its ramp (listeners join over 10 to 60 s), a hold that is
 measured (60 s, or 140 s when the step runs the joins phase), and about 75
 s to start, drain, fetch and settle: about 2.4 minutes, 3.8 with the
@@ -985,6 +1006,17 @@ more) and must run twice the change's length and more after it for the
 referee's no-change windows. A roll of every node and its probes is about an
 hour.
 
+**Warm before every window.** Every host of the proving lab (mesh nodes,
+the contributors, the view and listener hosts, the source) writes its free
+memory once at boot before it serves (the deploy's `node_warm`): a measured
+window of any group starts only after every host in it reports warm
+(`linode-small-mesh-deploy.py status`: `warm pass: complete on all N
+host(s)`, no `warm missing`); RP1's and RP2's replaced instances and A1p's
+created edge warm again before they serve, and that time is the change's,
+not a window's. Hosts the deploy does not push are warmed by the referee's
+`compare_lab.py warm`, or by `needletail-nodecheck warm` or
+`scripts/warm-host.sh` (docs/lab-environment.md).
+
 **The lab and its cost.** `up` creates 40 nodes at $3.186 an hour (three
 serving edges and one standby a region); with its eight slots 48 nodes at
 $3.618, so the ceilings are `NEEDLETAIL_LINODE_MAX_NODES=48` and
@@ -1339,7 +1371,11 @@ crash, stop and start act on a node of any role through its role's unit
   down when the load with one edge fewer stays at or under 450 for 300 s; one region at a time per 60 s, never an add and a
   remove within 5 min; at most 2 nodes an action; joining nodes counted;
   standby edges first, then drained slots inside their paid hour (the warm
-  pool), then a create; a warm slot is deleted 5 min before its next billed
+  pool), then a create (a created slot's time from trigger to serving,
+  `trigger_to_fresh_s`, grows by its warm pass at boot: up to 300 s more on a
+  g6-dedicated-2, about 90 s measured; a standby edge or a warm-pool slot,
+  warmed at its own boot, joins as fast as before; a new slot edge whose
+  pass says `slow_host` is deleted and created once more); a warm slot is deleted 5 min before its next billed
   hour; every intent written to its state before it acts, so a restart
   picks up where it stopped. A forwarder slot counts as drained only when
   its lease children and cache-mesh children read 0 as well (AM item 12;
