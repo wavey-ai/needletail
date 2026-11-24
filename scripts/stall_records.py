@@ -440,14 +440,18 @@ RECLAIM_KEYS = ("allocstall_dma", "allocstall_dma32", "allocstall_normal", "allo
 CLASSES = ("not run", "blocked in our code", "waited for input", "undetermined", "no sampler")
 
 
-def run_delay_ms(rows: list, min_ms: float) -> float:
+def run_delay_ms(rows: list, min_ms: float,
+                 spans: list[tuple[int, int]] | None = None) -> float:
     """The milliseconds a class thread waited runnable, counted from the
     sampler's seconds in which its run delay grew by `min_ms` or more.
     `rows`: [t_us, pid, tid, run delay ns] (the same thread from one row to
-    the next only)."""
+    the next only). With `spans` [(from_us, to_us)], only the seconds that
+    end inside one of them."""
     total = 0.0
     for before, after in zip(rows, rows[1:]):
         if before[1:3] != after[1:3] or before[3] is None or after[3] is None:
+            continue
+        if spans is not None and not any(start <= int(after[0]) <= end for start, end in spans):
             continue
         grown = (int(after[3]) - int(before[3])) / 1e6
         if grown >= min_ms:

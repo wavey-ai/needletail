@@ -189,7 +189,8 @@ class DryRun(unittest.TestCase):
     def test_a_dry_run_prints_every_command(self):
         up = self.commands("linode-small-mesh-lab.py up ")
         self.assertEqual(len(up), 1)
-        for flag in ("--watchdog-hours 1.9", "--optional-sites sydney", "--budget-usd 300",
+        for flag in ("--watchdog-hours 1.9", "--collect-timeout-s 240",
+                     "--optional-sites sydney", "--budget-usd 300",
                      "--run-id hunttest", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50",
                      "NEEDLETAIL_LINODE_MAX_NODES=24"):
             self.assertIn(flag, up[0])
@@ -278,6 +279,11 @@ class DryRun(unittest.TestCase):
         self.assertEqual(len(crowds), 2)
         self.assertIn("<public:lon-edge-1>:19446,<public:lon-edge-2>:19446,"
                       "<public:lon-edge-3>:19446,<public:lon-edge-4>:19446", crowds[0])
+        # No entry point for the crowd: listener i starts at edge i mod n,
+        # so that every edge gets UDP clients (an assignment would put them
+        # on the edges that hold the playlist already).
+        for crowd in crowds:
+            self.assertNotIn("--entry", crowd)
         churn = text[text.index("# minute 28: S3"):text.index("# minute 35")]
         for index in (1, 2, 3):
             self.assertIn(f"r{index}-uc-1", churn)
@@ -306,6 +312,28 @@ class Preflight(unittest.TestCase):
         text = "\n".join(problems)
         self.assertIn("--watchdog-hours", text)
         self.assertIn("--budget-usd", text)
+
+    def test_a_real_run_refuses_a_watchdog_that_does_not_collect(self):
+        """The lab tool's `up` must bound the watchdog's collect, and the
+        deploy tool must have the `collect --run-id` it runs."""
+        topology = hunt_tool.load_topology()
+
+        def helps(up: str, collect: str):
+            def text(command):
+                return up if "up" in command else collect if "collect" in command else ""
+            return text
+
+        without = "up --watchdog-hours --budget-usd --optional-sites --run-id"
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(hunt_tool, "STATE", pathlib.Path(directory) / "hunt-lab.json"):
+            with mock.patch.object(hunt_tool, "help_text", helps(without, "usage: deploy")):
+                refused = hunt_tool.preflight(topology)
+            with mock.patch.object(hunt_tool, "help_text",
+                                   helps(without + " --collect-timeout-s", "collect --run-id")):
+                passed = hunt_tool.preflight(topology)
+        self.assertTrue(any("no --collect-timeout-s" in line for line in refused), refused)
+        self.assertTrue(any("no `collect --run-id`" in line for line in refused), refused)
+        self.assertFalse([line for line in passed if "collect" in line], passed)
 
     def help_of(self, directory: str, text: str) -> list[str]:
         binary = pathlib.Path(directory)
@@ -357,19 +385,31 @@ def sampler_rows(delays_ms: list[float]) -> str:
     return "\n".join(rows)
 
 
+def watch_text(stops_ms: list[float], at_us: int = 2_000_000) -> str:
+    """A watch file of a 2-CPU node with stopped ticks of CPU 0 at `at_us`."""
+    lines = [{"kind": "sec", "cpu": cpu, "t_us": 1_000_000, "span_us": 1_000_000}
+             for cpu in (0, 1)]
+    lines += [{"kind": "tick", "thread": "tick-0", "cpu": 0, "t_us": at_us + i,
+               "dur_us": int(ms * 1000), "span_us": int(ms * 1000), "n": 1,
+               "run_delay_us": 10} for i, ms in enumerate(stops_ms)]
+    return "\n".join(json.dumps(line) for line in lines)
+
+
 class Replacement(unittest.TestCase):
-    def test_the_edge_not_run_most_is_chosen(self):
+    def hunt(self):
         topology = hunt_tool.load_topology()
         hunt = hunt_tool.Hunt(hunt_tool.Runner(False, pathlib.Path(tempfile.mkdtemp())),
                               topology, TOPOLOGY, "hunttest")
+        # The sessions so far: the first 10 s of the test's clock; the
+        # touched arm's touch long before them.
+        hunt.record["periods"] = [
+            {"name": "touch", "kind": "touch", "from_unix": -100.0, "to_unix": -90.0},
+            {"name": "S1", "kind": "session", "from_unix": 0.0, "to_unix": 10.0}]
+        return hunt
 
-        def watch(stops_ms: list[float]) -> str:
-            lines = [{"kind": "sec", "cpu": cpu, "t_us": 1_000_000, "span_us": 1_000_000}
-                     for cpu in (0, 1)]
-            lines += [{"kind": "tick", "thread": "tick-0", "cpu": 0, "t_us": 2_000_000 + i,
-                       "dur_us": int(ms * 1000), "span_us": int(ms * 1000), "n": 1,
-                       "run_delay_us": 10} for i, ms in enumerate(stops_ms)]
-            return "\n".join(json.dumps(line) for line in lines)
+    def test_the_edge_not_run_most_is_chosen(self):
+        hunt = self.hunt()
+        watch = watch_text
 
         records = {name: (watch([]), sampler_rows([1.0] * 5)) for name in hunt.nodes}
         records["lon-edge-1"] = (watch([60.0]), sampler_rows([1.0] * 5))
@@ -391,6 +431,24 @@ class Replacement(unittest.TestCase):
                                lambda name, command, **_k: quiet[name][0]
                                if "watch.ndjson" in command else quiet[name][1]):
             self.assertIsNone(hunt.worst()[0])
+
+    def test_a_stop_outside_the_sessions_does_not_choose_the_edge(self):
+        """A touched edge stopped 400 ms during its touch (minutes before
+        the first session) and not in the sessions is not chosen over an
+        edge that waited runnable 250 ms in a session."""
+        hunt = self.hunt()
+        records = {name: (watch_text([]), sampler_rows([1.0] * 5)) for name in hunt.nodes}
+        records["lon-edge-3"] = (watch_text([400.0, 400.0], at_us=-95_000_000),
+                                 sampler_rows([1.0] * 5))
+        records["lon-edge-2"] = (watch_text([]), sampler_rows([1.0, 250.0, 1.0]))
+
+        def ssh(name, command, **_kwargs):
+            return records[name][0] if "watch.ndjson" in command else records[name][1]
+
+        with mock.patch.object(hunt.runner, "ssh", ssh):
+            worst, figures = hunt.worst()
+        self.assertEqual(worst, "lon-edge-2")
+        self.assertEqual(figures["lon-edge-3"], 0.0)
 
 
 # A stand-in for needletail-nodecheck touch: it writes its arguments, when
@@ -419,9 +477,11 @@ line("end")
 
 class TouchedArm(unittest.TestCase):
     def test_the_guest_s_free_memory_is_held_until_it_is_given_back(self):
-        """The touch takes MemAvailable less the reserve and holds it; the
-        release ends it and marks that it had finished. Run under sh with a
-        fake nodecheck, in a directory of its own."""
+        """The touch takes MemFree (not MemAvailable, which counts the page
+        cache) less a margin of at least the reserve and above the zones'
+        watermarks, and holds it; the release ends it and marks that it had
+        finished. Run under sh with a fake nodecheck, in a directory of its
+        own."""
         with tempfile.TemporaryDirectory() as directory:
             folder = pathlib.Path(directory)
             fake = folder / "nodecheck"
@@ -432,9 +492,12 @@ class TouchedArm(unittest.TestCase):
                 return command.replace(hunt_tool.REMOTE, str(folder)).replace(
                     hunt_tool.NODECHECK, str(fake))
 
-            available = int(next(line.split()[1] for line in
-                                 pathlib.Path("/proc/meminfo").read_text().splitlines()
-                                 if line.startswith("MemAvailable:"))) // 1024
+            free = int(next(line.split()[1] for line in
+                            pathlib.Path("/proc/meminfo").read_text().splitlines()
+                            if line.startswith("MemFree:"))) // 1024
+            high_pages = sum(int(line.split()[1]) for line in
+                             pathlib.Path("/proc/zoneinfo").read_text().splitlines()
+                             if line.split()[:1] == ["high"])
             subprocess.run(["sh", "-c", local(hunt_tool.touch_command())], check=True, timeout=30)
             for _ in range(100):
                 if (folder / "touch-guest.ndjson").is_file():
@@ -450,12 +513,16 @@ class TouchedArm(unittest.TestCase):
         self.assertEqual(len(lives), 2)
         args = lives[0].split()[2:]
         megabytes = int(args[args.index("--mb") + 1])
-        self.assertLessEqual(abs(megabytes - (available - hunt_tool.TOUCH_LEAVE_MB)), 64)
+        _word, _unix, marked, free_then, leave = marks[0].split()
+        self.assertEqual(int(marked), megabytes)
+        self.assertEqual(megabytes, int(free_then) - int(leave))
+        self.assertEqual(int(leave), max(hunt_tool.TOUCH_LEAVE_MB, int(2 * high_pages * 4 / 1024)))
+        # MemFree as the command read it (this machine's moves while it runs).
+        self.assertLessEqual(abs(int(free_then) - free), 1024)
         self.assertIn("--hold", args)
         self.assertEqual(args[args.index("--rate-mb-s") + 1], str(hunt_tool.TOUCH_RATE_MB_S))
         self.assertTrue(lives[1].startswith("end "))
         self.assertTrue(marks[0].startswith("touch "))
-        self.assertEqual(marks[0].split()[2], str(megabytes))
         released = marks[1].split()
         self.assertEqual((released[0], released[2]), ("released", "finished"))
         self.assertLessEqual(float(lives[1].split()[1]), float(released[1]))
@@ -502,8 +569,8 @@ class Sampler(unittest.TestCase):
         this machine (its own /proc) and a fake service: a line a second
         with the thread's schedstat, switches and CPU, vmstat, MemFree,
         every thread, the counters cut from /api/mesh/local by name; the
-        stall journal read every tenth second from the last event + 1; the
-        slow path's lines."""
+        stall journal read every tenth second from the last event + 1, and
+        once more at the end; the slow path's lines."""
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeService)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         sleeper = subprocess.Popen(["sleep", "60"])
@@ -529,7 +596,7 @@ class Sampler(unittest.TestCase):
         self.assertEqual(len(lines), 11)
         first = lines[0]
         self.assertEqual((first["pid"], first["tid"], first["tid_by"]),
-                         (sleeper.pid, sleeper.pid, "first"))
+                         (sleeper.pid, sleeper.pid, "lowest"))
         self.assertEqual(len(first["schedstat"]), 3)
         self.assertEqual(len(first["csw"]), 2)
         self.assertIsInstance(first["cpu"], int)
@@ -546,11 +613,67 @@ class Sampler(unittest.TestCase):
             "stall.stopped_ms": 0})
         gaps = [(b["t_us"] - a["t_us"]) / 1e6 for a, b in zip(lines, lines[1:])]
         self.assertTrue(all(0.8 < gap < 1.6 for gap in gaps), gaps)
-        # At seconds 0 and 10: everything, then from the last event + 1.
-        self.assertEqual(FakeService.asked, ["since_us=0", "since_us=201"])
+        # At seconds 0 and 10: everything, then from the last event + 1;
+        # and the last pull at the end.
+        self.assertEqual(FakeService.asked, ["since_us=0", "since_us=201", "since_us=201"])
         self.assertEqual([event["t_us"] for event in stalls], [100, 200])
-        self.assertEqual(len(pacing), 2)
+        self.assertEqual(len(pacing), 3)
         self.assertEqual(pacing[0]["body"], {"rx_to_publish_p50_us": 120})
+
+    def test_the_sampler_follows_the_first_of_two_threads_of_one_name(self):
+        """Two threads whose names /proc cuts to the same 15 characters
+        (needletail-fast-audio and -video), neither real-time (the local
+        lab): the one started first, the lower tid, is the audio class
+        thread. A SIGTERM ends the sampler with one more pull of the stall
+        journal (the last seconds are not lost)."""
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeService)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        program = (
+            "import os, threading, time\n"
+            "tids = []\n"
+            "def run():\n"
+            "    tid = threading.get_native_id()\n"
+            "    with open(f'/proc/self/task/{tid}/comm', 'w') as handle:\n"
+            "        handle.write('needletail-fast-class')\n"
+            "    tids.append(tid)\n"
+            "    time.sleep(60)\n"
+            "for _ in range(2):\n"
+            "    threading.Thread(target=run, daemon=True).start()\n"
+            "    while len(tids) < 1 + _:\n"
+            "        time.sleep(0.01)\n"
+            "print(' '.join(map(str, tids)), flush=True)\n"
+            "time.sleep(60)\n")
+        named = subprocess.Popen([sys.executable, "-c", program], stdout=subprocess.PIPE, text=True)
+        FakeService.asked = []
+        try:
+            first, second = (int(tid) for tid in named.stdout.readline().split())
+            with tempfile.TemporaryDirectory() as directory:
+                sampler = subprocess.Popen(
+                    ["nice", "-n", "19", "sh", str(hunt_tool.SAMPLER), directory, str(named.pid),
+                     "needletail-fast", f"http://127.0.0.1:{server.server_address[1]}"])
+                folder = pathlib.Path(directory)
+                for _ in range(100):
+                    if (folder / "stalls.ndjson").is_file():
+                        break
+                    time.sleep(0.05)
+                time.sleep(1.5)
+                os.kill(sampler.pid, 15)
+                sampler.wait(timeout=30)
+                lines = [json.loads(line) for line in
+                         (folder / "sampler.ndjson").read_text().splitlines()]
+        finally:
+            named.kill()
+            named.wait()
+            named.stdout.close()
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(sampler.returncode, 0)
+        self.assertLess(first, second)
+        self.assertTrue(lines)
+        self.assertTrue(all((line["tid"], line["tid_by"]) == (first, "lowest") for line in lines))
+        self.assertEqual(sorted(line[0] for line in lines[0]["threads"]
+                                if line[4] == "needletail-fast"), [first, second])
+        self.assertEqual(FakeService.asked, ["since_us=0", "since_us=201"])
 
 
 def live_hunt(directory: str):

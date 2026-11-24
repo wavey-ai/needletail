@@ -23,9 +23,11 @@ before the run.
 
 This tool creates and deletes nothing by itself. Every instance is created
 and deleted by scripts/linode-small-mesh-lab.py, called by command line:
-`up` with a watchdog of WATCHDOG_HOURS and the budget given here (the lab
-tool refuses a plan that is not dedicated, tags every instance and arms the
-watchdog before the first create), `remove` and `grow` for the replacement,
+`up` with a watchdog of WATCHDOG_HOURS, its bounded collect
+(COLLECT_TIMEOUT_S: the deploy tool's `collect --run-id` before the
+watchdog deletes) and the budget given here (the lab tool refuses a plan
+that is not dedicated, tags every instance and arms the watchdog before the
+first create), `remove` and `grow` for the replacement,
 `down` at the end, whatever happened before. The lab has its own state file
 (target/linode-qualification/hunt-lab.json) and its own ceilings
 (NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50, NEEDLETAIL_LINODE_MAX_NODES=24), set
@@ -37,7 +39,8 @@ is scripts/linode-route-survey.py; both by command line too.
 `plan` prints the cost, the timeline and every command from the topology
 alone: no lab, no token, no request. `run --dry` prints the same commands
 through the code of a real run. A real `run` first checks, without a
-request, that the lab tool has the watchdog and the budget on `up`, that
+request, that the lab tool has the watchdog, its collect bound and the
+budget on `up` and the deploy tool a `collect --run-id`, that
 the binaries carry what the hunt needs (the stall journal, the arena
 warm-up's switch, needletail-nodecheck touch --hold, the sender's lateness
 journal) and that no other lab's deploy settings are in this checkout; it
@@ -160,6 +163,9 @@ SESSIONS = (
 # joins at once, for a round, then leaves; the next round 12 s later.
 CHURN_ROUNDS = 3
 CHURN_GAP_S = 12
+# A round ends when its last probe has ended: ntcmp udp-ingest after the
+# UDP client, the crowd's drain. The sender is given this much more a round.
+ROUND_OVERHEAD_S = 15
 TOUCH_MINUTE = 15
 BURN_MINUTE = 18
 RELEASE_MINUTE = 19.5
@@ -170,7 +176,9 @@ DOWN_MINUTE = 88
 BURN_SECONDS = 20
 # Listeners start this long after the sender's START, as the referee's do.
 LISTEN_AFTER_START_S = 12
-# The touched edges touch MemAvailable less this, at this rate, and hold it.
+# The touched edges touch MemFree less a margin, at this rate, and hold it.
+# The margin is this, or twice the zones' high watermarks when that is
+# more, so that the kernel neither reclaims page cache nor swaps for it.
 TOUCH_LEAVE_MB = 384
 TOUCH_RATE_MB_S = 1024
 STALL_JOURNAL_CAPACITY = 65_536
@@ -187,8 +195,13 @@ SAMPLED = {"contributor": ("av-contrib", "audio-hot-0", 19443, "/api/pacing"),
 # av-mesh's switch of the audio class thread's arena warm-up (MB; 0: none):
 # the no_arena_warm arm runs without it.
 ARENA_FLAG = "--relay-class-arena-warm-mb"
+# The watchdog's bounded collect at its deadline (the lab tool's `up
+# --collect-timeout-s`, running the deploy tool's `collect --run-id`).
+COLLECT_TIMEOUT_S = 240
 # What a real run needs of the tools and binaries it calls (preflight).
-LAB_UP_FLAGS = ("--watchdog-hours", "--budget-usd", "--optional-sites", "--run-id")
+LAB_UP_FLAGS = ("--watchdog-hours", "--budget-usd", "--collect-timeout-s", "--optional-sites",
+                "--run-id")
+DEPLOY_COLLECT_FLAGS = ("--run-id",)
 DEPLOY_SETTINGS = ("node_overrides", "stall_journal_capacity", "mlock")
 MESH_FLAG_NEEDS = {
     "--stall-journal-capacity": "the build is without the stall instruments (D1)",
@@ -213,7 +226,9 @@ SYSTEM_FACTS = (
     "for f in /sys/bus/virtio/drivers/virtio_balloon/virtio*/features; do "
     "[ -f \"$f\" ] && echo balloon-features: $(cat \"$f\"); done; "
     "echo clocksource: $(cat /sys/devices/system/clocksource/clocksource0/current_clocksource); "
-    "echo meminfo: $(grep -E 'MemTotal|MemAvailable|AnonHugePages' /proc/meminfo | tr '\\n' ' '); "
+    "echo meminfo: $(grep -E 'MemTotal|MemAvailable|AnonHugePages|SwapTotal|SwapFree' "
+    "/proc/meminfo | tr '\\n' ' '); "
+    "echo swaps: $(tail -n +2 /proc/swaps | tr '\\n' ' '); "
     "chronyc tracking 2>/dev/null || timedatectl timesync-status 2>/dev/null; true")
 
 
@@ -251,19 +266,31 @@ def cost(topology: dict) -> dict:
             "watchdog_hours": WATCHDOG_HOURS}
 
 
+def rounds_of(session: dict) -> int:
+    return CHURN_ROUNDS if session["role"] == "churn" else 1
+
+
 def listening_seconds(session: dict) -> int:
     """How long a session's listeners run: one round, or the churn's
     rounds and the gaps between them."""
-    if session["role"] == "churn":
-        return CHURN_ROUNDS * session["seconds"] + (CHURN_ROUNDS - 1) * CHURN_GAP_S
-    return session["seconds"]
+    rounds = rounds_of(session)
+    return rounds * session["seconds"] + (rounds - 1) * CHURN_GAP_S
+
+
+def sender_seconds(session: dict) -> int:
+    """How long the sender runs: from its START, the 12 s before the
+    listeners, their rounds, each round's own end (its probes' processing,
+    the crowd's drain) and a margin; it is stopped when the probes are
+    done."""
+    return (LISTEN_AFTER_START_S + listening_seconds(session)
+            + rounds_of(session) * ROUND_OVERHEAD_S + 10)
 
 
 def session_seconds(session: dict) -> float:
     """The longest a session takes: the contributor's restart, the wait for
-    the 64 s boundary (8 to 72 s), the 12 s before the listeners, their
-    length, and the journal pull."""
-    return 5 + 72 + LISTEN_AFTER_START_S + listening_seconds(session) + 30
+    the 64 s boundary (8 to 72 s), the sender's run, and the journal
+    pull."""
+    return 5 + 72 + sender_seconds(session) + 30
 
 
 def sessions_end_minute() -> float:
@@ -363,14 +390,17 @@ def hls_probe_command(name: str, edge: str, config: str, seconds: int, tag: str)
             f"--count 1 --frames {name}.probe.csv >{name}.log 2>&1")
 
 
-def load_command(name: str, listeners: int, sample: int, entries: list[str], edges: list[str],
+def load_command(name: str, listeners: int, sample: int, edges: list[str],
                  config: str, seconds: int, tag: str) -> str:
-    """The crowd: needletail-load over every edge of the site, each
-    listener assigned as a client is, so that UDP clients arrive at each."""
+    """The crowd: needletail-load over every edge of the site with no entry
+    point, so that listener i starts at edge i mod n and UDP clients arrive
+    at every edge at once. Through an entry point each listener would go
+    where /api/assignment sends it, which puts new readers on the edges
+    that already hold the playlist (wave 9: every lon-view lane on
+    lon-edge-1). The report checks the arrival per edge (intervals.jsonl)."""
     return ("( ulimit -n 1048576; needletail-load "
             f"--edges {','.join(f'{edge}:{CLIENT_UDP_PORT}' for edge in edges)} "
-            f"--entry {','.join(f'https://{entry}:{HTTP_PORT}' for entry in entries)} "
-            f"--tls-ca {CA} --server-name {SERVER_NAME} --stream {CONFIGS[config]['stream']} "
+            f"--stream {CONFIGS[config]['stream']} "
             f"--listeners {listeners} --ramp {listeners}@0 --duration {seconds} "
             f"--sample {min(sample, listeners)} --out {name} --label {tag} --quiet "
             f">{name}.out 2>{name}.err )")
@@ -393,14 +423,22 @@ def listener_script(directory: str, rounds: list[list[str]], gap_s: int) -> str:
 
 
 def touch_command() -> str:
-    """The touched arm: MemAvailable less TOUCH_LEAVE_MB, touched page by
-    page by needletail-nodecheck touch and held (--hold) until
-    release_command, so that the guest's free memory has been written once
-    when the first session begins, and is not given back early. Its mark
-    and its pid are kept beside it."""
+    """The touched arm: the guest's free memory (MemFree, not MemAvailable:
+    that counts the page cache, which holds av-mesh's own text) less a
+    margin, touched page by page by needletail-nodecheck touch and held
+    (--hold) until release_command, so that it has been written once when
+    the first session begins, and is not given back early. The margin is
+    TOUCH_LEAVE_MB, or twice the zones' high watermarks when that is more:
+    the kernel then has no reason to reclaim or swap for the touch. The
+    mark (`touch <unix> <MB> <MemFree MB> <margin MB>`) and the pid are
+    kept beside it."""
     return (f"mkdir -p {REMOTE} && cd {REMOTE} && "
-            "MB=$(( $(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)"
-            f" - {TOUCH_LEAVE_MB} )) && echo \"touch $(date +%s.%N) $MB\" >>touch-marks.txt && "
+            "set -- $(awk -v least=" + str(TOUCH_LEAVE_MB) + " '"
+            "FNR == NR && /^MemFree:/ { free = int($2 / 1024) } "
+            "FNR != NR && $1 == \"high\" { high += $2 } "
+            "END { leave = int(2 * high * 4 / 1024); if (leave < least) leave = least; "
+            "print free - leave, free, leave }' /proc/meminfo /proc/zoneinfo) && MB=$1 && "
+            "echo \"touch $(date +%s.%N) $1 $2 $3\" >>touch-marks.txt && "
             f"(setsid nohup {NODECHECK} touch --mb $MB --rate-mb-s {TOUCH_RATE_MB_S} --hold "
             "--out touch-guest.ndjson >touch.log 2>&1 </dev/null & echo $! >touch.pid)")
 
@@ -737,7 +775,8 @@ class Hunt:
     def up(self) -> None:
         args = ["up", "--topology", relative(self.topology_path), "--run-id", self.run_id,
                 "--optional-sites", "sydney", "--watchdog-hours", f"{WATCHDOG_HOURS:g}",
-                "--budget-usd", f"{self.budget_usd:g}" if self.budget_usd is not None
+                "--collect-timeout-s", f"{COLLECT_TIMEOUT_S:g}",
+                "--budget-usd",f"{self.budget_usd:g}" if self.budget_usd is not None
                 else "<budget>"]
         if self.spent_before_usd is not None:
             args += ["--spent-before-usd", f"{self.spent_before_usd:g}"]
@@ -925,10 +964,9 @@ class Hunt:
                                                   self.nodes[edge]["public_ipv4"], config,
                                                   seconds, tag))
         if plan.get("load"):
-            entries = [found for found in (site_entry, self.entry(host, "b")) if found]
             commands.append(load_command(f"{prefix}load", plan["load"], plan.get("sample", 8),
-                                         entries, [self.nodes[edge]["public_ipv4"]
-                                                   for edge in edges], config, seconds, tag))
+                                         [self.nodes[edge]["public_ipv4"] for edge in edges],
+                                         config, seconds, tag))
         return commands
 
     def session(self, session: dict) -> None:
@@ -937,7 +975,7 @@ class Hunt:
         tag = f"hunt-{self.run_id}-{name}"
         contributor = self.names("contributor")[0]
         source = self.purpose("source")[0]
-        rounds = CHURN_ROUNDS if session["role"] == "churn" else 1
+        rounds = rounds_of(session)
         entry = {"name": name, "role": session["role"], "config": config,
                  "stream": CONFIGS[config]["stream"], "seconds": seconds, "rounds": rounds,
                  "hosts": {}}
@@ -946,8 +984,7 @@ class Hunt:
         self.runner.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
                                      "systemctl is-active needletail-contrib.service")
         printed = self.runner.ssh(source, sender_command(
-            config, self.nodes[contributor]["vlan_ipv4"],
-            listening_seconds(session) + LISTEN_AFTER_START_S + 10, directory))
+            config, self.nodes[contributor]["vlan_ipv4"], sender_seconds(session), directory))
         if not self.runner.dry:
             start = int(printed.split()[-1])
             wait = int(self.runner.ssh(source, f"echo $(( {start} - $(date +%s) ))") or 0)
@@ -1030,10 +1067,18 @@ class Hunt:
 
     # ---- the replacement and the restart
 
+    def session_spans(self) -> list[tuple[int, int]]:
+        """The sessions run so far, (from_us, to_us)."""
+        return [(int(item["from_unix"] * 1e6), int(item["to_unix"] * 1e6))
+                for item in self.record["periods"] if item.get("kind") == "session"]
+
     def not_run_so_far(self) -> dict[str, float]:
-        """Each edge's "not run" milliseconds so far: its watch's stopped
-        ticks, and the sampler's seconds in which the audio class thread
-        waited runnable NOT_RUN_SECOND_MS or more."""
+        """Each edge's "not run" milliseconds in the sessions so far (not in
+        the deploy, the burn or the touched arm's touch, which would choose
+        a touched edge for its arm): its watch's stopped ticks that ended
+        in a session, and the sampler's seconds in a session in which the
+        audio class thread waited runnable NOT_RUN_SECOND_MS or more."""
+        spans = self.session_spans()
         out = {}
         for name in self.names("edge"):
             try:
@@ -1045,8 +1090,10 @@ class Hunt:
                 continue
             events = stall_records.dedupe(stall_records.parse_ndjson(watch))
             delays = [json.loads(line) for line in rows.splitlines() if line.strip()]
-            out[name] = round(stall_records.stopped_ms(events)
-                              + stall_records.run_delay_ms(delays, NOT_RUN_SECOND_MS), 3)
+            cpus = len(stall_records.cpus_of(events)) or 1
+            out[name] = round(sum(stall_records.stopped_ms(events, start, end, cpus)
+                                  for start, end in spans)
+                              + stall_records.run_delay_ms(delays, NOT_RUN_SECOND_MS, spans), 3)
         return out
 
     def worst(self) -> tuple[str | None, dict[str, float]]:
@@ -1155,10 +1202,14 @@ class Hunt:
 
     def stop_recorders(self, names: list[str]) -> None:
         """The sampler and the watch of `names` stopped (SIGTERM: the watch
-        writes what it holds), so that their files are whole when fetched."""
+        writes what it holds, the sampler pulls the stall journal a last
+        time), waited for up to 15 s, so that their files are whole when
+        fetched."""
         self.runner.each(names, lambda name: self.runner.ssh(name, (
-            f"cd {REMOTE} 2>/dev/null && for f in sampler.pid watch.pid; do "
-            "[ -f $f ] && kill $(cat $f) 2>/dev/null; done; sleep 1; true"),
+            f"cd {REMOTE} 2>/dev/null && P=$(cat sampler.pid watch.pid 2>/dev/null); "
+            "kill $P 2>/dev/null; n=0; while [ $n -lt 150 ]; do a=; for p in $P; do "
+            "kill -0 $p 2>/dev/null && a=1; done; [ -z \"$a\" ] && break; sleep 0.1; "
+            "n=$((n + 1)); done; true"),
             check=False, what="stop the sampler and the watch"))
 
     def collect(self) -> None:
@@ -1373,7 +1424,12 @@ def preflight(topology: dict) -> list[str]:
     for flag in LAB_UP_FLAGS:
         if flag not in up_help:
             problems.append(f"the lab tool's `up` has no {flag}: no lab is created without a "
-                            "watchdog and a budget")
+                            "watchdog that collects before it deletes, and a budget")
+    collect_help = help_text([sys.executable, str(DEPLOY_TOOL), "collect", "--help"])
+    for flag in DEPLOY_COLLECT_FLAGS:
+        if flag not in collect_help:
+            problems.append(f"the deploy tool has no `collect {flag}`: the watchdog could not "
+                            "collect the run before it deletes the lab")
     deploy_source = DEPLOY_TOOL.read_text()
     for setting in DEPLOY_SETTINGS:
         if f'"{setting}"' not in deploy_source:
