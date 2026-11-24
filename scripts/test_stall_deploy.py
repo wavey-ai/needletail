@@ -189,7 +189,7 @@ class Units(Base):
                 self.assertIn(
                     "needletail-nodecheck boot --out /run/needletail/node-warm.json --warm \\\n"
                     f"  --warm-leave-mb 300 --warm-max-seconds {warm} --slow-write-ms 5000 "
-                    "--slow-seconds-per-4gb 180 \\\n"
+                    "--slow-seconds-per-4gb 180 --slow-stall-share-permille 500 \\\n"
                     "  --check-seconds 0 --max-stop-ms 20 --max-steal-permille 10\n", check)
                 self.assertIn(f"\nTimeoutStartSec={timeout}\n", check)
                 self.assertEqual(deploy.check_timeout_s(settings, node), timeout)
@@ -568,6 +568,102 @@ class Hosts(unittest.TestCase):
         self.assertEqual(document["nodes"]["tok-edge-2"],
                          {"region": "ap-northeast", "role": "edge", "host_uuid": "t4"})
         self.assertEqual(document["regions"]["ap-northeast"]["t4"], ["tok-edge-2"])
+
+
+class MeshMemory(Base):
+    """The memory round (av-mesh rm/mem, .resilient/reports/mem.md;
+    integration 5): the mesh unit's cgroup lines, av-mesh's budgets rendered
+    from the plan's MemTotal (the unit's MemoryHigh would make its auto
+    shares a quarter smaller), the cache ring sized for the shortest part
+    published, the memory in status, and the sampler."""
+
+    def test_the_mesh_unit_has_the_memory_lines_and_the_contributor_none(self):
+        settings = self.settings()
+        mesh = deploy.unit_text("needletail-mesh", "info", settings)
+        self.assertIn("\nMemoryAccounting=yes\nMemoryHigh=75%\nMemoryMax=85%\n"
+                      "MemorySwapMax=0\n", mesh)
+        self.assertLess(mesh.index("MemoryHigh="), mesh.index("ExecStart="))
+        contrib = deploy.unit_text("needletail-contrib", "info", settings)
+        self.assertNotIn("Memory", contrib)
+        off = self.settings(["mesh_memory_high=null", "mesh_memory_max=null"])
+        self.assertNotIn("Memory", deploy.unit_text("needletail-mesh", "info", off))
+        for bad in (["mesh_memory_high=0.75"], ["mesh_memory_max=100%"],
+                    ["mesh_memory_high=90%", "mesh_memory_max=85%"],
+                    ["mesh_memory_budgets=1"]):
+            with self.subTest(bad), self.assertRaises(SystemExit), \
+                    redirect_stderr(io.StringIO()):
+                self.settings(bad)
+
+    def test_the_budgets_are_the_plan_s_memtotal_shares(self):
+        settings = self.settings()
+        two = {"name": "lon-edge-1", "type": "g6-dedicated-2"}
+        deploy.RENDER_BINARIES["av-mesh"] = self.fake_binary(
+            "av-mesh", "--video-cache-mb --memory-soft-mb --memory-hard-mb")
+        self.assertEqual(deploy.mesh_memory_args(two, settings),
+                         ["--video-cache-mb", "392", "--memory-soft-mb", "1960",
+                          "--memory-hard-mb", "2548"])
+        self.assertEqual(deploy.mesh_memory_args({"type": "g6-dedicated-4"}, settings)[1], "794")
+        # A plan not measured: its memory at a g6-dedicated-2's share.
+        self.assertEqual(deploy.mesh_memory_args({"type": "g6-dedicated-8"}, settings)[1], "1568")
+        self.assertEqual(deploy.mesh_memory_args({"type": "local"}, settings), [])
+        self.assertEqual(deploy.mesh_memory_args(
+            two, self.settings(["mesh_memory_budgets=false"])), [])
+        # The hard limit stays under the unit's MemoryHigh (75% of 3,921 MB).
+        self.assertLess(2548, 3921 * 75 // 100)
+        # A binary without the flags gets none (it runs on its auto shares).
+        deploy.RENDER_BINARIES["av-mesh"] = self.fake_binary("av-mesh", "--prefault")
+        self.assertEqual(deploy.mesh_memory_args(two, settings), [])
+
+    def test_the_ring_is_sized_for_the_shortest_part(self):
+        plan = deploy.part_plan(self.settings())
+        self.assertEqual(plan["smallest_part_us"], 1000)
+        args = plan["mesh_args"]
+        self.assertEqual(value_of(args, "--min-part-us"), "1000")
+        self.assertEqual(value_of(args, "--window-parts"), "12000")
+        short = deploy.part_plan(self.settings(["pcm_epoch_samples=12"]))["mesh_args"]
+        self.assertEqual(value_of(short, "--min-part-us"), "250")
+
+    def test_rendered_mesh_nodes_carry_the_memory_flags(self):
+        deploy.RENDER_BINARIES["av-mesh"] = self.fake_binary(
+            "av-mesh", "--video-cache-mb --memory-soft-mb --memory-hard-mb")
+        state = lab.lab_state()
+        for node in [*state["nodes"].values(), *state.get("slots", {}).values()]:
+            node["type"] = "g6-dedicated-2"
+        args = self.render(state=state)
+        meshes = [name for name, item in args.items() if "--node-id" in item]
+        self.assertTrue(meshes)
+        for name in meshes:
+            self.assertEqual(value_of(args[name], "--video-cache-mb"), "392", name)
+            self.assertEqual(value_of(args[name], "--min-part-us"), "1000", name)
+        # An extra argument of the role wins over the rendered one.
+        args = self.render(['extra_edge_args=["--video-cache-mb","600"]'], state=state)
+        self.assertEqual(args["lon-edge-1"].count("--video-cache-mb"), 1)
+        self.assertEqual(value_of(args["lon-edge-1"], "--video-cache-mb"), "600")
+
+    def test_status_shows_the_guard_s_state_and_rss(self):
+        document = {"memory": {"state": "soft", "rss_bytes": 2_100 * 1048576,
+                               "rss_peak_bytes": 2_200 * 1048576,
+                               "video_cache_bytes": 196 * 1048576,
+                               "video_cache_budget_bytes": 392 * 1048576,
+                               "soft_entries": 1, "hard_entries": 0,
+                               "refused_large_playlists": 2, "socket_clamped": 0}}
+        self.assertEqual(deploy.memory_summary(document),
+                         " memory=soft rss=2100MB peak=2200MB cache=196MB/392MB "
+                         "soft_entries=1 refused_large_playlists=2")
+        self.assertEqual(deploy.memory_summary({"state": "ready"}), "")
+        self.assertEqual(deploy.memory_summary(None), "")
+
+    def test_the_sampler_reads_api_node_memory_once_a_second(self):
+        edge = deploy.memory_sampler_start_script({"role": "edge"}, "T", 1.0)
+        self.assertIn(f"sampler.py {deploy.HTTP_PORT} "
+                      f"{deploy.MEMORY_SAMPLER_DIR}/memory-T.ndjson 1.0", edge)
+        self.assertTrue(deploy.MEMORY_SAMPLER_DIR.startswith(deploy.NODE_RUNS + "/"))
+        contrib = deploy.memory_sampler_start_script({"role": "contributor"}, "T", 1.0)
+        self.assertIn(f"sampler.py {deploy.CONTRIB_HTTP_PORT} ", contrib)
+        for field in ('"memory"', "window_parts", "memory.current", "memory.events",
+                      "oom_kill", "RcvbufErrors", "MemErrors", "VmHWM"):
+            self.assertIn(field, deploy.MEMORY_SAMPLER)
+        compile(deploy.MEMORY_SAMPLER, "sampler.py", "exec")
 
 
 if __name__ == "__main__":

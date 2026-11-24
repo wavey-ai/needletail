@@ -99,11 +99,11 @@ class Preflight(unittest.TestCase):
 
         old = tool("old", "--out <OUT> --warm --check-seconds --max-stop-ms")
         new = tool("new", "--out --warm --warm-leave-mb --warm-max-seconds --slow-write-ms "
-                          "--slow-seconds-per-4gb --check-seconds")
+                          "--slow-seconds-per-4gb --slow-stall-share-permille --check-seconds")
         silent = tool("silent", "")
         problem = deploy.nodecheck_problem(old)
         self.assertIn("--warm-leave-mb, --warm-max-seconds, --slow-write-ms, "
-                      "--slow-seconds-per-4gb", problem)
+                      "--slow-seconds-per-4gb, --slow-stall-share-permille", problem)
         self.assertIn("node_warm=false", problem)
         self.assertIsNone(deploy.nodecheck_problem(new))
         self.assertIsNone(deploy.nodecheck_problem(silent))           # cannot tell
@@ -473,11 +473,22 @@ class ThereferesLab(unittest.TestCase):
         self.assertEqual(flagged["tok-nano"], [])           # 4.85 s: under the 5 s write
         self.assertEqual(flagged["lon-edge-2"], [])         # 0.4 s, backed already
         self.assertEqual(flagged["new-edge-2"], [])
-        # The quarter clause: the hosts that passed fastest spent most of
-        # their pass in long writes.
-        self.assertEqual(flagged["lon-dist-a"], ["stall-share"])
-        self.assertEqual(flagged["contrib-lon"], ["stall-share"])
-        self.assertEqual(flagged["tok-view"], ["stall-share"])
+        # The stall-share clause at half (the lead, 24 Nov): none of the
+        # table's hosts. At a quarter it flagged ten fast first-touch hosts
+        # (the fastest spent most of their pass in long writes).
+        self.assertEqual(flagged["lon-dist-a"], [])
+        self.assertEqual(flagged["contrib-lon"], [])
+        self.assertEqual(flagged["tok-view"], [])
+        self.assertEqual(sorted(name for name, reasons in flagged.items() if reasons),
+                         ["tok-edge-1", "tok-lk"])
+        quarter = {**deploy.DEFAULT_SETTINGS, "node_warm_slow_stall_share_permille": 250}
+        item = record()
+        kind, seconds, worst, over, total = self.TABLE["lon-dist-a"]
+        item["warm"] = {"ran": True, "finished": True, "seconds": seconds,
+                        "worst_page_us": worst * 1000, "mem_total_mb": total,
+                        "stall_ms": 100, "stalls": [{"ms": 100.0}] * over, "stalls_dropped": 0}
+        self.assertEqual(deploy.judge_warm(item, quarter, {"name": "lon-dist-a", "type": kind})
+                         ["slow_reasons"], ["stall-share"])
 
 
 class Boot(unittest.TestCase):
@@ -561,7 +572,7 @@ class Boot(unittest.TestCase):
 
 class SlowHostRule(unittest.TestCase):
     """The deploy's slow-host rule (lead, 24 Nov): a pass over 180 s for
-    every 4 GB, one write of 5 s or more, or over a quarter of the pass's
+    every 4 GB, one write of 5 s or more, or over half the pass's
     thread time in writes of 100 ms or more; nodecheck's own judgement kept
     beside it."""
 
@@ -577,7 +588,8 @@ class SlowHostRule(unittest.TestCase):
 
     def test_the_defaults(self):
         self.assertEqual(self.SETTINGS["node_warm_slow_write_ms"], 5000)
-        self.assertEqual(self.SETTINGS["node_warm_slow_stall_share_permille"], 250)
+        # The lead, 24 Nov: half (at a quarter it flagged ten fast first-touch hosts).
+        self.assertEqual(self.SETTINGS["node_warm_slow_stall_share_permille"], 500)
         self.assertEqual(self.SETTINGS["node_warm_slow_seconds_per_4gb"], 180)
 
     def test_the_hunt_s_touched_edge_is_not_slow(self):
@@ -605,17 +617,17 @@ class SlowHostRule(unittest.TestCase):
         self.assertEqual(self.judged(node=node, seconds=700.0, mem_total_mb=None)["slow_reasons"],
                          [])
 
-    def test_a_quarter_of_the_pass_in_stalls(self):
-        # 70 s on two threads: 140 thread-s; a quarter is 35 s.
-        many = [{"ms": 300.0}] * 110                       # 33 s
+    def test_half_of_the_pass_in_stalls(self):
+        # 70 s on two threads: 140 thread-s; half is 70 s.
+        many = [{"ms": 300.0}] * 230                       # 69 s
         self.assertEqual(self.judged(stalls=many)["slow_reasons"], [])
         self.assertEqual(self.judged(stalls=many + [{"ms": 3000.0}])["slow_reasons"],
                          ["stall-share"])
         # Dropped stalls count at 100 ms each (a lower bound).
-        self.assertEqual(self.judged(stalls=many, stalls_dropped=21)["slow_reasons"],
+        self.assertEqual(self.judged(stalls=many, stalls_dropped=11)["slow_reasons"],
                          ["stall-share"])
         # nodecheck's own total and thread count win when it gives them.
-        self.assertEqual(self.judged(stalled_us=34_000_000, threads=1)["slow_reasons"],
+        self.assertEqual(self.judged(stalled_us=36_000_000, threads=1)["slow_reasons"],
                          ["stall-share"])
         self.assertEqual(self.judged(stalls=many, stalled_us=1_000_000)["slow_reasons"], [])
 

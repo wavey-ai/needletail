@@ -66,7 +66,7 @@ class Settings(unittest.TestCase):
         # 12 s of the 1 ms lossless epoch: av-mesh's --window-ms would count
         # 4,800 parts of 2.5 ms.
         self.assertEqual(plan["mesh_args"], ["--part-us", "2500", "--segment-ms", "1000",
-                                             "--window-parts", "12000"])
+                                             "--window-parts", "12000", "--min-part-us", "1000"])
         self.assertEqual(plan["smallest_part_us"], 1000)
 
     def test_mesh_and_contributor_arguments(self):
@@ -108,7 +108,7 @@ class Settings(unittest.TestCase):
                                  "fmp4_part_ms=5", "fmp4_video_part_ms=200"])
         plan = deploy.part_plan(settings)
         self.assertEqual(plan["mesh_args"], ["--part-us", "5000", "--parts-per-segment", "200",
-                                             "--window-parts", "2400"])
+                                             "--window-parts", "2400", "--min-part-us", "5000"])
         self.assertEqual(plan["audio_part"], "5000us")
         self.assertEqual(plan["video_part"], "200ms")
         # Saved in a version 2 file: a later run without --set keeps them.
@@ -312,7 +312,7 @@ class Lab(unittest.TestCase):
         self.assertFalse(dropped)
         plan = deploy.part_plan(settings)
         self.assertEqual(plan["mesh_args"], ["--part-us", "2500", "--segment-ms", "1000",
-                                             "--window-parts", "12000"])
+                                             "--window-parts", "12000", "--min-part-us", "1000"])
         self.assertEqual((plan["audio_part"], plan["video_part"]), ("epoch", "frame"))
 
     def test_the_probe_sender_follows_the_lab_settings(self):

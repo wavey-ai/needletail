@@ -717,6 +717,21 @@ DEFAULT_SETTINGS = {
     "mlock": None,
     "stall_tick_us": None,
     "stall_journal_capacity": None,
+    # The memory round (av-mesh rm/mem, .resilient/reports/mem.md; the 4K
+    # sweep of 24 Nov had every mesh node killed by the kernel at 240
+    # Mbit/s). mesh_memory_high and mesh_memory_max: the mesh unit's
+    # MemoryHigh= and MemoryMax= (systemd's share of the host's memory, with
+    # MemoryAccounting=yes and MemorySwapMax=0); None renders no memory line.
+    # mesh_memory_budgets: av-mesh's --video-cache-mb, --memory-soft-mb and
+    # --memory-hard-mb rendered at its own auto shares (10%, 50%, 65%) of
+    # the plan's MemTotal (MESH_MEM_TOTAL_MB). Without them av-mesh takes
+    # its shares of the smaller of MemTotal and the cgroup's memory.high,
+    # which the unit sets to 75%: every budget a quarter smaller (video
+    # cache 294 MB on a g6-dedicated-2, not 392), and at 320 Mbit/s the
+    # playlist window below three target durations. false renders none.
+    "mesh_memory_high": "75%",
+    "mesh_memory_max": "85%",
+    "mesh_memory_budgets": True,
     # The check at boot (D 2.4): with node_warm, or node_check_seconds above
     # 0, every mesh node and the contributor get the oneshot unit
     # needletail-node-check.service (`needletail-nodecheck boot`: a warm
@@ -753,7 +768,7 @@ DEFAULT_SETTINGS = {
     "node_warm_max_seconds_per_4gb": 300,
     "node_warm_slow_seconds_per_4gb": 180,
     "node_warm_slow_write_ms": 5000,
-    "node_warm_slow_stall_share_permille": 250,
+    "node_warm_slow_stall_share_permille": 500,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
@@ -1055,6 +1070,22 @@ def check_stall_settings(settings: dict) -> None:
     thp = settings.get("transparent_hugepage")
     if thp is not None and thp not in THP_MODES:
         raise ValueError(f"transparent_hugepage {thp!r} is not one of {', '.join(THP_MODES)}")
+    shares = {}
+    for key in ("mesh_memory_high", "mesh_memory_max"):
+        value = settings.get(key)
+        if value is None:
+            continue
+        match = re.fullmatch(r"([1-9][0-9]?)%", str(value))
+        if not match:
+            raise ValueError(f"{key} {value!r} is not a share of the host's memory "
+                             "between 1% and 99% (such as 75%) or null")
+        shares[key] = int(match.group(1))
+    if len(shares) == 2 and shares["mesh_memory_high"] >= shares["mesh_memory_max"]:
+        raise ValueError(f"mesh_memory_high {settings['mesh_memory_high']} is not below "
+                         f"mesh_memory_max {settings['mesh_memory_max']}")
+    if not isinstance(settings.get("mesh_memory_budgets", True), bool):
+        raise ValueError(f"mesh_memory_budgets {settings['mesh_memory_budgets']!r} is not "
+                         "true or false")
 
 
 def warm_max_seconds(settings: dict, node: dict | None) -> int:
@@ -1526,6 +1557,16 @@ def part_plan(settings: dict) -> dict:
         window_parts = window_parts_for(window_ms, part_us, smallest_us)
         mesh += (["--window-ms", str(window_ms)] if window_parts is None
                  else ["--window-parts", str(window_parts)])
+    # The cache ring of each playlist slot is sized for parts no shorter
+    # than the shortest this deploy publishes (av-mesh's default is 250 µs,
+    # 12 PCM samples): at 1 ms it is 48,000 slots, not 132,000, and its
+    # index on a node of 16 playlists ~100 MB, not ~260 (mem.md 3). A stream
+    # of 1 ms parts with stamps keeps the same window (30 s at
+    # --window-parts 12000 of 2.5 ms); one without stamps keeps 12 s (four
+    # windows in the ring), still more than three target durations; a
+    # shorter part than this (not published by the deploy) keeps a shorter
+    # window, never less than three target durations.
+    mesh += ["--min-part-us", str(int(smallest_us))]
     return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
             "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
             "opus_bitrate": opus_bitrate,
@@ -3528,6 +3569,7 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
         args += yield_to(extra, mesh_class_args(node, args, classes))
         args += yield_to(extra, two_path_args(args, settings))
         args += yield_to(extra, wave7_args(args, settings))
+        args += yield_to(extra, mesh_memory_args(node, settings))
         args += yield_to(extra, stall_args("av-mesh", node, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
@@ -3654,6 +3696,8 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
     thp = thp_mode(settings)
     if thp:
         thread_line += thp_exec_line(thp, "-+")
+    if service == "needletail-mesh":
+        thread_line += mesh_memory_lines(settings)
     # C 2.5: no start limit (with RestartSec=1, five crashes in ten seconds
     # would leave a media node failed for good); a stop is bounded by B's
     # edge drain (--stop-drain-ms 14000) plus the shutdown and a spare
@@ -3683,6 +3727,62 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def mesh_memory_lines(settings: dict) -> str:
+    """The mesh unit's memory lines (mem.md 4): MemoryAccounting=yes,
+    MemoryHigh= and MemoryMax= from mesh_memory_high and mesh_memory_max,
+    and MemorySwapMax=0; none when both are None. On a g6-dedicated-2
+    (MemTotal 3,921 MB) 75% and 85% are 2.9 and 3.3 GB, above av-mesh's
+    guard (soft 1,960 MB, hard 2,548 MB of RSS, mesh_memory_args) with room
+    for the socket and page-cache charges of the cgroup."""
+    high, most = settings.get("mesh_memory_high"), settings.get("mesh_memory_max")
+    if high is None and most is None:
+        return ""
+    lines = "MemoryAccounting=yes\n"
+    if high is not None:
+        lines += f"MemoryHigh={high}\n"
+    if most is not None:
+        lines += f"MemoryMax={most}\n"
+    return lines + "MemorySwapMax=0\n"
+
+
+# MemTotal of a Linode plan as the guest reports it, in MB (nodecheck's
+# mem_total_mb on the labs of 24 Nov); a plan not listed is taken as
+# MESH_MEM_TOTAL_SHARE of its memory (the smallest share measured).
+MESH_MEM_TOTAL_MB = {"g6-dedicated-2": 3921, "g6-dedicated-4": 7947}
+MESH_MEM_TOTAL_SHARE = 3921 / 4096
+# av-mesh's auto shares of the node's memory (mem_guard::share), permille.
+MESH_MEMORY_SHARES = (("--video-cache-mb", 100), ("--memory-soft-mb", 500),
+                      ("--memory-hard-mb", 650))
+
+
+def mesh_mem_total_mb(node: dict) -> int | None:
+    """The MemTotal of a node's plan in MB, None without a known plan (the
+    namespace lab, a test)."""
+    kind = (node or {}).get("type")
+    if kind in MESH_MEM_TOTAL_MB:
+        return MESH_MEM_TOTAL_MB[kind]
+    memory = mesh_ops.plan_memory_gb(kind)
+    return None if memory is None else int(memory * 1024 * MESH_MEM_TOTAL_SHARE)
+
+
+def mesh_memory_args(node: dict, settings: dict) -> list[str]:
+    """av-mesh's memory budgets at its auto shares of the plan's MemTotal
+    (mesh_memory_budgets): on a g6-dedicated-2 --video-cache-mb 392
+    --memory-soft-mb 1960 --memory-hard-mb 2548. Rendered because the
+    unit's MemoryHigh would make auto take its shares of 75% of that. The
+    per-playlist cache and the sockets' budget stay auto (the node's cache;
+    a quarter of the host's UDP pressure threshold). None without a known
+    plan or with mesh_memory_budgets false; each flag only to a binary that
+    has it (binary_takes)."""
+    total = mesh_mem_total_mb(node)
+    if not settings.get("mesh_memory_budgets", True) or total is None:
+        return []
+    pairs = []
+    for name, permille in MESH_MEMORY_SHARES:
+        pairs += [name, str(total * permille // 1000)]
+    return binary_takes("av-mesh", pairs)
 
 
 def thp_exec_line(mode: str, prefix: str = "") -> str:
@@ -3717,9 +3817,11 @@ def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
     if settings.get("node_warm"):
         slow = int(settings.get("node_warm_slow_seconds_per_4gb")
                    or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
+        share = int(settings.get("node_warm_slow_stall_share_permille")
+                    or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
         warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
                 f"{warm_max_seconds(settings, node)} --slow-write-ms {slow_write_ms(settings)} "
-                f"--slow-seconds-per-4gb {slow}")
+                f"--slow-seconds-per-4gb {slow} --slow-stall-share-permille {share}")
     thp = thp_mode(settings)
     pre = thp_exec_line(thp, "-") if thp else ""
     return f"""[Unit]
@@ -4469,7 +4571,7 @@ def warm_word(record: dict | None, settings: dict | None = None) -> str:
 # The flags of `needletail-nodecheck boot` that a check unit with the warm
 # pass renders (check_unit_text).
 NODECHECK_WARM_FLAGS = ("--warm-leave-mb", "--warm-max-seconds", "--slow-write-ms",
-                        "--slow-seconds-per-4gb")
+                        "--slow-seconds-per-4gb", "--slow-stall-share-permille")
 
 
 def nodecheck_problem(path: pathlib.Path | None = None) -> str | None:
@@ -6380,7 +6482,30 @@ def node_summary(document, entry: dict | None) -> str:
         served = (f" node_warm={warm.get('verdict')}"
                   + (" slow_host" if warm.get("slow_host") else ""))
     return (f" build={status.build_git}-{status.build_unix} state={status.state} "
-            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}{served}")
+            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}{served}"
+            f"{memory_summary(document)}")
+
+
+def memory_summary(document) -> str:
+    """A mesh node's memory from its /api/node `memory` (av-mesh rm/mem):
+    the guard's state, RSS and its peak, the video caches against their
+    budget, and the guard's sheds and refusals; "" when it serves none (a
+    contributor, an older build)."""
+    memory = document.get("memory") if isinstance(document, dict) else None
+    if not isinstance(memory, dict):
+        return ""
+
+    def mb(key):
+        value = memory.get(key)
+        return "-" if value is None else f"{round(float(value) / 1048576)}MB"
+
+    text = (f" memory={memory.get('state', '-')} rss={mb('rss_bytes')} "
+            f"peak={mb('rss_peak_bytes')} cache={mb('video_cache_bytes')}"
+            f"/{mb('video_cache_budget_bytes')}")
+    counts = [f"{key}={memory[key]}" for key in ("soft_entries", "hard_entries",
+                                                  "refused_large_playlists", "socket_clamped")
+              if memory.get(key)]
+    return text + (" " + " ".join(counts) if counts else "")
 
 
 def deployed_summary(state: dict) -> list[str]:
@@ -6404,6 +6529,145 @@ def deployed_summary(state: dict) -> list[str]:
         lines.append(f"unfinished: {journal.data.get('label') or journal.data.get('command')} "
                      f"({journal.path.name}): " + (", ".join(left) or "no node in hand"))
     return lines
+
+
+# ------------------------------------------------------------ memory sampler
+
+# The memory round's sampler (mem.md 5): on every mesh node and contributor,
+# once a second, the service's RSS and peak, /api/node's `memory` and each
+# stream's window_parts and head_part, the service cgroup's memory.current,
+# memory.stat (anon, sock, file) and memory.events (high, max, oom,
+# oom_kill), the host's UDP memory (/proc/net/sockstat) and UDP receive
+# buffer and memory errors (/proc/net/snmp, cumulative). One JSON line a
+# second in NODE_RUNS/memory/, which `collect` brings home under the node's
+# samplers/.
+MEMORY_SAMPLER_DIR = "/var/lib/needletail-runs/memory"  # under NODE_RUNS
+MEMORY_SAMPLER_PID = "/run/needletail-memory-sampler.pid"
+MEMORY_SAMPLER = r"""
+import json, os, ssl, subprocess, sys, time, urllib.request
+port, out, interval = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+context = ssl.create_default_context()
+context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+
+
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def pairs(text, keys, separator=" "):
+    found = {}
+    for line in (text or "").splitlines():
+        key, _, value = line.partition(separator)
+        if key.strip() in keys:
+            try:
+                found[key.strip()] = int(value.split()[0])
+            except (IndexError, ValueError):
+                pass
+    return found
+
+
+def snmp_udp():
+    lines = [line.split() for line in (read("/proc/net/snmp") or "").splitlines()
+             if line.startswith("Udp:")]
+    if len(lines) < 2:
+        return {}
+    row = dict(zip(lines[0][1:], lines[1][1:]))
+    return {key: int(row[key]) for key in ("RcvbufErrors", "MemErrors", "InErrors") if key in row}
+
+
+def sockstat_udp():
+    for line in (read("/proc/net/sockstat") or "").splitlines():
+        if line.startswith("UDP:"):
+            fields = line.split()[1:]
+            return {fields[i]: int(fields[i + 1]) for i in range(0, len(fields) - 1, 2)}
+    return {}
+
+
+next_at = time.time()
+with open(out, "a", buffering=1) as sink:
+    while True:
+        row = {"unix": round(time.time(), 3)}
+        procs, cgroup = {}, None
+        for name in ("av-mesh", "av-contrib"):
+            found = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True).stdout
+            for pid in found.split():
+                status = pairs(read(f"/proc/{pid}/status"), ("VmRSS", "VmHWM"), ":")
+                procs[f"{name}:{pid}"] = {"rss_kb": status.get("VmRSS"),
+                                          "hwm_kb": status.get("VmHWM")}
+                for line in (read(f"/proc/{pid}/cgroup") or "").splitlines():
+                    if line.startswith("0::"):
+                        cgroup = "/sys/fs/cgroup" + line[3:].strip()
+        row["procs"] = procs
+        if cgroup:
+            current = read(f"{cgroup}/memory.current")
+            row["cgroup"] = {
+                "path": cgroup,
+                "current": int(current) if current and current.strip().isdigit() else None,
+                "stat": pairs(read(f"{cgroup}/memory.stat"), ("anon", "sock", "file")),
+                "events": pairs(read(f"{cgroup}/memory.events"),
+                                ("high", "max", "oom", "oom_kill")),
+            }
+        try:
+            with urllib.request.urlopen(f"https://127.0.0.1:{port}/api/node",
+                                        timeout=max(0.5, interval * 0.8),
+                                        context=context) as answer:
+                document = json.load(answer)
+            row["memory"] = document.get("memory")
+            row["streams"] = [{key: item.get(key) for key in
+                               ("stream_id", "window_parts", "head_part")}
+                              for item in document.get("streams") or []]
+        except Exception as error:
+            row["api_error"] = str(error)[:160]
+        row["udp_sockstat"] = sockstat_udp()
+        row["udp_snmp"] = snmp_udp()
+        sink.write(json.dumps(row, separators=(",", ":")) + "\n")
+        next_at += interval
+        time.sleep(max(0.0, next_at - time.time()))
+"""
+
+
+def memory_sampler_start_script(node: dict, stamp: str, interval_s: float) -> str:
+    """What one ssh runs to start a node's memory sampler (one at a time: an
+    earlier one is stopped first)."""
+    port = CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT
+    out = f"{MEMORY_SAMPLER_DIR}/memory-{stamp}.ndjson"
+    return (f"{memory_sampler_stop_script()}; mkdir -p {MEMORY_SAMPLER_DIR} && "
+            f"cat >{MEMORY_SAMPLER_DIR}/sampler.py <<'EOS'\n{MEMORY_SAMPLER}EOS\n"
+            f"(setsid nohup python3 {MEMORY_SAMPLER_DIR}/sampler.py {port} {out} {interval_s} "
+            f">{MEMORY_SAMPLER_DIR}/sampler.log 2>&1 </dev/null & echo $! >{MEMORY_SAMPLER_PID}); "
+            f"echo {out}")
+
+
+def memory_sampler_stop_script() -> str:
+    return (f"[ -f {MEMORY_SAMPLER_PID} ] && kill $(cat {MEMORY_SAMPLER_PID}) 2>/dev/null; "
+            f"rm -f {MEMORY_SAMPLER_PID}; true")
+
+
+def memory_sampler_nodes(state: dict) -> list[dict]:
+    return [node for node in state["nodes"].values()
+            if node["role"] in mesh_ops.ROLE_TIER and node.get("public_ipv4")]
+
+
+def command_memory_sample(args: argparse.Namespace) -> None:
+    """Start (or stop) the memory sampler on every mesh node and the
+    contributor. Its files stay on the nodes until `collect`."""
+    state = common.load_state()
+    nodes = memory_sampler_nodes(state)
+    if args.action == "start":
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        script = lambda node: memory_sampler_start_script(node, stamp, args.interval_s)
+    else:
+        script = lambda node: memory_sampler_stop_script()
+    results = common.parallel(nodes, lambda node: common.ssh(node, script(node), check=False,
+                                                             timeout=60).returncode)
+    for name in sorted(results):
+        print(f"{name}: memory sampler {args.action} "
+              + ("ok" if results[name] == 0 else f"FAILED ({results[name]})"))
 
 
 # ------------------------------------------------------------ collect (the run archive)
@@ -7101,6 +7365,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="hunt while edges serve: every remote region goes silent")
     hunt.set_defaults(handler=command_hunt)
     sub.add_parser("status").set_defaults(handler=command_status)
+    memory = sub.add_parser("memory-sample", help="the memory sampler on every mesh node and the "
+                                                  "contributor: RSS, /api/node memory, cgroup and "
+                                                  "UDP memory once a second, until stopped "
+                                                  "(collect brings its files home)")
+    memory.add_argument("action", choices=("start", "stop"))
+    memory.add_argument("--interval-s", type=float, default=1.0)
+    memory.set_defaults(handler=command_memory_sample)
     collect = sub.add_parser("collect", help="every node's journal, API and samplers, and the "
                                              "lab's files, into the run archive")
     collect.add_argument("--run-id", required=True, help="the lab's run id (its archive run)")
