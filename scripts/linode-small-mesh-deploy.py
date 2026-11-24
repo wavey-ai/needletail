@@ -4111,6 +4111,18 @@ for file in "$(dirname "$to")"/*; do
   name=$(basename "$file")
   ln -sfn "$file" "$BIN/.$name.new" && mv -Tf "$BIN/.$name.new" "$BIN/$name"
 done
+# A node taken into service (start, the autoscaler's standby, a roll's
+# surge edge: its service not running) whose boot check left no complete
+# warm record runs it again now, with this build's nodecheck in place
+# (rm/iso: a held-out edge's check ran at push before nodecheck was
+# installed, exited 203, stayed "active" and never ran again, so the node
+# never became ready). Blocks until the pass is done or its unit's
+# TimeoutStartSec; the activation's wait has that on top.
+if [ -f "$UNITS/needletail-node-check.service" ] \
+    && ! grep -qs '"complete": *true' "$RUN/node-warm.json" \
+    && ! systemctl is-active --quiet "$service.service"; then
+  systemctl restart needletail-node-check.service || true
+fi
 systemctl enable --quiet "$service.service" 2>/dev/null
 systemctl restart "$service.service" || finish false "systemctl restart failed"
 finish true ""
@@ -4676,16 +4688,33 @@ def warm_host(node: dict, settings: dict) -> dict | None:
     return read_warm_record(node)
 
 
-def warm_staged(node: dict, service: str, check_s: float) -> dict | None:
-    """A standby edge's warm pass, held out: its staged check unit put in
-    place (as its activation will) and started now, so that taking it in
-    later (start, the autoscaler) waits for no warm pass; its record."""
+def warm_staged_script(service: str, key: str) -> str:
+    """What warm_staged runs on a held-out node: the staged build's
+    needletail-nodecheck linked into /usr/local/bin first (the activation
+    links every binary of the build, but a held-out node is not activated:
+    rm/iso's standby edge ran its check before nodecheck was there, exit
+    203), the staged check unit put in place, and the check started; run
+    again (restart) when this boot's record is missing or not complete."""
     staged = f"{NODE_ETC}/{service}.check.next"
     unit = f"/etc/systemd/system/{NODE_CHECK_UNIT}"
-    script = (f"set -u\nif [ -f {staged} ] && ! cmp -s {staged} {unit}; then\n"
-              f"  cp {staged} {unit}.tmp && mv -f {unit}.tmp {unit} && systemctl daemon-reload\n"
-              f"fi\nsystemctl start {NODE_CHECK_UNIT} || true\n")
-    common.ssh_text(node, script, check=False, timeout=int(check_s) + 60)
+    nodecheck = f"{NODE_BUILDS}/{key}/needletail-nodecheck"
+    return (f"set -u\nif [ -x {nodecheck} ]; then\n"
+            f"  ln -sfn {nodecheck} /usr/local/bin/.needletail-nodecheck.new "
+            f"&& mv -Tf /usr/local/bin/.needletail-nodecheck.new /usr/local/bin/needletail-nodecheck\n"
+            f"fi\nif [ -f {staged} ] && ! cmp -s {staged} {unit}; then\n"
+            f"  cp {staged} {unit}.tmp && mv -f {unit}.tmp {unit} && systemctl daemon-reload\n"
+            f"fi\nif grep -qs '\"complete\": *true' {NODE_WARM_FILE}; then\n"
+            f"  systemctl start {NODE_CHECK_UNIT} || true\n"
+            f"else\n  systemctl restart {NODE_CHECK_UNIT} || true\nfi\n")
+
+
+def warm_staged(node: dict, service: str, check_s: float, key: str) -> dict | None:
+    """A standby edge's warm pass, held out: its staged build's nodecheck in
+    place, its staged check unit put in place (as its activation will) and
+    run now (warm_staged_script), so that taking it in later (start, the
+    autoscaler) waits for no warm pass; its record."""
+    common.ssh_text(node, warm_staged_script(service, key), check=False,
+                    timeout=int(check_s) + 60)
     return read_warm_record(node)
 
 
@@ -5518,7 +5547,8 @@ class LinodeOps(mesh_ops.Ops):
                     stop_service(node)
                     if check_unit_wanted(own):
                         self.warm_records[name] = judge_warm(warm_staged(
-                            node, plans[name][0], check_timeout_s(own, node)), own, node)
+                            node, plans[name][0], check_timeout_s(own, node), plans[name][1]),
+                            own, node)
                         return f"staged, held out, {warm_word(self.warm_records[name], own)}"
                     return "staged, held out"
                 result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000),
