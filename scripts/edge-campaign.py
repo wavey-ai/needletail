@@ -3287,7 +3287,9 @@ def autoscale_edge_lab(ctx):
          str(AUTOSCALE_SECONDS + 20),
          "--poll-s", "1", "--up-samples", "3", "--cooldown-s", "20", "--down-hold-s", "40",
          "--no-flap-s", "60", "--join-timeout-s", "60", "--drain-timeout-s", "40",
-         "--min-edges", "2", "--no-warm-pool"],
+         "--min-edges", "2", "--no-warm-pool",
+         # Its events and state into the campaign's run in the archive.
+         *(["--run-id", core.archive_run_id()] if core.archive_run_id() else [])],
         stdout=open(ctx.directory / "autoscale.log", "ab"), stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL, start_new_session=True)
     ctx.defer(lambda: controller.poll() is None and controller.terminate())

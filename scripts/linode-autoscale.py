@@ -116,7 +116,12 @@ proof without a Linode.
 
 Every decision, with its inputs, and every action, goes to --events (JSON
 lines, `unix_us`: Unix time in microseconds), the same file as the scale
-run's phases (referee R3), and to stderr.
+run's phases (referee R3), and to stderr. Unless --dry-run, the same events
+and every change of the controller's state go into the run archive as they
+happen (~/needletail-data/<run id>/autoscale/events.ndjson and
+state.ndjson, `unix_us` on each line; NEEDLETAIL_DATA_ROOT overrides): the
+run is --run-id, else on the linode backend the lab's own run (which the
+deploy's collect and the lab's down end), else linode-autoscale-<UTC time>.
 
   linode-autoscale.py run --backend linode --budget-usd 100 \\
       --spent-before-usd 31.4 --events target/compare/scale-a1/events.jsonl
@@ -148,6 +153,7 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
+import archived_run  # noqa: E402
 from mesh_ops import (CLOCK_LIMIT_S, EMPTY_HOLD_S, HTTP_PORT, LIVE_MS, Http,  # noqa: E402
                       Marks, Ops, OpsLock, Refused, address_of, control_accepted,
                       control_body, forwarder_gate, gauge, http_post, signals_held,
@@ -262,14 +268,19 @@ class Events:
     """JSON lines with `unix_us` (Unix time in µs) and `source`, appended
     and flushed one by one, so that they line up with the per-second
     samplers and the listeners' arrivals (referee R3). Also shown on stderr
-    (stdout carries a change's marks and nothing else)."""
+    (stdout carries a change's marks and nothing else), and appended to the
+    run archive's autoscale/events.ndjson with each change of the
+    controller's state to autoscale/state.ndjson (`record`)."""
 
-    def __init__(self, path: str | None, echo: bool = True, clock=time.time):
+    def __init__(self, path: str | None, echo: bool = True, clock=time.time,
+                 record: archived_run.Run | None = None):
         self.path = pathlib.Path(path) if path else None
         self.echo = echo
         self.clock = clock
+        self.record = record
         self.lines: list[dict] = []
         self.lock = threading.Lock()
+        self.last_state: str | None = None
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -282,9 +293,30 @@ class Events:
             if self.path:
                 with open(self.path, "a") as handle:
                     handle.write(text + "\n")
+            if self.record is not None:
+                self.record.append_ndjson(
+                    "events.ndjson", item, "events",
+                    "every decision with its inputs and every action of the autoscaler",
+                    {"unix_us": "us", "*_unix_s": "s", "*_s": "s", "*_ms": "ms"})
             if self.echo:
                 print(text, file=sys.stderr, flush=True)
         return item
+
+    def state(self, state: dict) -> None:
+        """The controller's state, into the run archive each time it is
+        saved changed: its state transitions."""
+        if self.record is None:
+            return
+        text = json.dumps(state, sort_keys=True)
+        with self.lock:
+            if text == self.last_state:
+                return
+            self.last_state = text
+            self.record.append_ndjson(
+                "state.ndjson", {"unix_us": int(self.clock() * 1_000_000), "state": state},
+                "events", "the controller's state each time it changed (its actions, phases, "
+                          "regions, warm pool, losses and recoveries)",
+                {"unix_us": "us", "*_unix": "s (Unix time)", "*_s": "s"})
 
 
 # ------------------------------------------------------------------ backends
@@ -1720,6 +1752,7 @@ class Controller:
     def save(self) -> None:
         if self.state_path is None or self.backend.dry_run:
             return
+        self.events.state(self.state)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.state_path.with_suffix(".next")
         temporary.write_text(json.dumps(self.state, indent=1, sort_keys=True) + "\n")
@@ -1964,7 +1997,7 @@ class Controller:
                 until = now + CREATE_BACKOFF_S
                 self.state["backoff"][name] = until
                 self.fail(name, "create", result["error"])
-                self.events("backoff", node=name, until_unix=int(until),
+                self.events("backoff", node=name, until_unix_s=int(until),
                             why="its create failed; not asked again for "
                                 f"{CREATE_BACKOFF_S:.0f} s")
                 self.done(name, "failed")
@@ -2366,7 +2399,7 @@ class Controller:
             if not record.get("waiting"):
                 record["waiting"] = True
                 self.events("recover_wait", node=name,
-                            next_unix=int(history[-1] + self.config.recover_gap_s),
+                            next_unix_s=int(history[-1] + self.config.recover_gap_s),
                             why=f"one recovery in {self.config.recover_gap_s:.0f} s")
             return
         history.append(now)
@@ -2807,6 +2840,9 @@ def add_backend_flags(parser: argparse.ArgumentParser) -> None:
                         help="the controller's own state (default target/linode-qualification/"
                              "autoscale-<backend>.json)")
     parser.add_argument("--events", default=None, help="append the decisions here (JSON lines)")
+    parser.add_argument("--run-id", default=None,
+                        help="the run in the archive (default: the lab's run on the linode "
+                             "backend, else linode-autoscale-<UTC time>)")
     parser.add_argument("--stream", type=int, default=4001)
     parser.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
     parser.add_argument("--marks", default=None,
@@ -2831,6 +2867,35 @@ def make_backend(args: argparse.Namespace, config: Config, sites: list[str]) -> 
                               "the lab tool's up recorded in the lab state")
         return backend
     return EdgeLabBackend(args.stream, sites)
+
+
+def archive_record(args: argparse.Namespace, backend: Backend, config: Config,
+                   sites: list[str]) -> archived_run.Run:
+    """The controller's run in the archive: --run-id; else on the linode
+    backend the lab's own run, which this controller never ends (the
+    deploy's collect and the lab's down do), else linode-autoscale-<UTC>."""
+    settings = {"command": args.command, "backend": args.backend, "stream": args.stream,
+                "sites": sites, **dataclasses.asdict(config),
+                **({"direction": args.direction, "site": args.site, "tier": args.tier}
+                   if args.command == "scale" else {})}
+    if isinstance(backend, LinodeBackend):
+        state = backend.state()
+        mesh = os.environ.get("NEEDLETAIL_AV_MESH_ROOT", str(ROOT.parent / "av-mesh"))
+        contrib = os.environ.get("NEEDLETAIL_AV_CONTRIB_ROOT", str(ROOT.parent / "av-contrib"))
+        topology = pathlib.Path(state.get("topology_file") or "")
+        return archived_run.Run(
+            args.run_id or state["run_id"], "linode-lab", "linode-autoscale",
+            code=archived_run.code_paths(mesh, contrib), settings=settings,
+            topology=topology if topology.is_file() else None,
+            regions=sorted({node["region"] for node in state["nodes"].values()
+                            if node.get("region")}),
+            prefix="autoscale/", finish=False)
+    lab = backend.edge_lab
+    topology, regions = archived_run.local_topology(lab.NODES)
+    return archived_run.Run(
+        args.run_id or archived_run.default_run_id("linode-autoscale"), "local-lab",
+        "linode-autoscale", code=archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT),
+        settings=settings, topology=topology, regions=regions, prefix="autoscale/")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -2877,6 +2942,7 @@ def main(argv: list[str] | None = None) -> None:
     stdout = sys.stdout
     marks = Marks(out=stdout, marks_file=args.marks)
     sys.stdout = sys.stderr
+    record = code = None
     try:
         inner = make_backend(args, config, sites)
         backend = Guarded(inner, config, dry_run)
@@ -2885,7 +2951,8 @@ def main(argv: list[str] | None = None) -> None:
             # starts (deploy push, lab replace) carries its token.
             lock = OpsLock(backend.lock_path()).acquire()
             inner.lock_env = lock.env()
-        events = Events(args.events)
+            record = archive_record(args, inner, config, sites)
+        events = Events(args.events, record=record)
         state_path = pathlib.Path(args.controller_state or default_state_path(args.backend))
         controller = Controller(backend, config, state_path, events)
         if args.command == "scale":
@@ -2905,6 +2972,11 @@ def main(argv: list[str] | None = None) -> None:
             marks.close()
             if controller is not None:
                 controller.close()
+            if record is not None:
+                if code != EXIT_DONE:
+                    record.fail({EXIT_REFUSED: "refused", EXIT_FAILED: "failed",
+                                 EXIT_INTERRUPTED: "interrupted"}.get(code, "stopped"))
+                record.close()
             if lock is not None:
                 lock.release()
             sys.stdout = stdout
