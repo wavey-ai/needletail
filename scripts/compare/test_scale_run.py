@@ -2203,8 +2203,13 @@ class Phases(unittest.TestCase):
                                   lambda directory, got: scored.append(directory.name) or 0):
             runner.run()
             runner.finish()
-        self.assertEqual(collected, [("start", "F1", 369.0), ("collect", "F1"),
-                                     ("start", "F2", 369.0), ("collect", "F2")])
+        # The probes end when planned: started late by the paths wait and
+        # the reads (here a few ms), they are that much shorter.
+        self.assertEqual([item[:2] for item in collected],
+                         [("start", "F1"), ("collect", "F1"), ("start", "F2"), ("collect", "F2")])
+        for item in (collected[0], collected[2]):
+            self.assertAlmostEqual(item[2], 369.0, delta=0.5)
+            self.assertLessEqual(item[2], 369.0)
         self.assertEqual(scored, ["F1", "F2"])
         for name in ("F1", "F2"):
             labels = {label for _k, _t, label in scale.change_run().marks_of(

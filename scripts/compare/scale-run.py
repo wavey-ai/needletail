@@ -4214,10 +4214,13 @@ class PhaseRunner:
                               "why": f"it would start {late:.0f} s late: a change before it "
                                      "ran past its bound, and it no longer fits the hold"})
                     continue
-                waited = self.wait_paths(name)
+                self.wait_paths(name)
                 self.log_boot_ids(name, "before")
                 if self.probes is not None:
-                    self.start_probes(name, waited)
+                    # Late by the wait, the reads and the schedule: the
+                    # probes still end when planned.
+                    self.start_probes(name, max(0.0, time.time()
+                                                - max(self.start + item["t"], began)))
                 continue
             if name in self.not_run:
                 continue
