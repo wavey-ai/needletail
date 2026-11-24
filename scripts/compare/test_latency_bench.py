@@ -608,7 +608,7 @@ class Video(unittest.TestCase):
             mock.patch.object(lab, "up", lambda overrides: {}),
             mock.patch.object(lab, "down", lambda quiet=False: None),
             mock.patch.object(lab, "wait_live", lambda *a, **k: None),
-            mock.patch.object(lab, "enter", lambda name: []),
+            mock.patch.object(lab, "enter", lambda name, source=False: []),
             mock.patch.object(lab, "load", lambda name, default=None: {}),
             mock.patch.object(lab, "save", lambda name, value: None),
             mock.patch.object(lab, "Sampler", Sampler),

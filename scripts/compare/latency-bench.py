@@ -1900,14 +1900,14 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     if video["source"] is not None:
         lab.start_sources(args.seconds + 120, video=True, audio=None,
                           clip=pathlib.Path(video["source"]["path"]))
-    sender = subprocess.Popen(lab.enter("contrib-lon") + steps["sender"]["command"], stdout=sender_log,
+    sender = subprocess.Popen(lab.enter("contrib-lon", source=True) + steps["sender"]["command"], stdout=sender_log,
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")
     sources["bench-sender"] = sender.pid
     unread_senders = []
     for index, command in enumerate(unread_sender_commands(args, start, steps["media"]["loop"])):
         unread_log = open(out / f"sender-unread-{index}.log", "ab")
-        unread = subprocess.Popen(lab.enter("contrib-lon") + command, stdout=unread_log,
+        unread = subprocess.Popen(lab.enter("contrib-lon", source=True) + command, stdout=unread_log,
                                   stderr=unread_log, stdin=subprocess.DEVNULL,
                                   start_new_session=True)
         unread_log.close()

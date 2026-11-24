@@ -855,8 +855,19 @@ class RealTime(Isolated):
     def test_every_node_two_cpus_and_the_edges_their_own(self):
         sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
         for name in RT_STANDING:
-            self.assertEqual(len(sets[name]), 2, name)
-        self.assertEqual(sets["_rest"], [28, 29, 30, 31])
+            if name != lab.SOURCE_HOST:
+                self.assertEqual(len(sets[name]), 2, name)
+        # The sender's host has the last CPU of the tail alone.
+        self.assertEqual(sets["_rest"], [28, 29, 30])
+        self.assertEqual(sets["_source"], [31])
+        self.assertEqual(sets[lab.SOURCE_HOST], [31])
+        self.assertFalse(any(31 in sets[name] for name in RT_STANDING if name != lab.SOURCE_HOST))
+        self.a_lab_that_is_up(sets, [lab.SOURCE_HOST, CONTRIBUTOR])
+        self.assertEqual(lab.enter(CONTRIBUTOR, source=True)[-3:], ["taskset", "-c", "31"])
+        self.assertEqual(lab.enter(CONTRIBUTOR)[-3:], ["taskset", "-c", "28,29,30"])
+        # Without rt a sender is pinned as any command.
+        plain = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31))
+        self.assertNotIn("_source", plain)
         edges = [name for name in RT_STANDING if lab.node(name)["role"] == "edge"]
         self.assertEqual(len(edges), 5)
         for edge in edges:
@@ -865,7 +876,8 @@ class RealTime(Isolated):
             self.assertEqual(others, [], f"{edge} shares its CPUs")
         # The others share the rest of the ring, never the readers' tail.
         for name in RT_STANDING:
-            self.assertLessEqual(set(sets[name]), set(range(16, 28)), name)
+            if name != lab.SOURCE_HOST:
+                self.assertLessEqual(set(sets[name]), set(range(16, 28)), name)
         # Seven edges do not fit beside the rest: the ring is shared as before.
         crowded = lab.node_cpu_sets(STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
         self.assertNotIn("_edge_cpus", crowded)

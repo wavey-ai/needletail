@@ -125,7 +125,8 @@ the instance's CPU 0, the video one nice -10 on CPU 1. Under rt=1:
   "auto" gives it "0,1" as on Linode, which become its own two CPUs; in a
   range the edges have CPUs of their own when they fit and the other nodes
   share the rest of the ring (`up rt=1 slots=lon-edge-4,new-edge-3` fits
-  five edges and the rest in 16-31);
+  five edges and the rest in 16-31), and the source host (lon-src) has the
+  last CPU of the tail alone, for the sender (enter(..., source=True));
 - each service's scope first raises its own RLIMIT_RTPRIO (99) and
   RLIMIT_NICE (40) with `sudo -n prlimit --pid $$` and then becomes the
   service as the user (RT_GRANT): a capability would not reach a process
@@ -546,17 +547,19 @@ def nsenter(name: str | None) -> list[str]:
     return ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
 
 
-def enter(name: str | None) -> list[str]:
+def enter(name: str | None, source: bool = False) -> list[str]:
     """Command prefix that runs a command of the lab's own (a reader, the
     load tool, a probe, a sender, tc, curl) in the namespace of a node, or
     in the lab namespace for `None`. Such a command is in the lab's tools
     scope with the process that starts it (join_tools) and, with the lab's
     CPU sets (`cpus`, `node_cpus`), on the CPUs that are not the nodes'.
     Only a node's service runs elsewhere: in its own scope, on its own CPUs
-    (start_service)."""
+    (start_service). `source`: a sender, on the source host's own CPU when
+    the layout gives it one (rt=1, "_source"), else as any command."""
     prefix = nsenter(name)
     join_tools()
-    rest = load("cpus.json").get("_rest")
+    sets = load("cpus.json")
+    rest = sets.get("_source") if source and sets.get("_source") else sets.get("_rest")
     if rest:
         prefix += ["taskset", "-c", cpu_list(rest)]
     return prefix
@@ -813,6 +816,9 @@ def take_window(sets: dict, name: str) -> list[int]:
     `node_cpus`: the next CPUs of the host, its own, taken from "_rest" (a
     contributor PINNED_CONTRIBUTOR_CPUS of them). With "_per_node" (rt=1):
     exactly that many, whatever the node's limit."""
+    if name == SOURCE_HOST and "_source" in sets:
+        sets[name] = list(sets["_source"])
+        return sets[name]
     count = sets.get("_per_node") or max(1, default_limits(name)["cpu_percent"] // 100)
     if "_range" not in sets and node(name)["role"] == "contributor":
         count = min(count, PINNED_CONTRIBUTOR_CPUS)
@@ -876,6 +882,12 @@ def node_cpu_sets(names: list[str], first: int | None = None,
                "_rest": list(range(high + 1 - rest, high + 1)), "_next": 0}
         if per_node:
             out["_per_node"] = per_node
+            # The source host's sender has a CPU of its own, the last of
+            # the tail, as lon-src is a host of its own on Linode: a sender
+            # starved by the readers is late, and its lateness looks like
+            # a stall of the whole mesh.
+            if len(out["_rest"]) >= 3:
+                out["_source"], out["_rest"] = out["_rest"][-1:], out["_rest"][:-1]
             ring = out["_node_cpus"]
             need = per_node * sum(1 for name in names if node(name)["role"] == "edge")
             if need and need + per_node <= len(ring):
