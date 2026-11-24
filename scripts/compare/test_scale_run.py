@@ -12,8 +12,11 @@ committed phase plan (at most 2 of 5 edges at once, F9 and A3 only when
 named), its timeline (a kill is node loss, every fault restored), entry
 points and liveness away from the faults, steered readers, the autoscale
 listener profile, faults left out of what gave out first, the stranded
-detector, a scenario's before/during/after analysis from files, the runner's
-order, Unix-µs events and owed restores, and the plan's phase cost.
+detector, a scenario's before/during/after analysis from files, `analyse`
+on a phase run's directory, the serving edges as the only receiving edges,
+missing parts booked when they were due (the load tool's settle time, its
+final line, a clean baseline), the runner's order, Unix-µs events and owed
+restores, and the plan's phase cost and default step.
 python3 -m unittest scripts/compare/test_scale_run.py"""
 
 from __future__ import annotations
@@ -47,6 +50,11 @@ STANDBY = [f"{short}-edge-{index}" for short in ("syd", "lon", "new", "tok")
 
 def lab(without=()) -> dict:
     return scale.topology_state(TOPOLOGY, list(without))
+
+
+# Edges 1 to 5 of every region: in service on the first curve.
+SERVING = sorted((name for name, node in lab()["nodes"].items()
+                  if node["role"] == "edge" and name not in STANDBY), key=scale.natural)
 
 
 _lab_spec = importlib.util.spec_from_file_location("small_mesh_lab",
@@ -944,8 +952,9 @@ class Phases(unittest.TestCase):
         """A step of F1 (drain lon-edge-1) from its files: lon-load-1 with
         listeners on lon-edge-1 and lon-edge-2, which move off lon-edge-1 at
         the fault onto lon-edge-2 (and two onto lon-edge-3), their missing
-        parts booked on lon-edge-2 as needletail-load does; a survivor sampler; the mesh samplers;
-        a reader report with one move."""
+        parts booked on lon-edge-2 as needletail-load does, in the intervals
+        where it counts them (1.5 s after they were due); a survivor
+        sampler; the mesh samplers; a reader report with one move."""
         state = lab()
         address = {name: f"{state['nodes'][name]['vlan_ipv4']}:19446"
                    for name in ("lon-edge-1", "lon-edge-2", "lon-edge-3")}
@@ -957,12 +966,14 @@ class Phases(unittest.TestCase):
             moving = fault <= t < fault + 2
             # needletail-load books a moved listener's missing parts on the
             # edge it moved to (src/load.rs mark(): the current edge's
-            # counters), never on the edge it left.
+            # counters), never on the edge it left, and when the newest part
+            # is 1,500 past them (settle()): two intervals after the moves.
+            settled = fault + 2 <= t < fault + 4
             edges = {address["lon-edge-1"]: {"up": 0 if t >= fault + 2 else 50,
                                              "parts": 0 if t >= fault + 2 else 50_000,
                                              "missing": 0, "moves": 0},
                      address["lon-edge-2"]: {"up": 98 if t >= fault + 2 else 50, "parts": 50_000,
-                                             "missing": 1 if moving else 0,
+                                             "missing": 1 if settled else 0,
                                              "moves": 24 if moving else 0},
                      address["lon-edge-3"]: {"up": 2 if t >= fault + 2 else 0, "parts": 0,
                                              "missing": 0, "moves": 1 if moving else 0}}
@@ -979,7 +990,7 @@ class Phases(unittest.TestCase):
                     # stalls, moves and loses a part 5 s later: collateral.
                     for edge in edges.values():
                         edge["left_lost"] = 0
-                    edges[address["lon-edge-1"]]["left_lost"] = 1 if moving else 0
+                    edges[address["lon-edge-1"]]["left_lost"] = 1 if settled else 0
                     if int(t - fault) == 5:
                         edges[address["lon-edge-3"]].update(
                             missing=1, missing_moved=1, left_lost=1)
@@ -1022,8 +1033,8 @@ class Phases(unittest.TestCase):
         self.write_phase_step(directory, start, timeline)
         events = [{"unix_us": int((start + 60) * 1e6), "event": "action", "node": "lon-edge-1"},
                   {"unix_us": int((start + 500) * 1e6), "event": "later"}]
-        result = scale.analyse_phases(lab(), directory, timeline, start, plan, events,
-                                      readers_launched=start - 10)[0]
+        result = scale.analyse_phases(lab(), directory, timeline, start, plan, SERVING,
+                                      "pcm-1", events, readers_launched=start - 10)[0]
         self.assertEqual(result["name"], "F1")
         self.assertEqual(result["targets"], ["lon-edge-1"])
         self.assertEqual(result["windows"]["during"], [start + 60, start + 150])
@@ -1109,8 +1120,8 @@ class Phases(unittest.TestCase):
         timeline = scale.phase_timeline(plan)
         start = 1_790_000_000.0
         self.write_phase_step(directory, start, timeline, am10=True)
-        result = scale.analyse_phases(lab(), directory, timeline, start, plan, [],
-                                      readers_launched=start - 10)[0]
+        result = scale.analyse_phases(lab(), directory, timeline, start, plan, SERVING,
+                                      "pcm-1", [], readers_launched=start - 10)[0]
         during = result["udp"]["during"]
         self.assertEqual(during["unaffected"]["missing_moved"], 2)
         self.assertEqual(during["unaffected"]["time_to_move_ms"]["count"], 48)
@@ -1134,8 +1145,8 @@ class Phases(unittest.TestCase):
         timeline = scale.phase_timeline(plan)
         start = 1_790_000_000.0
         self.write_phase_step(directory, start, timeline, am10=True, left_lost=True)
-        result = scale.analyse_phases(lab(), directory, timeline, start, plan, [],
-                                      readers_launched=start - 10)[0]
+        result = scale.analyse_phases(lab(), directory, timeline, start, plan, SERVING,
+                                      "pcm-1", [], readers_launched=start - 10)[0]
         during = result["udp"]["during"]
         self.assertEqual(during["faulted"]["left_lost"], 2)
         self.assertEqual(during["unaffected"]["left_lost"], 1)
@@ -1143,6 +1154,379 @@ class Phases(unittest.TestCase):
         unaffected = criteria["unaffected listeners alone: 0 missing"]
         self.assertFalse(unaffected["ok"], unaffected)
         self.assertEqual(unaffected["value"], 1)
+
+    def test_analyse_reads_back_a_phase_run(self):
+        """`analyse` on a phase run's directory as `run` leaves it (plan.json,
+        phases.json, events.jsonl, scale.json, steps/N/HOST/...): the faults'
+        windows, the serving edges and the lane come back from the files,
+        and the step and its scenario read the same again."""
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        directory = tmp / "scale-ph-f"
+        state = lab()
+        phase_plan = scale.load_phase_plan(PHASES, names=["F1"])
+        timeline = scale.phase_timeline(phase_plan)
+        plan = scale.plan_steps(state, [6000], "pcm-1", 0.05, standby=STANDBY,
+                                hold=timeline["hold_s"])
+        step = plan["steps"][0]
+        start = 1_790_000_000.0  # the end of the ramp
+        fault = start + timeline["scenarios"][0]["fault"]
+        step_dir = directory / "steps" / str(step["listeners"])
+        step_dir.mkdir(parents=True)
+        self.write_phase_step(step_dir, start, timeline, am10=True, left_lost=True)
+        # The drained edge's last listeners miss every part of one interval:
+        # an edge that gave out, were it not under its own fault.
+        intervals = step_dir / "lon-load-1" / "udp" / "intervals.jsonl"
+        lines = [json.loads(line) for line in intervals.read_text().splitlines()]
+        drained = f"{state['nodes']['lon-edge-1']['vlan_ipv4']}:19446"
+        for line in lines:
+            if line["unix_ms"] == int((fault + 3) * 1000):
+                line["edges"][drained]["missing"] = 600
+        intervals.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        window = (start, start + timeline["hold_s"])
+        self.assertEqual(scale.analyse_step(state, step_dir, step, window)[
+            "gave_out_first"]["node"], "lon-edge-1")
+        events = [{"unix_us": int(fault * 1e6), "source": "scale-run", "event": "action",
+                   "kind": "drain", "node": "lon-edge-1", "scenario": "F1"}]
+        (directory / "events.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in events) + "\n")
+        (directory / "plan.json").write_text(json.dumps(plan, indent=1) + "\n")
+        (directory / "phases.json").write_text(json.dumps(
+            {"plan": phase_plan, "timeline": timeline, "serving_edges": SERVING}, indent=1) + "\n")
+        # The step's record as run_step leaves it.
+        exclude = scale.exclusion(timeline, start)
+        first = scale.analyse_step(state, step_dir, step, window, "pcm-1", exclude)
+        first["stopped"] = None
+        first["ramp_s"], first["hold_s"] = step["ramp_s"], step["hold_s"]
+        first["phase_start"], first["readers_launched"] = start, start - 10
+        first["exclude"] = exclude
+        first["phases"] = scale.analyse_phases(state, step_dir, timeline, start, phase_plan,
+                                               SERVING, "pcm-1", events, start - 10)
+        scale.write_results(directory, {"run": "ph-f", "config": "pcm-1", "hls_share": 0.05,
+                                        "standby_edges": STANDBY, "steps": [first]})
+        written = json.loads((directory / "scale.json").read_text())
+        (directory / "summary.md").unlink()
+        args = argparse.Namespace(run=str(directory), topology=str(TOPOLOGY), topology_only=True)
+        with redirect_stdout(io.StringIO()) as out:
+            scale.command_analyse(args)
+        again = json.loads((directory / "scale.json").read_text())
+        self.assertEqual(again, written)
+        outcome = again["steps"][0]
+        # The fault's windows came back: the drained edge did not give out.
+        self.assertIsNone(outcome["gave_out_first"])
+        self.assertEqual(outcome["exclude"]["node_windows"]["lon-edge-1"],
+                         [[fault, start + timeline["hold_s"]]])
+        scenario = outcome["phases"][0]
+        self.assertEqual((scenario["name"], scenario["targets"]), ("F1", ["lon-edge-1"]))
+        self.assertEqual(scenario["udp"]["during"]["faulted"]["missing"], 600)
+        self.assertEqual(sorted(scenario["moves"]["listeners_after"]),
+                         ["lon-edge-2", "lon-edge-3", "lon-edge-4", "lon-edge-5"])
+        self.assertEqual([item["event"] for item in scenario["events"]], ["action"])
+        self.assertIn("| F1 | lon-edge-1 |", out.getvalue())
+        self.assertEqual(out.getvalue(), (directory / "summary.md").read_text() + "\n")
+
+    def write_f1_moves(self, state: dict, taken: dict[str, int]):
+        """A step directory of F1: 50 listeners on each of London's five
+        serving edges; lon-edge-1 drains and its listeners move in the
+        second after the fault, `taken` {edge: count} of them to each other
+        edge. The directory, the plan, the timeline and the start."""
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        plan = scale.load_phase_plan(PHASES, names=["F1"])
+        timeline = scale.phase_timeline(plan)
+        row = timeline["scenarios"][0]
+        start = 1_790_000_000.0
+        fault = start + row["fault"]
+        london = [f"lon-edge-{index}" for index in range(1, 11)]
+        address = {name: f"{state['nodes'][name]['vlan_ipv4']}:19446" for name in london[:5]}
+        lines = []
+        for second in range(int(row["end"]) + 1):
+            t = start + second
+            moved, moving = t > fault, t == fault + 1
+            edges = {address["lon-edge-1"]: {"up": 0 if moved else 50, "moves": 0,
+                                             "parts": 0 if moved else 50_000, "missing": 0}}
+            for name, count in taken.items():
+                edges[address[name]] = {
+                    "up": 50 + count if moved else 50, "parts": 50_000, "missing": 0,
+                    "moves": count if moving else 0,
+                    "moves_in_by_reason": {"drain": count} if moving else {}}
+            lines.append({"unix_ms": int(t * 1000), "phase": "run", "edges": edges,
+                          "total": {"up": 250, "active": 250, "parts": 250_000, "missing": 0}})
+        host = directory / "lon-load-1" / "udp"
+        host.mkdir(parents=True)
+        (host / "intervals.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+        for name in london:
+            rows = []
+            for second in range(int(row["end"]) + 1):
+                t = start + second
+                if name in STANDBY:
+                    # The sampler of a stopped node: no endpoint answers.
+                    rows.append({"t": t, "node": name})
+                    continue
+                listeners = 50 if t <= fault else 50 + taken.get(name, -50)
+                rows.append({"t": t, "node": name, "load_permille": 8 * listeners,
+                             "draining": False, "sessions": 0,
+                             "client_udp": {"subscribers": listeners}})
+            (directory / name).mkdir()
+            (directory / name / "mesh.jsonl").write_text(
+                "\n".join(json.dumps(item) for item in rows))
+        return directory, plan, timeline, start
+
+    def test_standby_edges_are_not_receiving_edges(self):
+        """The edges that take a faulted edge's listeners are those in
+        service when the phases began. An edge held out on standby is
+        stopped: it has no load and no gauge, and counted as a receiving
+        edge it left the share and the balance of F1 and F2 unjudged."""
+        state = lab()
+        asked = []
+
+        def answer(node, path, timeout=5.0):
+            asked.append((node["name"], path))
+            if node["name"] == "lon-edge-2":
+                return {"state": "draining", "ready": False, "not_ready": ["draining: operator"],
+                        "drain_reasons": ["operator"]}
+            if node["name"] == "new-edge-3":
+                return {"error": "timed out"}
+            return {"state": "ready", "ready": True, "not_ready": []}
+
+        with mock.patch.object(scale, "http_get", answer), \
+                mock.patch.object(scale.time, "sleep", lambda seconds: None):
+            serving, left_out = scale.serving_edges(state, STANDBY)
+        self.assertEqual(serving, [name for name in SERVING
+                                   if name not in ("lon-edge-2", "new-edge-3")])
+        self.assertEqual(left_out, {
+            "lon-edge-2": {"state": "draining", "not_ready": ["draining: operator"],
+                           "drain_reasons": ["operator"]},
+            "new-edge-3": {"error": "timed out"}})
+        # An edge on standby is not asked: it is out whatever it would say.
+        # One that does not answer is asked again.
+        self.assertEqual(sorted(asked), sorted(
+            [(name, "/api/node") for name in SERVING]
+            + [("new-edge-3", "/api/node")] * scale.NODE_RETRIES))
+
+        london = [f"lon-edge-{index}" for index in range(1, 11)]
+        # lon-edge-1 drains and its 50 listeners move to the other four
+        # serving edges: 13, 12, 13 and 12.
+        directory, plan, timeline, start = self.write_f1_moves(
+            state, dict(zip(london[1:5], (13, 12, 13, 12))))
+        share = "each edge's moves within 1.3x of its headroom-weighted share"
+        after = "listeners per receiving edge after the moves max/mean <= 1.15"
+        result = scale.analyse_phases(state, directory, timeline, start, plan, SERVING,
+                                      "pcm-1")[0]
+        criteria = {item["criterion"]: item for item in result["criteria"]}
+        self.assertEqual(result["moves"]["listeners_after"],
+                         {"lon-edge-2": 63, "lon-edge-3": 62, "lon-edge-4": 63, "lon-edge-5": 62})
+        self.assertEqual(sorted(result["moves"]["udp_by_headroom"]), london[1:5])
+        self.assertTrue(criteria[share]["ok"], criteria[share])
+        self.assertEqual(criteria[share]["value"]["worst"], 1.042)  # 12 of a due 12.5
+        self.assertTrue(criteria[after]["ok"], criteria[after])
+        self.assertEqual(criteria[after]["value"], 1.008)
+        self.assertEqual(result["moves"]["udp_spread_max_over_mean"], 1.04)
+        # With every edge of the site counted, as before: nothing judged,
+        # and the spread thinned over five edges that took nobody.
+        every = [name for name, node in state["nodes"].items() if node["role"] == "edge"]
+        result = scale.analyse_phases(state, directory, timeline, start, plan,
+                                      sorted(every, key=scale.natural), "pcm-1")[0]
+        criteria = {item["criterion"]: item for item in result["criteria"]}
+        self.assertIsNone(criteria[share]["ok"])
+        self.assertIsNone(criteria[after]["ok"])
+        self.assertEqual(result["moves"]["udp_spread_max_over_mean"], 2.34)
+
+    def test_moves_into_an_edge_left_out_fail_the_share_and_the_balance(self):
+        """Review of CL6: an edge in service that serving_edges left out
+        still takes listeners. Its moves are weighed, and the share and the
+        balance fail naming it, never pass over the edges that were listed."""
+        state = lab()
+        london = [f"lon-edge-{index}" for index in range(2, 6)]
+        # lon-edge-5 takes 40 of lon-edge-1's 50: the imbalance F1 catches.
+        directory, plan, timeline, start = self.write_f1_moves(
+            state, dict(zip(london, (3, 3, 4, 40))))
+        share = "each edge's moves within 1.3x of its headroom-weighted share"
+        after = "listeners per receiving edge after the moves max/mean <= 1.15"
+
+        def criteria(serving: list[str]) -> tuple[dict, dict]:
+            result = scale.analyse_phases(state, directory, timeline, start, plan, serving,
+                                          "pcm-1")[0]
+            return result, {item["criterion"]: item for item in result["criteria"]}
+
+        result, judged = criteria(SERVING)
+        self.assertEqual(result["moves"]["unlisted_receiving"], [])
+        self.assertFalse(judged[share]["ok"])
+        self.assertEqual(judged[share]["value"]["worst"], 4.167)
+        self.assertFalse(judged[after]["ok"])
+        self.assertEqual(judged[after]["value"], 1.44)
+        result, judged = criteria([name for name in SERVING if name != "lon-edge-5"])
+        self.assertEqual(result["moves"]["unlisted_receiving"], ["lon-edge-5"])
+        self.assertEqual(sorted(result["moves"]["listeners_after"]), london)
+        self.assertFalse(judged[share]["ok"], judged[share])
+        self.assertEqual(judged[share]["value"]["not_serving"], ["lon-edge-5"])
+        self.assertEqual(judged[share]["value"]["worst"], 4.167)
+        self.assertFalse(judged[after]["ok"], judged[after])
+        self.assertEqual(judged[after]["value"], {"max_over_mean": 1.44,
+                                                  "not_serving": ["lon-edge-5"]})
+        self.assertIn("not_serving", scale.format_phases([result]))
+
+    def test_a_phase_run_records_its_serving_edges_or_does_not_start(self):
+        """`run` asks every edge not on standby for /api/node as the phases
+        begin, asks again an edge that did not answer, and writes the ready
+        ones to phases.json, which `analyse` requires; an edge that never
+        answers, a build without /api/node, or no ready edge stops the run
+        before anything is started."""
+        state = lab()
+        phase_plan = scale.load_phase_plan(PHASES, names=["F1"])
+        timeline = scale.phase_timeline(phase_plan)
+        plan = scale.plan_steps(state, [6000], "pcm-1", 0.05, standby=STANDBY,
+                                hold=timeline["hold_s"])
+        plan["cost"] = scale.cost_estimate(state, plan)
+        asked: list[str] = []
+
+        def begin(answer) -> tuple[pathlib.Path, dict, list[dict]]:
+            directory = pathlib.Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, directory, True)
+            phases, logged = {"plan": phase_plan, "timeline": timeline}, []
+            asked.clear()
+
+            def get(node, path, timeout=5.0):
+                asked.append(node["name"])
+                return answer(node["name"], asked.count(node["name"]))
+            with mock.patch.object(scale, "http_get", get), \
+                    mock.patch.object(scale.time, "sleep", lambda seconds: None):
+                scale.begin_phases(state, STANDBY, phases, plan, directory, logged.append)
+            return directory, phases, logged
+
+        ready = {"state": "ready", "ready": True, "not_ready": []}
+        # new-edge-3 times out once and answers the second time.
+        directory, phases, logged = begin(
+            lambda name, tries: {"error": "timed out"} if name == "new-edge-3" and tries == 1
+            else ready)
+        self.assertEqual(asked.count("new-edge-3"), 2)
+        self.assertEqual(phases["serving_edges"], SERVING)
+        written = json.loads((directory / "phases.json").read_text())
+        self.assertEqual(written["serving_edges"], SERVING)
+        self.assertEqual(written["timeline"], timeline)
+        self.assertIn("pro_rata_usd", written["cost"])
+        self.assertEqual(logged, [{"serving_edges": SERVING, "not_ready": {}}])
+        # A draining edge is left out by its own word.
+        directory, phases, logged = begin(
+            lambda name, tries: {"state": "draining", "ready": False,
+                                 "drain_reasons": ["operator"]}
+            if name == "lon-edge-2" else ready)
+        self.assertNotIn("lon-edge-2", phases["serving_edges"])
+        self.assertEqual(logged[0]["not_ready"],
+                         {"lon-edge-2": {"state": "draining", "drain_reasons": ["operator"]}})
+        for answer, text in (
+                (lambda name, tries: {"error": "timed out"} if name == "new-edge-3" else ready,
+                 "new-edge-3 (timed out)"),
+                (lambda name, tries: {"error": "HTTP Error 404: Not Found"},
+                 "this build has no /api/node"),
+                (lambda name, tries: {"state": "starting", "ready": False},
+                 "no edge in service says it is ready")):
+            with self.assertRaises(SystemExit) as caught:
+                begin(answer)
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual(asked.count("lon-edge-1"), 1)
+        # An edge that never answers is asked three times in all.
+        with self.assertRaises(SystemExit):
+            begin(lambda name, tries: {"error": "timed out"} if name == "new-edge-3" else ready)
+        self.assertEqual(asked.count("new-edge-3"), 1 + scale.NODE_RETRIES)
+
+    def test_a_phase_run_keeps_the_load_tools_settle_time(self):
+        """Review of CL6: the analysis books losses by the load tool's
+        default settle time, so a phase run refuses another."""
+        for extra in ("--settle-parts 500", "--quiet --settle-ms=3500"):
+            args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="",
+                                      steps=None, hls_share=None, config=None, joins=None,
+                                      lk_per_sfu=None, load_args=extra)
+            with self.assertRaises(ValueError) as caught:
+                scale.phase_setup(args)
+            self.assertIn("settle", str(caught.exception))
+        args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="", steps=None,
+                                  hls_share=None, config=None, joins=None, lk_per_sfu=None,
+                                  load_args="--quiet")
+        self.assertIsNotNone(scale.phase_setup(args))
+
+    def test_a_late_settle_is_booked_in_its_own_scenario(self):
+        """needletail-load counts a part missing 1,500 parts after it was due
+        and its final line carries what was still open when it stopped: a
+        scenario's last losses are booked in that scenario, the final line
+        in the last window, and a loss in a scenario's baseline voids it."""
+        self.assertEqual(scale.settle_seconds("pcm-1"), 1.5)
+        self.assertEqual(scale.settle_seconds("opus-2.5"), 3.75)
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        plan = scale.load_phase_plan(PHASES, names=["F1", "F2"])
+        timeline = scale.phase_timeline(plan)
+        self.assertEqual([(row["base_start"], row["end"]) for row in timeline["scenarios"]],
+                         [(0, 180), (180, 360)])
+        state = lab()
+        start = 1_790_000_000.0
+        address = f"{state['nodes']['lon-edge-2']['vlan_ipv4']}:19446"
+        (directory / "lon-load-1" / "udp").mkdir(parents=True)
+
+        def analyse(missing_in: dict[int, int], final_missing: int = 0,
+                    config: str = "pcm-1") -> dict:
+            """The scenarios of a step whose load tool counted `missing_in`
+            {second of the hold: parts} and `final_missing` as it stopped."""
+            lines = [{"schema": "needletail.load.interval.v1", "phase": "run",
+                      "t": 30.0 + second, "unix_ms": int((start + second) * 1000),
+                      "total": {"up": 100, "active": 100, "parts": 100_000,
+                                "missing": missing_in.get(second, 0)},
+                      "edges": {address: {"up": 100, "active": 100, "parts": 100_000,
+                                          "missing": missing_in.get(second, 0), "moves": 0}}}
+                     for second in range(1, 361)]
+            # The tool's last line, after its drain: seconds from its start
+            # and no Unix time (src/load.rs).
+            lines.append({"schema": "needletail.load.interval.v1", "phase": "final", "t": 390.6,
+                          "total": {"parts": 600, "missing": final_missing},
+                          "edges": {address: {"parts": 600, "missing": final_missing,
+                                              "moves": 0}}})
+            (directory / "lon-load-1" / "udp" / "intervals.jsonl").write_text(
+                "\n".join(json.dumps(line) for line in lines) + "\n")
+            return {item["name"]: item for item in scale.analyse_phases(
+                state, directory, timeline, start, plan, SERVING, config)}
+
+        def missing(result: dict, name: str, window: str) -> int:
+            return result[name]["udp"][window]["unaffected"]["missing"]
+
+        def criterion(result: dict, name: str, text: str) -> dict:
+            return {item["criterion"]: item for item in result[name]["criteria"]}[text]
+
+        every = "all listeners (moved ones included): 0 missing"
+        # A part due 0.8 s before F1 ends is counted 1.5 s later, in the
+        # first interval of F2's baseline; two more are open when the tool
+        # stops.
+        result = analyse({181: 1}, final_missing=2)
+        self.assertEqual(result["F1"]["settle_s"], 1.5)
+        self.assertEqual(missing(result, "F1", "after"), 1)
+        self.assertEqual(criterion(result, "F1", every)["value"], 1)
+        self.assertFalse(criterion(result, "F1", every)["ok"])
+        self.assertEqual(missing(result, "F2", "before"), 0)
+        self.assertTrue(criterion(result, "F2", "baseline: 0 missing")["ok"])
+        self.assertEqual(missing(result, "F2", "after"), 2)
+        self.assertEqual(result["F2"]["udp"]["after"]["unaffected"]["parts"], 30 * 100_000 + 600)
+        self.assertEqual(criterion(result, "F2", every)["value"], 2)
+        self.assertEqual(missing(result, "F1", "before") + missing(result, "F1", "during")
+                         + missing(result, "F2", "during"), 0)
+        # A part lost in F2's own baseline: whatever F2 shows is void.
+        result = analyse({181: 1, 203: 1})
+        baseline = criterion(result, "F2", "baseline: 0 missing")
+        self.assertFalse(baseline["ok"])
+        self.assertEqual(baseline["value"], 1)
+        self.assertTrue(criterion(result, "F2", every)["ok"])
+        self.assertIn("FAIL baseline: 0 missing (1)", scale.format_phases(list(result.values())))
+        # At 2.5 ms a part is counted 3.75 s after it was due.
+        self.assertEqual(missing(analyse({183: 1}), "F2", "before"), 1)
+        result = analyse({183: 1}, config="opus-2.5")
+        self.assertEqual(result["F1"]["settle_s"], 3.75)
+        self.assertEqual((missing(result, "F1", "after"), missing(result, "F2", "before")), (1, 0))
+        # No listener intervals at all (a host's file not fetched): the
+        # baseline is not known clean, so it is open, not passed.
+        (directory / "lon-load-1" / "udp" / "intervals.jsonl").unlink()
+        result = {item["name"]: item for item in scale.analyse_phases(
+            state, directory, timeline, start, plan, SERVING, "pcm-1")}
+        baseline = criterion(result, "F1", "baseline: 0 missing")
+        self.assertIsNone(baseline["ok"])
+        self.assertEqual(baseline["needs"], "no listener intervals in the baseline")
 
     def test_the_autoscale_phases_need_a_datagram_capacity(self):
         """Wave 8 review: A1-A3 need client_udp_datagram_capacity in the
@@ -1165,8 +1549,9 @@ class Phases(unittest.TestCase):
         spec = next(item for item in plan["scenarios"] if item["name"] == "A1")
         quiet = {"nodes": [], "cpu_max": 0.1, "core_max": 0.1, "nic_share_max": 0.1}
         result = {"stranded": {"max": 0},
-                  "udp": {key: {side: {"missing": 0} for side in ("unaffected", "faulted")}
-                          for key in ("during", "after")},
+                  "udp": {key: {side: {"missing": 0, "parts": 1000}
+                                for side in ("unaffected", "faulted")}
+                          for key in ("before", "during", "after")},
                   "survivors": {key: dict(quiet) for key in ("before", "during", "after")},
                   "moves": {"udp": 0, "udp_spread_max_over_mean": None},
                   "mesh": {key: {"survivors": {}} for key in ("before", "during", "after")}}
@@ -1397,7 +1782,18 @@ class Phases(unittest.TestCase):
             scenarios="")
         with redirect_stdout(io.StringIO()) as out:
             plan = scale.command_plan(args)
-        self.assertEqual(plan["steps"][0]["listeners"], 8000)
+        # The plan's own default, which is what its schedule runs, in
+        # every group.
+        self.assertEqual(plan["steps"][0]["listeners"], 6000)
+        for group in ("F", "R", "A"):
+            asked = argparse.Namespace(phase_plan=str(PHASES), group=group, scenarios="",
+                                       steps=None, hls_share=None, config=None)
+            scale.phase_setup(asked)
+            self.assertEqual(asked.steps, "6000", group)
+        runs = [block["run"] for block in json.loads(PHASES.read_text())["schedule"]["blocks"]
+                if "--phase-plan" in block.get("run", "")]
+        self.assertEqual([re.search(r"--steps (\S+)", run).group(1) for run in runs],
+                         ["6000"] * 3)
         self.assertEqual(plan["steps"][0]["hold_s"], 9 * 180)
         self.assertIn("F8", out.getvalue())
         cost = plan["phases"]["cost"]
