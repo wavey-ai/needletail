@@ -840,3 +840,205 @@ class Tools(Isolated):
                 mock.patch.object(lab, "read_cgroup", lambda directory: (
                     {"usage_usec": usage[str(directory)]} if str(directory) in usage else {})):
             self.assertEqual(lab.scope_cpu_usec(), {"tools": 500, EDGE: 1200})
+
+
+# The edges that an rt=1 lab in 16-31 starts: lon-edge-4 and new-edge-3 held
+# as slots, so that five edges have CPUs of their own.
+RT_STANDING = [name for name in STANDING if name not in ("lon-edge-4", "new-edge-3")]
+
+
+class RealTime(Isolated):
+    """`up rt=1`: real-time scheduling as a Linode unit has it, granted to
+    the node's own process by its real-time limits, never by running it as
+    root; two CPUs a node; class threads pinned as the deploy pins them."""
+
+    def test_every_node_two_cpus_and_the_edges_their_own(self):
+        sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
+        for name in RT_STANDING:
+            self.assertEqual(len(sets[name]), 2, name)
+        self.assertEqual(sets["_rest"], [28, 29, 30, 31])
+        edges = [name for name in RT_STANDING if lab.node(name)["role"] == "edge"]
+        self.assertEqual(len(edges), 5)
+        for edge in edges:
+            others = [name for name in RT_STANDING if name != edge
+                      and set(sets[name]) & set(sets[edge])]
+            self.assertEqual(others, [], f"{edge} shares its CPUs")
+        # The others share the rest of the ring, never the readers' tail.
+        for name in RT_STANDING:
+            self.assertLessEqual(set(sets[name]), set(range(16, 28)), name)
+        # Seven edges do not fit beside the rest: the ring is shared as before.
+        crowded = lab.node_cpu_sets(STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
+        self.assertNotIn("_edge_cpus", crowded)
+        self.assertEqual(len(crowded[CONTRIBUTOR]), 2)
+        # A slot edge taken in later wraps on the edges' ring.
+        lab.save("cpus.json", sets)
+        self.assertLessEqual(set(lab.node_cpus("lon-edge-4")), set(sets["_edge_cpus"]))
+        # Without rt the layout is as it was.
+        self.assertEqual(lab.node_cpu_sets(RT_STANDING, cpus=(16, 31))[CONTRIBUTOR],
+                         [16, 17, 18, 19])
+        # node_cpus: own CPUs anyway, two each.
+        first = lab.node_cpu_sets(STANDING, first=0, per_node=lab.RT_CPUS)
+        self.assertEqual(first[CONTRIBUTOR], [0, 1])
+
+    def test_the_node_raises_its_own_limits_and_runs_as_the_user(self):
+        sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
+        lab.save("rendered.json", {EDGE: {"rust_log": "info", "args": [
+            "/bin/av-mesh", "--relay-class-cpus", "0,1"]}})
+        self.a_lab_that_is_up(sets, [EDGE, CONTRIBUTOR, "lon-readers"])
+        window = ",".join(str(cpu) for cpu in sets[EDGE])
+        for realtime in (False, True):
+            lab.save("rt.json", {"rt": realtime})
+            with mock.patch.object(lab.subprocess, "run"), \
+                    mock.patch.object(lab.subprocess, "Popen") as popen:
+                popen.return_value.pid = 4242
+                lab.start_service(EDGE)
+            command = popen.call_args.args[0]
+            at = command.index("--")
+            service = ["nsenter", "--preserve-credentials", "-U", "-n", "-t", "101",
+                       "taskset", "-c", window, "/bin/av-mesh", "--relay-class-cpus", window]
+            if not realtime:
+                self.assertEqual(command[at + 1:], service)
+                self.assertNotIn("--expand-environment=no", command)
+                continue
+            # systemd-run leaves $$ to the shell; the shell raises its own
+            # limits (sudo runs prlimit, nothing else) and becomes the service.
+            self.assertIn("--expand-environment=no", command[:at])
+            self.assertEqual(command[at + 1:at + 5], [
+                "sh", "-c", lab.RT_GRANT.format(prio=99, nice=40), "needletail-rt"])
+            self.assertEqual(command[at + 5:], service)
+            grant = command[at + 3]
+            self.assertIn("sudo -n prlimit --pid $$ --rtprio=99:99 --nice=40:40", grant)
+            self.assertTrue(grant.endswith('exec "$@"'))
+            self.assertEqual(grant.count("sudo -n prlimit --pid"), 1, "sudo runs prlimit once")
+
+    def test_the_grant_raises_the_shells_own_limits_then_execs(self):
+        # A sudo of the test's own, on PATH: it records what it was asked.
+        fake = self.tmp / "bin"
+        fake.mkdir()
+        record = self.tmp / "sudo.args"
+        (fake / "sudo").write_text(f'#!/bin/sh\necho "$PPID $*" >{record}\nexit "${{FAKE_SUDO:-0}}"\n')
+        (fake / "sudo").chmod(0o755)
+        grant = lab.RT_GRANT.format(prio=99, nice=40)
+        env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+        result = subprocess.run(["sh", "-c", grant, "needletail-rt", "sh", "-c", "echo $$"],
+                                capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parent, *argv = record.read_text().split()
+        # --pid is the shell itself, which the service then is (exec).
+        self.assertEqual(argv, ["-n", "prlimit", "--pid", parent, "--rtprio=99:99", "--nice=40:40"])
+        self.assertEqual(result.stdout.strip(), parent)
+        refused = subprocess.run(["sh", "-c", grant, "needletail-rt", "echo", "ran"],
+                                 capture_output=True, text=True, env={**env, "FAKE_SUDO": "1"})
+        self.assertEqual(refused.returncode, 126)
+        self.assertNotIn("ran", refused.stdout)
+        self.assertIn("rt=1", refused.stderr)
+
+    def test_sudo_is_only_asked_whether_it_may(self):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "/usr/bin/prlimit\n", "")
+        lab.rt_preflight(run)
+        self.assertEqual(calls, [["sudo", "-n", "-l", "prlimit"]])
+        for failure in (subprocess.CompletedProcess([], 1, "", "sudo: a password is required"),
+                        OSError(2, "No such file")):
+            def refuse(argv, failure=failure, **kwargs):
+                if isinstance(failure, Exception):
+                    raise failure
+                return failure
+            with self.assertRaises(lab.LabError) as caught:
+                lab.rt_preflight(refuse)
+            self.assertIn("rt=1", str(caught.exception))
+
+    def test_the_deploy_pins_an_rt_node_as_a_two_cpu_instance(self):
+        sys.path.insert(0, str(HERE))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("deploy_rt", HERE / "linode-small-mesh-deploy.py")
+        deploy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(deploy)
+        plan = {"relay_class_cpus": "auto"}
+        lab.save("rt.json", {"rt": False, "layout": False})
+        self.assertEqual(deploy.relay_class_cpus(lab.lab_state()["nodes"][EDGE], plan), "")
+        lab.save("rt.json", {"rt": True, "layout": True})
+        state = lab.lab_state()
+        self.assertEqual(state["nodes"][EDGE]["type"], "g6-dedicated-2")
+        self.assertEqual(deploy.relay_class_cpus(state["nodes"][EDGE], plan), "0,1")
+        self.assertEqual(state["slots"]["lon-edge-4"]["type"], "g6-dedicated-2")
+        # "0,1" lands on the node's own two CPUs.
+        lab.save("cpus.json", {EDGE: [16, 17], "_rest": [28, 29, 30, 31]})
+        self.assertEqual(lab.node_class_cpus(EDGE, "0,1"), "16,17")
+
+    def test_the_check_wants_the_audio_thread_fifo_on_its_one_cpu(self):
+        lab.save("rendered.json", {EDGE: {"rust_log": "", "args": [
+            "/bin/av-mesh", "--relay-class-cpus", "0,1"]}, CONTRIBUTOR: {"rust_log": "", "args": [
+            "/bin/av-contrib"]}})
+        lab.save("cpus.json", {EDGE: [16, 17], CONTRIBUTOR: [26, 27], "_rest": [28, 29]})
+        lab.save("services.json", {EDGE: {"pid": os.getpid()}, CONTRIBUTOR: {"pid": os.getpid()}})
+        limits = "Max realtime priority     99                   99\n"
+        fast = {"relay_session": {"fast_plane": {"realtime_threads": 2, "pinned_threads": 2}},
+                # Another node's telemetry never counts as this node's.
+                "relay_nodes": [{"fast_plane": {"realtime_threads": 9}}]}
+        audio = {"tid": 11, "comm": "needletail-fast", "cls": "FF", "rtprio": 10, "psr": 16,
+                 "allowed": "16"}
+        other = {"tid": 12, "comm": "tokio-runtime-w", "cls": "TS", "rtprio": None, "psr": 17,
+                 "allowed": "16-17"}
+        good = lab.rt_check(EDGE, fast, [audio, other], limits)
+        self.assertTrue(good["ok"], good["why"])
+        self.assertEqual(good["fast_plane"]["realtime_threads"], 2)
+        self.assertEqual(good["rtprio_limit"], "99")
+        for snapshot, threads in (
+                (fast, [{**audio, "allowed": "16-17"}, other]),     # not pinned
+                (fast, [{**audio, "cls": "TS", "rtprio": None}]),   # not FIFO
+                ({"relay_session": {"fast_plane": {"realtime_threads": 0,
+                                                   "pinned_threads": 2}}}, [audio])):
+            self.assertFalse(lab.rt_check(EDGE, snapshot, threads, limits)["ok"])
+        self.assertIsNone(lab.rt_check(CONTRIBUTOR, {}, [other], limits)["ok"])
+        # rt=pin: pinned at the normal policy passes; unpinned does not.
+        plain = {**audio, "cls": "TS", "rtprio": None}
+        self.assertTrue(lab.rt_check(EDGE, fast, [plain], limits, realtime=False)["ok"])
+        self.assertFalse(lab.rt_check(EDGE, fast, [{**plain, "allowed": "16-17"}], limits,
+                                      realtime=False)["ok"])
+        self.assertEqual(lab.expand_cpus("0-2,8"), [0, 1, 2, 8])
+
+
+class RealTimeUp(Up):
+    def test_rt_is_refused_without_a_layout_or_sudo_and_nothing_is_stopped(self):
+        with mock.patch.object(lab, "rt_preflight", lambda: None):
+            with self.assertRaises(lab.LabError):
+                lab.up(["rt=1"], start=False)
+            with self.assertRaises(lab.LabError):
+                lab.up(["rt=yes", "cpus=16-31"], start=False)
+            with self.assertRaises(lab.LabError):
+                lab.up(["rt=pin"], start=False)
+
+        def no_sudo():
+            raise lab.LabError("rt=1: no sudo")
+        with mock.patch.object(lab, "rt_preflight", no_sudo), self.assertRaises(lab.LabError):
+            lab.up(["rt=1", "cpus=16-31"], start=False)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.registered(), {})
+
+    def test_rt_up_records_it_and_gives_every_node_two_cpus(self):
+        with mock.patch.object(lab, "rt_preflight", lambda: None):
+            lab.up(["rt=1", "cpus=16-31", "slots=lon-edge-4,new-edge-3"], start=False)
+        self.assertTrue(lab.load("rt.json")["rt"])
+        sets = lab.load("cpus.json")
+        self.assertEqual(sets["_per_node"], 2)
+        self.assertEqual(sets[CONTRIBUTOR], [26, 27])
+        self.assertEqual(lab.service_limits(CONTRIBUTOR)["cpu_percent"], 200)
+        self.assertEqual(lab.service_limits(EDGE)["cpu_percent"], 200)
+        lab.up(["cpus=16-31"], start=False)
+        self.assertFalse(lab.load("rt.json")["rt"])
+        self.assertEqual(lab.service_limits(CONTRIBUTOR)["cpu_percent"], 400)
+
+    def test_rt_pin_is_the_layout_without_the_grant(self):
+        def no_sudo():
+            raise lab.LabError("rt=1: no sudo")
+        # The control needs no sudo: nothing is granted.
+        with mock.patch.object(lab, "rt_preflight", no_sudo):
+            lab.up(["rt=pin", "cpus=16-31", "slots=lon-edge-4,new-edge-3"], start=False)
+        self.assertEqual(lab.load("rt.json"), {"rt": False, "layout": True, "cpus_per_node": 2})
+        self.assertEqual(lab.load("cpus.json")[CONTRIBUTOR], [26, 27])
+        self.assertEqual(lab.lab_state()["nodes"][EDGE]["type"], "g6-dedicated-2")
+        self.assertEqual(lab.rt_grant(), [])

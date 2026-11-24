@@ -69,6 +69,10 @@ the cgroups are scopes of the user's systemd manager.
                                         "rebuilt" (--gap-s down, its drain file gone),
                                         started and resumed; a forwarder through its
                                         site's dist-c slot
+  edge_lab.py rt-check [node ...]       is each node's audio class thread SCHED_FIFO
+                                        and pinned (rt=1): its fast plane's counters
+                                        and the kernel's view of its threads; exit 1
+                                        when one is not
   Engine options: --marks FILE --node-marks FILE --gate-timeout-s 30
   --drain-timeout-s 30 --ready-timeout-s 60 --on-failure stop|rollback-all
   --surge auto|never --parity-ms 1.0. Exit status is the engine's (0 done, 2
@@ -112,6 +116,30 @@ writes the lab into a registry that every worktree of the host shares
 - Whatever the lab runs beside a node's service is in one cgroup, the scope
   needletail-lab-...-tools.scope, the process that drives the lab included,
   so the lab's own CPU time can be read (scope_cpu_usec).
+
+Real time as on Linode (`up rt=1`, off by default). A Linode unit gives its
+service CAP_SYS_NICE: the audio class thread runs SCHED_FIFO 10 pinned to
+the instance's CPU 0, the video one nice -10 on CPU 1. Under rt=1:
+- every node has exactly two CPUs (RT_CPUS), the contributor too, and is
+  rendered as a g6-dedicated-2, so that the deploy's relay_class_cpus
+  "auto" gives it "0,1" as on Linode, which become its own two CPUs; in a
+  range the edges have CPUs of their own when they fit and the other nodes
+  share the rest of the ring (`up rt=1 slots=lon-edge-4,new-edge-3` fits
+  five edges and the rest in 16-31);
+- each service's scope first raises its own RLIMIT_RTPRIO (99) and
+  RLIMIT_NICE (40) with `sudo -n prlimit --pid $$` and then becomes the
+  service as the user (RT_GRANT): a capability would not reach a process
+  in the lab's user namespace, these limits do. Without passwordless sudo
+  for prlimit, or without a CPU layout, `up rt=1` is refused before
+  anything is stopped;
+- `up` returns only when every av-mesh node's audio class thread is seen
+  SCHED_FIFO 10 on its one CPU, by its fast plane's counters and by ps
+  (rt-check.json; `edge_lab.py rt-check` again at any time).
+`up rt=pin` is the same layout, render and pinning without the grant (the
+control: av-mesh is refused SCHED_FIFO and runs its fallback), checked the
+same way for the pinning alone.
+The host's own sched_rt_runtime_us is what it is (1000000 here: no
+throttling of real-time threads); a Linode guest's kernel has its own.
 
 Two builds in one lab. With NEEDLETAIL_AV_MESH_BIN_NEXT or
 NEEDLETAIL_AV_CONTRIB_BIN_NEXT, `up` keeps a second set of binaries (set b,
@@ -781,16 +809,20 @@ def take_window(sets: dict, name: str) -> list[int]:
     """Give node `name` its CPUs in `sets` (changed in place), after the
     nodes that have theirs. In a range: the next window of as many CPUs as
     its limit on the ring of node CPUs, so nodes share when the ring is
-    short. With `node_cpus`: the next CPUs of the host, its own, taken from
-    "_rest" (a contributor PINNED_CONTRIBUTOR_CPUS of them)."""
-    count = max(1, default_limits(name)["cpu_percent"] // 100)
+    short (an edge on the edges' own ring when the layout has one). With
+    `node_cpus`: the next CPUs of the host, its own, taken from "_rest" (a
+    contributor PINNED_CONTRIBUTOR_CPUS of them). With "_per_node" (rt=1):
+    exactly that many, whatever the node's limit."""
+    count = sets.get("_per_node") or max(1, default_limits(name)["cpu_percent"] // 100)
     if "_range" not in sets and node(name)["role"] == "contributor":
         count = min(count, PINNED_CONTRIBUTOR_CPUS)
     if "_range" in sets:
-        ring = sets["_node_cpus"]
+        edge_ring = "_edge_cpus" in sets and node(name)["role"] == "edge"
+        ring = sets["_edge_cpus" if edge_ring else "_node_cpus"]
+        at = "_edge_next" if edge_ring else "_next"
         count = min(count, len(ring))
-        window = [ring[(sets["_next"] + index) % len(ring)] for index in range(count)]
-        sets["_next"] = (sets["_next"] + count) % len(ring)
+        window = [ring[(sets[at] + index) % len(ring)] for index in range(count)]
+        sets[at] = (sets[at] + count) % len(ring)
     else:
         window = list(range(sets["_next"], sets["_next"] + count))
         rest = [cpu for cpu in sets["_rest"] if cpu not in window]
@@ -806,7 +838,7 @@ def take_window(sets: dict, name: str) -> list[int]:
 
 
 def node_cpu_sets(names: list[str], first: int | None = None,
-                  cpus: tuple[int, int] | None = None) -> dict:
+                  cpus: tuple[int, int] | None = None, per_node: int | None = None) -> dict:
     """The CPUs of the nodes `names` (in the order of NODES) and "_rest",
     the CPUs of the reader and load hosts and of the lab's own commands.
 
@@ -827,7 +859,14 @@ def node_cpu_sets(names: list[str], first: int | None = None,
     `names`: a window taken later could only come out of "_rest", which the
     reader hosts and the lab's own commands already run on. With neither
     layout: {}, and every node shares every CPU of the host under its CPU
-    quota."""
+    quota.
+
+    `per_node` (rt=1, RT_CPUS): every node exactly that many CPUs, as a
+    g6-dedicated-2 has, whatever its limit (the contributor too). In a
+    range the edges then come first and have CPUs of their own, as an
+    instance has, when they fit with `per_node` CPUs left for the others
+    ("_edge_cpus"); the other nodes share what is left of the ring. An
+    edge taken in later wraps on the edges' ring."""
     total = os.cpu_count() or 1
     if cpus is not None:
         low, high = cpus
@@ -835,8 +874,17 @@ def node_cpu_sets(names: list[str], first: int | None = None,
         rest = max(2, count // 4)
         out = {"_range": [low, high], "_node_cpus": list(range(low, high + 1 - rest)),
                "_rest": list(range(high + 1 - rest, high + 1)), "_next": 0}
+        if per_node:
+            out["_per_node"] = per_node
+            ring = out["_node_cpus"]
+            need = per_node * sum(1 for name in names if node(name)["role"] == "edge")
+            if need and need + per_node <= len(ring):
+                out.update({"_edge_cpus": ring[:need], "_node_cpus": ring[need:],
+                            "_edge_next": 0})
     elif first is not None:
         out = {"_first": first, "_total": total, "_rest": list(range(total)), "_next": first}
+        if per_node:
+            out["_per_node"] = per_node
         names = [name for name in names if name not in DEFAULT_SLOTS]
     else:
         return {}
@@ -855,6 +903,10 @@ def pinned_limits(sets: dict, limits: dict) -> dict:
         for name in names("contributor"):
             if name in sets:
                 out.setdefault(name, {}).setdefault("cpu_percent", 100 * len(sets[name]))
+    if sets.get("_per_node"):
+        # rt=1: every node's quota is its window, the contributor's too.
+        for name, *_ in NODES:
+            out.setdefault(name, {}).setdefault("cpu_percent", 100 * sets["_per_node"])
     return out
 
 
@@ -898,6 +950,188 @@ def node_class_cpus(name: str, value: str) -> str:
     if not cpus:
         return value
     return ",".join(str(cpus[int(item) % len(cpus)]) for item in value.split(",") if item)
+
+
+# ------------------------------------------------------------------ real time (rt=1)
+
+# `up rt=1`: each node's service may use real-time scheduling as a Linode
+# unit's does (AmbientCapabilities=CAP_SYS_NICE): the audio class thread
+# SCHED_FIFO 10, the video one nice -10, the fan-out threads nice -5. A
+# capability cannot reach the service here: it runs in the lab's rootless
+# user namespace, and a capability held there counts for nothing in the
+# host's (sched_setscheduler asks the host's). What does reach it are
+# RLIMIT_RTPRIO and RLIMIT_NICE, which allow the same calls to a process
+# that has no capability. So the node's start, inside its own scope, raises
+# both on its own shell (`sudo -n prlimit --pid $$`, root for that alone)
+# and then becomes the service, as the user, with the limits inherited.
+# Nothing else is run as root and no system file or setting is changed.
+RT_PRIO = 99    # what CAP_SYS_NICE allows: any SCHED_FIFO priority
+RT_NICE = 40    # RLIMIT_NICE 40: down to nice -20, as CAP_SYS_NICE allows
+RT_CPUS = 2     # every node a g6-dedicated-2 (2 vCPU) under rt=1
+RT_AUDIO_PRIO = 10   # av-mesh's AUDIO_FIFO_PRIORITY
+RT_AUDIO_COMM = "needletail-fast"
+RT_GRANT = ('sudo -n prlimit --pid $$ --rtprio={prio}:{prio} --nice={nice}:{nice} '
+            '|| {{ echo "rt=1: sudo -n prlimit could not raise the real-time limits of this '
+            'service" >&2; exit 126; }}; exec "$@"')
+
+
+def rt_preflight(run=subprocess.run) -> None:
+    """rt=1 needs `sudo -n prlimit`, and refuses clearly without it. `sudo
+    -n -l prlimit` only asks whether it may, and runs nothing."""
+    try:
+        result = run(["sudo", "-n", "-l", "prlimit"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise LabError(f"rt=1: sudo cannot be run ({error}); the lab needs `sudo -n prlimit` to "
+                       "give its nodes real-time limits. Leave rt=1 out")
+    if result.returncode != 0:
+        raise LabError("rt=1: `sudo -n prlimit` is not allowed here without a password "
+                       f"({(result.stderr or result.stdout).strip()[:200]}). The nodes cannot "
+                       "be given SCHED_FIFO without it; leave rt=1 out")
+
+
+def rt_grant() -> list[str]:
+    """The prefix, inside a node's scope, that raises the service's own
+    real-time limits before it becomes the service (rt=1); [] without."""
+    if not load("rt.json").get("rt"):
+        return []
+    return ["sh", "-c", RT_GRANT.format(prio=RT_PRIO, nice=RT_NICE), "needletail-rt"]
+
+
+def ps_threads(pid: int) -> list[dict]:
+    """Every thread of a process: tid, name, class (TS, FF, RR...), rtprio,
+    the CPU it last ran on and the CPUs it may run on."""
+    result = subprocess.run(["ps", "-L", "-o", "tid=,cls=,rtprio=,psr=,comm=", "-p", str(pid)],
+                            capture_output=True, text=True)
+    out = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 4)
+        if len(fields) < 5:
+            continue
+        tid, cls, rtprio, psr, comm = fields
+        allowed = None
+        try:
+            for item in pathlib.Path(f"/proc/{pid}/task/{tid}/status").read_text().splitlines():
+                if item.startswith("Cpus_allowed_list:"):
+                    allowed = item.split(":", 1)[1].strip()
+        except OSError:
+            pass
+        out.append({"tid": int(tid), "cls": cls, "rtprio": None if rtprio == "-" else int(rtprio),
+                    "psr": int(psr), "comm": comm.strip(), "allowed": allowed})
+    return out
+
+
+def expand_cpus(text: str | None) -> list[int]:
+    """A CPU list as the kernel prints it (0-3,8) as numbers."""
+    out = []
+    for item in (text or "").split(","):
+        low, _, high = item.strip().partition("-")
+        if low.strip().isdigit():
+            out += list(range(int(low), int(high or low) + 1))
+    return out
+
+
+def own_counters(snapshot, keys: tuple[str, ...]) -> dict:
+    """The largest value of each counter named in `keys` on this node's own
+    paths of /api/mesh/local (never under another node's telemetry)."""
+    out: dict = {}
+
+    def walk(item, top: str | None) -> None:
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if top is None and key in ("relay_nodes", "nodes", "peers", "edge_services",
+                                           "streams", "connections"):
+                    continue
+                if key in keys and isinstance(value, (int, float)):
+                    out[key] = max(out.get(key, value), value)
+                walk(value, key if top is None else top)
+        elif isinstance(item, list):
+            for value in item:
+                walk(value, top or "list")
+
+    walk(snapshot, None)
+    return out
+
+
+def rt_check(name: str, snapshot=None, threads=None, limits_text: str | None = None,
+             realtime: bool | None = None) -> dict:
+    """Is a node's audio class thread real-time and pinned, as on Linode?
+    From the fast plane's own counters (/api/mesh/local `realtime_threads`,
+    `pinned_threads`) and from the kernel (ps: SCHED_FIFO 10, and its CPU
+    list the one CPU that --relay-class-cpus names). A node rendered without
+    --relay-class-cpus (the contributor) is only described. Under rt=pin
+    (`realtime` False, or rt.json's) the thread must be pinned only."""
+    pid = service_pid(name)
+    args = service_args(name) if name in load("rendered.json") else []
+    class_cpus = (args[args.index("--relay-class-cpus") + 1]
+                  if "--relay-class-cpus" in args else "")
+    out = {"node": name, "pid": pid, "class_cpus": class_cpus, "node_cpus": node_cpus(name)}
+    if pid is None:
+        return {**out, "ok": False, "why": "the service does not run"}
+    if threads is None:
+        threads = ps_threads(pid)
+    if limits_text is None:
+        try:
+            limits_text = pathlib.Path(f"/proc/{pid}/limits").read_text()
+        except OSError:
+            limits_text = ""
+    rtprio_limit = next((line.split()[3] for line in limits_text.splitlines()
+                         if line.startswith("Max realtime priority")), None)
+    fifo = [item for item in threads if item["cls"] in ("FF", "RR")]
+    out.update({"rtprio_limit": rtprio_limit, "threads": len(threads),
+                "realtime": [{key: item[key] for key in ("tid", "comm", "cls", "rtprio", "psr",
+                                                         "allowed")} for item in fifo]})
+    if node(name)["role"] == "contributor" or not class_cpus:
+        return {**out, "ok": None, "why": "no class thread to pin (described only)"}
+    if snapshot is None:
+        try:
+            snapshot = mesh_local(name)
+        except LabError as error:
+            return {**out, "ok": False, "why": str(error)}
+    counts = own_counters(snapshot, ("realtime_threads", "pinned_threads", "threads"))
+    out["fast_plane"] = counts
+    audio_cpu = int(class_cpus.split(",")[0])
+    granted = load("rt.json").get("rt", True) if realtime is None else realtime
+    problems = []
+    if granted:
+        audio = [item for item in fifo if item["comm"] == RT_AUDIO_COMM
+                 and item["rtprio"] == RT_AUDIO_PRIO
+                 and expand_cpus(item["allowed"]) == [audio_cpu]]
+        if not counts.get("realtime_threads"):
+            problems.append(f"the fast plane counts {counts.get('realtime_threads')} real-time "
+                            "threads")
+        if not audio:
+            problems.append(f"no {RT_AUDIO_COMM} thread at SCHED_FIFO {RT_AUDIO_PRIO} allowed "
+                            f"only CPU {audio_cpu}")
+    else:
+        # rt=pin: pinned as the deploy pins it, at the normal policy.
+        audio = [item for item in threads if item["comm"] == RT_AUDIO_COMM
+                 and expand_cpus(item["allowed"]) == [audio_cpu]]
+        if not audio:
+            problems.append(f"no {RT_AUDIO_COMM} thread allowed only CPU {audio_cpu}")
+    if not counts.get("pinned_threads"):
+        problems.append(f"the fast plane counts {counts.get('pinned_threads')} pinned threads")
+    out["audio_thread"] = audio[0] if audio else None
+    policy = f"SCHED_FIFO {RT_AUDIO_PRIO}" if granted else f"{audio[0]['cls'] if audio else '?'}"
+    return {**out, "ok": not problems, "why": "; ".join(problems) or
+            f"audio class thread {audio[0]['tid']} {policy} on CPU {audio_cpu}"}
+
+
+def rt_verify(timeout: float = 30.0) -> list[dict]:
+    """After an rt=1 `up`: every node's check, waited for until each av-mesh
+    node with class CPUs passes (its class threads start with the service).
+    Kept in rt-check.json; a node that does not pass is an error."""
+    deadline = time.time() + timeout
+    while True:
+        checks = [rt_check(name) for name in standing_services()]
+        failed = [item for item in checks if item["ok"] is False]
+        if not failed or time.time() > deadline:
+            break
+        time.sleep(1.0)
+    save("rt-check.json", checks)
+    if failed:
+        raise LabError("rt=1: not real-time and pinned: " + "; ".join(
+            f"{item['node']}: {item['why']}" for item in failed))
+    return checks
 
 
 # ------------------------------------------------------------------ the tools scope
@@ -1401,10 +1635,15 @@ def deploy_module():
 def lab_state() -> dict:
     """The lab as the deploy tool's state. Its "slots" are the slot
     candidates: the deploy renders them into every peer list, and a
-    distributor slot is a lease child, never a compiled relay child."""
+    distributor slot is a lease child, never a compiled relay child.
+    Under rt=1 every node is the Linode type of its RT_CPUS vCPUs, so that
+    the deploy's "auto" settings render what they render on Linode for it
+    (relay_class_cpus: the audio class thread on CPU 0, the video one on 1;
+    service_args puts them on the node's own CPUs)."""
+    kind = f"g6-dedicated-{RT_CPUS}" if load("rt.json").get("layout") else "local"
     return {"run_id": "edge-lab", "hourly_usd": 0.0,
-            "nodes": {name: {**node(name), "type": "local"} for name, *_ in NODES},
-            "slots": {name: {**node(name), "type": "local", "slot": True}
+            "nodes": {name: {**node(name), "type": kind} for name, *_ in NODES},
+            "slots": {name: {**node(name), "type": kind, "slot": True}
                       for name in SLOT_CANDIDATES}}
 
 
@@ -1616,14 +1855,18 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
                    capture_output=True)
     pin = ["taskset", "-c", cpu_list(cpus)] if cpus else []
+    # rt=1: the scope's first process raises its own real-time limits and
+    # becomes the service (RT_GRANT); systemd-run must leave its $$ alone.
+    grant = rt_grant()
     command = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+               *(["--expand-environment=no"] if grant else []),
                "--unit", unit_name(name),
                "-p", f"CPUQuota={limits['cpu_percent']}%",
                "-p", f"MemoryMax={limits['memory_mb']}M",
                "-p", "MemorySwapMax=0",
                # A process may be put into the node's cgroup (burn).
                "-p", "Delegate=yes",
-               "--", *nsenter(name), *pin, *args, *(extra_args or [])]
+               "--", *grant, *nsenter(name), *pin, *args, *(extra_args or [])]
     # A service on a Nanode sees one CPU and starts one worker thread. Here it
     # would see every CPU of the host, so it is told the number that its
     # limit stands for.
@@ -1835,9 +2078,17 @@ def up(overrides: list[str], start: bool = True) -> dict:
     slots = set(DEFAULT_SLOTS)
     first_cpu = None
     cpus = os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS") or None
-    take = overlap = False
+    take = overlap = realtime = layout = False
     for item in overrides:
         key, _, value = item.partition("=")
+        if key == "rt":
+            # A lab setting: the nodes may use real-time scheduling
+            # (RT_GRANT), on two CPUs each with their class threads pinned;
+            # rt=pin: the same layout and pinning without the grant.
+            if value not in ("0", "1", "pin"):
+                raise LabError(f"rt={value}: 1, pin or 0")
+            realtime, layout = value == "1", value in ("1", "pin")
+            continue
         if key == "node_cpus":
             # A lab setting: each node its own host CPUs (node_cpu_sets).
             value = value.strip().strip('"')
@@ -1869,7 +2120,7 @@ def up(overrides: list[str], start: bool = True) -> dict:
             if "b" not in sources:
                 raise LabError(f"{item}: this lab has one build set; set b needs "
                                "NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT")
-            if key[2:] in ("node_cpus", "cpus", "take", "cpus_overlap", "slots") \
+            if key[2:] in ("node_cpus", "cpus", "take", "cpus_overlap", "slots", "rt") \
                     or key[2:].startswith(("limit.", "b.")):
                 raise LabError(f"{item}: {key[2:].split('.')[0]} is the lab's, not a build "
                                "set's")
@@ -1879,12 +2130,19 @@ def up(overrides: list[str], start: bool = True) -> dict:
     if first_cpu is not None and cpus is not None:
         raise LabError(f"node_cpus={first_cpu} is the layout of one lab on the whole host and "
                        f"cpus={cpus} that of a lab in a range: give one")
+    if layout:
+        if first_cpu is None and cpus is None:
+            raise LabError("rt=1 pins each node's class threads to CPUs of its own: give the "
+                           "lab a layout, cpus=A-B (or NEEDLETAIL_EDGE_LAB_CPUS) or node_cpus=FIRST")
+    if realtime:
+        rt_preflight()
     # In a range, a slot that is held out takes its window when it is taken
     # in; with node_cpus every slot has its own CPUs from the start, as the
     # reader hosts are pinned to what is left (node_cpu_sets).
     sets = node_cpu_sets([name for name, role, *_ in NODES
                           if role != "backbone" and (cpus is None or name not in slots)],
-                         first=first_cpu, cpus=None if cpus is None else cpu_range(cpus))
+                         first=first_cpu, cpus=None if cpus is None else cpu_range(cpus),
+                         per_node=RT_CPUS if layout else None)
     # Refused here, with nothing stopped yet, when the lab is another
     # owner's or its CPUs are another lab's; else the lab that ran in this
     # state directory is stopped.
@@ -1899,6 +2157,10 @@ def up(overrides: list[str], start: bool = True) -> dict:
         kept.unlink()
     save("limits.json", limits)
     save("cpus.json", sets)
+    save("rt.json", {"rt": realtime, "layout": layout, "cpus_per_node": RT_CPUS,
+                     **({"rtprio": RT_PRIO, "nice": RT_NICE} if realtime else {})}
+         if layout else {"rt": False, "layout": False})
+    (WORK / "rt-check.json").unlink(missing_ok=True)
     save("slots.json", sorted(slots))
     save("slots-created.json", [])
     start_tools()
@@ -1943,6 +2205,8 @@ def up(overrides: list[str], start: bool = True) -> dict:
         tails = "\n".join(f"--- {name}\n" + (WORK / "logs" / f"{name}.log").read_text()[-1200:]
                           for name in dead)
         raise LabError(f"services did not start: {dead}\n{tails}")
+    if layout:
+        rt_verify()
     return rendered
 
 
@@ -3071,6 +3335,21 @@ def main() -> None:
             burned = burn(arguments[0], float(arguments[1]))
             print(f"{arguments[0]} burned for {burned:.1f} s"
                   + ("" if burned >= float(arguments[1]) else ": its service stopped"))
+        elif command == "rt-check":
+            checks = [rt_check(name) for name in (arguments or standing_services())]
+            setting = load("rt.json")
+            print(f"rt={'1' if setting.get('rt') else 'pin' if setting.get('layout') else '0'}")
+            for item in checks:
+                verdict = {True: "ok", False: "NOT", None: "-"}[item["ok"]]
+                realtime = ", ".join(f"{thread['comm']}/{thread['tid']} {thread['cls']} "
+                                     f"{thread['rtprio']} cpus {thread['allowed']}"
+                                     for thread in item.get("realtime", []))
+                print(f"{item['node']:<14} {verdict:<3} cpus {cpu_ranges(item['node_cpus'] or [])}"
+                      f" class {item['class_cpus'] or '-'} rtprio-limit "
+                      f"{item.get('rtprio_limit')} fast-plane {item.get('fast_plane', {})}: "
+                      f"{item['why']}" + (f"; real-time threads: {realtime}" if realtime else ""))
+            if any(item["ok"] is False for item in checks):
+                sys.exit(1)
         else:
             sys.exit(__doc__)
     except LabError as error:
