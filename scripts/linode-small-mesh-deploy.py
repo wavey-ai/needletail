@@ -79,6 +79,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import contextlib
+import fcntl
 import filecmp
 import functools
 import gzip
@@ -95,7 +96,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
+import traceback
+import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import archived_run  # noqa: E402
@@ -5681,6 +5685,12 @@ def deployed_summary(state: dict) -> list[str]:
 COLLECT_TOOL = "deploy-collect"
 COLLECT_TIMEOUT_S = 300.0
 COLLECT_WORKERS = 32
+# collect's own failure (not a node's): the run is marked not collected.
+EXIT_COLLECT_FAILED = 70
+# A file the pull ended in, kept under its name with this suffix.
+COLLECT_PARTIAL = ".partial"
+# Beside the archive root: what collects pull, until each file is moved in.
+COLLECT_STAGING = ".needletail-collect"
 # What collect asks of a node's own HTTP service, once, at the end: (file
 # stem, path, extension). /api/hops with no stream is the hop journal of
 # every stream the node holds. api-stats and api-stalls are the names of the
@@ -5717,9 +5727,9 @@ def collect_apis(node: dict) -> tuple:
 
 def collect_script(node: dict, stamp: str) -> str:
     """What one ssh runs on a node: a gzipped tar on its stdout of the
-    journal since boot (gzipped), each API's body and HTTP status, and the
-    samplers' files. Nothing on the node is changed or removed but its own
-    temporary directory."""
+    journal since boot (gzipped), each API's body with its HTTP status and
+    curl's exit status, and the samplers' files. Nothing on the node is
+    changed or removed but its own temporary directory."""
     port = CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT
     lines = ["set -u", f"T={stamp}",
              "D=$(mktemp -d /tmp/needletail-collect.XXXXXX) || exit 70",
@@ -5729,8 +5739,8 @@ def collect_script(node: dict, stamp: str) -> str:
     for stem, path, extension in collect_apis(node):
         url = shlex.quote(f"https://{node['public_ipv4']}:{port}{path}")
         lines += [f"code=$(curl -sk --max-time 30 -o \"$D/{stem}.$T.{extension}\" "
-                  f"-w '%{{http_code}}' {url} 2>/dev/null) || true",
-                  f"echo \"{stem} ${{code:-000}}\" >>\"$D/http-status.$T.txt\""]
+                  f"-w '%{{http_code}}' {url} 2>/dev/null); rc=$?",
+                  f"echo \"{stem} ${{code:-000}} $rc\" >>\"$D/http-status.$T.txt\""]
     parent, name = NODE_RUNS.rsplit("/", 1)
     lines += ["set -- -C \"$D\" .",
               f"[ -d {NODE_RUNS} ] && set -- \"$@\" -C {parent} {name}",
@@ -5744,9 +5754,10 @@ def collect_member_path(name: str) -> str | None:
     """Where a member of a node's tar goes under nodes/<node>/: the node's
     own files (`./...`) at the top, its run directories under
     samplers/needletail-runs/, the referee's sampler files under
-    samplers/var-tmp/. None for a name that would leave the directory."""
+    samplers/var-tmp/. None for a name that would leave the directory, or
+    one that ends as a cut member's does."""
     parts = pathlib.PurePosixPath(name).parts
-    if name.startswith("/") or ".." in parts:
+    if name.startswith("/") or ".." in parts or name.endswith(COLLECT_PARTIAL):
         return None
     if name.startswith("./"):
         return pathlib.PurePosixPath(*parts).as_posix() if parts else None
@@ -5755,61 +5766,101 @@ def collect_member_path(name: str) -> str | None:
     return f"samplers/var-tmp/{pathlib.PurePosixPath(*parts).as_posix()}" if parts else None
 
 
-def unpack_node(path: pathlib.Path, directory: pathlib.Path) -> tuple[list[str], str | None]:
-    """The regular files of a node's tar into its staging directory, as
-    far as the tar goes: (the files, why it ended early or None)."""
-    files = []
+def unpack_stream(stream, directory: pathlib.Path) -> tuple[list[str], str | None, str | None]:
+    """The regular files of a node's tar, read as it streams in, into its
+    staging directory: (the files whole, the one cut part-way, why the tar
+    ended early or None). Each member is written as <name>.partial and
+    renamed when whole, so one the tar ended in stays marked as cut."""
+    files: list[str] = []
+    current: tuple[str, pathlib.Path] | None = None
     try:
-        with tarfile.open(path, "r:gz") as tar:
+        with tarfile.open(fileobj=stream, mode="r|gz") as tar:
             for member in tar:
                 rel = collect_member_path(member.name)
                 if not member.isfile() or rel is None:
                     continue
                 target = directory / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with tar.extractfile(member) as source, open(target, "wb") as out:
+                current = (rel, target.with_name(target.name + COLLECT_PARTIAL))
+                with tar.extractfile(member) as source, open(current[1], "wb") as out:
                     shutil.copyfileobj(source, out)
+                current[1].rename(target)
+                current = None
                 files.append(rel)
-    except (tarfile.TarError, OSError, EOFError) as error:
-        return files, f"its tar ended early: {error}"
-    return files, None
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as error:
+        cut = current[0] + COLLECT_PARTIAL if current and current[1].is_file() else None
+        return files, cut, f"its tar ended early: {error}"
+    return files, None, None
 
 
-def pull_node(node: dict, stamp: str, directory: pathlib.Path, timeout_s: float) -> dict:
-    """One node's files into its staging directory, by one ssh bounded by
-    timeout_s. Whatever arrived is kept, also from a node that timed out."""
-    record = {"node": node["name"], "role": node["role"], "error": None, "files": [], "http": {}}
+def pull_node(node: dict, stamp: str, directory: pathlib.Path, deadline: float) -> dict:
+    """One node's files into its staging directory as they stream in, by
+    one ssh killed at `deadline` (time.monotonic). Whatever arrived is kept,
+    also from a node that ran out of time."""
+    record = {"node": node["name"], "role": node["role"], "error": None, "files": [],
+              "partial": None, "http": {}, "curl_exit": {}}
     began = time.monotonic()
-    tarball = directory.with_name(directory.name + ".tar.gz")
+    left = deadline - began
+    if left < 1:
+        record.update(error="no time left within the collect's --timeout-s", seconds=0.0)
+        return record
     command = ["ssh", *common.ssh_base(), f"root@{node['public_ipv4']}",
                "bash -c " + shlex.quote(collect_script(node, stamp))]
-    try:
-        with open(tarball, "wb") as out:
-            result = subprocess.run(command, stdout=out, stderr=subprocess.PIPE,
-                                    timeout=timeout_s, check=False)
-        if result.returncode != 0:
-            record["error"] = (f"ssh exited {result.returncode}: "
-                               f"{result.stderr.decode(errors='replace').strip()[-300:]}")
-    except subprocess.TimeoutExpired:
-        record["error"] = f"timed out after {timeout_s:.0f} s"
-    except OSError as error:
-        record["error"] = f"ssh: {error}"
-    record["files"], ended = unpack_node(tarball, directory)
-    tarball.unlink(missing_ok=True)
-    if ended and not record["error"]:
+    killed = threading.Event()
+    with tempfile.TemporaryFile() as errors:
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=errors)
+        except OSError as error:
+            record.update(error=f"ssh: {error}", seconds=round(time.monotonic() - began, 3))
+            return record
+
+        def stop() -> None:
+            if process.poll() is None:
+                killed.set()
+                process.kill()
+
+        timer = threading.Timer(left, stop)
+        timer.daemon = True
+        timer.start()
+        try:
+            record["files"], record["partial"], ended = unpack_stream(process.stdout, directory)
+            # A tar that ended wrong: ssh is given a moment to end by
+            # itself (its own error says more), else stopped.
+            stopped = False
+            if ended:
+                try:
+                    process.wait(timeout=min(5.0, max(0.0, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    stopped = True
+                    process.kill()
+            returncode = process.wait()
+        finally:
+            timer.cancel()
+            process.stdout.close()
+        errors.seek(0)
+        said = errors.read().decode(errors="replace").strip()[-300:]
+    if killed.is_set():
+        record["error"] = f"timed out after {left:.0f} s"
+    elif returncode != 0 and not stopped:
+        record["error"] = f"ssh exited {returncode}: {said}" + (f" ({ended})" if ended else "")
+    elif ended:
         record["error"] = ended
     for status in directory.glob("http-status.*.txt"):
         for line in status.read_text(errors="replace").splitlines():
-            stem, _, code = line.partition(" ")
-            record["http"][stem] = code.strip()
+            if not line.strip():
+                continue
+            stem, code, curl_exit = (line.split() + ["", ""])[:3]
+            record["http"][stem] = code
+            record["curl_exit"][stem] = curl_exit
     record["seconds"] = round(time.monotonic() - began, 3)
     return record
 
 
 def node_missing(node: dict, record: dict, directory: pathlib.Path) -> list[str]:
     """What of a node this collect could not have: the node (its ssh failed
-    or ran out of time), else each file: the journal when empty, an API
-    that did not answer 200."""
+    or ran out of time, or its tar was cut), else each file: the journal
+    when empty, an API that did not answer 200 whole (curl exited 0)."""
     if record["error"]:
         return [node["name"]]
     out = []
@@ -5822,15 +5873,56 @@ def node_missing(node: dict, record: dict, directory: pathlib.Path) -> list[str]
     if empty:
         out.append(f"{node['name']}/journal")
     out += [f"{node['name']}/{stem}" for stem, _path, _extension in collect_apis(node)
-            if record["http"].get(stem) != "200"]
+            if record["http"].get(stem) != "200" or record["curl_exit"].get(stem) != "0"]
     return out
 
 
 def collect_describe(rel: str) -> tuple[str, str, dict | None]:
+    whole = rel[:-len(COLLECT_PARTIAL)] if rel.endswith(COLLECT_PARTIAL) else rel
     for pattern, kind, text, units in COLLECT_FILES:
-        if re.search(pattern, rel):
-            return kind, text, units
+        if re.search(pattern, whole):
+            return kind, (f"CUT PART-WAY (the pull ended in it): {text}" if whole != rel
+                          else text), units
     return "raw", "", None
+
+
+def remove_empty(directory: pathlib.Path) -> None:
+    """The empty directories under `directory`, and it when empty; a
+    directory that still holds a file is left (never a file removed)."""
+    for path in sorted(directory.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink():
+            with contextlib.suppress(OSError):
+                path.rmdir()
+    with contextlib.suppress(OSError):
+        directory.rmdir()
+
+
+def archive_node(run: archived_run.Run, name: str, directory: pathlib.Path) -> list[str]:
+    """Every file of a node's staging directory moved into nodes/<node>/:
+    its own files at the top (a cut one as <name>.partial), its samplers'
+    files under samplers/. A file the archive refuses as a credential is
+    deleted, never kept; any other that could not be moved stays in
+    staging for the next collect. Returns what could not be moved."""
+    failed = []
+    for path in sorted(item for item in directory.iterdir() if item.is_file()):
+        kind, text, units = collect_describe(path.name)
+        if run.add_file(path, f"nodes/{name}/{path.name}", kind, text, units, move=True) is None:
+            failed.append(f"{name}/{path.name}")
+    samplers = directory / "samplers"
+    if samplers.is_dir():
+        result = run.add_tree(
+            samplers, f"nodes/{name}/samplers", "samples",
+            f"the node's run directories ({NODE_RUNS}: samplers, listener and probe outputs) "
+            "and the referee's sampler files (/var/tmp/compare-*), as they were at collection "
+            f"(a name ending {COLLECT_PARTIAL}: cut part-way)", move=True)
+        if result is None:
+            failed.append(f"{name}/samplers")
+        else:
+            for rel in result["refused"]:
+                (samplers / rel).unlink(missing_ok=True)
+                failed.append(f"{name}/samplers/{rel} (refused: a credential)")
+    remove_empty(directory)
+    return failed
 
 
 def scrubbed_record(deployed: dict) -> dict:
@@ -5841,11 +5933,48 @@ def scrubbed_record(deployed: dict) -> dict:
     return {**deployed, "settings": run_archive.scrub_obj(deployed["settings"])}
 
 
+def mesh_worktree() -> pathlib.Path:
+    """The av-mesh worktree the deploy takes its binaries from (binaries_for)."""
+    return pathlib.Path(os.environ.get("NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh")))
+
+
 def collect_code_paths() -> list[pathlib.Path]:
     """The worktrees whose builds the deploy installs (binaries_for)."""
     return archived_run.code_paths(
-        os.environ.get("NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh")),
+        mesh_worktree(),
         os.environ.get("NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib")))
+
+
+def deployed_builds(state: dict) -> dict:
+    """What the lab ran, from the deployed record rather than from the
+    worktrees collect happens to see: each repository's build keys (av-mesh
+    on the mesh tiers, av-contrib on the contributor) with the nodes that
+    run each, and the playlists sources that av-mesh's Cargo.lock pins at
+    each av-mesh build's commit (read from the av-mesh object store, which
+    its worktrees share; a dirty build's own lock may differ)."""
+    nodes = (state.get("deployed") or {}).get("nodes") or {}
+    out: dict = {"av-mesh": {}, "av-contrib": {}, "playlists": {}}
+    for name, entry in sorted(nodes.items()):
+        role = (state["nodes"].get(name) or {}).get("role")
+        repo = "av-contrib" if role == "contributor" else \
+            "av-mesh" if role in mesh_ops.ROLE_TIER else None
+        if repo and entry.get("build"):
+            out[repo].setdefault(entry["build"], []).append(name)
+    for key in sorted(out["av-mesh"]):
+        commit = key_build(key)["git"].removesuffix("-dirty")
+        try:
+            lock = subprocess.run(["git", "-C", str(mesh_worktree()), "show", f"{commit}:Cargo.lock"],
+                                  capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            out["playlists"][key] = {"error": f"git: {error}"}
+            continue
+        if lock.returncode != 0:
+            out["playlists"][key] = {"error": f"git show {commit}:Cargo.lock: "
+                                              f"{lock.stderr.strip()[-200:]}"}
+            continue
+        out["playlists"][key] = re.findall(
+            r'name = "playlists"\nversion = "[^"]*"\nsource = "([^"]+)"', lock.stdout)
+    return out
 
 
 def topology_path(state: dict) -> pathlib.Path | None:
@@ -5858,22 +5987,26 @@ def topology_path(state: dict) -> pathlib.Path | None:
 
 def collect_run(state: dict) -> archived_run.Run:
     """The lab's run in the archive (the lab's run id), made with the lab's
-    facts when it is not there yet, else opened to append to. Collect never
-    ends the run: the run's own tool and the lab's down do."""
+    facts when it is not there yet, else opened to append to; either way
+    the deployed settings (scrubbed) go into its manifest's deploy_settings.
+    Collect never ends the run: the run's own tool and the lab's down do."""
     topology = topology_path(state)
-    return archived_run.Run(
+    run = archived_run.Run(
         state["run_id"], "linode-lab", COLLECT_TOOL, code=collect_code_paths(),
-        settings=(state.get("deployed") or {}).get("settings"),
         topology=topology if topology and topology.is_file() else None,
         regions=sorted({node["region"] for node in state["nodes"].values() if node.get("region")}),
         finish=False)
+    settings = (state.get("deployed") or {}).get("settings")
+    if settings:
+        run.guarded("record the deploy settings", run.archive.set_deploy_settings, settings)
+    return run
 
 
 def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
     """The lab's own files: its state (with every node's physical host),
-    the hosts map, the deployed record, the settings, the routes and hunted
-    ports, the topology; the lab's instances in the manifest. Returns what
-    could not be had."""
+    the hosts map, the deployed record and the builds it names, the
+    settings, the routes and hunted ports, the topology; the lab's
+    instances in the manifest. Returns what could not be had."""
     missing = []
     deployed = state.get("deployed") or {}
     run.write_json(f"lab/state.{stamp}.json", {**state, "deployed": scrubbed_record(deployed)},
@@ -5890,6 +6023,10 @@ def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
         run.write_json(f"lab/deployed.{stamp}.json", scrubbed_record(deployed), "lab",
                        "the deployed record: settings in force, routes and ports digests, each "
                        "node's build and argument digests")
+        run.write_json(f"lab/builds.{stamp}.json", deployed_builds(state), "lab",
+                       "the builds the lab ran, from the deployed record: av-mesh and av-contrib "
+                       "build keys (<git>-<unix>) with their nodes, and the playlists sources "
+                       "av-mesh's Cargo.lock pins at each av-mesh build's commit")
     else:
         missing.append("lab/deployed")
     own = {}
@@ -5927,95 +6064,179 @@ def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
     return missing
 
 
-def collect_nodes(run: archived_run.Run, state: dict, names: list[str], timeout_s: float,
-                  stamp: str) -> tuple[dict, list[str]]:
-    """Every named node at once, each by one ssh, all within timeout_s;
-    then each node's files into nodes/<node>/. Returns each node's record
-    and what could not be had. One node never stops the others."""
-    staging = pathlib.Path(tempfile.mkdtemp(prefix=f".collect-{state['run_id']}-",
-                                            dir=run.root.parent))
+def collect_staging(run: archived_run.Run) -> pathlib.Path:
+    """Where collects of this run stage what they pull:
+    <archive root's parent>/.needletail-collect/<run id>/, on the archive's
+    filesystem so that a move is a hard link, and outside the root, which
+    refuses to move its own files. One directory per collect, held under
+    its .lock while that collect lives."""
+    return run.root.parent / COLLECT_STAGING / run.run_id
+
+
+def adopt_staged(run: archived_run.Run, staging: pathlib.Path,
+                 own: pathlib.Path) -> dict[str, list[str]]:
+    """What earlier collects of this run pulled and never moved (one that
+    was killed, or a move that failed) into nodes/<node>/ now: each staged
+    collect but this one (`own`) whose .lock no live collect holds.
+    Returns, per staged collect, what still could not be moved (left in
+    place for the next)."""
+    left: dict[str, list[str]] = {}
+    for earlier in sorted(path for path in staging.iterdir() if path.is_dir() and path != own):
+        lock = earlier / ".lock"
+        try:
+            fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue
+            failed = []
+            for node in sorted(path for path in earlier.iterdir() if path.is_dir()):
+                failed += archive_node(run, node.name, node)
+            lock.unlink(missing_ok=True)
+            remove_empty(earlier)
+            if failed:
+                left[earlier.name] = failed
+        finally:
+            os.close(fd)
+    return left
+
+
+def collect_nodes(run: archived_run.Run, state: dict, names: list[str], deadline: float,
+                  stamp: str, mine: pathlib.Path) -> tuple[dict, list[str]]:
+    """Every named node at once, each by one ssh killed at `deadline`, and
+    each node moved into nodes/<node>/ as soon as its pull ends (a line in
+    collect/progress.<t>.ndjson says so, which a collect killed later still
+    shows). Returns each node's record and what could not be had. One node
+    never stops the others."""
     records: dict[str, dict] = {}
     missing: list[str] = []
-    deadline = time.monotonic() + timeout_s
+    began = time.monotonic()
 
     def one(node: dict) -> dict:
-        directory = staging / node["name"]
+        directory = mine / node["name"]
         directory.mkdir()
-        left = deadline - time.monotonic()
-        if left < 1:
-            return {"node": node["name"], "role": node["role"], "files": [], "http": {},
-                    "error": f"no time left within --timeout-s {timeout_s:g}"}
-        return pull_node(node, stamp, directory, left)
+        try:
+            record = pull_node(node, stamp, directory, deadline)
+            record["missing"] = node_missing(node, record, directory)
+        except Exception as error:  # noqa: BLE001 - what arrived is still moved in
+            record = {"node": node["name"], "role": node["role"], "seconds": None,
+                      "error": f"{type(error).__name__}: {error}", "partial": None,
+                      "missing": [node["name"]]}
+        record["unmoved"] = archive_node(run, node["name"], directory)
+        record["moved_at_s"] = round(time.monotonic() - began, 3)
+        run.append_ndjson(f"collect/progress.{stamp}.ndjson",
+                          {key: record[key] for key in ("node", "error", "partial", "missing",
+                                                        "unmoved", "seconds", "moved_at_s")},
+                          "lab", "each node as this collect moved it into the archive, in the order "
+                                 "they ended", {"seconds": "s", "moved_at_s": "s"})
+        return record
 
-    try:
-        nodes = [state["nodes"][name] for name in names]
-        with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, min(COLLECT_WORKERS, len(nodes)))) as pool:
-            futures = {pool.submit(one, node): node for node in nodes}
-            for future in concurrent.futures.as_completed(futures):
-                node = futures[future]
-                try:
-                    records[node["name"]] = future.result()
-                except Exception as error:  # noqa: BLE001 - one node never stops the collect
-                    records[node["name"]] = {"node": node["name"], "role": node["role"],
-                                             "files": [], "http": {},
-                                             "error": f"{type(error).__name__}: {error}"}
-        for name in names:
-            node, record, directory = state["nodes"][name], records[name], staging / name
-            missing += node_missing(node, record, directory)
-            for rel in record["files"]:
-                if rel.startswith("samplers/"):
-                    continue
-                kind, text, units = collect_describe(rel)
-                if run.add_file(directory / rel, f"nodes/{name}/{rel}", kind, text, units,
-                                move=True) is None:
-                    missing.append(f"{name}/{rel}")
-            samplers = run.add_tree(
-                directory / "samplers", f"nodes/{name}/samplers", "samples",
-                f"the node's run directories ({NODE_RUNS}: samplers, listener and probe "
-                "outputs) and the referee's sampler files (/var/tmp/compare-*), as they were "
-                "at collection", move=True)
-            if samplers is not None and samplers["refused"]:
-                missing += [f"{name}/samplers/{rel} (refused: a credential)"
-                            for rel in samplers["refused"]]
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+    nodes = [state["nodes"][name] for name in names]
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, min(COLLECT_WORKERS, len(nodes)))) as pool:
+        futures = {pool.submit(one, node): node for node in nodes}
+        for future in concurrent.futures.as_completed(futures):
+            node = futures[future]
+            try:
+                records[node["name"]] = future.result()
+            except Exception as error:  # noqa: BLE001 - one node never stops the collect
+                records[node["name"]] = {"node": node["name"], "role": node["role"],
+                                         "error": f"{type(error).__name__}: {error}",
+                                         "missing": [node["name"]], "unmoved": []}
+    for name in names:
+        missing += records[name]["missing"] + records[name]["unmoved"]
     return records, missing
+
+
+def earlier_collects(run: archived_run.Run) -> list[dict]:
+    """The records (collect/collect.<t>.json) of this run's earlier
+    collects, oldest first."""
+    out = []
+    for entry in run.archive.manifest["files"]:
+        if re.fullmatch(r"collect/collect\.[^/]+\.json", entry["path"]):
+            try:
+                out.append(json.loads((run.path / entry["path"]).read_text()))
+            except (OSError, ValueError):
+                continue
+    return out
+
+
+def carried_missing(earlier: list[dict], name: str) -> list[str]:
+    """What of a node outside --nodes is still missing: what the latest
+    earlier collect that pulled it could not have of it, or the node when
+    none pulled it."""
+    for record in reversed(earlier):
+        if name in (record.get("nodes") or {}):
+            return [item for item in record.get("missing") or []
+                    if item == name or item.startswith(f"{name}/")]
+    return [name]
 
 
 def command_collect(args: argparse.Namespace) -> None:
     """`collect --run-id ID`: every node of the lab (or --nodes), in
-    parallel and within --timeout-s, into the run archive's nodes/<node>/,
-    and the lab's files into lab/ and topology/; then the run is marked
-    collected, complete or with every node and file that could not be had
-    (a node not in --nodes counts as had when an earlier collect brought its
-    journal). Exit 0 when complete, 1 when not, 2 when refused. No Linode
-    API call: the hosts map is the one the lab tool's `hosts` recorded."""
-    state = common.load_state()
+    parallel and within --timeout-s of the start, into the run archive's
+    nodes/<node>/ (each node as its pull ends), and the lab's files into
+    lab/ and topology/; then the run is marked collected, complete or with
+    every node and file that could not be had (a node not in --nodes keeps
+    what the latest earlier collect that pulled it could not have). Exit 0
+    when complete, 1 when not, 2 when refused, 70 when collect itself
+    failed (the run is then marked not collected, with why). No Linode API
+    call: the hosts map is the one the lab tool's `hosts` recorded."""
+    deadline = time.monotonic() + args.timeout_s
+    try:
+        state = common.load_state()
+        names = named_nodes(state, args.nodes) or sorted(state["nodes"], key=mesh_ops.natural)
+    except SystemExit as refusal:
+        print(f"collect: {refusal.code}", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
     if state.get("run_id") != args.run_id:
         print(f"collect --run-id {args.run_id}: the lab of {common.state_path()} is "
               f"{state.get('run_id')!r}; a lab's data goes into its own run", file=sys.stderr)
         sys.exit(mesh_ops.EXIT_REFUSED)
-    names = named_nodes(state, args.nodes) or sorted(state["nodes"], key=mesh_ops.natural)
     try:
         run = collect_run(state)
     except run_archive.ArchiveError as error:
         print(f"collect: the run archive refused: {error}", file=sys.stderr)
         sys.exit(mesh_ops.EXIT_REFUSED)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    records, missing = collect_nodes(run, state, names, args.timeout_s, stamp)
-    missing += collect_lab(run, state, stamp)
-    have = {entry["path"] for entry in run.archive.manifest["files"]}
-    missing += [name for name in sorted(set(state["nodes"]) - set(names), key=mesh_ops.natural)
-                if not any(path.startswith(f"nodes/{name}/journal.") for path in have)]
-    missing += [f"archive: {problem}" for problem in run.problems]
-    written = len(run.problems)
-    run.write_json(f"collect/collect.{stamp}.json",
-                   {"run_id": args.run_id, "stamp_utc": stamp, "timeout_s": args.timeout_s,
-                    "nodes": records, "missing": missing}, "lab",
-                   "what each node gave this collect: its files, its API answers' HTTP status, "
-                   "its error, its seconds", {"seconds": "s"})
-    missing += [f"archive: {problem}" for problem in run.problems[written:]]
+    try:
+        collect_staging(run).mkdir(parents=True, exist_ok=True)
+        mine = pathlib.Path(tempfile.mkdtemp(prefix=f"{stamp}-", dir=collect_staging(run)))
+        lock = os.open(mine / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            earlier = earlier_collects(run)
+            missing = collect_lab(run, state, stamp)
+            records, pulled = collect_nodes(run, state, names, deadline, stamp, mine)
+            missing += pulled
+            missing += [item for name in sorted(set(state["nodes"]) - set(names),
+                                                key=mesh_ops.natural)
+                        for item in carried_missing(earlier, name)]
+            (mine / ".lock").unlink(missing_ok=True)
+        finally:
+            os.close(lock)
+        remove_empty(mine)
+        left_over = adopt_staged(run, collect_staging(run), mine)
+        missing += [f"staged {name}: {item}" for name, items in sorted(left_over.items())
+                    for item in items]
+        missing += [f"archive: {problem}" for problem in run.problems]
+        written = len(run.problems)
+        run.write_json(f"collect/collect.{stamp}.json",
+                       {"run_id": args.run_id, "stamp_utc": stamp, "timeout_s": args.timeout_s,
+                        "nodes": records, "missing": missing}, "lab",
+                       "what each node gave this collect: its files, a file cut part-way, its "
+                       "API answers' HTTP status and curl's exit status, its error, its "
+                       "seconds, when it was moved into the archive", {"seconds": "s",
+                                                                      "moved_at_s": "s"})
+        missing += [f"archive: {problem}" for problem in run.problems[written:]]
+    except Exception as error:  # noqa: BLE001 - said, and the run marked not collected
+        traceback.print_exc()
+        run.guarded("mark the run not collected", run.archive.mark_collected, False,
+                    [f"deploy collect failed: {type(error).__name__}: {error}"])
+        sys.exit(EXIT_COLLECT_FAILED)
     run.guarded("mark the run collected", run.archive.mark_collected, not missing, missing)
     print(f"collect {args.run_id}: {len(names)} node(s) into {run.path}; missing: "
           + (", ".join(missing) or "none"))
@@ -6131,7 +6352,8 @@ def main() -> None:
     collect.add_argument("--run-id", required=True, help="the lab's run id (its archive run)")
     collect.add_argument("--nodes", default=None, help="comma-separated: only these nodes")
     collect.add_argument("--timeout-s", type=float, default=COLLECT_TIMEOUT_S,
-                         help="the bound of the nodes' pulls, together")
+                         help="the bound of the nodes' pulls, together, from collect's start "
+                              "(each node is moved into the archive as its pull ends)")
     collect.set_defaults(handler=command_collect)
     args = parser.parse_args()
     args.handler(args)

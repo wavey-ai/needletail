@@ -142,22 +142,39 @@ one that the lab tool's `hosts` recorded in the lab state.
 | --- | --- |
 | `nodes/<node>/journal.<t>.txt.gz` | the node's whole journal since boot (`journalctl -b -o short-iso-precise`), gzipped |
 | `nodes/<node>/api-node.<t>.json`, `api-mesh-local.<t>.json`, `api-stats.<t>.json`, `api-stalls.<t>.json`, `api-hops.<t>.ndjson` | the node's API, read once at the end. Mesh nodes answer all five, the contributor (port 19443) `node`, `stalls` and `hops`, and other hosts none. `/api/hops` is asked with no stream, so it returns every stream the node holds. |
-| `nodes/<node>/http-status.<t>.txt` | the HTTP status of each answer |
+| `nodes/<node>/http-status.<t>.txt` | each answer's stem, HTTP status and curl's exit status (an answer counts only at 200 with curl exit 0: a body cut by `--max-time` still has a 200 status) |
+| `nodes/<node>/<file>.partial` | the file a pull ended in (cut part-way), kept under its own name with `.partial` |
 | `nodes/<node>/samplers/needletail-runs/...` | the node's `/var/lib/needletail-runs` (the lead's tools' samplers, listener and probe outputs) |
 | `nodes/<node>/samplers/var-tmp/compare-*` | the referee's sampler files, read in place and left there |
 | `lab/state.<t>.json`, `lab/hosts.<t>.json` | the lab state, and each node's id, label, region, site, role, plan and `host_uuid` |
 | `lab/deployed.<t>.json`, `lab/settings.<t>.json`, `lab/routes.<t>.json`, `lab/ecmp-ports.<t>.json` | the deployed record and this checkout's files for the lab. Settings are scrubbed; build keys and digests are kept. |
+| `lab/builds.<t>.json` | what the lab ran, from the deployed record: the av-mesh and av-contrib build keys (`<git>-<unix>`) with their nodes, and the playlists sources that av-mesh's `Cargo.lock` pins at each av-mesh build's commit. The manifest's `code_heads` are the worktrees that collect's environment names, which need not be the ones the lab was deployed from. |
 | `topology/<file>` | the lab's topology |
-| `collect/collect.<t>.json` | each node's files, HTTP statuses, error and seconds, and what was missing |
+| `collect/progress.<t>.ndjson` | one line per node as it is moved into the archive, in the order the pulls end: a collect killed part-way still shows which nodes it moved |
+| `collect/collect.<t>.json` | each node's files, the file cut part-way, HTTP statuses and curl exits, error, seconds and when it was moved, and what was missing |
 
-`<t>` is the collect's UTC time (`yyyymmddThhmmssZ`). Then the run is marked
-collected: complete, or not, with a list of what is missing. A node whose ssh
-failed or ran out of time is listed by name, and a single file as `node/journal`
-or `node/api-stalls`. The list also names `lab/deployed`, `lab/settings`,
-`topology`, and every write the archive refused. A node left out of `--nodes`
-counts as collected when an earlier collect brought its journal. Exit 0 means
-complete, 1 means incomplete, and 2 means refused (another lab's run id, or the
-archive refused the run).
+`<t>` is the collect's UTC time (`yyyymmddThhmmssZ`). The lab's files go in first.
+Each node's tar is unpacked as it streams in and the node is moved into the archive
+as soon as its pull ends, so the pulled data is not held back until the last node.
+The `--timeout-s` bound starts when `collect` starts, and every ssh still running
+at it is killed. Collects stage what they pull in
+`<archive root's parent>/.needletail-collect/<run id>/` (on the archive's
+filesystem, so that a move is a hard link), one directory per collect under a lock.
+Nothing pulled is ever deleted there: what a killed or interrupted collect left is
+moved in by the next collect of the run.
+
+Then the run is marked collected: complete, or not, with a list of what is
+missing. A node whose ssh failed, ran out of time or whose tar was cut is listed by
+name, and a single file as `node/journal` or `node/api-stalls`. The list also names
+`lab/deployed`, `lab/settings`, `topology`, and every write the archive refused. A
+node left out of `--nodes` keeps what the latest earlier collect that pulled it
+could not have (`collect/collect.*.json`); a node no collect pulled is missing.
+The deployed settings (scrubbed) go into the manifest's `deploy_settings` also
+when the run was made by another tool. Exit 0 means complete, 1 means incomplete,
+2 means refused (no lab state, a node not in the lab, another lab's run id, or the
+archive refused the run), and 70 means collect itself failed: the run is then
+marked not collected with the reason. A tool that reads `collected` after a collect
+trusts it only when its `at_utc` is later than the collect's start.
 
 The referee's `archive-run.py collect-nodes` uses the same `nodes/<node>/` names
 for the journal, `api-stats` and `api-stalls`. Its other files differ:
