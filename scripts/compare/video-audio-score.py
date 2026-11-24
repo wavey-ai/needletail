@@ -37,10 +37,19 @@ audio = load_module("compare_audio_analyse", "compare-audio-analyse.py")
 
 
 def caches(path: pathlib.Path) -> list[str]:
+    """Every edge a UDP client was served by: all of `caches`, and every leg
+    of `legs` when the client reports them (two legs and a spare an audio
+    listener on the lead's builds; read all, not the first)."""
     try:
-        return list(json.loads(path.read_text()).get("caches") or [])
+        report = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return []
+    edges = [str(item) for item in report.get("caches") or []]
+    for leg in report.get("legs") or []:
+        name = leg.get("edge") or leg.get("cache") or leg.get("name") if isinstance(leg, dict) else leg
+        if name:
+            edges.append(str(name))
+    return sorted(set(edges))
 
 
 class Dir:
