@@ -888,6 +888,12 @@ def check_stall_settings(settings: dict) -> None:
     that cannot be rendered."""
     if settings.get("mlock") is not None and settings["mlock"] not in MLOCK_MODES:
         raise ValueError(f"mlock {settings['mlock']!r} is not one of {', '.join(MLOCK_MODES)}")
+    if not isinstance(settings.get("node_warm"), (bool, type(None))):
+        raise ValueError(f"node_warm {settings['node_warm']!r} is not true or false")
+    for key in ("stall_tick_us", "stall_journal_capacity", "node_check_seconds",
+                "node_check_max_stop_ms", "node_check_max_steal_permille"):
+        if isinstance(settings.get(key), bool):
+            raise ValueError(f"{key} {settings[key]!r} is not a whole number")
     for key in ("stall_tick_us", "stall_journal_capacity"):
         if settings.get(key) is not None:
             whole_or_zero(settings[key], key)

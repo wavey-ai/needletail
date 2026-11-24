@@ -138,7 +138,8 @@ class Units(Base):
         self.assertIn("node-warm.json --warm \\\n  --check-seconds 0 ", check)
         self.assertIn("TimeoutStartSec=70\n", check)
         for bad in ("node_check_seconds=61", "node_check_seconds=-1",
-                    "node_check_max_stop_ms=x"):
+                    "node_check_max_stop_ms=x", "node_warm=False", "node_warm=1",
+                    "node_check_seconds=true", "stall_tick_us=false"):
             with self.subTest(bad), self.assertRaises(SystemExit):
                 self.settings([bad])
 
@@ -214,6 +215,7 @@ class Render(Base):
         for bad in ({"lon-edge-1": {"class_port_offset": 2000}},
                     {"lon-edge-1": {"mlock": "all"}},
                     {"lon-edge-1": {"node_check_seconds": 600}},
+                    {"lon-edge-1": {"node_warm": "yes"}},
                     {"lon-edge-1": "mlock"}):
             with self.subTest(bad), self.assertRaises(SystemExit):
                 self.settings([f"node_overrides={json.dumps(bad)}"])
