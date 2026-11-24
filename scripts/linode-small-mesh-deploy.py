@@ -38,7 +38,9 @@ Subcommands:
             slots) into service and start them, and nothing else
   stop      --nodes a,b: hold nodes out and stop their service, and nothing
             else
-  change    KIND ...: workstream A's contributor and ingress changes
+  kill      --node X: a contributor or a first forwarder killed and held
+            down, behind workstream A's gate (A 2.10)
+  return    --node X: the node killed by `kill` started and made ready
   hunt      ECMP source ports of the long-haul links (a bring-up step)
   status    service state, build, readiness and the deployed record per node
   collect   --run-id ID [--nodes a,b] [--timeout-s N]: every node's journal
@@ -103,6 +105,7 @@ import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import archived_run  # noqa: E402
+import contributor_changes  # noqa: E402
 import mesh_ops  # noqa: E402
 import run_archive  # noqa: E402
 import small_mesh_common as common  # noqa: E402
@@ -2893,20 +2896,7 @@ def contributor_identity(args: list[str]) -> dict | None:
     answer: an identity that cannot be read is not known to be equal."""
     if not binary_has("av-contrib", "--print-fingerprint"):
         return None
-    command = [str(RENDER_BINARIES["av-contrib"]), *args[1:], "--print-fingerprint"]
-    result = identity = None
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60,
-                                check=False)
-        if result.returncode == 0:
-            identity = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        identity = None
-    if not isinstance(identity, dict) or not identity.get("fingerprint"):
-        said = "" if result is None else (result.stderr or result.stdout).strip()[-400:]
-        raise ValueError("av-contrib --print-fingerprint gave no identity"
-                         + (f": {said}" if said else ""))
-    return identity
+    return contributor_changes.identity_of(RENDER_BINARIES["av-contrib"], args)
 
 
 def check_contributor_pair(state: dict, rendered: dict[str, dict]) -> None:
@@ -5279,6 +5269,41 @@ class LinodeOps(mesh_ops.Ops):
         if node not in self.full["nodes"]:
             common.forget_host(address)
 
+    # ---------------------------------------------------------- workstream A's kill and return
+    def hold_path(self, node: str) -> str:
+        return f"/run/systemd/system/{self.service(node)}.service.d/hold.conf"
+
+    def hold_down(self, node: str) -> None:
+        """Its unit is not started again after the kill (A 2.10): a drop-in
+        under /run (gone at a reboot) with Restart=no."""
+        path = self.hold_path(node)
+        directory = str(pathlib.PurePosixPath(path).parent)
+        common.ssh_text(self.full["nodes"][node],
+                        f"mkdir -p {shlex.quote(directory)} && printf '[Service]\\nRestart=no\\n'"
+                        f" > {shlex.quote(path)} && systemctl daemon-reload", timeout=30)
+
+    def kill(self, node: str) -> None:
+        common.ssh_text(self.full["nodes"][node],
+                        f"systemctl kill -s KILL {self.service(node)}.service", timeout=30)
+
+    def release(self, node: str) -> None:
+        """The hold taken away and the unit started on what it runs."""
+        common.ssh_text(self.full["nodes"][node],
+                        f"rm -f {shlex.quote(self.hold_path(node))} && systemctl daemon-reload"
+                        f" && systemctl start {self.service(node)}.service", timeout=60)
+
+    def staged_identity(self, node: str) -> dict | None:
+        """The `--print-fingerprint` identity of what is staged for
+        contributor `node` (its staged build's av-contrib from the build
+        cache, its staged arguments), run here; None when nothing is
+        staged."""
+        staged = self.staged.get(node)
+        if staged is None:
+            return None
+        key = staged["build"]
+        args, _unit, _service = self.node_args(node, self.node_settings(node, self.given), key)
+        return contributor_changes.identity_of(builds_dir() / key / "av-contrib", args)
+
 
 def linode_ops(args: argparse.Namespace) -> LinodeOps:
     """The backend of a change command: this lab's state, the worktree's
@@ -5417,26 +5442,15 @@ def command_push(args: argparse.Namespace) -> None:
 def command_restart(args: argparse.Namespace) -> None:
     """`restart --nodes a,b`: one node at a time through the engine's gates
     and readiness, each on its recorded build (`--rollback`: `.args.prev`
-    in force; `--hold-s`: held stopped that long). A contributor goes to
-    workstream A's `change contrib-restart`. `restart --roles`: every node
-    of a role at once, on its recorded build, for a cold bring-up."""
+    in force; `--hold-s`: held stopped that long; a contributor through
+    workstream A's gate and readiness, so `--hold-s 20` on a contributor
+    is A's hand-over). `restart --roles`: every node of a role at once, on
+    its recorded build, for a cold bring-up."""
     if args.nodes:
         if args.roles:
             sys.exit("restart takes --nodes or --roles, not both")
         names = names_of(args.nodes)
         ops = linode_ops(args)
-        contributors = [name for name in names if ops.role(name) == "contributor"]
-        if contributors:
-            given = [flag for flag, value in (("--rollback", args.rollback),
-                                              ("--hold-s", args.hold_s), ("--set", args.set),
-                                              ("--resume", args.resume)) if value]
-            if len(names) > 1 or given:
-                print("restart --nodes: a contributor is restarted alone, on the arguments it "
-                      "runs, by workstream A's change contrib-restart"
-                      + (f", which takes no {', '.join(given)}" if given else ""),
-                      file=sys.stderr)
-                sys.exit(mesh_ops.EXIT_REFUSED)
-            sys.exit(run_change(ops, "contrib-restart", ["--node", names[0]]))
         sys.exit(mesh_ops.restart_nodes(ops, names, options=engine_options(args),
                                         resume=args.resume))
     if args.rollback or args.hold_s or args.resume:
@@ -5501,35 +5515,14 @@ def command_replace(args: argparse.Namespace) -> None:
                               options=engine_options(args)))
 
 
-def contributor_changes():
-    """Workstream A's scripts/contributor_changes.py, loaded when a command
-    needs it; refused while it is not in this checkout."""
-    path = common.ROOT / "scripts" / "contributor_changes.py"
-    if not path.is_file():
-        raise mesh_ops.Refused("the contributor and ingress changes are workstream A's "
-                               "scripts/contributor_changes.py, which is not in this checkout")
-    spec = importlib.util.spec_from_file_location("contributor_changes", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def run_change(ops: LinodeOps, kind: str, arguments: list[str]) -> int:
-    """A contributor or ingress change of workstream A (`contrib-kill`,
-    `contrib-restart`, `ingress-kill-return`, ...) under the ops lock:
-    `contributor_changes.change(ops, kind, arguments)` returns the exit
-    status and prints the change's marks."""
-    try:
-        module = contributor_changes()
-    except mesh_ops.Refused as refused:
-        print(refused, file=sys.stderr)
-        return mesh_ops.EXIT_REFUSED
-    with ops_locked():
-        return module.change(ops, kind, list(arguments))
-
-
 def command_change(args: argparse.Namespace) -> None:
-    sys.exit(run_change(linode_ops(args), args.kind, args.arguments))
+    """`kill --node X` and `return --node X` (A 2.10): workstream A's
+    contributor and ingress changes (contributor_changes.run) under the ops
+    lock. stdout carries the change's two marks only; the exit status is
+    the change's."""
+    ops = linode_ops(args)
+    with ops_locked():
+        sys.exit(contributor_changes.run(ops, args.command, args))
 
 
 def checked_for_start_stop(state: dict, names: list[str], verb: str) -> None:
@@ -6336,10 +6329,12 @@ def main() -> None:
     replace.add_argument("--surge", choices=("auto", "never"), default="auto")
     replace.add_argument("--parity-ms", type=float, default=1.0)
     replace.set_defaults(handler=command_replace, on_failure="stop", video_gap="refuse")
-    change = sub.add_parser("change", help="workstream A's contributor and ingress changes")
-    change.add_argument("kind")
-    change.add_argument("arguments", nargs=argparse.REMAINDER)
-    change.set_defaults(handler=command_change)
+    for verb, text in (("kill", "a contributor or a first forwarder killed and held down, "
+                                "gated (A 2.10)"),
+                       ("return", "the node `kill` held down started and made ready")):
+        change = sub.add_parser(verb, help=text)
+        contributor_changes.add_options(change, verb)
+        change.set_defaults(handler=command_change)
     hunt = sub.add_parser("hunt")
     hunt.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                       help="a setting of this hunt (relay_class_split, class_port_offset), "

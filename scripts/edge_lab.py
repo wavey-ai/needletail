@@ -31,7 +31,8 @@ the cgroups are scopes of the user's systemd manager.
   edge_lab.py sh <node> <command...>    run a command in the namespace of a node
   edge_lab.py net <node> <pub|vlan> <out|in|both> <netem spec | clear>
   edge_lab.py wan <site> <out|in|both> <netem spec | clear>
-  edge_lab.py sources <seconds>         start the 4K video and the audio sources
+  edge_lab.py sources <seconds>         start the 4K video and the audio sources in
+                                        lon-src: every AEP1 epoch to both contributors
   edge_lab.py start <node>              start a node's service (a slot: take it into
                                         service)
   edge_lab.py stop <node>               stop a node's service (SIGTERM; a slot: out of
@@ -43,6 +44,17 @@ the cgroups are scopes of the user's systemd manager.
                                         after the unit's RestartSec, and return
                                         when it is back (ready, or /up answers)
   edge_lab.py burn <node> <seconds>     busy loops in the node's own cgroup, on its CPUs
+  edge_lab.py kill <node> [--unprotected] [--video-gap accept] [--gate-timeout-s 30]
+                                        a contributor or a first forwarder killed (SIGKILL)
+                                        and held down, behind workstream A's gate; exit 2
+                                        and nothing touched when the other contributor (or
+                                        forwarder) does not carry every stream
+  edge_lab.py return <node> [--ready-timeout-s 60]
+                                        the node `kill` held down started and made ready
+  edge_lab.py freeze <node> --ms N      a contributor or a first forwarder stopped
+                                        (SIGSTOP) for N ms and thawed
+                                        (kill, return, freeze: stdout is their two marks,
+                                        --marks FILE appends them; scripts/contributor_changes.py)
   edge_lab.py roll <edges|forwarders|contributors|all> [--build a|b] [--nodes a,b]
               [--sites s,..] [--force] [--dry-marks] [--resume] [engine options]
                                         a roll through the change engine (mesh_ops):
@@ -92,9 +104,11 @@ writes the lab into a registry that every worktree of the host shares
   cpus_overlap=1`, and so is any CPU while a lab that the registry does not
   know runs. The standing layout of two labs on the 32 CPU host: lab a on
   2-15, lab b on 16-29.
-- `up node_cpus=FIRST` is the layout of one lab alone: each node, the slots
-  included, its own CPUs from FIRST on, the reader hosts on every other CPU
-  of the host.
+- `up node_cpus=FIRST` is the layout of one lab alone: each node its own
+  CPUs from FIRST on (the contributors 2 each, lon-src 2, lon-edge-4 and
+  new-edge-3 included, the two dist-c slots none: they cannot be taken in
+  under it), the reader hosts on every other CPU of the host: 4 CPUs on the
+  32 CPU host from 0.
 - Whatever the lab runs beside a node's service is in one cgroup, the scope
   needletail-lab-...-tools.scope, the process that drives the lab included,
   so the lab's own CPU time can be read (scope_cpu_usec).
@@ -130,6 +144,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import contributor_changes  # noqa: E402
 import mesh_ops  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -195,6 +210,8 @@ LADDER = [
     (13, LADDER_DIR / "tos24-360p-700k.ts", 1_100_000, 950_000, "640x360", 24_000),
 ]
 RTMP_PORT = 19350
+# The source host's 4K feed loop (A 3.6): one contributor at a time.
+VIDEO_FEED = pathlib.Path(__file__).resolve().parent / "video-feed.sh"
 
 
 def ladder_renditions() -> list[str]:
@@ -268,7 +285,17 @@ NODES = [
     # that the forwarder tier and a second region scale in the lab too.
     ("new-edge-3", "edge", "newyork", "us-east", "10.90.2.23", "10.77.2.23"),
     ("new-dist-c", "distributor", "newyork", "us-east", "10.90.2.13", "10.77.2.13"),
+    # Workstream A (A 2.7, NT4): the standby contributor, publishing the
+    # same parts beside contrib-lon on lanes of its own to lon-dist-a and
+    # lon-dist-b, and the source host, which sends every AEP1 epoch to both
+    # over the London VLAN, as lon-src does on Linode.
+    ("contrib-lon-b", "contributor", "london", "gb-lon", "10.90.0.7", "10.77.1.7"),
+    ("lon-src", "load", "london", "gb-lon", "10.90.0.4", "10.77.1.4"),
 ]
+# The standby contributor (the topology's `"standby": true`) and the source
+# host (a load host of purpose "source").
+STANDBY_CONTRIBUTORS = ("contrib-lon-b",)
+SOURCE_HOST = "lon-src"
 # Reader hosts: a namespace on the public network of a site. They are not
 # mesh nodes and have no CPU or memory limit.
 READER_HOSTS = [
@@ -377,8 +404,10 @@ SITE_DELAY_MS = site_delays(os.environ.get("NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS"),
 def node(name: str) -> dict:
     for item, role, site, region, public, vlan in NODES:
         if item == name:
+            extra = ({"standby": True} if item in STANDBY_CONTRIBUTORS else
+                     {"purpose": "source"} if item == SOURCE_HOST else {})
             return {"name": item, "role": role, "site": site, "region": region,
-                    "public_ipv4": public, "vlan_ipv4": vlan}
+                    "public_ipv4": public, "vlan_ipv4": vlan, **extra}
     for item, site, public in READER_HOSTS:
         if item == name:
             return {"name": item, "role": "reader", "site": site, "region": None,
@@ -736,13 +765,27 @@ def cpu_range(text: str) -> tuple[int, int]:
     return first, last
 
 
+# The layout of one lab alone (`node_cpus=FIRST`) on the 32 CPU host, with
+# workstream A's second contributor and source host: 22 CPUs for the
+# standing mesh nodes, 2 for each contributor, 2 for lon-src and 4 left for
+# the reader hosts, the probes and the lab's own commands. A contributor's 4
+# CPUs (its g6-dedicated-4) do not fit beside its standby's, so in this
+# layout each has 2 (its CPU limit 200%, unless `up limit.<node>.*` says
+# otherwise), and the dist-c slots have none: they cannot be taken in under
+# it (a scenario that needs one runs in a range, `cpus=A-B`). The range
+# layout is as it was: every node a window of its limit on the ring.
+PINNED_CONTRIBUTOR_CPUS = 2
+
+
 def take_window(sets: dict, name: str) -> list[int]:
     """Give node `name` its CPUs in `sets` (changed in place), after the
     nodes that have theirs. In a range: the next window of as many CPUs as
     its limit on the ring of node CPUs, so nodes share when the ring is
     short. With `node_cpus`: the next CPUs of the host, its own, taken from
-    "_rest"."""
+    "_rest" (a contributor PINNED_CONTRIBUTOR_CPUS of them)."""
     count = max(1, default_limits(name)["cpu_percent"] // 100)
+    if "_range" not in sets and node(name)["role"] == "contributor":
+        count = min(count, PINNED_CONTRIBUTOR_CPUS)
     if "_range" in sets:
         ring = sets["_node_cpus"]
         count = min(count, len(ring))
@@ -775,7 +818,8 @@ def node_cpu_sets(names: list[str], first: int | None = None,
 
     `first` (`up node_cpus=FIRST`): each node its own CPUs, as a Linode
     instance has, from host CPU FIRST on, and "_rest" is every other CPU of
-    the host: the layout of one lab alone.
+    the host: the layout of one lab alone (PINNED_CONTRIBUTOR_CPUS: the
+    contributors 2 CPUs each, the dist-c slots none).
 
     In a range, a node that is not in `names` (a slot that is held out, a
     backbone relay) takes its window on the ring when its service starts
@@ -793,11 +837,24 @@ def node_cpu_sets(names: list[str], first: int | None = None,
                "_rest": list(range(high + 1 - rest, high + 1)), "_next": 0}
     elif first is not None:
         out = {"_first": first, "_total": total, "_rest": list(range(total)), "_next": first}
+        names = [name for name in names if name not in DEFAULT_SLOTS]
     else:
         return {}
     for name, *_ in NODES:
         if name in names:
             take_window(out, name)
+    return out
+
+
+def pinned_limits(sets: dict, limits: dict) -> dict:
+    """`limits` (up's limit.<node>.*) with, in the `node_cpus` layout, each
+    contributor's CPU limit that of its window (PINNED_CONTRIBUTOR_CPUS)
+    unless given: its quota and worker threads follow the CPUs it has."""
+    out = {name: dict(value) for name, value in limits.items()}
+    if "_first" in sets:
+        for name in names("contributor"):
+            if name in sets:
+                out.setdefault(name, {}).setdefault("cpu_percent", 100 * len(sets[name]))
     return out
 
 
@@ -809,6 +866,10 @@ def node_cpus(name: str) -> list[int] | None:
     `node_cpus` every node that has CPUs was given them at `up`; a backbone
     relay of the legacy topology runs under its quota alone, as before."""
     sets = load("cpus.json")
+    if "_first" in sets and name not in sets and name in DEFAULT_SLOTS:
+        raise LabError(f"node_cpus={sets['_first']}: {name} has no CPUs of its own in this "
+                       "layout (PINNED_CONTRIBUTOR_CPUS); a lab that takes a dist-c in runs in "
+                       "a range, cpus=A-B")
     if name in sets or "_range" not in sets:
         return sets.get(name)
     with open(WORK / "cpus.json.lock", "w") as handle:
@@ -1828,6 +1889,7 @@ def up(overrides: list[str], start: bool = True) -> dict:
     # owner's or its CPUs are another lab's; else the lab that ran in this
     # state directory is stopped.
     claim(lab_cpus(sets), take=take, overlap=overlap)
+    limits = pinned_limits(sets, limits)
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     for log in (WORK / "logs").glob("*"):
         if log.is_file():
@@ -1935,46 +1997,73 @@ def opus_bitrate() -> int:
     return int(load("settings.json").get("opus_bitrate") or 320000)
 
 
+def contributor_targets() -> list[str]:
+    """`address:27100` of every contributor on the London VLAN, the origin
+    first: where a source sends each AEP1 epoch (the deploy's
+    contributor_targets of this lab)."""
+    import small_mesh_common
+    return small_mesh_common.contributor_targets(lab_state())
+
+
+def source_prefix() -> list[str]:
+    """Command prefix of a source: in lon-src's namespace and the lab's tools
+    scope, on lon-src's own CPUs (a starved sender looks like a mesh stall),
+    or on the readers' CPUs in a lab without them."""
+    prefix = nsenter(SOURCE_HOST)
+    join_tools()
+    cpus = node_cpus(SOURCE_HOST) or load("cpus.json").get("_rest")
+    if cpus:
+        prefix += ["taskset", "-c", cpu_list(cpus)]
+    return prefix
+
+
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
-    """Start the sources next to the contributor, as an encoder on its LAN.
+    """Start the sources in lon-src, an encoder on the contributors' VLAN as
+    on Linode: every AEP1 epoch to each contributor (contributor_targets),
+    the video to one contributor at a time through the feed loop
+    (scripts/video-feed.sh: contrib-lon first, the other when it fails).
     `audio` is `probe` (lossless FLAC), `daw` (FLAC and HQ SoundKit Opus) or
     None."""
     sources = load("sources.json")
+    targets = contributor_targets()
+    feed = [str(VIDEO_FEED), "--seconds", str(seconds),
+            *[target.rsplit(":", 1)[0] for target in targets], "--"]
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     if video and "video" not in sources and load("settings.json").get("hls_renditions"):
         # An encoder that sends a ladder: one process reads every rendition
         # at its own rate and publishes each under the key of its stream.
         log = open(WORK / "logs" / "source-video.log", "ab")
-        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        command = ["-hide_banner", "-loglevel", "error", "-nostdin"]
         for _stream, path, *_ in LADDER:
             command += ["-re", "-stream_loop", "-1", "-i", str(path)]
         for index, (stream, *_rest) in enumerate(LADDER):
             command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
-                        "-t", str(seconds), "-f", "flv",
-                        f"rtmp://127.0.0.1:{RTMP_PORT}/live/{stream}"]
-        process = subprocess.Popen(enter("contrib-lon") + command, stdout=log, stderr=log,
+                        "-f", "flv", f"rtmp://{{host}}:{RTMP_PORT}/live/{stream}"]
+        process = subprocess.Popen(source_prefix() + feed + command, stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
+        log.close()
     if video and "video" not in sources:
         log = open(WORK / "logs" / "source-video.log", "ab")
         process = subprocess.Popen(
-            enter("contrib-lon") + [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
+            source_prefix() + feed + [
+                "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
                 # A 4K clip of 120 Mbit/s or more holds its first audio
                 # packet past the default 5 MB probe: without a longer one
                 # ffmpeg finds no sample rate and sends nothing.
                 "-probesize", "64M", "-analyzeduration", "10000000",
-                "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP), "-t", str(seconds),
+                "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP),
                 "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-muxdelay", "0",
                 "-muxpreload", "0", "-f", "mpegts",
-                "srt://127.0.0.1:27001?mode=caller&transtype=live&latency=80"],
+                "srt://{host}:27001?mode=caller&transtype=live&latency=80"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
+        log.close()
     if audio == "daw" and "audio" not in sources:
         log = open(WORK / "logs" / "source-audio.log", "ab")
         process = subprocess.Popen(
-            enter("contrib-lon") + [
+            source_prefix() + [
                 str(DAW_SOURCE), "--direct-contributor", "--loop-prepared-pcm",
                 # The DAW lane's Opus frame and rate: 1 ms Opus Custom at
                 # 320 kb/s by default.
@@ -1984,17 +2073,21 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 # daw_hls_formats "flac,opus"); daw-nexus now sends PCM
                 # unless told, and the contributor then made no stream 2001.
                 "--lossless-payload", "flac",
-                "127.0.0.1:27100", str(seconds), str(daw_tracks())],
+                # Each contributor an upstream: daw-nexus sends every epoch
+                # to the first and then to each extra one (A DN1).
+                ",".join(targets), str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),
                  "DAW_TEST_SOURCE_CAPACITY_OUTPUT": str(WORK / "logs" / "daw-capacity.ndjson")},
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["audio"] = process.pid
+        log.close()
     elif audio == "probe" and "audio" not in sources:
         log = open(WORK / "logs" / "source-audio.log", "ab")
         process = subprocess.Popen(
-            enter("contrib-lon") + [
-                binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+            source_prefix() + [
+                binary("aep1-48k-probe"), "send",
+                *[item for target in targets for item in ("--target", target)],
                 "--session-id", str(time.time_ns() + 2_000_000_000), "--group-id", "0",
                 "--duration-seconds", str(seconds), "--payload", "flac",
                 "--epoch-samples", str(probe_epoch_samples("flac")),
@@ -2003,6 +2096,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 "--repair-percent", "12", "--min-repair-symbols", "1"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["audio"] = process.pid
+        log.close()
     save("sources.json", sources)
 
 
@@ -2765,6 +2859,33 @@ class EdgeLabOps(mesh_ops.Ops):
         if node in self.lab.SLOT_CANDIDATES:
             self.lab.set_slot_in_service(node, False)
 
+    # ---------------------------------------------------------- workstream A's changes
+    def hold_down(self, node: str) -> None:
+        """Nothing to hold: the lab starts no service again by itself."""
+
+    def kill(self, node: str) -> None:
+        self.lab.kill_service(node)
+
+    def release(self, node: str) -> None:
+        """Start the node with what it was started with, unless it runs."""
+        if self.lab.service_pid(node) is None:
+            given = self.services().get(node) or {}
+            self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                   extra_args=given.get("extra_args"))
+
+    def freeze(self, node: str, frozen: bool) -> None:
+        self.lab.freeze_service(node, frozen)
+
+    def staged_identity(self, node: str) -> dict | None:
+        """`--print-fingerprint` of the build set staged for contributor
+        `node`, with the arguments it gets on that set; None when nothing
+        is staged."""
+        build = self.staged.get(node)
+        if build is None:
+            return None
+        return contributor_changes.identity_of(self.lab.binary("av-contrib", build),
+                                               self.args_of(node, build))
+
 
 ENGINE_VERBS = ("roll", "restart", "replace")
 
@@ -2831,6 +2952,17 @@ def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
                                       **engine)
     return mesh_ops.replace(ops, args.node, mode="rebuild", no_slot=args.no_slot,
                             resume=args.resume, options=options, **engine)
+
+
+def change_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = None,
+                **change) -> int:
+    """`kill`, `return` and `freeze` on this lab (workstream A, A 2.10):
+    contributor_changes on an EdgeLabOps backend. stdout carries the
+    change's two marks only. Returns the change's exit status."""
+    parser = argparse.ArgumentParser(prog=f"edge_lab.py {command}")
+    contributor_changes.add_options(parser, command, positional=True)
+    args = parser.parse_args(arguments)
+    return contributor_changes.run(ops or EdgeLabOps(), command, args, **change)
 
 
 def status() -> None:
@@ -2931,6 +3063,8 @@ def main() -> None:
             print(f"{name} was killed and is back (pid {pid})")
         elif command in ENGINE_VERBS:
             sys.exit(engine_verb(command, arguments))
+        elif command in contributor_changes.VERBS:
+            sys.exit(change_verb(command, arguments))
         elif command == "burn":
             if len(arguments) != 2:
                 sys.exit("usage: edge_lab.py burn <node> <seconds>")

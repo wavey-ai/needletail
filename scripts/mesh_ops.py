@@ -39,8 +39,7 @@ down); 130 interrupted and cleaned up.
 
 The contributor tier's gate and readiness are workstream A's
 (scripts/contributor_changes.py, `contrib_gate` and `contrib_ready`); they
-are reached through `contributor_rules` alone, which refuses the tier while
-the module is absent.
+are reached through `contributor_rules` alone.
 """
 
 from __future__ import annotations
@@ -49,7 +48,6 @@ import contextlib
 import dataclasses
 import fcntl
 import http.client
-import importlib.util
 import json
 import os
 import pathlib
@@ -64,7 +62,6 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-HERE = pathlib.Path(__file__).resolve().parent
 HTTP_PORT = 19444
 # av-mesh's --rebalance-target-permille default: an edge over it sends UDP
 # legs to an edge with room (the capacity gate's ceiling).
@@ -430,6 +427,13 @@ def status_of(document) -> Status | None:
         warm_parts_pending=_num(document, "cache_mesh.warm_parts_pending"),
         client_udp=udp if isinstance(udp, dict) else None,
         caches_fresh=_num(document, "entry.caches_fresh"))
+
+
+def idle_contributor(status: Status) -> bool:
+    """A contributor that hears no source (A 2.6: `standing_by`): not
+    ready, and not failing; workstream A's gate decides whether it may be
+    changed."""
+    return status.role == "contributor" and status.state == "standing_by"
 
 
 def parent_row(status: Status | None, addresses, stream_id: int, track: str = "audio"):
@@ -879,15 +883,10 @@ def contributor_rules():
     the engine reaches them: `contrib_gate(ops, node, *, timeout_s, poll_s,
     clock, sleep, video_gap)` and `contrib_ready(ops, node, *, timeout_s,
     poll_s, clock, sleep)`, each returning (ok, why, evidence) after its own
-    polling. Refused while scripts/contributor_changes.py is absent."""
-    path = HERE / "contributor_changes.py"
-    if not path.exists():
-        raise Refused("the contributor tier needs workstream A's scripts/contributor_changes.py "
-                      "(contrib_gate, contrib_ready); it is not in this checkout")
-    spec = importlib.util.spec_from_file_location("contributor_changes", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.contrib_gate, module.contrib_ready
+    polling. Imported here, not at the top: contributor_changes imports this
+    module."""
+    import contributor_changes
+    return contributor_changes.contrib_gate, contributor_changes.contrib_ready
 
 
 # ---------------------------------------------------------------- the checks
@@ -1341,7 +1340,9 @@ def readiness_check(lab: Lab, name: str, statuses: dict, *, expected: dict, befo
     if status.args_sha256 != expected.get("args_sha256"):
         out["R1"].append("args_sha256 differs from the rendered arguments")
     if tier == "contributors":
-        if status.state != "ready":
+        # A 2.10: a contributor that hears no source is standing_by, never
+        # ready; contrib_ready then decides whether that is allowed.
+        if status.state != "ready" and not idle_contributor(status):
             out["R2"].append(f"state {status.state}")
         return out
     if status.threads is None or status.threads_expected is None:
@@ -1651,8 +1652,14 @@ class Engine:
 
     def all_ready(self, names) -> dict:
         statuses = self.poll(names)
+        # A 2.10: an idle pair (every contributor standing_by) may be
+        # changed; one standing_by beside a ready one is "1 of 2".
+        idle_pair = all(status is not None and idle_contributor(status)
+                        for name, status in statuses.items()
+                        if self.lab.tier(name) == "contributors")
         bad = [f"{name} ({'no answer' if status is None else status.state})"
-               for name, status in statuses.items() if status is None or status.ready is not True]
+               for name, status in statuses.items() if status is None or (
+                   status.ready is not True and not (idle_pair and idle_contributor(status)))]
         if bad:
             raise Refused(f"not every node is ready: {', '.join(bad)}")
         self.seen_ready.update(statuses)

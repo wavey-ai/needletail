@@ -942,16 +942,6 @@ class Roll(Base):
         self.assertEqual(journal["exit"], 0)
         self.assertIsNone(journal["in_hand"])
 
-    def test_the_contributor_tier_needs_workstream_a_s_module(self):
-        code = self.roll("contributors")
-        self.assertEqual(code, 2)
-        self.assertIn("scripts/contributor_changes.py", self.err.getvalue())
-        self.assertEqual(self.out.getvalue(), "")
-        self.assertEqual(self.sim.activations(), [])
-        self.assertEqual(mesh_ops.restart_nodes(self.sim, ["contrib-lon"], out=self.out,
-                                                err=self.err, clock=self.clock,
-                                                sleep=self.clock.sleep), 2)
-
     def test_a_failed_gate_stops_before_the_node(self):
         self.sim.row[("new-edge-2", "new-dist-a")] = {"slack_mean_us_10s": 989_000}
         code = self.roll("forwarders", options=self.options(gate_timeout_s=3))

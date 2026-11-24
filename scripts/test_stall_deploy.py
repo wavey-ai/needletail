@@ -207,9 +207,11 @@ class Render(Base):
         self.assertEqual(value_of(edge, "--prefault"), "false")
         self.assertEqual(value_of(edge, "--node-warm-file"), "/run/needletail/node-warm.json")
         self.assertEqual(value_of(args["contrib-lon"], "--mlock"), "off")
+        # The time of each render (the contributors' path observation) aside.
         for name in args:
             if name not in overrides:
-                self.assertEqual(args[name], base[name], name)
+                self.assertEqual(deploy.render_sha256(args[name]),
+                                 deploy.render_sha256(base[name]), name)
         settings = self.settings([f"node_overrides={json.dumps(overrides)}"])
         own = deploy.node_own_settings(settings, "lon-edge-1")
         self.assertIn(f"Wants={CHECK}", deploy.unit_text("needletail-mesh", "info", own))

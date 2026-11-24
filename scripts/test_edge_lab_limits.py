@@ -101,11 +101,18 @@ class CpuSets(unittest.TestCase):
         names = [name for name, role, *_ in lab.NODES if role != "backbone"]
         with mock.patch.object(lab.os, "cpu_count", return_value=32):
             sets = lab.node_cpu_sets(names, first=0)
-        self.assertEqual(sets[CONTRIBUTOR], [0, 1, 2, 3])
+        # Two contributors and the source host fit beside the mesh: each
+        # contributor 2 CPUs, the dist-c slots none, 4 for the readers.
+        self.assertEqual(sets[CONTRIBUTOR], [0, 1])
+        self.assertEqual(len(sets["contrib-lon-b"]), lab.PINNED_CONTRIBUTOR_CPUS)
+        self.assertEqual(len(sets["lon-src"]), 2)
         self.assertEqual(len(sets[EDGE]), 2)
-        used = [cpu for name in names for cpu in sets[name]]
+        for slot in lab.DEFAULT_SLOTS:
+            self.assertNotIn(slot, sets)
+        used = [cpu for name in names for cpu in sets.get(name, [])]
         self.assertEqual(len(used), len(set(used)), "no CPU is shared")
         self.assertEqual(sets["_rest"], [cpu for cpu in range(32) if cpu not in used])
+        self.assertEqual(sets["_rest"], [28, 29, 30, 31])
         with mock.patch.object(lab.os, "cpu_count", return_value=8), \
                 self.assertRaises(lab.LabError):
             lab.node_cpu_sets(names, first=0)
@@ -260,14 +267,14 @@ class CpuRange(Isolated):
 
     def test_nodes_take_windows_round_robin_and_share_a_short_range(self):
         sets = lab.node_cpu_sets(STANDING, cpus=(2, 15))
-        # Eleven node CPUs (2-12) for 26 CPUs of limits: in the order of
+        # Eleven node CPUs (2-12) for 32 CPUs of limits: in the order of
         # NODES, each window follows the last, around the ring.
         self.assertEqual(sets[CONTRIBUTOR], [2, 3, 4, 5])
         self.assertEqual([sets[name] for name in ("lon-dist-a", "lon-dist-b", "lon-edge-1",
                                                   "lon-edge-2", "lon-edge-3")],
                          [[6, 7], [8, 9], [10, 11], [12, 2], [3, 4]])
         load = {cpu: sum(cpu in sets[name] for name in STANDING) for cpu in range(2, 13)}
-        self.assertEqual(sum(load.values()), 26)
+        self.assertEqual(sum(load.values()), 32)
         self.assertLessEqual(max(load.values()) - min(load.values()), 1,
                              "the node CPUs are shared evenly")
         # A node never has more CPUs than there are.
@@ -300,15 +307,21 @@ class CpuRange(Isolated):
 
     def test_with_node_cpus_a_slot_never_takes_the_readers_cpus(self):
         # The reader hosts, the load tool and the driving process are pinned
-        # to "_rest" at `up` and never again: with node_cpus every node, the
-        # slots included, has its own CPUs from `up` on, and a slot that is
-        # taken in later takes none of "_rest".
+        # to "_rest" at `up` and never again: with node_cpus every node that
+        # may run has its own CPUs from `up` on (an edge slot included), and
+        # a slot that is taken in later takes none of "_rest": a dist-c,
+        # which has none in this layout, is refused.
         every = [name for name, role, *_ in lab.NODES if role != "backbone"]
-        sets = lab.node_cpu_sets(every, first=0)
+        with mock.patch.object(lab.os, "cpu_count", return_value=32):
+            sets = lab.node_cpu_sets(every, first=0)
         lab.save("cpus.json", sets)
         rest = list(sets["_rest"])
-        self.assertEqual(rest, [30, 31])
+        self.assertEqual(rest, [28, 29, 30, 31])
         for slot in lab.SLOT_CANDIDATES:
+            if slot in lab.DEFAULT_SLOTS:
+                with self.assertRaises(lab.LabError, msg=slot):
+                    lab.node_cpus(slot)
+                continue
             self.assertEqual(lab.node_cpus(slot), sets[slot])
             self.assertFalse(set(sets[slot]) & set(rest), slot)
         self.assertEqual(lab.load("cpus.json")["_rest"], rest)
@@ -588,17 +601,25 @@ class Up(Isolated):
         lab.up(["cpus=16-29"], start=False)
         self.assertEqual(self.registered()["b"]["cpus"], list(range(16, 30)))
         del lab.os.environ["NEEDLETAIL_EDGE_LAB_CPUS"]
-        # One lab alone on the host, each node its own CPUs, the slots
-        # included: the readers are pinned to what is left, once.
+        # One lab alone on the host, each node its own CPUs, the edge slots
+        # included: the readers are pinned to what is left, once. The
+        # contributors' limit is their two CPUs.
         lab.up(["node_cpus=0", "slots=lon-edge-4"], start=False)
         self.assertEqual(self.registered()["b"]["cpus"], list(range(32)))
         sets = lab.load("cpus.json")
-        self.assertEqual(sets[CONTRIBUTOR], [0, 1, 2, 3])
-        nodes = [cpu for name in lab.SLOT_CANDIDATES for cpu in sets[name]]
-        self.assertEqual(len(nodes), 8)
-        self.assertEqual(sets["_rest"], [30, 31])
+        self.assertEqual(sets[CONTRIBUTOR], [0, 1])
+        nodes = [cpu for name in lab.SLOT_CANDIDATES for cpu in sets.get(name, [])]
+        self.assertEqual(len(nodes), 4)
+        self.assertEqual(sets["_rest"], [28, 29, 30, 31])
         self.assertFalse(set(nodes) & set(sets["_rest"]))
-        self.assertEqual({tuple(cpus) for _task, cpus in self.pinned[-1:]}, {(30, 31)})
+        self.assertEqual({tuple(cpus) for _task, cpus in self.pinned[-1:]}, {(28, 29, 30, 31)})
+        for name in ("contrib-lon", "contrib-lon-b"):
+            self.assertEqual(lab.service_limits(name)["cpu_percent"], 200, name)
+        lab.up(["node_cpus=0", "limit.contrib-lon.cpu_percent=150"], start=False)
+        self.assertEqual(lab.service_limits("contrib-lon")["cpu_percent"], 150)
+        # In a range the limits are the instances': 4 CPUs a contributor.
+        lab.up(["cpus=2-15"], start=False)
+        self.assertEqual(lab.service_limits("contrib-lon")["cpu_percent"], 400)
 
     def test_lab_settings_that_cannot_be(self):
         for overrides in (["cpus=2-15", "node_cpus=0"], ["take=yes"], ["cpus_overlap=2"],
