@@ -152,7 +152,7 @@ class Budget(unittest.TestCase):
         for name, figures in scenarios(self.tmp).items():
             self.assertLessEqual(figures["max_per_node_window"], 1, (name, figures))
 
-    def test_mesh_local_is_read_only_where_node_status_lacks_the_counters(self):
+    def test_no_gate_reads_mesh_local(self):
         found = scenarios(self.tmp)
         # The forwarder gate and the rolls read /api/node only.
         for name in ("ingress gate, refusing 30 s", "roll edges", "roll forwarders"):
@@ -161,12 +161,12 @@ class Budget(unittest.TestCase):
                                                              "/api/control/resume-node"},
                              set(), name)
         self.assertNotIn("/api/assignment", found["ingress gate, refusing 30 s"]["by_path"])
-        # The contributor gate: the two ingresses' plane counters on its
-        # first and its deciding poll only, never beside their /api/node.
+        # The contributor gate and readiness: the ingresses' counters from
+        # their /api/node (integration 4), never /api/mesh/local.
         gate = found["contributor gate, passing"]["by_path"]
-        self.assertLessEqual(gate.get("/api/mesh/local", 0), 4, gate)
+        self.assertNotIn("/api/mesh/local", gate)
         ready = found["contributor readiness"]["by_path"]
-        self.assertLessEqual(ready.get("/api/mesh/local", 0), 4, ready)
+        self.assertNotIn("/api/mesh/local", ready)
 
     def test_counters_on_node_status_need_no_mesh_local(self):
         # Once av-mesh serves `relay_counters` on /api/node (the field this
@@ -185,11 +185,10 @@ class Budget(unittest.TestCase):
         ok, why, _evidence = cc.contrib_gate(ops, "contrib-lon", timeout_s=30.0, clock=clock,
                                              sleep=clock.sleep, change=False)
         self.assertTrue(ok, why)
-        # The first poll reads each ingress's /api/mesh/local once, which
-        # shows that its /api/node carries the counters; never again.
+        # The counters come from /api/node alone: /api/mesh/local is never
+        # read (integration 4).
         local = [(node, at) for at, node, path in ops.log if path == "/api/mesh/local"]
-        self.assertEqual(sorted(node for node, _at in local), ["lon-dist-a", "lon-dist-b"])
-        self.assertEqual({at for _node, at in local}, {ops.log[0][0]})
+        self.assertEqual(local, [])
         def rising(name):
             document = doc(name)
             if document is not None and name == "lon-dist-a":

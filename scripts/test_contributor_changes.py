@@ -123,7 +123,9 @@ class ContribSim(Sim):
     def doc(self, name):
         if not self.contributor(name):
             document = super().doc(name)
-            if document is not None and name in self.plane and name not in self.unserved:
+            if document is not None and name in self.unserved:
+                document.pop("relay_counters", None)
+            elif document is not None and name in self.plane:
                 document["relay_counters"] = self.relay_counters(name)
             return document
         if not self.up(name) or name in self.frozen:
@@ -643,11 +645,13 @@ class Kill(Base):
         code = self.change("kill", "--node", "lon-dist-a")
         self.assertEqual(code, 0, self.err.getvalue())
         self.assertFalse(self.sim.nodes_["lon-dist-a"]["running"])
-        # The gate says what it could not prove and how it judged.
-        self.assertIn("gate note: LG2 lon-edge-1 <- lon-dist-b: P2 (c) not proved",
+        # The gate says how it judged (c): the children's own figure of
+        # objects every parent skipped (integration 4), 0 here.
+        self.assertIn("gate note: LG2 lon-edge-1 <- lon-dist-b: P2 (c) for stream 3001",
                       self.err.getvalue())
-        self.assertIn("gate note: CG2 new-dist-a <- lon-dist-b: P2 (c) not proved",
+        self.assertIn("gate note: CG2 new-dist-a <- lon-dist-b: P2 (c) for stream 3001",
                       self.err.getvalue())
+        self.assertIn("0 skipped by every parent", self.err.getvalue())
         record = json.loads(sorted(self.sim.evidence_dir.glob("kill-*.json"))[-1].read_text())
         self.assertTrue(record["gate"]["notes"])
 
@@ -656,7 +660,8 @@ class Kill(Base):
         self.sim.gaps["lon-edge-2"] = 1
         self.assertEqual(self.change("kill", "--node", "lon-dist-a", "--gate-timeout-s", "2"),
                          mesh_ops.EXIT_REFUSED)
-        self.assertIn("the child misses 1 of the last 12000 parts", self.err.getvalue())
+        self.assertIn("the child missed 1 parts of stream 3001 in the last 10 s",
+                      self.err.getvalue())
         self.assertEqual(self.touched(), [])
 
     def test_an_ingress_whose_sibling_misses_a_contributor_is_not_killed(self):
