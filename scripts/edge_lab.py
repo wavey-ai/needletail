@@ -1592,6 +1592,23 @@ def sysctls_not_applied(wanted: dict, seen: dict) -> dict:
             for key, value in wanted.items() if seen.get(key) != " ".join(str(value).split())}
 
 
+def report_sysctls(rendered, sysctls: dict) -> dict:
+    """Read the node settings back from the first of the `rendered` nodes
+    (a dict or list of names), record those that did not take in
+    sysctls-not-applied.json and name each on stderr with the host command
+    that sets it. The record."""
+    names = list(rendered)
+    if not names or not sysctls:
+        return {}
+    short = sysctls_not_applied(sysctls, sysctl_values(names[0], list(sysctls)))
+    save("sysctls-not-applied.json", short)
+    for key, item in short.items():
+        print(f"edge_lab: node sysctl {key}={item['wanted']} did not take in the lab's "
+              f"namespaces (they have {item['node_has']}); a host setting: "
+              f"`sudo sysctl -w {key}={item['wanted']}` on the host", file=sys.stderr)
+    return short
+
+
 def sysctl_values(name: str, keys: list[str]) -> dict[str, str | None]:
     """{key: value} of kernel settings as node `name` reads them (None when
     it cannot read one)."""
@@ -2545,13 +2562,7 @@ def up(overrides: list[str], start: bool = True) -> dict:
         # silently: local proof 3's nodes kept the host's 4 MiB, so no
         # socket buffer grew past 8 MiB and the 4K edges dropped on the
         # cache mesh. Say which did not take, and what the nodes have.
-        if rendered:
-            short = sysctls_not_applied(sysctls, sysctl_values(rendered[0], list(sysctls)))
-            save("sysctls-not-applied.json", short)
-            for key, item in short.items():
-                print(f"edge_lab: node sysctl {key}={item['wanted']} did not take in the lab's "
-                      f"namespaces (they have {item['node_has']}); a host setting: "
-                      f"`sudo sysctl -w {key}={item['wanted']}` on the host", file=sys.stderr)
+        report_sysctls(rendered, sysctls)
     # The host qdisc of this run's settings (the links were built before
     # they were rendered).
     save("qdisc.json", {})

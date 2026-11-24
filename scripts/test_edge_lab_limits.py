@@ -12,6 +12,7 @@ python3 -m unittest scripts/test_edge_lab_limits.py"""
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -916,6 +917,15 @@ class RealTime(Isolated):
         self.assertEqual(seen, {"net.core.rmem_max": "4194304", "net.ipv4.udp_mem": "1 2 3"})
         self.assertEqual(lab.sysctls_not_applied(lab.load("sysctls.json"), seen),
                          {"net.core.rmem_max": {"wanted": "134217728", "node_has": "4194304"}})
+        # As up calls it: the rendered nodes are a dict of name -> render.
+        with mock.patch.object(lab, "sh_in", lambda name, script, check=True, timeout=60:
+                               read[script.split()[-1].strip("'")]), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            short = lab.report_sysctls({"lon-edge-1": {}, "lon-edge-2": {}},
+                                       lab.load("sysctls.json"))
+        self.assertEqual(list(short), ["net.core.rmem_max"])
+        self.assertEqual(lab.load("sysctls-not-applied.json"), short)
+        self.assertIn("sudo sysctl -w net.core.rmem_max=134217728", err.getvalue())
 
     def test_the_node_raises_its_own_limits_and_runs_as_the_user(self):
         sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
