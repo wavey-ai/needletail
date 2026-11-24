@@ -583,3 +583,23 @@ def classify(start_us: int, end_us: int, lines: list[dict], journal: list[dict] 
     return {"class": "undetermined", "figures": figures,
             "why": f"run delay {delay:.0f} ms over a {length_ms:.0f} ms stop: between flat "
                    "and not run"}
+
+
+def sampler_stops(lines: list[dict], min_ms: float) -> list[tuple[int, int]]:
+    """The class thread's stops that its sampler alone shows (where no
+    commit stamps are kept, as in a local lab): a second in which its run
+    delay grew by `min_ms` or more, or its loop's longest pass rose to
+    `min_ms` or more. Each is (end - length, end) at the line that showed
+    it, its length the larger of the two, ready for `classify`."""
+    out = []
+    for before, after in zip(lines, lines[1:]):
+        figures = deltas(before, after)
+        delay = figures.get("run_delay_ms") or 0.0
+        busy_before, busy_after = figures["busy_max_us"]
+        busy = (busy_after / 1000 if busy_after is not None and busy_after > (busy_before or 0)
+                else 0.0)
+        length = max(delay, busy)
+        if figures["same_thread"] and length >= min_ms:
+            end = int(after["t_us"])
+            out.append((end - int(length * 1000), end))
+    return out

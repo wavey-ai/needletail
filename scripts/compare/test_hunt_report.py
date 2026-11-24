@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Tests of hunt-report.py (D-hunt.md 7.4, 7.5), offline on synthetic hunt
-records: the join of a silence to its cause in the fixed order and the
-unexplained rest; nodes grouped by physical host and their stops at one
-instant against chance (a stop of a whole node counted once); one
-synthetic input for each rule R1 to R6, R1 the same whatever the nodes are
-called; a run whose /api/hops pull fell inside a session is refused; a
-node with unpinned tick threads has its scope marked untrusted; the first
-of two edges for every pair of a region's edges; a whole report from a
-synthetic run; and, when the referee's wave 7 files are on this machine,
-E1's table of edge commit gaps and the first of two edges per region.
+"""Tests of hunt-report.py (D-hunt.md 7, as revised after the wave 9 run),
+offline on synthetic hunt records: the join of a silence to its cause and
+the unexplained rest; nodes grouped by physical host and their stops at one
+instant against chance; a stop of the class thread classified from the
+sampler by each rule of stall_records.classify (not run by run delay, by a
+stopped tick, by the guest's reclaim, by a real-time neighbour; blocked in
+our code on a named wait, on page faults; waited for input; undetermined;
+no sampler); one synthetic input for each decision rule H1 to H7; a run
+whose /api/hops pull fell inside a session is refused; unpinned tick
+threads make the scope untrusted; the first of two edges for every pair; a
+whole report from a synthetic run with an LL-HLS probe at each edge and a
+sampler; and, where the referee's files are on this machine, E1's table of
+wave 7 and the wave 9 first session's 13 stops of 100 ms or more with the
+London twins stopped together for 446 ms.
 python3 -m unittest test_hunt_report.py (in scripts/compare)"""
 
 from __future__ import annotations
@@ -36,6 +40,10 @@ MS = 1000
 WAVE7 = (pathlib.Path(os.environ.get("NEEDLETAIL_COMPARE_ROOT",
                                      str(HERE.parents[2] / "needletail-compare")))
          / "target" / "compare" / "runs" / "waudio7" / "audio.opus-2.5.baseline.clean")
+# Wave 9's first session (the referee's cmpd5) and its lab's addresses.
+WAVE9 = WAVE7.parents[1] / "waudio9" / "audio.opus-2.5.baseline.clean"
+WAVE9_STATE = pathlib.Path.home() / "needletail-data" / "cmpd5" / "lab" / "state.20261123T235445Z.json"
+WAVE9_T0 = 1_795_477_184
 
 
 def tick(cpu: int, end_us: int, dur_us: int, run_delay_us: int = 10, **more) -> dict:
@@ -174,162 +182,225 @@ class Hosts(unittest.TestCase):
         self.assertEqual(merged, [(at - 40 * MS, at + 30 * MS), (at + 475 * MS, at + 500 * MS)])
 
 
+def sample(t_us: int, delay_ms: float = 0.0, run_ms: float = 0.0, voluntary: int = 0,
+           busy_us: int = 500, over_50ms: int = 0, minflt: int = 0, waits: dict | None = None,
+           vm: dict | None = None, threads: list | None = None, pid: int = 7, tid: int = 9,
+           cpu: int = 0) -> dict:
+    """A sampler line (scripts/hunt-sampler.sh) with the totals given."""
+    mesh = {"relay_session.fast_plane.audio_loop_busy_max_us": busy_us,
+            "relay_session.fast_plane.audio_loop_busy_over_50ms": over_50ms,
+            "relay_session.fast_plane.audio_thread_minflt": minflt,
+            "relay_session.fast_plane.audio_thread_majflt": 0}
+    for key, value in (waits or {}).items():
+        mesh[f"relay_session.edge_clients.{key}"] = value
+    return {"t_us": int(t_us), "pid": pid, "tid": tid, "tid_by": "fifo", "cpu": cpu,
+            "schedstat": [int(run_ms * 1e6), int(delay_ms * 1e6), 100],
+            "csw": [voluntary, 0], "vm": {"pgfault": 1, "allocstall_normal": 0, **(vm or {})},
+            "memfree_kb": 1_000_000,
+            "threads": threads or [[tid, "FF", 10, cpu, "needletail-fast"]], "mesh": mesh}
+
+
+STOP = (T + 2_100_000, T + 2_500_000)          # a 400 ms stop inside second 2
+
+
+class Classify(unittest.TestCase):
+    def lines(self, **after) -> list[dict]:
+        """Lines at 1, 2, 3, 4 s; the line at 3 s carries `after`'s growth."""
+        base = dict(delay_ms=10.0, run_ms=100.0, voluntary=50, busy_us=800,
+                    waits={"class_compact_max_us": 200, "fanout_dispatch_max_us": 900})
+        grown = {**base, **after}
+        return [sample(T + 1_000_000, **base), sample(T + 2_000_000, **base),
+                sample(T + 3_000_000, **grown), sample(T + 4_000_000, **grown)]
+
+    def test_runnable_and_not_run(self):
+        found = sr.classify(*STOP, self.lines(delay_ms=10.0 + 390, voluntary=51))
+        self.assertEqual(found["class"], "not run")
+        self.assertEqual(found["where"], "not named: the hypervisor or the guest kernel")
+        self.assertAlmostEqual(found["figures"]["run_delay_ms"], 390.0)
+        reclaim = sr.classify(*STOP, self.lines(delay_ms=400.0, vm={"allocstall_normal": 3}))
+        self.assertEqual(reclaim["where"], "the guest kernel: direct reclaim or compaction")
+        neighbour = self.lines(delay_ms=400.0)
+        neighbour[2]["threads"].append([12, "FF", 10, 0, "nt-fanout-audio0"])
+        found = sr.classify(*STOP, neighbour)
+        self.assertEqual(found["where"],
+                         "another real-time thread on CPU 0: nt-fanout-audio0 (12)")
+
+    def test_a_stopped_tick_of_its_cpu_is_the_hypervisor(self):
+        watch = [tick(0, STOP[1], 390 * MS), tick(1, STOP[1], 390 * MS)]
+        found = sr.classify(*STOP, self.lines(), [], watch)
+        self.assertEqual(found["class"], "not run")
+        self.assertEqual(found["where"], "the hypervisor: the vCPU was not run")
+        # A stopped tick of another CPU (scope one) is not this thread's.
+        other = [tick(1, STOP[1], 390 * MS, cause="stopped", scope="one")]
+        self.assertNotEqual(sr.classify(*STOP, self.lines(), [], other)["class"], "not run")
+
+    def test_blocked_in_our_code_on_a_named_wait(self):
+        found = sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=53, busy_us=395_000,
+                                              waits={"class_compact_max_us": 380_000}))
+        self.assertEqual(found["class"], "blocked in our code")
+        self.assertIn("the compact path", found["wait"])
+        # The fan-out hand-off counter that did not rise is not named.
+        found = sr.classify(*STOP, self.lines(
+            delay_ms=11.0, voluntary=53, over_50ms=1, minflt=2400,
+            waits={"fanout_dispatch_max_us": 900}))
+        self.assertEqual(found["class"], "blocked in our code")
+        self.assertEqual(found["wait"], "page faults on the class thread (2400 minor, 0 major)")
+        # The journal's own long pass is evidence too; with no switch it is a spin.
+        journal = [{"kind": "class_pass", "thread": "audio", "cpu": 0, "t_us": STOP[1],
+                    "dur_us": 390 * MS, "cause": "own"}]
+        found = sr.classify(*STOP, self.lines(delay_ms=11.0, run_ms=490.0), journal)
+        self.assertEqual(found["class"], "blocked in our code")
+        self.assertTrue(found["wait"].startswith("no switch: a spin"))
+
+    def test_waited_for_input_undetermined_and_no_sampler(self):
+        self.assertEqual(sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=60))["class"],
+                         "waited for input")
+        self.assertEqual(sr.classify(*STOP, self.lines(delay_ms=110.0))["class"], "undetermined")
+        self.assertEqual(sr.classify(*STOP, [])["class"], "no sampler")
+        restarted = self.lines()
+        restarted[2]["pid"] = restarted[3]["pid"] = 8
+        self.assertEqual(sr.classify(*STOP, restarted)["class"], "undetermined")
+
+
+def stop(edge: str, start_s: float, ms: float, cls: str = "not run", session: str = "S1",
+         role: str = "first", **more) -> dict:
+    begin = int(T + start_s * 1e6)
+    return {"session": session, "role": role, "edge": edge, "from_us": begin,
+            "to_us": begin + int(ms * 1000), "ms": ms, "class": cls, "why": "test", **more}
+
+
+EDGES = ["lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4", "tok-edge-1", "tok-edge-2"]
+
+
+def table(*stops: dict, seen=EDGES, roles=None) -> dict:
+    """An edges table: {session: {"role", "seen", "stops", "twins", ...}}."""
+    out = {}
+    for name, role in (roles or {"S1": "first"}).items():
+        mine = [item for item in stops if item["session"] == name]
+        out[name] = {"role": role, "seen": list(seen), "stops": mine, "over_20ms": {},
+                     "twins": report.twin_overlaps(mine), "first_of_two": {}}
+    return out
+
+
 class Rules(unittest.TestCase):
-    def figures(self, frozen: dict, soak: dict, session: dict) -> dict:
-        return {name: {"frozen_ms": frozen[name], "soak_f": soak.get(name, 0.0),
-                       "session_f": session.get(name, 0.0)} for name in frozen}
+    def test_h1_the_fix_per_edge(self):
+        clean = report.rule_fix(table(), EDGES)
+        self.assertTrue(clean["fires"])
+        self.assertIn("NO STOP REMAINS", clean["line"])
+        found = report.rule_fix(table(stop("lon-edge-1", 5, 670), seen=EDGES[:-1]), EDGES)
+        self.assertFalse(found["fires"])
+        self.assertEqual(found["stopped"], ["lon-edge-1"])
+        self.assertEqual(found["unmeasured"], ["tok-edge-2"])
+        self.assertEqual(found["verdicts"]["lon-edge-2"], "no stop of 100 ms or more")
+        self.assertEqual(found["verdicts"]["lon-edge-1"], "1 stops: lon-edge-1 670 ms (not run)")
 
-    def test_r1_the_host(self):
-        names = [f"n{index}" for index in range(8)]
-        frozen = {name: 10.0 for name in names}
-        frozen["n3"] = 400.0
-        fires = report.rule_r1(self.figures(frozen, {"n3": 30.0, "n1": 1.0},
-                                            {"n3": 50.0, "n1": 2.0}), {}, [], {})
-        self.assertTrue(fires["fires"], fires["line"])
-        # The quarter is n3 and one of the seven tied at 10 ms.
-        self.assertEqual(fires["worst"], ["n3"])
-        self.assertEqual(fires["tied"], ["n0", "n1", "n2", "n4", "n5", "n6", "n7"])
-        self.assertIn("n3 and 1 of n0, n1", fires["line"])
-        spread = report.rule_r1(self.figures({name: 10.0 for name in names}, {"n3": 30.0},
-                                             {"n3": 50.0}), {}, [], {})
-        self.assertFalse(spread["fires"])
-        # The soak named an instance that the sessions did not.
-        unlike = report.rule_r1(self.figures(frozen, {"n5": 30.0, "n6": 20.0},
-                                             {"n3": 50.0, "n0": 40, "n1": 30, "n2": 20}),
-                                {}, [], {})
-        self.assertFalse(unlike["fires"])
-        same_host = report.rule_r1(
-            self.figures(frozen, {"n3": 30.0}, {"n3": 50.0}), {"above_chance": True},
-            [{"name": "n3", "host_uuid_before": "h9", "host_uuid_after": "h9"}],
-            {"n3": (40.0, 35.0)})
-        self.assertIn("platform matter", same_host["line"])
-        self.assertIn("host rule of 2.10", same_host["line"])
+    def test_h2_the_class_of_each_stop(self):
+        roles = {"S1": "first", "S4": "repeat-first"}
+        hosts = {"lon-edge-1": "h1", "lon-edge-2": "h1", "tok-edge-1": "h3"}
+        replaced = [{"name": "lon-edge-1", "unix": S + 100, "host_uuid_before": "h1",
+                     "host_uuid_after": "h2"}]
+        before = [stop("lon-edge-1", 5, 670, where="the hypervisor: the vCPU was not run"),
+                  stop("lon-edge-2", 7, 300, where="the hypervisor: the vCPU was not run")]
+        clean_after = report.rule_classes(table(*before, roles=roles), hosts, replaced)
+        self.assertTrue(clean_after["fires"]["not_run"])
+        self.assertIn("co-hosted: h1", clean_after["line"])
+        self.assertIn("the replaced instance is clean: the instance", clean_after["line"])
+        again = before + [stop("lon-edge-1", 200, 500, session="S4", role="repeat-first",
+                               where="the hypervisor: the vCPU was not run")]
+        same = report.rule_classes(table(*again, roles=roles), hosts,
+                                   [{**replaced[0], "host_uuid_after": "h1"}])
+        self.assertIn("a platform matter for the owner (same host h1)", same["line"])
+        other = report.rule_classes(table(*again, roles=roles), hosts, replaced)
+        self.assertIn("not one instance but guests under first load", other["line"])
+        ours = report.rule_classes(table(
+            stop("tok-edge-1", 5, 400, "blocked in our code", wait="the compact path"),
+            stop("tok-edge-2", 9, 200, "blocked in our code", wait="the compact path"),
+            stop("lon-edge-3", 9, 150, "waited for input")), hosts, [])
+        self.assertTrue(ours["fires"]["our_code"])
+        self.assertTrue(ours["fires"]["input"])
+        self.assertIn("OUR CODE: the compact path (2)", ours["line"])
+        nothing = report.rule_classes(table(), hosts, [])
+        self.assertIn("no stop of 100 ms or more in the run", nothing["line"])
 
-    def test_r1_does_not_depend_on_names(self):
-        """The review's case: n7 is the bad instance (soak F 30, session F
-        50, 400 frozen ms); one other node has soak F 1 and session F 0.
-        Whatever that node is called, the verdict is the same."""
-        names = [f"n{index}" for index in range(8)]
-        verdicts = set()
-        for other in names[:-1]:
-            frozen = {name: 0.0 for name in names}
-            frozen["n7"] = 400.0
-            figures = self.figures(frozen, {"n7": 30.0, other: 1.0}, {"n7": 50.0})
-            verdicts.add(report.rule_r1(figures, {}, [], {})["fires"])
-        self.assertEqual(verdicts, {False})
-        # Nodes of equal value share the worst rank of their tie, and a node
-        # at 0 is in no worst set.
-        ranked = report.ranks({"a": 5.0, "b": 0.0, "c": 0.0, "d": 2.0})
-        self.assertEqual(ranked, {"a": 1, "b": 4, "c": 4, "d": 2})
-        self.assertEqual(report.worst_quarter({"a": 0.0, "b": 0.0, "c": 0.0, "d": 0.0})["worst"],
-                         [])
+    def test_h3_the_arena_warm_up(self):
+        arms = {"no_arena_warm": ["tok-edge-1", "tok-edge-2"]}
+        roles = {"S1": "first", "S2": "second"}
+        matters = report.rule_arena(table(
+            stop("tok-edge-1", 5, 600, "blocked in our code", wait="page faults"),
+            stop("lon-edge-1", 5, 100, "not run"),
+            stop("tok-edge-2", 5, 900, session="S2", role="second"), roles=roles), arms, EDGES)
+        self.assertTrue(matters["fires"], matters["line"])
+        # 300 ms an edge without it (the S2 stop is not a first session),
+        # 25 with it.
+        self.assertEqual((matters["without"], matters["with"]), (300.0, 25.0))
+        self.assertIn("its region is the other variable", matters["line"])
+        clean = report.rule_arena(table(), arms, EDGES)
+        self.assertFalse(clean["fires"])
+        self.assertIn("no stop with or without it", clean["line"])
+        same = report.rule_arena(table(stop("tok-edge-1", 5, 400, "blocked in our code",
+                                            wait="x"),
+                                       stop("lon-edge-1", 5, 400), stop("lon-edge-2", 9, 400)),
+                                 arms, EDGES)
+        self.assertFalse(same["fires"])
+        self.assertIn("no effect shown", same["line"])
 
-    def touch_run(self, fresh_stops: dict[str, int], s1_f: dict[str, float]) -> Builder:
-        nodes = {"lon-bare-1": {"role": "bare"}, "lon-bare-2": {"role": "bare"},
-                 "tok-bare-1": {"role": "bare", "site": "tokyo"},
-                 "lon-edge-1": {"role": "edge"}, "lon-edge-4": {"role": "edge"},
-                 "tok-edge-1": {"role": "edge", "site": "tokyo"},
-                 "lon-edge-3": {"role": "edge"}, "lon-dist-a": {"role": "distributor"}}
-        built = Builder(nodes, [period("soak-1", "soak", 0, 60), period("S1", "session", 1200, 1270)],
-                        arms={"warmed": ["lon-edge-3", "lon-dist-a", "lon-bare-2"]})
-        marks = {"fresh": 1200, "thp-never": 1500, "again": 1800, "end": 1980}
-        for name in nodes:
-            items = seconds_of(T, T + 2000 * 1_000_000)
-            for index in range(fresh_stops.get(name, 0)):
-                items.append(tick(0, T + (1210 + index) * 1_000_000, 50 * MS))
-            if s1_f.get(name):
-                # F ms a node-minute in S1 (70 s, two CPUs).
-                items.append(tick(0, T + 1230 * 1_000_000, s1_f[name] * 70 / 60 * 2 * MS))
-            built.node(name, "watch.ndjson", items)
-        for name in ("lon-bare-1", "lon-bare-2", "tok-bare-1"):
-            path = built.dir / "nodes" / name / "touch-marks.txt"
-            path.write_text("".join(f"{label} {S + at}\n" for label, at in marks.items()))
-        return built
+    def test_h4_first_touch(self):
+        arms = {"touched": ["lon-edge-1", "lon-edge-3", "tok-edge-1"]}
+        matters = report.rule_touch(table(stop("lon-edge-2", 5, 700), stop("lon-edge-4", 6, 300)),
+                                    arms, EDGES)
+        self.assertTrue(matters["fires"], matters["line"])
+        self.assertIn("node_warm", matters["line"])
+        # Stops on the untouched edges that are our own waits do not make
+        # first touch the cause.
+        ours = report.rule_touch(table(stop("lon-edge-2", 5, 700, "blocked in our code",
+                                            wait="the compact path")), arms, EDGES)
+        self.assertFalse(ours["fires"])
+        touched_too = report.rule_touch(table(stop("lon-edge-2", 5, 700),
+                                              stop("lon-edge-1", 5, 700)), arms, EDGES)
+        self.assertFalse(touched_too["fires"])
 
-    def test_r2_first_touch(self):
-        built = self.touch_run({"lon-bare-1": 20, "tok-bare-1": 20},
-                               {"lon-edge-1": 200.0, "lon-edge-4": 150.0, "tok-edge-1": 300.0,
-                                "lon-edge-3": 10.0, "lon-dist-a": 0.0})
-        try:
-            fires = report.rule_r2(built.run())
-        finally:
-            built.close()
-        self.assertTrue(fires["fires"], fires["line"])
-        built = self.touch_run({"lon-bare-1": 20, "tok-bare-1": 20, "lon-bare-2": 20},
-                               {"lon-edge-1": 200.0, "lon-edge-3": 150.0})
-        try:
-            warmed_too = report.rule_r2(built.run())
-        finally:
-            built.close()
-        self.assertFalse(warmed_too["fires"])
-        self.assertFalse(warmed_too["first"])
+    def test_h5_twins_stopped_together(self):
+        apart = report.rule_twins(table(stop("lon-edge-1", 5, 300), stop("lon-edge-2", 9, 300),
+                                        stop("tok-edge-1", 5.1, 300)))
+        self.assertFalse(apart["fires"])
+        self.assertIn("two paths hide every stop", apart["line"])
+        together = report.rule_twins(table(stop("lon-edge-1", 5.0, 690),
+                                           stop("lon-edge-2", 5.039, 446),
+                                           stop("lon-edge-3", 20.0, 200),
+                                           stop("lon-edge-4", 20.240, 150)))
+        self.assertTrue(together["fires"])
+        self.assertEqual([(item["edges"], item["both_ms"]) for item in together["together"]],
+                         [(["lon-edge-1", "lon-edge-2"], 446.0),
+                          (["lon-edge-3", "lon-edge-4"], 0.0)])
 
-    def test_r3_huge_pages(self):
-        built = self.touch_run({}, {})
-        try:
-            slow = [{"kind": "touch", "t_us": T + (1250 + k) * 1_000_000, "page": k,
-                     "dur_us": 4000} for k in range(10)]
-            slow_never = [{"kind": "touch", "t_us": T + 1600 * 1_000_000, "page": 1,
-                           "dur_us": 4000}]
-            built.node("lon-bare-1", "touch-fresh.ndjson", slow)
-            built.node("lon-bare-1", "touch-thp-never.ndjson", slow_never)
-            fires = report.rule_r3(built.run())
-        finally:
-            built.close()
-        self.assertTrue(fires["fires"], fires["line"])
-        self.assertAlmostEqual(fires["ratios"]["lon-bare-1"], 10.0)
-        self.assertIsNone(fires["ratios"]["lon-bare-2"])
+    def test_h6_pcm_first(self):
+        roles = {"S4": "repeat-first", "S5": "repeat-second"}
+        opus_only = report.rule_pcm_first(table(
+            stop("lon-edge-1", 5, 300, session="S5", role="repeat-second"), roles=roles))
+        self.assertIn("only the Opus session stops", opus_only["line"])
+        pcm = report.rule_pcm_first(table(
+            stop("lon-edge-1", 5, 300, session="S4", role="repeat-first"), roles=roles))
+        self.assertIn("whatever its codec", pcm["line"])
+        clean = report.rule_pcm_first(table(roles=roles))
+        self.assertFalse(clean["fires"])
+        self.assertIn("not the process's", clean["line"])
+        self.assertIn("no repeat", report.rule_pcm_first(table())["line"])
 
-    def test_r4_our_own_threads(self):
-        built = Builder({"lon-edge-1": {"role": "edge"}}, [])
-        try:
-            built.node("lon-edge-1", "stalls.ndjson", [
-                {"kind": "class_pass", "thread": "audio", "cpu": 1, "t_us": T, "dur_us": 25_000,
-                 "span_us": 25_000, "n": 1, "cause": "own"},
-                {"kind": "class_pass", "thread": "audio", "cpu": 1, "t_us": T + 60_000_000,
-                 "dur_us": 90_000, "span_us": 90_000, "n": 1, "cause": "stopped"}])
-            fires = report.rule_r4(built.run())
-        finally:
-            built.close()
-        self.assertTrue(fires["fires"])
-        self.assertEqual(len(fires["events"]), 1)
-        self.assertIn("lon-edge-1 audio 25000 us", fires["line"])
-
-    def test_r5_the_guest_kernel(self):
-        built = Builder({"lon-edge-1": {"role": "edge"}}, [])
-        try:
-            # A sec line is written at the end of the second it covers: the
-            # starved tick at 1.5 s is in the line of 2 s (kernel, with
-            # compaction), not in the line of 1 s; the tick at 5.5 s is in
-            # the line of 6 s (none), not in the kernel line of 5 s.
-            built.node("lon-edge-1", "watch.ndjson", [
-                sec(0, T + 1_000_000), sec(1, T + 1_000_000),
-                sec(0, T + 2_000_000, compact_stall=3, allocstall=0),
-                sec(1, T + 2_000_000, system=80),
-                tick(1, T + 1_500_000, 30 * MS, run_delay_us=29_000),
-                sec(0, T + 5_000_000, compact_stall=3), sec(1, T + 5_000_000, system=80),
-                tick(1, T + 5_500_000, 30 * MS, run_delay_us=29_000)])
-            fires = report.rule_r5(built.run())
-        finally:
-            built.close()
-        self.assertTrue(fires["fires"])
-        self.assertEqual([event["t_us"] for event in fires["events"]], [T + 1_500_000])
-
-    def test_r6_nothing(self):
-        def run_with(stop_ms: float):
-            built = Builder({"lon-edge-1": {"role": "edge"}, "lon-bare-1": {"role": "bare"}},
-                            [period("S1", "session", 0, 70), period("S4", "session", 1200, 1270)])
-            for name in ("lon-edge-1", "lon-bare-1"):
-                built.node(name, "watch.ndjson", seconds_of(T, T + 1300 * 1_000_000)
-                           + [tick(0, T + 600 * 1_000_000, stop_ms * MS)])
-            try:
-                return report.rule_r6(built.run())
-            finally:
-                built.close()
-        quiet = run_with(25)          # 12.5 ms over two CPUs in 21 minutes
-        self.assertTrue(quiet["fires"], quiet["line"])
-        loud = run_with(400)
-        self.assertFalse(loud["fires"])
+    def test_h7_churn(self):
+        roles = {"S3": "churn"}
+        starts = {"S3": [T + 0, T + 62_000_000, T + 124_000_000]}
+        joins = report.rule_churn(table(stop("lon-edge-1", 63.0, 300, session="S3", role="churn"),
+                                        stop("lon-edge-2", 125.5, 200, session="S3",
+                                             role="churn"),
+                                        stop("lon-edge-3", 40.0, 200, session="S3",
+                                             role="churn"), roles=roles), starts)
+        self.assertTrue(joins["fires"])
+        self.assertEqual((joins["at_join"], joins["elsewhere"]), (2, 1))
+        elsewhere = report.rule_churn(table(stop("lon-edge-3", 40.0, 200, session="S3",
+                                                 role="churn"), roles=roles), starts)
+        self.assertFalse(elsewhere["fires"])
+        self.assertIn("not at the joins", elsewhere["line"])
+        self.assertIn("churn is clean", report.rule_churn(table(roles=roles), starts)["line"])
 
 
 class Guards(unittest.TestCase):
@@ -393,21 +464,41 @@ class Guards(unittest.TestCase):
         self.assertEqual(alone, {"tok": {}})
 
 
+def write_hls_probe(folder: pathlib.Path, name: str, address: str, published: dict,
+                    commits: dict) -> None:
+    """An LL-HLS probe at one edge: its report names the host of its media
+    playlist; its rows carry every part's publish and commit stamps."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.probe.json").write_text(json.dumps(
+        {"detail": {"playlist_url_host": f"{address}:19444"}}))
+    with open(folder / f"{name}.probe.csv", "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["kind", "index", "latency_us", "complete_unix_us", "first_unix_us",
+                         "part", "published_unix_us", "edge_committed_unix_us"])
+        for part, at in sorted(commits.items()):
+            writer.writerow(["a", part, at + 2000 - published[part], at + 2000, part, part,
+                             published[part], at])
+
+
 class WholeReport(unittest.TestCase):
     def test_a_report_of_a_small_run(self):
+        """S1 at 100 to 170 s: lon-edge-1 stops 400 ms at 120 s, blocked in
+        our code by its sampler; lon-edge-2 commits every part on time; the
+        sender is late once."""
         built = Builder({"contrib-lon": {"role": "contributor", "type": "g6-dedicated-4"},
                          "lon-src": {"role": "load", "type": "g6-dedicated-4"},
                          "lon-view": {"role": "load", "type": "g6-dedicated-4"},
                          "lon-dist-a": {"role": "distributor", "host_uuid": "h1"},
-                         "lon-edge-1": {"role": "edge", "host_uuid": "h1"}},
-                        [period("soak-1", "soak", 0, 60), period("S1", "session", 100, 170)],
-                        sessions=[{"name": "S1", "config": "opus-1"}],
-                        arms={"warmed": ["lon-dist-a"], "control": {}})
+                         "lon-edge-1": {"role": "edge", "host_uuid": "h1",
+                                        "public_ipv4": "192.0.2.1"},
+                         "lon-edge-2": {"role": "edge", "host_uuid": "h2",
+                                        "public_ipv4": "192.0.2.2"}},
+                        [period("S1", "session", 100, 170)],
+                        sessions=[{"name": "S1", "config": "opus-1", "role": "first"}],
+                        arms={"touched": ["lon-edge-1"], "no_arena_warm": []})
         try:
             for name in built.record["nodes"]:
                 built.node(name, "watch.ndjson", seconds_of(T, T + 200 * 1_000_000))
-            built.node("lon-edge-1", "stalls.ndjson",
-                       [tick(0, T + 120_000_000, 300 * MS, cause="stopped", scope="all")])
             start = int(S) + 90
             session = built.dir / "sessions" / "S1"
             (session / "lon-src").mkdir(parents=True)
@@ -416,25 +507,23 @@ class WholeReport(unittest.TestCase):
                 {"kind": "late", "epoch": 20_000, "deadline_us": start * 1_000_000 + 20_001_000,
                  "woke_late_us": 3000, "encode_us": 90, "late_first_us": 3000,
                  "late_last_us": 3100}])
-            (session / "lon-view").mkdir(parents=True)
-            with open(session / "lon-view" / "uc-1.probe.csv", "w", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["kind", "index", "latency_us", "complete_unix_us",
-                                 "first_unix_us", "part"])
-                for part in range(10_000, 80_000):
-                    source = start * 1_000_000 + (part + 1) * 1000
-                    delay = 2000 + (3000 if 20_000 <= part < 20_003 else 0)
-                    writer.writerow(["a", part, delay, source + delay, part, part])
-            with open(session / "lon-view" / "uc-1.arrivals.csv", "w", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["part", "arrival_unix_us", "bytes", "published_unix_us",
-                                 "available_unix_us", "kernel_unix_us"])
-                for part in range(10_000, 80_000):
-                    source = start * 1_000_000 + (part + 1) * 1000
-                    late = 3000 if 20_000 <= part < 20_003 else 0
-                    writer.writerow([part, source + 2000, 56, source + 100 + late, 0,
-                                     source + 1900])
-            (session / "lon-view" / "uc-1.uc.json").write_text(json.dumps({"caches": ["lon-edge-1"]}))
+            published = {part: start * 1_000_000 + (part + 1) * 1000 + 100
+                         + (3000 if 20_000 <= part < 20_003 else 0)
+                         for part in range(10_000, 75_000)}
+            on_time = {part: at + 500 for part, at in published.items()}
+            held = dict(on_time)
+            stopped_at = T + 120_000_000
+            for part, at in published.items():
+                if stopped_at - 500 <= at < stopped_at + 400_000:
+                    held[part] = stopped_at + 400_000 + 500
+            write_hls_probe(session / "lon-view", "hls-lon-edge-1-1", "192.0.2.1", published, held)
+            write_hls_probe(session / "lon-view", "hls-lon-edge-2-1", "192.0.2.2", published,
+                            on_time)
+            lines = [sample(T + second * 1_000_000, delay_ms=5.0, voluntary=10 * second,
+                            busy_us=800 if second <= 120 else 401_000)
+                     for second in range(95, 175)]
+            built.node("lon-edge-1", "sampler.ndjson", lines)
+            built.node("lon-edge-2", "sampler.ndjson", lines[:1])
 
             class NoNull:
                 @staticmethod
@@ -449,13 +538,26 @@ class WholeReport(unittest.TestCase):
             text = report.format_report(built_report)
         finally:
             built.close()
+        edges = built_report["edges"]["S1"]
+        self.assertEqual(edges["seen"], ["lon-edge-1", "lon-edge-2"])
+        self.assertEqual(len(edges["stops"]), 1)
+        found = edges["stops"][0]
+        self.assertEqual((found["edge"], found["class"]), ("lon-edge-1", "blocked in our code"))
+        self.assertAlmostEqual(found["ms"], 400.5, delta=1.5)
+        rules = built_report["rules"]
+        self.assertEqual(rules["H1"]["stopped"], ["lon-edge-1"])
+        self.assertEqual(rules["H1"]["verdicts"]["lon-edge-2"], "no stop of 100 ms or more")
+        self.assertTrue(rules["H2"]["fires"]["our_code"])
+        self.assertFalse(rules["H5"]["fires"])
+        # lon-edge-2 hides lon-edge-1's stop: nothing is late on both.
+        pair = edges["first_of_two"]["lon"]["lon-edge-1+lon-edge-2"]
+        self.assertEqual(pair["late_on_both"], 0)
         source = built_report["source"]["S1"]
-        self.assertEqual(len(source["over_2000us"]["episodes"]), 1)
         self.assertEqual(source["over_2000us"]["by_side"], {"pacer": {"n": 1, "ms": 3.0}})
-        self.assertEqual(built_report["hosts"]["groups"], {"h1": ["lon-dist-a", "lon-edge-1"]})
-        for rule in ("R1", "R2", "R3", "R4", "R5", "R6"):
+        for rule in ("H1", "H2", "H3", "H4", "H5", "H6", "H7"):
             self.assertIn(f"{rule} (", text)
-        self.assertIn("3.1 source component S1: 1 episodes more than 1 ms", text)
+        self.assertIn("BLOCKED IN OUR CODE", text)
+        self.assertIn("first session, lon-edge-2: no stop of 100 ms or more", text)
 
 
 @unittest.skipUnless((WAVE7 / "lon-view" / "nt-popus.probe.json").is_file(),
@@ -492,6 +594,50 @@ class Wave7(unittest.TestCase):
             self.assertAlmostEqual(figure["max_ms"], most, delta=0.01, msg=region)
             # The p99 depends on which parts the window holds: within 0.05 ms.
             self.assertAlmostEqual(figure["p99_ms"], p99, delta=0.05, msg=region)
+
+
+
+@unittest.skipUnless((WAVE9 / "lon-view" / "nt-popus.probe.json").is_file()
+                     and WAVE9_STATE.is_file(), "the wave 9 files are not on this machine")
+class Wave9(unittest.TestCase):
+    def test_the_first_session_s_stops_and_the_london_twins(self):
+        """w9-stall-analysis.md section 1: from every LL-HLS probe of the
+        first session, mapped to its edge by the lab's addresses, 13 commit
+        stops of 100 ms or more, 5,146 ms in all; the London twins stopped
+        together for 446 ms (and 31 ms just before); new-edge-1 clean; no
+        sampler then, so no stop can be classified."""
+        state = json.loads(WAVE9_STATE.read_text())
+        addresses = {node["public_ipv4"]: name for name, node in state["nodes"].items()}
+        paths = sorted(path for path in WAVE9.glob("*/nt-*.probe.csv")
+                       if not path.name.startswith("nt-uc"))
+        commits, _published = report.edge_commits(report.hls_probes(paths, addresses))
+        gaps = report.commit_gaps(commits, report.STOP_MS)
+        found = {edge: [(round(a / 1e6 - WAVE9_T0, 3), round(b / 1e6 - WAVE9_T0, 3), round(ms))
+                        for a, b, ms in items] for edge, items in gaps.items() if items}
+        self.assertEqual(found, {
+            "lon-edge-1": [(14.304, 14.974, 670), (17.137, 17.827, 690),
+                           (25.529, 26.866, 1337), (48.295, 48.63, 335)],
+            "lon-edge-2": [(16.871, 17.169, 298), (17.176, 17.622, 446)],
+            "tok-edge-2": [(46.348, 46.836, 488), (56.5, 56.648, 148), (71.427, 71.552, 125)],
+            "tok-edge-1": [(43.302, 43.488, 187)],
+            "syd-edge-2": [(23.813, 23.98, 168), (45.353, 45.505, 152)],
+            "new-edge-2": [(18.699, 18.8, 102)]})
+        stops = [{"session": "S1", "role": "first", "edge": edge, "from_us": a, "to_us": b,
+                  "ms": ms, **sr.classify(a, b, [])} for edge, items in gaps.items()
+                 for a, b, ms in items]
+        self.assertEqual(len(stops), 13)
+        self.assertEqual(round(sum(item["ms"] for item in stops)), 5146)
+        self.assertEqual({item["class"] for item in stops}, {"no sampler"})
+        edges = sorted(commits)
+        edges_table = {"S1": {"role": "first", "seen": edges, "stops": stops, "over_20ms": {},
+                              "twins": report.twin_overlaps(stops), "first_of_two": {}}}
+        twins = report.rule_twins(edges_table)
+        self.assertTrue(twins["fires"])
+        self.assertEqual([(item["edges"], round(item["both_ms"])) for item in twins["together"]],
+                         [(["lon-edge-1", "lon-edge-2"], 31), (["lon-edge-1", "lon-edge-2"], 446)])
+        fix = report.rule_fix(edges_table, edges)
+        self.assertEqual(fix["verdicts"]["new-edge-1"], "no stop of 100 ms or more")
+        self.assertEqual(len(fix["stopped"]), 6)
 
 
 if __name__ == "__main__":
