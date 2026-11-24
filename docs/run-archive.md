@@ -123,3 +123,60 @@ difference. It names the files the manifest does not list, but those do not fail
 it. `list` prints each run's id, status, kind, total size and lab cost.
 `require_collected(run_id)` returns `None` when the run is collected. Otherwise it
 returns the message for a lab tool's `down` to print as it refuses.
+
+## Collecting a Linode lab (`linode-small-mesh-deploy.py collect`)
+
+```sh
+scripts/linode-small-mesh-deploy.py collect --run-id RUN [--nodes a,b] [--timeout-s 300]
+```
+
+`collect` writes into the lab's own run (`RUN` must be the lab's run id). It makes
+the run (kind `linode-lab`, tool `deploy-collect`) when the archive has none, and
+otherwise appends to it. It never ends the run. It pulls every node at once, one
+ssh each, and all of them share the `--timeout-s` bound. A node that fails or runs
+out of time never stops the others, and whatever arrived from it is kept. Nothing
+on a node is changed or removed. It makes no Linode API call: the hosts map is the
+one that the lab tool's `hosts` recorded in the lab state.
+
+| Path | What it holds |
+| --- | --- |
+| `nodes/<node>/journal.<t>.txt.gz` | the node's whole journal since boot (`journalctl -b -o short-iso-precise`), gzipped |
+| `nodes/<node>/api-node.<t>.json`, `api-mesh-local.<t>.json`, `api-stats.<t>.json`, `api-stalls.<t>.json`, `api-hops.<t>.ndjson` | the node's API, read once at the end. Mesh nodes answer all five, the contributor (port 19443) `node`, `stalls` and `hops`, and other hosts none. `/api/hops` is asked with no stream, so it returns every stream the node holds. |
+| `nodes/<node>/http-status.<t>.txt` | the HTTP status of each answer |
+| `nodes/<node>/samplers/needletail-runs/...` | the node's `/var/lib/needletail-runs` (the lead's tools' samplers, listener and probe outputs) |
+| `nodes/<node>/samplers/var-tmp/compare-*` | the referee's sampler files, read in place and left there |
+| `lab/state.<t>.json`, `lab/hosts.<t>.json` | the lab state, and each node's id, label, region, site, role, plan and `host_uuid` |
+| `lab/deployed.<t>.json`, `lab/settings.<t>.json`, `lab/routes.<t>.json`, `lab/ecmp-ports.<t>.json` | the deployed record and this checkout's files for the lab. Settings are scrubbed; build keys and digests are kept. |
+| `topology/<file>` | the lab's topology |
+| `collect/collect.<t>.json` | each node's files, HTTP statuses, error and seconds, and what was missing |
+
+`<t>` is the collect's UTC time (`yyyymmddThhmmssZ`). Then the run is marked
+collected: complete, or not, with a list of what is missing. A node whose ssh
+failed or ran out of time is listed by name, and a single file as `node/journal`
+or `node/api-stalls`. The list also names `lab/deployed`, `lab/settings`,
+`topology`, and every write the archive refused. A node left out of `--nodes`
+counts as collected when an earlier collect brought its journal. Exit 0 means
+complete, 1 means incomplete, and 2 means refused (another lab's run id, or the
+archive refused the run).
+
+The referee's `archive-run.py collect-nodes` uses the same `nodes/<node>/` names
+for the journal, `api-stats` and `api-stalls`. Its other files differ:
+
+- It writes the lab's files to `lab/state.<t>.json` and `lab/hosts.<t>.txt` (the
+  output of `lab hosts`, which calls the Linode API). `collect` writes
+  `lab/hosts.<t>.json` from the lab state instead.
+- It writes each session's samplers under `sessions/<session>/samplers/`.
+  `collect` takes the sampler files from each node as they are, under
+  `nodes/<node>/samplers/`.
+
+## The run tools (`scripts/archived_run.py`)
+
+Every local and Linode run tool writes its raw data into the archive as it runs,
+through `archived_run.Run`. Copies under `target/` stay as working copies. The
+tool takes its run id from `--run-id`, or else uses `<tool>-<UTC time>`. A run id
+that already exists is opened to append to (another tool's run, under a prefix).
+The manifest records the heads of the five worktrees in use
+(`archived_run.code_paths`), the settings, the topology, the regions and the
+listener steps that apply. A run ends failed when an exception ends it or when a
+write into the archive failed. A run that the tool did not make is not ended by
+it: the tool's outcome goes to `outcomes.ndjson` under its prefix.

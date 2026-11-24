@@ -41,6 +41,10 @@ Subcommands:
   change    KIND ...: workstream A's contributor and ingress changes
   hunt      ECMP source ports of the long-haul links (a bring-up step)
   status    service state, build, readiness and the deployed record per node
+  collect   --run-id ID [--nodes a,b] [--timeout-s N]: every node's journal
+            since boot, its API at the end, its samplers' files, and the
+            deployed record, settings, topology and lab state, into the run
+            archive (~/needletail-data/<run id>/), marked collected or not
 
 What is deployed is recorded in the lab state (`deployed`): the settings,
 the routes and hunted ports, and each node's build and arguments (with the
@@ -73,9 +77,11 @@ Tuning knobs live in the settings file and can be changed with
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import filecmp
 import functools
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -87,11 +93,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import archived_run  # noqa: E402
 import mesh_ops  # noqa: E402
+import run_archive  # noqa: E402
 import small_mesh_common as common  # noqa: E402
 
 SETTINGS_FILE = common.ARTIFACT_DIR / "settings.json"
@@ -5667,6 +5676,352 @@ def deployed_summary(state: dict) -> list[str]:
     return lines
 
 
+# ------------------------------------------------------------ collect (the run archive)
+
+COLLECT_TOOL = "deploy-collect"
+COLLECT_TIMEOUT_S = 300.0
+COLLECT_WORKERS = 32
+# What collect asks of a node's own HTTP service, once, at the end: (file
+# stem, path, extension). /api/hops with no stream is the hop journal of
+# every stream the node holds. api-stats and api-stalls are the names of the
+# referee's collect-nodes (needletail-compare scripts/compare/archive-run.py).
+MESH_APIS = (("api-node", "/api/node", "json"), ("api-mesh-local", "/api/mesh/local", "json"),
+             ("api-stats", "/api/stats", "json"), ("api-stalls", "/api/stalls", "json"),
+             ("api-hops", "/api/hops", "ndjson"))
+CONTRIBUTOR_APIS = (("api-node", "/api/node", "json"), ("api-stalls", "/api/stalls", "json"),
+                    ("api-hops", "/api/hops", "ndjson"))
+# The samplers' files of a node, read where they are and left there: the
+# lead's tools' run directories (their samplers, listener and probe
+# outputs) and the referee's sampler files.
+NODE_RUNS = "/var/lib/needletail-runs"
+REFEREE_SAMPLERS = ("/var/tmp/compare-*.log", "/var/tmp/compare-*.carry")
+COLLECT_FILES = (
+    (r"^journal\.", "node-logs", "the node's journal since boot (journalctl -b -o "
+                                 "short-iso-precise), gzipped", None),
+    (r"^api-node\.", "node-api", "the node's /api/node at collection: build, state, readiness",
+     None),
+    (r"^api-mesh-local\.", "node-api", "the node's /api/mesh/local at collection", None),
+    (r"^api-stats\.", "node-api", "the node's /api/stats at collection", None),
+    (r"^api-stalls\.", "node-api", "the node's stop journal (/api/stalls) at collection", None),
+    (r"^api-hops\.", "node-api", "the node's hop journal (/api/hops, every stream) at collection",
+     {"t_us": "us"}),
+    (r"^http-status\.", "node-api", "the HTTP status of each API answer of this collect", None),
+)
+
+
+def collect_apis(node: dict) -> tuple:
+    if node["role"] == "contributor":
+        return CONTRIBUTOR_APIS
+    return MESH_APIS if node["role"] in mesh_ops.ROLE_TIER else ()
+
+
+def collect_script(node: dict, stamp: str) -> str:
+    """What one ssh runs on a node: a gzipped tar on its stdout of the
+    journal since boot (gzipped), each API's body and HTTP status, and the
+    samplers' files. Nothing on the node is changed or removed but its own
+    temporary directory."""
+    port = CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT
+    lines = ["set -u", f"T={stamp}",
+             "D=$(mktemp -d /tmp/needletail-collect.XXXXXX) || exit 70",
+             "trap 'rm -rf \"$D\"' EXIT",
+             "journalctl -b --no-pager -o short-iso-precise 2>/dev/null "
+             "| gzip -c >\"$D/journal.$T.txt.gz\""]
+    for stem, path, extension in collect_apis(node):
+        url = shlex.quote(f"https://{node['public_ipv4']}:{port}{path}")
+        lines += [f"code=$(curl -sk --max-time 30 -o \"$D/{stem}.$T.{extension}\" "
+                  f"-w '%{{http_code}}' {url} 2>/dev/null) || true",
+                  f"echo \"{stem} ${{code:-000}}\" >>\"$D/http-status.$T.txt\""]
+    parent, name = NODE_RUNS.rsplit("/", 1)
+    lines += ["set -- -C \"$D\" .",
+              f"[ -d {NODE_RUNS} ] && set -- \"$@\" -C {parent} {name}",
+              f"for f in {' '.join(REFEREE_SAMPLERS)}; do "
+              "[ -f \"$f\" ] && set -- \"$@\" -C /var/tmp \"${f#/var/tmp/}\"; done",
+              "tar -cf - \"$@\" 2>/dev/null | gzip -1", "exit 0"]
+    return "\n".join(lines) + "\n"
+
+
+def collect_member_path(name: str) -> str | None:
+    """Where a member of a node's tar goes under nodes/<node>/: the node's
+    own files (`./...`) at the top, its run directories under
+    samplers/needletail-runs/, the referee's sampler files under
+    samplers/var-tmp/. None for a name that would leave the directory."""
+    parts = pathlib.PurePosixPath(name).parts
+    if name.startswith("/") or ".." in parts:
+        return None
+    if name.startswith("./"):
+        return pathlib.PurePosixPath(*parts).as_posix() if parts else None
+    if parts and parts[0] == NODE_RUNS.rsplit("/", 1)[1]:
+        return "samplers/" + pathlib.PurePosixPath(*parts).as_posix()
+    return f"samplers/var-tmp/{pathlib.PurePosixPath(*parts).as_posix()}" if parts else None
+
+
+def unpack_node(path: pathlib.Path, directory: pathlib.Path) -> tuple[list[str], str | None]:
+    """The regular files of a node's tar into its staging directory, as
+    far as the tar goes: (the files, why it ended early or None)."""
+    files = []
+    try:
+        with tarfile.open(path, "r:gz") as tar:
+            for member in tar:
+                rel = collect_member_path(member.name)
+                if not member.isfile() or rel is None:
+                    continue
+                target = directory / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as source, open(target, "wb") as out:
+                    shutil.copyfileobj(source, out)
+                files.append(rel)
+    except (tarfile.TarError, OSError, EOFError) as error:
+        return files, f"its tar ended early: {error}"
+    return files, None
+
+
+def pull_node(node: dict, stamp: str, directory: pathlib.Path, timeout_s: float) -> dict:
+    """One node's files into its staging directory, by one ssh bounded by
+    timeout_s. Whatever arrived is kept, also from a node that timed out."""
+    record = {"node": node["name"], "role": node["role"], "error": None, "files": [], "http": {}}
+    began = time.monotonic()
+    tarball = directory.with_name(directory.name + ".tar.gz")
+    command = ["ssh", *common.ssh_base(), f"root@{node['public_ipv4']}",
+               "bash -c " + shlex.quote(collect_script(node, stamp))]
+    try:
+        with open(tarball, "wb") as out:
+            result = subprocess.run(command, stdout=out, stderr=subprocess.PIPE,
+                                    timeout=timeout_s, check=False)
+        if result.returncode != 0:
+            record["error"] = (f"ssh exited {result.returncode}: "
+                               f"{result.stderr.decode(errors='replace').strip()[-300:]}")
+    except subprocess.TimeoutExpired:
+        record["error"] = f"timed out after {timeout_s:.0f} s"
+    except OSError as error:
+        record["error"] = f"ssh: {error}"
+    record["files"], ended = unpack_node(tarball, directory)
+    tarball.unlink(missing_ok=True)
+    if ended and not record["error"]:
+        record["error"] = ended
+    for status in directory.glob("http-status.*.txt"):
+        for line in status.read_text(errors="replace").splitlines():
+            stem, _, code = line.partition(" ")
+            record["http"][stem] = code.strip()
+    record["seconds"] = round(time.monotonic() - began, 3)
+    return record
+
+
+def node_missing(node: dict, record: dict, directory: pathlib.Path) -> list[str]:
+    """What of a node this collect could not have: the node (its ssh failed
+    or ran out of time), else each file: the journal when empty, an API
+    that did not answer 200."""
+    if record["error"]:
+        return [node["name"]]
+    out = []
+    journals = sorted(directory.glob("journal.*.txt.gz"))
+    try:
+        with gzip.open(journals[0], "rb") as handle:
+            empty = not handle.read(1)
+    except (IndexError, OSError, EOFError):
+        empty = True
+    if empty:
+        out.append(f"{node['name']}/journal")
+    out += [f"{node['name']}/{stem}" for stem, _path, _extension in collect_apis(node)
+            if record["http"].get(stem) != "200"]
+    return out
+
+
+def collect_describe(rel: str) -> tuple[str, str, dict | None]:
+    for pattern, kind, text, units in COLLECT_FILES:
+        if re.search(pattern, rel):
+            return kind, text, units
+    return "raw", "", None
+
+
+def scrubbed_record(deployed: dict) -> dict:
+    """The deployed record with its settings scrubbed of secrets; the
+    nodes' build keys and digests kept as they are."""
+    if not isinstance(deployed.get("settings"), dict):
+        return dict(deployed)
+    return {**deployed, "settings": run_archive.scrub_obj(deployed["settings"])}
+
+
+def collect_code_paths() -> list[pathlib.Path]:
+    """The worktrees whose builds the deploy installs (binaries_for)."""
+    return archived_run.code_paths(
+        os.environ.get("NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh")),
+        os.environ.get("NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib")))
+
+
+def topology_path(state: dict) -> pathlib.Path | None:
+    raw = state.get("topology_file")
+    if not raw:
+        return None
+    path = pathlib.Path(raw)
+    return path if path.is_absolute() else common.ROOT / path
+
+
+def collect_run(state: dict) -> archived_run.Run:
+    """The lab's run in the archive (the lab's run id), made with the lab's
+    facts when it is not there yet, else opened to append to. Collect never
+    ends the run: the run's own tool and the lab's down do."""
+    topology = topology_path(state)
+    return archived_run.Run(
+        state["run_id"], "linode-lab", COLLECT_TOOL, code=collect_code_paths(),
+        settings=(state.get("deployed") or {}).get("settings"),
+        topology=topology if topology and topology.is_file() else None,
+        regions=sorted({node["region"] for node in state["nodes"].values() if node.get("region")}),
+        finish=False)
+
+
+def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
+    """The lab's own files: its state (with every node's physical host),
+    the hosts map, the deployed record, the settings, the routes and hunted
+    ports, the topology; the lab's instances in the manifest. Returns what
+    could not be had."""
+    missing = []
+    deployed = state.get("deployed") or {}
+    run.write_json(f"lab/state.{stamp}.json", {**state, "deployed": scrubbed_record(deployed)},
+                   "lab", "the lab state at collection: nodes, addresses, plans, watchdog, "
+                          "budget and the deployed record")
+    run.write_json(f"lab/hosts.{stamp}.json",
+                   {name: {key: node.get(key) for key in
+                           ("id", "label", "region", "site", "role", "type", "host_uuid")}
+                    for name, node in sorted(state["nodes"].items(), key=lambda item:
+                                             mesh_ops.natural(item[0]))},
+                   "lab", "the physical Linode host of every node (host_uuid as the lab tool's "
+                          "`hosts` recorded it in the lab state; null: never recorded)")
+    if deployed:
+        run.write_json(f"lab/deployed.{stamp}.json", scrubbed_record(deployed), "lab",
+                       "the deployed record: settings in force, routes and ports digests, each "
+                       "node's build and argument digests")
+    else:
+        missing.append("lab/deployed")
+    own = {}
+    for label, path, read in (
+            ("settings", SETTINGS_FILE, lambda text: json.loads(text)),
+            ("routes", common.ARTIFACT_DIR / "routes.json", lambda text: json.loads(text)),
+            ("ecmp-ports", HUNT_FILE, lambda text: json.loads(text))):
+        try:
+            document = read(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict) and document.get("lab_run_id") == state["run_id"]:
+            own[label] = document
+    if "settings" in own:
+        run.write_json(f"lab/settings.{stamp}.json", run_archive.scrub_obj(own.pop("settings")),
+                       "settings", "this checkout's settings.json for the lab (scrubbed)")
+    elif not deployed.get("settings"):
+        missing.append("lab/settings")
+    for label, document in own.items():
+        run.write_json(f"lab/{label}.{stamp}.json", document, "lab",
+                       f"this checkout's {label} file for the lab")
+    topology = topology_path(state)
+    if topology is None or run.add_file(topology, f"topology/{topology.name}", "topology",
+                                        "the lab's topology") is None:
+        missing.append("topology")
+    created = state.get("created_unix")
+    run.guarded("record the lab", run.archive.set_lab,
+                run_tag=state.get("tag") or f"needletail-small-mesh-{state['run_id']}",
+                instances=[{"label": node.get("label"), "id": node.get("id"),
+                            "plan": node.get("type"), "region": node.get("region"),
+                            "role": node.get("role"), "hourly_usd": node.get("hourly_usd")}
+                           for _name, node in sorted(state["nodes"].items())],
+                created_at_utc=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(created))
+                if created else None)
+    return missing
+
+
+def collect_nodes(run: archived_run.Run, state: dict, names: list[str], timeout_s: float,
+                  stamp: str) -> tuple[dict, list[str]]:
+    """Every named node at once, each by one ssh, all within timeout_s;
+    then each node's files into nodes/<node>/. Returns each node's record
+    and what could not be had. One node never stops the others."""
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=f".collect-{state['run_id']}-",
+                                            dir=run.root.parent))
+    records: dict[str, dict] = {}
+    missing: list[str] = []
+    deadline = time.monotonic() + timeout_s
+
+    def one(node: dict) -> dict:
+        directory = staging / node["name"]
+        directory.mkdir()
+        left = deadline - time.monotonic()
+        if left < 1:
+            return {"node": node["name"], "role": node["role"], "files": [], "http": {},
+                    "error": f"no time left within --timeout-s {timeout_s:g}"}
+        return pull_node(node, stamp, directory, left)
+
+    try:
+        nodes = [state["nodes"][name] for name in names]
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, min(COLLECT_WORKERS, len(nodes)))) as pool:
+            futures = {pool.submit(one, node): node for node in nodes}
+            for future in concurrent.futures.as_completed(futures):
+                node = futures[future]
+                try:
+                    records[node["name"]] = future.result()
+                except Exception as error:  # noqa: BLE001 - one node never stops the collect
+                    records[node["name"]] = {"node": node["name"], "role": node["role"],
+                                             "files": [], "http": {},
+                                             "error": f"{type(error).__name__}: {error}"}
+        for name in names:
+            node, record, directory = state["nodes"][name], records[name], staging / name
+            missing += node_missing(node, record, directory)
+            for rel in record["files"]:
+                if rel.startswith("samplers/"):
+                    continue
+                kind, text, units = collect_describe(rel)
+                if run.add_file(directory / rel, f"nodes/{name}/{rel}", kind, text, units,
+                                move=True) is None:
+                    missing.append(f"{name}/{rel}")
+            samplers = run.add_tree(
+                directory / "samplers", f"nodes/{name}/samplers", "samples",
+                f"the node's run directories ({NODE_RUNS}: samplers, listener and probe "
+                "outputs) and the referee's sampler files (/var/tmp/compare-*), as they were "
+                "at collection", move=True)
+            if samplers is not None and samplers["refused"]:
+                missing += [f"{name}/samplers/{rel} (refused: a credential)"
+                            for rel in samplers["refused"]]
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return records, missing
+
+
+def command_collect(args: argparse.Namespace) -> None:
+    """`collect --run-id ID`: every node of the lab (or --nodes), in
+    parallel and within --timeout-s, into the run archive's nodes/<node>/,
+    and the lab's files into lab/ and topology/; then the run is marked
+    collected, complete or with every node and file that could not be had
+    (a node not in --nodes counts as had when an earlier collect brought its
+    journal). Exit 0 when complete, 1 when not, 2 when refused. No Linode
+    API call: the hosts map is the one the lab tool's `hosts` recorded."""
+    state = common.load_state()
+    if state.get("run_id") != args.run_id:
+        print(f"collect --run-id {args.run_id}: the lab of {common.state_path()} is "
+              f"{state.get('run_id')!r}; a lab's data goes into its own run", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    names = named_nodes(state, args.nodes) or sorted(state["nodes"], key=mesh_ops.natural)
+    try:
+        run = collect_run(state)
+    except run_archive.ArchiveError as error:
+        print(f"collect: the run archive refused: {error}", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    records, missing = collect_nodes(run, state, names, args.timeout_s, stamp)
+    missing += collect_lab(run, state, stamp)
+    have = {entry["path"] for entry in run.archive.manifest["files"]}
+    missing += [name for name in sorted(set(state["nodes"]) - set(names), key=mesh_ops.natural)
+                if not any(path.startswith(f"nodes/{name}/journal.") for path in have)]
+    missing += [f"archive: {problem}" for problem in run.problems]
+    written = len(run.problems)
+    run.write_json(f"collect/collect.{stamp}.json",
+                   {"run_id": args.run_id, "stamp_utc": stamp, "timeout_s": args.timeout_s,
+                    "nodes": records, "missing": missing}, "lab",
+                   "what each node gave this collect: its files, its API answers' HTTP status, "
+                   "its error, its seconds", {"seconds": "s"})
+    missing += [f"archive: {problem}" for problem in run.problems[written:]]
+    run.guarded("mark the run collected", run.archive.mark_collected, not missing, missing)
+    print(f"collect {args.run_id}: {len(names)} node(s) into {run.path}; missing: "
+          + (", ".join(missing) or "none"))
+    sys.exit(0 if not missing else 1)
+
+
 def change_options(parser: argparse.ArgumentParser) -> None:
     """The options of the engine's commands (C 2.6; mesh_ops.Options)."""
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
@@ -5771,6 +6126,13 @@ def main() -> None:
                       help="hunt while edges serve: every remote region goes silent")
     hunt.set_defaults(handler=command_hunt)
     sub.add_parser("status").set_defaults(handler=command_status)
+    collect = sub.add_parser("collect", help="every node's journal, API and samplers, and the "
+                                             "lab's files, into the run archive")
+    collect.add_argument("--run-id", required=True, help="the lab's run id (its archive run)")
+    collect.add_argument("--nodes", default=None, help="comma-separated: only these nodes")
+    collect.add_argument("--timeout-s", type=float, default=COLLECT_TIMEOUT_S,
+                         help="the bound of the nodes' pulls, together")
+    collect.set_defaults(handler=command_collect)
     args = parser.parse_args()
     args.handler(args)
 
