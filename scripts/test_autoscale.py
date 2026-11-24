@@ -2176,6 +2176,10 @@ class LinodeBackendTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.config = auto.Config(budget_usd=100.0, spent_before_usd=20.0)
         self.backend = auto.LinodeBackend(str(self.path), 4001, self.config, ["london"])
+        # The lab's watchdog unit is running (no user systemd is asked).
+        patcher = mock.patch.object(self.backend.lab, "watchdog_active", lambda run_id: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_roster_slots_standby_and_first_distributors(self):
         roster = self.backend.roster()
