@@ -19,6 +19,7 @@ import importlib.util
 import inspect
 import io
 import json
+import math
 import pathlib
 import shutil
 import subprocess
@@ -860,7 +861,8 @@ class Campaign(Base):
         for name in ("scale-up", "scale-down", "autoscale-edges-up"):
             self.assertTrue(set(campaign.SCALE_NEEDS) <= set(items[name].needs), name)
 
-    def change_runs(self, ctx_name, command_exit=0, cw_pass=True, before=None, after=None):
+    def change_runs(self, ctx_name, command_exit=0, cw_pass=True, before=None, after=None,
+                    null_windows=300):
         """The scenario of `ctx_name` run with change-run.py faked: each call
         writes one run of its kind as change-run.py does (run.json with the
         referee's verdict, nodes-before.json and nodes-after.json)."""
@@ -884,7 +886,7 @@ class Campaign(Base):
             passed = cw_pass if kind == "change" else True
             result = {"pass": passed, "missing": 0 if passed else 3, "gap_ms": 2.1,
                       "gap_bar_ms": 2.4, "p99_ms": 1.5, "p99_bar_ms": 1.6,
-                      "null_fail_rate": 0.07}
+                      "null_fail_rate": 0.07, "null_windows": null_windows, "window_s": 40.0}
             (directory / "run.json").write_text(json.dumps({
                 "directory": str(directory), "kind": kind, "layout": "cpus=2-15",
                 "status": "pass" if passed and (kind == "null" or command_exit == 0) else "fail",
@@ -950,6 +952,12 @@ class Campaign(Base):
         self.assertIn("change-01: lon-edge-1, lon-edge-2 restarted (new boot id)", names)
         self.assertEqual(ctx.measurements["cw_change-01"]["roll.edges new-readers-pcm-1-1"][
             "null_fail_rate"], 0.07)
+        # Where CW could not score each null window against 120 others (a
+        # 40 s window needs 203 of them), its rate is not measured, never 0.
+        ctx, _calls = self.change_runs("roll-edges", null_windows=202)
+        figure = ctx.measurements["cw_change-01"]["roll.edges new-readers-pcm-1-1"]
+        self.assertIsNone(figure["null_fail_rate"])
+        self.assertIn("not measured", figure["null_fail_rate_unmeasured"])
         # The campaign's own sources come back after the runs.
         self.assertEqual(len(ctx.deferred), 1)
         # A plain kind's null is `sleep` under the scenario's name.
@@ -960,6 +968,51 @@ class Campaign(Base):
         self.assertEqual(calls[1][calls[1].index("--") + 1:], campaign.FORWARDER_CRASH)
         _ctx, calls = self.change_runs("roll-forwarders-client-loss")
         self.assertEqual(calls[1][calls[1].index("--client-loss") + 1], "loss 1%")
+
+    def test_each_change_scenario_s_probes_hold_its_command_s_bound(self):
+        """Review of CL5: change-run.py's default 360 s leaves the referee
+        under its 120 no-change windows for any change over about 90 s, so
+        every scenario's --seconds comes from its command's bound (the
+        engine's timeouts it is given), and the null runs as long."""
+        def null_windows(seconds, bound):
+            # change-window.py's windows after a change at --at of `bound`
+            # seconds: its length + 7 s, clear of it and its 1 s tail.
+            return math.floor(seconds - campaign.CHANGE_AT_S - bound - 5 - 1 - (bound + 7) - 1)
+
+        roles = {"lon-edge-1": "edge", "lon-edge-2": "edge", "lon-dist-a": "distributor",
+                 "contrib-lon": "contributor"}
+        for name in ("roll-edges", "upgrade-all", "replace-forwarder", "scale-up",
+                     "autoscale-edges-down", "forwarder-kill-return-wan-loss"):
+            with mock.patch.object(campaign.lab, "build_sets", lambda: {"a": {}, "b": {}}), \
+                    mock.patch.object(campaign.lab, "standing_services", lambda: list(roles)), \
+                    mock.patch.object(campaign.lab, "node", lambda node: {"role": roles[node]}), \
+                    mock.patch.object(campaign.lab, "terminate_service", lambda node: None), \
+                    mock.patch.object(campaign.lab, "set_slot_in_service", lambda node, on: None), \
+                    mock.patch.object(campaign.lab, "service_pid", lambda node: 1):
+                ctx, calls = self.change_runs(name)
+            bound = ctx.measurements["change_bound_s"]
+            for argv in calls:
+                seconds = int(argv[argv.index("--seconds") + 1])
+                self.assertEqual(argv[argv.index("--at") + 1], str(campaign.CHANGE_AT_S))
+                self.assertEqual(seconds, ctx.measurements["probe_seconds"])
+                self.assertGreaterEqual(seconds, 360, name)
+                self.assertGreaterEqual(null_windows(seconds, bound), 120, name)
+        # The bound of a roll: 70 s a node with the timeouts it is given,
+        # and the surge edge a held edge slot stands for.
+        ctx, calls = self.change_runs("roll-edges")
+        self.assertEqual(ctx.measurements["change_bound_s"], 2 * campaign.CHANGE_NODE_S)
+        self.assertEqual(calls[1][-6:], campaign.CHANGE_TIMEOUTS)
+        self.assertEqual(campaign.CHANGE_NODE_S, 70.0)
+        with mock.patch.object(campaign.lab, "held_slots", lambda: {"lon-edge-4", "lon-dist-c"}), \
+                mock.patch.object(campaign.lab, "node", lambda name: {
+                    "lon-edge-4": {"site": "london", "role": "edge"},
+                    "lon-dist-c": {"site": "london", "role": "distributor"}}[name]):
+            self.assertEqual(campaign.engine_bound_s(["lon-edge-1", "lon-edge-2"], ["london"]),
+                             3 * campaign.CHANGE_NODE_S)
+            self.assertEqual(campaign.engine_bound_s(["lon-dist-a"], []), campaign.CHANGE_NODE_S)
+        # Four edges' roll: 280 s, far past what 360 s of probe can score.
+        self.assertGreaterEqual(null_windows(campaign.probe_seconds(280), 280), 120)
+        self.assertLess(null_windows(360, 280), 120)
 
     def test_a_change_scenario_fails_on_the_referee_s_verdict_and_on_restarts(self):
         ctx, _calls = self.change_runs("roll-edges", cw_pass=False)

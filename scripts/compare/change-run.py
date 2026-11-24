@@ -676,7 +676,7 @@ def verdict_of(verdict: dict | None, items: list[dict]) -> dict:
                 "gap_ms": change.get("gap_ms"), "gap_bar_ms": result.get("gap_bar_ms"),
                 "p99_ms": change.get("p99_ms"), "p99_bar_ms": result.get("p99_bar_ms"),
                 "null_fail_rate": result.get("null_fail_rate"),
-                "null_windows": result.get("null_windows"),
+                "null_windows": result.get("null_windows"), "window_s": result.get("window_s"),
                 **{key: result[key] for key in ("note", "error") if key in result}}
     return out
 
@@ -715,6 +715,25 @@ def seconds_needed(span: tuple[int, int], launch_ns: int) -> int:
     length_s = (span[1] - span[0]) / 1e9
     end_s = (span[1] - launch_ns) / 1e9
     return 10 * math.ceil((end_s + length_s + 14 + MIN_NULL_WINDOWS + 10) / 10)
+
+
+def null_fail_rate(result: dict) -> tuple[float | None, str | None]:
+    """CW's null_fail_rate of one label and probe, and None with the reason
+    when CW could not measure it. CW scores each no-change window against
+    the others more than the window's length + 1 s away and skips a window
+    with fewer than MIN_NULL_WINDOWS of them, yet divides by every window:
+    unless each window can have that many, the rate is low by
+    construction (0.0 once no window has them)."""
+    rate, windows, length = (result.get("null_fail_rate"), result.get("null_windows"),
+                             result.get("window_s"))
+    if rate is None or windows is None or length is None:
+        return None, "change-window.py gave no null_fail_rate"
+    needed = MIN_NULL_WINDOWS + 1 + 2 * math.floor(length + 1)
+    if windows < needed:
+        return None, (f"not measured: {windows} no-change windows of {length:g} s, and each is "
+                      f"scored only against those more than {length + 1:g} s away; "
+                      f"{needed} are needed")
+    return rate, None
 
 
 def null_hints(labels: dict, marks: list[tuple[str, int, str]],

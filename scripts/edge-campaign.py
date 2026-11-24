@@ -3417,7 +3417,10 @@ def autoscale_edge_lab(ctx):
 # locally" is 10 of 10 of both, change-run.py's summary.json counts every
 # run of the name). The checks are the referee's verdicts: every run passes
 # by its rule on every probe and label, and the nodes that the change must
-# restart did (their /api/node boot id) and no other did.
+# restart did (their /api/node boot id) and no other did. Each scenario's
+# probes are sized from its command's bound (the timeouts it is given, never
+# its typical time, as scale-run sizes its own): long enough after it for
+# the referee's 120 no-change windows of its length.
 
 CHANGE_RUN = pathlib.Path(__file__).resolve().parent / "compare" / "change-run.py"
 EDGE_LAB = [sys.executable, str(pathlib.Path(__file__).resolve().parent / "edge_lab.py")]
@@ -3431,6 +3434,26 @@ CHANGE_LANES = "opus-1,pcm-1"
 # 450 for a scale-down.
 AUTOSCALE_UP_LISTENERS = 30
 AUTOSCALE_DOWN_LISTENERS = 10
+# The engine's timeouts the change commands are given, the proving run's
+# (phases-proving.json), and what a node may take with them: its gate, drain
+# and readiness, and its stop and start (scale-run's ENGINE_RESTART_S).
+CHANGE_TIMEOUTS = ["--gate-timeout-s", "10", "--drain-timeout-s", "15", "--ready-timeout-s", "30"]
+CHANGE_NODE_S = 10.0 + 15.0 + 30.0 + 15.0
+# change-run.py's --at: the change starts this long after the probes.
+CHANGE_AT_S = 45
+# The bounds of the commands with no engine timeouts: a crash (the kill,
+# 5 s at most for the process to go, the 1 s restart, then wait_back's 60 s);
+# a replace's 30 s gap; the autoscaler's scale verbs (its join timeout, 120 s,
+# and the rebalance's 60 s; down: its drain timeout, 60 s, and the stop) and
+# the controller's runs below (3 samples a second apart, the join timeout
+# they give, 60 s, the rebalance's 60 s; down: the 20 s hold, the 40 s drain,
+# the stop).
+CRASH_BOUND_S = 5.0 + 1.0 + 60.0
+REPLACE_GAP_S = 30.0
+SCALE_UP_BOUND_S = 120.0 + 60.0
+SCALE_DOWN_BOUND_S = 60.0 + 30.0 + 30.0
+AUTOSCALE_UP_BOUND_S = 3.0 + 60.0 + 60.0
+AUTOSCALE_DOWN_BOUND_S = 3.0 + 20.0 + 40.0 + 30.0
 _change_run = {}
 
 
@@ -3456,12 +3479,32 @@ def change_needs(lanes: str, extra=()) -> list[str]:
     return change_run().lab_overrides(argparse.Namespace(lanes=lanes, set=[])) + list(extra)
 
 
+def probe_seconds(bound_s: float) -> int:
+    """change-run.py's --seconds for a change of at most `bound_s` at
+    CHANGE_AT_S: change-run.py's own seconds_needed (the referee's 120
+    no-change windows of the change's length after it), and its 360 at
+    least."""
+    tool = change_run()
+    at_ns = int(CHANGE_AT_S * 1e9)
+    return max(tool.MIN_SECONDS, tool.seconds_needed((at_ns, at_ns + int(bound_s * 1e9)), 0))
+
+
+def engine_bound_s(nodes: list[str], sites: list[str]) -> float:
+    """The bound of an engine command over `nodes`: CHANGE_NODE_S a node,
+    and a surge edge in each of `sites` that holds an edge slot out."""
+    surges = {lab.node(name)["site"] for name in lab.held_slots()
+              if lab.node(name)["role"] == "edge"} & set(sites)
+    return (len(nodes) + len(surges)) * CHANGE_NODE_S
+
+
 def change_run_argv(name: str, command: list[str], lanes: str, options: list[str],
-                    dry: bool = False) -> list[str]:
-    """change-run.py's command line for one command of a scenario (`dry`:
-    the engine's null, COMMAND with --dry-marks)."""
+                    seconds: int, dry: bool = False) -> list[str]:
+    """change-run.py's command line for one command of a scenario, its
+    probes `seconds` long with the change at CHANGE_AT_S (`dry`: the
+    engine's null, COMMAND with --dry-marks)."""
     return ([sys.executable, str(CHANGE_RUN), "run", "--name", name, "--no-up",
-             "--lanes", lanes, "--repeat", str(CHANGE_REPEAT), *options]
+             "--lanes", lanes, "--repeat", str(CHANGE_REPEAT), "--seconds", str(seconds),
+             "--at", str(CHANGE_AT_S), *options]
             + (["--dry"] if dry else []) + ["--", *command])
 
 
@@ -3507,36 +3550,47 @@ def verdict_checks(ctx, run: dict) -> None:
     name = pathlib.Path(run["directory"]).name
     ctx.check(f"{name}: pass by the referee's rule", run.get("status") == "pass",
               {"status": run.get("status"), "reasons": run.get("reasons"),
-               "command_exit": run.get("command_exit")})
+               "command_exit": run.get("command_exit"), "hints": run.get("hints")})
     figures = {}
     for label, per in (run.get("labels") or {}).items():
         for probe, result in per.items():
+            # CW's false-fail rate only where it could measure it (never a
+            # 0.0 by construction).
+            rate, unmeasured = change_run().null_fail_rate(result)
+            result = {**result, "null_fail_rate": rate,
+                      **({"null_fail_rate_unmeasured": unmeasured} if unmeasured else {})}
             figures[f"{label} {probe}"] = result
             if run["kind"] == "change":
                 ctx.check(f"{name}: {label} on {probe}", result.get("pass") is True
                           and "error" not in result,
                           {key: result.get(key) for key in (
                               "pass", "missing", "gap_ms", "gap_bar_ms", "p99_ms", "p99_bar_ms",
-                              "null_fail_rate", "note", "error") if result.get(key) is not None})
+                              "null_fail_rate", "null_fail_rate_unmeasured", "note", "error")
+                           if result.get(key) is not None})
     ctx.measure(f"cw_{name}", figures)
 
 
 def change_scenario(ctx, command: list[str], null: list[str] | None, lanes: str,
-                    options: list[str], restarted: list[str] | None, setup=None) -> None:
+                    options: list[str], restarted: list[str] | None, bound_s: float,
+                    setup=None) -> None:
     """Run the scenario's null, then its change, through change-run.py, and
-    take the referee's verdicts as the scenario's checks. The campaign's
-    own sources are stopped for the runs (change-run.py starts the senders
-    of its lanes) and started again after."""
+    take the referee's verdicts as the scenario's checks; both with probes
+    sized from the change's bound. The campaign's own sources are stopped
+    for the runs (change-run.py starts the senders of its lanes) and
+    started again after."""
     name = ctx.scenario.name
     if setup is not None:
         setup(ctx)
     lab.stop_sources()
     ctx.defer(lambda: lab.start_sources(6 * 3600, audio="daw"))
     scenario_dir = change_run().out_root() / name
-    null_argv = (change_run_argv(name, command, lanes, options, dry=True) if null is None
-                 else change_run_argv(name, null, lanes, options))
+    seconds = probe_seconds(bound_s)
+    ctx.measure("change_bound_s", bound_s)
+    ctx.measure("probe_seconds", seconds)
+    null_argv = (change_run_argv(name, command, lanes, options, seconds, dry=True)
+                 if null is None else change_run_argv(name, null, lanes, options, seconds))
     for kind, argv in (("null", null_argv),
-                       ("change", change_run_argv(name, command, lanes, options))):
+                       ("change", change_run_argv(name, command, lanes, options, seconds))):
         known = {run.get("directory") for run in change_run().runs_of(scenario_dir)}
         ctx.event(f"change-run.py {kind}: {' '.join(argv[2:])}")
         with open(ctx.directory / f"change-run-{kind}.log", "ab") as log:
@@ -3588,14 +3642,16 @@ def needs_set_b(ctx) -> None:
 
 
 def register_change(name: str, question: str, command: list[str], null: list[str] | None,
-                    restarted, criterion: str = "", needs=(), lanes: str = CHANGE_LANES,
+                    restarted, bound, criterion: str = "", needs=(), lanes: str = CHANGE_LANES,
                     options=(), setup=None) -> None:
     """One scenario of the change group: `restarted` is the nodes the change
     must restart (a callable of the lab, evaluated when the scenario runs),
-    [] for none, None when restarts are not judged."""
+    [] for none, None when restarts are not judged; `bound` the most its
+    command may take in seconds (or a callable of the lab, likewise)."""
     def run(ctx) -> None:
         change_scenario(ctx, command, null, lanes, list(options),
-                        restarted() if callable(restarted) else restarted, setup)
+                        restarted() if callable(restarted) else restarted,
+                        bound() if callable(bound) else bound, setup)
     scenario(name, "change", question,
              criterion or ("change-run.py: the null and the change pass by the referee's rule "
                            "(change-window.py: 0 missing, silence and p99 within the 97.5th "
@@ -3617,10 +3673,10 @@ def every_node() -> list[str]:
             if lab.node(name)["role"] in ("edge", "distributor", "contributor")]
 
 
-ROLL_EDGES = EDGE_LAB + ["roll", "edges", "--sites", "london"]
-ROLL_FORWARDERS = EDGE_LAB + ["roll", "forwarders"]
-UPGRADE_ALL = EDGE_LAB + ["roll", "all", "--build", "b"]
-UPGRADE_BACK = EDGE_LAB + ["roll", "all", "--build", "a"]
+ROLL_EDGES = EDGE_LAB + ["roll", "edges", "--sites", "london", *CHANGE_TIMEOUTS]
+ROLL_FORWARDERS = EDGE_LAB + ["roll", "forwarders", *CHANGE_TIMEOUTS]
+UPGRADE_ALL = EDGE_LAB + ["roll", "all", "--build", "b", *CHANGE_TIMEOUTS]
+UPGRADE_BACK = EDGE_LAB + ["roll", "all", "--build", "a", *CHANGE_TIMEOUTS]
 FORWARDER_CRASH = EDGE_LAB + ["crash", "new-dist-a"]
 # The typical times of the commands that have no dry mode, for their
 # `sleep` nulls (C 6.2): a crash and its return, a replace with its 30 s
@@ -3634,43 +3690,60 @@ CELLS = (("opus25", "on 2.5 ms Opus", {"lanes": "opus-2.5"}),
           {"options": ["--client-loss", "loss 1%"]}),
          ("wan-loss", "with 1% loss on New York's wide-area link",
           {"options": ["--wan-loss", "newyork=loss 1%"]}))
-for _name, _question, _command, _null, _restarted, _extra in (
+def roll_edges_bound_s() -> float:
+    return engine_bound_s(london_edges(), ["london"])
+
+
+def roll_forwarders_bound_s() -> float:
+    return engine_bound_s(distributors_in_service(), [])
+
+
+def every_node_bound_s() -> float:
+    return engine_bound_s(every_node(), ["london", "newyork"])
+
+
+for _name, _question, _command, _null, _restarted, _bound, _extra in (
         ("roll-edges", "Is a rolling restart of London's edges hitless for every probe?",
-         ROLL_EDGES, None, london_edges, {"needs": ["slots=lon-edge-4"]}),
+         ROLL_EDGES, None, london_edges, roll_edges_bound_s, {"needs": ["slots=lon-edge-4"]}),
         ("roll-forwarders", "Is a rolling restart of every forwarder hitless for every probe?",
-         ROLL_FORWARDERS, None, distributors_in_service, {}),
+         ROLL_FORWARDERS, None, distributors_in_service, roll_forwarders_bound_s, {}),
         ("upgrade-all", "Is a rolling upgrade of every node to build b hitless?",
-         UPGRADE_ALL, None, every_node, {"setup": needs_set_b}),
+         UPGRADE_ALL, None, every_node, every_node_bound_s, {"setup": needs_set_b}),
         ("forwarder-kill-return", "Is a forwarder crash and its return hitless?",
-         FORWARDER_CRASH, CRASH_NULL, ["new-dist-a"], {})):
-    register_change(_name, _question, _command, _null, _restarted, **_extra)
+         FORWARDER_CRASH, CRASH_NULL, ["new-dist-a"], CRASH_BOUND_S, {})):
+    register_change(_name, _question, _command, _null, _restarted, _bound, **_extra)
     for _cell, _words, _change in CELLS:
         _options = {**_extra, **_change}
         register_change(f"{_name}-{_cell}", f"{_question[:-1]} {_words}?", _command, _null,
-                        _restarted, **_options)
+                        _restarted, _bound, **_options)
 register_change("upgrade-back", "Is a rolling upgrade of every node back to build a hitless?",
-                UPGRADE_BACK, None, every_node, setup=needs_set_b)
+                UPGRADE_BACK, None, every_node, every_node_bound_s, setup=needs_set_b)
 register_change("replace-edge", "Is a replace of lon-edge-1 hitless, and nothing else restarted?",
-                EDGE_LAB + ["replace", "lon-edge-1", "--gap-s", "30"], REPLACE_NULL,
-                ["lon-edge-1"])
+                EDGE_LAB + ["replace", "lon-edge-1", "--gap-s", f"{REPLACE_GAP_S:g}",
+                            *CHANGE_TIMEOUTS], REPLACE_NULL,
+                ["lon-edge-1"], CHANGE_NODE_S + REPLACE_GAP_S)
+# A forwarder's replace: its slot started and made ready, then the node
+# itself.
 register_change("replace-forwarder",
                 "Is a replace of lon-dist-a through lon-dist-c hitless, nothing else restarted?",
-                EDGE_LAB + ["replace", "lon-dist-a", "--gap-s", "30"], REPLACE_NULL,
-                ["lon-dist-a"])
+                EDGE_LAB + ["replace", "lon-dist-a", "--gap-s", f"{REPLACE_GAP_S:g}",
+                            *CHANGE_TIMEOUTS], REPLACE_NULL,
+                ["lon-dist-a"], 2 * CHANGE_NODE_S + REPLACE_GAP_S)
 register_change("scale-up", "Is the scale-up verb hitless (it ends when the rebalance is still)?",
                 AUTOSCALE + ["scale", "up", "--backend", "edge_lab", "--site", "london",
-                             "--stream", str(OPS_STREAM)], SCALE_NULL, [],
+                             "--stream", str(OPS_STREAM)], SCALE_NULL, [], SCALE_UP_BOUND_S,
                 needs=SCALE_NEEDS, setup=hold_out_after("lon-edge-4"))
 register_change("scale-down", "Is the scale-down verb hitless (it ends at the stop)?",
                 AUTOSCALE + ["scale", "down", "--backend", "edge_lab", "--site", "london",
-                             "--stream", str(OPS_STREAM)], SCALE_NULL, [],
+                             "--stream", str(OPS_STREAM)], SCALE_NULL, [], SCALE_DOWN_BOUND_S,
                 needs=SCALE_NEEDS, setup=start_slot("lon-edge-4"))
 register_change("autoscale-edges-up",
                 "Does the controller alone add an edge over its trigger, hitlessly?",
                 AUTOSCALE + ["run", "--backend", "edge_lab", "--until", "join", "--sites",
                              "london", "--stream", str(OPS_STREAM), "--poll-s", "1",
                              "--up-samples", "3", "--join-timeout-s", "60"],
-                AUTOSCALE_NULL, [], needs=SCALE_NEEDS, setup=hold_out_after("lon-edge-4"),
+                AUTOSCALE_NULL, [], AUTOSCALE_UP_BOUND_S, needs=SCALE_NEEDS,
+                setup=hold_out_after("lon-edge-4"),
                 options=["--load-listeners", str(AUTOSCALE_UP_LISTENERS)])
 register_change("autoscale-edges-down",
                 "Does the controller alone drain and stop an edge under its trigger, hitlessly?",
@@ -3678,7 +3751,8 @@ register_change("autoscale-edges-down",
                              "london", "--stream", str(OPS_STREAM), "--poll-s", "1",
                              "--down-hold-s", "20", "--drain-timeout-s", "40",
                              "--no-warm-pool"],
-                AUTOSCALE_NULL, [], needs=SCALE_NEEDS, setup=start_slot("lon-edge-4"),
+                AUTOSCALE_NULL, [], AUTOSCALE_DOWN_BOUND_S, needs=SCALE_NEEDS,
+                setup=start_slot("lon-edge-4"),
                 options=["--load-listeners", str(AUTOSCALE_DOWN_LISTENERS)])
 register_change("autoscale-forwarders",
                 "Does the controller alone join dist-c, warm, in London and New York?",
@@ -3686,7 +3760,7 @@ register_change("autoscale-forwarders",
                              "london,newyork", "--stream", str(OPS_STREAM), "--forwarders",
                              "--lease-k", "2", "--poll-s", "1", "--up-samples", "3",
                              "--join-timeout-s", "60"],
-                AUTOSCALE_NULL, [], needs=SCALE_NEEDS,
+                AUTOSCALE_NULL, [], AUTOSCALE_UP_BOUND_S, needs=SCALE_NEEDS,
                 setup=hold_out_after("lon-dist-c", "new-dist-c"),
                 options=["--load-listeners", str(AUTOSCALE_UP_LISTENERS)])
 
