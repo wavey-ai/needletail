@@ -74,7 +74,7 @@ Safety, before anything else:
 * The warm pass at boot (integration 4): a created slot's push waits for
   it and the slot is not ready before it is complete, so a create's and a
   recovery boot's or rebuild's deadlines have the plan's allowance on top
-  (120 s for every 4 GB). A new slot edge whose pass says slow_host
+  (longer than the pass's bound: 300 s for every 4 GB, and 70 s). A new slot edge whose pass says slow_host
   (/api/node node_warm) and that holds nobody is deleted (proof
   "slow-host") and created again, once a slot (`slow_replaced`); a
   forwarder slot, a standby edge or a slot replaced before is only
@@ -167,7 +167,7 @@ import archived_run  # noqa: E402
 from mesh_ops import (CLOCK_LIMIT_S, EMPTY_HOLD_S, HTTP_PORT, LIVE_MS, Http,  # noqa: E402
                       Marks, Ops, OpsLock, Refused, address_of, control_accepted,
                       control_body, forwarder_gate, gauge, http_post, signals_held,
-                      status_of, warm_seconds)
+                      status_of, warm_allowance_seconds)
 SCHEMA = "needletail.autoscale.v1"
 # Never touched, whatever a state file says.
 DENY = {"arch-us-east"}
@@ -2047,10 +2047,11 @@ class Controller:
 
     @staticmethod
     def warm_s(node: dict) -> float:
-        """The allowance of a node's warm pass at boot (mesh_ops.warm_seconds
-        of its plan: 120 s for every 4 GB); 0 for a node without a Linode
-        plan (the local lab runs no warm pass)."""
-        return float(warm_seconds(node.get("type")) or 0)
+        """The allowance of a node's warm pass at boot, longer than the
+        pass's bound (mesh_ops.warm_allowance_seconds of its plan: 300 s for
+        every 4 GB and 70 s); 0 for a node without a Linode plan (the local
+        lab runs no warm pass)."""
+        return float(warm_allowance_seconds(node.get("type")) or 0)
 
     def slow_host(self, name: str, action: dict, now: float, view: dict, node: dict) -> bool:
         """A joining node whose warm pass says slow_host (its /api/node

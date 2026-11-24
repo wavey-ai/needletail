@@ -104,11 +104,16 @@ INTERRUPT_WAIT_S = 15.0
 # `needletail-nodecheck boot --warm` writes one byte in every page of
 # MemAvailable minus 300 MB once, before the service starts, and the node is
 # not ready until it is complete. The hunt lab took 43 to 79 s for 2.3 to
-# 2.5 GB on a 4 GB guest; the tools allow WARM_SECONDS_PER_4GB for every
-# 4 GB of the plan's memory (never less than that), as the pass's own limit
-# (--warm-max-seconds) and on top of every wait for a node's readiness after
-# a boot (push, roll, replace, the autoscaler's join and recovery).
-WARM_SECONDS_PER_4GB = 120
+# 2.5 GB on a 4 GB guest; the lab of 24 Nov evening 83 to 95 s on 4 GB
+# nodes and more than 240 s on one Tokyo edge. The pass's own bound is
+# WARM_SECONDS_PER_4GB for every 4 GB of the plan's memory (never less than
+# that; --warm-max-seconds), and every wait for a node's readiness after a
+# boot (push, roll, replace, the autoscaler's join and recovery) has longer
+# than that on top: the bound and WARM_MARGIN_S (warm_allowance_seconds).
+WARM_SECONDS_PER_4GB = 300
+# Beyond the pass's bound: needletail-nodecheck's start, its unmapping of
+# what it touched and its record (the check unit's TimeoutStartSec margin).
+WARM_MARGIN_S = 70
 # GB of memory of a Linode plan (GET /linode/types). A g6-dedicated-N not
 # listed has 2N GB, a g6-standard-N or g6-nanode-N is never a lab plan.
 LINODE_MEMORY_GB = {
@@ -132,14 +137,21 @@ def plan_memory_gb(kind) -> int | None:
 
 
 def warm_seconds(kind, per_4gb: float = WARM_SECONDS_PER_4GB) -> int | None:
-    """The seconds allowed for the boot warm pass of a host of plan `kind`:
-    `per_4gb` for every 4 GB of its memory, at least `per_4gb`
-    (g6-dedicated-2: 120, -4: 240, -8: 480); None when the plan is not
-    known."""
+    """The bound of the boot warm pass of a host of plan `kind`: `per_4gb`
+    for every 4 GB of its memory, at least `per_4gb` (g6-dedicated-2: 300,
+    -4: 600, -8: 1200); None when the plan is not known."""
     memory = plan_memory_gb(kind)
     if memory is None:
         return None
     return int(max(per_4gb, -(-memory * per_4gb // 4)))
+
+
+def warm_allowance_seconds(kind, per_4gb: float = WARM_SECONDS_PER_4GB) -> int | None:
+    """What a wait for readiness after a boot adds for a host of plan
+    `kind`: longer than its pass's bound (warm_seconds + WARM_MARGIN_S:
+    g6-dedicated-2 370 s); None when the plan is not known."""
+    bound = warm_seconds(kind, per_4gb)
+    return None if bound is None else bound + WARM_MARGIN_S
 
 
 def warm_allowance(ops, name: str) -> float:
@@ -777,8 +789,9 @@ class Ops:
 
     def warm_allowance_s(self, node: str) -> float:
         """Seconds a readiness wait of `node` adds to `ready_timeout_s` for
-        the node's warm pass at boot (WARM_SECONDS_PER_4GB, scaled by its
-        plan's memory, plus its check's watch): after a push of a new
+        the node's warm pass at boot (longer than its bound:
+        WARM_SECONDS_PER_4GB scaled by its plan's memory, its check's watch
+        and WARM_MARGIN_S): after a push of a new
         instance, a rebuild or a boot the node is not ready before the pass
         is complete. 0: a backend with no warm pass (the local lab)."""
         return 0.0

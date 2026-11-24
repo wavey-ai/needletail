@@ -48,12 +48,14 @@ def record(slow: bool = False, verdict: str = "ok", reasons=("page-stall",),
 
 
 class Arithmetic(unittest.TestCase):
-    def test_warm_seconds_are_120_for_every_4_gb_of_the_plan(self):
-        for kind, seconds in (("g6-dedicated-2", 120), ("g6-dedicated-4", 240),
-                              ("g6-dedicated-8", 480), ("g6-dedicated-12", 720),
-                              ("g6-nanode-1", 120)):
+    def test_the_bound_is_300_s_for_every_4_gb_and_the_waits_longer(self):
+        for kind, seconds in (("g6-dedicated-2", 300), ("g6-dedicated-4", 600),
+                              ("g6-dedicated-8", 1200), ("g6-dedicated-12", 1800),
+                              ("g6-nanode-1", 300)):
             self.assertEqual(mesh_ops.warm_seconds(kind), seconds, kind)
+            self.assertEqual(mesh_ops.warm_allowance_seconds(kind), seconds + 70, kind)
         self.assertEqual(mesh_ops.warm_seconds("g6-dedicated-4", 150), 300)
+        self.assertIsNone(mesh_ops.warm_allowance_seconds(None))
         for kind in (None, "", "local", "x1-gpu-2"):
             self.assertIsNone(mesh_ops.warm_seconds(kind), kind)
 
@@ -61,7 +63,7 @@ class Arithmetic(unittest.TestCase):
         """push waits 150 s for an activation (the 120 s deadline, the
         stop's 20 s, 10 s); the first one after the check unit is new also
         waits for the check: its TimeoutStartSec on top (a g6-dedicated-4:
-        240 + 70)."""
+        600 + 70)."""
         seen = []
 
         def ssh_text(node, script, **kwargs):
@@ -73,9 +75,9 @@ class Arithmetic(unittest.TestCase):
             deploy.activate_node({"name": "n"}, "needletail-mesh", deadline)
             settings = dict(deploy.DEFAULT_SETTINGS)
             check = deploy.check_timeout_s(settings, {"type": "g6-dedicated-4"})
-            self.assertEqual(check, 310)
+            self.assertEqual(check, 670)
             deploy.activate_node({"name": "n"}, "needletail-mesh", deadline, check_s=check)
-        self.assertAlmostEqual(seen[1] - seen[0], 310, delta=2)
+        self.assertAlmostEqual(seen[1] - seen[0], 670, delta=2)
         self.assertAlmostEqual(seen[0], 120 + 20 + 10 + 60, delta=2)
 
 
@@ -97,11 +99,11 @@ class Preflight(unittest.TestCase):
 
         old = tool("old", "--out <OUT> --warm --check-seconds --max-stop-ms")
         new = tool("new", "--out --warm --warm-leave-mb --warm-max-seconds --slow-write-ms "
-                          "--slow-seconds-per-gib --check-seconds")
+                          "--slow-seconds-per-4gb --check-seconds")
         silent = tool("silent", "")
         problem = deploy.nodecheck_problem(old)
         self.assertIn("--warm-leave-mb, --warm-max-seconds, --slow-write-ms, "
-                      "--slow-seconds-per-gib", problem)
+                      "--slow-seconds-per-4gb", problem)
         self.assertIn("node_warm=false", problem)
         self.assertIsNone(deploy.nodecheck_problem(new))
         self.assertIsNone(deploy.nodecheck_problem(silent))           # cannot tell
@@ -183,7 +185,7 @@ class Push(scale.FakeLab):
         standby = set(self.saved_standby())
         for name, node in state["nodes"].items():
             text = self.scripts_of(name)
-            plan = deploy.mesh_ops.warm_seconds(node.get("type")) or 120
+            plan = deploy.mesh_ops.warm_seconds(node.get("type")) or 300
             with self.subTest(name):
                 if node["role"] in ("load", "livekit"):
                     # Its own unit, enabled at boot, started now, waited for.
@@ -275,6 +277,33 @@ class Push(scale.FakeLab):
             self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
         self.assertIn("in the arguments of lon-dist-a: report only", self.stderr)
 
+    def test_the_deployed_record_keeps_each_host_s_warm_pass(self):
+        """Every host whose warm pass push ran or read: its verdict,
+        duration and worst page write (its worst stall) in deployed
+        ["warm"], load hosts included, so that a report can show them."""
+        slow = record(slow=True)
+        self.seed({"lon-edge-1": slow, "lon-load-1": record(), "lon-edge-6": record()})
+        self.slow_push()
+        warm = self.state()["deployed"]["warm"]
+        self.assertEqual(warm["lon-edge-1"]["seconds"], 71.4)
+        self.assertEqual(warm["lon-edge-1"]["worst_page_us"], 1_930_000)
+        self.assertIs(warm["lon-edge-1"]["slow_host"], True)
+        self.assertEqual(warm["lon-edge-1"]["slow_reasons"], ["page-stall"])
+        self.assertEqual(warm["lon-load-1"]["verdict"], "ok")
+        self.assertEqual(warm["lon-edge-6"]["verdict"], "ok")      # a standby edge
+        self.assertEqual(warm["lon-edge-2"], {"verdict": "missing", "complete": False})
+        self.assertNotIn("contrib-lon", {name for name, item in warm.items()
+                                         if item["verdict"] == "ok"})
+
+    def test_collect_takes_every_node_s_warm_record(self):
+        for name in ("lon-edge-1", "lon-load-1", "lon-lk"):
+            node = self.state()["nodes"][name]
+            script = deploy.collect_script(node, "T1")
+            self.assertIn(f'[ -f {WARM_FILE} ] && cp {WARM_FILE} "$D/node-warm.$T.json"', script)
+        kind, text, units = deploy.collect_describe("node-warm.T1.json")
+        self.assertEqual(kind, "node-api")
+        self.assertIn("worst page write", text)
+
     def test_the_decision(self):
         decide = deploy.slow_host_decision
         self.assertEqual(decide({"role": "edge"}, False)[0], "replace")
@@ -318,6 +347,25 @@ class Status(unittest.TestCase):
                     "ready": False, "node_warm": {"configured": True, "complete": False,
                                                   "verdict": "warm-timeout", "slow_host": True}}
         self.assertIn("node_warm=warm-timeout slow_host", deploy.node_summary(document, None))
+
+
+class ShellWarm(unittest.TestCase):
+    def test_the_dependency_free_pass_holds_nothing_and_says_what_it_did(self):
+        """scripts/warm-host.sh, for a host without needletail-nodecheck:
+        dd's buffer is anonymous memory, gone when dd exits (no file: safe
+        to kill, nothing held); one JSON line. Run here on 32 MiB only."""
+        import subprocess
+        result = subprocess.run(["sh", str(HERE / "warm-host.sh"), "--mb", "32"],
+                                capture_output=True, text=True, timeout=60, check=True)
+        line = json.loads(result.stdout)
+        self.assertEqual((line["method"], line["ok"], line["touched_mb"]), ("dd", True, 32))
+        self.assertGreater(line["mem_total_mb"], 0)
+        text = (HERE / "warm-host.sh").read_text()
+        self.assertNotIn("/dev/shm", text)
+        self.assertIn("of=/dev/null", text)
+        refused = subprocess.run(["sh", str(HERE / "warm-host.sh"), "--nope"],
+                                 capture_output=True, text=True, timeout=60)
+        self.assertEqual(refused.returncode, 2)
 
 
 class LocalLabs(unittest.TestCase):
@@ -383,8 +431,8 @@ class Autoscaler(autoscale_tests.Base):
         for action in joins:
             base = (self.config.create_timeout_s if action["how"] == "create"
                     else self.config.join_timeout_s)
-            self.assertAlmostEqual(action["deadline_unix"] - action["trigger_unix"], base + 120)
-        self.assertEqual(auto.Controller.warm_s({"type": "g6-dedicated-8"}), 480.0)
+            self.assertAlmostEqual(action["deadline_unix"] - action["trigger_unix"], base + 370)
+        self.assertEqual(auto.Controller.warm_s({"type": "g6-dedicated-8"}), 1270.0)
         self.assertEqual(auto.Controller.warm_s({}), 0.0)
 
     def test_recovery_after_a_boot_or_rebuild_waits_for_the_warm_pass(self):
@@ -393,7 +441,7 @@ class Autoscaler(autoscale_tests.Base):
         self.assertEqual(controller.settle_s({"step": "restart"}, node), auto.RECOVER_SETTLE_S)
         for step in ("boot", "rebuild"):
             self.assertEqual(controller.settle_s({"step": step}, node),
-                             auto.RECOVER_SETTLE_S + 120)
+                             auto.RECOVER_SETTLE_S + 370)
 
     def test_a_slow_new_slot_edge_is_deleted_and_created_again_once(self):
         self.fill_standby()

@@ -732,13 +732,18 @@ DEFAULT_SETTINGS = {
     # stop of 100 ms or more afterwards, untouched ones 28 to 146. With it,
     # the hosts without a service that push manages (load hosts: source,
     # view, listeners; self-hosted LiveKit hosts) get the same unit enabled
-    # at boot and run once at push (warm only, no watch). The pass may take
-    # node_warm_seconds_per_4gb for every 4 GB of the plan's memory
-    # (--warm-max-seconds; mesh_ops.warm_seconds); the unit's
-    # TimeoutStartSec, push's wait for an activation and every readiness
-    # wait after a boot grow by as much. false turns it off everywhere.
+    # at boot and run once at push (warm only, no watch). The pass is
+    # bounded at node_warm_max_seconds_per_4gb for every 4 GB of the plan's
+    # memory (--warm-max-seconds; mesh_ops.warm_seconds: 300 s on a 4 GB
+    # node; the lab of 24 Nov evening took 83 to 95 s there, and more than
+    # 240 s on one Tokyo edge); the unit's TimeoutStartSec, push's wait for
+    # an activation and every readiness wait after a boot have more than
+    # that on top. A pass longer than node_warm_slow_seconds_per_4gb for
+    # every 4 GB, or one page write of a second or more, says slow_host
+    # (--slow-seconds-per-4gb, --slow-write-ms). false turns it all off.
     "node_warm": True,
-    "node_warm_seconds_per_4gb": 120,
+    "node_warm_max_seconds_per_4gb": 300,
+    "node_warm_slow_seconds_per_4gb": 180,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
@@ -835,8 +840,8 @@ ROLLABLE_SETTINGS = (
 # the check at boot's.
 NODE_SETTINGS = ROLLABLE_SETTINGS + (
     "stall_tick_us", "stall_journal_capacity", "node_warm", "node_check_seconds",
-    "node_check_max_stop_ms", "node_check_max_steal_permille", "node_warm_seconds_per_4gb",
-    "transparent_hugepage",
+    "node_check_max_stop_ms", "node_check_max_steal_permille", "node_warm_max_seconds_per_4gb",
+    "node_warm_slow_seconds_per_4gb", "transparent_hugepage",
 )
 MLOCK_MODES = ("off", "rings")
 # LimitMEMLOCK of every service unit (D 2.3): the rings that --mlock rings
@@ -857,14 +862,13 @@ NODE_CHECK_MAX_SECONDS = 50
 # start-up, reading /proc, unmapping the touched memory and writing the
 # record. systemd killing the check leaves no record, and a node without
 # one is never ready.
-NODE_CHECK_MARGIN_S = 70
+NODE_CHECK_MARGIN_S = mesh_ops.WARM_MARGIN_S
 # The warm pass's flags, rendered explicitly (av-mesh needletail-nodecheck
 # boot): memory left untouched (the referee's warm-guest.py leaves 300 MB
-# too), and the slow_host thresholds: one page write of a second or more,
-# or more than 40 s a GiB touched.
+# too), and slow_host's page write of a second or more (its other bound is
+# node_warm_slow_seconds_per_4gb).
 NODE_WARM_LEAVE_MB = 300
 NODE_WARM_SLOW_WRITE_MS = 1000
-NODE_WARM_SLOW_SECONDS_PER_GIB = 40
 # transparent_hugepage: what may be written at boot; "unchanged" writes
 # nothing.
 THP_MODES = ("unchanged", "madvise", "never")
@@ -1022,27 +1026,26 @@ def check_stall_settings(settings: dict) -> None:
     seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
     if seconds > NODE_CHECK_MAX_SECONDS:
         raise ValueError(f"node_check_seconds {seconds} is over {NODE_CHECK_MAX_SECONDS}: the "
-                         "first start after the check unit is installed waits for it (up to "
-                         "70 s more), and push waits 150 s for an activation")
+                         "watch is time after the warm pass that the node is not ready, at "
+                         "every boot")
     for key in ("node_check_max_stop_ms", "node_check_max_steal_permille"):
         whole_or_zero(settings.get(key, DEFAULT_SETTINGS[key]), key)
-    per_4gb = settings.get("node_warm_seconds_per_4gb")
-    if per_4gb is not None and (isinstance(per_4gb, bool) or whole_or_zero(
-            per_4gb, "node_warm_seconds_per_4gb") < 1):
-        raise ValueError(f"node_warm_seconds_per_4gb {per_4gb!r} is not a whole number of 1 "
-                         "or more")
+    for key in ("node_warm_max_seconds_per_4gb", "node_warm_slow_seconds_per_4gb"):
+        value = settings.get(key)
+        if value is not None and (isinstance(value, bool) or whole_or_zero(value, key) < 1):
+            raise ValueError(f"{key} {value!r} is not a whole number of 1 or more")
     thp = settings.get("transparent_hugepage")
     if thp is not None and thp not in THP_MODES:
         raise ValueError(f"transparent_hugepage {thp!r} is not one of {', '.join(THP_MODES)}")
 
 
 def warm_max_seconds(settings: dict, node: dict | None) -> int:
-    """--warm-max-seconds of a node's warm pass: node_warm_seconds_per_4gb
+    """--warm-max-seconds of a node's warm pass: node_warm_max_seconds_per_4gb
     for every 4 GB of its plan's memory (mesh_ops.warm_seconds:
-    g6-dedicated-2 120 s, -4 240 s, -8 480 s); a node without a known plan
+    g6-dedicated-2 300 s, -4 600 s, -8 1200 s); a node without a known plan
     (the namespace lab, a test) is taken as the smallest, 4 GB."""
-    per_4gb = int(settings.get("node_warm_seconds_per_4gb")
-                  or DEFAULT_SETTINGS["node_warm_seconds_per_4gb"])
+    per_4gb = int(settings.get("node_warm_max_seconds_per_4gb")
+                  or DEFAULT_SETTINGS["node_warm_max_seconds_per_4gb"])
     seconds = mesh_ops.warm_seconds((node or {}).get("type"), per_4gb)
     return per_4gb if seconds is None else seconds
 
@@ -1059,11 +1062,9 @@ def check_timeout_s(settings: dict, node: dict | None) -> int:
 
 def warm_allowance_s(settings: dict, node: dict | None) -> int:
     """What a readiness wait after a boot adds for the node's check at boot:
-    the warm pass's limit and the watch (0 without the check)."""
-    if not check_unit_wanted(settings):
-        return 0
-    seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
-    return (warm_max_seconds(settings, node) if settings.get("node_warm") else 0) + seconds
+    longer than the warm pass's bound and the watch, the check unit's whole
+    TimeoutStartSec (0 without the check)."""
+    return check_timeout_s(settings, node)
 
 
 def thp_mode(settings: dict) -> str | None:
@@ -3628,9 +3629,11 @@ def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
                           "node_check_max_steal_permille")
     warm = ""
     if settings.get("node_warm"):
+        slow = int(settings.get("node_warm_slow_seconds_per_4gb")
+                   or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
         warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
                 f"{warm_max_seconds(settings, node)} --slow-write-ms {NODE_WARM_SLOW_WRITE_MS} "
-                f"--slow-seconds-per-gib {NODE_WARM_SLOW_SECONDS_PER_GIB}")
+                f"--slow-seconds-per-4gb {slow}")
     thp = thp_mode(settings)
     pre = thp_exec_line(thp, "-") if thp else ""
     return f"""[Unit]
@@ -4344,7 +4347,7 @@ def warm_word(record: dict | None, settings: dict | None = None) -> str:
 # The flags of `needletail-nodecheck boot` that a check unit with the warm
 # pass renders (check_unit_text).
 NODECHECK_WARM_FLAGS = ("--warm-leave-mb", "--warm-max-seconds", "--slow-write-ms",
-                        "--slow-seconds-per-gib")
+                        "--slow-seconds-per-4gb")
 
 
 def nodecheck_problem(path: pathlib.Path | None = None) -> str | None:
@@ -4371,6 +4374,23 @@ def nodecheck_problem(path: pathlib.Path | None = None) -> str | None:
     return (f"{path} boot has no {', '.join(missing)}: the warm pass at boot would write no "
             "record and no node would be ready. Build av-mesh's needletail-nodecheck with "
             "them, or push with --set node_warm=false")
+
+
+def warm_entry(record: dict | None) -> dict:
+    """What the deployed record keeps of a host's warm pass (deployed
+    ["warm"]): its verdict, slow_host and reasons, the pass's duration and
+    worst page write (its worst stall), what it touched, when."""
+    if record is None:
+        return {"verdict": "missing", "complete": False}
+    warm = record.get("warm") or {}
+    out = {"verdict": record.get("verdict"), "complete": record.get("complete") is True,
+           "slow_host": record.get("slow_host") is True,
+           "slow_reasons": record.get("slow_reasons") or [], "unix_us": record.get("unix_us")}
+    for key in ("seconds", "worst_page_us", "touched_mb", "mem_total_mb",
+                "slow_bound_seconds", "max_seconds", "pages_over_100ms"):
+        if warm.get(key) is not None:
+            out[key] = warm[key]
+    return out
 
 
 def install_nodecheck(node: dict) -> None:
@@ -4551,7 +4571,8 @@ RECORD_FIELDS = ("args_sha256", "render_sha256", "unit_sha256")
 
 
 def record_deployed(full: dict, entries: dict, settings: dict | None = None,
-                    standby: list[str] | None = None, files: bool = False) -> None:
+                    standby: list[str] | None = None, files: bool = False,
+                    warm: dict | None = None) -> None:
     """state["deployed"] (C 2.6), under the lab state's lock. `entries`:
     per node `{"build", "args_sha256", "render_sha256", "unit_sha256"}` as
     the node reported them after its activation, with "set" (the `--set`
@@ -4559,8 +4580,10 @@ def record_deployed(full: dict, entries: dict, settings: dict | None = None,
     `.args.prev` holds) and "activating" (an activation begun and not yet
     seen to end) where they apply; None drops a node (held out). `settings`:
     the settings in force (a push, a fold, an adoption), `standby` the edges
-    held out, `files`: the routes and hunted ports rendered with. Only nodes
-    of the lab are kept, and the tiers' builds follow what they run
+    held out, `files`: the routes and hunted ports rendered with, `warm`:
+    {host: warm_entry} of the hosts whose warm pass this command ran or read
+    (deployed["warm"], every host push manages, load hosts included). Only
+    nodes of the lab are kept, and the tiers' builds follow what they run
     (tier_builds)."""
     routes = sha256_file(common.ARTIFACT_DIR / "routes.json")
     ecmp = sha256_file(HUNT_FILE)
@@ -4579,6 +4602,10 @@ def record_deployed(full: dict, entries: dict, settings: dict | None = None,
                              if entry is not None and name in created}
         deployed["tiers"] = tier_builds(deployed["nodes"],
                                         {name: created[name]["role"] for name in deployed["nodes"]})
+        if warm or deployed.get("warm"):
+            deployed["warm"] = {name: item for name, item in
+                                {**(deployed.get("warm") or {}), **(warm or {})}.items()
+                                if name in created}
 
     lab_tool().change_state(common.state_path(), full, change)
 
@@ -5262,8 +5289,13 @@ class LinodeOps(mesh_ops.Ops):
             try:
                 results = common.parallel(group, one)
             finally:
+                warm = {node["name"]: warm_entry(self.warm_records[node["name"]])
+                        for node in group if node["name"] in self.warm_records}
                 if intended:
-                    record_deployed(self.full, entries, settings=self.settings, files=True)
+                    record_deployed(self.full, entries, settings=self.settings, files=True,
+                                    warm=warm)
+                elif warm:
+                    record_deployed(self.full, {}, warm=warm)
             print(f"installed {len(group)} {role} node(s): "
                   + ", ".join(f"{name} {what}" for name, what in sorted(results.items())),
                   file=sys.stderr)
@@ -6234,6 +6266,9 @@ COLLECT_FILES = (
     (r"^api-hops\.", "node-api", "the node's hop journal (/api/hops, every stream) at collection",
      {"t_us": "us"}),
     (r"^http-status\.", "node-api", "the HTTP status of each API answer of this collect", None),
+    (r"^node-warm\.", "node-api", "the node's warm pass at boot (needletail-nodecheck boot, "
+                                  "/run/needletail/node-warm.json): verdict, slow_host, "
+                                  "seconds, worst page write", {"unix_us": "us"}),
 )
 
 
@@ -6259,6 +6294,8 @@ def collect_script(node: dict, stamp: str) -> str:
         lines += [f"code=$(curl -sk --max-time 30 -o \"$D/{stem}.$T.{extension}\" "
                   f"-w '%{{http_code}}' {url} 2>/dev/null); rc=$?",
                   f"echo \"{stem} ${{code:-000}} $rc\" >>\"$D/http-status.$T.txt\""]
+    # The warm pass's record of this boot (every host push warms).
+    lines.append(f"[ -f {NODE_WARM_FILE} ] && cp {NODE_WARM_FILE} \"$D/node-warm.$T.json\"")
     parent, name = NODE_RUNS.rsplit("/", 1)
     lines += ["set -- -C \"$D\" .",
               f"[ -d {NODE_RUNS} ] && set -- \"$@\" -C {parent} {name}",

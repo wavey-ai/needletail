@@ -164,43 +164,51 @@ class Units(Base):
         for bad in ("node_check_seconds=51", "node_check_seconds=-1",
                     "node_check_max_stop_ms=x", "node_warm=False", "node_warm=1",
                     "node_check_seconds=true", "stall_tick_us=false",
-                    "node_warm_seconds_per_4gb=0", "node_warm_seconds_per_4gb=true",
+                    "node_warm_max_seconds_per_4gb=0", "node_warm_max_seconds_per_4gb=true",
+                    "node_warm_slow_seconds_per_4gb=0",
                     "transparent_hugepage=always", "transparent_hugepage=off"):
             with self.subTest(bad), self.assertRaises(SystemExit):
                 self.settings([bad])
 
     def test_warm_flags_and_timeout_scale_with_the_plan_s_memory(self):
-        """--warm-max-seconds is 120 s for every 4 GB of the plan's memory
+        """--warm-max-seconds is 300 s for every 4 GB of the plan's memory
         (g6-dedicated-2: 4 GB, -4: 8 GB, -8: 16 GB), TimeoutStartSec that
         plus the watch plus 70 s (systemd killing the check would leave no
-        record and the node never ready); a node of no known plan is taken
-        as 4 GB; node_warm_seconds_per_4gb scales it all."""
+        record and the node never ready), and every readiness wait after a
+        boot has the whole TimeoutStartSec on top, longer than the bound; a
+        node of no known plan is taken as 4 GB; slow_host past 180 s for
+        every 4 GB (nodecheck scales it by MemTotal) or a 1 s page write;
+        the two per-4gb settings scale it all."""
         settings = self.settings()
-        for kind, warm, timeout in (("g6-dedicated-2", 120, 190), ("g6-dedicated-4", 240, 310),
-                                    ("g6-dedicated-8", 480, 550), ("g6-dedicated-16", 960, 1030),
-                                    (None, 120, 190)):
+        for kind, warm, timeout in (("g6-dedicated-2", 300, 370), ("g6-dedicated-4", 600, 670),
+                                    ("g6-dedicated-8", 1200, 1270),
+                                    ("g6-dedicated-16", 2400, 2470), (None, 300, 370)):
             node = {"name": "n", "type": kind}
             check = deploy.check_unit_text(settings, node)
             with self.subTest(kind):
                 self.assertIn(
                     "needletail-nodecheck boot --out /run/needletail/node-warm.json --warm \\\n"
                     f"  --warm-leave-mb 300 --warm-max-seconds {warm} --slow-write-ms 1000 "
-                    "--slow-seconds-per-gib 40 \\\n"
+                    "--slow-seconds-per-4gb 180 \\\n"
                     "  --check-seconds 0 --max-stop-ms 20 --max-steal-permille 10\n", check)
                 self.assertIn(f"\nTimeoutStartSec={timeout}\n", check)
                 self.assertEqual(deploy.check_timeout_s(settings, node), timeout)
-                self.assertEqual(deploy.warm_allowance_s(settings, node), warm)
+                self.assertEqual(deploy.warm_allowance_s(settings, node), timeout)
+                self.assertGreater(deploy.warm_allowance_s(settings, node), warm)
                 self.assertEqual(deploy.node_files(["x"], "unit", settings, node)["check"], check)
         node = {"type": "g6-dedicated-4"}
-        watched = self.settings(["node_check_seconds=30", "node_warm_seconds_per_4gb=150"])
+        watched = self.settings(["node_check_seconds=30", "node_warm_max_seconds_per_4gb=150",
+                                 "node_warm_slow_seconds_per_4gb=90"])
         check = deploy.check_unit_text(watched, node)
         self.assertIn("--warm-max-seconds 300 ", check)
+        self.assertIn("--slow-seconds-per-4gb 90 ", check)
         self.assertIn("--check-seconds 30 ", check)
         self.assertIn("\nTimeoutStartSec=400\n", check)
-        self.assertEqual(deploy.warm_allowance_s(watched, node), 330)
-        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-dedicated-2"), 120)
-        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-nanode-1"), 120)
-        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-dedicated-32"), 1920)
+        self.assertEqual(deploy.warm_allowance_s(watched, node), 400)
+        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-dedicated-2"), 300)
+        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-nanode-1"), 300)
+        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-dedicated-32"), 4800)
+        self.assertEqual(deploy.mesh_ops.warm_allowance_seconds("g6-dedicated-2"), 370)
         self.assertIsNone(deploy.mesh_ops.warm_seconds(None))
 
     def test_hosts_without_a_service_get_the_warm_pass_alone(self):
@@ -209,9 +217,9 @@ class Units(Base):
         mesh's), enabled at every boot; none without node_warm."""
         settings = self.settings(["node_check_seconds=30", "transparent_hugepage=never"])
         text = deploy.host_check_unit_text(settings, {"type": "g6-dedicated-8"})
-        self.assertIn("--warm-max-seconds 480 ", text)
+        self.assertIn("--warm-max-seconds 1200 ", text)
         self.assertIn("--check-seconds 0 ", text)
-        self.assertIn("\nTimeoutStartSec=550\n", text)
+        self.assertIn("\nTimeoutStartSec=1270\n", text)
         self.assertNotIn("transparent_hugepage", text)
         self.assertTrue(text.endswith("\n[Install]\nWantedBy=multi-user.target\n"))
         self.assertIsNone(deploy.host_check_unit_text(self.settings(["node_warm=false"]),
