@@ -1,0 +1,494 @@
+{
+  "schema": "needletail.scale.phases.v1",
+  "description": "Not the run (see phases-proving.json, the one lab of 5 billed hours): C-operations 7's proving run as first designed, every change kind of C CL7 with a probe of its own, kept as the full set and for the tools' tests. The proving run of the resilient mesh on Linode (C-operations 7), on deploy/low-latency/topology-proving.json (three serving edges and one standby a region, two forwarders and a dist-c slot, two contributors): every change kind of C CL7 as one held step of opus-1 listeners, each scenario with probes of its own on every view host on opus-1 and pcm-1 (probe_configs, published beside the crowd's) and scored alone by the referee's change-window.py on its own marks (pass may be null; null_fail_rate reported). Groups in order: N (the deployed null), U (rolls and the upgrade), F (crashes and A's changes), R (replace), A (the autoscaler's verbs and the controller alone). scale-run.py run --phase-plan deploy/low-latency/phases-proving.json --group N|U|F|R|A --budget-usd 90 [--next-av-mesh-root ... for U4]. The lab: up creates 40 nodes at $3.186 an hour (48 at $3.618 with every slot; ceilings NEEDLETAIL_LINODE_MAX_NODES=48 and NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65); the run is 483.6 minutes, and U3, C1 and C2 by name 25.1 more, so two labs of a 5-hour watchdog (N, U, U3, C1 and C2; F, R and A), 10 billed hours, $31.86 and at most $36.18. Listener figures are listeners: two-path listeners are two legs each (C 2.11, B 3.6). U3, C1 and C2 wait for workstream A's two contributors and its kill and return on the deploy tool (scripts/contributor_changes.py): run them by name. The engine's timeouts are given to every gated command (gate 10 s, drain 15 s, readiness 30 s: B's drain bound is 3 s + 4 r and a 5 s grace, C 3.4's warm-up a few seconds) because a scenario's probes are planned from them: they run about twice its bound beyond its change. deploy/low-latency/SCALE.md, section 'The proving run', has the sizing, the time and the cost.",
+  "defaults": {
+    "config": "opus-1",
+    "probe_configs": "opus-1,pcm-1",
+    "listeners": 480,
+    "hls_share": 0.02,
+    "baseline_s": 60,
+    "observe_s": 60,
+    "settle_s": 30
+  },
+  "groups": {
+    "N": {
+      "listeners": 480
+    },
+    "U": {
+      "listeners": 480
+    },
+    "F": {
+      "listeners": 480
+    },
+    "R": {
+      "listeners": 480
+    },
+    "A": {
+      "listeners": 900,
+      "hls_share": 0.0
+    }
+  },
+  "scenarios": [
+    {
+      "name": "N1",
+      "group": "N",
+      "title": "roll all, dry: the deployed null (every gate for real, nothing restarted)",
+      "actions": [
+        {
+          "kind": "roll",
+          "tier": "all",
+          "dry": true,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {
+        "exit": 0
+      }
+    },
+    {
+      "name": "U1",
+      "group": "U",
+      "title": "roll edges (the same build): every edge restarted once, the surge edges back on standby",
+      "actions": [
+        {
+          "kind": "roll",
+          "tier": "edges",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "the surge edges back on standby after the roll",
+          "needs": "the deploy record's standby_edges read after the roll (not in the samplers)"
+        }
+      ]
+    },
+    {
+      "name": "U2",
+      "group": "U",
+      "title": "roll forwarders (the same build)",
+      "actions": [
+        {
+          "kind": "roll",
+          "tier": "forwarders",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {
+        "moves": 0,
+        "parents_released_unconfirmed": 0
+      }
+    },
+    {
+      "name": "U3",
+      "group": "U",
+      "enabled": false,
+      "title": "roll contributors (after workstream A)",
+      "actions": [
+        {
+          "kind": "roll",
+          "tier": "contributors",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {
+        "moves": 0
+      },
+      "note": "Runs by name (--scenarios U3) once workstream A's two contributors and its gate are deployed."
+    },
+    {
+      "name": "U4",
+      "group": "U",
+      "title": "upgrade all to the next build",
+      "actions": [
+        {
+          "kind": "upgrade",
+          "tier": "all",
+          "build": "next",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "every node on the target build (its git id) each way",
+          "needs": "the git ids of the run's roots beside the nodes' /api/node build; judged now as one build after the change"
+        }
+      ]
+    },
+    {
+      "name": "U5",
+      "group": "U",
+      "title": "upgrade all back to the first build",
+      "actions": [
+        {
+          "kind": "upgrade",
+          "tier": "all",
+          "build": "first",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "every node on the target build (its git id) each way",
+          "needs": "the git ids of the run's roots beside the nodes' /api/node build; judged now as one build after the change"
+        }
+      ]
+    },
+    {
+      "name": "F4",
+      "group": "F",
+      "title": "crash tok-dist-a (Restart=always returns it)",
+      "actions": [
+        {
+          "kind": "crash",
+          "targets": [
+            "tok-dist-a"
+          ]
+        }
+      ],
+      "expect": {
+        "moves": 0
+      },
+      "open": [
+        {
+          "criterion": "leases back within 500 ms of the forwarder's first hello",
+          "needs": "lease timing finer than the 1 s mesh sampler (the node's own lease events)"
+        }
+      ]
+    },
+    {
+      "name": "F6",
+      "group": "F",
+      "title": "crash the ingress lon-dist-a (it returns)",
+      "actions": [
+        {
+          "kind": "crash",
+          "targets": [
+            "lon-dist-a"
+          ]
+        }
+      ],
+      "expect": {
+        "moves": 0
+      },
+      "open": [
+        {
+          "criterion": "leases back within 500 ms of the forwarder's first hello",
+          "needs": "lease timing finer than the 1 s mesh sampler (the node's own lease events)"
+        }
+      ]
+    },
+    {
+      "name": "C1",
+      "group": "F",
+      "enabled": false,
+      "title": "restart contrib-lon through workstream A's gate and readiness",
+      "actions": [
+        {
+          "kind": "restart",
+          "targets": [
+            "contrib-lon"
+          ],
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {
+        "moves": 0
+      },
+      "note": "Runs by name once workstream A lands (two contributors, contrib_gate and contrib_ready)."
+    },
+    {
+      "name": "C2",
+      "group": "F",
+      "enabled": false,
+      "title": "kill contrib-lon (A's kill, held down) and its return",
+      "actions": [
+        {
+          "kind": "change",
+          "change": "kill",
+          "targets": [
+            "contrib-lon"
+          ]
+        }
+      ],
+      "expect": {
+        "moves": 0
+      },
+      "note": "Runs by name once the deploy tool has workstream A's kill and return (A 2.10); the return is the restore."
+    },
+    {
+      "name": "RP1",
+      "group": "R",
+      "title": "replace new-edge-1 by a rebuild: no other node restarted, both addresses kept",
+      "actions": [
+        {
+          "kind": "replace",
+          "targets": [
+            "new-edge-1"
+          ],
+          "mode": "rebuild",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "both addresses as recorded after the rebuild",
+          "needs": "the lab state's public and VLAN addresses of new-edge-1 compared before and after the replace"
+        }
+      ]
+    },
+    {
+      "name": "RP2",
+      "group": "R",
+      "title": "replace tok-dist-b by a rebuild, through tok-dist-c: the slot created, warm, removed",
+      "actions": [
+        {
+          "kind": "replace",
+          "targets": [
+            "tok-dist-b"
+          ],
+          "mode": "rebuild",
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "the slot created, warm before it clears its bit, removed, within the budget",
+          "needs": "the deploy tool's replace journal (slot, warm, bit, delete) and the lab tool's ledger, read after the replace"
+        }
+      ]
+    },
+    {
+      "name": "S1",
+      "group": "A",
+      "title": "scale up London (the referee's command)",
+      "actions": [
+        {
+          "kind": "scale",
+          "direction": "up",
+          "site": "london",
+          "tier": "edges"
+        }
+      ],
+      "expect": {}
+    },
+    {
+      "name": "S2",
+      "group": "A",
+      "title": "scale down London (the referee's command)",
+      "actions": [
+        {
+          "kind": "scale",
+          "direction": "down",
+          "site": "london",
+          "tier": "edges"
+        }
+      ],
+      "expect": {}
+    },
+    {
+      "name": "A1p",
+      "group": "A",
+      "title": "the controller alone: 75, 150, 225 listeners a region; the standby joins (the first controller), then the next run creates edge-5 (the first create by the controller on Linode)",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "controller_args": []
+        },
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "controller_args": [
+            "--create-timeout-s",
+            900
+          ],
+          "after": {
+            "event": "controller_exit",
+            "timeout_s": 60
+          }
+        }
+      ],
+      "profile": [
+        [
+          0,
+          0.333
+        ],
+        [
+          120,
+          0.333
+        ],
+        [
+          150,
+          0.667
+        ],
+        [
+          330,
+          0.667
+        ],
+        [
+          360,
+          1.0
+        ]
+      ],
+      "observe_s": 1330,
+      "expect": {
+        "trigger_to_fresh_s": 20,
+        "events": [
+          "join",
+          "created",
+          "serving"
+        ]
+      }
+    },
+    {
+      "name": "A2p",
+      "group": "A",
+      "title": "the controller alone: 225 to 37 listeners a region; it drains to its edges and deletes the slot",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "stopped",
+          "controller_args": [
+            "--down-hold-s",
+            60,
+            "--no-warm-pool"
+          ]
+        }
+      ],
+      "profile": [
+        [
+          0,
+          1.0
+        ],
+        [
+          60,
+          0.164
+        ]
+      ],
+      "observe_s": 600,
+      "expect": {
+        "events": [
+          "drain_end",
+          "stopped",
+          "deleted"
+        ]
+      }
+    },
+    {
+      "name": "A3p",
+      "group": "A",
+      "title": "forwarders, K = 2, London: lon-dist-c created, joined warm, drained, gated, stopped",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "controller_args": [
+            "--forwarders",
+            "--lease-k",
+            2,
+            "--sites",
+            "london"
+          ]
+        },
+        {
+          "kind": "autoscale",
+          "until": "stopped",
+          "controller_args": [
+            "--forwarders",
+            "--lease-k",
+            2,
+            "--sites",
+            "london",
+            "--down-hold-s",
+            60
+          ],
+          "after": {
+            "event": "controller_exit",
+            "timeout_s": 60
+          }
+        }
+      ],
+      "profile": [
+        [
+          0,
+          0.333
+        ],
+        [
+          60,
+          1.0
+        ],
+        [
+          600,
+          1.0
+        ],
+        [
+          630,
+          0.164
+        ]
+      ],
+      "observe_s": 900,
+      "expect": {}
+    },
+    {
+      "name": "A4p",
+      "group": "A",
+      "title": "the controller running; lon-edge-2 killed and its unit masked (held down): lost from in-mesh evidence, replace_join within 12 s",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "background": true,
+          "controller_args": []
+        },
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-edge-2"
+          ],
+          "at_s": 30,
+          "mask": true
+        }
+      ],
+      "observe_s": 240,
+      "expect": {
+        "events": [
+          "lost",
+          "replace_join"
+        ],
+        "event_within_s": {
+          "replace_join": 42
+        }
+      },
+      "open": [
+        {
+          "criterion": "recovered after the replacement joined",
+          "needs": "a controller that runs on past replace_join (run --until join returns there)"
+        }
+      ]
+    }
+  ]
+}

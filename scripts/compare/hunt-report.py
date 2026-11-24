@@ -2,7 +2,7 @@
 """The stall hunt's report and its decision rules (D-hunt.md 7, as revised
 after the wave 9 run), from what scripts/linode-stall-hunt.py collected.
 
-    hunt-report.py DIR [--json OUT] [--lengths 8,30]
+    hunt-report.py DIR [--json OUT] [--null [--jobs N] [--lengths 8,30]]
 
 DIR is a hunt run's directory (target/stall-hunt/<run id>/, or its copy in
 the run archive): hunt.json (periods, sessions with their roles, nodes with
@@ -17,14 +17,31 @@ NODE.sys.T.log, NODE.meshlocal.T.log, NODE.nic.T.txt), sessions/<S>/<host>/
 journal and source.start; the 4K probes' v.json of each rung of the
 GSO/GRO matrix).
 
+An edge's stop is its own: a run of parts whose commit minus publish
+(from its LL-HLS probe) stood 100 ms or more above its p50, as the hunt's
+operator read them (hunt-lab.md (a)); a stop that every other edge measured
+in the session had at the same time (the source's: input every edge waited
+for) is listed as shared, never as an edge's stop. Each stop names the
+physical host it happened on (a replaced instance keeps its old host for
+its old stops).
+
 A stop is classified from the referee's samplers when the run has them
-(stall_records.classify_heartbeat: "not run" when the heartbeat of the
-class thread's vCPU woke late by about the stop's length and no service
-thread's system time rose; "kernel, interrupts off" when it was late and a
-service thread's stime rose; "blocked in our code" when the heartbeat was
-on time, the wait named from /api/mesh/local; "waited for input" when the
-counters show no long pass), else from the hunt's own sampler
-(stall_records.classify).
+(stall_records.classify_heartbeat): "kernel" when a soft lockup of the
+node's kernel log overlaps it (with what the kernel was doing: e.g. zeroing
+a fresh huge page on first touch); "not run" when a vCPU's heartbeat woke
+late by about the stop's length (every vCPU: the whole guest); "blocked in
+our code" when the heartbeats were on time and a counter of /api/mesh/local,
+a long class pass or a stack dumped just after names the wait; "waited for
+input" when nothing does. A thread's system time is not read: a vCPU that
+is not run charges its pause to the thread current on it. Without the
+referee's samplers, from the hunt's own sampler (stall_records.classify).
+
+The large files are read once each, streamed: the meshlocal sampler (a
+node's whole /api/mesh/local a second) is indexed by time and only the
+lines a stop needs are parsed; the sys sampler keeps the class threads'
+lines; a session's probes are read once for the edges and the silences.
+The null of every probe (section 5) runs the referee's scorer over every
+window and takes minutes on a large run: it is computed with --null.
 
 It prints, in this order:
  1. per node and period (sessions, the time between two of them, the whole
@@ -57,8 +74,9 @@ The rules:
     session (on the fresh deploy)? An edge without a probe of its commits,
     or that no UDP client reached, is "not measured";
  H2 the class of every stop of 100 ms or more in the run: not run (the
-    hypervisor or the guest kernel: the instances and their hosts compared,
-    and the replaced instance against its predecessor), blocked in our
+    hypervisor: the instances and the hosts the stops happened on
+    compared, and the replaced instance against its predecessor), the
+    kernel (its soft lockups, with where), blocked in our
     code (the named waits: a fault of av-mesh, fixed there), waited for
     input (upstream or the kernel's delivery: the London hop journals);
  H3 the arena warm-up: in the first sessions of a process (the first
@@ -76,8 +94,8 @@ The rules:
  H8 GSO and GRO (the wave 9 4K run): per combination of the senders' GSO
     and the receivers' GRO (the defaults first), the mesh nodes' stops of
     100 ms or more by their heartbeats (the whole guest when every vCPU's
-    heartbeat was late at once; in the kernel when a service thread's
-    stime rose), the sys sampler's gaps, by region, in the first audio
+    heartbeat was late at once; in the kernel when a soft lockup of its
+    kernel log overlaps), the sys sampler's gaps, by region, in the first audio
     session and at each 4K rung, and whether each view host got the 4K
     whole: which of GSO and GRO makes the stops, or neither.
 """
@@ -87,9 +105,12 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib.util
+import io
 import itertools
 import json
 import math
+import operator
+import os
 import pathlib
 import statistics
 import sys
@@ -111,6 +132,14 @@ SHORT_STOP_MS = 20.0
 LATE_ON_BOTH_MS = 20.0
 # Twins stop together when their stops overlap or come this close.
 TWIN_WITHIN_US = 50_000
+# An edge's episode is the same as another edge's (a stop of their common
+# input) when their parts' publish times overlap or come this close.
+SHARED_WITHIN_US = 50_000
+# Another edge's episode makes one shared when it is at least this share of
+# it (and no more than STOP_MS shorter).
+SHARED_SHARE = 0.5
+# Late parts this few apart are one episode (the hunt operator's reading).
+EPISODE_JOIN_PARTS = 5
 EPISODE_ABOVE_US = (500, 1000, 2000)
 AGREE_SHARE = 0.10
 # Below this a node's F is no stop at all (agreement is not asked of it).
@@ -130,6 +159,11 @@ SAMPLER_GAP_MS = 2000.0
 NIC_OFFLOADS = ("generic-segmentation-offload", "generic-receive-offload",
                 "rx-gro-list", "rx-udp-gro-forwarding", "tx-udp-segmentation")
 SPLIT_25_MS = 0.05
+# A period's watch and journal lines are read with this margin on either
+# side (an event is dated by its end; its length reaches back from there).
+PERIOD_MARGIN_US = 120_000_000
+# The meshlocal lines read for a figure that holds for a process's life.
+MESHLOCAL_SAMPLE_S = 60.0
 
 
 def load_null_window():
@@ -154,6 +188,9 @@ class Run:
         self._sampler: dict[str, list] = {}
         self._referee: dict[tuple[str, str], object] = {}
         self._unpinned: dict[str, str] | None = None
+        self._frames: dict[pathlib.Path, list[dict]] = {}
+        self._frames_session: pathlib.Path | None = None
+        self._session_cache: dict[tuple, object] = {}
 
     def node_dir(self, name: str) -> pathlib.Path:
         return self.dir / "nodes" / name
@@ -192,15 +229,82 @@ class Run:
                 .get("host_uuid", {}).get(name)
         return found
 
+    def host_at(self, name: str, at_us: int | None) -> str | None:
+        """The physical host a node's instance had at `at_us`: a replaced
+        instance keeps its own host for what happened before the replace
+        (hunt.json `replaced`: unix, host_uuid_before), the replacement's
+        after it."""
+        for item in sorted((item for item in self.record.get("replaced") or []
+                            if item.get("name") == name),
+                           key=lambda item: item.get("unix") or 0):
+            if at_us is not None and item.get("unix") and at_us < item["unix"] * 1e6:
+                return item.get("host_uuid_before") or self.host_uuid(name)
+        return self.host_uuid(name)
+
+    def frames(self, path) -> list[dict]:
+        """A probe's audio rows (read_frames), kept for the session it
+        belongs to only (the edges and the silences read the same probes;
+        a 9 GB run's probes do not all fit in memory as rows)."""
+        path = pathlib.Path(path)
+        session = path.parent.parent
+        if session != self._frames_session:
+            self._frames, self._frames_session = {}, session
+        if path not in self._frames:
+            self._frames[path] = read_frames(path)
+        return self._frames[path]
+
+    def cached(self, key: tuple, make):
+        if key not in self._session_cache:
+            self._session_cache[key] = make()
+        return self._session_cache[key]
+
+    def lockups(self, name: str) -> list[dict]:
+        """The soft lockups of the node's kernel logs, the replaced
+        instance's included (sr.parse_kernel_log)."""
+        key = (name, "lockups")
+        if key not in self._referee:
+            found = []
+            for path in (self.node_dir(name) / "before-replace" / "kernel.log",
+                         self.node_dir(name) / "kernel.log"):
+                if path.is_file():
+                    found += [{**item, "instance": "before-replace" if
+                               path.parent.name == "before-replace" else "last"}
+                              for item in sr.parse_kernel_log(path.read_text(errors="replace"))]
+            seen, out = set(), []
+            for item in sorted(found, key=lambda item: item["t_us"]):
+                mark = (item["t_us"], item["cpu"], item["comm"])
+                if mark not in seen:
+                    seen.add(mark)
+                    out.append(item)
+            self._referee[key] = out
+        return self._referee[key]
+
+    def stacks(self, name: str) -> list[dict]:
+        """The stack dumps of the node's extra sampler (extra.log), the
+        replaced instance's included; only the stack lines are parsed."""
+        key = (name, "stacks")
+        if key not in self._referee:
+            lines = []
+            for path in (self.node_dir(name) / "before-replace" / "extra.log",
+                         self.node_dir(name) / "extra.log"):
+                if path.is_file():
+                    with open(path, errors="replace") as handle:
+                        lines += [line for line in handle if " X stack " in line]
+            self._referee[key] = sorted(sr.parse_stacks("".join(lines)),
+                                        key=lambda item: item["t_us"])
+        return self._referee[key]
+
     def contributor(self) -> str | None:
         names = [name for name in self.nodes if self.role(name) == "contributor"]
         return names[0] if names else None
 
     def span_us(self) -> tuple[int, int] | None:
         """From the first to the last line of any watch record."""
-        times = [sr.at_us(item) for name in self.nodes for item in self.watch(name)]
-        times = [value for value in times if value]
-        return (min(times), max(times)) if times else None
+        if "_span" not in self.__dict__:
+            times = [value for name in self.nodes for value
+                     in (sr.at_us(item) for item in self.watch(name)) if value]
+            self._span = (min(times), max(times)) if times else None
+        return self._span
 
     def period(self, name: str) -> tuple[int, int] | None:
         for item in self.periods:
@@ -222,19 +326,24 @@ class Run:
         if self._unpinned is None:
             self._unpinned = {}
             for name in self.mesh():
-                for line in self.sampler(name) + self.meshlocal(name):
+                for line in self.sampler(name) + self.meshlocal_sample(name):
                     threads = sr.mesh_value(line, "tick_threads")
                     pinned = sr.mesh_value(line, "tick_pinned")
                     if threads is not None and pinned is not None and pinned < threads:
                         self._unpinned[name] = f"{pinned} of {threads}"
         return self._unpinned
 
-    def referee_text(self, name: str, kind: str, suffix: str = "log") -> str:
+    def referee_files(self, name: str, kind: str, suffix: str = "log") -> list[pathlib.Path]:
         """The referee's sampler files of a node and kind, every call's
-        (samplers/NODE.KIND.T.log), in time order, joined."""
-        files = sorted((self.dir / "samplers").glob(f"{name}.{kind}.*.{suffix}"),
-                       key=lambda path: path.name)
-        return "\n".join(path.read_text(errors="replace") for path in files)
+        (samplers/NODE.KIND.T.log), in time order."""
+        return sorted((self.dir / "samplers").glob(f"{name}.{kind}.*.{suffix}"),
+                      key=lambda path: path.name)
+
+    def referee_text(self, name: str, kind: str, suffix: str = "log") -> str:
+        """The referee's sampler files of a node and kind, joined (small
+        files only: the heartbeat and NIC files)."""
+        return "\n".join(path.read_text(errors="replace")
+                         for path in self.referee_files(name, kind, suffix))
 
     def has_referee(self, name: str) -> bool:
         return any((self.dir / "samplers").glob(f"{name}.heartbeat.*.log"))
@@ -245,23 +354,116 @@ class Run:
             self._referee[key] = sr.parse_heartbeat(self.referee_text(name, "heartbeat"))
         return self._referee[key]
 
+    def _sys(self, name: str) -> None:
+        """One streamed pass over the node's sys sampler: the times of its
+        seconds, and the task lines of the class threads (the only ones a
+        stop's class reads: sr.class_thread)."""
+        times, tasks = set(), []
+        marker = f"({sr.CLASS_THREAD})".encode()
+        for path in self.referee_files(name, "sys"):
+            last = None
+            with open(path, "rb") as handle:
+                for line in handle:
+                    cut = line.find(b" ")
+                    if line[cut + 1:cut + 3] != b"S ":
+                        continue
+                    stamp = line[:cut]
+                    if stamp != last:
+                        try:
+                            times.add(int(float(stamp) * 1e6))
+                        except ValueError:
+                            continue
+                        last = stamp
+                    if marker in line and line[cut + 3:cut + 8] == b"task ":
+                        parts = line.decode(errors="replace").rstrip("\n").split(" ", 4)
+                        task = sr.parse_task_stat(parts[4]) if len(parts) == 5 else None
+                        if task:
+                            try:
+                                tasks.append({"t_us": int(float(parts[0]) * 1e6),
+                                              "pid": int(parts[3]), **task})
+                            except ValueError:
+                                continue
+        self._referee[(name, "sys_times")] = sorted(times)
+        self._referee[(name, "tasks")] = sorted(tasks, key=lambda item: (item["t_us"],
+                                                                          item["tid"]))
+
     def tasks(self, name: str) -> list[dict]:
-        key = (name, "tasks")
-        if key not in self._referee:
-            self._referee[key] = sr.parse_sys_tasks(self.referee_text(name, "sys"))
-        return self._referee[key]
+        """The class threads' task lines of the node's sys sampler."""
+        if (name, "tasks") not in self._referee:
+            self._sys(name)
+        return self._referee[(name, "tasks")]
 
     def sys_seconds(self, name: str) -> list[int]:
-        key = (name, "sys_times")
+        if (name, "sys_times") not in self._referee:
+            self._sys(name)
+        return self._referee[(name, "sys_times")]
+
+    def meshlocal_index(self, name: str) -> list[tuple[int, pathlib.Path, int]]:
+        """(t_us, file, offset) of every line of the node's meshlocal
+        sampler, oldest first: its lines (a node's whole /api/mesh/local,
+        a few hundred kB each) are parsed only when one is read."""
+        key = (name, "meshlocal_index")
         if key not in self._referee:
-            self._referee[key] = sr.sys_times(self.referee_text(name, "sys"))
+            index = []
+            for path in self.referee_files(name, "meshlocal"):
+                with open(path, "rb") as handle:
+                    offset = 0
+                    for line in handle:
+                        stamp = line[:line.find(b" ")] if b" " in line[:40] else b""
+                        try:
+                            index.append((int(float(stamp) * 1e6), path, offset))
+                        except ValueError:
+                            pass
+                        offset += len(line)
+            index.sort(key=lambda item: item[0])
+            self._referee[key] = index
         return self._referee[key]
 
-    def meshlocal(self, name: str) -> list[dict]:
-        key = (name, "meshlocal")
+    def meshlocal_line(self, entry: tuple[int, pathlib.Path, int]) -> dict | None:
+        key = ("meshlocal_line", entry[1], entry[2])
         if key not in self._referee:
-            self._referee[key] = sr.parse_meshlocal(self.referee_text(name, "meshlocal"))
+            with open(entry[1], "rb") as handle:
+                handle.seek(entry[2])
+                line = handle.readline().decode(errors="replace")
+            found = sr.parse_meshlocal(line)
+            self._referee[key] = found[0] if found else None
         return self._referee[key]
+
+    def meshlocal_around(self, start_us: int, end_us: int, name: str) -> list[dict]:
+        """The meshlocal lines just before `start_us` and just after
+        `end_us` (what a stop's class reads), parsed alone."""
+        import bisect
+        index = self.meshlocal_index(name)
+        times = [item[0] for item in index]
+        out = []
+        before = bisect.bisect_right(times, start_us) - 1
+        after = bisect.bisect_left(times, end_us)
+        for at in (before, after):
+            if 0 <= at < len(index):
+                line = self.meshlocal_line(index[at])
+                if line is not None:
+                    out.append(line)
+        return out
+
+    def meshlocal(self, name: str) -> list[dict]:
+        """Every meshlocal line parsed (tests and small runs; a stop's class
+        reads meshlocal_around)."""
+        return [line for line in (self.meshlocal_line(entry)
+                                  for entry in self.meshlocal_index(name)) if line]
+
+    def meshlocal_sample(self, name: str, every_s: float = MESHLOCAL_SAMPLE_S) -> list[dict]:
+        """One meshlocal line every `every_s` (and the first and last): what
+        a figure that holds for a process's life (its tick threads pinned)
+        needs, without parsing every line."""
+        index = self.meshlocal_index(name)
+        out, last = [], None
+        for at, entry in enumerate(index):
+            if last is None or entry[0] - last >= every_s * 1e6 or at == len(index) - 1:
+                line = self.meshlocal_line(entry)
+                if line is not None:
+                    out.append(line)
+                last = entry[0]
+        return out
 
     def nic(self, name: str) -> dict[str, str]:
         """The node's offloads of NIC_OFFLOADS by interface (`ethtool -k`
@@ -274,7 +476,9 @@ class Run:
         them, else by the hunt's own sampler."""
         if self.has_referee(edge):
             return sr.classify_heartbeat(begin, finish, self.heartbeat(edge), self.tasks(edge),
-                                         self.meshlocal(edge), self.journal(edge))
+                                         self.meshlocal_around(begin, finish, edge),
+                                         self.journal(edge), self.lockups(edge),
+                                         self.stacks(edge))
         return sr.classify(begin, finish, self.sampler(edge), self.journal(edge),
                            self.watch(edge), trusted)
 
@@ -382,17 +586,30 @@ def node_periods(run: Run) -> list[dict]:
     periods.append(("run", span[0], span[1] + 1))
     unpinned = run.unpinned()
     rows = []
+    import bisect
     for name in sorted(run.nodes):
         watch, journal, cpus = run.watch(name), run.journal(name), run.cpus(name)
+        watch_at = [sr.at_us(item) or 0 for item in watch]
+        journal_at = [sr.at_us(item) or 0 for item in journal]
+        whole = sorted(watch_at) == watch_at and sorted(journal_at) == journal_at
         for label, start, end in periods:
-            lines = sr.seconds(watch, start, end)
-            f_watch = f_over(watch, [(start, end)], cpus) if watch else None
-            f_journal = f_over(journal, [(start, end)], cpus) if journal else None
+            if whole:
+                # Only the lines of the period (and a margin for an event's
+                # length on either side): the same figures, read once.
+                part = watch[bisect.bisect_left(watch_at, start - PERIOD_MARGIN_US):
+                             bisect.bisect_right(watch_at, end + PERIOD_MARGIN_US)]
+                own = journal[bisect.bisect_left(journal_at, start - PERIOD_MARGIN_US):
+                              bisect.bisect_right(journal_at, end + PERIOD_MARGIN_US)]
+            else:
+                part, own = watch, journal
+            lines = sr.seconds(part, start, end)
+            f_watch = f_over(part, [(start, end)], cpus) if watch else None
+            f_journal = f_over(own, [(start, end)], cpus) if journal else None
             rows.append({
-                "node": name, "period": label, "stops": sr.stop_counts(watch, start, end),
+                "node": name, "period": label, "stops": sr.stop_counts(part, start, end),
                 "scope_trusted": name not in unpinned, "tick_pinned": unpinned.get(name),
                 "f_watch": f_watch, "f_journal": f_journal, "agree": agree(f_watch, f_journal),
-                "steal_permille": sr.steal_permille(watch, start, end),
+                "steal_permille": sr.steal_permille(part, start, end),
                 "kernel_share": round(sum(1 for line in lines if sr.kernel_second(line))
                                       / len(lines), 4) if lines else None})
     return rows
@@ -444,6 +661,39 @@ def simultaneity(stops: dict[str, list[tuple[int, int]]], pairs: list[tuple[str,
     return out
 
 
+def lockup_table(run: Run) -> dict[str, list[dict]]:
+    """Every soft lockup the nodes' kernels reported in the run, per node,
+    with the host it happened on: {node: [{"t_us", "cpu", "stuck_s",
+    "comm", "work", "text", "host"}]}."""
+    out = {}
+    for name in sorted(run.nodes):
+        found = [{"t_us": item["t_us"], "cpu": item["cpu"], "stuck_s": item["stuck_s"],
+                  "comm": item["comm"], "work": item["work"], "text": sr.lockup_text(item),
+                  "host": run.host_at(name, item["t_us"])} for item in run.lockups(name)]
+        if found:
+            out[name] = found
+    return out
+
+
+def lockup_line(lockups: dict[str, list[dict]]) -> str:
+    """The soft lockups by node and host, and what the kernel was doing."""
+    if not lockups:
+        return "no soft lockup in any node's kernel log"
+    parts = []
+    for name, items in sorted(lockups.items()):
+        by_host: dict[str, list[dict]] = {}
+        for item in items:
+            by_host.setdefault(short_host(item["host"]), []).append(item)
+        for host, mine in sorted(by_host.items()):
+            works: dict[str, int] = {}
+            for item in mine:
+                works[item["work"]] = works.get(item["work"], 0) + 1
+            parts.append(f"{name} {len(mine)} on host {host} ("
+                         + ", ".join(f"{work} {count}" for work, count in sorted(works.items()))
+                         + ")")
+    return "soft lockups: " + "; ".join(parts)
+
+
 def cohosting(run: Run) -> dict:
     groups = host_groups(run)
     span = run.span_us()
@@ -458,23 +708,72 @@ def cohosting(run: Run) -> dict:
 
 # ------------------------------------------------------ 4. silences joined
 
-def read_frames(path) -> list[dict]:
+class Frames:
+    """A probe's audio rows (ntcmp --frames, kind "a") read by columns, the
+    numbers parsed once: complete_us, latency_us, part, published_us,
+    committed_us (None where the CSV has no value or no column). Iterating
+    gives each row as a dict of the CSV's strings, as before."""
+
+    COLUMNS = {"complete_us": "complete_unix_us", "latency_us": "latency_us", "part": "part",
+               "published_us": "published_unix_us", "committed_us": "edge_committed_unix_us"}
+
+    def __init__(self, header: list[str], rows: list[list[str]]) -> None:
+        self.header, self.rows = header, rows
+        self._where = {name: index for index, name in enumerate(header)}
+
+    def __getattr__(self, attribute: str) -> list:
+        """A column, parsed when first asked for (the edges read three, the
+        silences two)."""
+        column = Frames.COLUMNS.get(attribute)
+        if column is None or attribute.startswith("_"):
+            raise AttributeError(attribute)
+        rows, index = self.rows, self._where.get(column)
+        if index is None:
+            values = [None] * len(rows)
+        else:
+            try:
+                strings = list(map(operator.itemgetter(index), rows))
+            except IndexError:
+                strings = [row[index] if index < len(row) else "" for row in rows]
+            values = (list(map(int, strings)) if "" not in strings
+                      else [int(value) if value else None for value in strings])
+        setattr(self, attribute, values)
+        return values
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __iter__(self):
+        return (dict(zip(self.header, row)) for row in self.rows)
+
+
+def read_frames(path) -> Frames:
     """A probe's per-unit CSV (ntcmp --frames), audio rows."""
-    out = []
     with open(path, newline="") as handle:
-        for row in csv.DictReader(handle):
-            if row.get("kind") != "a":
-                continue
-            out.append(row)
-    return out
+        text = handle.read()
+    if '"' in text:
+        reader = csv.reader(io.StringIO(text, newline=""))
+        header = next(reader, [])
+        rows = [row for row in reader if row and row[0] == "a"]
+    else:
+        # Numbers only (ntcmp writes no quoted field): split by hand.
+        lines = text.splitlines()
+        header = lines[0].split(",") if lines else []
+        rows = [line.split(",") for line in lines[1:] if line.startswith("a,")]
+    return Frames(header, rows)
 
 
 def silences(rows: list[dict], min_ms: float | None = None) -> list[dict]:
     """Arrival silences of a probe: [{"from_us", "to_us", "ms", "source_us"}]
     (source_us: the source time of the unit that ended the silence). The
     threshold is 3 ms, or two unit spacings when that is more."""
-    units = sorted((int(row["complete_unix_us"]), int(row["complete_unix_us"])
-                    - int(row["latency_us"])) for row in rows)
+    if isinstance(rows, Frames):
+        units = sorted((complete, complete - latency) for complete, latency
+                       in zip(rows.complete_us, rows.latency_us)
+                       if complete is not None and latency is not None)
+    else:
+        units = sorted((int(row["complete_unix_us"]), int(row["complete_unix_us"])
+                        - int(row["latency_us"])) for row in rows)
     gaps = [b[0] - a[0] for a, b in zip(units, units[1:])]
     if not gaps:
         return []
@@ -484,13 +783,60 @@ def silences(rows: list[dict], min_ms: float | None = None) -> list[dict]:
             for a, b in zip(units, units[1:]) if (b[0] - a[0]) / 1000 >= threshold]
 
 
+_EVENT_INDEXES: dict[int, tuple] = {}
+
+
+class EventIndex:
+    """One source's events (not `sec` lines) indexed by the end of their
+    interval: the events that meet a window are found by bisection, not by
+    a scan of the whole list (sr.overlapping's answer, fast)."""
+
+    def __init__(self, events: list[dict]) -> None:
+        import bisect
+        self._bisect = bisect
+        spans = sorted((sr.interval(event) + (index,))
+                       for index, event in enumerate(events)
+                       if event.get("kind") != "sec" and event.get("t_us"))
+        spans.sort(key=lambda item: item[1])
+        self.ends = [end for _begin, end, _index in spans]
+        self.spans = spans
+        self.events = events
+        self.longest = max((end - begin for begin, end, _index in spans), default=0)
+
+    @classmethod
+    def of(cls, events: list[dict]) -> "EventIndex":
+        """The index of a list, built once while the list lives (the same
+        journal is a source of every listener on its path)."""
+        kept = _EVENT_INDEXES.get(id(events))
+        if kept is None or kept[0] is not events:
+            kept = (events, cls(events))
+            _EVENT_INDEXES[id(events)] = kept
+        return kept[1]
+
+    def overlapping(self, start_us: int, end_us: int) -> list[dict]:
+        lo = self._bisect.bisect_left(self.ends, start_us)
+        hi = self._bisect.bisect_right(self.ends, end_us + self.longest)
+        return [self.events[index] for begin, _end, index in self.spans[lo:hi]
+                if begin <= end_us]
+
+
+def first_cause(start_us: int, end_us: int, indexed: list[tuple[str, EventIndex]]):
+    """sr.first_cause over indexed sources."""
+    for side, index in indexed:
+        found = index.overlapping(start_us, end_us)
+        if found:
+            return side, max(found, key=lambda event: int(event.get("dur_us") or 0))
+    return None
+
+
 def gap_join(found: list[dict], sources: list[tuple[str, list[dict]]],
              margin_us: int = 5000) -> dict:
     """Each silence joined to the first source with an event between the
     source time of the unit that ended it (less a margin) and its end."""
     by_cause: dict[str, dict] = {}
+    indexed = [(side, EventIndex.of(events)) for side, events in sources] if found else []
     for gap in found:
-        cause = sr.first_cause(gap["source_us"] - margin_us, gap["to_us"], sources)
+        cause = first_cause(gap["source_us"] - margin_us, gap["to_us"], indexed)
         gap["cause"] = cause[0] if cause else "unexplained"
         slot = by_cause.setdefault(gap["cause"], {"n": 0, "ms": 0.0})
         slot["n"] += 1
@@ -526,10 +872,12 @@ def session_dir(run: Run, session: str) -> pathlib.Path:
 
 
 def sender_lines(run: Run, session: str) -> list[dict]:
-    lines = []
-    for path in sorted(session_dir(run, session).glob("*/sender.ndjson")):
-        lines += sr.read_ndjson(path)
-    return lines
+    def read() -> list[dict]:
+        lines = []
+        for path in sorted(session_dir(run, session).glob("*/sender.ndjson")):
+            lines += sr.read_ndjson(path)
+        return lines
+    return run.cached((session, "sender_lines"), read)
 
 
 def source_host(run: Run, session: str) -> str | None:
@@ -550,22 +898,27 @@ def path_nodes(run: Run, host: str, edge: str | None) -> list[str]:
 
 
 def listener_sources(run: Run, session: str, host: str, edge: str | None) -> list:
-    sender = sr.sender_events(sender_lines(run, session))
+    sender = run.cached((session, "sender_events"),
+                        lambda: sr.sender_events(sender_lines(run, session)))
     contributor = run.contributor()
     journal = run.journal(contributor) if contributor else []
     source = source_host(run, session)
-    sources = sr.source_sides(sender, journal, run.watch(source) if source else [],
-                              contributor or "contributor", source or "source host")
+    sources = list(run.cached((session, "source_sides"), lambda: sr.source_sides(
+        sender, journal, run.watch(source) if source else [], contributor or "contributor",
+        source or "source host")))
     for name in path_nodes(run, host, edge):
         if name == contributor:
             continue
         for cause in ("stopped", "starved", "own", "waited"):
-            sources.append((f"{name} {cause}", [event for event in run.journal(name)
-                                                 if event.get("cause") == cause]))
-    sources.append((f"{host} (listener host) stopped", sr.stopped_ticks(run.watch(host), 0)))
-    sources.append((f"{host} (listener host) starved",
-                    [event for event in sr.ticks(run.watch(host))
-                     if sr.tick_cause(event) == "starved"]))
+            sources.append((f"{name} {cause}", run.cached(
+                ("journal_cause", name, cause),
+                lambda name=name, cause=cause: [event for event in run.journal(name)
+                                                if event.get("cause") == cause])))
+    sources.append((f"{host} (listener host) stopped", run.cached(
+        ("stopped_ticks", host), lambda: sr.stopped_ticks(run.watch(host), 0))))
+    sources.append((f"{host} (listener host) starved", run.cached(
+        ("starved_ticks", host), lambda: [event for event in sr.ticks(run.watch(host))
+                                          if sr.tick_cause(event) == "starved"])))
     return sources
 
 
@@ -573,14 +926,17 @@ def session_probes(run: Run, session: str) -> list[pathlib.Path]:
     return sorted(session_dir(run, session).glob("*/*.probe.csv"))
 
 
-def silence_table(run: Run) -> dict:
+def silence_table(run: Run, only: list[str] | None = None) -> dict:
     out = {}
+    addresses = run.addresses()
     for name, _start, _end in run.periods_of("session"):
+        if only is not None and name not in only:
+            continue
         per = {}
         for path in session_probes(run, name):
             host = path.parent.name
-            edge = probe_edge(path, run.addresses())
-            joined = gap_join(silences(read_frames(path)),
+            edge = probe_edge(path, addresses)
+            joined = gap_join(silences(run.frames(path)),
                               listener_sources(run, name, host, edge))
             per[f"{host}/{path.name}"] = {"edge": edge, **joined}
         out[name] = per
@@ -596,6 +952,18 @@ def edge_commits(probes: list[tuple[str, list[dict]]]) -> tuple[dict, dict]:
     commits: dict[str, dict[int, int]] = {}
     published: dict[int, int] = {}
     for edge, rows in probes:
+        if isinstance(rows, Frames):
+            mine = commits.setdefault(edge, {})
+            for part, commit, stamp in zip(rows.part, rows.committed_us, rows.published_us):
+                if not commit or part is None:
+                    continue
+                if part not in mine:
+                    mine[part] = commit
+                if stamp:
+                    published[part] = stamp
+            if not mine:
+                del commits[edge]
+            continue
         for row in rows:
             if not row.get("edge_committed_unix_us") or not row.get("part"):
                 continue
@@ -634,33 +1002,43 @@ def pct(values: list[float], p: float) -> float | None:
 
 def first_of_two(commits: dict[str, dict[int, int]], published: dict[int, int],
                  edges: list[str], since_us: int | None = None,
-                 until_us: int | None = None) -> dict:
+                 until_us: int | None = None, exclude: list[tuple[int, int]] = ()) -> dict:
     """Per part that both edges of a pair committed, the earlier commit's
-    distance from publish (ms): what a listener held on those two gets."""
+    distance from publish (ms): what a listener held on those two gets.
+    `late_on_both`: the parts each edge committed LATE_ON_BOTH_MS or more
+    over its own p50 of commit minus publish, those published inside
+    `exclude` (the stops every edge shared) left out."""
     if len(edges) != 2 or any(edge not in commits for edge in edges):
         return {"parts": 0}
-    both = set(commits[edges[0]]) & set(commits[edges[1]])
+    first, second = commits[edges[0]], commits[edges[1]]
     values, late = [], 0
-    for part in both:
-        if part not in published:
+    # Late is late for that edge: over its own p50 of commit minus publish
+    # by LATE_ON_BOTH_MS (a Tokyo edge is 110 ms from the London source).
+    usual = [lateness_of(mine, published)[1] for mine in (first, second)]
+    low = -math.inf if since_us is None else since_us
+    high = math.inf if until_us is None else until_us
+    limit = LATE_ON_BOTH_MS * 1000
+    for part in first.keys() & second.keys():
+        stamp = published.get(part)
+        if stamp is None or not low <= stamp <= high:
             continue
-        if (since_us is not None and published[part] < since_us) \
-                or (until_us is not None and published[part] > until_us):
-            continue
-        each = [(commits[edge][part] - published[part]) / 1000 for edge in edges]
-        values.append(min(each))
-        late += all(value > LATE_ON_BOTH_MS for value in each)
+        a, b = first[part] - stamp, second[part] - stamp
+        values.append(min(a, b) / 1000)
+        if a - usual[0] > limit and b - usual[1] > limit and not any(
+                start - SHARED_WITHIN_US <= stamp <= end + SHARED_WITHIN_US
+                for start, end in exclude):
+            late += 1
     return {"parts": len(values), "p50_ms": pct(values, 50), "p99_ms": pct(values, 99),
             "max_ms": max(values) if values else None, "late_on_both": late}
 
 
-def hls_probes(paths: list[pathlib.Path],
-               addresses: dict[str, str] | None = None) -> list[tuple[str, list[dict]]]:
+def hls_probes(paths: list[pathlib.Path], addresses: dict[str, str] | None = None,
+               reader=None) -> list[tuple[str, list[dict]]]:
     out = []
     for path in paths:
         edge = probe_edge(path, addresses)
         if edge and path.with_name(path.name[:-len(".probe.csv")] + ".probe.json").is_file():
-            out.append((edge, read_frames(path)))
+            out.append((edge, (reader or read_frames)(path)))
     return out
 
 
@@ -692,14 +1070,16 @@ def udp_clients(folder: pathlib.Path, addresses: dict[str, str] | None = None) -
 
 
 def first_of_pairs(commits: dict[str, dict[int, int]], published: dict[int, int],
-                   since_us: int | None, until_us: int | None) -> dict:
+                   since_us: int | None, until_us: int | None,
+                   exclude: list[tuple[int, int]] = ()) -> dict:
     """Per region (an edge's name up to its first dash), the first of two
     for every pair of the region's edges seen: {region: {"a+b": figure}};
     a region with one edge seen has no pair."""
     regions: dict[str, list[str]] = {}
     for edge in commits:
         regions.setdefault(edge.split("-")[0], []).append(edge)
-    return {region: {f"{a}+{b}": first_of_two(commits, published, [a, b], since_us, until_us)
+    return {region: {f"{a}+{b}": first_of_two(commits, published, [a, b], since_us, until_us,
+                                              exclude)
                      for a, b in itertools.combinations(sorted(edges), 2)}
             for region, edges in sorted(regions.items())}
 
@@ -721,49 +1101,200 @@ def twin_overlaps(stops: list[dict], within_us: int = TWIN_WITHIN_US) -> list[di
     return out
 
 
-def edges_table(run: Run) -> dict:
-    """Per session: each edge's commit stops of 100 ms or more (each
-    classified) and the count of 20 ms or more, the edges seen, the first
-    of two per pair, and the twins' stops at once."""
+_LATENESS: dict[int, tuple] = {}
+
+
+def lateness_of(commits: dict[int, int], published: dict[int, int]) -> tuple[list, int]:
+    """An edge's parts as (part, published, commit) in part order and its
+    p50 of commit minus publish (us), computed once per commits dict."""
+    kept = _LATENESS.get(id(commits))
+    if kept is not None and kept[0] is commits and kept[1] is published:
+        return kept[2], kept[3]
+    rows = sorted((part, published[part], commit) for part, commit in commits.items()
+                  if part in published)
+    lateness = sorted(commit - pub for _part, pub, commit in rows)
+    p50 = lateness[len(lateness) // 2] if lateness else 0
+    _LATENESS[id(commits)] = (commits, published, rows, p50)
+    return rows, p50
+
+
+def own_episodes(commits: dict[int, int], published: dict[int, int], min_ms: float,
+                 since_us: int | None = None, until_us: int | None = None) -> list[dict]:
+    """An edge's own lateness episodes (the hunt operator's reading,
+    hunt-lab.md (a)): per part, commit minus publish above the edge's p50
+    of it; runs of parts `min_ms` or more above it (parts at most
+    EPISODE_JOIN_PARTS apart joined): [{"first_part", "last_part",
+    "pub_from_us", "pub_to_us", "from_us" (when the first part would have
+    committed: its publish plus the p50), "to_us" (the last commit), "ms"
+    (the most a part was above the p50)}], those whose first part was
+    published in [since, until]. Without publish stamps: the commit gaps
+    (commit_gaps), each one episode."""
+    if not commits:
+        return []
+    rows, p50 = lateness_of(commits, published)
+    if not rows:
+        return [{"first_part": None, "last_part": None, "pub_from_us": a, "pub_to_us": b,
+                 "from_us": a, "to_us": b, "ms": ms}
+                for a, b, ms in commit_gaps({"e": commits}, min_ms, since_us, until_us)["e"]]
+    out: list[dict] = []
+    current = None
+    for part, pub, commit in rows:
+        excess = (commit - pub - p50) / 1000
+        if excess < min_ms:
+            continue
+        if current is not None and part - current["last_part"] <= EPISODE_JOIN_PARTS:
+            current["last_part"] = part
+            current["pub_to_us"] = pub
+            current["to_us"] = max(current["to_us"], commit)
+            current["ms"] = max(current["ms"], round(excess, 3))
+            continue
+        current = {"first_part": part, "last_part": part, "pub_from_us": pub, "pub_to_us": pub,
+                   "from_us": pub + p50, "to_us": commit, "ms": round(excess, 3)}
+        out.append(current)
+    return [item for item in out
+            if (since_us is None or item["pub_from_us"] >= since_us)
+            and (until_us is None or item["pub_from_us"] <= until_us)]
+
+
+def coverage(commits: dict[int, int], published: dict[int, int]) -> tuple[int, int] | None:
+    """The publish times (else commit times) an edge's probe spans."""
+    stamps = [published[part] for part in commits if part in published] or list(commits.values())
+    return (min(stamps), max(stamps)) if stamps else None
+
+
+def covers(span: tuple[int, int] | None, a_us: int, b_us: int) -> bool:
+    """The edge's probe has parts published before `a_us` and after `b_us`."""
+    return span is not None and span[0] <= a_us and span[1] >= b_us
+
+
+def split_shared(episodes: dict[str, list[dict]], short: dict[str, list[dict]],
+                 commits: dict[str, dict[int, int]], published: dict[int, int],
+                 within_us: int = SHARED_WITHIN_US) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Each edge's episodes split: an episode is shared (input every edge
+    waited for: the source's stops) when two or more edges are measured and
+    every other edge whose probe covers its time has an episode (`short`:
+    SHORT_STOP_MS or more) overlapping it in publish time, within
+    `within_us`, about as long: at least SHARED_SHARE of it and no more than
+    STOP_MS shorter (tok-edge-2's 2,337 ms against the source's 2,251 is
+    shared; its 4,793 ms with a 20 ms blip elsewhere is its own). Returns ({edge: own episodes}, [shared, merged across the
+    edges: {"from_us", "to_us", "ms" (the most of any edge), "edges"}])."""
+    own: dict[str, list[dict]] = {}
+    shared: list[dict] = []
+    measured = sorted(commits)
+    spans = {edge: coverage(commits[edge], published) for edge in measured}
+    for edge, items in episodes.items():
+        own[edge] = []
+        for item in items:
+            a, b = item["pub_from_us"], item["pub_to_us"]
+            others = [other for other in measured if other != edge
+                      and covers(spans[other], a, b)]
+            # As long, or nearly: the other edge waited out the same input
+            # (a blip of its own inside a long stop of this one is not it).
+            needed = max(SHORT_STOP_MS, SHARED_SHARE * item["ms"], item["ms"] - STOP_MS)
+            together = bool(others) and all(
+                any(other_item["pub_from_us"] - within_us <= b
+                    and other_item["pub_to_us"] + within_us >= a
+                    and other_item["ms"] >= needed
+                    for other_item in short.get(other, [])) for other in others)
+            if not together:
+                own[edge].append(item)
+                continue
+            for slot in shared:
+                if slot["from_us"] - within_us <= b and slot["to_us"] + within_us >= a:
+                    slot["from_us"], slot["to_us"] = min(slot["from_us"], a), max(slot["to_us"], b)
+                    slot["ms"] = max(slot["ms"], item["ms"])
+                    slot["edges"] = sorted(set(slot["edges"]) | {edge})
+                    break
+            else:
+                shared.append({"from_us": a, "to_us": b, "ms": item["ms"], "edges": [edge]})
+    return own, sorted(shared, key=lambda slot: slot["from_us"])
+
+
+def edges_table(run: Run, only: list[str] | None = None) -> dict:
+    """Per session: each edge's own stops of 100 ms or more (commit minus
+    publish above its p50, from its LL-HLS probe; each classified and with
+    the physical host it happened on), the stops every edge shared (the
+    source's: input waited for, never an edge's stop), the count of own
+    stops of 20 ms or more, the edges seen, the first of two per pair (parts
+    inside a shared stop left out), and the twins' stops at once."""
     out = {}
     roles = run.roles()
     addresses = run.addresses()
     unpinned = run.unpinned()
     for name, start, end in run.periods_of("session"):
-        commits, published = edge_commits(hls_probes(session_probes(run, name), addresses))
+        if only is not None and name not in only:
+            continue
+        _LATENESS.clear()
+        probes = hls_probes(session_probes(run, name), addresses, run.frames)
+        commits, published = edge_commits(probes)
+        # Each edge's own publish stamps: a part its probe has no stamp for
+        # is not one of its rows (another probe's stamp would join two of
+        # its stops across parts it never showed).
+        stamped: dict[str, dict[int, int]] = {}
+        for edge, rows in probes:
+            stamped.setdefault(edge, {}).update(edge_commits([(edge, rows)])[1])
+        short = {edge: own_episodes(by_part, stamped.get(edge, published), SHORT_STOP_MS)
+                 for edge, by_part in commits.items()}
+        windowed = {edge: [item for item in items if start <= item["pub_from_us"] <= end]
+                    for edge, items in short.items()}
+        # The stops: episodes at STOP_MS itself (as the operator read them:
+        # two stops 40 parts apart stay two), the shared ones left out.
+        long = {edge: [item for item in own_episodes(by_part, stamped.get(edge, published),
+                                                     STOP_MS)
+                       if start <= item["pub_from_us"] <= end]
+                for edge, by_part in commits.items()}
+        own_long, _shared_long = split_shared(long, short, commits, published)
+        own, shared = split_shared(windowed, short, commits, published)
         stops = []
-        for edge, gaps in sorted(commit_gaps(commits, STOP_MS, start, end).items()):
-            for begin, finish, ms in gaps:
+        for edge, items in sorted(own_long.items()):
+            for item in items:
+                begin, finish = item["from_us"], item["to_us"]
                 stops.append({"session": name, "role": roles.get(name), "edge": edge,
-                              "from_us": begin, "to_us": finish, "ms": ms,
+                              "from_us": begin, "to_us": finish, "ms": item["ms"],
+                              "host": run.host_at(edge, begin),
                               **run.classify(edge, begin, finish, edge not in unpinned)})
-        short = {edge: len(gaps) for edge, gaps
-                 in commit_gaps(commits, SHORT_STOP_MS, start, end).items()}
+        over_20 = {edge: len(items) for edge, items in own.items()}
         out[name] = {"role": roles.get(name), "seen": sorted(commits), "stops": stops,
+                     "shared": [slot for slot in shared if slot["ms"] >= STOP_MS],
                      "udp_clients": udp_clients(session_dir(run, name), addresses),
-                     "over_20ms": short, "twins": twin_overlaps(stops),
-                     "first_of_two": first_of_pairs(commits, published, start, end)}
+                     "over_20ms": over_20, "twins": twin_overlaps(stops),
+                     "first_of_two": first_of_pairs(commits, published, start, end,
+                                                    [(slot["from_us"], slot["to_us"])
+                                                     for slot in shared])}
     return out
 
 
 # ----------------------------------------------------------------- 5. null
 
-def null_table(run: Run, lengths, null_window=None) -> dict:
-    null_window = null_window or load_null_window()
-    cw = null_window.referee()
-    out = {}
+def _null_one(item: tuple) -> list[dict]:
+    """One probe's null (a worker of null_table)."""
+    frame, paired, lengths = item
+    null_window = load_null_window()
+    return null_window.analyse(null_window.referee(), [frame], [paired] if paired else [],
+                               lengths, 5.0, 97.5, 120)["probes"]
+
+
+def null_table(run: Run, lengths, null_window=None, jobs: int = 1) -> dict:
+    work = []
     for name, _start, _end in run.periods_of("session"):
-        frames, arrivals = [], []
         for path in session_probes(run, name):
             stem = path.name[:-len(".probe.csv")]
             paired = path.with_name(f"{stem}.arrivals.csv")
-            frames.append(str(path))
-            arrivals.append(str(paired) if paired.is_file() else None)
-        probes = []
-        for frame, paired in zip(frames, arrivals):
-            probes += null_window.analyse(cw, [frame], [paired] if paired else [], lengths,
-                                          5.0, 97.5, 120)["probes"]
-        out[name] = probes
+            work.append((name, (str(path), str(paired) if paired.is_file() else None,
+                                tuple(lengths))))
+    if jobs > 1 and null_window is None:
+        import concurrent.futures
+        with concurrent.futures.ProcessPoolExecutor(jobs, mp_context=_fork_context()) as pool:
+            results = list(pool.map(_null_one, [item for _name, item in work]))
+    else:
+        null_window = null_window or load_null_window()
+        cw = null_window.referee()
+        results = [null_window.analyse(cw, [frame], [paired] if paired else [], list(lengths),
+                                       5.0, 97.5, 120)["probes"]
+                   for _name, (frame, paired, lengths) in work]
+    out = {name: [] for name, _start, _end in run.periods_of("session")}
+    for (name, _item), probes in zip(work, results):
+        out[name] += probes
     return out
 
 
@@ -784,13 +1315,18 @@ def published_stamps(paths: list[pathlib.Path]) -> dict[int, int]:
         found: dict[int, int] = {}
         if arrivals.is_file():
             with open(arrivals, newline="") as handle:
-                for row in csv.DictReader(handle):
-                    if row.get("published_unix_us") and int(row["published_unix_us"]):
-                        found[int(row["part"])] = int(row["published_unix_us"])
+                reader = csv.reader(handle)
+                header = next(reader, [])
+                if "part" in header and "published_unix_us" in header:
+                    part_at, stamp_at = header.index("part"), header.index("published_unix_us")
+                    for row in reader:
+                        if len(row) > max(part_at, stamp_at) and row[stamp_at] \
+                                and int(row[stamp_at]):
+                            found[int(row[part_at])] = int(row[stamp_at])
         else:
-            for row in read_frames(path):
-                if row.get("published_unix_us") and row.get("part"):
-                    found[int(row["part"])] = int(row["published_unix_us"])
+            frames = read_frames(path)
+            found = {part: stamp for part, stamp in zip(frames.part, frames.published_us)
+                     if part is not None and stamp}
         if found:
             return found
     return {}
@@ -861,6 +1397,11 @@ def lane_split(run: Run, session: str) -> dict:
 
 
 # ---------------------------------------------------------------- 7. rules
+
+def short_host(uuid: str | None) -> str:
+    """A physical host's id as the reports quote it: its first 8 characters."""
+    return (uuid or "-")[:8]
+
 
 def all_stops(edges: dict, roles=None) -> list[dict]:
     """The stops of the edges table, of the sessions of `roles` (all)."""
@@ -959,17 +1500,21 @@ def rule_classes(edges: dict, hosts: dict[str, str | None], replaced: list[dict]
         for stop in not_run:
             edges_hit.setdefault(stop["edge"], []).append(stop)
         where = sorted({stop["where"] for stop in not_run})
-        shared = sorted({host for host in (hosts.get(edge) for edge in edges_hit) if host
-                         and sum(1 for other in edges_hit if hosts.get(other) == host) > 1})
+        stop_hosts: dict[str, set[str]] = {}
+        for stop in not_run:
+            host = stop.get("host") or hosts.get(stop["edge"])
+            if host:
+                stop_hosts.setdefault(host, set()).add(stop["edge"])
+        shared = sorted(short_host(host) for host, names in stop_hosts.items() if len(names) > 1)
         outcome = "no replacement in the record"
         verdicts = []
         for item in replaced_after(stops, replaced):
-            again = [stop for stop in item["after"] if stop["class"] == "not run"]
+            again = [stop for stop in item["after"] if stop["class"] in ("not run", "kernel")]
             same = item["host_before"] and item["host_before"] == item["host_after"]
             if not again:
                 verdicts.append("clean")
             elif same:
-                verdicts.append(f"same host {item['host_after']}")
+                verdicts.append(f"same host {short_host(item['host_after'])}")
             else:
                 verdicts.append("other host")
         if verdicts:
@@ -982,20 +1527,33 @@ def rule_classes(edges: dict, hosts: dict[str, str | None], replaced: list[dict]
                        else "the replacement on another host stops again: not one instance "
                             "but guests under first load (H10, broadened): the record goes "
                             "to the owner; two paths at every tier are the answer")
+            outcome += "; replaced: " + "; ".join(
+                f"{item['name']} {short_host(item['host_before'])} -> "
+                f"{short_host(item['host_after'])} ({len(item['before'])} stops before, "
+                f"{len(item['after'])} after)" for item in replaced_after(stops, replaced))
+        by_host: dict[tuple[str, str], list[dict]] = {}
+        for stop in not_run:
+            by_host.setdefault((stop["edge"], stop.get("host") or hosts.get(stop["edge"]) or "-"),
+                               []).append(stop)
         parts.append("NOT RUN (" + "; ".join(where) + "): "
                      + ", ".join(f"{edge} {len(items)} ({sum(s['ms'] for s in items):.0f} ms, "
-                                 f"host {hosts.get(edge) or '-'})"
-                                 for edge, items in sorted(edges_hit.items()))
+                                 f"host {short_host(host)})"
+                                 for (edge, host), items in sorted(by_host.items()))
                      + (f"; co-hosted: {', '.join(shared)}" if shared else "")
                      + f"; {outcome}")
-    kernel = [stop for stop in stops if stop["class"] == "kernel, interrupts off"]
+    kernel = [stop for stop in stops if stop["class"] == "kernel"]
     if kernel:
         fires["kernel"] = True
-        parts.append(f"IN THE KERNEL WITH INTERRUPTS OFF ({len(kernel)}, "
+        works: dict[str, int] = {}
+        for stop in kernel:
+            for text in (stop.get("figures") or {}).get("soft_lockups") or [stop.get("where", "")]:
+                works[text.split(" (")[0]] = works.get(text.split(" (")[0], 0) + 1
+        parts.append(f"IN THE KERNEL (soft lockups, {len(kernel)} stops, "
                      f"{sum(stop['ms'] for stop in kernel):.0f} ms): "
-                     + "; ".join(sorted({stop.get("where", "") for stop in kernel}))
-                     + ": an av-mesh thread's system call or the kernel's work for it (GSO, "
-                       "GRO, softirq), not the host")
+                     + "; ".join(f"{work} ({count})" for work, count in sorted(works.items()))
+                     + ", on " + ", ".join(sorted({f"{stop['edge']} (host "
+                                                   f"{short_host(stop.get('host'))})"
+                                                   for stop in kernel})))
     waited = [stop for stop in stops if stop["class"] == "waited for input"]
     if waited:
         fires["input"] = True
@@ -1053,7 +1611,7 @@ def rule_touch(edges: dict, arms: dict, names: list[str],
     touched = [name for name in armed if name not in left_out]
     found = arm_rule("H4 (first touch, first session)", all_stops(edges, ("first",)), touched,
                      [name for name in names if name not in set(armed)],
-                     lambda stop: stop["class"] == "not run"
+                     lambda stop: stop["class"] in ("not run", "kernel")
                      or stop.get("wait_kind") in ("faults", "reclaim"))
     if found["fires"]:
         found["line"] += ": node_warm (the whole guest) defaults true and is part of readiness"
@@ -1221,29 +1779,35 @@ def nic_offloads(text: str) -> dict[str, str]:
 
 def node_stops(run: Run, name: str, start: int, end: int) -> list[dict]:
     """A node's stops of STOP_MS or more inside [start, end] by its
-    heartbeats (sr.heartbeat_stops), each with its class: "kernel,
-    interrupts off" when a service thread on one of its vCPUs had its
-    system time rise by half the stop or more, else "not run" ("whole
-    guest" when every vCPU's heartbeat was late at once); and its sys
-    sampler's gaps of SAMPLER_GAP_MS or more."""
+    heartbeats (sr.heartbeat_stops), each with its class: "kernel" when a
+    soft lockup of its kernel log overlaps it (where: what the kernel was
+    doing), else "not run" ("whole guest" when every vCPU's heartbeat was
+    late at once); and its sys sampler's gaps of SAMPLER_GAP_MS or more.
+    No thread's system time is read (a vCPU not run charges its pause to
+    the thread current on it)."""
     beats = run.heartbeat(name)
     cpus = sorted({beat["cpu"] for beat in beats})
+    lockups = run.lockups(name)
     out = []
     for stop in sr.heartbeat_stops(beats, STOP_MS):
         if not (start <= stop["from_us"] < end):
             continue
-        hot = [item for cpu in stop["cpus"] for item in sr.kernel_threads(
-            run.tasks(name), cpu, stop["from_us"], stop["to_us"],
-            sr.STIME_SHARE * stop["ms"])]
+        hit = [item for item in lockups
+               if sr.overlap((item["from_us"], item["t_us"]), (stop["from_us"], stop["to_us"])) > 0]
         out.append({"node": name, **stop, "whole_guest": len(cpus) > 1 and stop["cpus"] == cpus,
-                    "class": "kernel, interrupts off" if hot else "not run",
-                    "kernel_threads": hot})
-    seconds = [value for value in run.sys_seconds(name) if start - 5_000_000 <= value <= end]
+                    "class": "kernel" if hit else "not run",
+                    "host": run.host_at(name, stop["from_us"]),
+                    "soft_lockups": [sr.lockup_text(item) for item in hit]})
+    seconds = run.sys_seconds(name)
+    import bisect
+    lo = bisect.bisect_left(seconds, start - 5_000_000)
+    hi = bisect.bisect_right(seconds, end)
+    seconds = seconds[lo:hi]
     for a, b in zip(seconds, seconds[1:]):
         if (b - a) / 1000 >= SAMPLER_GAP_MS and a < end and b > start:
             out.append({"node": name, "from_us": a, "to_us": b, "ms": round((b - a) / 1000, 3),
                         "cpus": cpus, "whole_guest": True, "class": "sampler gap",
-                        "kernel_threads": []})
+                        "host": run.host_at(name, a), "soft_lockups": []})
     return out
 
 
@@ -1412,16 +1976,62 @@ def acceptance(null: dict, source: dict) -> list[str]:
 
 # ---------------------------------------------------------------- the report
 
-def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
+def _fork_context():
+    """Workers forked from this process: they find this module (loaded by
+    path, as the tests and the hunt driver load it) under its own name."""
+    import multiprocessing
+    import types
+    module = sys.modules.get(__name__)
+    if module is None or getattr(module, "_session_tables", None) is not _session_tables:
+        module = types.ModuleType(__name__)
+        module._session_tables = _session_tables
+        module._null_one = _null_one
+        sys.modules[__name__] = module
+    return multiprocessing.get_context("fork")
+
+
+def _session_tables(item: tuple[str, str, dict]) -> tuple[dict, dict]:
+    """One session's edges and silences tables (a worker of build); the
+    run's unpinned nodes come from the parent (read once)."""
+    directory, name, unpinned = item
+    run = Run(directory)
+    run._unpinned = dict(unpinned)
+    return edges_table(run, [name]), silence_table(run, [name])
+
+
+def build(run: Run, lengths=(8, 30), null_window=None, null: bool = True,
+          jobs: int = 1) -> dict:
+    """The report. `null`: the null of every probe (section 5, the
+    referee's own scorer over every window of every probe: minutes on a
+    large run; `--null` asks for it, with `--jobs` processes)."""
     inside = hops_inside_sessions(run)
     if inside:
         raise Refused("; ".join(inside))
-    null = null_table(run, lengths, null_window)
+    nulls = null_table(run, lengths, null_window, jobs) if null else {}
+    # One session at a time: its probes are read once for the edges and the
+    # silences, then let go; with `jobs`, the sessions in processes of their
+    # own (each reads the node records it needs).
+    edges, silence = {}, {}
+    names = [name for name, _start, _end in run.periods_of("session")]
+    if jobs > 1 and len(names) > 1:
+        import concurrent.futures
+        with concurrent.futures.ProcessPoolExecutor(min(jobs, len(names)),
+                                                    mp_context=_fork_context()) as pool:
+            for found_edges, found_silence in pool.map(
+                    _session_tables, [(str(run.dir), name, run.unpinned()) for name in names]):
+                edges.update(found_edges)
+                silence.update(found_silence)
+        edges = {name: edges[name] for name in names if name in edges}
+        silence = {name: silence[name] for name in names if name in silence}
+    else:
+        for name in names:
+            edges.update(edges_table(run, [name]))
+            silence.update(silence_table(run, [name]))
     source = source_table(run)
-    edges = edges_table(run)
     matrix = matrix_table(run)
     names = run.edges()
     arms = run.arms()
+    lockups = lockup_table(run)
     rules = {"H1": rule_fix(edges, names),
              "H2": rule_classes(edges, {name: run.host_uuid(name) for name in names},
                                 run.record.get("replaced") or []),
@@ -1431,11 +2041,14 @@ def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
              "H7": rule_churn(edges, {name: run.round_starts(name) for name, item
                                       in edges.items() if item["role"] == "churn"}),
              "H8": rule_gso_gro(matrix, {name: run.nic(name) for name in run.mesh()})}
+    rules["H2"]["line"] += f" | {lockup_line(lockups)}"
+    rules["H2"]["lockups"] = {name: len(items) for name, items in lockups.items()}
     return {"schema": "needletail.hunt-report.v2", "run_id": run.record.get("run_id"),
             "periods": node_periods(run), "unpinned": run.unpinned(), "hosts": cohosting(run),
-            "edges": edges, "matrix": matrix, "silences": silence_table(run), "null": null,
-            "source": source,
-            "rules": rules, "acceptance": acceptance(null, source)}
+            "lockups": lockups,
+            "edges": edges, "matrix": matrix, "silences": silence, "null": nulls,
+            "null_computed": null, "source": source,
+            "rules": rules, "acceptance": acceptance(nulls, source)}
 
 
 def fmt(value, places: int = 2) -> str:
@@ -1444,8 +2057,10 @@ def fmt(value, places: int = 2) -> str:
 
 def stop_line(stop: dict) -> str:
     detail = stop.get("where") or stop.get("wait") or ""
-    return (f"{stop['from_us'] / 1e6:.3f} -> {stop['to_us'] / 1e6:.3f} ({stop['ms']:.0f} ms): "
-            f"{stop['class'].upper()}" + (f", {detail}" if detail else "") + f" [{stop['why']}]")
+    host = f" on host {short_host(stop['host'])}" if stop.get("host") else ""
+    return (f"{stop['from_us'] / 1e6:.3f} -> {stop['to_us'] / 1e6:.3f} ({stop['ms']:.0f} ms)"
+            f"{host}: {stop['class'].upper()}" + (f", {detail}" if detail else "")
+            + f" [{stop['why']}]")
 
 
 def format_report(report: dict) -> str:
@@ -1472,6 +2087,7 @@ def format_report(report: dict) -> str:
                      + (" ABOVE CHANCE" if item["above_chance"] else ""))
     if not report["hosts"]["groups"]:
         lines.append("  no two nodes share a host")
+    lines.append("  " + lockup_line(report.get("lockups") or {}))
     lines += ["", "3. the edges' commit stops of 100 ms or more, each classified; the twins"]
     for session, item in report["edges"].items():
         lines.append(f"  {session} ({item['role']}): edges seen {', '.join(item['seen']) or 'none'}"
@@ -1481,6 +2097,10 @@ def format_report(report: dict) -> str:
                      + "; stops of 20 ms or more " + (", ".join(
                          f"{edge} {count}" for edge, count in sorted(item["over_20ms"].items())
                          if count) or "none"))
+        for slot in item.get("shared") or []:
+            lines.append(f"    shared by every edge measured (upstream, not an edge's stop): "
+                         f"{slot['from_us'] / 1e6:.3f} ({slot['ms']:.0f} ms, "
+                         f"{len(slot['edges'])} edges)")
         for stop in item["stops"]:
             lines.append(f"    {stop['edge']:<12} {stop_line(stop)}")
         for twin in item["twins"]:
@@ -1503,6 +2123,9 @@ def format_report(report: dict) -> str:
             lines.append(f"  {session} {probe} ({item['edge']}): {item['silences']} silences: "
                          f"{causes or 'none'}")
     lines += ["", "5. the null of every probe"]
+    if not report.get("null_computed", True):
+        lines.append("  not computed (--null computes it: the referee's scorer over every "
+                     "window of every probe, minutes on a large run; --jobs N in parallel)")
     null_window = load_null_window()
     for session, probes in report["null"].items():
         text = null_window.format_result({"probes": probes})
@@ -1565,11 +2188,18 @@ def main() -> None:
     parser.add_argument("dir")
     parser.add_argument("--json", default=None)
     parser.add_argument("--lengths", default="8,30", help="the null's window lengths, seconds")
+    parser.add_argument("--null", action="store_true",
+                        help="also the null of every probe (section 5 and 3.1's steady state): "
+                             "the referee's scorer over every window, minutes on a large run")
+    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1),
+                        help="processes: the sessions' tables, one session each, and --null's "
+                             "probes (default the CPUs, at most 8; 1: none)")
     args = parser.parse_args()
     if not (pathlib.Path(args.dir) / "hunt.json").is_file():
         sys.exit(f"{args.dir}/hunt.json is missing: not a hunt run's directory")
     try:
-        report = build(Run(args.dir), [int(item) for item in args.lengths.split(",") if item])
+        report = build(Run(args.dir), [int(item) for item in args.lengths.split(",") if item],
+                       null=args.null, jobs=args.jobs)
     except Refused as refused:
         sys.exit(f"no report of {args.dir}: {refused}")
     if args.json:
