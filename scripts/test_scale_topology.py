@@ -1518,42 +1518,114 @@ class Replace(FakeLab):
     """`replace --nodes X` (C 3.7, CT4) on the engine: an edge is emptied,
     stopped, rebuilt by the lab tool with the command's budget, its host key
     forgotten, pushed on its recorded build and resumed, and nothing else
-    restarts; a forwarder's slot that the lab tool refuses leaves the
-    forwarder untouched; a new instance whose public address other nodes
-    name is refused before anything, naming them."""
+    restarts; a forwarder goes through its region's slot, and a slot that
+    the lab tool refuses leaves it untouched; what the lab tool would refuse
+    after the node was stopped (its watchdog, the instance's tag, the
+    budget) and a new instance whose public address other nodes name are
+    refused before anything; a new instance whose create fails is named
+    with its way back."""
 
     engine = Deployed.engine
+    TYPES = {plan: {"id": plan, "class": "dedicated", "price": {"hourly": price},
+                    "region_prices": []}
+             for plan, price in (("g6-dedicated-2", 0.054), ("g6-dedicated-4", 0.108),
+                                 ("g6-dedicated-8", 0.216))}
+    REGIONS = {region: {"id": region, "status": "ok", "capabilities": ["Vlans"]}
+               for region in ("gb-lon", "us-east", "ap-northeast", "ap-southeast")}
 
     def setUp(self):
         super().setUp()
         self.lab_calls: list[list[str]] = []
         self.refuse: set[str] = set()
+        self.fail_create = False
         self.forgotten: list[tuple] = []
+        self.watchdog: list[str] = []
+        self.foreign: set[str] = set()
+        self.over_budget = False
+        self.budgets: list[dict] = []
+        state = self.state()
+        for index, node in enumerate(state["nodes"].values(), 1):
+            node.update(id=1000 + index, label=f"ntsm-test-{node['name']}",
+                        hourly_usd=self.TYPES[node["type"]]["price"]["hourly"])
+        state.update(tag="needletail-small-mesh-test", topology_file=str(SCALE),
+                     watchdog_deadline_unix=int(time.time()) + 3 * 3600,
+                     created_unix=int(time.time()) - 600, max_nodes=200, max_hourly_usd=20.0)
+        self.state_file.write_text(json.dumps(state))
+        api = types.SimpleNamespace(list_all=lambda path: list(
+            (self.TYPES if path == "/linode/types" else self.REGIONS).values()))
+        lab = types.SimpleNamespace(
+            change_state=self.change_state, watchdog_ensure=lambda state, path: [],
+            watchdog_problems=lambda state, now, life=None: list(self.watchdog),
+            MAX_LIFE_HOURS=6.0, ADD_CUTOFF_S=900, without_sites=lab_tool.without_sites,
+            Api=lambda: api, owned_instance=self.owned_instance,
+            topology_cost=lab_tool.topology_cost,
+            lab_ceilings=lambda state: (state["max_nodes"], state["max_hourly_usd"]),
+            lab_hourly=lambda state: sum(node.get("hourly_usd", 0.0)
+                                         for node in state["nodes"].values()),
+            removed_record=lab_tool.removed_record, held_to_budget=self.held_to_budget)
         for target, name, value in (
                 (deploy, "run_lab", self.fake_lab),
+                (deploy, "lab_tool", lambda: lab),
                 (deploy.common, "forget_host", lambda *addresses: self.forgotten.append(addresses))):
             patcher = mock.patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def owned_instance(self, api, state, name, verb):
+        if name in self.foreign:
+            raise SystemExit(f"{verb} refused: instance {state['nodes'][name]['id']} does not "
+                             f"carry the run's tag {state['tag']}")
+        return {"id": state["nodes"][name]["id"]}
+
+    def held_to_budget(self, verb, api, state, new, budget_usd=None, spent_before_usd=None):
+        self.budgets.append({"nodes": sorted(state["nodes"]), "new": new, "budget": budget_usd,
+                             "spent": spent_before_usd})
+        if self.over_budget:
+            raise SystemExit(f"{verb} refused: over the budget: {{\"budget_usd\": {budget_usd}}}")
+
+    def create(self, state: dict, name: str, spec: dict, suffix: str) -> None:
+        """A new instance of `name` in the state, with an address of its own."""
+        address = f"203.0.113.{len(self.lab_calls) + 10}"
+        state["nodes"][name] = {**spec, "name": name, "id": 5000 + len(self.lab_calls),
+                                "label": f"ntsm-test-{name}{suffix}", "public_ipv4": address,
+                                "vlan_ipv4": (spec.get("vlan_ipv4") or "").split("/")[0],
+                                "hourly_usd": self.TYPES[spec["type"]]["price"]["hourly"]}
+        self.hosts.by_address[address] = state["nodes"][name]
+        self.hosts.by_address_name[name] = state["nodes"][name]
+
     def fake_lab(self, *arguments):
-        """The lab tool's command line: `replace` gives the node a new disk
-        (nothing of ours on it, not running; `--mode new` also a new public
-        address), `add` creates a slot; a verb in `refuse` changes nothing
+        """The lab tool's command line as rm/ct3 behaves: `replace --mode
+        rebuild` gives the node a new disk (nothing of ours on it, not
+        running), `--mode new` deletes it, records it in `replaced`, and
+        creates it again with a new id, label and public address (with
+        `fail_create`, the create fails after the delete); `add` creates a
+        slot and `remove` deletes one; a verb in `refuse` changes nothing
         and fails, as a refusal does."""
         self.lab_calls.append(list(arguments))
         verb, node = arguments[0], arguments[1]
         if verb in self.refuse:
             return deploy.subprocess.CompletedProcess(list(arguments), 1, "refused\n")
         state = self.state()
+        code = 0
         if verb == "replace":
-            if arguments[arguments.index("--mode") + 1] == "new":
-                state["nodes"][node]["public_ipv4"] = "203.0.113.77"
-                self.hosts.by_address["203.0.113.77"] = state["nodes"][node]
             self.hosts.files.pop(node, None)
             self.hosts.running[node] = False
+            if arguments[arguments.index("--mode") + 1] == "new":
+                old = state["nodes"].pop(node)
+                state.setdefault("replaced", []).append(
+                    {"name": node, "id": old["id"], "unix": int(time.time()), "mode": "new"})
+                state.setdefault("removed", []).append(
+                    lab_tool.removed_record(state, old, time.time()))
+                if self.fail_create:
+                    code = 1
+                else:
+                    self.create(state, node, old, f"r{len(state['replaced'])}")
+        elif verb == "add":
+            self.create(state, node, state["slots"][node], "")
+        elif verb == "remove":
+            state["nodes"].pop(node, None)
         self.state_file.write_text(json.dumps(state))
-        return deploy.subprocess.CompletedProcess(list(arguments), 0, "")
+        return deploy.subprocess.CompletedProcess(list(arguments), code, "")
 
     def replace(self, **kwargs) -> int:
         """command_replace on the fake clock; its exit status."""
@@ -1570,6 +1642,13 @@ class Replace(FakeLab):
                 self.quietly(deploy.command_replace, namespace)
         return code.exception.code
 
+    def untouched(self) -> None:
+        """No node was drained, stopped, restarted or given a file: each was
+        at most asked the time or had its ssh connection opened."""
+        for name, scripts in self.hosts.scripts.items():
+            self.assertLessEqual(set(scripts), {"date +%s.%N", "true"}, name)
+        self.assertEqual(self.hosts.drained, set())
+
     def test_replace_of_an_edge_restarts_nothing_else(self):
         for mode in ("rebuild", "new"):
             with self.subTest(mode=mode):
@@ -1578,6 +1657,7 @@ class Replace(FakeLab):
                 boots = dict(self.hosts.boots)
                 self.lab_calls.clear()
                 self.forgotten.clear()
+                self.budgets.clear()
                 code = self.replace(nodes="lon-edge-1", mode=mode, spent_before_usd=38.0)
                 self.assertEqual(code, 0, self.stderr)
                 self.assertEqual(self.lab_calls, [["replace", "lon-edge-1", "--mode", mode,
@@ -1586,6 +1666,17 @@ class Replace(FakeLab):
                 new = self.state()["nodes"]["lon-edge-1"]["public_ipv4"]
                 self.assertEqual(new != address, mode == "new")
                 self.assertEqual([set(item) for item in self.forgotten], [{address, new}])
+                # A new instance was held to the budget before anything, with
+                # the old one deleted; a rebuild creates nothing.
+                if mode == "new":
+                    self.assertEqual(len(self.budgets), 1)
+                    self.assertNotIn("lon-edge-1", self.budgets[0]["nodes"])
+                    self.assertEqual([item["name"] for item in self.budgets[0]["new"]],
+                                     ["lon-edge-1"])
+                    self.assertEqual((self.budgets[0]["budget"], self.budgets[0]["spent"]),
+                                     (60.0, 38.0))
+                else:
+                    self.assertEqual(self.budgets, [])
                 # Pushed again on its recorded build, in service, recorded.
                 self.assertEqual(self.args_of("lon-edge-1")[0],
                                  f"/opt/needletail/builds/{key(OLD)}/av-mesh")
@@ -1603,6 +1694,73 @@ class Replace(FakeLab):
                                  {name: boot for name, boot in boots.items()
                                   if name != "lon-edge-1"})
 
+    def forwarder_fakes(self) -> None:
+        """The forwarder gate and a forwarder's readiness pass (CT1's, tested
+        there on its own Sim: the FakeHosts documents carry no parents), and
+        every forwarder reports its lease pairs, 0."""
+        passed = deploy.mesh_ops.Gate(True, [], {}, [], 0.0, 2)
+        document = self.hosts.document
+
+        def with_pairs(name, role):
+            found = document(name, role)
+            if found is not None and role == "distributor":
+                found["children"] = {"lease": {"pairs": 0}}
+            return found
+
+        for target, name, value in (
+                (deploy.mesh_ops.Engine, "gate_forwarder", lambda engine, node: passed),
+                (deploy.mesh_ops, "readiness_check", lambda *args, **kwargs: {}),
+                (self.hosts, "document", with_pairs)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_forwarder_is_replaced_through_its_region_s_slot(self):
+        self.forwarder_fakes()
+        for keep in (False, True):
+            with self.subTest(keep_slot=keep):
+                self.push()
+                boots = dict(self.hosts.boots)
+                self.lab_calls.clear()
+                self.forgotten.clear()
+                self.budgets.clear()
+                code = self.replace(nodes="lon-dist-a", budget_usd=45.5, keep_slot=keep)
+                self.assertEqual(code, 0, self.stderr)
+                # The slot held to the budget before anything, then created
+                # with it, X rebuilt with it, and the slot deleted (or kept).
+                self.assertEqual([[item["name"] for item in each["new"]]
+                                  for each in self.budgets], [["lon-dist-c"]])
+                self.assertEqual(self.lab_calls,
+                                 [["add", "lon-dist-c", "--budget-usd", "45.5"],
+                                  ["replace", "lon-dist-a", "--mode", "rebuild",
+                                   "--budget-usd", "45.5"]]
+                                 + ([] if keep else [["remove", "lon-dist-c"]]))
+                # The slot was pushed on the forwarders' recorded build.
+                self.assertEqual(self.args_of("lon-dist-c")[0],
+                                 f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+                slot_address = self.hosts.by_address_name["lon-dist-c"]["public_ipv4"]
+                address = self.state()["nodes"]["lon-dist-a"]["public_ipv4"]
+                self.assertEqual([set(item) - {None} for item in self.forgotten],
+                                 [{slot_address}, {address}]
+                                 + ([] if keep else [{slot_address}]))
+                self.assertEqual("lon-dist-c" in self.state()["nodes"], keep)
+                # X pushed again on its build and running; drained by nobody.
+                self.assertEqual(self.args_of("lon-dist-a")[0],
+                                 f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+                self.assertNotEqual(self.hosts.boots["lon-dist-a"], boots["lon-dist-a"])
+                self.assertTrue(self.hosts.running["lon-dist-a"])
+                self.assertEqual(self.hosts.running["lon-dist-c"], False)
+                self.assertEqual(self.hosts.drained - {"lon-dist-c"}, set())
+                # No third node restarted.
+                self.assertEqual({name: boot for name, boot in self.hosts.boots.items()
+                                  if name not in ("lon-dist-a", "lon-dist-c")},
+                                 {name: boot for name, boot in boots.items()
+                                  if name not in ("lon-dist-a", "lon-dist-c")})
+                for name, scripts in self.hosts.scripts.items():
+                    if name not in ("lon-dist-a", "lon-dist-c"):
+                        self.assertLessEqual(set(scripts), {"date +%s.%N", "true"}, name)
+                self.hosts.scripts.clear()
+
     def test_a_refused_slot_leaves_the_forwarder_untouched(self):
         self.push()
         files = dict(self.hosts.fs("lon-dist-a"))
@@ -1618,16 +1776,118 @@ class Replace(FakeLab):
         self.assertEqual(self.lab_calls, [["add", "lon-dist-c", "--budget-usd", "45.5"]])
         self.assertEqual(self.hosts.fs("lon-dist-a"), files)
         self.assertEqual(self.hosts.boots, boots)
-        self.assertEqual(self.hosts.drained, set())
-        # Asked the time, and lon-dist-a's ssh connection opened for its gate.
-        for name, scripts in self.hosts.scripts.items():
-            self.assertLessEqual(set(scripts), {"date +%s.%N", "true"}, name)
+        self.untouched()
         # --no-slot where the region has none is the operator's choice; a
         # region without a slot refuses before anything.
         self.lab_calls.clear()
         self.assertEqual(self.replace(nodes="tok-dist-b"), 2)
         self.assertIn("tokyo has no forwarder slot (--no-slot)", self.stderr)
         self.assertEqual(self.lab_calls, [])
+
+    def test_what_the_lab_tool_would_refuse_is_refused_before_anything(self):
+        self.push()
+        boots = dict(self.hosts.boots)
+        state = self.state()
+        cases = (
+            # 25 min to the deadline: the lab tool's 15 min cutoff would
+            # come while the edge is stopped.
+            ("deadline", {"nodes": "lon-edge-1"}, "the watchdog deletes the lab in"),
+            ("watchdog", {"nodes": "lon-edge-1"}, "the watchdog unit is not active"),
+            ("tag", {"nodes": "lon-edge-1"}, "does not carry the run's tag"),
+            ("budget", {"nodes": "lon-edge-1", "mode": "new"}, "over the budget"),
+            ("slot budget", {"nodes": "lon-dist-a"}, "over the budget"),
+            ("ceiling", {"nodes": "lon-dist-a"}, "the ceiling that up recorded is $0.10"),
+        )
+        for case, arguments, why in cases:
+            with self.subTest(case=case):
+                current = json.loads(json.dumps(state))
+                self.watchdog = ["the watchdog unit is not active"] if case == "watchdog" else []
+                self.foreign = {"lon-edge-1"} if case == "tag" else set()
+                self.over_budget = case.endswith("budget")
+                if case == "deadline":
+                    current["watchdog_deadline_unix"] = int(time.time()) + 25 * 60
+                if case == "ceiling":
+                    current["max_hourly_usd"] = 0.1
+                self.state_file.write_text(json.dumps(current))
+                self.lab_calls.clear()
+                self.hosts.scripts.clear()
+                self.assertEqual(self.replace(**arguments), 2, self.stderr)
+                self.assertIn("the lab tool would refuse this replace after "
+                              f"{arguments['nodes']} was emptied and stopped", self.stderr)
+                self.assertIn(why, self.stderr)
+                self.assertEqual(self.lab_calls, [])
+                self.assertEqual(self.hosts.boots, boots)
+                self.untouched()
+                self.assertNotIn("start ", self.stderr.replace("mark start", ""))
+
+    def test_a_new_instance_whose_create_fails_is_named_with_its_way_back(self):
+        self.push()
+        self.fail_create = True
+        code = self.replace(nodes="lon-edge-1", mode="new")
+        self.assertEqual(code, 5, self.stderr)
+        self.assertNotIn("lon-edge-1", self.state()["nodes"])
+        self.assertIn("the lab tool deleted lon-edge-1 and did not create it again", self.stderr)
+        self.assertIn(f"grow --topology {SCALE}", self.stderr)
+        self.assertIn("replace --nodes lon-edge-1 --mode rebuild --resume", self.stderr)
+        # The lab tool's grow creates it again (at its VLAN address, a new
+        # public one); the resume rebuilds that instance and finishes.
+        state = self.state()
+        self.create(state, "lon-edge-1", next(node for node in json.loads(SCALE.read_text())
+                                              ["nodes"] if node["name"] == "lon-edge-1"), "")
+        self.state_file.write_text(json.dumps(state))
+        self.fail_create = False
+        self.lab_calls.clear()
+        code = self.replace(nodes="lon-edge-1", mode="rebuild", resume=True)
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual([call[:4] for call in self.lab_calls],
+                         [["replace", "lon-edge-1", "--mode", "rebuild"]])
+        self.assertTrue(self.hosts.running["lon-edge-1"])
+        self.assertEqual(self.hosts.drained, set())
+
+    def test_a_resume_after_the_rebuild_is_not_held_to_the_deadline(self):
+        """A node left stopped and rebuilt (its push failed) is pushed back by
+        the resume even within the lab tool's cutoff: nothing is left for
+        the lab tool to create or rebuild."""
+        self.push()
+        real = deploy.LinodeOps.push
+        failures = ["ssh dropped"]
+
+        def push(ops, node):
+            if failures:
+                raise RuntimeError(failures.pop())
+            real(ops, node)
+
+        with mock.patch.object(deploy.LinodeOps, "push", push):
+            self.assertEqual(self.replace(nodes="lon-edge-1"), 5, self.stderr)
+            self.assertIn("lon-edge-1's push failed (ssh dropped)", self.stderr)
+            state = self.state()
+            state["watchdog_deadline_unix"] = int(time.time()) + 25 * 60
+            self.state_file.write_text(json.dumps(state))
+            self.assertEqual(self.replace(nodes="lon-edge-1"), 2, self.stderr)
+            self.assertIn("the watchdog deletes the lab in", self.stderr)
+            self.lab_calls.clear()
+            self.assertEqual(self.replace(nodes="lon-edge-1", resume=True), 0, self.stderr)
+        self.assertEqual(self.lab_calls, [])
+        self.assertTrue(self.hosts.running["lon-edge-1"])
+        self.assertEqual(self.hosts.drained, set())
+
+    def test_an_interrupt_during_the_lab_tool_still_reads_the_lab_again(self):
+        """run_lab raises the interrupt only after the lab tool ended; the
+        state it wrote is read and both addresses forgotten all the same."""
+        self.push()
+        ops = self.ops()
+        address = ops.full["nodes"]["lon-edge-1"]["public_ipv4"]
+
+        def interrupted(*arguments):
+            self.fake_lab(*arguments)
+            raise deploy.mesh_ops.Interrupted("SIGINT")
+
+        with mock.patch.object(deploy, "run_lab", interrupted), \
+                self.assertRaises(deploy.mesh_ops.Interrupted):
+            ops.rebuild("lon-edge-1", "new")
+        new = ops.full["nodes"]["lon-edge-1"]["public_ipv4"]
+        self.assertNotEqual(new, address)
+        self.assertEqual([set(item) for item in self.forgotten], [{address, new}])
 
     def test_a_new_forwarder_address_names_its_dependents(self):
         self.push()
@@ -1638,13 +1898,15 @@ class Replace(FakeLab):
             self.assertIn(name, dependents)
         # Its own region names it by its VLAN address.
         self.assertFalse([name for name in dependents if name.startswith("tok-")], dependents)
-        self.hosts.touched.clear()
+        self.hosts.scripts.clear()
         code = self.replace(nodes="tok-dist-a", mode="new")
         self.assertEqual(code, 2, self.stderr)
         self.assertIn(f"the arguments of {', '.join(dependents)} name tok-dist-a's public "
                       "address", self.stderr)
+        self.assertIn("in this round that is an outage", self.stderr)
         self.assertEqual(self.lab_calls, [])
-        self.assertEqual(self.hosts.touched, [])
+        self.assertEqual(self.budgets, [])
+        self.untouched()
         # An edge is named by its VLAN address: nothing depends on its public one.
         self.assertEqual(self.ops().address_dependents("lon-edge-1"), [])
 
@@ -1657,6 +1919,14 @@ class Replace(FakeLab):
         self.assertEqual(self.lab_calls, [])
         self.assertEqual([name for name, scripts in self.hosts.scripts.items()
                           if set(scripts) - {"date +%s.%N"}], [])
+
+    def test_without_the_lab_tool_of_ct3_replace_is_refused(self):
+        lab = types.SimpleNamespace(change_state=self.change_state,
+                                    watchdog_ensure=lambda state, path: [])
+        with mock.patch.object(deploy, "lab_tool", lambda: lab):
+            self.assertEqual(self.replace(nodes="lon-edge-1"), 2)
+        self.assertIn("has no watchdog_problems", self.stderr)
+        self.assertEqual(self.lab_calls, [])
 
 
 class RunLab(unittest.TestCase):
