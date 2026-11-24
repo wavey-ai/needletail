@@ -2855,12 +2855,16 @@ def status() -> None:
                 f"set {services.get(name, {}).get('build', 'a')} "
                 f"mem {stats.get('memory_bytes', 0) / 1e6:6.0f} MB "
                 f"throttled {stats.get('throttled_usec', 0) / 1e6:6.1f} s")
-        if role in ("edge", "distributor"):
-            own = node_status(name)
+        if role in ("edge", "distributor", "contributor"):
+            # One parser for both shapes of the build block (av-mesh's and
+            # av-contrib's, mesh_ops.status_of).
+            own = mesh_ops.status_of(node_status(name) or None)
             if own:
-                reasons = ",".join(own.get("drain_reasons") or []) or "none"
-                line += (f" build {(own.get('build') or {}).get('git')} "
-                         f"state {own.get('state')} drain {reasons}")
+                reasons = ",".join(own.drain_reasons or []) or "none"
+                line += f" build {own.build_git} state {own.state} drain {reasons}"
+                if own.not_ready:
+                    line += f" not ready: {'; '.join(own.not_ready)}"
+        if role in ("edge", "distributor"):
             try:
                 view = edge_view(name)
                 line += (f" holds {sorted(view['playlists'])} sessions {view['sessions']} "

@@ -137,6 +137,30 @@ class Slots(Base):
             lab.main()
         self.assertIn("lon-dist-c", out.getvalue())
 
+    def test_status_shows_the_contributors_own_node_status(self):
+        # av-contrib answers /api/node with A 2.6's build block (build.id),
+        # av-mesh with C 2.3's (build.git); status reads both through
+        # mesh_ops.status_of and says why a node is not ready.
+        documents = {
+            "contrib-lon": {"role": "contributor", "build": {"id": "703fe825245f", "unix": 1},
+                            "state": "standing_by", "not_ready": ["no source heard"]},
+            "lon-edge-1": {"role": "edge", "build": {"git": "d718b6da3eb1", "built_unix": 1},
+                           "state": "ready", "not_ready": [], "drain_reasons": []},
+        }
+        out = io.StringIO()
+        with mock.patch.object(lab, "service_pid",
+                               lambda name: 7 if name in documents else None), \
+                mock.patch.object(lab, "cgroup_dir", lambda name: None), \
+                mock.patch.object(lab, "node_status", lambda name: documents.get(name, {})), \
+                mock.patch.object(lab, "edge_view", mock.Mock(side_effect=lab.LabError("x"))), \
+                mock.patch.object(sys, "argv", ["edge_lab.py", "status"]), redirect_stdout(out):
+            lab.main()
+        lines = {line.split()[0]: line for line in out.getvalue().splitlines() if line.strip()}
+        self.assertIn("build 703fe825245f state standing_by", lines["contrib-lon"])
+        self.assertIn("not ready: no source heard", lines["contrib-lon"])
+        self.assertIn("build d718b6da3eb1 state ready drain none", lines["lon-edge-1"])
+        self.assertNotIn("not ready", lines["lon-edge-1"])
+
 
 @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
 class Render(Base):
