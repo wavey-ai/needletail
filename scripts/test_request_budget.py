@@ -298,6 +298,46 @@ class KeptOpen(unittest.TestCase):
         self.assertEqual(len(Counting.connections), 1)
         self.assertEqual(client.requests, 20)
 
+    @unittest.skipUnless(shutil.which("openssl"), "openssl makes the lab's certificates")
+    def test_the_labs_own_certificates_pass_the_helpers_tls_check(self):
+        # The lab's CA and leaf (linode-small-mesh-deploy.ensure_tls) carry no
+        # Authority Key Identifier; Python 3.13+'s strict X.509 check refused
+        # them and every request of the helper failed (local proof 3).
+        import ssl
+        import ns_http
+        tls = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tls, True)
+        name = "mesh.needletail.test"
+        run = lambda *command: subprocess.run(command, check=True, capture_output=True)
+        run("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(tls / "ca.key"))
+        run("openssl", "req", "-x509", "-new", "-key", str(tls / "ca.key"), "-sha256", "-days", "1",
+            "-subj", "/CN=lab CA", "-out", str(tls / "ca.crt"))
+        run("openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-out", str(tls / "key.pem"))
+        run("openssl", "req", "-new", "-key", str(tls / "key.pem"), "-subj", f"/CN={name}",
+            "-out", str(tls / "leaf.csr"))
+        (tls / "leaf.ext").write_text(f"subjectAltName=DNS:{name}\nkeyUsage=digitalSignature\n"
+                                      "extendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n")
+        run("openssl", "x509", "-req", "-in", str(tls / "leaf.csr"), "-CA", str(tls / "ca.crt"),
+            "-CAkey", str(tls / "ca.key"), "-CAcreateserial", "-days", "1", "-sha256",
+            "-extfile", str(tls / "leaf.ext"), "-out", str(tls / "leaf.crt"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Counting)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(tls / "leaf.crt", tls / "key.pem")
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        connection = ns_http.tls_connect(str(tls / "ca.crt"), name)(
+            "127.0.0.1", server.server_address[1], 5.0)
+        connection.request("GET", "/api/node")
+        self.assertEqual(connection.getresponse().status, 200)
+        connection.close()
+        # The name is still checked.
+        wrong = ns_http.tls_connect(str(tls / "ca.crt"), "other.test")(
+            "127.0.0.1", server.server_address[1], 5.0)
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            wrong.request("GET", "/api/node")
+
     def test_a_node_that_does_not_answer_is_none_and_a_dead_helper_is_said(self):
         import ns_http
         with socket.socket() as sock:

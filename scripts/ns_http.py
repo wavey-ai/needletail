@@ -53,6 +53,13 @@ def tls_connect(ca: str | None, server_name: str | None):
     lab's server name (SNI) and, with `ca`, its certificate checked."""
     if ca:
         context = ssl.create_default_context(cafile=ca)
+        # Python 3.13+ sets VERIFY_X509_STRICT by default, which refuses a
+        # certificate without an Authority Key Identifier, as the lab's CA
+        # makes them (curl takes them). With it every request of the helper
+        # failed its handshake and the engine's gates read every node as
+        # silent (local proof 3: the ingress kill refused, "lon-dist-a does
+        # not answer /api/node"). The chain and the name are still checked.
+        context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     else:
         context = ssl.create_default_context()
         context.check_hostname = False
