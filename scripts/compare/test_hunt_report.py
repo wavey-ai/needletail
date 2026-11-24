@@ -196,7 +196,7 @@ def sample(t_us: int, delay_ms: float = 0.0, run_ms: float = 0.0, voluntary: int
             "relay_session.fast_plane.audio_thread_minflt": minflt,
             "relay_session.fast_plane.audio_thread_majflt": 0}
     for key, value in (waits or {}).items():
-        mesh[f"relay_session.edge_clients.{key}"] = value
+        mesh[f"client_udp.fast_lane.{key}"] = value
     return {"t_us": int(t_us), "pid": pid, "tid": tid, "tid_by": "fifo", "cpu": cpu,
             "schedstat": [int(run_ms * 1e6), int(delay_ms * 1e6), 100],
             "csw": [voluntary, 0], "vm": {"pgfault": 1, "allocstall_normal": 0, **(vm or {})},

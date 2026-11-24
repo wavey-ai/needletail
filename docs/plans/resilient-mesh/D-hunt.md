@@ -761,13 +761,15 @@ soaked or kept as the wave 7 control.
   context switches) and its last CPU; every thread's policy, priority and last CPU (`ps -L`); `/proc/vmstat`
   (`pgfault`, `pgmajfault`, `thp_fault_alloc`, `thp_fault_fallback`, `thp_collapse_alloc`, `compact_stall`,
   `compact_fail`, `allocstall_*`, `pgscan_direct`, `pgsteal_direct`, `pswpin`, `pswpout`,
-  `workingset_refault_anon`, `workingset_refault_file`); `MemFree`; and `/api/mesh/local` cut to the
-  fast plane's counters by name (`tick_threads`, `tick_pinned`, `fanout_started`, `fanout_policies`, `fanout_cpus`, `fanout_threads`,
+  `workingset_refault_anon`, `workingset_refault_file`); `MemFree`; and `/api/mesh/local` cut to these
+  counters at their paths (`MESH_PATHS`, the same list in `stall_records.py`, each checked against av-mesh's
+  MeshApiSnapshot): `stall.` `tick_threads`, `tick_pinned`, `tick_late_max_us`, `stopped_ms`, `starved_ms`;
+  `client_udp.fast_lane.` `fanout_started`, `fanout_policies`, `fanout_cpus`, `fanout_threads`,
   `fanout_first_dispatch_faults`, `fanout_dispatch_max_us`, `fanout_shed`, `fanout_waited`, `class_plan_grows`,
-  `class_compact_max_us`, `class_send_max_us`, `class_repair_max_us`, `class_arena_warm_bytes`,
-  `audio_loop_busy_max_us`, `audio_loop_busy_over_5ms`, `audio_loop_busy_over_50ms`, `audio_loop_gap_max_us`,
-  `audio_thread_minflt`, `audio_thread_majflt`, `process_minflt`, `process_majflt`, `kernel_dropped`,
-  `tee_dropped`, `deadline_drops`, and the stall journal's `tick_late_max_us`, `stopped_ms`, `starved_ms`). Every
+  `class_compact_max_us`, `class_send_max_us`, `class_repair_max_us`, `class_arena_warm_bytes`;
+  `relay_session.fast_plane.` `audio_loop_busy_max_us`, `audio_loop_busy_over_5ms`, `audio_loop_busy_over_50ms`,
+  `audio_loop_gap_max_us`, `audio_thread_minflt`, `audio_thread_majflt`, `process_minflt`, `process_majflt`,
+  `kernel_dropped`, `tee_dropped`; `status.ingest.` `audio_deadline_drops`, `video_deadline_drops`. Every
   tenth second `/api/stalls?since_us=` (`stalls.ndjson`) and, on the contributor, `/api/pacing`, pulled in the
   background one at a time so that a slow answer never widens a one-second line, and once more when the sampler
   ends or is sent SIGTERM (collect and the replacement wait for it), so the journal's last seconds are kept.
@@ -805,7 +807,7 @@ the stop plus up to two seconds.
    (`audio_loop_busy_max_us` rose to it, `audio_loop_busy_over_50ms` grew on a stop of 100 ms or less, since it
    counts passes over 50 ms, or the journal has a `class_pass` of the audio class thread's own over it). Only this
    node's counters count: `/api/mesh/local` also carries every peer's telemetry (`relay_nodes`, `nodes`, `peers`,
-   `edge_services`, `streams`, `connections`), which the sampler leaves out. The wait is named by the first that applies: a counter that rose to L/2 (`fanout_dispatch_max_us`:
+   `edge_services`, `streams`, `connections`), and the sampler reads only its own paths. The wait is named by the first that applies: a counter that rose to L/2 (`fanout_dispatch_max_us`:
    the hand-off; `class_compact_max_us`: the compact path; `class_send_max_us`: a send; `class_repair_max_us`: a
    window repair); page faults in the long pass itself (the journal's `class_pass` over the stop carries the
    thread's faults since its last once-a-second reading); the guest's reclaim; else "a lock or wait that no

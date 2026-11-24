@@ -89,17 +89,27 @@ class SamplerFigures(unittest.TestCase):
         # Only the seconds that end inside the spans given.
         self.assertAlmostEqual(stall_records.run_delay_ms(rows, 50.0, [(5, 5)]), 400.0)
 
-    def test_a_counter_is_found_by_its_name_on_any_path(self):
+    def test_a_counter_is_read_at_its_own_path(self):
+        """mesh_value reads each counter at its path of /api/mesh/local
+        (MESH_PATHS), never a namesake elsewhere nor a peer's."""
         line = {"mesh": {"relay_session.fast_plane.audio_loop_busy_max_us": 812,
                          "other.audio_loop_busy_max_us": 900, "stall.stopped_ms": 0,
+                         "client_udp.fast_lane.fanout_started": 2,
+                         "status.ingest.audio_deadline_drops": 4,
                          # A peer's telemetry on /api/mesh/local (av-mesh
                          # MeshApiSnapshot.relay_nodes): never this node's.
                          "relay_nodes.0.relay_session.fast_plane.audio_loop_busy_max_us": 5000,
-                         "nodes.1.audio_loop_busy_max_us": 7000}}
-        self.assertEqual(stall_records.mesh_value(line, "audio_loop_busy_max_us"), 900)
-        self.assertIsNone(stall_records.mesh_value(line, "fanout_started"))
+                         "relay_session.edge_clients.fanout_policies": 1}}
+        self.assertEqual(stall_records.mesh_value(line, "audio_loop_busy_max_us"), 812)
+        self.assertEqual(stall_records.mesh_value(line, "fanout_started"), 2)
+        self.assertEqual(stall_records.mesh_value(line, "stopped_ms"), 0)
+        self.assertEqual(stall_records.mesh_value(line, "audio_deadline_drops"), 4)
+        # The fan-out's counters are at client_udp.fast_lane, not under
+        # relay_session.edge_clients.
+        self.assertIsNone(stall_records.mesh_value(line, "fanout_policies"))
         self.assertIsNone(stall_records.mesh_value({"mesh": None}, "stopped_ms"))
-
+        with self.assertRaises(KeyError):
+            stall_records.mesh_value(line, "duplicates")
 
 if __name__ == "__main__":
     unittest.main()

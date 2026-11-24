@@ -478,20 +478,38 @@ def sampler_lines(items: list[dict]) -> list[dict]:
                   key=lambda item: int(item["t_us"]))
 
 
-# The paths of /api/mesh/local that hold other nodes' telemetry (av-mesh
-# MeshApiSnapshot: relay_nodes[i].relay_session.fast_plane.* is a peer's),
-# never this node's counters; the sampler leaves them out too.
-PEER_PATHS = ("relay_nodes", "nodes", "peers", "edge_services", "streams", "connections")
+# The counters the hunt's sampler cuts from a node's own /api/mesh/local,
+# by name, at their paths there (av-mesh MeshApiSnapshot, b446cb5; held to
+# its source by test_stall_hunt.MeshContract): the fan-out's counters under
+# client_udp.fast_lane (FastLaneSnapshot), the class thread's under
+# relay_session.fast_plane (FastPlaneSnapshot), the stall journal's under
+# stall, the deadline drops in the node's status (/api/node's ingest).
+# Paths are read as they are: a peer's telemetry (relay_nodes[i].*, nodes,
+# peers, ...) is never one of them. scripts/hunt-sampler.sh's MESH_PATHS is
+# the same list (a test says so).
+MESH_PATHS = {
+    **{name: f"stall.{name}" for name in (
+        "tick_threads", "tick_pinned", "tick_late_max_us", "stopped_ms", "starved_ms")},
+    **{name: f"client_udp.fast_lane.{name}" for name in (
+        "fanout_started", "fanout_policies", "fanout_cpus", "fanout_threads",
+        "fanout_first_dispatch_faults", "fanout_dispatch_max_us", "fanout_shed",
+        "fanout_waited", "class_plan_grows", "class_compact_max_us", "class_send_max_us",
+        "class_repair_max_us", "class_arena_warm_bytes")},
+    **{name: f"relay_session.fast_plane.{name}" for name in (
+        "audio_loop_busy_max_us", "audio_loop_busy_over_5ms", "audio_loop_busy_over_50ms",
+        "audio_loop_gap_max_us", "audio_thread_minflt", "audio_thread_majflt",
+        "process_minflt", "process_majflt", "kernel_dropped", "tee_dropped")},
+    **{name: f"status.ingest.{name}" for name in (
+        "audio_deadline_drops", "video_deadline_drops")},
+}
 
 
 def mesh_value(line: dict | None, key: str) -> int | None:
-    """A counter of the line's /api/mesh/local cut, by its name (the last
-    part of its path), this node's own (never under PEER_PATHS); the
-    largest when the name is on several of its own paths."""
-    values = [value for path, value in ((line or {}).get("mesh") or {}).items()
-              if path.split(".")[-1] == key and path.split(".")[0] not in PEER_PATHS
-              and isinstance(value, (int, float))]
-    return int(max(values)) if values else None
+    """A counter of the line's /api/mesh/local cut, by its name, read at
+    its path (MESH_PATHS); None when the line does not have it."""
+    value = ((line or {}).get("mesh") or {}).get(MESH_PATHS[key])
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
+        else None
 
 
 def around(lines: list[dict], start_us: int, end_us: int) -> tuple[dict, dict] | None:

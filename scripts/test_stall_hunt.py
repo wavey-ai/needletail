@@ -597,11 +597,16 @@ class FakeService(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - the handler's name
         path, _, query = self.path.partition("?")
         if path == "/api/mesh/local":
+            # As av-mesh serves it (MeshApiSnapshot): the fan-out's counters
+            # under client_udp.fast_lane, the class thread's under
+            # relay_session.fast_plane, the node's status (ingest) beside.
             body = {"relay_session": {"fast_plane": {"audio_loop_busy_max_us": 812,
                                                      "audio_thread_minflt": 3,
-                                                     "duplicates": 5},
-                                      "edge_clients": {"fanout_started": 2,
-                                                       "fanout_policies": 1}},
+                                                     "duplicates": 5}},
+                    "client_udp": {"subscribers": 4,
+                                   "fast_lane": {"fanout_started": 2, "fanout_policies": 1,
+                                                 "class_arena_warm_bytes": 33554432}},
+                    "status": {"ingest": {"audio_deadline_drops": 0, "tee_dropped": 9}},
                     "stall": {"stopped_ms": 0},
                     # Every peer's telemetry rides on /api/mesh/local too.
                     "relay_nodes": [{"relay_session": {"fast_plane": {
@@ -628,12 +633,36 @@ class FakeService(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class MeshContract(unittest.TestCase):
+    """The counters the hunt reads from /api/mesh/local: one list in the
+    sampler and in stall_records, each path served by av-mesh, and those
+    its tooling contract test names among them."""
+
+    def test_the_sampler_and_the_reader_name_the_same_paths(self):
+        text = hunt_tool.SAMPLER.read_text()
+        listed = json.loads(text.split("MESH_PATHS='", 1)[1].split("'", 1)[0])
+        self.assertEqual(listed, list(hunt_tool.stall_records.MESH_PATHS.values()))
+        self.assertEqual([path for path in listed if "edge_clients" in path], [])
+
+    def test_av_mesh_serves_every_path(self):
+        import av_mesh_contract
+        root = av_mesh_contract.root()
+        if root is None:
+            self.skipTest("NEEDLETAIL_AV_MESH_ROOT is not set")
+        served = av_mesh_contract.mesh_local_paths(root)
+        paths = [path.replace(".", "/") for path in hunt_tool.stall_records.MESH_PATHS.values()]
+        self.assertEqual([path for path in paths if path not in served], [])
+        # Every counter av-mesh's contract test names for the hunt is read.
+        named = av_mesh_contract.contract(root)["mesh_local"]
+        self.assertEqual(sorted(named - set(paths)), [])
+
+
 class Sampler(unittest.TestCase):
     def test_the_sampler_writes_the_class_thread_s_view_each_second(self):
         """scripts/hunt-sampler.sh for 11 s against a sleeping process of
         this machine (its own /proc) and a fake service: a line a second
         with the thread's schedstat, switches and CPU, vmstat, MemFree,
-        every thread, the counters cut from /api/mesh/local by name; the
+        every thread, the counters cut from /api/mesh/local at their paths; the
         stall journal read every tenth second from the last event + 1, and
         once more at the end; the slow path's lines."""
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeService)
@@ -673,8 +702,10 @@ class Sampler(unittest.TestCase):
         self.assertEqual(first["mesh"], {
             "relay_session.fast_plane.audio_loop_busy_max_us": 812,
             "relay_session.fast_plane.audio_thread_minflt": 3,
-            "relay_session.edge_clients.fanout_started": 2,
-            "relay_session.edge_clients.fanout_policies": 1,
+            "client_udp.fast_lane.fanout_started": 2,
+            "client_udp.fast_lane.fanout_policies": 1,
+            "client_udp.fast_lane.class_arena_warm_bytes": 33554432,
+            "status.ingest.audio_deadline_drops": 0,
             "stall.stopped_ms": 0})
         gaps = [(b["t_us"] - a["t_us"]) / 1e6 for a, b in zip(lines, lines[1:])]
         self.assertTrue(all(0.8 < gap < 1.6 for gap in gaps), gaps)
