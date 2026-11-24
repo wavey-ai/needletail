@@ -96,6 +96,38 @@ def verdict(nt, lk, higher_better: bool) -> str:
     return "win" if (nt > lk) == higher_better else "loss"
 
 
+def rss_by_step(session: str) -> dict:
+    """{step: {node: [MB at the step's start, peak MB in it]}}: each mesh
+    node's av-mesh resident memory (the 1 s sampler's RSS), so that a memory
+    or window fault shows beside the frames it cost (lead, 24 Nov)."""
+    import re
+    base = run.RUNS / session
+    series = {}
+    for path in sorted((base / "samplers").glob("*.log")):
+        parts = path.name.split(".")
+        if len(parts) != 3:          # NODE.UNIX.log only: the CPU sampler
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            m = re.match(r"(\d+\.\d+) cpu .*?\| av-mesh \d+ \d+ (\d+)", line)
+            if m:
+                series.setdefault(parts[0], []).append((float(m.group(1)), int(m.group(2)) // 1024))
+    out = {}
+    for meta_path in sorted(base.glob("*/meta.json")):
+        meta = json.loads(meta_path.read_text())
+        start = meta.get("started_unix")
+        if start is None:
+            continue
+        end = start + float(meta.get("seconds") or 0)
+        nodes = {}
+        for node, rows in series.items():
+            inside = [mb for t, mb in rows if start <= t <= end]
+            before = [mb for t, mb in rows if t <= start]
+            if inside:
+                nodes[node] = [before[-1] if before else inside[0], max(inside)]
+        out[meta_path.parent.name] = nodes
+    return out
+
+
 def board(analysis: dict, session: str, host_stops: dict | None) -> dict:
     steps = analysis["sessions"][session]["steps"]
     rungs = sorted({s["rung"] for s in steps.values() if s.get("phase") == "throughput"}, key=rung_mbit)
@@ -144,7 +176,8 @@ def board(analysis: dict, session: str, host_stops: dict | None) -> dict:
                              "livekit_stopped": lk.get("host_stopped") if lk else None,
                              "result": verdict(None if a is None else round(a, 1),
                                                None if b is None else round(b, 1), higher)})
-    return {"session": session, "rungs": rungs, "ceilings": ceilings, "rows": rows}
+    return {"session": session, "rungs": rungs, "ceilings": ceilings, "rows": rows,
+            "rss_mb": rss_by_step(session)}
 
 
 def markdown(b: dict) -> str:
@@ -189,6 +222,18 @@ def markdown(b: dict) -> str:
                    f"{cell(row['needletail'], first and _whole(b, row, 'needletail'), row['needletail_stopped'])} | "
                    f"{cell(row['livekit'], first and _whole(b, row, 'livekit'), row['livekit_stopped'])} | "
                    f"{row['result']} |")
+    rss = b.get("rss_mb") or {}
+    steps = [f"nt.throughput.{r}" for r in b["rungs"] if rss.get(f"nt.throughput.{r}")]
+    if steps:
+        nodes = sorted({n for st in steps for n in rss[st]})
+        out.append("")
+        out.append("**Needletail's memory in each step** (av-mesh resident MB at the step's start → its peak, "
+                   "1 s sampler):\n")
+        out.append("| Node | " + " | ".join(st.split(".")[-1][5:] + " Mbit/s" for st in steps) + " |")
+        out.append("| --- |" + " ---: |" * len(steps))
+        for node in nodes:
+            cells = [f"{rss[st][node][0]} → {rss[st][node][1]}" if node in rss[st] else "–" for st in steps]
+            out.append(f"| {node} | " + " | ".join(cells) + " |")
     return "\n".join(out) + "\n"
 
 

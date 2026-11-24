@@ -778,9 +778,22 @@ def carried_by(session: Session, step_name: str, seconds: int, site: str, label:
         return bool(verdicts) and all(verdicts)
 
 
-def throughput(session: Session, lane: Lane, seconds: int, rungs: list[str] | None = None) -> None:
+def rung_seconds(session: Session, rung: str, seconds: int) -> int:
+    """A throughput step's length: --long-seconds from --long-from-mbit up
+    (lead, 24 Nov: 40 s cannot show a memory or window fault, which the
+    resilient-mesh build's showed in its second minute at 160 Mbit/s)."""
+    try:
+        rate = int(rung.split("p", 1)[1])
+    except (IndexError, ValueError):
+        return seconds
+    long = getattr(session, "long_seconds", 0) or 0
+    return max(seconds, long) if long and rate >= getattr(session, "long_from_mbit", 160) else seconds
+
+
+def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str] | None = None) -> None:
     failed = 0
     for rung in rungs or THROUGHPUT:
+        seconds = rung_seconds(session, rung, base_seconds)
         try:
             lane.start(rung)
         except RuntimeError as error:
@@ -878,6 +891,10 @@ def main() -> None:
     parser.add_argument("--phases", default="baseline,ttff,impair,fanout,ramp")
     parser.add_argument("--seconds", type=int, default=60, help="length of the baseline")
     parser.add_argument("--rungs", default="", help="rungs of the throughput sweep (default all)")
+    parser.add_argument("--long-seconds", type=int, default=0,
+                        help="throughput steps of this many seconds from --long-from-mbit up (0: all at the "
+                             "base length, 40 s)")
+    parser.add_argument("--long-from-mbit", type=int, default=160)
     parser.add_argument("--audio", choices=("pcm", "flac", "off"), default="pcm",
                         help="the Needletail lane's 1 ms audio source, on before the probes start: "
                              "pcm (the audio headline's lane, stream 4001, with an LL-HLS and a UDP "
@@ -889,6 +906,7 @@ def main() -> None:
     refuse_livekit_cloud(args.lanes.split(","))
     session = Session(args.session)
     session.rungs = args.rungs.split(",") if args.rungs else None
+    session.long_seconds, session.long_from_mbit = args.long_seconds, args.long_from_mbit
     session.pace = args.pace
     session.audio = args.audio
     started = time.time()
