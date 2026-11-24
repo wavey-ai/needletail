@@ -23,6 +23,8 @@ Subcommands:
   restart   --nodes a,b: one node at a time, gated, on its recorded build
             (--rollback: its previous arguments); --roles: every node of a
             role at once, re-rendered from the current settings
+  replace   --nodes X --budget-usd B: X on a new disk (or --mode new: a new
+            instance), gated, on its tier's recorded build (C 3.7)
   start     --nodes a,b: take held-out nodes (standby edges, autoscale
             slots) into service and start them, and nothing else
   stop      --nodes a,b: hold nodes out and stop their service, and nothing
@@ -73,6 +75,7 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -3645,6 +3648,19 @@ def lab_tool():
 # What the deploy calls of the lab tool in-process (C CT3).
 LAB_TOOL_CALLS = ("change_state", "watchdog_ensure")
 
+# What `replace` calls of the lab tool in-process to find, before it
+# touches the node, what the lab tool's replace and add would refuse (C
+# CT3): LinodeOps.lab_refusals.
+REPLACE_LAB_CALLS = ("watchdog_problems", "MAX_LIFE_HOURS", "ADD_CUTOFF_S", "without_sites",
+                     "Api", "owned_instance", "topology_cost", "lab_ceilings", "lab_hourly",
+                     "removed_record", "held_to_budget")
+
+# How long after a replace begins its last create or rebuild may come:
+# a forwarder's slot created, pushed and ready, the forwarder drained to no
+# pairs and gated (C 3.7). The lab's watchdog must be at least this beyond
+# the lab tool's own cutoff (ADD_CUTOFF_S) when the replace begins.
+REPLACE_LEAD_S = 1200
+
 
 def lab_tool_checked() -> None:
     """Exit 2, before anything is touched, when the lab tool lacks the
@@ -3660,12 +3676,51 @@ def lab_tool_checked() -> None:
 def run_lab(*arguments: str) -> subprocess.CompletedProcess:
     """The lab tool's command line, for what bills (replace, add, remove):
     its own watchdog and budget checks apply. Its output goes to stderr
-    (a change command's stdout is its marks)."""
-    result = subprocess.run([sys.executable, str(common.ROOT / "scripts" /
-                                                 "linode-small-mesh-lab.py"), *arguments],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            check=False)
-    sys.stderr.write(result.stdout)
+    (a change command's stdout is its marks).
+
+    The lab tool runs a sequence of billing API calls (a create and then
+    its state write, a rebuild and then its config and boot), so no signal
+    of this command may cut it: it is spawned in a session of its own with
+    no signal blocked (signals are held in this process across the spawn,
+    so an interrupt cannot land between the fork and its pid), and an
+    interrupt of this command (the engine's Interrupted, or Ctrl-C) waits
+    for it to end, by its own timeouts, and is raised after its result is
+    read."""
+    command = [sys.executable, str(common.ROOT / "scripts" / "linode-small-mesh-lab.py"),
+               *arguments]
+    read_end, write_end = os.pipe()
+    try:
+        with mesh_ops.signals_held():
+            pid = os.posix_spawn(command[0], command, os.environ, setsid=True, setsigmask=(),
+                                 setsigdef=(signal.SIGINT, signal.SIGTERM, signal.SIGHUP,
+                                            signal.SIGPIPE),
+                                 file_actions=[(os.POSIX_SPAWN_DUP2, write_end, 1),
+                                               (os.POSIX_SPAWN_DUP2, write_end, 2),
+                                               (os.POSIX_SPAWN_CLOSE, read_end)])
+    finally:
+        os.close(write_end)
+    chunks: list[bytes] = []
+    interrupted: BaseException | None = None
+    status = None
+    with os.fdopen(read_end, "rb") as output:
+        while status is None:
+            try:
+                chunk = output.read1(65536)
+                if chunk:
+                    chunks.append(chunk)
+                    continue
+                status = os.waitpid(pid, 0)[1]
+            except (mesh_ops.Interrupted, KeyboardInterrupt) as caught:
+                if interrupted is None:
+                    print(f"interrupted ({caught!r}): the lab tool's {arguments[0]} runs to its "
+                          "end first (it is never cut part-way through a create or a rebuild)",
+                          file=sys.stderr, flush=True)
+                interrupted = caught
+    text = b"".join(chunks).decode(errors="replace")
+    sys.stderr.write(text)
+    result = subprocess.CompletedProcess(command, os.waitstatus_to_exitcode(status), text)
+    if interrupted is not None:
+        raise interrupted
     return result
 
 
@@ -4085,6 +4140,8 @@ class LinodeOps(mesh_ops.Ops):
                 raise mesh_ops.Refused(f"--set {', '.join(sorted(self.given))} changes "
                                        f"{', '.join(beyond)}, outside the nodes of this {command}")
             self.fold()
+        if command == "replace":
+            self.check_replace(nodes[0])
 
     def changed_by_set(self) -> list[str]:
         """The nodes that run (recorded, not held out) whose arguments or
@@ -4452,10 +4509,203 @@ class LinodeOps(mesh_ops.Ops):
             common.ssh_text(record, f"systemctl stop {service}.service")
 
     # ---------------------------------------------------------- instances (replace)
+    # The replace this command makes (command_replace): {"mode", "no_slot",
+    # "resume", "budget_usd", "spent_before_usd"}; None for every other
+    # command.
+    replacing: dict | None = None
+
+    @property
+    def budget_args(self) -> tuple[str, ...]:
+        """`--budget-usd B [--spent-before-usd S]` of the replace, passed to
+        the lab tool's replace and add, which hold every create to them."""
+        if self.replacing is None:
+            return ()
+        spent = self.replacing["spent_before_usd"]
+        return ("--budget-usd", str(self.replacing["budget_usd"])) + (
+            ("--spent-before-usd", str(spent)) if spent is not None else ())
+
+    def check_replace(self, name: str) -> None:
+        """What `replace` refuses before its first mark, under the ops lock
+        and after the reproduce check (C 3.7: "the watchdog and the budget
+        checked first"): a new instance whose public address other nodes'
+        arguments name, and anything the lab tool would refuse once X was
+        emptied and stopped (lab_refusals). A resume after the lab tool's
+        replace was done needs nothing more of it (the slot's `remove`
+        refuses nothing that matters), so a node left stopped near the
+        deadline can still be pushed back."""
+        if self.replacing["mode"] == "new":
+            try:
+                dependents = self.address_dependents(name)
+            except mesh_ops.Refused:
+                raise
+            except Exception as error:  # noqa: BLE001 - a render or a fetch: refused
+                raise mesh_ops.Refused(f"the nodes that name {name}'s public address could not "
+                                       f"be rendered: {error}") from None
+            if dependents:
+                raise mesh_ops.Refused(
+                    f"replace --mode new: the arguments of {', '.join(dependents)} name {name}'s "
+                    f"public address, which a new instance changes; they and it cannot agree "
+                    f"while {name} is replaced, so no gate or readiness could pass between them. "
+                    "--mode rebuild keeps both addresses. Two forwarders that `lab hosts` found "
+                    "on one physical host need a new instance: in this round that is an outage "
+                    f"(the lab tool's `replace {name} --mode new`, then `push` of {name} and "
+                    "these nodes)")
+        if self.replacing["resume"]:
+            journals = [journal for journal in mesh_ops.Journal.unfinished(self.evidence_dir,
+                                                                           "replace")
+                        if journal.data.get("label") == f"replace.{name}"]
+            done = ((journals[0].data.get("context") or {}).get("done_steps") or []) \
+                if journals else []
+            if "rebuild" in done:
+                return  # the lab tool has nothing left to create or rebuild
+        problems = self.lab_refusals(name)
+        if problems:
+            raise mesh_ops.Refused("the lab tool would refuse this replace after "
+                                   f"{name} was emptied and stopped: " + "; ".join(problems))
+
+    def replace_slot(self, name: str) -> str | None:
+        """The slot a forwarder's replace creates (the engine's choice: the
+        first forwarder slot of its region), None when it creates none."""
+        if self.replacing["no_slot"] or mesh_ops.ROLE_TIER.get(self.role(name)) != "forwarders":
+            return None
+        site = (self.full["nodes"].get(name) or {}).get("site")
+        slots = sorted((slot for slot, spec in lab_slots(self.full).items()
+                        if spec["site"] == site and spec["role"] == "distributor"),
+                       key=mesh_ops.natural)
+        return slots[0] if slots and slots[0] not in self.full["nodes"] else None
+
+    def lab_refusals(self, name: str) -> list[str]:
+        """The lab tool's own refusals of this replace's `replace NAME`
+        and, for a forwarder, its slot's `add`, checked now with the lab
+        tool's functions (C CT3), since the engine reaches the lab tool only
+        after the node was emptied and stopped: the watchdog (armed, its
+        unit active, within the lab's life, and its deadline far enough
+        ahead for the whole replace: REPLACE_LEAD_S beyond the lab tool's
+        ADD_CUTOFF_S); the node's VLAN address as the topology gives it;
+        its live instance carrying the run's tag and its label; and, for
+        every instance created (`--mode new`, the slot), dedicated plans in
+        regions that are up, the node and hourly ceilings that `up`
+        recorded, and the budget with the new instances (the node deleted
+        now is priced to now, as the lab tool prices it). The API token
+        stays inside the lab tool's Api."""
+        lab = lab_tool()
+        state = self.full
+        now = time.time()
+        problems = list(lab.watchdog_problems(state, now, lab.MAX_LIFE_HOURS))
+        deadline = state.get("watchdog_deadline_unix") or 0
+        if not problems and deadline - now < lab.ADD_CUTOFF_S + REPLACE_LEAD_S:
+            problems.append(
+                f"the watchdog deletes the lab in {(deadline - now) / 60:.1f} min: the lab "
+                f"tool's last create or rebuild of a replace comes up to "
+                f"{REPLACE_LEAD_S // 60} min after it begins, and it makes none within "
+                f"{lab.ADD_CUTOFF_S // 60} min of the deadline")
+        if problems:
+            return problems
+        node = state["nodes"].get(name)
+        if node is None:
+            return [f"{name} is not created: there is nothing to replace"]
+        topology = json.loads(pathlib.Path(state["topology_file"]).read_text())
+        known = {item["site"] for item in topology["nodes"]}
+        topology = lab.without_sites(topology, [site for site in state.get("sites_left_out", [])
+                                                if site in known])
+        spec = next((dict(item) for item in topology["nodes"] if item["name"] == name), None)
+        if spec is None:
+            return [f"{name} is not a node of the lab's topology {state['topology_file']}"]
+        if (spec.get("vlan_ipv4") or "").split("/")[0] != (node.get("vlan_ipv4") or ""):
+            return [f"the topology gives {name} the VLAN address {spec.get('vlan_ipv4')}, the "
+                    f"lab made it at {node.get('vlan_ipv4')}"]
+        api = lab.Api()
+        try:
+            live = lab.owned_instance(api, state, name, "replace")
+        except SystemExit as refused:
+            return [str(refused)]
+        mode = self.replacing["mode"]
+        if mode == "rebuild" and not live:
+            return [f"{name}: the instance is gone, there is nothing to rebuild"]
+        slot = self.replace_slot(name)
+        new = ([spec] if mode == "new" else []) + (
+            [dict(lab_slots(state)[slot])] if slot else [])
+        if not new:
+            return []
+        types = {item["id"]: item for item in api.list_all("/linode/types")}
+        regions = {item["id"]: item for item in api.list_all("/regions")}
+        _hourly, problems = lab.topology_cost({"nodes": new}, types, regions)
+        if problems:
+            return problems
+        max_nodes, max_hourly = lab.lab_ceilings(state)
+        count = len(state["nodes"]) + (1 if slot else 0)
+        if count > max_nodes:
+            problems.append(f"the lab would have {count} nodes; the ceiling that up recorded is "
+                            f"{max_nodes}")
+        hourly = lab.lab_hourly(state) + sum(item["_hourly"] for item in new) - (
+            node.get("hourly_usd", 0.0) if mode == "new" else 0.0)
+        if hourly > max_hourly + 1e-9:
+            problems.append(f"the lab would cost ${hourly:.4f}/hour; the ceiling that up "
+                            f"recorded is ${max_hourly:.2f}")
+        after = state if mode == "rebuild" else {
+            **state, "nodes": {other: item for other, item in state["nodes"].items()
+                               if other != name},
+            "removed": [*state.get("removed", []), lab.removed_record(state, node, now)]}
+        try:
+            lab.held_to_budget("replace", api, after,
+                               [{"name": item["name"], "hourly_usd": item["_hourly"]}
+                                for item in new],
+                               self.replacing["budget_usd"], self.replacing["spent_before_usd"])
+        except SystemExit as refused:
+            problems.append(str(refused))
+        return problems
+
     def rebuild(self, node: str, mode: str) -> None:
-        if run_lab("replace", node, "--mode", mode).returncode != 0:
+        """The lab tool's `replace NODE --mode M` with the command's budget,
+        then the host's key forgotten (common.forget_host) at its address
+        before and after: a rebuild keeps the address and changes the key, a
+        new instance has another address. The state is read again and the
+        keys forgotten whatever the lab tool's result, an interrupt
+        included, for it may have rebuilt part-way. A `--mode new` whose
+        create failed after the delete leaves the node absent from the lab:
+        named, with the way back."""
+        old = (self.full["nodes"].get(node) or {}).get("public_ipv4")
+        try:
+            result = run_lab("replace", node, "--mode", mode, *self.budget_args)
+        finally:
+            self.reload()
+            common.forget_host(old, (self.full["nodes"].get(node) or {}).get("public_ipv4"))
+        if node not in self.full["nodes"]:
+            again = (f"`linode-small-mesh-lab.py add {node}`" if node in lab_slots(self.full)
+                     else "`linode-small-mesh-lab.py grow --topology "
+                          f"{self.full.get('topology_file')}` (it creates every topology node "
+                          "the lab lacks)")
+            raise RuntimeError(
+                f"the lab tool deleted {node} and did not create it again: {node} is gone. "
+                f"Create it with {again} and the budget, then `replace --nodes {node} --mode "
+                "rebuild --resume`")
+        if result.returncode != 0:
             raise RuntimeError(f"the lab tool's replace of {node} failed")
-        self.reload()
+
+    def address_dependents(self, node: str) -> list[str]:
+        """The running nodes (recorded, not held out) whose arguments name
+        `node`'s public address: each rendered on its recorded build with
+        that address and with another (TEST-NET-1), the ones that differ.
+        What a new instance of `node` (`replace --mode new`) would make
+        restart-bound (C 3.7); peers that name it by its VLAN address are
+        not among them."""
+        other = json.loads(json.dumps(self.full))
+        other["nodes"][node]["public_ipv4"] = "192.0.2.1"
+        moved = LinodeOps(other, self.base)
+        out = []
+        for name in sorted(self.deployed().get("nodes") or {}, key=mesh_ops.natural):
+            key = self.recorded(name)
+            if name == node or name not in self.full["nodes"] or self.held_out(name) \
+                    or key is None:
+                continue
+            settings = self.node_settings(name)
+            try:
+                here = self.node_args(name, settings, key)[0]
+            except mesh_ops.Refused:
+                continue  # no service (a backbone the topology does not use)
+            if render_sha256(here) != render_sha256(moved.node_args(name, settings, key)[0]):
+                out.append(name)
+        return out
 
     def push(self, node: str) -> None:
         """Bootstrap, the node's tier's recorded build, its arguments, start;
@@ -4466,18 +4716,31 @@ class LinodeOps(mesh_ops.Ops):
         self.install([node], None)
 
     def add_slot(self, node: str) -> None:
-        failed = run_lab("add", node).returncode != 0
-        self.reload()
+        """The lab tool's `add` with the budget, then the slot pushed. Its
+        address may have been another instance's (Linode gives released
+        addresses out again): forgotten before the push."""
+        try:
+            failed = run_lab("add", node, *self.budget_args).returncode != 0
+        finally:
+            self.reload()
         if node not in self.full["nodes"]:
             raise mesh_ops.Refused(f"the lab tool did not create {node}")
         if failed:
             raise RuntimeError(f"the lab tool's add of {node} failed part-way")
+        common.forget_host(self.full["nodes"][node]["public_ipv4"])
         self.push(node)
 
     def remove_slot(self, node: str) -> None:
-        if node in self.full["nodes"] and run_lab("remove", node).returncode != 0:
-            raise RuntimeError(f"the lab tool's remove of {node} failed")
-        self.reload()
+        """The lab tool's `remove`; the slot's address forgotten (another
+        instance may get it)."""
+        address = (self.full["nodes"].get(node) or {}).get("public_ipv4")
+        try:
+            if node in self.full["nodes"] and run_lab("remove", node).returncode != 0:
+                raise RuntimeError(f"the lab tool's remove of {node} failed")
+        finally:
+            self.reload()
+        if node not in self.full["nodes"]:
+            common.forget_host(address)
 
 
 def linode_ops(args: argparse.Namespace) -> LinodeOps:
@@ -4663,6 +4926,41 @@ def command_roll(args: argparse.Namespace) -> None:
     ops = linode_ops(args)
     sys.exit(mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
                            options=engine_options(args), resume=args.resume))
+
+
+def command_replace(args: argparse.Namespace) -> None:
+    """`replace --nodes X` (C 3.7): one node on a new disk (`--mode
+    rebuild`, the default: both addresses kept) or a new instance (`--mode
+    new`), through the engine (mesh_ops.replace): an edge emptied first, a
+    forwarder through its region's slot (`--no-slot`: without), a
+    contributor through workstream A's gate and readiness; then pushed on
+    its tier's recorded build. Every instance the lab tool rebuilds or
+    creates (the node, the slot) is held to `--budget-usd` and
+    `--spent-before-usd`. Before the first mark, under the ops lock
+    (LinodeOps.check_replace): a new instance whose public address other
+    nodes' arguments name (a compiled forwarder: its parents'
+    --relay-forward, its children's peers, the other regions'
+    --failover-entry) is refused, naming them, for their arguments and its
+    address cannot agree while it is replaced; and so is a replace that
+    the lab tool would refuse once the node was emptied and stopped (the
+    watchdog, the instance's tag, the ceilings, the budget). stdout carries
+    the change's two marks only; the exit status is the engine's."""
+    names = names_of(args.nodes) or []
+    if len(names) != 1:
+        print("replace --nodes takes one node", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    name = names[0]
+    ops = linode_ops(args)
+    missing = [call for call in REPLACE_LAB_CALLS if not hasattr(lab_tool(), call)]
+    if missing:
+        print(f"scripts/linode-small-mesh-lab.py has no {', '.join(missing)}: replace checks "
+              "the lab tool's refusals before it touches the node (C CT3)", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    ops.replacing = {"mode": args.mode, "no_slot": args.no_slot, "resume": args.resume,
+                     "budget_usd": args.budget_usd, "spent_before_usd": args.spent_before_usd}
+    sys.exit(mesh_ops.replace(ops, name, mode=args.mode, no_slot=args.no_slot,
+                              keep_slot=args.keep_slot, resume=args.resume,
+                              options=engine_options(args)))
 
 
 def contributor_changes():
@@ -4910,6 +5208,32 @@ def main() -> None:
     roll.add_argument("--sites", default=None)
     change_options(roll)
     roll.set_defaults(handler=command_roll)
+    replace = sub.add_parser("replace", help="one node on a new disk or a new instance, "
+                                             "gated (C 3.7)")
+    replace.add_argument("--nodes", required=True, help="the node to replace (one)")
+    replace.add_argument("--mode", choices=("rebuild", "new"), default="rebuild",
+                         help="rebuild: a new disk, both addresses kept (the lab tool's "
+                              "replace); new: a new instance with a new public address")
+    replace.add_argument("--no-slot", action="store_true",
+                         help="a forwarder without its region's slot standing in")
+    replace.add_argument("--keep-slot", action="store_true",
+                         help="leave the slot stopped afterwards, not deleted")
+    replace.add_argument("--budget-usd", type=float, required=True,
+                         help="what the work may cost in all, for the lab tool's creates")
+    replace.add_argument("--spent-before-usd", type=float, default=None,
+                         help="what the work cost before this lab (the lab tool's default)")
+    replace.add_argument("--marks", default=None, help="append the change's two marks here")
+    replace.add_argument("--node-marks", default=None, help="per-node marks go here")
+    replace.add_argument("--resume", action="store_true",
+                         help="go on after the last step done of a cut-off replace of the node")
+    replace.add_argument("--adopt-settings", action="store_true",
+                         help="go on with settings that do not reproduce what is deployed")
+    replace.add_argument("--gate-timeout-s", type=float, default=30.0)
+    replace.add_argument("--drain-timeout-s", type=float, default=30.0)
+    replace.add_argument("--ready-timeout-s", type=float, default=60.0)
+    replace.add_argument("--surge", choices=("auto", "never"), default="auto")
+    replace.add_argument("--parity-ms", type=float, default=1.0)
+    replace.set_defaults(handler=command_replace, on_failure="stop", video_gap="refuse")
     change = sub.add_parser("change", help="workstream A's contributor and ingress changes")
     change.add_argument("kind")
     change.add_argument("arguments", nargs=argparse.REMAINDER)

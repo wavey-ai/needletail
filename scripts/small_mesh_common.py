@@ -105,6 +105,23 @@ def ssh_text(node: dict, command: str, **kwargs) -> str:
     return ssh(node, command, **kwargs).stdout.decode(errors="replace").strip()
 
 
+def forget_host(*addresses: str | None) -> None:
+    """A host whose key changed: a rebuilt instance keeps its address and
+    gets a new host key, and Linode gives a released address to another
+    instance. Each address's entries go from the worktree's known_hosts
+    (`ssh-keygen -R`, plain and hashed) and its ssh control connection is
+    closed (`ssh -O exit`, which only speaks to a master that exists), so
+    that the next ssh learns the new key once (accept-new) and does not
+    reuse a connection to the old host."""
+    for address in sorted({address for address in addresses if address}):
+        subprocess.run(["ssh", *ssh_base(), "-O", "exit", f"root@{address}"],
+                       capture_output=True, timeout=15, check=False)
+        if KNOWN_HOSTS.is_file():
+            subprocess.run(["ssh-keygen", "-R", address, "-f", str(KNOWN_HOSTS)],
+                           capture_output=True, timeout=30, check=False)
+            KNOWN_HOSTS.with_name(KNOWN_HOSTS.name + ".old").unlink(missing_ok=True)
+
+
 def rsync_to(node: dict, sources: list[str], destination: str,
              timeout: int = 900) -> None:
     command = [
