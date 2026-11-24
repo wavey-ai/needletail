@@ -159,6 +159,49 @@ class Slices(Base):
         self.assertFalse((run_dir / "scenarios/two/node-logs/lon-dist-a.log").exists())
         self.assertEqual((logs / "lon-dist-a.log").read_text(), "new log\n", "the lab's log is kept")
 
+    def test_a_log_made_again_under_the_same_inode_and_longer_is_copied_whole(self):
+        # ext4 gives a log that `up` deleted and the service made again the
+        # same inode number; written in place here, which keeps the inode
+        # for certain. The new log is longer than the old offset.
+        logs = self.dir / "logs"
+        logs.mkdir()
+        log = logs / "lon-edge-1.log"
+        log.write_text("".join(f"old pass line {i}\n" for i in range(10)))
+        slices = archived_run.LogSlices(logs)
+        slices.mark()
+        inode = log.stat().st_ino
+        new = "".join(f"new pass line {i}\n" for i in range(40))
+        with open(log, "w") as handle:
+            handle.write(new)
+        self.assertEqual(log.stat().st_ino, inode)
+        with archived_run.Run("r6", "local-lab", "latency-bench", argv=["x"]) as run:
+            slices.take(run, "p2/node-logs")
+            with open(log, "a") as handle:
+                handle.write("more\n")
+            slices.take(run, "p3/node-logs")
+        self.assertEqual((self.root / "r6/p2/node-logs/lon-edge-1.log").read_text(), new)
+        self.assertEqual((self.root / "r6/p3/node-logs/lon-edge-1.log").read_text(), "more\n")
+
+    def test_a_long_log_is_known_by_its_first_bytes(self):
+        logs = self.dir / "logs"
+        logs.mkdir()
+        log = logs / "lon-edge-1.log"
+        old = b"".join(b"2026-11-24T00:00:00Z line %05d\n" % i for i in range(400))
+        self.assertGreater(len(old), archived_run.LogSlices.HEAD_BYTES)
+        log.write_bytes(old)
+        slices = archived_run.LogSlices(logs)
+        slices.mark()
+        with archived_run.Run("r7", "local-lab", "latency-bench", argv=["x"]) as run:
+            with open(log, "ab") as handle:
+                handle.write(b"tail line\n")
+            slices.take(run, "one")
+            with open(log, "r+b") as handle:
+                handle.write(b"3")
+            slices.take(run, "two")
+        self.assertEqual((self.root / "r7/one/lon-edge-1.log").read_bytes(), b"tail line\n")
+        self.assertEqual((self.root / "r7/two/lon-edge-1.log").read_bytes(),
+                         b"3" + old[1:] + b"tail line\n")
+
 
 if __name__ == "__main__":
     unittest.main()

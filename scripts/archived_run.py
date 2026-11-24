@@ -28,6 +28,7 @@ the one way the tools do it:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 import shutil
@@ -210,15 +211,45 @@ class Run:
         return False
 
 
+def head_digest(path: pathlib.Path, length: int) -> str | None:
+    """sha256 of a file's first `length` bytes; None when it cannot be read
+    or is shorter."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(length)
+    except OSError:
+        return None
+    return hashlib.sha256(head).hexdigest() if len(head) == length else None
+
+
 class LogSlices:
     """The local lab's node logs into a run, slice by slice: each slice is
-    what a log gained since the last one (a log that was made again, by the
-    lab's `up`, from its start)."""
+    what a log gained since the last one. A log that was made again (the
+    lab's `up` deletes its logs and the services make them anew) is copied
+    from its start. It is known as the same log only when its inode, its
+    length (no shorter) and its first HEAD_BYTES bytes (or all of them, when
+    it was shorter) are what they were: ext4 hands a deleted log's inode
+    number to the next new file, so the inode alone does not tell."""
+
+    HEAD_BYTES = 4096
 
     def __init__(self, directory, pattern: str = "*"):
         self.directory = pathlib.Path(directory)
         self.pattern = pattern
-        self.seen: dict[str, tuple[int, int]] = {}
+        # name -> (inode, offset, sha256 of the first min(offset, HEAD_BYTES) bytes)
+        self.seen: dict[str, tuple[int, int, str | None]] = {}
+
+    def remember(self, path: pathlib.Path, inode: int, offset: int) -> None:
+        self.seen[path.name] = (inode, offset,
+                                head_digest(path, min(offset, self.HEAD_BYTES)))
+
+    def start_of(self, path: pathlib.Path, stat: os.stat_result) -> int:
+        """Where this log's next slice starts: the offset of the last one,
+        or 0 when it is another log under the same name."""
+        inode, offset, digest = self.seen.get(path.name, (None, 0, None))
+        if inode != stat.st_ino or offset > stat.st_size:
+            return 0
+        return offset if head_digest(path, min(offset, self.HEAD_BYTES)) == digest else 0
 
     def mark(self) -> None:
         """Start the next slice at the logs as they are now."""
@@ -228,7 +259,7 @@ class LogSlices:
             except OSError:
                 continue
             if path.is_file():
-                self.seen[path.name] = (stat.st_ino, stat.st_size)
+                self.remember(path, stat.st_ino, stat.st_size)
 
     def take(self, run: Run, dest: str) -> list[str]:
         """Copy each log's new bytes into the run at dest/<log name>."""
@@ -241,8 +272,7 @@ class LogSlices:
                     continue
                 if not path.is_file():
                     continue
-                inode, offset = self.seen.get(path.name, (None, 0))
-                start = offset if inode == stat.st_ino and offset <= stat.st_size else 0
+                start = self.start_of(path, stat)
                 if stat.st_size <= start:
                     continue
                 piece = pathlib.Path(staging) / path.name
@@ -250,7 +280,7 @@ class LogSlices:
                     source.seek(start)
                     shutil.copyfileobj(source, out)
                     end = start + out.tell()
-                self.seen[path.name] = (stat.st_ino, end)
+                self.remember(path, stat.st_ino, end)
                 used = run.add_file(piece, f"{dest}/{path.name}", "node-logs",
                                     f"what the node's log gained in this part of the run "
                                     f"(bytes {start} to {end} of {path})", move=True)
