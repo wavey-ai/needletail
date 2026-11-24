@@ -235,12 +235,21 @@ DEFAULT_SETTINGS = {
     # the same sender arrive between two of its fragments. A distributor
     # sends thousands of fragments a second, so a link that reorders packets
     # by a few milliseconds lost most 4K symbols. Zero turns that check off.
+    #
+    # av-mesh grows the receive buffer of each video socket of the fast
+    # plane and of each cache-mesh socket to two seconds of its busiest
+    # second, up to 128 MiB (fix4-video, integration 4): 71 MB at 247 Mbit/s
+    # of 4K, 86 MB at 300. The bootstrap's rmem_max of 64 MiB would cap
+    # SO_RCVBUF below that; av-mesh then needs SO_RCVBUFFORCE (CAP_NET_ADMIN).
+    # 128 MiB lets the buffer be asked for without it. It is a bound, not
+    # memory: the kernel charges a buffer only while datagrams wait in it.
     "node_sysctls": {
         "net.ipv4.tcp_congestion_control": "bbr",
         "net.ipv4.tcp_slow_start_after_idle": "0",
         "net.ipv4.ipfrag_time": "1",
         "net.ipv4.ipfrag_high_thresh": "67108864",
         "net.ipv4.ipfrag_max_dist": "0",
+        "net.core.rmem_max": "134217728",
     },
     "path_loss_ppm": 20000,
     # The contributor's legacy AEP1 lanes (wave 7 item 1): each AEP1 epoch

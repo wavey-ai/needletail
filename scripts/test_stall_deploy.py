@@ -100,6 +100,21 @@ class Units(Base):
         with self.assertRaises(SystemExit):
             self.settings(["mlock=all"])
 
+    def test_mesh_nodes_allow_receive_buffers_of_128_mib(self):
+        """fix4-video and integration 4: av-mesh grows its video and
+        cache-mesh sockets' receive buffers to two seconds of their busiest
+        second, up to 128 MiB, so every mesh node renders
+        net.core.rmem_max=134217728 in its kernel settings (above the
+        bootstrap's 64 MiB); a settings file may still override it."""
+        settings = self.settings()
+        self.assertEqual(deploy.node_sysctls(settings)["net.core.rmem_max"], "134217728")
+        sysctl = deploy.node_files(["x"], "unit", settings)["sysctl"]
+        self.assertIn("net.core.rmem_max = 134217728\n", sysctl)
+        self.assertEqual(deploy.node_sysctls({"node_sysctls": {"net.core.rmem_max": "268435456"}})
+                         ["net.core.rmem_max"], "268435456")
+        self.assertNotIn("net.core.rmem_max",
+                         deploy.node_sysctls({"node_sysctls": {"net.core.rmem_max": ""}}))
+
     def test_check_unit_only_when_set(self):
         """D 2.4: no check unit, no Wants= and no --node-warm-file by
         default (no placebo); node_check_seconds or node_warm render all
