@@ -2315,7 +2315,7 @@ class LinodeBackendTests(unittest.TestCase):
 
     def test_nothing_is_pushed_to_a_slot_without_the_lab_firewall(self):
         deployed = []
-        self.backend.deploy = lambda verb, names: deployed.append((verb, names))
+        self.backend.deploy = lambda verb, names, *extra: deployed.append((verb, names, *extra))
         with mock.patch.object(self.backend, "api", lambda: object()), \
                 mock.patch.object(self.backend.lab, "firewall_attached",
                                   lambda api, state, name: name != "lon-edge-2"):
@@ -2326,8 +2326,9 @@ class LinodeBackendTests(unittest.TestCase):
                 mock.patch.object(self.backend.lab, "firewall_attached",
                                   lambda api, state, name: True):
             self.backend.push(["lon-edge-1", "lon-edge-2"])
-        # One push of the batch.
-        self.assertEqual(deployed, [("push", "lon-edge-1,lon-edge-2")])
+        # One push of the batch; the controller, not the deploy, decides
+        # what a slow host costs its slots.
+        self.assertEqual(deployed, [("push", "lon-edge-1,lon-edge-2", "--slow-host", "report")])
 
     def test_a_state_without_a_run_tag_is_refused(self):
         self.state["tag"] = ""

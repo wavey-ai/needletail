@@ -830,6 +830,15 @@ def party_markdown() -> str:
         f"- **Cost**: every instance billed whole hours, at least one (`--hours`, default "
         f"{d['hours']:g}: the watchdog's hours). Prices of 22 November: "
         + ", ".join(f"{kind} ${price}" for kind, price in PRICES.items()) + " an hour.",
+        "- **The warm pass at boot** (the deploy's `node_warm`, on since the stall lab of 24 "
+        "November): every host the deploy pushes writes its free memory once before its "
+        "service starts and is not ready before that; the pass is bounded at 300 s for every "
+        "4 GB of the plan (a g6-dedicated-2 took 83 to 95 s on 24 November, one Tokyo edge more "
+        "than 240 s). The lab's push takes that much longer (its hosts warm in parallel, the "
+        "listener hosts' g6-dedicated-8 the longest); a slot the autoscaler creates serves that "
+        "much later after its trigger; the standby edges, warmed at the push, join as fast as "
+        "before. Every measured window starts only once every host reports warm "
+        "(`linode-small-mesh-deploy.py status`: `warm pass: complete on all`).",
         "- **Not counted**: LL-HLS readers (scale-run sizes them), the view hosts' probes "
         "(a few listeners), more long-haul flows than the copies above (workstream D), "
         "LiveKit Cloud.",

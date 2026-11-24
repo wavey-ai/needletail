@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Tests of the deploy settings for the stall instruments (D 2.9, D4): a
 finite LimitMEMLOCK on both services; --mlock in place of --mlock-all; the
-check at boot (its unit, the services' Wants=, --node-warm-file) only
-when set; per-node overrides that reach their node only; --host-tag from
+check at boot (its unit, the services' Wants=, --node-warm-file) on by
+default with the warm pass sized by the plan's memory, off when unset; the
+transparent_hugepage experiment; per-node overrides that reach their node only; --host-tag from
 the lab state's host_uuid, only to a binary that has it; needletail-nodecheck
 on every role; and the lab tool's `hosts`, which flags contributors on one
 host and a region whose edges sit on one host. Offline: no Linode call, no
@@ -115,21 +116,15 @@ class Units(Base):
         self.assertNotIn("net.core.rmem_max",
                          deploy.node_sysctls({"node_sysctls": {"net.core.rmem_max": ""}}))
 
-    def test_check_unit_only_when_set(self):
-        """D 2.4: no check unit, no Wants= and no --node-warm-file by
-        default (no placebo); node_check_seconds or node_warm render all
-        three; a watch longer than push waits for is refused. A check that
-        fails never keeps the service down: the service Wants= it (not
-        Requires=), and any exit of its ExecStart (`-`) counts as done."""
+    def test_check_unit_on_by_default_and_off_when_unset(self):
+        """D 2.4 and integration 4: the warm pass at boot is on by default
+        (hunt11241537), so every service has the check unit, Wants= and
+        After= it, and av-mesh reads its record; node_warm=false with no
+        watch renders none of the three. A check that fails never keeps the
+        service down: the service Wants= it (not Requires=), and any exit of
+        its ExecStart (`-`) counts as done. A watch over 50 s is refused."""
         settings = self.settings()
-        self.assertIsNone(deploy.check_unit_text(settings))
-        self.assertNotIn(CHECK, deploy.unit_text("needletail-mesh", "info", settings))
-        self.assertNotIn("check", deploy.node_files(["x"], "unit", settings))
-        args = self.render()
-        for name, node_args in args.items():
-            self.assertNotIn("--node-warm-file", node_args, name)
-
-        settings = self.settings(["node_check_seconds=30"])
+        self.assertIs(settings["node_warm"], True)
         for service in ("needletail-mesh", "needletail-contrib"):
             unit = deploy.unit_text(service, "info", settings)
             self.assertIn(f"\nWants={CHECK}\nAfter={CHECK}\n", unit, service)
@@ -137,13 +132,9 @@ class Units(Base):
         check = deploy.check_unit_text(settings)
         self.assertIn("Type=oneshot\nRemainAfterExit=yes\n", check)
         self.assertIn("RuntimeDirectory=needletail\nRuntimeDirectoryPreserve=yes\n", check)
-        self.assertIn("TimeoutStartSec=100\n", check)
         self.assertIn("\nExecStart=-/usr/local/bin/needletail-nodecheck boot ", check)
-        self.assertIn("needletail-nodecheck boot --out /run/needletail/node-warm.json \\\n"
-                      "  --check-seconds 30 --max-stop-ms 20 --max-steal-permille 10\n", check)
-        self.assertNotIn("--warm", check)
         self.assertEqual(deploy.node_files(["x"], "unit", settings)["check"], check)
-        args = self.render(["node_check_seconds=30"])
+        args = self.render()
         for name, node_args in args.items():
             if name.startswith("contrib"):
                 self.assertNotIn("--node-warm-file", node_args, name)
@@ -151,18 +142,121 @@ class Units(Base):
                 self.assertEqual(value_of(node_args, "--node-warm-file"),
                                  "/run/needletail/node-warm.json", name)
 
-        check = deploy.check_unit_text(self.settings(["node_warm=true"]))
-        self.assertIn("node-warm.json --warm \\\n  --check-seconds 0 ", check)
-        self.assertIn("TimeoutStartSec=70\n", check)
-        # The longest watch: the stop (20 s) and the check at its timeout
-        # (70 + 50 s) end 10 s inside push's 150 s wait for an activation.
-        check = deploy.check_unit_text(self.settings(["node_check_seconds=50"]))
+        off = self.settings(["node_warm=false"])
+        self.assertIsNone(deploy.check_unit_text(off))
+        self.assertNotIn(CHECK, deploy.unit_text("needletail-mesh", "info", off))
+        self.assertNotIn("check", deploy.node_files(["x"], "unit", off))
+        self.assertEqual(deploy.check_timeout_s(off, None), 0)
+        self.assertEqual(deploy.warm_allowance_s(off, {"type": "g6-dedicated-8"}), 0)
+        for name, node_args in self.render(["node_warm=false"]).items():
+            self.assertNotIn("--node-warm-file", node_args, name)
+
+        # The watch alone, as before: 70 s and the watch, no warm flags.
+        check = deploy.check_unit_text(self.settings(["node_warm=false",
+                                                      "node_check_seconds=30"]))
+        self.assertIn("TimeoutStartSec=100\n", check)
+        self.assertIn("needletail-nodecheck boot --out /run/needletail/node-warm.json \\\n"
+                      "  --check-seconds 30 --max-stop-ms 20 --max-steal-permille 10\n", check)
+        self.assertNotIn("--warm", check)
+        check = deploy.check_unit_text(self.settings(["node_warm=false",
+                                                      "node_check_seconds=50"]))
         self.assertIn("TimeoutStartSec=120\n", check)
         for bad in ("node_check_seconds=51", "node_check_seconds=-1",
                     "node_check_max_stop_ms=x", "node_warm=False", "node_warm=1",
-                    "node_check_seconds=true", "stall_tick_us=false"):
+                    "node_check_seconds=true", "stall_tick_us=false",
+                    "node_warm_max_seconds_per_4gb=0", "node_warm_max_seconds_per_4gb=true",
+                    "node_warm_slow_seconds_per_4gb=0",
+                    "transparent_hugepage=always", "transparent_hugepage=off"):
             with self.subTest(bad), self.assertRaises(SystemExit):
                 self.settings([bad])
+
+    def test_warm_flags_and_timeout_scale_with_the_plan_s_memory(self):
+        """--warm-max-seconds is 300 s for every 4 GB of the plan's memory
+        (g6-dedicated-2: 4 GB, -4: 8 GB, -8: 16 GB), TimeoutStartSec that
+        plus the watch plus 70 s (systemd killing the check would leave no
+        record and the node never ready), and every readiness wait after a
+        boot has the whole TimeoutStartSec on top, longer than the bound; a
+        node of no known plan is taken as 4 GB; slow_host past 180 s for
+        every 4 GB (nodecheck scales it by MemTotal) or a 1 s page write;
+        the two per-4gb settings scale it all."""
+        settings = self.settings()
+        for kind, warm, timeout in (("g6-dedicated-2", 300, 370), ("g6-dedicated-4", 600, 670),
+                                    ("g6-dedicated-8", 1200, 1270),
+                                    ("g6-dedicated-16", 2400, 2470), (None, 300, 370)):
+            node = {"name": "n", "type": kind}
+            check = deploy.check_unit_text(settings, node)
+            with self.subTest(kind):
+                self.assertIn(
+                    "needletail-nodecheck boot --out /run/needletail/node-warm.json --warm \\\n"
+                    f"  --warm-leave-mb 300 --warm-max-seconds {warm} --slow-write-ms 1000 "
+                    "--slow-seconds-per-4gb 180 \\\n"
+                    "  --check-seconds 0 --max-stop-ms 20 --max-steal-permille 10\n", check)
+                self.assertIn(f"\nTimeoutStartSec={timeout}\n", check)
+                self.assertEqual(deploy.check_timeout_s(settings, node), timeout)
+                self.assertEqual(deploy.warm_allowance_s(settings, node), timeout)
+                self.assertGreater(deploy.warm_allowance_s(settings, node), warm)
+                self.assertEqual(deploy.node_files(["x"], "unit", settings, node)["check"], check)
+        node = {"type": "g6-dedicated-4"}
+        watched = self.settings(["node_check_seconds=30", "node_warm_max_seconds_per_4gb=150",
+                                 "node_warm_slow_seconds_per_4gb=90"])
+        check = deploy.check_unit_text(watched, node)
+        self.assertIn("--warm-max-seconds 300 ", check)
+        self.assertIn("--slow-seconds-per-4gb 90 ", check)
+        self.assertIn("--check-seconds 30 ", check)
+        self.assertIn("\nTimeoutStartSec=400\n", check)
+        self.assertEqual(deploy.warm_allowance_s(watched, node), 400)
+        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-dedicated-2"), 300)
+        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-nanode-1"), 300)
+        self.assertEqual(deploy.mesh_ops.warm_seconds("g6-dedicated-32"), 4800)
+        self.assertEqual(deploy.mesh_ops.warm_allowance_seconds("g6-dedicated-2"), 370)
+        self.assertIsNone(deploy.mesh_ops.warm_seconds(None))
+
+    def test_hosts_without_a_service_get_the_warm_pass_alone(self):
+        """Load hosts (source, view, listeners) and self-hosted LiveKit:
+        the same pass, no watch and no transparent_hugepage (those are the
+        mesh's), enabled at every boot; none without node_warm."""
+        settings = self.settings(["node_check_seconds=30", "transparent_hugepage=never"])
+        text = deploy.host_check_unit_text(settings, {"type": "g6-dedicated-8"})
+        self.assertIn("--warm-max-seconds 1200 ", text)
+        self.assertIn("--check-seconds 0 ", text)
+        self.assertIn("\nTimeoutStartSec=1270\n", text)
+        self.assertNotIn("transparent_hugepage", text)
+        self.assertTrue(text.endswith("\n[Install]\nWantedBy=multi-user.target\n"))
+        self.assertIsNone(deploy.host_check_unit_text(self.settings(["node_warm=false"]),
+                                                      {"type": "g6-dedicated-4"}))
+        self.assertEqual(deploy.WARM_ONLY_ROLES, ("load", "livekit"))
+
+    def test_transparent_hugepage_is_written_at_boot_only_when_set(self):
+        """unchanged (the default) renders nothing; madvise or never is
+        written before the warm pass (the check unit's ExecStartPre) and
+        before every start of the service (as root, never fatal); with no
+        check unit, the service's line alone."""
+        settings = self.settings()
+        self.assertEqual(settings["transparent_hugepage"], "unchanged")
+        self.assertIsNone(deploy.thp_mode(settings))
+        for service in ("needletail-mesh", "needletail-contrib"):
+            self.assertNotIn("transparent_hugepage", deploy.unit_text(service, "info", settings))
+        self.assertNotIn("transparent_hugepage", deploy.check_unit_text(settings))
+        for mode in ("madvise", "never"):
+            settings = self.settings([f"transparent_hugepage={mode}"])
+            line = f"/bin/sh -c 'echo {mode} > /sys/kernel/mm/transparent_hugepage/enabled'"
+            check = deploy.check_unit_text(settings)
+            self.assertIn(f"\nExecStartPre=-{line}\nExecStart=", check, mode)
+            for service in ("needletail-mesh", "needletail-contrib"):
+                unit = deploy.unit_text(service, "info", settings)
+                self.assertIn(f"\nExecStartPre=-+{line}\n", unit, (mode, service))
+                self.assertLess(unit.index("ExecStartPre="), unit.index("ExecStart="))
+        alone = self.settings(["node_warm=false", "transparent_hugepage=madvise"])
+        self.assertIsNone(deploy.check_unit_text(alone))
+        self.assertIn("ExecStartPre=-+/bin/sh -c 'echo madvise > ",
+                      deploy.unit_text("needletail-mesh", "info", alone))
+        # One node's experiment: an override.
+        overrides = {"lon-edge-1": {"transparent_hugepage": "never"}}
+        settings = self.settings([f"node_overrides={json.dumps(overrides)}"])
+        own = deploy.node_own_settings(settings, "lon-edge-1")
+        self.assertIn("echo never", deploy.unit_text("needletail-mesh", "info", own))
+        other = deploy.node_own_settings(settings, "lon-edge-2")
+        self.assertNotIn("transparent_hugepage", deploy.unit_text("needletail-mesh", "info", other))
 
     def test_nodecheck_is_installed_on_every_role(self):
         nodes = lab.lab_state()["nodes"].values()
@@ -214,8 +308,10 @@ class Render(Base):
         overrides = {"lon-edge-1": {"mlock": "off", "stall_journal_capacity": 65536,
                                     "node_check_seconds": 20, "prefault": False},
                      "contrib-lon": {"mlock": "off"}}
-        base = self.render()
-        args = self.render([f"node_overrides={json.dumps(overrides)}"])
+        # The check is the lab's default (node_warm); off here, so that one
+        # node's override is the only check.
+        base = self.render(["node_warm=false"])
+        args = self.render(["node_warm=false", f"node_overrides={json.dumps(overrides)}"])
         edge = args["lon-edge-1"]
         self.assertEqual(value_of(edge, "--mlock"), "off")
         self.assertEqual(value_of(edge, "--stall-journal-capacity"), "65536")
@@ -227,7 +323,7 @@ class Render(Base):
             if name not in overrides:
                 self.assertEqual(deploy.render_sha256(args[name]),
                                  deploy.render_sha256(base[name]), name)
-        settings = self.settings([f"node_overrides={json.dumps(overrides)}"])
+        settings = self.settings(["node_warm=false", f"node_overrides={json.dumps(overrides)}"])
         own = deploy.node_own_settings(settings, "lon-edge-1")
         self.assertIn(f"Wants={CHECK}", deploy.unit_text("needletail-mesh", "info", own))
         self.assertIn("check", deploy.node_files(["x"], "unit", own))
@@ -294,7 +390,7 @@ class OverridesShipped(scale.FakeLab):
     def test_push_and_roll_ship_a_node_s_overrides_to_that_node_only(self):
         overrides = f"node_overrides={json.dumps(self.OVERRIDES)}"
         self.quietly(scale.deploy.command_push,
-                     self.namespace(skip_bootstrap=True, set=[overrides]))
+                     self.namespace(skip_bootstrap=True, set=["node_warm=false", overrides]))
         self.assert_shipped(staged=False)
         # The record is of the unit that node runs, so the reproduce check
         # of a later roll holds.
