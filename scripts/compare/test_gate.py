@@ -288,3 +288,28 @@ class RefereeSource(unittest.TestCase):
                 capture_output=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(out.read_bytes(), b"frames")
+
+
+class Archive(unittest.TestCase):
+
+    def test_the_gate_never_takes_a_run_from_latency_bench(self):
+        """latency-bench.py makes each pass's run and a run is refused to a
+        tool that did not make it: the gate opens it, or makes it as the
+        bench would, so every later pass can append."""
+        import os
+        sys.path.insert(0, str(HERE.parent))
+        import run_archive
+        with tempfile.TemporaryDirectory() as root:
+            old = os.environ.get("NEEDLETAIL_DATA_ROOT")
+            os.environ["NEEDLETAIL_DATA_ROOT"] = root
+            try:
+                gate.open_archive("g1")
+                run_archive.RunArchive.create("g1", "local-lab", tool="latency-bench.py")
+                run_archive.RunArchive.create("g2", "local-lab", tool="latency-bench.py")
+                gate.open_archive("g2").write_json("x.json", {"a": 1})
+                self.assertTrue((pathlib.Path(root) / "g2" / "x.json").is_file())
+            finally:
+                if old is None:
+                    os.environ.pop("NEEDLETAIL_DATA_ROOT", None)
+                else:
+                    os.environ["NEEDLETAIL_DATA_ROOT"] = old

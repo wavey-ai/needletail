@@ -620,8 +620,7 @@ def run_pass(item: dict, run_id: str, media: pathlib.Path, seconds: int, extra: 
         edge_lab("down")
     extras["gate-bench.log"] = text
     out.mkdir(parents=True, exist_ok=True)
-    archive = run_archive.RunArchive.open(run_id) if (run_archive.data_root() / run_id).is_dir() \
-        else run_archive.RunArchive.create(run_id, "local-lab", tool="gate.py")
+    archive = open_archive(run_id)
     for name, body in extras.items():
         (out / name).write_text(body)
         archive.add_file(out / name, f"{item['name']}/{name}", kind="raw",
@@ -635,6 +634,17 @@ def run_pass(item: dict, run_id: str, media: pathlib.Path, seconds: int, extra: 
     archive.write_json(f"{item['name']}/gate-figures.json", figures, kind="result",
                        description="gate.py analyze: this pass's figures")
     return figures
+
+
+def open_archive(run_id: str):
+    """The run, to append to. latency-bench.py makes it (a run is refused to
+    a tool that did not make it), so the gate only opens it; a run whose
+    first pass made nothing is made here, as latency-bench.py would."""
+    sys.path.insert(0, str(SCRIPTS))
+    import run_archive  # noqa: E402
+    if (run_archive.data_root() / run_id / run_archive.MANIFEST).is_file():
+        return run_archive.RunArchive.open(run_id, tool="gate.py")
+    return run_archive.RunArchive.create(run_id, "local-lab", tool="latency-bench.py")
 
 
 def preflight() -> str | None:
@@ -671,16 +681,16 @@ def cmd_run(args) -> int:
             print(shlex.join(bench_command(item, run_id, pathlib.Path(args.media), args.seconds,
                                            args.bench_args)))
         return 0
-    archive = run_archive.RunArchive.create(run_id, "local-lab", tool="gate.py")
     meta = {"host": socket.gethostname(), "lab_id": os.environ.get("NEEDLETAIL_EDGE_LAB_ID"),
             "cpus": os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS"), "quick": args.quick,
             "started": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
             "binaries": os.environ.get("NEEDLETAIL_AV_MESH_BIN"), "passes": [p["name"] for p in passes]}
-    archive.write_json("gate-plan.json", {"meta": meta, "passes": passes, "thresholds": thresholds},
-                       kind="config", description="gate.py: the plan and the thresholds it judged by")
     results = []
     for item in passes:
         results.append(run_pass(item, run_id, pathlib.Path(args.media), args.seconds, args.bench_args))
+    archive = open_archive(run_id)
+    archive.write_json("gate-plan.json", {"meta": meta, "passes": passes, "thresholds": thresholds},
+                       kind="config", description="gate.py: the plan and the thresholds it judged by")
     meta["ended"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     judged = verdict(results, thresholds, baseline)
     archive.write_json("gate-verdict.json", {"meta": meta, **judged}, kind="result",
