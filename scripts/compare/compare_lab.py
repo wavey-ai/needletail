@@ -472,6 +472,44 @@ def status(_: argparse.Namespace) -> None:
         print(f"{name:<10} {out}")
 
 
+def warm(args: argparse.Namespace) -> None:
+    """Touch each guest's free memory once before any measured window (lead's
+    hunt lab, 24 Nov: fresh Linode guests stop for up to 2.3 s on first touch).
+    By default the hosts that are not Needletail's to warm: the source, every
+    -view and -nano host, listener hosts and the LiveKit hosts (Needletail's
+    mesh is warmed by its own deploy, as its product does); --all adds the mesh
+    nodes. All hosts at once; the results go to target/compare/warm-UNIX.json."""
+    import time
+    state = common.load_state()["nodes"]
+    hosts = [item for item in state.values()
+             if item["role"] in ("load", "livekit")
+             or (args.all and item["role"] in ("contributor", "backbone", "distributor", "edge"))]
+    script = pathlib.Path(__file__).resolve().parent / "warm-guest.py"
+
+    def one(item: dict) -> dict:
+        common.rsync_to(item, [str(script)], "/usr/local/bin/")
+        text = common.ssh_text(item, f"python3 /usr/local/bin/warm-guest.py --reserve-mb {args.reserve_mb}",
+                               check=False, timeout=1800)
+        try:
+            return json.loads(text.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"error": text[-400:]}
+
+    started = time.time()
+    results = common.parallel(hosts, one)
+    out = COMPARE / f"warm-{int(started)}.json"
+    COMPARE.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"started_unix": started, "ended_unix": time.time(), "all": args.all,
+                               "reserve_mb": args.reserve_mb, "hosts": results}, indent=1) + "\n")
+    for name, r in sorted(results.items()):
+        if "error" in r:
+            print(f"{name:<12} ERROR {r['error'][-200:]}")
+        else:
+            print(f"{name:<12} {r['touched_mb']:>6} MB in {r['seconds']:>5} s; worst write {r['worst_write_ms']} ms; "
+                  f"{len(r['stalls'])} writes of {r['stall_ms']:g} ms or more")
+    print(f"wrote {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -485,6 +523,10 @@ def main() -> None:
     sub.add_parser("audio").set_defaults(handler=audio)
     sub.add_parser("secrets").set_defaults(handler=push_secrets)
     sub.add_parser("status").set_defaults(handler=status)
+    warming = sub.add_parser("warm", help="touch each guest's free memory once, before any measured window")
+    warming.add_argument("--all", action="store_true", help="the Needletail mesh nodes too")
+    warming.add_argument("--reserve-mb", type=int, default=300)
+    warming.set_defaults(handler=warm)
     args = parser.parse_args()
     args.handler(args)
 

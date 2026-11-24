@@ -16,6 +16,12 @@ view-host probe (older evidence); the host is named in the JSON.
 
 python3 scripts/compare/scoreboard.py EVIDENCE --sessions waudio7,waudio7-std \
     --out target/compare/scoreboard-wave7.json  >scoreboard.md
+
+--host-stops FILE (host-stops.py's JSON) marks each row whose step had a
+heartbeat stop on a measurement host that the row depends on: the source host
+(lon-src) or the host of either listener. Both systems' listeners run on the
+same hosts at the same time, so such a stop voids the row for both. The rows
+stay in the board, marked, and the tally is given with and without them.
 """
 
 from __future__ import annotations
@@ -63,21 +69,33 @@ def rendition(steps: dict, config: str) -> str:
 
 
 def figure(steps: dict, config: str, detail: str, site: str, lane: str, path, joins: bool):
-    """(value, host) of a lane in a region, preferring the view host."""
+    """(value, host, step name) of a lane in a region, preferring the view host."""
     if joins:
-        step = next((s for name, s in steps.items() if name.startswith(f"audio.{config}.joins.")), None)
+        name = next((n for n in steps if n.startswith(f"audio.{config}.joins.")), None)
     else:
-        step = steps.get(f"audio.{config}.{detail}")
+        name = f"audio.{config}.{detail}"
+    step = steps.get(name) if name else None
     if not step:
-        return None, None
+        return None, None, None
     for host in (f"{site}-view", f"{site}-nano"):
         entry = (step.get("hosts", {}).get(host, {}).get("lanes", {}) or {}).get(lane) or {}
         record = entry.get("joins") if joins else entry.get("probe")
         if record and not (not joins and record.get("error")):
             value = dig(record, path)
             if value is not None:
-                return value, host
-    return None, None
+                return value, host, name
+    return None, None, name
+
+
+def stopped_hosts(host_stops: dict | None, session: str, step: str | None, hosts) -> dict:
+    """{measurement host: worst stop ms} among the source host and the row's
+    listener hosts, for this step; {} without host-stops data."""
+    if not host_stops or not step:
+        return {}
+    info = (((host_stops.get("sessions") or {}).get(session) or {}).get("steps") or {}).get(step) or {}
+    wanted = {"lon-src", *[h for h in hosts if h]}
+    return {h: v["worst_ms"] for h, v in (info.get("hosts") or {}).items()
+            if h in wanted and v.get("class") == "measurement"}
 
 
 def verdict(nt, lk, digits: int) -> str:
@@ -87,7 +105,7 @@ def verdict(nt, lk, digits: int) -> str:
     return "win" if a < b else "tie" if a == b else "loss"
 
 
-def board(evidence: dict, sessions: list[str]) -> list[dict]:
+def board(evidence: dict, sessions: list[str], host_stops: dict | None = None) -> list[dict]:
     rows = []
     for session in sessions:
         steps = evidence["sessions"][session]["steps"]
@@ -100,14 +118,18 @@ def board(evidence: dict, sessions: list[str]) -> list[dict]:
             for key, name, detail, path, digits in METRICS:
                 for site, region in SITES:
                     joins = detail == "joins"
-                    nt, nt_host = figure(steps, config, detail, site, NT, path, joins)
-                    lk, lk_host = figure(steps, config, detail, site, LK, path, joins)
+                    nt, nt_host, step_name = figure(steps, config, detail, site, NT, path, joins)
+                    lk, lk_host, _ = figure(steps, config, detail, site, LK, path, joins)
                     if nt is None and lk is None:
                         continue
-                    rows.append({"session": session, "config": config, "rendition": label, "metric": key,
-                                 "label": name, "region": region, "needletail": nt, "livekit": lk,
-                                 "hosts": [nt_host, lk_host], "result": verdict(nt, lk, digits),
-                                 "digits": digits})
+                    row = {"session": session, "config": config, "rendition": label, "metric": key,
+                           "label": name, "region": region, "needletail": nt, "livekit": lk,
+                           "hosts": [nt_host, lk_host], "result": verdict(nt, lk, digits),
+                           "digits": digits}
+                    stopped = stopped_hosts(host_stops, session, step_name, (nt_host, lk_host))
+                    if host_stops is not None:
+                        row["measurement_host_stopped"] = stopped or None
+                    rows.append(row)
     return rows
 
 
@@ -125,6 +147,15 @@ def markdown(rows: list[dict]) -> str:
                "same session; lower is better. "
                + ", ".join(f"{counts.get(k, 0)} {k}" for k in ("win", "tie", "loss", "not measured"))
                + f" of {total}.\n")
+    if any("measurement_host_stopped" in row for row in rows):
+        clean = [row for row in rows if not row.get("measurement_host_stopped")]
+        kept = {}
+        for row in clean:
+            kept[row["result"]] = kept.get(row["result"], 0) + 1
+        out.append(f"{total - len(clean)} rows are marked ‡: the source host or a listener's host stopped "
+                   "(heartbeat) during the step, for both systems alike. Without them: "
+                   + ", ".join(f"{kept.get(k, 0)} {k}" for k in ("win", "tie", "loss", "not measured"))
+                   + f" of {len(clean)}.\n")
     seen = []
     for row in rows:
         group = (row["session"], row["rendition"])
@@ -136,8 +167,11 @@ def markdown(rows: list[dict]) -> str:
         out.append("| --- | --- | ---: | ---: | --- |")
         for row in rows:
             if (row["session"], row["rendition"]) == (session, label):
+                stopped = row.get("measurement_host_stopped")
+                mark = (" ‡ (" + ", ".join(f"{h} {ms:.0f} ms" for h, ms in sorted(stopped.items())) + ")"
+                        if stopped else "")
                 out.append(f"| {row['label']} | {row['region']} | {fmt(row['needletail'], row['digits'])} | "
-                           f"{fmt(row['livekit'], row['digits'])} | {row['result']} |")
+                           f"{fmt(row['livekit'], row['digits'])} | {row['result']}{mark} |")
         out.append("")
     return "\n".join(out)
 
@@ -149,11 +183,13 @@ def main() -> None:
     parser.add_argument("--out", help="the scoreboard as JSON (target/compare/scoreboard-*.json)")
     parser.add_argument("--against", choices=sorted(AGAINST), default="lkregion",
                         help="the LiveKit lane: self-hosted (default) or LiveKit Cloud (audio sessions only)")
+    parser.add_argument("--host-stops", help="host-stops.py's JSON: mark rows whose measurement hosts stopped")
     args = parser.parse_args()
     global LK
     LK = args.against
     evidence = json.loads(pathlib.Path(args.evidence).read_text())
-    rows = board(evidence, args.sessions.split(","))
+    host_stops = json.loads(pathlib.Path(args.host_stops).read_text()) if args.host_stops else None
+    rows = board(evidence, args.sessions.split(","), host_stops)
     if args.out:
         pathlib.Path(args.out).write_text(json.dumps({"evidence": args.evidence, "sessions": args.sessions,
                                                       "needletail_lane": NT, "livekit_lane": LK,

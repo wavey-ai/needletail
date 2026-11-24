@@ -72,6 +72,29 @@ What changed since wave 7:
 
   The stops did not start after large frames any more often than chance (12
   of 19 and 12 of 17, against 12.7 and 11.1 expected).
+- **Cause, found afterwards: a fresh guest touching its memory for the first
+  time.** The lead's stall-hunt lab (`hunt11241537`, 24 November, London,
+  New York and Tokyo, with the heartbeat added to these samplers) settled it.
+  The referee checked these figures in its raw files:
+  - On edges whose free memory was written once before the first session, no
+    heartbeat stopped 100 ms or more from 16:00 to 17:02 UTC, through every
+    audio session and all the 4K. The other mesh nodes stopped 10 to 218
+    times each in the same hour.
+  - In a stop, the heartbeats of both vCPUs were late together with steal 0:
+    the guest was not run.
+  - The kernel of one fresh edge logged nine soft lockups of 3 to 4 s inside
+    av-mesh. All of them were in `clear_page_rep`, under
+    `do_huge_pmd_anonymous_page`: zeroing a new 2 MB transparent huge page
+    (THP is `[always]` on these images).
+  - Measurement hosts do it too. The source host's worst stop was 2,328 ms
+    and lon-view had 119 stops in the hour.
+
+  So the stops are Linode's first touch of guest memory, not the software and
+  not one bad host. Every measured run from here warms every guest first:
+  - the Needletail mesh, by its own deploy (product behaviour from the lead's
+    next build);
+  - the source, measurement and LiveKit hosts, by the harness with the same
+    method (`compare_lab.py warm`).
 - **One measurement host stopped too.** Tokyo failed 25 Mbit/s only on
   tok-nano, whose own samplers stopped for 2.4 s. tok-view, beside it, was
   whole at 25.
@@ -84,7 +107,10 @@ every mesh node.
 - GSO off (`relay_video_gso=false`, UDP GRO still on), 60 s: whole in all four
   regions, with no sampler gap on any node.
 
-This is one short pair, not a controlled comparison.
+This is one short pair, not a controlled comparison. The hunt lab later
+showed that stops fall by more than 90% from a guest's second video pass
+onward, whatever GSO and GRO are set to. The GSO-off step came after the
+sweep, so its clean result is most likely that order, not GSO.
 
 CPU of one vCPU over each whole step (1 s sampler), the service's:
 
