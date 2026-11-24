@@ -2509,6 +2509,208 @@ class Phases(unittest.TestCase):
                                places=1)
 
 
+class Party(unittest.TestCase):
+    """The global listening party (owner, 23 Nov): the schedule's
+    arithmetic (shares over the regions, waves, churn, the fault step's
+    hold, the joins after the faults), the controller through it all, the
+    LiveKit Cloud hook, and every step's raw data in the run archive."""
+
+    def test_the_committed_schedule_loads_and_is_checked(self):
+        spec = scale.load_party(scale.PARTY)
+        self.assertEqual(spec["steps"], [1000, 5000, 10000, 20000])
+        self.assertEqual(sorted(spec["shares"]), ["london", "newyork", "sydney", "tokyo"])
+        self.assertEqual([action["kind"] for scenario in spec["faults"]["scenarios"]
+                          for action in scenario["actions"]], ["kill", "kill"])
+        kinds = {scenario["name"]: scenario["actions"][0]["targets"][0]
+                 for scenario in spec["faults"]["scenarios"]}
+        roles = {name: lab()["nodes"][target]["role"] for name, target in kinds.items()}
+        self.assertEqual(roles, {"P1": "edge", "P2": "distributor"})
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        for change, why in (({"steps": [5000, 1000]}, "rise"), ({"config": "flac"}, "config"),
+                            ({"shares": {"london": -1}}, "shares"),
+                            ({"waves": {"count": 0, "every_s": 20}}, "waves"),
+                            ({"churn": {"share": 1.0, "leave_after_s": 1, "rejoin_after_s": 1}},
+                             "churn"),
+                            ({"faults": {**spec["faults"], "at_step": 7}}, "at_step")):
+            path = directory / f"{why}.json"
+            path.write_text(json.dumps({**spec, **change}))
+            with self.assertRaises(ValueError, msg=why):
+                scale.load_party(path)
+        self.assertEqual(scale.parse_shares("london=0.4, newyork=0.4,tokyo=0.1,sydney=0.1"),
+                         {"london": 0.4, "newyork": 0.4, "tokyo": 0.1, "sydney": 0.1})
+        self.assertIsNone(scale.parse_shares(None))
+        for bad in ("london", "london=-1", "london=0,tokyo=0", "london=x"):
+            with self.assertRaises(ValueError, msg=bad):
+                scale.parse_shares(bad)
+
+    def test_waves_and_churn_are_the_load_tool_s_ramp(self):
+        """Listeners join in equal waves; a share leaves and rejoins later;
+        each COUNT@SECOND holds from that second on."""
+        self.assertEqual(scale.party_ramp(1003, 5, 20.0, 0.1, 160.0, 30.0),
+                         "201@0,402@20,603@40,803@60,1003@80,903@160,1003@190")
+        self.assertEqual(scale.party_ramp(3, 5, 20.0, 0.1, 160.0, 30.0),
+                         "1@0,2@20,3@40,3@60,3@80")
+        times = scale.party_times(scale.load_party(scale.PARTY), 0.0, 20)
+        self.assertEqual(times, {"ramp_s": 100.0, "leave_at_s": 160.0, "rejoin_at_s": 190.0,
+                                 "joins_after_s": 0.0, "hold_s": 150.0})
+        # The fault step: the faults' scenarios first, from the end of the
+        # waves; then the churn and the joins.
+        faulted = scale.party_times(scale.load_party(scale.PARTY), 828.0, 20)
+        self.assertEqual((faulted["leave_at_s"], faulted["joins_after_s"], faulted["hold_s"]),
+                         (988.0, 828.0, 978.0))
+        # Joins that take longer than the churn hold the step longer.
+        self.assertEqual(scale.party_times(scale.load_party(scale.PARTY), 0.0, 40)["hold_s"],
+                         scale.joins_seconds(40))
+
+    def test_the_party_s_steps_follow_the_shares_and_hold_its_faults(self):
+        state = lab()
+        spec = scale.load_party(scale.PARTY)
+        shares = scale.parse_shares("london=0.4,newyork=0.3,tokyo=0.2,sydney=0.1")
+        faults = scale.party_faults(spec, {**state, "standby_edges": STANDBY})
+        self.assertEqual([row["name"] for row in faults["timeline"]["scenarios"]], ["P1", "P2"])
+        self.assertEqual(faults["timeline"]["hold_s"], 2 * 414)
+        plan = scale.party_plan(spec, state, STANDBY, shares, [1000, 10000], "opus-1", faults)
+        first, second = plan["steps"]
+        self.assertEqual(first["party"]["by_region"],
+                         {"london": 400, "newyork": 300, "tokyo": 200, "sydney": 100})
+        self.assertEqual(sum(second["party"]["by_region"].values()), 10000)
+        self.assertEqual((first["faults"], second["faults"]), (False, True))
+        self.assertEqual(second["hold_s"], 978.0)
+        self.assertEqual(second["joins_after_s"], 828.0)
+        # Each host's ramp: its own listeners in the step's waves, its share
+        # of the churn at the step's times.
+        for step in plan["steps"]:
+            for by_host in step["allocation"].values():
+                for name, item in by_host.items():
+                    if not item["udp"]:
+                        continue
+                    points = [entry.split("@") for entry in step["ramp_by_host"][name].split(",")]
+                    self.assertEqual(int(points[4][0]), item["udp"])
+                    self.assertEqual(points[-1], [str(item["udp"]),
+                                                  f"{step['party']['rejoin_at_s']:g}"])
+        self.assertEqual(plan["seconds"], sum(step["seconds"] for step in plan["steps"]))
+        self.assertGreater(plan["cost"]["instances_usd"], 0)
+        # The run's commands take each host's party ramp.
+        args = argparse.Namespace(config="opus-1", sample=20, load_args="", hls_window=40,
+                                  hls_http2=False, hls_steering="steered", udp_assignment="on")
+        commands = scale.step_commands(state, plan, first, "party", args)
+        host = next(name for by_host in first["allocation"].values() for name, item
+                    in by_host.items() if item["udp"])
+        self.assertIn(f"--ramp {first['ramp_by_host'][host]} ", commands[host])
+        with self.assertRaises(ValueError):
+            scale.party_plan(spec, state, STANDBY, {"atlantis": 1.0}, [1000], "opus-1", None)
+
+    def test_the_plan_command_prints_the_party(self):
+        with redirect_stdout(io.StringIO()) as out:
+            plan = scale.main(["party-plan", "--topology-only", "--json",
+                               "--shares", "london=1,newyork=1,tokyo=1,sydney=1"]) or \
+                json.loads(out.getvalue())
+        self.assertEqual([step["listeners"] for step in plan["steps"]],
+                         [1000, 5000, 10000, 20000])
+        self.assertEqual(plan["party"]["faults_at"], 10000)
+
+    def test_the_controller_runs_through_the_party_and_livekit_cloud_is_a_hook(self):
+        args = argparse.Namespace(config="opus-1", budget_usd=200.0, spent_before_usd=None)
+        command = scale.party_controller_command(args, pathlib.Path("/tmp/run"),
+                                                 pathlib.Path("/tmp/run/events.jsonl"), 2130.2,
+                                                 ["--up-samples", 3])
+        self.assertEqual(command[1:], [str(scale.AUTOSCALER), "run", "--backend", "linode",
+                                       "--duration", "2131", "--stream", "3001",
+                                       "--controller-state", "/tmp/run/autoscale-state.json",
+                                       "--events", "/tmp/run/events.jsonl", "--budget-usd",
+                                       "200.0", "--up-samples", "3"])
+        logged = []
+        record = scale.livekit_cloud_hook(scale.load_party(scale.PARTY), {"listeners": 5000},
+                                          logged.append)
+        self.assertEqual(record["livekit_cloud"]["listeners"], 1000)
+        self.assertFalse(record["livekit_cloud"]["run"])
+        self.assertEqual(logged, [record])
+        self.assertIsNone(scale.livekit_cloud_hook({}, {"listeners": 5000}, logged.append))
+
+    def test_a_party_step_says_who_was_interrupted_and_what_the_controller_did(self):
+        step_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, step_dir, True)
+        base = 1_790_000_000
+        (step_dir / "lon-load-1" / "udp").mkdir(parents=True)
+
+        def write(interrupted):
+            lines = [{"unix_ms": (base + t) * 1000, "total": {
+                "up": 100, "parts": 100_000, "missing": 0,
+                **({"listeners_interrupted": interrupted if t == 50 else 0}
+                   if interrupted is not None else {})}} for t in range(0, 100)]
+            (step_dir / "lon-load-1" / "udp" / "intervals.jsonl").write_text(
+                "\n".join(json.dumps(line) for line in lines))
+
+        events = [{"unix_us": (base + 30) * 1_000_000, "kind": "decision", "action": "join"},
+                  {"unix_us": (base + 45) * 1_000_000, "kind": "serving", "node": "lon-edge-6"},
+                  {"unix_us": (base + 200) * 1_000_000, "kind": "serving", "node": "late"},
+                  {"unix_us": (base + 40) * 1_000_000, "source": "scale-run", "kind": "kill"}]
+        for interrupted, ok in ((0, True), (2, False), (None, None)):
+            write(interrupted)
+            figures = scale.party_step_figures(step_dir, (base + 10, base + 90), "opus-1", events)
+            self.assertEqual(figures["criteria"][0]["ok"], ok, interrupted)
+        self.assertEqual(figures["controller"], {"joins": 1, "serving": ["lon-edge-6"],
+                                                 "drains": []})
+        self.assertIn("B Y4", figures["criteria"][0]["needs"])
+
+    def test_every_step_s_raw_data_goes_to_the_run_archive(self):
+        """Keep all the data: the step's directory whole and the step
+        recorded (listeners by region, lane, paths), then the run's own
+        files, into the run of the lab's id."""
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        directory = root / "target" / "scale-party"
+        step_dir = directory / "steps" / "1000"
+        (step_dir / "lon-load-1" / "udp").mkdir(parents=True)
+        (step_dir / "lon-load-1" / "udp" / "intervals.jsonl").write_text('{"unix_ms": 1}\n')
+        (step_dir / "lon-load-1" / "udp" / "summary.json").write_text('{"total": {}}\n')
+        (step_dir / "lon-dist-a").mkdir()
+        (step_dir / "lon-dist-a" / "sampler.jsonl").write_text('{"t": 1}\n')
+        (step_dir / "step.json").write_text("{}\n")
+        for name in ("plan.json", "party.json", "events.jsonl", "scale.json", "summary.md"):
+            (directory / name).write_text("{}\n")
+        logged = []
+        state = {**lab(), "run_id": "party1"}
+        step = {"listeners": 1000, "sites": {"london": {"udp": 600, "hls": 0},
+                                             "tokyo": {"udp": 400, "hls": 0}}}
+        with mock.patch.dict(scale.os.environ, {"NEEDLETAIL_DATA_ROOT": str(root / "data")}), \
+                mock.patch.object(scale, "deploy_settings", return_value={"playback_address": "vlan"}):
+            archive = scale.open_archive(state, "party", logged.append)
+            scale.archive_step(archive, "party", directory, step, "opus-1", 2, logged.append,
+                               party={"waves": {"count": 5}}, faults=False)
+            scale.archive_run(archive, "party", directory, logged.append)
+            manifest = json.loads((root / "data" / "party1" / "manifest.json").read_text())
+            # Another tool's run of the lab's id is appended to, not refused.
+            again = scale.open_archive(state, "party", logged.append)
+        self.assertIsNotNone(again)
+        self.assertEqual(manifest["kind"], "linode-lab")
+        steps = manifest["listener_steps"]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual((steps[0]["step"], steps[0]["lane"], steps[0]["listeners_total"],
+                          steps[0]["listeners_by_region"], steps[0]["paths_per_listener"]),
+                         (1000, "opus-1", 1000, {"london": 600, "tokyo": 400}, 2))
+        self.assertEqual(steps[0]["party"], {"waves": {"count": 5}})
+        files = {entry["path"] for entry in manifest["files"]}
+        for path in ("scale-run/party/steps/1000/lon-load-1/udp/intervals.jsonl",
+                     "scale-run/party/steps/1000/lon-load-1/udp/summary.json",
+                     "scale-run/party/steps/1000/lon-dist-a/sampler.jsonl",
+                     "scale-run/party/steps/1000/step.json", "scale-run/party/plan.json",
+                     "scale-run/party/party.json", "scale-run/party/events.jsonl",
+                     "scale-run/party/scale.json", "scale-run/party/summary.md"):
+            self.assertIn(path, files)
+        self.assertFalse([item for item in logged if "error" in item], logged)
+        # A refusal is loud and leaves the run going (its files stay under
+        # target/compare).
+        logged.clear()
+        with mock.patch.dict(scale.os.environ, {"NEEDLETAIL_DATA_ROOT": str(root / "data")}):
+            refused = scale.open_archive({**state, "run_id": "../escape"}, "party",
+                                         logged.append)
+        self.assertIsNone(refused)
+        self.assertEqual(logged[0]["archive"], "refused")
+        scale.archive_step(None, "party", directory, step, "opus-1", 2, logged.append)
+
+
 @unittest.skipUnless(scale.CHANGE_WINDOW.is_file(),
                      "needs the referee's change-window.py (NEEDLETAIL_COMPARE_ROOT)")
 class RefereeScoring(unittest.TestCase):

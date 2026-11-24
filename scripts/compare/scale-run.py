@@ -45,7 +45,9 @@ Every step:
 
 The ramp ends at the first step where something gave out (--keep-going
 runs on). Results: target/compare/scale-NAME/ (plan.json, events.jsonl,
-steps/STEP/HOST/..., scale.json, summary.md).
+steps/STEP/HOST/..., scale.json, summary.md), and every step's directory,
+its record (record_step) and the run's files in the run archive
+(scripts/run_archive.py, ~/needletail-data/<the lab's run id>/scale-run/NAME/).
 
   scale-run.py settings [--second-curve] [--edges-per-region N]
                                            the deploy --set arguments
@@ -65,6 +67,18 @@ steps/STEP/HOST/..., scale.json, summary.md).
                                            during and after (phases.json,
                                            events.jsonl with unix_us, the
                                            "Phases" table of summary.md)
+  scale-run.py party-plan [--shares london=0.3,...] [--steps ...] [--topology-only]
+  scale-run.py party [--plan deploy/low-latency/phases-party.json] [--shares ...]
+        [--steps ...] [--config ...] --budget-usd B
+                                           the global listening party: one
+                                           stream, its steps over the regions
+                                           by --shares, joins in waves, a share
+                                           leaving and rejoining, the referee's
+                                           joins at every step, the controller
+                                           through it all, an edge and a
+                                           forwarder killed at the fault step
+                                           (each scored by the referee's rule),
+                                           every step into the run archive
   scale-run.py run --phase-plan deploy/low-latency/phases-proving.json --group N|U|F|R|A
         [--probe-configs opus-1,pcm-1] [--next-av-mesh-root R] [--next-av-contrib-root R]
                                            the change kinds (C CL7): roll,
@@ -342,9 +356,20 @@ def idle_regions(state: dict, standby: list[str] = ()) -> dict[str, int]:
     return {site: count for site, count in sorted(edges.items()) if site not in listeners}
 
 
-def region_shares(total: int, regions: dict, idle: dict[str, int] | None = None) -> dict:
+def region_shares(total: int, regions: dict, idle: dict[str, int] | None = None,
+                  shares: dict[str, float] | None = None) -> dict:
     """{site: listeners} of a step over the regions in proportion to their
-    edges, the idle regions' (idle_regions) included."""
+    edges, the idle regions' (idle_regions) included; or in proportion to
+    `shares` ({site: weight}, the listening party's audience), a region it
+    does not name taking none."""
+    if shares is not None:
+        known = set(regions) | set(idle or {})
+        unknown = sorted(set(shares) - known)
+        if unknown:
+            raise ValueError(f"shares of {', '.join(unknown)}: no such region with edges and "
+                             "listener hosts in the lab")
+        weights = {site: float(shares.get(site, 0.0)) for site in sorted(known)}
+        return dict(zip(sorted(weights), split(total, [weights[site] for site in sorted(weights)])))
     weights = {**{site: len(regions[site]["edges"]) for site in regions},
                **{site: edges for site, edges in (idle or {}).items() if site not in regions}}
     return dict(zip(sorted(weights), split(total, [weights[site] for site in sorted(weights)])))
@@ -352,7 +377,8 @@ def region_shares(total: int, regions: dict, idle: dict[str, int] | None = None)
 
 def allocate(total: int, regions: dict, hls_share: float = 0.5,
              hls_cap_per_host: int | None = None, caps: dict[str, int] | None = None,
-             idle: dict[str, int] | None = None) -> dict:
+             idle: dict[str, int] | None = None,
+             shares: dict[str, float] | None = None) -> dict:
     """{site: {host: {"udp": n, "hls": n, "hls_by_edge": {edge: n}}}} for a
     step of `total` listeners: over the regions in proportion to their
     edges, in a region over its listener hosts in proportion to their vCPUs,
@@ -363,12 +389,13 @@ def allocate(total: int, regions: dict, hls_share: float = 0.5,
     `caps` ({site: n}) a region takes at most n listeners (what its listener
     hosts drive, fit_caps) and the others keep their share. `idle` ({site:
     edges}, idle_regions): regions with edges and no listener host, whose
-    share is split off and run by nobody, never given to the others."""
+    share is split off and run by nobody, never given to the others.
+    `shares`: the regions' weights in place of their edges (region_shares)."""
     if not 0.0 <= hls_share <= 1.0:
         raise ValueError("hls_share is a fraction")
-    shares = region_shares(total, regions, idle)
+    by_site = region_shares(total, regions, idle, shares)
     sites = sorted(regions)
-    per_site = [shares[site] for site in sites]
+    per_site = [by_site[site] for site in sites]
     if caps:
         per_site = [min(count, caps.get(site, count)) for site, count in zip(sites, per_site)]
     out: dict[str, dict] = {}
@@ -520,7 +547,8 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
                udp_mbps: float | None = None,
                inbound_gbps: float = LOAD_HOST_INBOUND_GBPS, fit: bool = False,
                lk_per_sfu: int = 0, joins: int = 0, joins_from: int = 0,
-               over_headroom: bool = False, joins_at: list[int] | None = None) -> dict:
+               over_headroom: bool = False, joins_at: list[int] | None = None,
+               shares: dict[str, float] | None = None) -> dict:
     """The allocation, the capacity check, the edges' planned egress and the
     duration of every step. With `fit` (a lab whose account refused some
     listener hosts: `listeners_missing` in its state, or --fit-hosts), each
@@ -536,7 +564,9 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
     lane on each view host in the joins phase of every step of `joins_from`
     listeners or more, whose hold is then long enough for them
     (joins_seconds); with `joins_at`, only in the steps asked as one of
-    those (`requested`, the step as given before any fit)."""
+    those (`requested`, the step as given before any fit). `shares`: the
+    regions' weights of every step (the listening party), in place of
+    their edges."""
     regions = regions_of(state, standby)
     if not regions:
         raise ValueError("the lab has no region with an edge and a listener host")
@@ -563,7 +593,7 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
 
     def allocate_with(total: int, chosen: dict, region_caps=None, idle_sites=None) -> dict:
         return add_livekit(allocate(total, chosen, hls_share, hls_cap_per_host, region_caps,
-                                    idle_sites), chosen, lk_per_sfu)
+                                    idle_sites, shares), chosen, lk_per_sfu)
 
     caps = None
     if fit:
@@ -604,8 +634,8 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
         if fit:
             caps, limits = step_caps(requested)
         alloc = allocate_with(requested, regions, caps, idle)
-        uncapped = allocate(requested, regions, hls_share, None, caps, idle)
-        shares = region_shares(requested, regions, idle)
+        uncapped = allocate(requested, regions, hls_share, None, caps, idle, shares)
+        planned = region_shares(requested, regions, idle, shares)
         total = sum(item["udp"] + item["hls"] for by_host in alloc.values()
                     for item in by_host.values())
         if fit and total <= previous:
@@ -645,9 +675,9 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
             "livekit": sum(item.get("lk", 0) for by_host in alloc.values()
                            for item in by_host.values()),
             "joins": step_joins,
-            **({"idle_regions": {site: shares[site] for site in idle}} if idle else {}),
+            **({"idle_regions": {site: planned[site] for site in idle}} if idle else {}),
             **({"clipped_regions": {site: caps[site] for site in sorted(regions)
-                                    if shares[site] > caps[site]},
+                                    if planned[site] > caps[site]},
                 "fit_load_limit": {site: round(value, 3) for site, value in sorted(limits.items())
                                    if value > 1.0}} if fit else {}),
             "hls_clipped": hls < sum(item["hls"] for by_host in uncapped.values()
@@ -5136,8 +5166,9 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args,
                 load_command(alloc, edges, args.config, step["ramp_s"], duration, args.sample,
                              remote_dir, label, lab["nodes"][name].get("vlan_ipv4"),
                              args.load_args, vcpus(lab["nodes"][name]),
-                             profile_ramp(alloc["udp"], step["ramp_s"], timeline)
-                             if timeline else None,
+                             (step.get("ramp_by_host") or {}).get(name)
+                             or (profile_ramp(alloc["udp"], step["ramp_s"], timeline)
+                                 if timeline else None),
                              [f"https://{ip}:{HTTP_PORT}" for ip in entries[:4]]
                              if getattr(args, "udp_assignment", "on") == "on" else None),
                 *(reader_commands(alloc, entries[:4], args.config, duration, remote_dir, label)
@@ -5263,8 +5294,11 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
          **({"readers_launched_us": int(started * 1e6)} if phases else {})})
     joins = None
     if audio is not None and step.get("joins"):
-        joins = JoinsJob(audio, step["joins"], started + step["ramp_s"], started + duration, log,
-                         step["listeners"]).start()
+        # A party step's joins begin after its faults' scenarios
+        # (`joins_after_s` from the end of the ramp).
+        joins = JoinsJob(audio, step["joins"],
+                         started + step["ramp_s"] + step.get("joins_after_s", 0.0),
+                         started + duration, log, step["listeners"]).start()
     runner = None
     if phases:
         args.stream = stream
@@ -5606,17 +5640,8 @@ def command_run(args: argparse.Namespace) -> None:
     plan["cost"] = cost_estimate(lab, plan)
     (directory / "plan.json").write_text(json.dumps(plan, indent=1) + "\n")
     events_path = directory / "events.jsonl"
-    events = open(events_path, "a")
-    lock = threading.Lock()
-
-    def log(item: dict) -> None:
-        # Every line with its Unix time in µs (referee R3), to line up with
-        # the samplers, the listeners' arrivals and the controller's lines.
-        item = {"unix_us": unix_us(), "source": "scale-run", **item}
-        with lock:
-            events.write(json.dumps(item) + "\n")
-            events.flush()
-        print(json.dumps(item), flush=True)
+    events, log = open_events(events_path)
+    archive = open_archive(lab, run, log)
 
     if plan.get("fit"):
         log({"fit": plan["fit"], "steps": [step["listeners"] for step in plan["steps"]],
@@ -5657,6 +5682,7 @@ def command_run(args: argparse.Namespace) -> None:
             outcome = run_step(lab, run, plan, step, args, directory, log, phases, control)
             result["steps"].append(outcome)
             write_results(directory, result)
+            archive_step(archive, run, directory, step, args.config, None, log)
             first = outcome.get("gave_out_first")
             log({"step": step["listeners"], "gave_out_first": first,
                  "stopped": outcome["stopped"]})
@@ -5674,6 +5700,7 @@ def command_run(args: argparse.Namespace) -> None:
         if control is not None:
             stop_livekit(control["ref"], control["session"])
         events.close()
+        archive_run(archive, run, directory, log)
     print(directory / "summary.md")
 
 
@@ -5730,6 +5757,472 @@ def command_analyse(args: argparse.Namespace) -> None:
     previous["steps"] = steps
     write_results(directory, previous)
     print((directory / "summary.md").read_text())
+
+
+# ---------------------------------------------------------------- the run archive
+#
+# Keep all the data (owner, 23 Nov; notes-stage2): every run writes its raw
+# data to the run archive (scripts/run_archive.py, ~/needletail-data/<run
+# id>/), the run of the lab's own id, beside target/compare: each step's
+# directory whole (the load tool's intervals, summary and histograms and its
+# sampled listeners' arrivals, the samplers, the mesh samplers, the readers'
+# reports, the scenarios' marks, probes and verdicts), each listener step
+# recorded with record_step, and the run's plan, events (the controller's
+# lines among them), results and summary.
+
+ARCHIVE_TOOL = "scale-run.py"
+
+
+def open_events(path: pathlib.Path):
+    """The run's events file and the function that logs to it: every line
+    with its Unix time in µs (referee R3), to line up with the samplers, the
+    listeners' arrivals and the controller's lines."""
+    events = open(path, "a")
+    lock = threading.Lock()
+
+    def log(item: dict) -> None:
+        item = {"unix_us": unix_us(), "source": "scale-run", **item}
+        with lock:
+            events.write(json.dumps(item) + "\n")
+            events.flush()
+        print(json.dumps(item), flush=True)
+
+    return events, log
+
+
+def open_archive(lab: dict, run: str, log):
+    """The run archive's run of the lab's id (appended to when another tool
+    made it), or a new one; None, logged loudly, when the archive refuses
+    (the run goes on: its files stay under target/compare)."""
+    import run_archive  # noqa: PLC0415 - scripts/ is on the path
+    run_id = lab.get("run_id") or f"scale-{run}"
+    try:
+        try:
+            archive = run_archive.RunArchive.open(run_id, tool=ARCHIVE_TOOL)
+        except run_archive.ArchiveError:
+            archive = run_archive.RunArchive.create(run_id, "linode-lab", tool=ARCHIVE_TOOL,
+                                                    deploy_settings=deploy_settings())
+        archive.set_regions(sorted({node["site"] for node in lab["nodes"].values()
+                                    if node.get("site")}))
+    except (run_archive.ArchiveError, OSError) as error:
+        log({"archive": "refused", "run_id": run_id, "error": str(error)})
+        return None
+    log({"archive": str(archive.path), "run_id": run_id})
+    return archive
+
+
+def archive_step(archive, run: str, directory: pathlib.Path, step: dict, config: str,
+                 paths: int | None, log, **extra) -> None:
+    """One listener step into the archive: its directory whole, and the step
+    recorded (listeners in all and by region, the lane, the paths a
+    listener holds, and what `extra` says of it)."""
+    if archive is None:
+        return
+    step_dir = directory / "steps" / str(step["listeners"])
+    try:
+        if step_dir.is_dir():
+            archive.add_tree(step_dir, f"scale-run/{run}/steps/{step['listeners']}", kind="raw",
+                             description=f"step {step['listeners']} of scale-run {run}: the load "
+                                         "tool's intervals, summary and sampled arrivals, the "
+                                         "samplers, the mesh samplers, the readers' reports, the "
+                                         "scenarios' marks, probes and verdicts")
+        archive.record_step(step["listeners"], config, step["listeners"],
+                            {site: item["udp"] + item["hls"]
+                             for site, item in (step.get("sites") or {}).items()},
+                            paths_per_listener=paths, run=run, **extra)
+    except Exception as error:  # noqa: BLE001 - loud, and the paid run goes on
+        log({"archive": "step not archived", "step": step["listeners"], "error": str(error)})
+
+
+def archive_run(archive, run: str, directory: pathlib.Path, log) -> None:
+    """The run's own files into the archive, as they stand at its end."""
+    if archive is None:
+        return
+    for name, kind in (("plan.json", "plan"), ("party.json", "plan"), ("phases.json", "plan"),
+                       ("events.jsonl", "samples"), ("scale.json", "result"),
+                       ("summary.md", "result"), ("cost.json", "result")):
+        path = directory / name
+        if not path.is_file():
+            continue
+        try:
+            archive.add_file(path, f"scale-run/{run}/{name}", kind=kind,
+                             description=f"scale-run {run}: {name}")
+        except Exception as error:  # noqa: BLE001 - loud, and the run's end goes on
+            log({"archive": f"{name} not archived", "error": str(error)})
+
+
+# ---------------------------------------------------------------- the listening party
+#
+# The owner, 23 Nov: "a global listening party with thousands or tens of
+# thousands of users". One stream, listeners spread over the regions like a
+# global audience (`shares`), stepped 1,000, 5,000, 10,000, 20,000 and on;
+# at each step the listeners join in waves, and a share of them leaves and
+# rejoins; the autoscaler runs through the whole party and adds edges as it
+# grows; at one step an edge and a forwarder are killed, each a scenario
+# with probes of its own scored by the referee's rule; the referee's joins
+# phase times new listeners' first audio at every step; the self-hosted
+# LiveKit control runs at the count its SFUs carry (LiveKit Cloud: a hook,
+# the referee's tool). Every step's raw data goes to the run archive.
+# deploy/low-latency/phases-party.json is the schedule.
+
+PARTY_SCHEMA = "needletail.scale.party.v1"
+PARTY = ROOT / "deploy" / "low-latency" / "phases-party.json"
+# Seconds the party's listeners hold after the last of their churn has
+# rejoined, and the margin of the controller's --duration past the party.
+PARTY_TAIL_S = 60.0
+CONTROLLER_MARGIN_S = 300.0
+
+
+def parse_shares(text: str | None) -> dict[str, float] | None:
+    """--shares london=0.3,newyork=0.3,tokyo=0.2,sydney=0.2: each region's
+    weight of the audience (they need not sum to 1); None when not given."""
+    if not text:
+        return None
+    out = {}
+    for item in [item.strip() for item in text.split(",") if item.strip()]:
+        site, _, value = item.partition("=")
+        try:
+            weight = float(value)
+        except ValueError:
+            raise ValueError(f"--shares {item!r}: SITE=WEIGHT") from None
+        if weight < 0 or not site:
+            raise ValueError(f"--shares {item!r}: SITE=WEIGHT, the weight 0 or more")
+        out[site] = weight
+    if not sum(out.values()):
+        raise ValueError("--shares: every weight is 0")
+    return out
+
+
+def load_party(path: str | pathlib.Path) -> dict:
+    """The party's schedule, checked: its steps rising, its shares, its waves
+    and churn, and its fault scenarios (phase scenarios of their own, at one
+    of its steps)."""
+    spec = json.loads(pathlib.Path(path).read_text())
+    if spec.get("schema") != PARTY_SCHEMA:
+        raise ValueError(f"{path}: schema is not {PARTY_SCHEMA}")
+    steps = spec["steps"]
+    if not steps or steps != sorted(set(steps)) or steps[0] <= 0:
+        raise ValueError("the party's steps rise, each a count of listeners")
+    if spec.get("config") not in CONFIGS:
+        raise ValueError(f"the party's config is one of {', '.join(CONFIGS)}")
+    shares = spec.get("shares") or {}
+    if not shares or min(shares.values()) < 0 or not sum(shares.values()):
+        raise ValueError("the party's shares weigh its regions, each 0 or more")
+    waves, churn = spec["waves"], spec["churn"]
+    if int(waves["count"]) < 1 or float(waves["every_s"]) <= 0:
+        raise ValueError("waves: a count of 1 or more, every_s above 0")
+    if not 0.0 <= float(churn["share"]) < 1.0 or float(churn["rejoin_after_s"]) <= 0:
+        raise ValueError("churn: a share under 1 leaves, and rejoins after rejoin_after_s")
+    faults = spec.get("faults")
+    if faults:
+        if faults["at_step"] not in steps:
+            raise ValueError("faults: at_step is one of the party's steps")
+        for scenario in faults["scenarios"]:
+            for action in scenario["actions"]:
+                check_action(scenario["name"], action, False)
+    return spec
+
+
+def party_ramp(count: int, waves: int, every_s: float, churn_share: float,
+               leave_at_s: float, rejoin_after_s: float) -> str:
+    """needletail-load --ramp of one listener host for a party step: its
+    listeners join in `waves` equal waves `every_s` apart, then a share of
+    them leaves at `leave_at_s` and rejoins `rejoin_after_s` later (the
+    load tool holds each COUNT@SECOND from that second on). B Y4's churn
+    options will say the same thing with fresh sessions for the rejoiners."""
+    points, joined = [], 0
+    for index, size in enumerate(split(count, [1.0] * waves)):
+        joined += size
+        points.append((index * every_s, joined))
+    leavers = int(round(count * churn_share))
+    if leavers:
+        points.append((leave_at_s, count - leavers))
+        points.append((leave_at_s + rejoin_after_s, count))
+    return ",".join(f"{value}@{at:g}" for at, value in points)
+
+
+def party_times(spec: dict, faults_hold_s: float, joins: int) -> dict:
+    """The times of a party step from its start (seconds): its waves' ramp
+    (`ramp_s`, the last wave and one wave's time to settle); the faults'
+    scenarios from the end of the ramp; the churn after them (`leave_at_s`,
+    `rejoin_at_s`); the joins phase after the faults (`joins_after_s` from
+    the end of the ramp); and the hold, long enough for every one of them
+    and PARTY_TAIL_S after the rejoin."""
+    waves, churn = spec["waves"], spec["churn"]
+    ramp_s = int(waves["count"]) * float(waves["every_s"])
+    leave_at = ramp_s + faults_hold_s + float(churn["leave_after_s"])
+    rejoin_at = leave_at + float(churn["rejoin_after_s"])
+    hold = max(rejoin_at - ramp_s + PARTY_TAIL_S,
+               faults_hold_s + (joins_seconds(joins) if joins else 0.0))
+    return {"ramp_s": ramp_s, "leave_at_s": leave_at, "rejoin_at_s": rejoin_at,
+            "joins_after_s": faults_hold_s, "hold_s": hold}
+
+
+def party_faults(spec: dict, lab: dict) -> dict | None:
+    """The party's fault step as a phase run: its scenarios, their timeline
+    on `lab` and the configs their probes listen to; None without faults."""
+    faults = spec.get("faults")
+    if not faults:
+        return None
+    plan = {"schema": PHASE_SCHEMA, "defaults": spec.get("fault_defaults") or {},
+            "scenarios": faults["scenarios"]}
+    return {"at_step": faults["at_step"], "plan": plan, "timeline": phase_timeline(plan, lab),
+            "probe_configs": probe_configs(spec.get("probe_configs"), spec["config"])}
+
+
+def party_plan(spec: dict, lab: dict, standby: list[str], shares: dict[str, float],
+               steps: list[int], config: str, faults: dict | None, fit: bool = False,
+               over_headroom: bool = False) -> dict:
+    """Every party step on `lab`: the allocation by `shares` over the
+    regions and their listener hosts (plan_steps), and each host's waves and
+    churn (`ramp_by_host`), the step's times (party_times; the fault step
+    holds its scenarios), its joins and its LiveKit crowd; the party's
+    duration and cost."""
+    joins = int(spec.get("joins") or 0)
+    plan = plan_steps(lab, steps, config, float(spec.get("hls_share", 0.0)), None, standby,
+                      lk_per_sfu=int((spec.get("livekit") or {}).get("self_hosted_per_sfu") or 0),
+                      joins=joins, fit=fit, over_headroom=over_headroom, shares=shares)
+    total = 0.0
+    waves, churn = spec["waves"], spec["churn"]
+    for step in plan["steps"]:
+        faulted = faults is not None and step["requested"] == faults["at_step"]
+        times = party_times(spec, faults["timeline"]["hold_s"] if faulted else 0.0,
+                            step["joins"])
+        step.update({"ramp_s": times["ramp_s"], "hold_s": times["hold_s"],
+                     "seconds": times["ramp_s"] + times["hold_s"] + STEP_OVERHEAD_S,
+                     "joins_after_s": times["joins_after_s"], "faults": faulted,
+                     "party": {"shares": shares, "waves": waves, "churn": churn,
+                               "leave_at_s": times["leave_at_s"],
+                               "rejoin_at_s": times["rejoin_at_s"],
+                               "by_region": {site: item["udp"] + item["hls"]
+                                             for site, item in step["sites"].items()}},
+                     "ramp_by_host": {name: party_ramp(item["udp"], int(waves["count"]),
+                                                       float(waves["every_s"]),
+                                                       float(churn["share"]),
+                                                       times["leave_at_s"],
+                                                       float(churn["rejoin_after_s"]))
+                                      for by_host in step["allocation"].values()
+                                      for name, item in by_host.items() if item["udp"]}})
+        total += step["seconds"]
+    plan["seconds"] = total
+    plan["party"] = {"schema": PARTY_SCHEMA, "shares": shares, "config": config,
+                     "paths": spec.get("paths"), "faults_at": faults["at_step"] if faults else None,
+                     "livekit_cloud": (spec.get("livekit") or {}).get("cloud")}
+    plan["cost"] = cost_estimate(lab, plan)
+    return plan
+
+
+def party_step_figures(step_dir: pathlib.Path, window: tuple[float, float], config: str,
+                       events: list[dict]) -> dict:
+    """What a party step adds to the step's own figures: the crowd over its
+    hold (B Y4's fields: nobody interrupted as the party grew and churned;
+    open while the load tool does not give them), and what the controller
+    did in it (its joins, the edges that came to serve, its drains)."""
+    rows = [row for host in sorted(step_dir.iterdir()) if host.is_dir()
+            and (host / LOAD_DIR / "intervals.jsonl").is_file()
+            for row in interval_rows(read_jsonl((host / LOAD_DIR / "intervals.jsonl").read_text()))]
+    crowd = crowd_window(rows, window[0], window[1], settle_seconds(config), True)
+    controller = [item for item in events if "kind" in item and item.get("source") != "scale-run"
+                  and window[0] * 1e6 <= (item.get("unix_us") or 0) <= window[1] * 1e6]
+    interrupted = crowd["listeners_interrupted"]
+    return {"crowd": crowd,
+            "controller": {"joins": sum(1 for item in controller if item["kind"] == "decision"
+                                        and item.get("action") == "join"),
+                           "serving": [item.get("node") for item in controller
+                                       if item["kind"] == "serving"],
+                           "drains": [item.get("node") for item in controller
+                                      if item["kind"] == "drain_start"]},
+            "criteria": [check("party: no listener interrupted as it grew and churned",
+                               None if interrupted is None else interrupted == 0, interrupted,
+                               None if interrupted is not None else
+                               "needletail-load's listeners_interrupted (B Y4)")]}
+
+
+def party_controller_command(args, directory: pathlib.Path, events_path: pathlib.Path,
+                             seconds: float, controller_args) -> list[str]:
+    """The autoscaler for the whole party: the controller alone on the
+    Linode lab, its decisions in the run's events, its state in the run's
+    directory, held to the run's budget."""
+    command = [sys.executable, str(AUTOSCALER), "run", "--backend", "linode",
+               "--duration", str(int(math.ceil(seconds))), "--stream",
+               str(CONFIGS[args.config]["stream"]), "--controller-state",
+               str(directory / "autoscale-state.json"), "--events", str(events_path)]
+    if getattr(args, "budget_usd", None) is not None:
+        command += ["--budget-usd", str(args.budget_usd), *spent_before_args(args)]
+    return command + [str(value) for value in controller_args]
+
+
+def livekit_cloud_hook(spec: dict, step: dict, log) -> dict | None:
+    """LiveKit Cloud as a control is the referee's (its tools run it, at a
+    count it carries); the party only records where it would run: one line
+    a step in the events and the step's record."""
+    cloud = (spec.get("livekit") or {}).get("cloud")
+    if not cloud:
+        return None
+    record = {"livekit_cloud": {"listeners": cloud.get("listeners"), "run": False,
+                                "by": "the referee's LiveKit Cloud crowd (not this tool)",
+                                "step": step["listeners"]}}
+    log(record)
+    return record
+
+
+def stop_process(process: subprocess.Popen, log, what: str) -> None:
+    """SIGINT (the controller resumes its drains in flight), then SIGTERM,
+    then SIGKILL."""
+    for name, send in (("SIGINT", lambda: process.send_signal(signal.SIGINT)),
+                       ("SIGTERM", process.terminate), ("SIGKILL", process.kill)):
+        if process.poll() is not None:
+            return
+        send()
+        log({"event": f"{what}_stop", "signal": name})
+        try:
+            process.wait(timeout=CONTROLLER_STOP_S)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def party_setup(args: argparse.Namespace, lab: dict, standby: list[str]) -> tuple:
+    spec = load_party(args.plan)
+    args.config = args.config or spec["config"]
+    shares = parse_shares(args.shares) or spec["shares"]
+    steps = parse_steps(args.steps) if args.steps else list(spec["steps"])
+    faults = party_faults({**spec, "config": args.config}, {**lab, "standby_edges": standby})
+    plan = party_plan(spec, lab, standby, shares, steps, args.config, faults,
+                      fit=fit_wanted(args, lab), over_headroom=bool(getattr(args, "force", False)))
+    return spec, faults, plan
+
+
+def command_party_plan(args: argparse.Namespace) -> dict:
+    """The party's steps, their allocation, waves, churn, times and cost,
+    without a lab (--topology-only) or on the lab that is up."""
+    if args.topology_only:
+        lab = topology_state(pathlib.Path(args.topology))
+        standby = lab["standby_edges"]
+    else:
+        lab = state()
+        standby = list(deploy_settings().get("standby_edges") or [])
+    spec, faults, plan = party_setup(args, lab, standby)
+    if args.json:
+        print(json.dumps(plan, indent=1))
+        return plan
+    print(f"party: {args.config}, shares "
+          + ", ".join(f"{site} {weight:g}" for site, weight in sorted(plan["party"]["shares"].items()))
+          + f"; {spec['waves']['count']} waves {spec['waves']['every_s']:g} s apart; "
+          f"{spec['churn']['share']:.0%} leave and rejoin; faults at "
+          f"{plan['party']['faults_at']}")
+    for step in plan["steps"]:
+        print(f"step {step['listeners']:>6}: " + ", ".join(
+            f"{site} {count}" for site, count in sorted(step["party"]["by_region"].items()))
+              + f"; ramp {step['ramp_s']:.0f} s, hold {step['hold_s']:.0f} s"
+              + (", the faults' scenarios" if step["faults"] else "")
+              + (f", joins {step['joins']}" if step["joins"] else "")
+              + f", LiveKit {step.get('livekit', 0)}; {step['seconds'] / 60:.1f} min"
+              + ("" if step["drivable"] else " <- OVER THE LOAD HOSTS"))
+    cost = plan["cost"]
+    print(f"party {plan['seconds'] / 60:.1f} min; lab ${cost['hourly_usd']}/h, "
+          f"${cost['instances_usd']} with an hour of bring-up")
+    return plan
+
+
+def command_party(args: argparse.Namespace) -> None:
+    """The listening party on the deployed lab: every step in turn (run_step,
+    the fault step as a phase run), the controller through it all, every
+    step into the run archive."""
+    lab = state()
+    settings = deploy_settings()
+    standby = list(settings.get("standby_edges") or [])
+    spec, faults, plan = party_setup(args, lab, standby)
+    for key, value in (("hls_window", 40), ("hls_http2", False), ("hls_steering", "steered"),
+                       ("udp_assignment", "on"), ("hls_share", plan["hls_share"]),
+                       ("lk_per_sfu", plan["livekit_per_sfu"]),
+                       ("joins", int(spec.get("joins") or 0)),
+                       ("next_av_mesh_root", None), ("next_av_contrib_root", None)):
+        setattr(args, key, value)
+    if not plan["steps"]:
+        sys.exit(f"no party step is left once fitted to the listener hosts ({fit_line(plan)})")
+    regions = regions_of(lab, standby)
+    check_vlan(lab, regions, args.allow_public_transfer)
+    if settings.get("playback_address") != "vlan" and not args.allow_public_transfer:
+        sys.exit("the deploy's playback_address is not vlan: deploy with `scale-run.py settings`")
+    undrivable = [step["listeners"] for step in plan["steps"] if not step["drivable"]]
+    if undrivable and not args.force:
+        sys.exit(f"party steps {undrivable} need more than the listener hosts can drive "
+                 "(scale-run.py party-plan): drop them with --steps, or --force")
+    run = args.name or time.strftime("%m%d%H%M", time.gmtime()) + f"-party-{args.config}"
+    directory = OUT / f"scale-{run}"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "plan.json").write_text(json.dumps(plan, indent=1) + "\n")
+    (directory / "party.json").write_text(json.dumps(spec, indent=1) + "\n")
+    events_path = directory / "events.jsonl"
+    events, log = open_events(events_path)
+    archive = open_archive(lab, run, log)
+    phases = None
+    if faults:
+        phases = {**faults, "events": events_path}
+        begin_phases(lab, standby, phases, plan, directory, log)
+    control = control_setup(args, lab, plan, regions, run, directory, log)
+    source = common.nodes_for(lab, "source")[0]
+    contributor = common.nodes_by_role(lab, "contributor")[0]
+    published = faults["probe_configs"] if faults else [args.config]
+    ssh(source, f"mkdir -p {REMOTE}; pkill -x aep1-48k-probe; "
+                + sender_command(published, contributor.get("vlan_ipv4")
+                                 or contributor["public_ipv4"], int(plan["seconds"] + 900),
+                                 f"{REMOTE_MEDIA}/audio/audio.s24le"), check=True)
+    stream = CONFIGS[args.config]["stream"]
+    args.stream = stream
+    avoid = fault_nodes(faults["timeline"]) if faults else set()
+    start = ssh(source, f"cat {REMOTE}/source.start").strip()
+    time.sleep(max(0.0, (int(start) if start.isdigit() else time.time()) - time.time() + 3))
+    if not wait_live(lab, stream, avoid=avoid):
+        sys.exit(f"stream {stream} is not live at {live_node(lab, avoid)['name']}")
+    result = {"run": run, "config": args.config, "party": plan["party"],
+              "standby_edges": standby, "steps": [],
+              "lab": {name: {key: node.get(key) for key in ("role", "site", "type", "purpose")}
+                      for name, node in lab["nodes"].items()}}
+    controller = None
+    try:
+        if control is not None:
+            control_start(control, log)
+        command = party_controller_command(args, directory, events_path,
+                                           plan["seconds"] + CONTROLLER_MARGIN_S,
+                                           (spec.get("autoscale") or {}).get("controller_args")
+                                           or [])
+        log({"event": "controller_start", "command": command[1:]})
+        with open(directory / "controller-party.log", "ab") as output:
+            controller = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
+                                          stderr=subprocess.STDOUT)
+        for step in plan["steps"]:
+            cloud = livekit_cloud_hook(spec, step, log)
+            outcome = run_step(lab, run, plan, step, args, directory, log,
+                               phases if step["faults"] else None, control)
+            outcome["party"] = {**step["party"], **party_step_figures(
+                directory / "steps" / str(step["listeners"]), tuple(outcome["window"]),
+                args.config, read_jsonl(events_path.read_text()))}
+            result["steps"].append(outcome)
+            write_results(directory, result)
+            archive_step(archive, run, directory, step, args.config, spec.get("paths"), log,
+                         party=step["party"], faults=step["faults"], **(cloud or {}))
+            log({"step": step["listeners"], "gave_out_first": outcome.get("gave_out_first"),
+                 "stopped": outcome["stopped"]})
+            if outcome["stopped"]:
+                log({"party": "ends: a listener host saturated"})
+                break
+            first = outcome.get("gave_out_first")
+            if first and not args.keep_going:
+                log({"party": f"ends: {first['tier']} {first['node']} gave out ({first['reason']})"})
+                break
+            time.sleep(args.settle)
+    finally:
+        if controller is not None:
+            stop_process(controller, log, "controller")
+            log({"event": "controller_exit", "returncode": controller.returncode})
+        stop_listeners(lab)
+        ssh(source, "pkill -x aep1-48k-probe; true")
+        if control is not None:
+            stop_livekit(control["ref"], control["session"])
+        events.close()
+        archive_run(archive, run, directory, log)
+    print(directory / "summary.md")
 
 
 def add_planning_args(item: argparse.ArgumentParser) -> None:
@@ -5790,6 +6283,27 @@ def add_planning_args(item: argparse.ArgumentParser) -> None:
                       help="run steps that the plan says the listener hosts cannot drive; "
                            "on a lab missing listener hosts, fitted to be as far over the "
                            "headroom as on the whole lab")
+
+
+def party_args(item: argparse.ArgumentParser) -> None:
+    """The options of `party` and `party-plan`."""
+    item.add_argument("--plan", default=str(PARTY), help="the party's schedule "
+                      f"({PARTY.relative_to(ROOT)})")
+    item.add_argument("--shares", default=None,
+                      help="each region's weight of the audience, e.g. london=0.3,newyork=0.3,"
+                           "tokyo=0.2,sydney=0.2 (default: the schedule's)")
+    item.add_argument("--steps", default=None, help="listeners of each step (default: the "
+                                                    "schedule's)")
+    item.add_argument("--config", choices=sorted(CONFIGS), default=None,
+                      help="the stream (default: the schedule's)")
+    item.add_argument("--topology", default=str(TOPOLOGY))
+    item.add_argument("--fit-hosts", action="store_true",
+                      help="each region takes at most what its listener hosts drive")
+    item.add_argument("--no-fit", action="store_true",
+                      help="on a lab missing listener hosts: each region's share on the hosts "
+                           "it has")
+    item.add_argument("--force", action="store_true",
+                      help="run steps over the listener hosts' headroom")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5864,6 +6378,29 @@ def build_parser() -> argparse.ArgumentParser:
     analyse.add_argument("--topology", default=str(TOPOLOGY))
     analyse.add_argument("--topology-only", action="store_true")
     analyse.set_defaults(handler=command_analyse)
+    party_plan_parser = sub.add_parser("party-plan", help="the listening party's steps, waves, "
+                                                          "churn, times and cost")
+    party_args(party_plan_parser)
+    party_plan_parser.add_argument("--topology-only", action="store_true",
+                                   help="plan from the topology file, without a lab")
+    party_plan_parser.add_argument("--json", action="store_true")
+    party_plan_parser.set_defaults(handler=command_party_plan)
+    party = sub.add_parser("party", help="the global listening party on the deployed lab")
+    party_args(party)
+    party.add_argument("--name", default=None, help="the run's name (default: time and config)")
+    party.add_argument("--sample", type=int, default=20,
+                       help="listeners per host whose every part arrival is kept")
+    party.add_argument("--load-args", default="", help="extra arguments of needletail-load")
+    party.add_argument("--poll", type=float, default=5.0)
+    party.add_argument("--settle", type=float, default=15.0)
+    party.add_argument("--keep-going", action="store_true",
+                       help="run the next step after a tier gave out")
+    party.add_argument("--allow-public-transfer", action="store_true")
+    party.add_argument("--budget-usd", type=float, default=None,
+                       help="the shared budget, for the controller's creates")
+    party.add_argument("--spent-before-usd", type=float, default=None,
+                       help="what earlier labs of the work cost (default: the lab tool's)")
+    party.set_defaults(handler=command_party)
     sub.add_parser("stop", help="stop sources, listeners, samplers").set_defaults(
         handler=command_stop)
     return parser

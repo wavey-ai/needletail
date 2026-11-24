@@ -984,6 +984,66 @@ more for the eight slots. Shorter timeouts shorten it (they are the plan's
 command that outlives one stops: the timeouts must stay above what the
 proving run measures.
 
+## The listening party (phases-party.json)
+
+The owner, 23 November: "a global listening party with thousands or tens of
+thousands of users". `deploy/low-latency/phases-party.json` is its schedule
+and `scale-run.py party` its driver, on `deploy/low-latency/topology-party.json`
+(workstream C's CT5, whose PARTY.md sizes it):
+
+```sh
+scripts/compare/scale-run.py party-plan --topology-only \
+    --topology deploy/low-latency/topology-party.json        # the arithmetic, no lab
+scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,sydney=0.25 \
+    --steps 1000,5000,10000,20000 --budget-usd 200            # add steps while the load hosts drive them
+```
+
+- **One stream** (`config`, opus-1 by default; `--config opus-2.5` for the
+  standard lane), its listeners over the regions by `--shares` (weights;
+  a region not named takes none), in a region over its listener hosts by
+  their vCPUs. Listeners are listeners; with two paths each holds two legs
+  (`paths` in the record).
+- **Waves and churn.** At every step each host's listeners join in five
+  equal waves 20 s apart (`waves`); 60 s after the last (and after the
+  faults' scenarios at the fault step) 10% of them leave and rejoin 30 s
+  later (`churn`); the step holds 60 s more. This is driven today with
+  needletail-load `--ramp` targets (`COUNT@SECOND`: up in waves, down and up
+  again for the churn); B Y4's churn options will give the rejoiners fresh
+  sessions and their own time to first audio.
+- **Time to first audio of joiners** at every step: the referee's joins
+  phase (20 new listeners of each lane on each view host, timed to first
+  audio) after the waves, and the load tool's own time to first part of
+  every listener in the step's figures.
+- **The autoscaler** runs through the whole party (`run --duration` the
+  party and a margin, its decisions in `events.jsonl`, held to
+  `--budget-usd`) and adds edges as the party grows; each step reports its
+  joins, the edges that came to serve and its drains, and "no listener
+  interrupted as it grew and churned" (B Y4's `listeners_interrupted`; open
+  until the load tool gives it).
+- **An edge and a forwarder killed mid-party.** At `faults.at_step`
+  (10,000) the step is a phase run of two scenarios, P1 (kill lon-edge-2)
+  and P2 (kill new-dist-b), each with probes of its own on every view host
+  and scored by the referee's change-window.py on its own marks, with every
+  criterion of C CL7. The joins and the churn of that step come after them.
+- **Controls.** The self-hosted LiveKit control runs on the listener hosts
+  at the count its SFUs carry (`livekit.self_hosted_per_sfu`, 450 a
+  region), with the referee's harness as in every ramp. LiveKit Cloud is
+  the referee's: the party records at each step where it would run
+  (`livekit_cloud` in the events and the archive's listener steps).
+- **Every step's raw data** goes to the run archive, the run of the lab's
+  id: the step's directory whole (needletail-load's intervals, summary and
+  histograms and its sampled listeners' arrivals, the samplers, the mesh
+  samplers, the readers' reports, the fault scenarios' marks, probes and
+  verdicts), the step recorded with `record_step` (listeners in all and by
+  region, the lane, the paths, the waves, the churn, the crowd's and the
+  controller's figures), and the run's plan, party schedule, events
+  (the controller's lines among them), results and summary. `scale-run.py
+  run` writes its steps there too.
+
+`party-plan` on the party topology, at C CL7, equal shares: steps of 1,000,
+5,000, 10,000 (with the faults' 828 s) and 20,000 listeners take 35.5
+minutes of steps; $19.062 an hour for the lab.
+
 ## Limits of the tools
 
 - **The LL-HLS figures are per reader.** ntcmp keeps a distribution per
