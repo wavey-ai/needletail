@@ -1586,7 +1586,7 @@ class Hunt:
             return
         ages = {}
         try:
-            for name, text in self.runner.each(self.present(self.mesh()), lambda name: self.runner.ssh(
+            for name, text in self.runner.each(self.present(self.mesh), lambda name: self.runner.ssh(
                     name, command, check=False, timeout=60)).items():
                 ages[name] = [int(line.split()[1]) for line in str(text).splitlines()
                               if len(line.split()) == 2 and line.split()[1].isdigit()]
