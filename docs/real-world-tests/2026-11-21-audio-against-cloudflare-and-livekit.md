@@ -7,7 +7,8 @@ the same audio from the same host in London to the same listeners in London,
 New York, Tokyo and Sydney, at the same time, on a lab of dedicated-CPU
 instances only.
 
-The latest results are waves 7, 6 and 5 (22 November), first below. The
+The latest result is wave 9 (23 November, one session), first below, then
+waves 7, 6 and 5 (22 November). Wave 8 had no Linode run. The
 fullest set is Needletail's `low-latency` build of 21 November, evening
 ("wave 2"): the smallest frames by default (Opus in 2.5 ms parts, lossless
 PCM in 1 ms parts) and both of its client modes, RaptorQ FEC over UDP from
@@ -17,7 +18,101 @@ A first pass on shared Nanodes is superseded; it is a side note at the end.
 
 The 4K video comparison is a separate record.
 
-## Latest: wave 7 (22 November, evening)
+## Latest: wave 9 (23 November, night): stopped after the first session
+
+**The first 1 ms session after the deploy still stalls in London, so the run
+stopped there under the agreed stop rule.** Nothing was lost: 0 units missing on
+every Needletail lane in every region. But London's Opus p99 was 854 ms,
+against 7.3 ms on self-hosted LiveKit. Everywhere else, wave 9 won:
+- Against self-hosted LiveKit: 53 wins, 1 tie and 2 losses of 56 metrics.
+  The losses are London Opus p99 and Sydney PCM p99 (137.2 against 133.4 ms).
+- Against LiveKit Cloud: 55 wins and 1 loss (London Opus p99).
+- A new listener heard its first audio in 7 to 21 ms, against 159 to 162 ms
+  on LiveKit with Opus.
+
+The session that followed, PCM about 8 minutes later, was clean in London:
+p99 3.4 ms against 4.7.
+
+Session, build and lab:
+- `waudio9` at 23:39 UTC on lab `cmpd5`: London, New York, Tokyo and Sydney,
+  33 dedicated nodes.
+- Self-hosted LiveKit (an SFU in each region) as the control. LiveKit Cloud
+  was back in the same session, for audio only (owner, 23 November), with
+  2.5 ms Opus and PCM on its data channel. Its estimated egress was 0.64 GB.
+- Build (the product session's last): `av-mesh` `cdfeb5c`, `playlists`
+  `c01662d`, `needletail` `e641b51`, `av-contrib` `219c6b5`.
+  - av-mesh was built for this run.
+  - av-contrib and `daw-test-source` were the wave 7 and wave 6 builds of the
+    same heads.
+- Deploy defaults with only the harness's three renditions set. `mlock_all`
+  was off, by the lead's decision. Wave 7's persisted settings were moved
+  aside, so wave 9 ran with its own defaults (`slot_kb` 8192, for example).
+- The product session's local first-session gate (session 1 against session 2,
+  ±0.3 ms) passed pinned (+0.071 ms). It missed unpinned by 0.019 ms (+0.319).
+  The lead counted it as passed for this run, because that local lab cannot
+  show the Linode stall either way.
+- Not run, under the stop rule: `waudio9-std`, the 4K sweep and the cost
+  tiers. Cost: lab $2.43 plus build host $0.22, so $2.65 in all.
+  - The lab figure includes $0.38 for seven Sydney nodes that the lab tool's
+    new optional-site rule deleted by mistake. They were created again.
+- Analysis version 15. Figures are from the 4-vCPU listener hosts, except in
+  Sydney, which had no 4-vCPU dedicated plan.
+
+Median / 99th percentile, mouth to ear (ms):
+
+| System | Frame | London | New York | Tokyo | Sydney |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **Needletail UDP** | Opus Custom 1 ms | **2.7** / 854.2 | **33.4 / 34.6** | **108.4 / 111.9** | **129.0 / 133.7** |
+| LiveKit, SFU in each region | Opus 2.5 ms | 5.2 / 7.3 | 35.8 / 37.5 | 114.0 / 115.8 | 131.5 / 135.3 |
+| LiveKit Cloud | Opus 2.5 ms | 19.1 / 21.8 | 61.2 / 64.5 | 134.3 / 137.7 | 144.4 / 148.5 |
+| **Needletail UDP** | PCM 1 ms | **1.7 / 3.4** | **32.4 / 33.4** | **110.5 / 112.0** | **128.1** / 137.2 |
+| LiveKit, SFU in each region | PCM 2.5 ms, data channel | 2.8 / 4.7 | 38.6 / 40.4 | 111.7 / 113.6 | 129.2 / 133.4 |
+| LiveKit Cloud | PCM 2.5 ms, data channel | 16.7 / 19.4 | 58.3 / 61.6 | 131.9 / 136.0 | 137.8 / 142.7 |
+
+The scoreboards are
+[evidence/20261124-scoreboard-wave9.json](evidence/20261124-scoreboard-wave9.json)
+(self-hosted LiveKit) and
+[evidence/20261124-scoreboard-wave9-lkcloud.json](evidence/20261124-scoreboard-wave9-lkcloud.json).
+The raw data, including every node's journal and samplers, is archived as run
+`cmpd5`.
+
+**Where the stall is.** The listeners' records, the edges' hop journals and
+the node journals were set side by side. They are in
+[evidence/20261124-wave9-first-session-stalls.txt](evidence/20261124-wave9-first-session-stalls.txt),
+with each edge's gaps over 20 ms:
+- **It starts on the edge, upstream of the listeners.** Every Needletail lane
+  on both London listener hosts, UDP and LL-HLS alike, stalled together:
+  23:40:01.1 to 02.5, 23:40:10.86 to 12.65, and 23:40:32.63 to 32.89. LiveKit
+  on the same hosts did not.
+- **Each edge stalls when its first UDP client arrives.** At that moment the
+  edge logs that its fan-out to clients "runs off the ingest thread". In
+  London and Tokyo each such line falls at the start of a stall of about one
+  second on every lane through that edge:
+  - lon-edge-2 at 23:40:01.17 and lon-edge-1 at 23:40:01.81;
+  - tok-edge-2 at 23:40:30.83, with tok-nano stalling from 30.84 to 31.9.
+  - New York's (new-edge-2, 23:40:02.66) brought only 0.2 s episodes on the
+    2-vCPU listener.
+- **lon-edge-1's ingest stopped at 23:40:10.9.** It skipped its watermark past
+  15 parts it never received in time. It then reported 329 datagrams that had
+  expired before it read them. Its relay ingress had stopped while packets
+  kept arriving.
+- **tok-edge-2 stopped committing for 148 ms at 23:40:40.50 and 125 ms at
+  23:40:55.43.** Its arrivals from the distributors had no gap, and the Tokyo
+  listener's stalls follow both. This is the commit-side stop seen on
+  lon-edge-1 in waves 6 and 7. tok-edge-2 had its physical host to itself.
+- **The UDP-serving edges were the busy ones.** lon-edge-1 and tok-edge-2 ran
+  at about 0.9 of a core through the session; lon-edge-2 at 0.55. Every mesh
+  node's resident memory grew by about 1 MB/s.
+- **No drops at the socket.** Neither UDP buffer errors nor socket drops rose
+  on any edge or distributor.
+- **What this run could not see.** The edges' per-CPU stop journal
+  (`/api/stalls`) is not in this build (it returned 404). The fault and
+  loop-lag counters in `/api/mesh` were not sampled. The hop journals are rings
+  of about 40 s, fetched once at the end of the clean minute, so they missed
+  the stalls of the first 20 s. Next time they will be polled through the
+  first session.
+
+## Wave 7 (22 November, evening)
 
 **Wave 7 won 49 of the 56 audio metrics against self-hosted LiveKit with
 1 ms Opus Custom and 1 ms PCM, in four regions (Sydney had dedicated
