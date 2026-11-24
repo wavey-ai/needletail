@@ -2063,8 +2063,8 @@
       "hours": 4.0,
       "budget_usd": 300.0,
       "spent_usd": 41.0,
-      "reserved_usd": 45.62,
-      "proving_hours": 4.0
+      "reserved_usd": 45.4,
+      "proving_hours": 10.0
     },
     "legs_per_edge": 271,
     "regions": {

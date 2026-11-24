@@ -947,9 +947,12 @@ forwarders and a dist-c slot, two contributors, a view host a region), run
 group by group:
 
 ```sh
+export NEEDLETAIL_LINODE_MAX_NODES=48 NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65   # recorded by up
+scripts/linode-small-mesh-lab.py up --topology deploy/low-latency/topology-proving.json \
+    --run-id prove1 --optional-sites sydney --watchdog-hours 5 --budget-usd 90
 scripts/compare/scale-run.py run --phase-plan deploy/low-latency/phases-proving.json \
-    --group N --name prove-n --budget-usd 60          # then U (with --next-av-mesh-root
-                                                      # for U4), F, R, A
+    --group N --name prove-n --budget-usd 90          # then U (with --next-av-mesh-root
+                                                      # for U4); F, R, A on the second lab
 ```
 
 Every scenario's probes listen on opus-1 and pcm-1 (`probe_configs`) on
@@ -977,9 +980,22 @@ timeouts: gate 10 s, drain 15 s, readiness 30 s and 15 s to restart a node,
 70 s a node; a rebuild and its bootstrap 15 minutes, a forwarder's slot 15
 more) and must run twice the change's length and more after it for the
 referee's no-change windows. A roll of every node and its probes is about an
-hour. With 20 minutes of bring-up the run needs a watchdog of 9 hours, or
-two labs: 36 nodes at $2.970 an hour, $26.73 for nine hours, at most $3.89
-more for the eight slots. Shorter timeouts shorten it (they are the plan's
+hour.
+
+**The lab and its cost.** `up` creates 40 nodes at $3.186 an hour (three
+serving edges and one standby a region); with its eight slots 48 nodes at
+$3.618, so the ceilings are `NEEDLETAIL_LINODE_MAX_NODES=48` and
+`NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65` (the topology's own description says
+the same). With 20 minutes of bring-up each, the run is two labs of a 5-hour
+watchdog, under the lab tool's 6-hour limit (`NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS`):
+N and U (232.3 minutes, 4.2 hours) on the first, F, R and A (251.3 minutes,
+4.5 hours) on the second. That bills 10 hours: $31.86, at most $36.18 with
+every slot alive throughout (the figure `scripts/scale_topology.py plan`
+holds for the proving run before the party). One lab of 9 hours bills $28.67
+($32.56 at most) but needs `NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS=9`. Both
+fit `--budget-usd 90` (cumulative: about $41 spent before, $77.18 at most
+after); C-operations 7's first budget of $60 and its 44 / 3.45 ceilings were for
+the 36-node lab of four hours. Shorter timeouts shorten it (they are the plan's
 `gate_timeout_s`, `drain_timeout_s`, `ready_timeout_s` per action), but a
 command that outlives one stops: the timeouts must stay above what the
 proving run measures.

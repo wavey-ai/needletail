@@ -84,7 +84,7 @@ Departures from the lead's brief, with the evidence (details in the sections nam
 8. The lab tool refuses `up` without a watchdog and a budget; the watchdog is a user unit that returns after a
    reboot and is checked by every later command; `replace` rebuilds an instance in place (both addresses kept).
 9. The autoscaler observes CPU, never blocks its tick on a create, acts on a lost node only on evidence from
-   inside the mesh, and has slots in every region. It runs on Linode in a 36-node proving lab at $2.970 an hour.
+   inside the mesh, and has slots in every region. It runs on Linode in a 40-node proving lab at $3.186 an hour.
 10. scale-run gains the change kinds, event-driven steps, a probe per scenario scored alone by the referee's own
     `change-window.py`, and its three analysis defects are fixed. The local lab runs as independent instances on
     disjoint CPU ranges under a host-wide registry, can run two builds side by side, and has a change-window
@@ -553,17 +553,18 @@ remembered and is tested against a fake.
 | --- | --- | --- | ---: | ---: |
 | Contributors, source | `contrib-lon`, `contrib-lon-b`, `lon-src` | g6-dedicated-4 | 3 | 0.324 |
 | Forwarders | `<s>-dist-a`, `-b` in four regions | g6-dedicated-2 | 8 | 0.432 |
-| Edges | `<s>-edge-1..3`; `<s>-edge-3` in `standby_edges` | g6-dedicated-2 | 12 | 0.648 |
+| Edges | `<s>-edge-1..4`; `<s>-edge-4` in `standby_edges` | g6-dedicated-2 | 16 | 0.864 |
 | Load host | `<s>-load-1` (purpose listeners) | g6-dedicated-8 | 4 | 0.864 |
 | View host | `<s>-view` | g6-dedicated-4 | 4 | 0.432 |
 | LiveKit | `<s>-lk`, `lk-redis` | g6-dedicated-2 | 5 | 0.270 |
-| **Created by `up`** | | | **36** | **2.970** |
-| Slots, not created | `<s>-dist-c`, `<s>-edge-4` | g6-dedicated-2 | 8 | 0.432 if all exist |
+| **Created by `up`** | | | **40** | **3.186** |
+| Slots, not created | `<s>-dist-c`, `<s>-edge-5` | g6-dedicated-2 | 8 | 0.432 if all exist |
 
-Sites in the file's order: sydney, london, newyork, tokyo (Sydney first, TOP:72-78). `-syd2`: Sydney's load
-host is two g6-dedicated-2 and its view host a g6-dedicated-2 (no larger plan had capacity there on 22 Nov):
-37 nodes, $2.808 an hour. `--without-sites sydney`: 28 nodes, $2.322. Ceilings for a run:
-`NEEDLETAIL_LINODE_MAX_NODES=44`, `NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.45`.
+Sites in the file's order: sydney, london, newyork, tokyo (Sydney first, TOP:72-78). Three serving edges and
+one standby a region (agreed with the referee, 23 Nov; CT5). There is no `-syd2` file (CT5 review: listener and
+view hosts stay g6-dedicated-4 or -8); Sydney is optional (`up --optional-sites sydney`), and
+`--without-sites sydney` gives 31 nodes, $2.484. Ceilings for a run (48 nodes, $3.618 with every slot):
+`NEEDLETAIL_LINODE_MAX_NODES=48`, `NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65`.
 
 ### 2.10 Autoscaler (`AUT`)
 
@@ -1352,10 +1353,10 @@ three extra cells 11, the lower block 2; half that with two labs if 6.1 allows.
 ```sh
 cd ~/wavey.ai/needletail-resilient
 export NEEDLETAIL_AV_MESH_ROOT=~/wavey.ai/av-mesh-resilient NEEDLETAIL_AV_CONTRIB_ROOT=~/wavey.ai/av-contrib-resilient
-export NEEDLETAIL_LINODE_MAX_NODES=44 NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.45     # recorded in the state by up
+export NEEDLETAIL_LINODE_MAX_NODES=48 NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65     # recorded in the state by up
 scripts/linode-small-mesh-lab.py check --topology deploy/low-latency/topology-proving.json
 scripts/linode-small-mesh-lab.py up --topology deploy/low-latency/topology-proving.json --run-id prove1 \
-    --optional-sites sydney --watchdog-hours 4 --budget-usd 60
+    --optional-sites sydney --watchdog-hours 5 --budget-usd 90       # two labs: N and U; F, R and A
 scripts/linode-small-mesh-lab.py hosts
 scripts/linode-small-mesh-deploy.py push --remeasure $(scripts/compare/scale-run.py settings \
     --topology deploy/low-latency/topology-proving.json --datagram-capacity 200000)
@@ -1405,8 +1406,10 @@ contributor changes 12; R 28 (a rebuild and a bootstrap with apt are minutes eac
 A 54; margin 25: 2 h 50 min. Scenario lengths in the plan come from the commands' bounds, not these typical
 times.
 
-Cost. 36 nodes at $2.970 an hour: $8.91 if `down` completes inside three billed hours, $11.88 at the
-watchdog's four; slots are $0.054 for each of their own hours, at most $1.73 if all eight lived four hours, so
+Cost (integration 2: superseded by SCALE.md "The proving run", which the plan's bounds made 483.6 minutes:
+40 nodes at $3.186 an hour, two labs of a 5-hour watchdog, $31.86 and at most $36.18 with every slot, under
+`--budget-usd 90`; the figures below are the first plan's, for 36 nodes and 2 h 50 min). 36 nodes at $2.970 an
+hour: $8.91 if `down` completes inside three billed hours, $11.88 at the watchdog's four; slots are $0.054 for each of their own hours, at most $1.73 if all eight lived four hours, so
 the lab cannot cost more than $13.61 and `--budget-usd 60` (cumulative: $38 before, at most $51.61 after)
 holds. The watchdog is four hours and not three because the schedule is 2 h 50 min and the watchdog starts
 `down` five minutes before its deadline: a three-hour watchdog would cut a run that slips by five minutes, and
