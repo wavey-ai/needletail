@@ -3309,6 +3309,7 @@ class Party(unittest.TestCase):
                 mock.patch.object(scale, "OUT", directory), \
                 mock.patch.object(scale, "open_archive", lambda *a: None), \
                 mock.patch.object(scale, "begin_phases", lambda *a: None), \
+                mock.patch.object(scale, "warm_gate", lambda *a, **k: {"ok": True}), \
                 mock.patch.object(scale, "control_setup", lambda *a: None), \
                 mock.patch.object(scale.common, "nodes_for", lambda state, kind: [source]), \
                 mock.patch.object(scale.common, "nodes_by_role", lambda state, role: [

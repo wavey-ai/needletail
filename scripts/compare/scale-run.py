@@ -105,6 +105,7 @@ readers below also take the field names of its earlier drafts.
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import json
 import math
@@ -5996,6 +5997,165 @@ def control_start(control: dict, log) -> None:
          "referee": str(COMPARE_ROOT)})
 
 
+# ------------------------------------------------------------ the warm gate
+
+# Before any measured window (a ramp step, a phase's scenarios, a party
+# step): every host of the window warm (hunt11241537: fresh Linode guests
+# are not run for seconds while they first touch their memory; the
+# referee's method, 24 Nov: every guest warmed before a measured window,
+# no cold row). Mesh nodes by their own /api/node (ready, and the boot
+# warm pass complete: node_warm.complete, which av-mesh's readiness also
+# takes; a node without node_warm in its answer, the av-contrib
+# contributor, by the deploy's record of its pass); standby edges, stopped,
+# by the deploy's record; every other host (source, view, listener and
+# LiveKit hosts) by the referee's warm result (`compare_lab.py warm`:
+# NEEDLETAIL_COMPARE_ROOT/target/compare/warm-UNIX.json) written after the
+# host was created. Waited for up to --warm-wait-s; else the run is refused
+# unless --warm-override REASON, which is recorded (events, warm-gate.json,
+# the archive) with the hosts it let through.
+WARM_GATE_FILE = "warm-gate.json"
+WARM_WAIT_S = 600.0
+WARM_POLL_S = 10.0
+WARM_GATE_MESH = ("contributor", "distributor", "edge", "backbone")
+WARM_GATE_OTHER = ("load", "livekit")
+
+
+def node_created_unix(node: dict) -> float | None:
+    """When the lab tool created the instance (the API's `created`, else
+    its own `created_unix`): a warm result older than that is another
+    instance's."""
+    text = node.get("created")
+    if text:
+        try:
+            parsed = datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+    value = node.get("created_unix")
+    return float(value) if value is not None else None
+
+
+def referee_warm_results(root: pathlib.Path | None = None) -> list[dict]:
+    """The referee's warm results (compare_lab.py warm), oldest first: each
+    {"file", "started_unix", "hosts": {name: result}}; unreadable files
+    are left out."""
+    directory = (root or COMPARE_ROOT) / "target" / "compare"
+    out = []
+    for path in sorted(directory.glob("warm-*.json")):
+        try:
+            document = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict) and isinstance(document.get("hosts"), dict):
+            out.append({"file": str(path), "started_unix": float(document.get("started_unix") or 0),
+                        "hosts": document["hosts"]})
+    return sorted(out, key=lambda item: item["started_unix"])
+
+
+def referee_warm_of(node: dict, results: list[dict]) -> dict:
+    """A host's verdict from the referee's warm results: the newest that
+    names it, started after the instance was created, without an error and
+    with memory touched."""
+    created = node_created_unix(node) or 0.0
+    for item in reversed(results):
+        found = item["hosts"].get(node["name"])
+        if not isinstance(found, dict):
+            continue
+        if item["started_unix"] < created:
+            return {"ok": False, "source": "referee", "why": f"the referee's warm "
+                    f"({pathlib.Path(item['file']).name}) is older than the instance"}
+        if found.get("error") or not found.get("touched_mb"):
+            return {"ok": False, "source": "referee",
+                    "why": f"the referee's warm failed: {str(found.get('error') or 'nothing touched')[-120:]}"}
+        return {"ok": True, "source": "referee", "file": pathlib.Path(item["file"]).name,
+                "seconds": found.get("seconds"), "worst_write_ms": found.get("worst_write_ms")}
+    return {"ok": False, "source": "referee",
+            "why": "no warm result of the referee names it" if results
+            else "no warm result of the referee (compare_lab.py warm) is present"}
+
+
+def mesh_warm_of(name: str, document, deployed_warm: dict) -> dict:
+    """A mesh node's verdict from its /api/node: ready, and node_warm
+    complete (else the deploy's record of its pass when the answer carries
+    no node_warm)."""
+    if not isinstance(document, dict) or document.get("error"):
+        return {"ok": False, "source": "api/node", "why": "no /api/node answer"}
+    ready = document.get("ready") is True or document.get("state") == "ready"
+    warm = document.get("node_warm")
+    if isinstance(warm, dict):
+        complete, source = warm.get("complete") is True, "api/node node_warm"
+        verdict = warm.get("verdict")
+    else:
+        entry = deployed_warm.get(name) or {}
+        complete, source, verdict = entry.get("complete") is True, "deployed record", entry.get("verdict")
+    why = [reason for reason, bad in (("not ready", not ready),
+                                       (f"warm pass not complete ({verdict or 'none'})",
+                                        not complete)) if bad]
+    return {"ok": not why, "source": source, **({"why": "; ".join(why)} if why else {})}
+
+
+def warm_gate_check(lab: dict, standby: list[str], deployed_warm: dict, answers: dict,
+                    results: list[dict]) -> dict:
+    """Every host of the lab judged once: {"ok", "hosts": {name: verdict},
+    "cold": [names]}. `answers`: {mesh node: its /api/node}."""
+    hosts = {}
+    for name, node in sorted(lab["nodes"].items(), key=lambda item: natural(item[0])):
+        role = node.get("role")
+        if role in WARM_GATE_MESH:
+            if name in standby:
+                entry = deployed_warm.get(name) or {}
+                hosts[name] = ({"ok": True, "source": "deployed record (standby)"}
+                               if entry.get("complete") is True else
+                               {"ok": False, "source": "deployed record (standby)",
+                                "why": f"warm pass not complete ({entry.get('verdict') or 'none'})"})
+            else:
+                hosts[name] = mesh_warm_of(name, answers.get(name), deployed_warm)
+        elif role in WARM_GATE_OTHER:
+            hosts[name] = referee_warm_of(node, results)
+    cold = [name for name, verdict in hosts.items() if not verdict["ok"]]
+    return {"ok": not cold, "hosts": hosts, "cold": cold}
+
+
+def warm_gate(lab: dict, standby: list[str], args, log, directory: pathlib.Path | None = None,
+              poll=None, now=time.time, sleep=time.sleep) -> dict:
+    """Wait until every host of the lab is warm (warm_gate_check), polling
+    the mesh nodes' /api/node every WARM_POLL_S, up to --warm-wait-s; then
+    go on, or stop the run unless --warm-override REASON (recorded)."""
+    poll = poll or http_get
+    deployed_warm = ((lab.get("deployed") or {}).get("warm")) or {}
+    wait_s = float(getattr(args, "warm_wait_s", None) or WARM_WAIT_S)
+    override = getattr(args, "warm_override", None)
+    began = now()
+    while True:
+        mesh = [node for name, node in lab["nodes"].items()
+                if node.get("role") in WARM_GATE_MESH and name not in standby]
+        answers = common.parallel(mesh, lambda node: poll(node, "/api/node")) if mesh else {}
+        result = warm_gate_check(lab, standby, deployed_warm, answers,
+                                 referee_warm_results())
+        if result["ok"] or now() - began >= wait_s:
+            break
+        sleep(WARM_POLL_S)
+    result["waited_s"] = round(now() - began, 1)
+    if not result["ok"] and override:
+        result["overridden"] = {"reason": str(override), "hosts": result["cold"]}
+    if directory is not None:
+        (directory / WARM_GATE_FILE).write_text(json.dumps(result, indent=1) + "\n")
+    log({"source": "scale-run", "event": "warm_gate", "unix_us": unix_us(),
+         "ok": result["ok"], "waited_s": result["waited_s"], "cold": result["cold"],
+         "overridden": result.get("overridden"),
+         "why": {name: result["hosts"][name].get("why") for name in result["cold"]}})
+    if not result["ok"] and not override:
+        sys.exit("warm gate: not every host of the window is warm after "
+                 f"{result['waited_s']:g} s: "
+                 + "; ".join(f"{name} ({result['hosts'][name].get('why')})"
+                             for name in result["cold"])
+                 + ". Warm them (deploy push: the mesh; compare_lab.py warm: the other hosts) "
+                   "or give --warm-override REASON (recorded)")
+    return result
+
+
 def command_run(args: argparse.Namespace) -> None:
     lab = state()
     settings = deploy_settings()
@@ -6026,6 +6186,7 @@ def command_run(args: argparse.Namespace) -> None:
     events, log = open_events(events_path)
     archive = open_archive(lab, run, log)
     sent: dict = {}
+    warm_gate(lab, standby, args, log, directory)
 
     if plan.get("fit"):
         log({"fit": plan["fit"], "steps": [step["listeners"] for step in plan["steps"]],
@@ -6804,6 +6965,7 @@ def command_party(args: argparse.Namespace) -> None:
     events, log = open_events(events_path)
     archive = open_archive(lab, run, log)
     sent: dict = {}
+    warm_gate(lab, standby, args, log, directory)
     phases = None
     if faults:
         phases = {**faults, "events": events_path}
@@ -6968,6 +7130,16 @@ def party_args(item: argparse.ArgumentParser) -> None:
                            "schedule's paths")
 
 
+def warm_gate_options(item: argparse.ArgumentParser) -> None:
+    """The warm gate's options of `run` and `party`."""
+    item.add_argument("--warm-wait-s", type=float, default=WARM_WAIT_S,
+                      help="how long the run waits for every host to be warm before its "
+                           "first window")
+    item.add_argument("--warm-override", default=None, metavar="REASON",
+                      help="run although hosts are not warm; the reason and the hosts are "
+                           "recorded")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -7035,6 +7207,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--next-av-contrib-root", default=None,
                      help="the av-contrib checkout an `upgrade` to `next` rolls to")
     collect_options(run)
+    warm_gate_options(run)
     run.set_defaults(handler=command_run)
     analyse = sub.add_parser("analyse", help="aggregate a run's files again")
     analyse.add_argument("run", help="the run's name or directory")
@@ -7064,6 +7237,7 @@ def build_parser() -> argparse.ArgumentParser:
     party.add_argument("--spent-before-usd", type=float, default=None,
                        help="what earlier labs of the work cost (default: the lab tool's)")
     collect_options(party)
+    warm_gate_options(party)
     party.set_defaults(handler=command_party)
     sub.add_parser("stop", help="stop sources, listeners, samplers").set_defaults(
         handler=command_stop)
