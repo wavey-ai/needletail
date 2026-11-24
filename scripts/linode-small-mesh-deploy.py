@@ -3398,10 +3398,11 @@ BOOTSTRAP = r"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v chronyc >/dev/null 2>&1 || ! command -v iptables >/dev/null 2>&1 \
-  || ! command -v jq >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1; then
+  || ! command -v jq >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1 \
+  || ! command -v ethtool >/dev/null 2>&1; then
   for attempt in 1 2 3 4 5; do
     if apt-get update -q >/dev/null 2>&1 && apt-get install -y -q \
-      chrony iptables iproute2 jq rsync procps >/dev/null 2>&1; then break; fi
+      chrony iptables iproute2 jq rsync procps ethtool >/dev/null 2>&1; then break; fi
     sleep 5
   done
 fi
