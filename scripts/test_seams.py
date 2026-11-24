@@ -453,5 +453,94 @@ class ContributorChanges(unittest.TestCase):
         self.assertEqual(rows[(3001, "video")]["track"], "video")
 
 
+import test_scale_topology as tst  # noqa: E402
+
+hunt_tool = load("stall_hunt_seams", HERE / "linode-stall-hunt.py")
+LOW_LATENCY = HERE.parent / "deploy" / "low-latency"
+
+
+@unittest.skipUnless(tst.COMPILER.is_file(), "needs target/release/needletail-compile")
+class Topologies(tst.Base):
+    """(d) CT5's proving and party topologies through the deploy tool's
+    offline render and the real needletail-compile, with both contributors,
+    a slot of each kind in every region, and the stall hunt's own deploy
+    settings (its stall journal, the large hop journals and the arm without
+    the arena warm-up, as linode-stall-hunt.py pushes them)."""
+
+    def render(self, topology: dict, overrides=()):
+        settings = self.settings(overrides)
+        active = tst.deploy.active_state(tst.topology_state(topology), settings)
+        plan = tst.deploy.compile_plan(tst.deploy.build_program(active, settings, tst.ROUTES))
+        rendered = tst.deploy.render(active, settings, plan)
+        return active, {name: item["args"] for name, item in rendered.items()}
+
+    def hunt_settings(self, topology: dict) -> list[str]:
+        hunt = json.loads((LOW_LATENCY / "topology-hunt.json").read_text())["hunt"]
+        return hunt_tool.push_settings({**topology, "hunt": hunt})
+
+    def check_hunt(self, args: dict) -> None:
+        hunt = json.loads((LOW_LATENCY / "topology-hunt.json").read_text())["hunt"]
+        for name, node_args in args.items():
+            if not name.startswith("contrib-"):
+                self.assertEqual(tst.deploy.flag_value(node_args, "--stall-journal-capacity"),
+                                 str(hunt_tool.STALL_JOURNAL_CAPACITY), name)
+        for name in hunt["hop_journal_large"]:
+            self.assertEqual(tst.deploy.flag_value(args[name], "--hop-journal-capacity"),
+                             str(hunt_tool.HOP_JOURNAL_LARGE), name)
+        for name in hunt["no_arena_warm"]:
+            self.assertEqual(tst.deploy.flag_value(args[name], hunt_tool.ARENA_FLAG), "0", name)
+
+    def test_the_proving_lab_renders_with_two_contributors_slots_and_the_hunt_settings(self):
+        topology = json.loads((LOW_LATENCY / "topology-proving.json").read_text())
+        active, args = self.render(topology, [
+            f"standby_edges={json.dumps(topology['standby_edges'])}",
+            *self.hunt_settings(topology)])
+        self.assertEqual(sorted(name for name in args if name.startswith("contrib-")),
+                         ["contrib-lon", "contrib-lon-b"])
+        slots = set(active["slot_names"])
+        for short in ("lon", "new", "tok", "syd"):
+            self.assertTrue({f"{short}-dist-c", f"{short}-edge-5"} <= slots, short)
+            peers = tst.flag_values(args[f"{short}-dist-a"], "--peer")
+            for name in (f"{short}-dist-c", f"{short}-edge-5"):
+                self.assertIn(f"{active['roster'][name]['vlan_ipv4']}:{tst.deploy.MESH_PORT}",
+                              peers, name)
+        self.check_hunt(args)
+
+    def test_the_party_renders_with_its_forwarder_setting_and_the_hunt_settings(self):
+        topology = json.loads((LOW_LATENCY / "topology-party.json").read_text())
+        plan = tst.scale_topology.party_plan()
+        _active, args = self.render(topology, [
+            f"standby_edges={json.dumps(topology['standby_edges'])}",
+            f"max_edges_per_forwarder={plan['max_edges_per_forwarder']}",
+            *self.hunt_settings(topology)])
+        self.assertEqual(sorted(name for name in args if name.startswith("contrib-")),
+                         ["contrib-lon", "contrib-lon-b"])
+        self.check_hunt(args)
+
+
+class LocalLabCpus(unittest.TestCase):
+    """(d) nt36's local lab rows (contrib-lon-b, lon-src) in both CPU layouts
+    of CL1 on this 32-CPU host's shape: alone (node_cpus=0) every standing
+    node has CPUs of its own and four are left for the readers; in a range
+    with every slot taken in, every node a window and the readers theirs."""
+
+    def test_both_layouts_hold_the_two_contributors_and_the_source_host(self):
+        import edge_lab  # noqa: PLC0415
+        standing = [name for name, role, *_ in edge_lab.NODES
+                    if role != "backbone" and name not in edge_lab.DEFAULT_SLOTS]
+        self.assertTrue({"contrib-lon", "contrib-lon-b", "lon-src"} <= set(standing))
+        with mock.patch.object(os, "cpu_count", lambda: 32):
+            alone = edge_lab.node_cpu_sets(standing, first=0)
+            ranged = edge_lab.node_cpu_sets(standing + list(edge_lab.DEFAULT_SLOTS),
+                                            cpus=(0, 31))
+        owned = [cpu for name in standing for cpu in alone[name]]
+        self.assertEqual(len(owned), len(set(owned)), "no CPU is two nodes' when pinned")
+        self.assertEqual(alone["_rest"], [28, 29, 30, 31])
+        self.assertEqual((alone["contrib-lon"], alone["contrib-lon-b"]), ([0, 1], [24, 25]))
+        for name in standing + list(edge_lab.DEFAULT_SLOTS):
+            self.assertTrue(ranged[name], name)
+            self.assertFalse(set(ranged[name]) & set(ranged["_rest"]), name)
+
+
 if __name__ == "__main__":
     unittest.main()
