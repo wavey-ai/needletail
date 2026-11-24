@@ -30,7 +30,10 @@
 #   memfree_kb       MemFree
 #   threads          every thread: [tid, policy, rtprio or null, last CPU, name]
 #   mesh             /api/mesh/local cut to the counters of MESH_KEYS, keyed
-#                    by their path (null when it did not answer in 0.8 s)
+#                    by their path, this node's own (no path under the
+#                    peers' relay_nodes, nodes, peers, edge_services,
+#                    streams or connections); null when it did not answer
+#                    in 0.8 s
 # OUT/stalls.ndjson  /api/stalls?since_us= (each read from the last event + 1)
 # OUT/<SLOW_PATH's last part>.ndjson  {"unix", "body"} lines
 # These two are pulled in the background (one pull at a time), so that a
@@ -44,9 +47,14 @@ COMM=$3
 URL=$4
 SLOW=${5:-}
 COUNT=${6:-0}
-MESH_KEYS='["tick_threads","tick_pinned","fanout_started","fanout_policies","fanout_cpus","fanout_threads","fanout_first_dispatch_faults","fanout_dispatch_max_us","fanout_shed","fanout_waited","class_plan_grows","class_compact_max_us","class_send_max_us","class_repair_max_us","class_arena_warm_bytes","audio_loop_busy_max_us","audio_loop_busy_over_5ms","audio_loop_busy_over_50ms","audio_loop_gap_max_us","audio_thread_minflt","audio_thread_majflt","process_minflt","process_majflt","kernel_dropped","tee_dropped","deadline_drops","tick_late_max_us","stopped_ms","starved_ms"]'
-FILTER='[paths(scalars) as $p | select(($p[-1] | type) == "string" and any($k[]; . == $p[-1]))
+MESH_KEYS='["tick_threads","tick_pinned","fanout_started","fanout_policies","fanout_cpus","fanout_threads","fanout_first_dispatch_faults","fanout_dispatch_max_us","fanout_shed","fanout_waited","class_plan_grows","class_compact_max_us","class_send_max_us","class_repair_max_us","class_arena_warm_bytes","audio_loop_busy_max_us","audio_loop_busy_over_5ms","audio_loop_busy_over_50ms","audio_loop_gap_max_us","audio_thread_minflt","audio_thread_majflt","process_minflt","process_majflt","kernel_dropped","tee_dropped","audio_deadline_drops","video_deadline_drops","tick_late_max_us","stopped_ms","starved_ms"]'
+FILTER='[paths(scalars) as $p | select(($p[0] | IN(PEER_PATHS) | not)
+  and ($p[-1] | type) == "string" and any($k[]; . == $p[-1]))
   | {key: ($p | map(tostring) | join(".")), value: getpath($p)}] | from_entries'
+# /api/mesh/local also carries every peer's telemetry (relay_nodes[i].
+# relay_session.fast_plane.*, nodes, peers, edge_services, streams: av-mesh
+# MeshApiSnapshot): those paths are never this node's counters.
+FILTER=$(printf '%s' "$FILTER" | sed 's/PEER_PATHS/"relay_nodes","nodes","peers","edge_services","streams","connections"/')
 VM_KEYS='pgfault pgmajfault thp_fault_alloc thp_fault_fallback thp_collapse_alloc compact_stall compact_fail allocstall_dma allocstall_dma32 allocstall_normal allocstall_movable pgscan_direct pgsteal_direct pswpin pswpout workingset_refault_anon workingset_refault_file'
 mkdir -p "$OUT"
 echo 0 >"$OUT/.since"

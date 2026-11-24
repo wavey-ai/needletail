@@ -417,7 +417,8 @@ def attribute(found: list[dict], ideal_us, sides: list[tuple[str, list[dict]]],
 #    thread on its CPU, or the hypervisor);
 #  - blocked in our code: run delay flat (under a tenth of the stop) and a
 #    pass of the class loop of half the stop or more (audio_loop_busy_max_us
-#    rose to it, audio_loop_busy_over_50ms grew, or the journal has a
+#    rose to it, audio_loop_busy_over_50ms grew on a stop of 100 ms or
+#    less, or the journal has a
 #    class_pass of its own over it), with voluntary switches (a wait) or
 #    without (a spin); the wait is named by the counter that rose to half
 #    the stop (the fan-out hand-off, the compact path, a send, a repair),
@@ -439,6 +440,8 @@ def attribute(found: list[dict], ideal_us, sides: list[tuple[str, list[dict]]],
 NOT_RUN_SHARE = 0.5
 FLAT_SHARE = 0.1
 BUSY_SHARE = 0.5
+# av-mesh relay.rs: audio_loop_busy_over_50ms counts the passes over this.
+OVER_50MS_US = 50_000
 BASELINE_PAIRS = 10
 NAMED_WAITS = (("fanout_dispatch_max_us", "the hand-off to the fan-out threads"),
                ("class_compact_max_us", "the compact path (its store and ring locks, the "
@@ -475,11 +478,19 @@ def sampler_lines(items: list[dict]) -> list[dict]:
                   key=lambda item: int(item["t_us"]))
 
 
+# The paths of /api/mesh/local that hold other nodes' telemetry (av-mesh
+# MeshApiSnapshot: relay_nodes[i].relay_session.fast_plane.* is a peer's),
+# never this node's counters; the sampler leaves them out too.
+PEER_PATHS = ("relay_nodes", "nodes", "peers", "edge_services", "streams", "connections")
+
+
 def mesh_value(line: dict | None, key: str) -> int | None:
     """A counter of the line's /api/mesh/local cut, by its name (the last
-    part of its path); the largest when the name is on several paths."""
+    part of its path), this node's own (never under PEER_PATHS); the
+    largest when the name is on several of its own paths."""
     values = [value for path, value in ((line or {}).get("mesh") or {}).items()
-              if path.split(".")[-1] == key and isinstance(value, (int, float))]
+              if path.split(".")[-1] == key and path.split(".")[0] not in PEER_PATHS
+              and isinstance(value, (int, float))]
     return int(max(values)) if values else None
 
 
@@ -609,10 +620,13 @@ def classify(start_us: int, end_us: int, lines: list[dict], journal: list[dict] 
         return {"class": "not run", "figures": figures, "where": where,
                 "why": f"run delay grew {delay:.0f} ms over a {length_ms:.0f} ms stop"}
     passes = [event for event in journal if event.get("kind") == "class_pass"
-              and event.get("cause") == "own"
+              and event.get("cause") == "own" and event.get("thread", "audio") == "audio"
               and overlap(interval(event), (start_us, end_us)) >= half_us]
     busy_before, busy_after = figures["busy_max_us"]
-    long_pass = bool(passes) or (figures["over_50ms"] or 0) > 0 or (
+    # audio_loop_busy_over_50ms counts passes over 50 ms: a pass of half the
+    # stop or more only for a stop of 100 ms or less.
+    long_pass = bool(passes) or (
+        length_ms <= 2 * OVER_50MS_US / 1000 and (figures["over_50ms"] or 0) > 0) or (
         busy_after is not None and busy_after >= BUSY_SHARE * length_ms * 1000
         and busy_after > (busy_before or 0))
     if delay < FLAT_SHARE * length_ms and long_pass:

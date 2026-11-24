@@ -602,7 +602,11 @@ class FakeService(http.server.BaseHTTPRequestHandler):
                                                      "duplicates": 5},
                                       "edge_clients": {"fanout_started": 2,
                                                        "fanout_policies": 1}},
-                    "stall": {"stopped_ms": 0}}
+                    "stall": {"stopped_ms": 0},
+                    # Every peer's telemetry rides on /api/mesh/local too.
+                    "relay_nodes": [{"relay_session": {"fast_plane": {
+                        "audio_loop_busy_max_us": 99999}}}],
+                    "nodes": [{"stall": {"stopped_ms": 7}}]}
             data = json.dumps(body).encode()
         elif path == "/api/stalls":
             FakeService.asked.append(query)

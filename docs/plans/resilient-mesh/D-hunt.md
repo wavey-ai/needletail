@@ -802,8 +802,10 @@ the stop plus up to two seconds.
    record names where: *the guest kernel* (direct reclaim or compaction grew in vmstat), *another real-time thread
    on its CPU* (named from `ps -L`), else *the hypervisor or the guest kernel, not named*.
 2. **Blocked in our code.** Run delay grew by under L/10, and a pass of the class loop was L/2 or more
-   (`audio_loop_busy_max_us` rose to it, `audio_loop_busy_over_50ms` grew, or the journal has a `class_pass` of its
-   own over it). The wait is named by the first that applies: a counter that rose to L/2 (`fanout_dispatch_max_us`:
+   (`audio_loop_busy_max_us` rose to it, `audio_loop_busy_over_50ms` grew on a stop of 100 ms or less, since it
+   counts passes over 50 ms, or the journal has a `class_pass` of the audio class thread's own over it). Only this
+   node's counters count: `/api/mesh/local` also carries every peer's telemetry (`relay_nodes`, `nodes`, `peers`,
+   `edge_services`, `streams`, `connections`), which the sampler leaves out. The wait is named by the first that applies: a counter that rose to L/2 (`fanout_dispatch_max_us`:
    the hand-off; `class_compact_max_us`: the compact path; `class_send_max_us`: a send; `class_repair_max_us`: a
    window repair); page faults in the long pass itself (the journal's `class_pass` over the stop carries the
    thread's faults since its last once-a-second reading); the guest's reclaim; else "a lock or wait that no

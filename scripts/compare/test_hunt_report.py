@@ -267,12 +267,28 @@ class Classify(unittest.TestCase):
         once-a-second reading, up to a second stale) around a 300 ms block
         with no class_pass faults: the wait is not "page faults", and H4
         does not take it as evidence."""
-        found = sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=53, over_50ms=1,
+        stop = (STOP[0], STOP[0] + 100_000)    # 100 ms: a pass over 50 ms is half of it
+        found = sr.classify(*stop, self.lines(delay_ms=11.0, voluntary=53, over_50ms=1,
                                               minflt=1))
         self.assertEqual(found["class"], "blocked in our code")
         self.assertEqual(found["wait_kind"], "unnamed")
         self.assertTrue(found["wait"].startswith("a lock or wait that no counter names"))
         self.assertIn("not evidence of faults in the stop", found["wait"])
+
+    def test_a_pass_over_50_ms_is_no_evidence_for_a_longer_stop(self):
+        """audio_loop_busy_over_50ms counts passes over 50 ms (av-mesh
+        relay.rs): its growth shows a pass of half a 400 ms stop no more than
+        a busy maximum that stayed at 0.8 ms does; on a 100 ms stop it does.
+        The video class thread's own passes never count for the audio
+        thread's stop."""
+        lines = self.lines(delay_ms=11.0, voluntary=53, over_50ms=1)
+        self.assertNotEqual(sr.classify(*STOP, lines)["class"], "blocked in our code")
+        self.assertEqual(sr.classify(STOP[0], STOP[0] + 100_000, lines)["class"],
+                         "blocked in our code")
+        video = [{"kind": "class_pass", "thread": "video", "cpu": 1, "t_us": STOP[1],
+                  "dur_us": 390 * MS, "cause": "own", "minflt": 2400, "majflt": 1}]
+        found = sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=53), video)
+        self.assertNotEqual(found["class"], "blocked in our code")
 
     def test_run_delay_is_measured_against_the_thread_s_own_rate(self):
         """A thread that waits 5 ms a second as a rule, sampled 2.5 s apart

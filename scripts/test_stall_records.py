@@ -91,7 +91,11 @@ class SamplerFigures(unittest.TestCase):
 
     def test_a_counter_is_found_by_its_name_on_any_path(self):
         line = {"mesh": {"relay_session.fast_plane.audio_loop_busy_max_us": 812,
-                         "other.audio_loop_busy_max_us": 900, "stall.stopped_ms": 0}}
+                         "other.audio_loop_busy_max_us": 900, "stall.stopped_ms": 0,
+                         # A peer's telemetry on /api/mesh/local (av-mesh
+                         # MeshApiSnapshot.relay_nodes): never this node's.
+                         "relay_nodes.0.relay_session.fast_plane.audio_loop_busy_max_us": 5000,
+                         "nodes.1.audio_loop_busy_max_us": 7000}}
         self.assertEqual(stall_records.mesh_value(line, "audio_loop_busy_max_us"), 900)
         self.assertIsNone(stall_records.mesh_value(line, "fanout_started"))
         self.assertIsNone(stall_records.mesh_value({"mesh": None}, "stopped_ms"))
