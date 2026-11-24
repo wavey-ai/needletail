@@ -1582,7 +1582,11 @@ class LinodeRecover(LinodeDelete):
 
     def test_the_rebuild_is_the_lab_tools_replace_in_place(self):
         """The replace runs in its own process group with the lab state and
-        the lock's token; then the host's key is forgotten."""
+        the lock's token; then the host's key is forgotten (the deploy
+        tool's common.forget_host). Its command line is the lab tool's own
+        (C CT3): parsed by the lab tool's parser, it is `replace` of the
+        node in place, on this controller's lab state."""
+        import small_mesh_common
         runs, popens = [], []
 
         class Popen:
@@ -1605,16 +1609,19 @@ class LinodeRecover(LinodeDelete):
 
         self.backend.lock_env = {"NEEDLETAIL_OPS_LOCK_TOKEN": "t0ken"}
         with mock.patch.object(auto.subprocess, "Popen", Popen), \
-                mock.patch.object(auto.subprocess, "run", run):
+                mock.patch.object(small_mesh_common, "forget_host",
+                                  lambda *addresses: runs.append(addresses)):
             self.backend.rebuild("lon-edge-11")
         command, kwargs = popens[0]
         self.assertEqual(pathlib.Path(command[1]).name, "linode-small-mesh-lab.py")
-        self.assertEqual(command[2:6], ["replace", "lon-edge-11", "--mode", "rebuild"])
+        parsed = self.backend.lab.build_parser().parse_args(command[2:])
+        self.assertIs(parsed.handler, self.backend.lab.command_replace)
+        self.assertEqual((parsed.state, parsed.names, parsed.mode),
+                         (str(self.path), ["lon-edge-11"], "rebuild"))
         self.assertEqual(kwargs["env"]["NEEDLETAIL_LINODE_LAB_STATE"], str(self.path))
         self.assertEqual(kwargs["env"]["NEEDLETAIL_OPS_LOCK_TOKEN"], "t0ken")
         self.assertTrue(kwargs["start_new_session"])
-        self.assertEqual(runs[0][:3], ["ssh-keygen", "-R", "192.0.2.50"])
-        self.assertEqual(runs[1][-2:], ["exit", "root@192.0.2.50"])
+        self.assertEqual(runs, [("192.0.2.50",)])
 
         class Failing(Popen):
             def __init__(self, command, **kwargs):
@@ -1626,7 +1633,8 @@ class LinodeRecover(LinodeDelete):
 
         runs.clear()
         with mock.patch.object(auto.subprocess, "Popen", Failing), \
-                mock.patch.object(auto.subprocess, "run", run), \
+                mock.patch.object(small_mesh_common, "forget_host",
+                                  lambda *addresses: runs.append(addresses)), \
                 self.assertRaises(RuntimeError):
             self.backend.rebuild("lon-edge-11")
         self.assertEqual(runs, [])  # nothing forgotten when the rebuild failed
@@ -2230,21 +2238,69 @@ class LinodeBackendTests(unittest.TestCase):
         self.assertFalse(self.backend.budget(["lon-edge-11"], offline=True)[0])
 
     def test_a_create_needs_what_earlier_labs_spent(self):
-        """Unknown is not 0: without --spent-before-usd the budget guard
-        refuses every create, and `run` with the linode backend is refused
-        before it starts."""
+        """Unknown is not 0 (C CT3's ledger): without --spent-before-usd the
+        budget guard takes what earlier labs spent from the lab tool (up's
+        recorded figure, or the ledger's sum when that is more), and
+        without --budget-usd the budget up recorded; with no budget
+        anywhere every create is refused and `run` is refused before it
+        starts."""
+        ledger = self.tmp / "ledger.jsonl"
+        ledger.write_text(json.dumps({"run_id": "before", "billed_usd": 90.0}) + "\n"
+                          + json.dumps({"run_id": "a1", "billed_usd": 12.5}) + "\n")
+        patcher = mock.patch.object(self.backend.lab, "LEDGER", ledger)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.backend.config.spent_before_usd = None
         ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
+        self.assertEqual(figures["spent_before_usd"], 102.5)
+        self.assertFalse(ok)  # 102.5 spent before is past 100 already
+        self.backend.config.spent_before_usd = 20.0
+        ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
+        self.assertEqual(figures["spent_before_usd"], 20.0)
+        self.assertTrue(ok, figures)
+        # The budget that up recorded is the default of --budget-usd.
+        self.backend.config.budget_usd = None
+        ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
         self.assertFalse(ok)
-        self.assertIn("--spent-before-usd", figures["why"])
+        self.assertIn("--budget-usd", figures["why"])
         args = argparse.Namespace(backend="linode", command="run", dry_run=False,
                                   state=str(self.path), stream=4001, ssh_public_key="k")
         with self.assertRaises(auto.Refused):
-            auto.make_backend(args, auto.Config(budget_usd=100.0), [])
+            auto.make_backend(args, auto.Config(), [])
         guard = auto.Guarded(self.backend, self.backend.config)
         guard.roster()
         with self.assertRaises(auto.Refused):
             guard.create(["lon-edge-11"])
+        self.state["budget_usd"] = 100.0
+        self.path.write_text(json.dumps(self.state))
+        ok, figures = self.backend.budget(["lon-edge-11"], offline=True)
+        self.assertTrue(ok, figures)
+        self.assertEqual(figures["budget_usd"], 100.0)
+        self.assertIsInstance(auto.make_backend(args, auto.Config(), []), auto.LinodeBackend)
+
+    def test_every_roster_starts_a_dead_watchdog_again(self):
+        """C CT6 finding 8, at the CT3 merge: each tick's roster calls the
+        lab tool's watchdog_ensure, which arms a unit that is not active at
+        the recorded deadline; a watchdog that cannot be armed fails the
+        tick."""
+        armed = []
+        with mock.patch.object(self.backend.lab, "watchdog_active", lambda run_id: False), \
+                mock.patch.object(self.backend.lab, "watchdog_arm",
+                                  lambda path, state, deadline: armed.append(
+                                      (pathlib.Path(path), state["run_id"], deadline))), \
+                redirect_stderr(io.StringIO()) as err:
+            self.backend.roster()
+        self.assertEqual(armed, [(self.path, "t1", int(self.state["watchdog_deadline_unix"]))])
+        self.assertIn("starting it again", err.getvalue())
+
+        def cannot(path, state, deadline):
+            raise SystemExit("linger is off for this user")
+
+        with mock.patch.object(self.backend.lab, "watchdog_active", lambda run_id: False), \
+                mock.patch.object(self.backend.lab, "watchdog_arm", cannot), \
+                redirect_stderr(io.StringIO()), self.assertRaises(auto.Refused) as caught:
+            self.backend.roster()
+        self.assertIn("linger is off", str(caught.exception))
 
     def test_nothing_is_pushed_to_a_slot_without_the_lab_firewall(self):
         deployed = []

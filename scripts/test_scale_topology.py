@@ -1543,6 +1543,8 @@ class Replace(FakeLab):
         self.foreign: set[str] = set()
         self.over_budget = False
         self.budgets: list[dict] = []
+        self.argv_errors: list[str] = []
+        self.addCleanup(lambda: self.assertEqual(self.argv_errors, []))
         state = self.state()
         for index, node in enumerate(state["nodes"].values(), 1):
             node.update(id=1000 + index, label=f"ntsm-test-{node['name']}",
@@ -1593,6 +1595,38 @@ class Replace(FakeLab):
         self.hosts.by_address[address] = state["nodes"][name]
         self.hosts.by_address_name[name] = state["nodes"][name]
 
+    def parsed_by_the_lab_tool(self, arguments) -> None:
+        """The seam with C CT3: what the deploy hands the lab tool's command
+        line (lab_argv) must parse with the lab tool's own parser, select
+        the verb's handler and carry the node, the mode and the budget as
+        given. A mismatch is recorded and fails the test at its end (the
+        engine would turn an exception here into an exit code)."""
+        try:
+            with redirect_stderr(io.StringIO()):
+                parsed = lab_tool.build_parser().parse_args(deploy.lab_argv(*arguments))
+        except SystemExit:
+            self.argv_errors.append(f"the lab tool's parser refuses {list(arguments)}")
+            return
+        verb = arguments[0]
+        handlers = {"replace": lab_tool.command_replace, "add": lab_tool.command_add,
+                    "remove": lab_tool.command_remove}
+        problems = []
+        if parsed.handler is not handlers.get(verb):
+            problems.append(f"handler {parsed.handler.__name__}")
+        if parsed.state != str(deploy.common.state_path()):
+            problems.append(f"state {parsed.state}")
+        if parsed.names != [arguments[1]]:
+            problems.append(f"names {parsed.names}")
+        if verb == "replace" and parsed.mode != arguments[arguments.index("--mode") + 1]:
+            problems.append(f"mode {parsed.mode}")
+        for flag, field in (("--budget-usd", "budget_usd"),
+                            ("--spent-before-usd", "spent_before_usd")):
+            if flag in arguments:
+                if getattr(parsed, field, None) != float(arguments[arguments.index(flag) + 1]):
+                    problems.append(f"{field} {getattr(parsed, field, None)}")
+        if problems:
+            self.argv_errors.append(f"{list(arguments)}: the lab tool reads {problems}")
+
     def fake_lab(self, *arguments):
         """The lab tool's command line as rm/ct3 behaves: `replace --mode
         rebuild` gives the node a new disk (nothing of ours on it, not
@@ -1602,6 +1636,7 @@ class Replace(FakeLab):
         slot and `remove` deletes one; a verb in `refuse` changes nothing
         and fails, as a refusal does."""
         self.lab_calls.append(list(arguments))
+        self.parsed_by_the_lab_tool(arguments)
         verb, node = arguments[0], arguments[1]
         if verb in self.refuse:
             return deploy.subprocess.CompletedProcess(list(arguments), 1, "refused\n")
@@ -1820,6 +1855,47 @@ class Replace(FakeLab):
                 self.untouched()
                 self.assertNotIn("start ", self.stderr.replace("mark start", ""))
 
+    def test_the_lab_tool_s_own_functions_take_what_replace_gives_them(self):
+        """The seam with C CT3, in-process: LinodeOps.lab_refusals runs on
+        the real lab tool's functions (only its Linode API, its user
+        systemd and the other labs' bill are faked), so a signature or a
+        state field that differs from what CT3 built fails here. Within
+        the budget a rebuild and a new instance go ahead; over it, a new
+        instance is refused by the lab tool's own held_to_budget, and an
+        instance without the run's tag by its owned_instance."""
+        self.push()
+        state = self.state()
+        tags = {node["id"]: [state["tag"]] for node in state["nodes"].values()}
+        test = self
+
+        class Api:
+            def list_all(self, path):
+                return list((test.TYPES if path == "/linode/types" else test.REGIONS).values())
+
+            def call(self, method, path, body=None, allow_404=False):
+                test.assertEqual(method, "GET", path)
+                ident = int(path.rsplit("/", 1)[1])
+                node = next((item for item in test.state()["nodes"].values()
+                             if item.get("id") == ident), None)
+                return node and {"id": ident, "label": node["label"], "tags": tags.get(
+                    ident, [test.state()["tag"]]), "status": "running"}
+
+        with mock.patch.object(deploy, "lab_tool", lambda: lab_tool), \
+                mock.patch.multiple(lab_tool, Api=Api, watchdog_active=lambda run_id: True,
+                                    account_billed=lambda api, tag, now=None: {"usd": 0.0},
+                                    read_ledger=lambda: []):
+            self.assertEqual(self.replace(nodes="lon-edge-1", mode="rebuild"), 0, self.stderr)
+            self.assertEqual(self.replace(nodes="lon-edge-2", mode="new", budget_usd=60.0), 0,
+                             self.stderr)
+            self.lab_calls.clear()
+            self.assertEqual(self.replace(nodes="lon-edge-3", mode="new", budget_usd=0.5), 2,
+                             self.stderr)
+            self.assertIn("replace refused: over the budget", self.stderr)
+            tags[self.state()["nodes"]["lon-edge-3"]["id"]] = ["another-lab"]
+            self.assertEqual(self.replace(nodes="lon-edge-3", mode="rebuild"), 2, self.stderr)
+            self.assertIn("does not carry the run's tag", self.stderr)
+            self.assertEqual(self.lab_calls, [])
+
     def test_a_new_instance_whose_create_fails_is_named_with_its_way_back(self):
         self.push()
         self.fail_create = True
@@ -1957,7 +2033,8 @@ class RunLab(unittest.TestCase):
         with mock.patch.object(deploy.common, "ROOT", directory), redirect_stderr(err):
             with self.assertRaises(deploy.mesh_ops.Interrupted):
                 deploy.run_lab("replace", "lon-edge-1", "--mode", "rebuild")
-        self.assertEqual(done.read_text(), "replace lon-edge-1 --mode rebuild")
+        self.assertEqual(done.read_text(), f"--state {deploy.common.state_path()} replace "
+                                           "lon-edge-1 --mode rebuild")
         self.assertIn("runs to its end first", err.getvalue())
         self.assertIn("session True", err.getvalue())
         self.assertIn("rebuilt", err.getvalue())

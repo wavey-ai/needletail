@@ -3112,8 +3112,8 @@ class PhaseRunner:
             command += ["--controller-state", str(self.directory / "autoscale-state.json")]
             output = open(self.directory / f"controller-{item['scenario']}.log", "ab")
         if getattr(self.args, "budget_usd", None) is not None:
-            command += ["--budget-usd", str(self.args.budget_usd),
-                        "--spent-before-usd", str(self.args.spent_before_usd)]
+            command += ["--budget-usd", str(self.args.budget_usd)]
+            command += spent_before_args(self.args)
         if os.environ.get("NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS"):
             # The lab tool's ceiling on the watchdog's hours (7 when the
             # joins phase runs in every step, SCALE.md), the controller's too.
@@ -3204,14 +3204,22 @@ def deploy_nodes(verb: str, name: str) -> None:
         raise RuntimeError(f"deploy {verb} --nodes {name}: {result.stderr[-800:]}")
 
 
+def spent_before_args(args) -> list[str]:
+    """`--spent-before-usd S` when the run was given what earlier labs cost;
+    nothing otherwise, so that the lab tool and the autoscaler take their
+    own figure (budget_in_force: up's, or the ledger's sum when more).
+    Unknown is never sent as 0."""
+    spent = getattr(args, "spent_before_usd", None)
+    return [] if spent is None else ["--spent-before-usd", str(spent)]
+
+
 def lab_tool_slot(verb: str, name: str, args) -> None:
     """The lab tool's add (with the run's budget) or remove of one slot."""
     command = [sys.executable, str(HERE.parent / "linode-small-mesh-lab.py"), verb, name]
     if verb == "add":
         if getattr(args, "budget_usd", None) is None:
             raise RuntimeError("an add needs --budget-usd")
-        command += ["--budget-usd", str(args.budget_usd),
-                    "--spent-before-usd", str(args.spent_before_usd)]
+        command += ["--budget-usd", str(args.budget_usd), *spent_before_args(args)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=1800)
     if result.returncode != 0:
         raise RuntimeError(f"lab {verb} {name}: {result.stderr[-800:]}")
@@ -4567,8 +4575,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--allow-public-transfer", action="store_true")
     run.add_argument("--budget-usd", type=float, default=None,
                      help="the shared budget, for a phase's add or the autoscaler's creates")
-    run.add_argument("--spent-before-usd", type=float, default=0.0,
-                     help="what earlier labs of the work cost")
+    run.add_argument("--spent-before-usd", type=float, default=None,
+                     help="what earlier labs of the work cost (default: the lab tool's "
+                          "figure, up's or the ledger's sum)")
     run.set_defaults(handler=command_run)
     analyse = sub.add_parser("analyse", help="aggregate a run's files again")
     analyse.add_argument("run", help="the run's name or directory")

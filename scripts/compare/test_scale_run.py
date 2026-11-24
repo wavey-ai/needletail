@@ -1773,6 +1773,34 @@ class Phases(unittest.TestCase):
         kinds = [item.get("event") for item in logged]
         self.assertLess(kinds.index("controller_wait"), kinds.index("controller_stop"))
 
+    def test_a_slot_s_add_is_the_lab_tool_s_own_command_line(self):
+        """The lab tool's add, as its own parser reads it (C CT3): the slot,
+        the run's budget, and what earlier labs cost only when the run was
+        given it (otherwise the lab tool takes the ledger's figure; unknown
+        is never sent as 0)."""
+        spec = importlib.util.spec_from_file_location(
+            "lab_for_scale_run", HERE.parent / "linode-small-mesh-lab.py")
+        lab = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lab)
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(scale.subprocess, "run", run):
+            for spent in (None, 31.4):
+                scale.lab_tool_slot("add", "lon-edge-11", argparse.Namespace(
+                    budget_usd=100.0, spent_before_usd=spent))
+            scale.lab_tool_slot("remove", "lon-edge-11", argparse.Namespace(budget_usd=None))
+        parsed = [lab.build_parser().parse_args(command[2:]) for command in commands]
+        self.assertEqual([item.handler for item in parsed],
+                         [lab.command_add, lab.command_add, lab.command_remove])
+        self.assertEqual([(item.names, getattr(item, "budget_usd", None),
+                           getattr(item, "spent_before_usd", None)) for item in parsed],
+                         [(["lon-edge-11"], 100.0, None), (["lon-edge-11"], 100.0, 31.4),
+                          (["lon-edge-11"], None, None)])
+
     def test_plan_prints_the_phases_and_their_cost(self):
         args = argparse.Namespace(
             topology=str(TOPOLOGY), topology_only=True, without_sites="", second_curve=False,

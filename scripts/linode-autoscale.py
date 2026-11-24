@@ -30,8 +30,10 @@ Safety, before anything else:
 * Before every create, a budget guard: this lab projected to its watchdog's
   deadline in whole billed hours, the new slots included, plus the other
   labs' live needletail instances and what earlier labs spent
-  (--spent-before-usd), within --budget-usd (both required with the linode
-  backend: unknown is not 0); it runs on the worker. It refuses when the
+  (--spent-before-usd), within --budget-usd. Either defaults to what the
+  lab tool holds (budget_in_force: the budget `up` recorded, and up's
+  spent figure or the ledger's sum now if that is more); a lab with no
+  budget anywhere gets no create. It runs on the worker. It refuses when the
   watchdog is not armed, is less than 15 min ahead, or is set past
   --max-watchdog-hours (6.0) of the lab's life (the lab tool's
   watchdog_problems; `add` applies the same rule). A slot whose create
@@ -720,6 +722,11 @@ class LinodeBackend(Backend):
 
     def roster(self) -> dict[str, list[dict]]:
         state = self.state()
+        # Every tick: a dead watchdog is started again at the recorded
+        # deadline (the lab tool's watchdog_ensure, C CT3), or the tick
+        # fails (a run ends with exit 3, its drains resumed).
+        for problem in self.lab.watchdog_ensure(state, self.state_path):
+            raise Refused(f"the lab's watchdog: {problem}")
         slots = self.lab.lab_slots(state)
         held = self.held_out()
         out: dict[str, list[dict]] = {}
@@ -1015,23 +1022,28 @@ class LinodeBackend(Backend):
         included; the instance, its id, both addresses and its billing
         continue), then the host's old key is forgotten: the rebuilt host
         has a new one."""
-        command = [sys.executable, str(HERE / "linode-small-mesh-lab.py"), "replace", name,
-                   "--mode", "rebuild", "--ssh-public-key", self.ssh_public_key]
+        command = [sys.executable, str(HERE / "linode-small-mesh-lab.py"), *self.lab_argv(
+            "replace", name, "--mode", "rebuild", "--ssh-public-key", self.ssh_public_key)]
         result = self.run_child(command, 3600)
         if result.returncode != 0:
             raise RuntimeError(f"lab replace {name} --mode rebuild: "
                                f"{(result.stderr or result.stdout)[-1500:]}")
         self.forget_host(name)
 
+    def lab_argv(self, verb: str, *rest: str) -> list[str]:
+        """The lab tool's arguments for `verb` on this backend's lab: its
+        state given as `--state` before the verb (the lab tool's top-level
+        option), so that the command acts on the lab this controller
+        watches, whatever NEEDLETAIL_LINODE_LAB_STATE says."""
+        return ["--state", str(self.state_path), verb, *rest]
+
     def forget_host(self, name: str) -> None:
         """The host's key out of the worktree's known_hosts and its kept
-        ssh connection closed (ssh refuses a host whose key changed)."""
+        ssh connection closed (ssh refuses a host whose key changed): the
+        deploy tool's own common.forget_host, which the deploy's replace
+        uses too."""
         import small_mesh_common as common  # noqa: PLC0415
-        address = self.public(name)
-        subprocess.run(["ssh-keygen", "-R", address, "-f", str(common.KNOWN_HOSTS)],
-                       capture_output=True, timeout=30)
-        subprocess.run(["ssh", *common.ssh_base(), "-O", "exit", f"root@{address}"],
-                       capture_output=True, timeout=30)
+        common.forget_host(self.public(name))
 
     def budget(self, new: list[str], offline: bool = False) -> tuple[bool, dict]:
         """The lab tool's budget_check, with the watchdog rule of D7: the
@@ -1039,11 +1051,14 @@ class LinodeBackend(Backend):
         lab was created. `offline` (a dry run): the other labs' live
         instances are not read from the account."""
         state = self.state()
-        if self.config.budget_usd is None:
-            return False, {"why": "no --budget-usd"}
-        if self.config.spent_before_usd is None:
-            return False, {"why": "no --spent-before-usd: what earlier labs of the work spent "
-                                  "is not known"}
+        # The lab tool's figures in force (C CT3): what the controller was
+        # given, else the budget `up` recorded and what earlier labs spent
+        # (up's figure, or the ledger's sum now if that is more). Unknown is
+        # never 0: no budget anywhere refuses.
+        budget, spent = self.lab.budget_in_force(state, self.config.budget_usd,
+                                                 self.config.spent_before_usd)
+        if budget is None:
+            return False, {"why": "no --budget-usd, and the lab state records none"}
         # The lab tool's own rule (add_slots applies it again): armed, at
         # least 15 min ahead, at most max_watchdog_hours into the lab's life.
         problems = self.lab.watchdog_problems(state, time.time(), self.config.max_watchdog_hours)
@@ -1058,8 +1073,7 @@ class LinodeBackend(Backend):
                                       "creates"}
             extra.append({"name": name, "hourly_usd": DEDICATED_PRICES[kind]})
         other = 0.0 if offline else self.lab.account_billed(self.api(), state["tag"])["usd"]
-        ok, figures = self.lab.budget_check(state, extra, self.config.budget_usd,
-                                            self.config.spent_before_usd, other)
+        ok, figures = self.lab.budget_check(state, extra, budget, spent, other)
         if offline:
             figures["other_labs"] = "not read (dry run)"
         return ok, figures
@@ -2798,14 +2812,19 @@ def make_backend(args: argparse.Namespace, config: Config, sites: list[str]) -> 
     if args.backend == "linode":
         # The controller may create at any time; a `scale` verb that would
         # create is refused at its budget check, before any mark.
-        if (config.budget_usd is None or config.spent_before_usd is None) \
-                and args.command == "run" and not args.dry_run:
-            raise Refused("the linode backend needs --budget-usd and --spent-before-usd (what "
-                          "earlier labs of the work cost)")
         if not args.state:
             import small_mesh_common as common  # noqa: PLC0415
             args.state = str(common.state_path())
-        return LinodeBackend(args.state, args.stream, config, sites, args.ssh_public_key)
+        backend = LinodeBackend(args.state, args.stream, config, sites, args.ssh_public_key)
+        if args.command == "run" and not args.dry_run:
+            # --budget-usd and --spent-before-usd default to what the lab
+            # tool holds (budget_in_force: up's budget, the ledger's sum);
+            # a lab with no budget anywhere is not watched.
+            state = backend.lab.read_state(backend.state_path) or {}
+            if backend.lab.budget_in_force(state, config.budget_usd)[0] is None:
+                raise Refused("the linode backend needs a budget: --budget-usd, or the one "
+                              "the lab tool's up recorded in the lab state")
+        return backend
     return EdgeLabBackend(args.stream, sites)
 
 

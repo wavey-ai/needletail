@@ -4188,6 +4188,13 @@ def lab_tool_checked() -> None:
         sys.exit(mesh_ops.EXIT_REFUSED)
 
 
+def lab_argv(verb: str, *rest: str) -> list[str]:
+    """The lab tool's arguments for `verb` on this lab: the deploy's lab
+    state (common.state_path()) given as the lab tool's top-level `--state`,
+    so both tools act on one lab whatever the environment of the child."""
+    return ["--state", str(common.state_path()), verb, *rest]
+
+
 def run_lab(*arguments: str) -> subprocess.CompletedProcess:
     """The lab tool's command line, for what bills (replace, add, remove):
     its own watchdog and budget checks apply. Its output goes to stderr
@@ -4202,7 +4209,7 @@ def run_lab(*arguments: str) -> subprocess.CompletedProcess:
     for it to end, by its own timeouts, and is raised after its result is
     read."""
     command = [sys.executable, str(common.ROOT / "scripts" / "linode-small-mesh-lab.py"),
-               *arguments]
+               *lab_argv(*arguments)]
     read_end, write_end = os.pipe()
     try:
         with mesh_ops.signals_held():
