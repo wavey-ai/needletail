@@ -327,6 +327,11 @@ class Report(unittest.TestCase):
         self.assertEqual(deltas["rps-on"]["delta"]["worst_core"], -29.0)
         self.assertEqual(deltas["gso-off"]["better"], "worse")
         self.assertEqual(deltas["gso-off"]["delta"]["drops"], 5.0)
+        # A cell whose viewer received nothing is no data, not a failure.
+        empty = row("A-d4-247", "247", 247.4, False, group="ab", arm="d4", shape="d4")
+        empty["measured"] = False
+        self.assertNotIn("A-d4-247", [item["cell"] for item in report.ab_deltas(table + [empty])])
+        self.assertNotIn("d4/d4", {item["config"] for item in report.limits(table + [empty])})
         # Each configuration has its own limit.
         configs = {item["config"] for item in report.limits(table)}
         self.assertEqual(configs, {"one/default", "one/rps-on", "one/gso-off"})

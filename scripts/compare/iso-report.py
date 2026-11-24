@@ -494,7 +494,11 @@ def step_row(directory: pathlib.Path) -> dict:
     udp = score_probe(viewer, "probe.uc")
     hls = score_probe(viewer, "probe.h3")
     latency = udp.get("latency_ms") or {}
-    row.update({"whole": whole(udp), "on_time_percent": udp.get("on_time_percent"),
+    # A viewer that received nothing is no measurement of the path (the
+    # edge was not serving: iso11242128's first d4 cells), not a failure.
+    measured = udp.get("on_time_percent") is not None or bool(udp.get("frames"))
+    row.update({"whole": whole(udp) if measured else None, "measured": measured,
+                "on_time_percent": udp.get("on_time_percent"),
                 "longest_stall_ms": udp.get("longest_stall_ms"),
                 "frames_missing": udp.get("frames_missing"), "frames_late": udp.get("frames_late"),
                 "latency_p50_ms": latency.get("p50"), "latency_p99_ms": latency.get("p99"),
@@ -624,7 +628,8 @@ def limits(table: list[dict]) -> list[dict]:
     out = []
     by_config: dict[str, list[dict]] = {}
     for row in table:
-        if row.get("scored") is False or row.get("group") in ("warmup", "soak"):
+        if (row.get("scored") is False or row.get("group") in ("warmup", "soak")
+                or row.get("measured") is False):
             continue
         by_config.setdefault(config_of(row), []).append(row)
     for config, items in by_config.items():
@@ -652,6 +657,7 @@ def headline(row: dict) -> dict:
         drops_total += sum(value for key, value in (figures.get("drops") or {}).items()
                            if not key.startswith(("iptables.", "softnet.")) or key.endswith(".dropped"))
     return {"whole": row.get("whole"), "on_time": row.get("on_time_percent"),
+            "hls_on_time": row.get("hls_on_time_percent"),
             "p99_ms": row.get("latency_p99_ms"), "lateness_worst_ms": row.get("lateness_worst_ms"),
             "drops": drops_total, "worst_core": worst_core, "softirq": softirq}
 
@@ -662,14 +668,15 @@ def ab_deltas(table: list[dict]) -> list[dict]:
     base = {row.get("rung"): row for row in table if row.get("group") == "base"}
     out = []
     for row in table:
-        if row.get("group") != "ab":
+        if row.get("group") != "ab" or row.get("measured") is False:
             continue
         reference = base.get(row.get("rung"))
         if reference is None:
             continue
         a, b = headline(reference), headline(row)
         delta = {}
-        for key in ("on_time", "p99_ms", "lateness_worst_ms", "drops", "worst_core", "softirq"):
+        for key in ("on_time", "hls_on_time", "p99_ms", "lateness_worst_ms", "drops", "worst_core",
+                    "softirq"):
             if a.get(key) is not None and b.get(key) is not None:
                 delta[key] = round(b[key] - a[key], 2)
         out.append({"cell": row.get("name"), "arm": row.get("arm"), "rung": row.get("rung"),
@@ -690,6 +697,8 @@ def better(a: dict, b: dict) -> str:
         score += ((b["lateness_worst_ms"] < 0.8 * a["lateness_worst_ms"] - 5)
                   - (b["lateness_worst_ms"] > 1.25 * a["lateness_worst_ms"] + 5))
     score += (b["drops"] < a["drops"]) - (b["drops"] > a["drops"])
+    if a.get("hls_on_time") is not None and b.get("hls_on_time") is not None:
+        score += (b["hls_on_time"] > a["hls_on_time"] + 5) - (b["hls_on_time"] < a["hls_on_time"] - 5)
     return "better" if score > 0 else "worse" if score < 0 else "same"
 
 
@@ -738,7 +747,8 @@ def markdown(table: list[dict]) -> str:
         late = row.get("late_by_hop") or {}
         out.append(
             f"| {row.get('name')} | {row.get('shape')} | {row.get('arm')} | {fmt(row.get('mbit'))} | "
-            f"{fmt(row.get('whole')) if row.get('scored') is not False else '(warm-up)'} | "
+            f"{fmt(row.get('whole')) if row.get('scored') is not False else '(warm-up)'}"
+            f"{'' if row.get('measured', True) else ' (no data)'} | "
             f"{fmt(row.get('on_time_percent'), 2)} | {fmt(row.get('latency_p50_ms'))}/"
             f"{fmt(row.get('latency_p99_ms'))} | {fmt(row.get('longest_stall_ms'))} | "
             f"{fmt(row.get('lateness_worst_ms'))}/{fmt(row.get('lateness_p99_ms'))} | "
