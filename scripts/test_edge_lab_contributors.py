@@ -133,7 +133,12 @@ class Sources(Base):
         for command in (video, probe):
             self.assertEqual(command[:9], ["nsenter", "--preserve-credentials", "-U", "-n",
                                            "-t", "4", "taskset", "-c", "26,27"])
-        self.assertIn("srt://10.77.1.5:27001?mode=caller&transtype=live&latency=80", video)
+        # The video through the feed loop: contrib-lon first, the standby
+        # when it fails (A 3.6).
+        self.assertEqual(video[9:15], [str(lab.VIDEO_FEED), "--seconds", "60", "10.77.1.5",
+                                       "10.77.1.7", "--"])
+        self.assertEqual(video[-1], "srt://{host}:27001?mode=caller&transtype=live&latency=80")
+        self.assertNotIn("-t", video[15:])
         targets = [probe[index + 1] for index, item in enumerate(probe) if item == "--target"]
         self.assertEqual(targets, ["10.77.1.5:27100", "10.77.1.7:27100"])
         self.assertEqual(lab.load("sources.json"), {"video": 1001, "audio": 1002})
@@ -141,6 +146,21 @@ class Sources(Base):
     def test_the_daw_source_sends_to_both(self):
         _video, daw = self.run_sources("daw")
         self.assertIn("10.77.1.5:27100,10.77.1.7:27100", daw)
+
+    def test_a_ladder_feeds_every_rendition_to_the_contributor_it_is_on(self):
+        lab.save("settings.json", {"hls_renditions": "on"})
+        with mock.patch.object(lab, "ns_pid", lambda name: 4), \
+                mock.patch.object(lab, "join_tools", lambda: None), \
+                mock.patch.object(lab.subprocess, "Popen",
+                                  lambda command, **kwargs: started.append(command)
+                                  or types.SimpleNamespace(pid=9)):
+            started = []
+            lab.start_sources(60, video=True, audio=None)
+        (command,) = started
+        outputs = [item for item in command if item.startswith("rtmp://")]
+        self.assertEqual(outputs, [f"rtmp://{{host}}:{lab.RTMP_PORT}/live/{stream}"
+                                   for stream, *_ in lab.LADDER])
+        self.assertIn(str(lab.VIDEO_FEED), command)
 
 
 class Verbs(unittest.TestCase):

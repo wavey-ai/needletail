@@ -210,6 +210,8 @@ LADDER = [
     (13, LADDER_DIR / "tos24-360p-700k.ts", 1_100_000, 950_000, "640x360", 24_000),
 ]
 RTMP_PORT = 19350
+# The source host's 4K feed loop (A 3.6): one contributor at a time.
+VIDEO_FEED = pathlib.Path(__file__).resolve().parent / "video-feed.sh"
 
 
 def ladder_renditions() -> list[str]:
@@ -2019,40 +2021,42 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
     """Start the sources in lon-src, an encoder on the contributors' VLAN as
     on Linode: every AEP1 epoch to each contributor (contributor_targets),
-    the video to contrib-lon. `audio` is `probe` (lossless FLAC), `daw` (FLAC
-    and HQ SoundKit Opus) or None."""
+    the video to one contributor at a time through the feed loop
+    (scripts/video-feed.sh: contrib-lon first, the other when it fails).
+    `audio` is `probe` (lossless FLAC), `daw` (FLAC and HQ SoundKit Opus) or
+    None."""
     sources = load("sources.json")
     targets = contributor_targets()
-    video_host = node("contrib-lon")["vlan_ipv4"]
+    feed = [str(VIDEO_FEED), "--seconds", str(seconds),
+            *[target.rsplit(":", 1)[0] for target in targets], "--"]
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     if video and "video" not in sources and load("settings.json").get("hls_renditions"):
         # An encoder that sends a ladder: one process reads every rendition
         # at its own rate and publishes each under the key of its stream.
         log = open(WORK / "logs" / "source-video.log", "ab")
-        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        command = ["-hide_banner", "-loglevel", "error", "-nostdin"]
         for _stream, path, *_ in LADDER:
             command += ["-re", "-stream_loop", "-1", "-i", str(path)]
         for index, (stream, *_rest) in enumerate(LADDER):
             command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
-                        "-t", str(seconds), "-f", "flv",
-                        f"rtmp://{video_host}:{RTMP_PORT}/live/{stream}"]
-        process = subprocess.Popen(source_prefix() + command, stdout=log, stderr=log,
+                        "-f", "flv", f"rtmp://{{host}}:{RTMP_PORT}/live/{stream}"]
+        process = subprocess.Popen(source_prefix() + feed + command, stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()
     if video and "video" not in sources:
         log = open(WORK / "logs" / "source-video.log", "ab")
         process = subprocess.Popen(
-            source_prefix() + [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
+            source_prefix() + feed + [
+                "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
                 # A 4K clip of 120 Mbit/s or more holds its first audio
                 # packet past the default 5 MB probe: without a longer one
                 # ffmpeg finds no sample rate and sends nothing.
                 "-probesize", "64M", "-analyzeduration", "10000000",
-                "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP), "-t", str(seconds),
+                "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP),
                 "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-muxdelay", "0",
                 "-muxpreload", "0", "-f", "mpegts",
-                f"srt://{video_host}:27001?mode=caller&transtype=live&latency=80"],
+                "srt://{host}:27001?mode=caller&transtype=live&latency=80"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()

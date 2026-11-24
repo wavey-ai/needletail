@@ -1,0 +1,22 @@
+# The 4K feed of the source host (lon-src) to one contributor at a time,
+# failing over to the other (A-contributor 3.6; scripts/video-feed.sh,
+# installed as /usr/local/bin/needletail-video-feed). The contributors and
+# ffmpeg's arguments are in /etc/needletail/video-feed.env
+# (video-feed.env.example). The feed moves only when the contributor it is on
+# fails; the unit is started again only when the loop itself fails.
+[Unit]
+Description=Needletail 4K feed to one contributor at a time
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/needletail/video-feed.env
+ExecStart=/usr/local/bin/needletail-video-feed $FEED_CONTRIBUTORS -- $FEED_ARGUMENTS
+Restart=on-failure
+RestartSec=1
+KillMode=mixed
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
