@@ -745,11 +745,14 @@ MLOCK_MODES = ("off", "rings")
 # journal; a finite limit, so mlockall of the whole process can never pass.
 MEMLOCK_LIMIT = "512M"
 # The check at boot (D 2.4): its unit, its record, and the bound of its
-# watch: push waits about 150 s for an activation (a 120 s deadline and the
-# stop), and the first start after the unit is new waits for the check.
+# watch. The first restart after the unit is new waits for the old
+# service's stop (up to TimeoutStopSec=20) and then for the check (up to
+# its TimeoutStartSec, 70 s plus the watch); push waits 150 s for an
+# activation (activate_node: the 120 s deadline, the stop's 20 s and 10 s).
+# A 50 s watch keeps the worst case, 20 + 120 = 140 s, 10 s inside it.
 NODE_CHECK_UNIT = "needletail-node-check.service"
 NODE_WARM_FILE = "/run/needletail/node-warm.json"
-NODE_CHECK_MAX_SECONDS = 60
+NODE_CHECK_MAX_SECONDS = 50
 
 
 TOPOLOGIES = ("legacy", "merged")
@@ -900,8 +903,8 @@ def check_stall_settings(settings: dict) -> None:
     seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
     if seconds > NODE_CHECK_MAX_SECONDS:
         raise ValueError(f"node_check_seconds {seconds} is over {NODE_CHECK_MAX_SECONDS}: the "
-                         "first start after the check unit is installed waits for it, and "
-                         "push waits for an activation about 150 s")
+                         "first start after the check unit is installed waits for it (up to "
+                         "70 s more), and push waits 150 s for an activation")
     for key in ("node_check_max_stop_ms", "node_check_max_steal_permille"):
         whole_or_zero(settings.get(key, DEFAULT_SETTINGS[key]), key)
 

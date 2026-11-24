@@ -139,7 +139,11 @@ class Units(Base):
         check = deploy.check_unit_text(self.settings(["node_warm=true"]))
         self.assertIn("node-warm.json --warm \\\n  --check-seconds 0 ", check)
         self.assertIn("TimeoutStartSec=70\n", check)
-        for bad in ("node_check_seconds=61", "node_check_seconds=-1",
+        # The longest watch: the stop (20 s) and the check at its timeout
+        # (70 + 50 s) end 10 s inside push's 150 s wait for an activation.
+        check = deploy.check_unit_text(self.settings(["node_check_seconds=50"]))
+        self.assertIn("TimeoutStartSec=120\n", check)
+        for bad in ("node_check_seconds=51", "node_check_seconds=-1",
                     "node_check_max_stop_ms=x", "node_warm=False", "node_warm=1",
                     "node_check_seconds=true", "stall_tick_us=false"):
             with self.subTest(bad), self.assertRaises(SystemExit):
