@@ -383,3 +383,10 @@ class CommitStops(unittest.TestCase):
         self.assertEqual(set(stop["fine"]["states"]), {"R"})
         self.assertGreater(stop["fine"]["run_delay_ms"], 250, "runnable and not run")
         self.assertEqual(first_session.commit_stops(bench, 4001)["lon-edge-1"]["stops"], [])
+        # A gap after the stream's end on another node (its tail) is no stop.
+        with open(bench / "hops.raw.ndjson", "a") as handle:
+            for seq, t_us in ((0, base), (1, base + 1000)):
+                handle.write(json.dumps({"node": "new-edge-1", "_node": "new-edge-1",
+                                         "stage": "committed", "stream": 3001, "seq": seq,
+                                         "t_us": t_us}) + "\n")
+        self.assertEqual(first_session.commit_stops(bench, 3001)["lon-edge-1"]["stops"], [])

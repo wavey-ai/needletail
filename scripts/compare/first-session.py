@@ -478,15 +478,23 @@ def journal_times(bench: pathlib.Path, stream: int) -> dict[str, dict[str, list[
 def commit_stops(bench: pathlib.Path, stream: int,
                  min_ms: float = COMMIT_STOP_MS) -> dict[str, dict]:
     """Per node of the pass's hop journals: its commits (count, first and
-    last) and every gap of `min_ms` or more between two of them, with the
+    last) and every gap of `min_ms` or more between two of them (before the
+    stream's end: the earliest last commit of any node), with the
     longest gap of its kernel receive stamps (relay_first: did the input
     stop too?), of its class thread's wakes (relay_woken) and of its sends
     to clients (udp_sent) over the same window."""
     out = {}
-    for node, stages in sorted(journal_times(bench, stream).items()):
+    times = journal_times(bench, stream)
+    # The stream's end: the earliest last commit of any node (the sender has
+    # stopped); a gap that begins after it is the tail, not a stop.
+    ends = [stages["committed"][-1] for stages in times.values() if stages.get("committed")]
+    end = min(ends) if ends else None
+    for node, stages in sorted(times.items()):
         commits = stages.get("committed") or []
         stops = []
         for a, b in zip(commits, commits[1:]):
+            if end is not None and a >= end:
+                break
             if (b - a) / 1000 >= min_ms:
                 stops.append({"from_us": a, "to_us": b, "ms": round((b - a) / 1000, 3),
                               **{f"{stage}_gap_ms": longest_gap(stages.get(stage) or [], a, b)
