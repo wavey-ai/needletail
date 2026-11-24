@@ -1,5 +1,8 @@
 # The large deployed mesh: audio, simulated listeners
 
+The environment every lab tool reads (source checkouts, binaries, media, the
+local lab, Linode) is listed in one place: `docs/lab-environment.md`.
+
 On 22 November the owner asked to "test on a larger deployed mesh", "with
 simulated users too - as many as we can simulate. lets stick to audio for
 now", and then raised the shared Linode budget of the Needletail work to

@@ -69,6 +69,8 @@ class FakeLab:
         self.store: dict = {"services.json": {"lon-edge-1": 1}}
         self.started: list = []
         self.pins: list = []
+        self.reports: dict = {}
+        self.gaps: dict = {}
         self.ran: list = []
         self.outcomes: list = []
         self.command = {"seconds": 20.0, "lines": ["start {start} roll.edges",
@@ -236,6 +238,19 @@ class FakeLab:
     def probe(self, script: str) -> None:
         launch = shlex.split(re.match(r"date \+%s\.%N >(\S+);", script).group(1))[0]
         pathlib.Path(launch).write_text(cr.unix_ns_text(self.clock.t) + "\n")
+        # The probe's own report (needletail-udp-client's uc.json): healthy
+        # unless `reports` says otherwise for its lane and host.
+        report = shlex.split(re.search(r" >(\S+\.uc\.json) ", script).group(1))[0]
+        seconds = float(re.search(r"--duration-seconds (\S+)", script).group(1))
+        name = pathlib.Path(report).name
+        per_s = 1000.0 / cr.unit_ms(re.match(r"[^.]+\.(.+?)\.uc\d+\.", name).group(1))
+        body = {"duration_seconds": seconds, "received_parts": int(seconds * per_s),
+                "datagrams": int(2 * seconds * per_s), "missing_parts": 0, "paths": 2,
+                "legs": {"lon-edge-1": {"datagrams": 10}, "lon-edge-2": {"datagrams": 10}}}
+        for key, change in self.reports.items():
+            if key in name:
+                body.update(change)
+        pathlib.Path(report).write_text(json.dumps(body))
 
     def change(self, stdout, marks: bool) -> int:
         """The change command: an engine prints its marks, `sleep` none."""
@@ -252,8 +267,22 @@ class FakeLab:
     def run(self, command, stdout=None, stderr=None, **_kwargs):
         self.started.append(command)
         if command[1] == "udp-ingest":
+            # The probe's frames, one a unit around the marks (CW's windows),
+            # less where `gaps` says (a share of each window's units).
             frames = pathlib.Path(command[command.index("--frames") + 1])
-            frames.write_text("kind,index,latency_us,complete_unix_us,first_unix_us\n")
+            name = frames.name
+            unit_us = 1000.0 * cr.unit_ms(re.match(r"[^.]+\.(.+?)\.uc\d+\.", name).group(1))
+            stamps = [int(line.split()[1].replace(".", "")[:16]) for line in
+                      (frames.parent / "marks.txt").read_text().splitlines() if line]
+            keep = 1.0 - next((share for key, share in self.gaps.items() if key in name), 0.0)
+            rows = ["kind,index,latency_us,complete_unix_us,first_unix_us"]
+            if stamps:
+                first, last = min(stamps) - 3_000_000, max(stamps) + 6_000_000
+                count = int((last - first) / unit_us)
+                step = max(1, round(1 / keep)) if keep < 1 else 1
+                rows += [f"a,{index},5000,{int(first + index * unit_us)},0"
+                         for index in range(0, count, step)]
+            frames.write_text("\n".join(rows) + "\n")
             return subprocess.CompletedProcess(command, 0)
         # change-window.py
         frames = [command[i + 1] for i, item in enumerate(command) if item == "--frames"]
@@ -306,11 +335,13 @@ class Commands(unittest.TestCase):
                          str(cr.compare_root() / "target/compare-media/audio/audio.s24le"))
         self.assertEqual(senders[0][senders[0].index("--duration-seconds") + 1], "1500")
         # The senders' bound: to START (8 s), 60 s of waiting to be live for
-        # each lane and site, then each repeat's probes (360 s), their grace
-        # (90 s), the command's stop (30 s) and the scoring (300 s).
+        # each lane and site, the probes' 10 s after that, then each run's
+        # probes (360 s), their grace (90 s), the command's stop (30 s) and
+        # the scoring (300 s): --repeat 2 of an engine command is 2 changes
+        # and 2 nulls.
         args.repeat = 2
         self.assertEqual(cr.sender_seconds(args, 2, int(cr.now()) + 8),
-                         8 + 4 * 60 + 2 * (360 + 90 + 30 + 300))
+                         8 + 4 * 60 + 10 + 4 * (360 + 90 + 30 + 300))
         probes = cr.probe_items(args, "roll-edges", self.dir)
         self.assertEqual([item["key"] for item in probes],
                          ["opus-1@lon-readers", "pcm-1@lon-readers",
@@ -525,18 +556,28 @@ class Runs(unittest.TestCase):
         self.assertEqual(sorted(item[1:] for item in self.fake.ran if item[0] == "live"),
                          [(3001, "london"), (3001, "newyork"), (4001, "london"),
                           (4001, "newyork")])
-        self.fake.outcomes = [True, False, True]
+        # --repeat N of an engine command alternates N changes with N dry
+        # nulls (change, null, change, ...) and prints the two rates beside
+        # CW's null_fail_rate.
+        self.fake.outcomes = [True, True, False, True, True, True]
         code, out = self.fake.main("run", "--name", "roll-edges", "--repeat", "3",
                                    "--", "engine", "roll", "edges")
         self.assertEqual(code, 1)
-        self.assertIn("roll-edges: change 2 of 3 pass", out)
-        self.assertIn("roll-edges (host): change 2 of 3 pass; null 2 of 2 pass", out)
+        self.assertIn("roll-edges: change 2 of 3 pass; null 3 of 3 pass", out)
+        self.assertIn("roll-edges: change 2 of 3 | null 3 of 3 | CW null_fail_rate median 0.07 "
+                      "(0.07 to 0.07, 24 probe-labels)", out)
+        self.assertIn("roll-edges (host): change 2 of 3 pass; null 5 of 5 pass", out)
+        engine = [command for command in self.fake.started if command[:1] == ["engine"]]
+        self.assertEqual(engine[2:], [["engine", "roll", "edges"],
+                                      ["engine", "roll", "edges", "--dry-marks"]] * 3)
         self.assertIn("roll.edges opus-1@lon-readers: FAIL missing 0 gap 3/4 ms p99 7/8 ms "
                       "null fail rate 0.07", out)
         record = json.loads((self.scenario / "summary.json").read_text())
         self.assertEqual(record["tally"], {"host": {
-            "change": {"pass": 2, "fail": 1, "void": 0, "unscored": 0, "interrupted": 0},
-            "null": {"pass": 2, "fail": 0, "void": 0, "unscored": 0, "interrupted": 0}}})
+            "change": {"pass": 2, "fail": 1, "void": 0, "unscored": 0, "invalid": 0,
+                       "interrupted": 0},
+            "null": {"pass": 5, "fail": 0, "void": 0, "unscored": 0, "invalid": 0,
+                     "interrupted": 0}}})
         run = json.loads((self.scenario / "change-02" / "run.json").read_text())
         self.assertEqual(run["status"], "fail")
         self.assertEqual(run["kind"], "change")
@@ -644,9 +685,11 @@ class Runs(unittest.TestCase):
         (self.scenario / "change-12" / "run.json").write_text(json.dumps(killed))
         record, lines = cr.summary(self.scenario)
         self.assertEqual(record["tally"]["host"]["change"],
-                         {"pass": 10, "fail": 0, "void": 1, "unscored": 0, "interrupted": 1})
+                         {"pass": 10, "fail": 0, "void": 1, "unscored": 0, "invalid": 0,
+                          "interrupted": 1})
         self.assertEqual(record["tally"]["host"]["null"],
-                         {"pass": 10, "fail": 0, "void": 0, "unscored": 1, "interrupted": 0})
+                         {"pass": 10, "fail": 0, "void": 0, "unscored": 1, "invalid": 0,
+                          "interrupted": 0})
         self.assertEqual(lines, ["roll-edges (host): change 10 of 10 pass (not scored: 1 void, "
                                  "1 interrupted); null 10 of 10 pass (not scored: 1 unscored); "
                                  "proved locally"])
@@ -742,6 +785,85 @@ class Runs(unittest.TestCase):
         self.assertEqual(json.loads((self.scenario / "change-01" / "run.json").read_text())
                          ["status"], "pass")
 
+    def test_a_stuck_probe_is_invalid_whatever_cw_said(self):
+        # Local proof 2 (F2): a probe that joined at the session's start
+        # took 2 of its parts while 840k datagrams arrived; CW passed it or
+        # could not score it. Neither is evidence.
+        self.fake.reports = {"new-readers.opus-1": {"received_parts": 2, "datagrams": 840_635,
+                                                    "missing_parts": 22}}
+        code, out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.assertEqual(code, 1)
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        self.assertEqual(run["status"], "invalid")
+        self.assertEqual(list(run["invalid_probes"]), ["opus-1@new-readers"])
+        self.assertIn("stuck: 840635 datagrams for 2 accepted parts",
+                      run["invalid_probes"]["opus-1@new-readers"])
+        self.assertIn("opus-1@new-readers: probe invalid (stuck: 840635 datagrams for 2 "
+                      "accepted parts), CW said pass", out)
+        self.assertIn("change 0 of 0 pass (not scored: 1 invalid)", out)
+        # CW's error on it is marked so too (here every probe errs, so the
+        # run fails on the others).
+        self.fake.outcomes = ["error"]
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        run = json.loads((self.scenario / "change-02" / "run.json").read_text())
+        self.assertEqual(run["status"], "fail")
+        result = run["labels"]["roll.edges"]
+        self.assertIn("invalid", result["opus-1@new-readers"])
+        self.assertNotIn("invalid", result["opus-1@lon-readers"])
+
+    def test_a_probe_whose_own_report_misses_parts_is_invalid(self):
+        # Part numbers that jumped: missing counts of 629k or 1e10.
+        self.fake.reports = {"lon-readers.pcm-1": {"missing_parts": 629_000}}
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        self.assertEqual(run["status"], "invalid")
+        self.assertIn("its own report counts 629000 missing parts",
+                      run["invalid_probes"]["pcm-1@lon-readers"])
+
+    def test_cw_s_pass_with_too_few_units_or_legs_is_refused_and_its_fail_kept(self):
+        self.fake.gaps = {"lon-readers.opus-1": 0.5}
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        self.assertEqual(run["status"], "invalid")
+        reason = run["invalid_probes"]["opus-1@lon-readers"][0]
+        self.assertRegex(reason, r"^\d+ units inside the window, \d+ expected$")
+        # A failing probe with the same gaps fails: CW's fail stands.
+        self.fake.outcomes = [False]
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.assertEqual(json.loads((self.scenario / "change-02" / "run.json").read_text())
+                         ["status"], "fail")
+        # One leg of two carried datagrams.
+        self.fake.gaps = {}
+        self.fake.reports = {"new-readers.pcm-1": {"legs": {"new-edge-1": {"datagrams": 9},
+                                                            "new-edge-2": {"datagrams": 0}}}}
+        self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        run = json.loads((self.scenario / "change-03" / "run.json").read_text())
+        self.assertEqual(run["invalid_probes"],
+                         {"pcm-1@new-readers": ["1 of its 2 legs carried datagrams"]})
+
+    def test_the_probes_start_ten_seconds_after_the_session_is_live(self):
+        lived = []
+        with mock.patch.object(lab, "wait_live", lambda stream, site, timeout=40:
+                               lived.append(self.fake.clock.t)):
+            code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
+        self.assertEqual(code, 0)
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        launch = min(float(pathlib.Path(item["files"]["launch"]).read_text())
+                     for item in run["probes"])
+        self.assertGreaterEqual(launch - max(lived) / 1e9, cr.PROBE_AFTER_LIVE_S - 0.001)
+
+    def test_null_sleep_alternates_a_plain_change_with_its_sleep(self):
+        code, out = self.fake.main("run", "--name", "edge-kill", "--repeat", "2",
+                                   "--null-sleep", "20", "--", "engine")
+        self.assertEqual(code, 0, out)
+        commands = [command for command in self.fake.started
+                    if command[:1] in (["engine"], ["sleep"])]
+        self.assertEqual(commands, [["engine"], ["sleep", "20"]] * 2)
+        self.assertIn("edge-kill: change 2 of 2 | null 2 of 2 | CW null_fail_rate", out)
+        # Without --repeat there is nothing to alternate with.
+        with self.assertRaises(SystemExit):
+            cr.check(parse("--null-sleep", "20", "--", "engine"))
+
     def test_the_tools_and_the_sender_run_apart_from_the_probes(self):
         # Local proof 2, F3: the tools, the sender and the probes shared the
         # lab's "_rest". In a layout the runner splits it (edge_lab.rest_split):
@@ -749,7 +871,7 @@ class Runs(unittest.TestCase):
         # rest, the command, the crowd and the readers on the other half.
         self.fake.store["cpus.json"] = {"_first": 0, "lon-src": [26, 27],
                                         "_rest": [28, 29, 30, 31]}
-        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll")
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine")
         self.assertEqual(code, 0)
 
         def pins_of(match):
@@ -774,7 +896,7 @@ class Runs(unittest.TestCase):
 
     def test_without_a_layout_the_command_is_only_niced(self):
         code, _out = self.fake.main("run", "--name", "roll-edges", "--nice", "0", "--",
-                                    "engine", "roll")
+                                    "engine")
         self.assertEqual(code, 0)
         self.assertEqual([(pins, env) for command, pins, env in self.fake.pins
                           if command[:1] == ["engine"]], [([], None)])
@@ -916,7 +1038,7 @@ class Archive(unittest.TestCase):
     def test_every_run_s_files_the_scorer_s_json_and_the_logs_go_into_one_run(self):
         self.fake.outcomes = [True, True]
         code, _out = self.fake.main("run", "--name", "roll-edges", "--repeat", "2",
-                                    "--run-id", "cr1", "--", "engine", "roll", "edges")
+                                    "--run-id", "cr1", "--", "engine", "edges")
         self.assertEqual(code, 0)
         manifest = self.manifest("cr1")
         self.assertEqual(manifest["status"], "complete")

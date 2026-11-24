@@ -278,10 +278,55 @@ def ladder_renditions() -> list[str]:
             for stream, _path, peak, average, frame, rate in LADDER]
 
 
-AUDIO_PCM = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_AUDIO_PCM",
-    str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
-        / "daw-nexus-album-1-track-pcm-300s" / "source-track-00.s24le")))
+def main_checkout(root: pathlib.Path = ROOT) -> pathlib.Path | None:
+    """The repository's main checkout when `root` is a linked worktree (its
+    `.git` is a file naming .../<main>/.git/worktrees/<name>), else None."""
+    marker = root / ".git"
+    try:
+        text = marker.read_text() if marker.is_file() else ""
+    except OSError:
+        return None
+    match = re.match(r"gitdir:\s*(\S+)", text)
+    if not match:
+        return None
+    gitdir = pathlib.Path(match.group(1))
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    return gitdir.parents[2] if len(gitdir.parents) > 2 and gitdir.parent.name == "worktrees" \
+        else None
+
+
+# The lab's audio media, built in the main checkout's target/ by the
+# qualification tools; a worktree has none of its own (rm/<name>: its
+# WORKSPACE is rm/, local proof 2's gate crashed on it).
+MEDIA_DIR = ("target", "linode-qualification", "media")
+
+
+def media_path(variable: str, *parts: str, environ=os.environ,
+               root: pathlib.Path | None = None) -> pathlib.Path:
+    """`$variable`; else the first of WORKSPACE/needletail/<media>/<parts>,
+    this checkout's and its main checkout's <media>/<parts> that exists;
+    else the first of them (require_media then says what to export)."""
+    if environ.get(variable):
+        return pathlib.Path(environ[variable])
+    root = root or ROOT
+    bases = [root.parent / "needletail", root, main_checkout(root)]
+    found = [base.joinpath(*MEDIA_DIR, *parts) for base in dict.fromkeys(bases) if base]
+    return next((path for path in found if path.exists()), found[0])
+
+
+def require_media(path: pathlib.Path, variable: str) -> pathlib.Path:
+    """`path`, or LabError naming the variable to export (docs/lab-environment.md)."""
+    if not path.exists():
+        raise LabError(f"{path} is missing: export {variable} with the file or directory to "
+                       "use (the lab's environment is listed in docs/lab-environment.md; a "
+                       "worktree finds the main checkout's target/linode-qualification/media "
+                       "by itself)")
+    return path
+
+
+AUDIO_PCM = media_path("NEEDLETAIL_AUDIO_PCM", "daw-nexus-album-1-track-pcm-300s",
+                       "source-track-00.s24le")
 def newest_build(*paths: pathlib.Path) -> pathlib.Path:
     """The most recently built of `paths` that exists (else the first): a
     native build and a cross build (zigbuild, for Linode) of one checkout
@@ -298,10 +343,7 @@ DAW_SOURCE = pathlib.Path(os.environ.get(
         WORKSPACE / "daw-nexus" / "target" / "release" / "daw-test-source",
         WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
         / "daw-test-source"))))
-DAW_TRACKS = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_DAW_TRACKS",
-    str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
-        / "daw-nexus-album-1-track-pcm-600s")))
+DAW_TRACKS = media_path("NEEDLETAIL_DAW_TRACKS", "daw-nexus-album-1-track-pcm-600s")
 SERVER_NAME = "mesh.needletail.test"
 
 
@@ -310,7 +352,7 @@ def daw_tracks() -> pathlib.Path:
     of tracks that the settings of the lab name."""
     tracks = load("settings.json").get("daw_album_tracks") or 1
     if tracks == 1:
-        return DAW_TRACKS
+        return require_media(DAW_TRACKS, "NEEDLETAIL_DAW_TRACKS")
     found = sorted(DAW_TRACKS.parent.glob(f"daw-nexus-album-{tracks}-track-pcm-*"))
     if not found:
         raise LabError(f"no audio album with {tracks} tracks in {DAW_TRACKS.parent}")
@@ -2487,7 +2529,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 "--duration-seconds", str(seconds), "--payload", "flac",
                 "--epoch-samples", str(probe_epoch_samples("flac")),
                 "--channels", "2", "--group-channels", "8",
-                "--pcm-s24le-file", str(AUDIO_PCM),
+                "--pcm-s24le-file", str(require_media(AUDIO_PCM, "NEEDLETAIL_AUDIO_PCM")),
                 "--repair-percent", "12", "--min-repair-symbols", "1"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["audio"] = process.pid
