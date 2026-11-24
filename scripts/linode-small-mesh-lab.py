@@ -392,7 +392,12 @@ def without_sites(topology: dict, sites: list[str]) -> dict:
     for node in topology["nodes"]:
         if node["site"] in sites and node["role"] == "contributor":
             sys.exit(f"site {node['site']} holds the contributor; it cannot be left out")
-    return {**topology, "nodes": [node for node in topology["nodes"] if node["site"] not in sites]}
+    kept = [node for node in topology["nodes"] if node["site"] not in sites]
+    names = {node["name"] for node in kept}
+    # The left-out sites' autoscale slots go with them (every site has slots).
+    return {**topology, "nodes": kept,
+            **({"autoscale_slots": [name for name in topology["autoscale_slots"] if name in names]}
+               if "autoscale_slots" in topology else {})}
 
 
 def topology_cost(topology: dict, types: dict, regions: dict,

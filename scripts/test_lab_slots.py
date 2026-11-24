@@ -54,7 +54,8 @@ TYPES = {"g6-dedicated-2": {"id": "g6-dedicated-2", "class": "dedicated",
                          "price": {"hourly": 0.0075}, "region_prices": []}}
 REGIONS = {region: {"id": region, "status": "ok", "capabilities": ["Vlans"]}
            for region in ("gb-lon", "us-east", "ap-northeast", "ap-southeast")}
-SLOTS = ["lon-dist-c", "lon-edge-11", "lon-edge-12", "new-dist-c"]
+SLOTS = ["lon-dist-c", "lon-edge-11", "lon-edge-12", "new-dist-c", "new-edge-11", "syd-dist-c",
+         "syd-edge-11", "tok-dist-c", "tok-edge-11"]
 UNIT = "needletail-watchdog-t1.service"
 # What the fake token file holds: it must appear in no file the tool writes.
 TOKEN = "fake-token-never-written"
