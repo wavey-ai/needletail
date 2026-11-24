@@ -215,13 +215,14 @@ class LogSlices:
     what a log gained since the last one (a log that was made again, by the
     lab's `up`, from its start)."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, pattern: str = "*"):
         self.directory = pathlib.Path(directory)
+        self.pattern = pattern
         self.seen: dict[str, tuple[int, int]] = {}
 
     def mark(self) -> None:
         """Start the next slice at the logs as they are now."""
-        for path in sorted(self.directory.glob("*")):
+        for path in sorted(self.directory.glob(self.pattern)):
             try:
                 stat = path.stat()
             except OSError:
@@ -233,7 +234,7 @@ class LogSlices:
         """Copy each log's new bytes into the run at dest/<log name>."""
         added = []
         with tempfile.TemporaryDirectory(prefix="needletail-log-slice-") as staging:
-            for path in sorted(self.directory.glob("*")):
+            for path in sorted(self.directory.glob(self.pattern)):
                 try:
                     stat = path.stat()
                 except OSError:
