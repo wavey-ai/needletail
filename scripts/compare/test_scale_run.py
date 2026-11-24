@@ -334,15 +334,33 @@ class Commands(unittest.TestCase):
         self.assertTrue(set(first) <= set(deploy.DEFAULT_SETTINGS))
 
     def test_sender_follows_compare_audio(self):
-        command = scale.sender_command("opus-1", "10.80.1.5", 600, "/var/lib/compare/audio/a.s24le")
+        command = scale.sender_command(["opus-1"], "10.80.1.5", 600,
+                                       "/var/lib/compare/audio/a.s24le")
         self.assertIn("--target 10.80.1.5:27100", command)
         self.assertIn("--session-id ${START}001000000", command)
         self.assertIn("--payload opus --epoch-samples 48", command)
         self.assertIn("--opus-bitrate 320000", command)
-        pcm = scale.sender_command("pcm-1", "10.80.1.5", 600, "/x")
+        pcm = scale.sender_command(["pcm-1"], "10.80.1.5", 600, "/x")
         self.assertNotIn("--opus-bitrate", pcm)
         self.assertIn("--session-id ${START}001000000", pcm)
-        self.assertIn("${START}002500000", scale.sender_command("opus-2.5", "h", 1, "/x"))
+        self.assertIn("${START}002500000", scale.sender_command(["opus-2.5"], "h", 1, "/x"))
+        # --probe-configs (C CL7): one sender a published config from one
+        # START, the second session one ns on (as change-run.py sends its
+        # lanes), each with files of its own.
+        both = scale.sender_command(["opus-1", "pcm-1"], "h", 1, "/x")
+        self.assertEqual(both.count("echo $START"), 1)
+        self.assertEqual(both.count("aep1-48k-probe send"), 2)
+        self.assertIn("--session-id ${START}001000000 --group-id 0 --duration-seconds 1 "
+                      "--payload opus", both)
+        self.assertIn("--session-id ${START}001000001 --group-id 0 --duration-seconds 1 "
+                      "--payload pcm", both)
+        self.assertIn(">/var/lib/needletail-runs/scale/source-pcm-1.json", both)
+        self.assertEqual(scale.probe_configs("opus-1,pcm-1", "opus-1"), ["opus-1", "pcm-1"])
+        self.assertEqual(scale.probe_configs(None, "pcm-1"), ["pcm-1"])
+        with self.assertRaises(ValueError):
+            scale.probe_configs("opus-2.5", "opus-1")  # both stream 3001
+        with self.assertRaises(ValueError):
+            scale.probe_configs("flac", "opus-1")
 
     def test_ramp_rises_in_stages_to_the_count(self):
         self.assertEqual(scale.ramp_spec(1000, 20, 4), "250@0,500@5,750@10,1000@15")
@@ -783,6 +801,61 @@ class Analysis(unittest.TestCase):
 PHASES = scale.PHASES
 
 
+class FakeProcess:
+    """A change command that has already exited with `code`."""
+
+    def __init__(self, command, code):
+        self.command = command
+        self.returncode = code
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def send_signal(self, number):
+        pass
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+ROLES = {name: node["role"] for name, node in lab()["nodes"].items()}
+
+
+def write_scenario_marks(step_dir: pathlib.Path, start: float, timeline: dict) -> None:
+    """Each scenario's marks as the runner writes them: one label from 2 s
+    after its planned fault to 5 s before its planned restore, so that its
+    window (widened as the referee widens it) is the planned one."""
+    for row in timeline["scenarios"]:
+        directory = step_dir / "scenarios" / row["name"]
+        directory.mkdir(parents=True, exist_ok=True)
+        first = int((start + row["fault"] + scale.CW_BEFORE_S) * 1e9)
+        last = int((start + row["observe_end"] - scale.CW_AFTER_S) * 1e9)
+        (directory / "marks.txt").write_text(
+            scale.mark_line("start", first, f"{row['name']}.change")
+            + scale.mark_line("end", last, f"{row['name']}.change"))
+
+
+def change_figures(**overrides) -> dict:
+    """The figures of C CL7 that a scenario's result carries (analyse_phases
+    writes them from its files), quiet: no crowd figure (a load tool before
+    B Y4), no reader, no probe, nothing restarted."""
+    empty = scale.crowd_window([], 0.0, 0.0, 1.5, False)
+    out = {"ran": True, "crowd": {key: dict(empty) for key in ("before", "during", "after")},
+           "unit_ms": 1.0, "readers": {"readers": 0, "stalls": 0, "longest_stall_ms": 0,
+                                       "parts_missing_run": 0},
+           "probe": None, "restarts": {}, "restarted_expected": [], "changes": [],
+           "builds": {"before": {}, "after": {}, "rx_invalid_frames_rise": None},
+           "commands": [], "waits": [], "controller": {"decisions": [], "kinds": []}}
+    out.update(overrides)
+    return out
+
+
 class Phases(unittest.TestCase):
     """The failover, redistribution and autoscale phases (items 4 and 5)."""
 
@@ -793,10 +866,11 @@ class Phases(unittest.TestCase):
         self.assertNotIn("F9", names)  # waits for AM item 11
         self.assertEqual([item["name"] for item in scale.load_phase_plan(
             PHASES, names=["F9"])["scenarios"]], ["F9"])
+        # C CL7: R4 and A3 are enabled.
         self.assertEqual([item["name"] for item in scale.load_phase_plan(PHASES, "R")[
-            "scenarios"]], ["R1", "R2", "R3", "R5"])
+            "scenarios"]], ["R1", "R2", "R3", "R4", "R5"])
         self.assertEqual([item["name"] for item in scale.load_phase_plan(PHASES, "A")[
-            "scenarios"]], ["A1", "A2"])
+            "scenarios"]], ["A1", "A2", "A3"])
         every = json.loads(PHASES.read_text())["scenarios"]
         # At most 2 of a region's 5 serving edges at once (D5), and never
         # the contributor.
@@ -820,12 +894,16 @@ class Phases(unittest.TestCase):
             scale.load_phase_plan(path, "F")
 
     def test_timeline_kill_is_node_loss_and_every_fault_is_restored(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"), lab())
         rows = {row["name"]: row for row in timeline["scenarios"]}
-        self.assertEqual((rows["F1"]["base_start"], rows["F1"]["fault"],
-                          rows["F1"]["observe_end"], rows["F1"]["end"]), (0, 60, 150, 180))
-        self.assertEqual(rows["F2"]["fault"], 240)
-        self.assertEqual(timeline["hold_s"], 9 * 180)
+        # The probes start 45 s before the fault and hold 369 s: the 90 s of
+        # the observation, and 234 s after it for the referee's 120
+        # no-change windows of 97 s (and 10 more); the slot ends 30 s after.
+        self.assertEqual((rows["F1"]["base_start"], rows["F1"]["probe_start"],
+                          rows["F1"]["fault"], rows["F1"]["observe_end"], rows["F1"]["probe_s"],
+                          rows["F1"]["end"]), (0, 15, 60, 150, 369, 414))
+        self.assertEqual(rows["F2"]["fault"], 474)
+        self.assertEqual(timeline["hold_s"], 9 * 414)
         self.assertEqual([(item["kind"], item["targets"]) for item in rows["F2"]["restores"]],
                          [("start", ["new-edge-2"])])
         self.assertEqual([(item["kind"], item["t"]) for item in rows["F1"]["restores"]],
@@ -835,12 +913,12 @@ class Phases(unittest.TestCase):
         self.assertEqual(rows["F3"]["actions"][1]["t"], rows["F3"]["fault"] + 20)
         self.assertIn("systemctl stop", scale.NODE_COMMANDS["kill"])
         self.assertNotIn("systemctl stop", scale.NODE_COMMANDS["crash"])
-        r4 = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["R4"]))["scenarios"][0]
+        r4 = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["R4"]), lab())["scenarios"][0]
         self.assertEqual(r4["observe_end"] - r4["fault"], 120 + 90)
         self.assertEqual([item["kind"] for item in r4["restores"]], ["leave"])
 
     def test_entries_and_liveness_avoid_the_nodes_under_fault(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"), lab())
         avoid = scale.fault_nodes(timeline)
         regions = scale.regions_of(lab(), STANDBY)
         london = [node["name"] for node in scale.entry_nodes(regions["london"], avoid)]
@@ -856,7 +934,7 @@ class Phases(unittest.TestCase):
     def test_phase_steps_use_steered_readers_at_entries_not_under_fault(self):
         state = lab()
         plan = scale.plan_steps(state, [8000], "pcm-1", 0.05, standby=STANDBY)
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"), lab())
         args = argparse.Namespace(config="pcm-1", sample=20, load_args="", hls_window=40,
                                   hls_http2=False, hls_steering="spread")
         commands = scale.step_commands(state, plan, plan["steps"][0], "r", args,
@@ -876,7 +954,9 @@ class Phases(unittest.TestCase):
             self.assertTrue(address.startswith("10.80."), address)
 
     def test_the_autoscale_profile_ramps_the_listeners_up_and_down(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "A"))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["A1", "A2"]),
+                                        lab())
+        a2 = timeline["scenarios"][1]
         spec = scale.profile_ramp(1000, 10.0, timeline)
         points = [(float(at), int(count)) for count, at in
                   (item.split("@") for item in spec.split(","))]
@@ -884,7 +964,10 @@ class Phases(unittest.TestCase):
         by_time = dict((at, count) for at, count in points)
         self.assertEqual(by_time[10.0 + 60], 300)        # A1 starts at 30%
         self.assertEqual(by_time[10.0 + 540], 950)       # 95% after 8 min
-        self.assertEqual(points[-1], (10.0 + 1110, 200))  # A2 ends at 20%
+        # A1's probes hold on after its 9.5 minutes (1,374 s in all), the
+        # crowd at 95% until A2 begins; A2 ends at 20%.
+        self.assertEqual(a2["fault"], 1374 + 60)
+        self.assertEqual(points[-1], (10.0 + a2["fault"] + 480, 200))
         self.assertTrue(max(count for _at, count in points) <= 950)
         self.assertEqual(scale.profile_ramp(100, 10.0, None), scale.ramp_spec(100, 10.0))
 
@@ -911,14 +994,14 @@ class Phases(unittest.TestCase):
 
     def test_only_faults_are_excluded_and_each_node_only_in_its_own(self):
         start = 10_000.0
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "A"))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "A"), lab())
         # An autoscale ramp faults nothing: an edge that saturates as A1
         # ramps to 95% is reported.
         exclude = scale.exclusion(timeline, start)
         self.assertEqual(exclude, {"windows": [], "node_windows": {}})
         first = scale.gave_out_first(lab(), {}, {"lon-edge-1": start + 500}, {}, exclude)
         self.assertEqual(first["node"], "lon-edge-1")
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "F"), lab())
         rows = {row["name"]: row for row in timeline["scenarios"]}
         exclude = scale.exclusion(timeline, start)
         self.assertEqual(len(exclude["windows"]),
@@ -1023,12 +1106,13 @@ class Phases(unittest.TestCase):
              "to": "lon-edge-5", "reason": "drain-redirect"}]}]}
         (directory / "lon-load-1" / "hls").mkdir()
         (directory / "lon-load-1" / "hls" / "steered.json").write_text(json.dumps(report))
+        write_scenario_marks(directory, start, timeline)
 
     def test_a_scenario_from_its_files_before_during_after(self):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1"])
-        timeline = scale.phase_timeline(plan)
+        timeline = scale.phase_timeline(plan, lab())
         start = 1_790_000_000.0
         self.write_phase_step(directory, start, timeline)
         events = [{"unix_us": int((start + 60) * 1e6), "event": "action", "node": "lon-edge-1"},
@@ -1117,7 +1201,7 @@ class Phases(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1"])
-        timeline = scale.phase_timeline(plan)
+        timeline = scale.phase_timeline(plan, lab())
         start = 1_790_000_000.0
         self.write_phase_step(directory, start, timeline, am10=True)
         result = scale.analyse_phases(lab(), directory, timeline, start, plan, SERVING,
@@ -1142,7 +1226,7 @@ class Phases(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1"])
-        timeline = scale.phase_timeline(plan)
+        timeline = scale.phase_timeline(plan, lab())
         start = 1_790_000_000.0
         self.write_phase_step(directory, start, timeline, am10=True, left_lost=True)
         result = scale.analyse_phases(lab(), directory, timeline, start, plan, SERVING,
@@ -1165,7 +1249,7 @@ class Phases(unittest.TestCase):
         directory = tmp / "scale-ph-f"
         state = lab()
         phase_plan = scale.load_phase_plan(PHASES, names=["F1"])
-        timeline = scale.phase_timeline(phase_plan)
+        timeline = scale.phase_timeline(phase_plan, lab())
         plan = scale.plan_steps(state, [6000], "pcm-1", 0.05, standby=STANDBY,
                                 hold=timeline["hold_s"])
         step = plan["steps"][0]
@@ -1233,7 +1317,7 @@ class Phases(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1"])
-        timeline = scale.phase_timeline(plan)
+        timeline = scale.phase_timeline(plan, lab())
         row = timeline["scenarios"][0]
         start = 1_790_000_000.0
         fault = start + row["fault"]
@@ -1270,6 +1354,7 @@ class Phases(unittest.TestCase):
             (directory / name).mkdir()
             (directory / name / "mesh.jsonl").write_text(
                 "\n".join(json.dumps(item) for item in rows))
+        write_scenario_marks(directory, start, timeline)
         return directory, plan, timeline, start
 
     def test_standby_edges_are_not_receiving_edges(self):
@@ -1374,7 +1459,7 @@ class Phases(unittest.TestCase):
         before anything is started."""
         state = lab()
         phase_plan = scale.load_phase_plan(PHASES, names=["F1"])
-        timeline = scale.phase_timeline(phase_plan)
+        timeline = scale.phase_timeline(phase_plan, lab())
         plan = scale.plan_steps(state, [6000], "pcm-1", 0.05, standby=STANDBY,
                                 hold=timeline["hold_s"])
         plan["cost"] = scale.cost_estimate(state, plan)
@@ -1438,12 +1523,12 @@ class Phases(unittest.TestCase):
                                       steps=None, hls_share=None, config=None, joins=None,
                                       lk_per_sfu=None, load_args=extra)
             with self.assertRaises(ValueError) as caught:
-                scale.phase_setup(args)
+                scale.phase_setup(args, lab())
             self.assertIn("settle", str(caught.exception))
         args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="", steps=None,
                                   hls_share=None, config=None, joins=None, lk_per_sfu=None,
                                   load_args="--quiet")
-        self.assertIsNotNone(scale.phase_setup(args))
+        self.assertIsNotNone(scale.phase_setup(args, lab()))
 
     def test_a_late_settle_is_booked_in_its_own_scenario(self):
         """needletail-load counts a part missing 1,500 parts after it was due
@@ -1455,13 +1540,14 @@ class Phases(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1", "F2"])
-        timeline = scale.phase_timeline(plan)
+        timeline = scale.phase_timeline(plan, lab())
         self.assertEqual([(row["base_start"], row["end"]) for row in timeline["scenarios"]],
-                         [(0, 180), (180, 360)])
+                         [(0, 414), (414, 828)])
         state = lab()
         start = 1_790_000_000.0
         address = f"{state['nodes']['lon-edge-2']['vlan_ipv4']}:19446"
         (directory / "lon-load-1" / "udp").mkdir(parents=True)
+        write_scenario_marks(directory, start, timeline)
 
         def analyse(missing_in: dict[int, int], final_missing: int = 0,
                     config: str = "pcm-1") -> dict:
@@ -1473,7 +1559,7 @@ class Phases(unittest.TestCase):
                                 "missing": missing_in.get(second, 0)},
                       "edges": {address: {"up": 100, "active": 100, "parts": 100_000,
                                           "missing": missing_in.get(second, 0), "moves": 0}}}
-                     for second in range(1, 361)]
+                     for second in range(1, 829)]
             # The tool's last line, after its drain: seconds from its start
             # and no Unix time (src/load.rs).
             lines.append({"schema": "needletail.load.interval.v1", "phase": "final", "t": 390.6,
@@ -1495,7 +1581,7 @@ class Phases(unittest.TestCase):
         # A part due 0.8 s before F1 ends is counted 1.5 s later, in the
         # first interval of F2's baseline; two more are open when the tool
         # stops.
-        result = analyse({181: 1}, final_missing=2)
+        result = analyse({415: 1}, final_missing=2)
         self.assertEqual(result["F1"]["settle_s"], 1.5)
         self.assertEqual(missing(result, "F1", "after"), 1)
         self.assertEqual(criterion(result, "F1", every)["value"], 1)
@@ -1503,20 +1589,22 @@ class Phases(unittest.TestCase):
         self.assertEqual(missing(result, "F2", "before"), 0)
         self.assertTrue(criterion(result, "F2", "baseline: 0 missing")["ok"])
         self.assertEqual(missing(result, "F2", "after"), 2)
-        self.assertEqual(result["F2"]["udp"]["after"]["unaffected"]["parts"], 30 * 100_000 + 600)
+        # F2's after: from its restore (564 s) to the end of its slot (828 s).
+        self.assertEqual(result["F2"]["udp"]["after"]["unaffected"]["parts"],
+                         264 * 100_000 + 600)
         self.assertEqual(criterion(result, "F2", every)["value"], 2)
         self.assertEqual(missing(result, "F1", "before") + missing(result, "F1", "during")
                          + missing(result, "F2", "during"), 0)
         # A part lost in F2's own baseline: whatever F2 shows is void.
-        result = analyse({181: 1, 203: 1})
+        result = analyse({415: 1, 437: 1})
         baseline = criterion(result, "F2", "baseline: 0 missing")
         self.assertFalse(baseline["ok"])
         self.assertEqual(baseline["value"], 1)
         self.assertTrue(criterion(result, "F2", every)["ok"])
         self.assertIn("FAIL baseline: 0 missing (1)", scale.format_phases(list(result.values())))
         # At 2.5 ms a part is counted 3.75 s after it was due.
-        self.assertEqual(missing(analyse({183: 1}), "F2", "before"), 1)
-        result = analyse({183: 1}, config="opus-2.5")
+        self.assertEqual(missing(analyse({417: 1}), "F2", "before"), 1)
+        result = analyse({417: 1}, config="opus-2.5")
         self.assertEqual(result["F1"]["settle_s"], 3.75)
         self.assertEqual((missing(result, "F1", "after"), missing(result, "F2", "before")), (1, 0))
         # No listener intervals at all (a host's file not fetched): the
@@ -1554,15 +1642,16 @@ class Phases(unittest.TestCase):
                           for key in ("before", "during", "after")},
                   "survivors": {key: dict(quiet) for key in ("before", "during", "after")},
                   "moves": {"udp": 0, "udp_spread_max_over_mean": None},
-                  "mesh": {key: {"survivors": {}} for key in ("before", "during", "after")}}
+                  "mesh": {key: {"survivors": {}} for key in ("before", "during", "after")},
+                  **change_figures(changes=["autoscale"])}
         setting = "deploy setting client_udp_datagram_capacity"
         with mock.patch.object(scale, "deploy_settings", return_value={}):
-            names = [item["criterion"] for item in scale.phase_criteria(result, spec)]
+            names = [item["criterion"] for item in scale.phase_criteria(result, spec, ROLES)]
         self.assertIn(setting, names)
         with mock.patch.object(scale, "deploy_settings",
                                return_value={"client_udp_datagram_capacity": 400_000,
                                              "cpu_load": True}):
-            names = [item["criterion"] for item in scale.phase_criteria(result, spec)]
+            names = [item["criterion"] for item in scale.phase_criteria(result, spec, ROLES)]
         self.assertNotIn(setting, names)
         self.assertNotIn("deploy setting cpu_load", names)
 
@@ -1577,7 +1666,7 @@ class Phases(unittest.TestCase):
         self.assertNotIn("--entry", scale.load_command(alloc, ["a:1"], "pcm-1", 1, 1, 1, "/r"))
 
     def test_the_runner_acts_in_order_logs_unix_us_and_restores_what_it_owes(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2", "F3"]))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2", "F3"]), lab())
         state = lab()
         done, logged = [], []
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
@@ -1611,14 +1700,19 @@ class Phases(unittest.TestCase):
             runner.finish()
         self.assertEqual(done, [("new-edge-2", "systemctl kill -s KILL needletail-mesh.service"),
                                 ("new-edge-2", "systemctl start needletail-mesh.service")])
+        # Role-aware (C CL7): a contributor is a node like any other, its
+        # service its role's unit.
+        self.assertEqual(scale.node_command("kill", runner.node("contrib-lon")),
+                         "systemctl kill -s KILL needletail-contrib.service; "
+                         "systemctl stop needletail-contrib.service; true")
         with self.assertRaises(ValueError):
-            runner.node("contrib-lon")
+            runner.node("lon-edge-99")
         # A control request that names no node would be global in av-mesh.
         with self.assertRaises(ValueError):
             scale.http_post(state["nodes"]["lon-edge-1"], "/api/control/drain-node", {})
 
     def test_a_step_stopped_early_starts_no_new_fault_and_restores_the_one_under_way(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2", "F3"]))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2", "F3"]), lab())
         state = lab()
         done, logged = [], []
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
@@ -1644,7 +1738,7 @@ class Phases(unittest.TestCase):
         self.assertEqual(runner.owed, [])
 
     def test_the_targets_of_one_action_are_faulted_at_once(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F8"]))
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F8"]), lab())
         action = timeline["scenarios"][0]["actions"][0]
         targets = action["targets"]
         self.assertGreater(len(targets), 2)
@@ -1673,7 +1767,7 @@ class Phases(unittest.TestCase):
         path = pathlib.Path(tempfile.mkdtemp()) / "plan.json"
         self.addCleanup(shutil.rmtree, path.parent, True)
         path.write_text(json.dumps(plan))
-        row = scale.phase_timeline(scale.load_phase_plan(path, names=["X1"]))["scenarios"][0]
+        row = scale.phase_timeline(scale.load_phase_plan(path, names=["X1"]), lab())["scenarios"][0]
         self.assertEqual([(item["kind"], item["targets"]) for item in row["restores"]],
                          [("leave", ["lon-edge-11"])])
         # A remove with no drain of the slot before it is refused.
@@ -1686,7 +1780,7 @@ class Phases(unittest.TestCase):
             {"kind": "drain", "targets": ["lon-edge-11"]},
             {"kind": "remove", "targets": ["lon-edge-11"], "at_s": 60}]}]
         path.write_text(json.dumps(plan))
-        timeline = scale.phase_timeline(scale.load_phase_plan(path, names=["X3"]))
+        timeline = scale.phase_timeline(scale.load_phase_plan(path, names=["X3"]), lab())
         # At run time, a remove whose drain never ended deletes nothing.
         logged, called = [], []
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
@@ -1705,73 +1799,656 @@ class Phases(unittest.TestCase):
             runner.act(timeline["scenarios"][0]["actions"][1])
         self.assertEqual(called, ["stop", "remove"])
 
-    def test_one_controller_at_a_time_its_state_and_output_in_the_step(self):
-        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, "A"))
+    def test_the_controller_runs_until_its_action_and_takes_its_marks(self):
+        """The autoscale kind (C 2.11): `run --until join|stopped` for the
+        rest of the observation, blocking; its state in the step's
+        directory, its output and marks in the scenario's, its exit
+        logged; one at a time, so A2's starts only when A1's is done."""
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["A1", "A2"]),
+                                        lab())
         items = [row["actions"][0] for row in timeline["scenarios"]]
-        self.assertEqual([item["kind"] for item in items], ["autoscale", "autoscale"])
+        self.assertEqual([(item["kind"], item["until"]) for item in items],
+                         [("autoscale", "join"), ("autoscale", "stopped")])
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         started = []
+        outputs = iter([("start 1790000000.000000001 autoscale.up.london\n"
+                         "end 1790000030.000000001 autoscale.up.london\n", 0), ("", 1)])
 
-        class Process:
-            def __init__(self, command, **kwargs):
-                self.command = command
-                self.signals = []
-                self.exited = threading.Event()
-                self.returncode = None
-                started.append(self)
-
-            def poll(self):
-                return self.returncode
-
-            def wait(self, timeout=None):
-                if not self.exited.wait(timeout):
-                    raise scale.subprocess.TimeoutExpired(self.command, timeout)
-                return self.returncode
-
-            def end(self, code):
-                self.returncode = code
-                self.exited.set()
-
-            def send_signal(self, number):
-                self.signals.append(number)
-                self.end(130)
-
-            def terminate(self):
-                self.signals.append("TERM")
-                self.end(-15)
-
-            def kill(self):
-                self.end(-9)
+        def popen(command, **kwargs):
+            text, code = next(outputs)
+            kwargs["stdout"].write(text.encode())
+            started.append(command)
+            return FakeProcess(command, code)
 
         logged = []
         args = argparse.Namespace(stream=4001, budget_usd=100.0, spent_before_usd=31.4)
         runner = scale.PhaseRunner(lab(), timeline, time.time(), logged.append, args,
                                    directory / "events.jsonl", directory=directory)
-        with mock.patch.object(scale.subprocess, "Popen", Process), \
-                mock.patch.object(scale, "CONTROLLER_WAIT_S", 0.2), \
+        with mock.patch.object(scale.subprocess, "Popen", popen), \
                 mock.patch.dict(scale.os.environ, {"NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS": "7"}):
             runner.act(items[0])
-            # A1's controller is still in its last tick when A2 begins: it
-            # is waited for, then stopped with SIGINT, before A2's starts.
+            self.assertEqual(len(started), 1)
             runner.act(items[1])
-            self.assertEqual(started[0].signals, [scale.signal.SIGINT])
-            self.assertEqual(len(started), 2)
-            started[1].end(1)  # A2's controller refuses
-            for thread in runner.threads:
-                thread.join(timeout=5)
-        for process in started:
-            command = process.command
+        for command in started:
+            self.assertEqual(command[2:5], ["run", "--backend", "linode"])
             self.assertEqual(command[command.index("--controller-state") + 1],
                              str(directory / "autoscale-state.json"))
-            # The lab tool's ceiling on the watchdog's hours is the controller's.
+            self.assertEqual(command[command.index("--events") + 1],
+                             str(directory / "events.jsonl"))
             self.assertEqual(command[command.index("--max-watchdog-hours") + 1], "7")
-        self.assertTrue((directory / "controller-A1.log").exists())
+            self.assertEqual(command[command.index("--budget-usd") + 1], "100.0")
+            self.assertEqual(command[command.index("--spent-before-usd") + 1], "31.4")
+        self.assertEqual(started[0][started[0].index("--until") + 1], "join")
+        self.assertEqual(started[1][started[1].index("--until") + 1], "stopped")
+        # --duration: what is left of the scenario's observation.
+        self.assertGreater(int(started[0][started[0].index("--duration") + 1]), 500)
+        self.assertEqual((directory / "scenarios" / "A1" / "marks.txt").read_text(),
+                         "start 1790000000.000000001 autoscale.up.london\n"
+                         "end 1790000030.000000001 autoscale.up.london\n")
+        self.assertTrue((directory / "scenarios" / "A1" / "command-1.out").exists())
         exits = {item["scenario"]: item["returncode"] for item in logged
                  if item.get("event") == "controller_exit"}
-        self.assertEqual(exits, {"A1": 130, "A2": 1})
-        kinds = [item.get("event") for item in logged]
-        self.assertLess(kinds.index("controller_wait"), kinds.index("controller_stop"))
+        self.assertEqual(exits, {"A1": 0, "A2": 1})
+        # A2's controller printed no mark: its run is wrapped in its own label.
+        a2 = scale.change_run().marks_of((directory / "scenarios" / "A2" / "marks.txt").read_text())
+        self.assertEqual([(kind, label) for kind, _t, label in a2],
+                         [("start", "A2.autoscale"), ("end", "A2.autoscale")])
+
+    def test_each_kind_runs_its_one_command(self):
+        """C 2.11: one blocking command a kind, by the deploy tool's and the
+        autoscaler's command lines, with the engine's timeouts (the bound
+        of its scenario) and the run's budget where it may create."""
+        directory = pathlib.Path("/tmp/step")
+        args = argparse.Namespace(stream=3001, budget_usd=60.0, spent_before_usd=None,
+                                  next_av_mesh_root="/w/av-mesh-next", next_av_contrib_root=None)
+
+        def command(action, duration=0.0):
+            argv, env = scale.action_command(action, args, directory,
+                                             directory / "events.jsonl", duration)
+            return argv[1:], env
+
+        deploy = str(scale.DEPLOY)
+        autoscaler = str(scale.AUTOSCALER)
+        timeouts = ["--gate-timeout-s", "30", "--drain-timeout-s", "30", "--ready-timeout-s", "60"]
+        self.assertEqual(command({"kind": "roll", "tier": "edges", "sites": ["london"]})[0],
+                         [deploy, "roll", "edges", "--force", "--sites", "london", *timeouts])
+        self.assertEqual(command({"kind": "roll", "tier": "all", "dry": True})[0],
+                         [deploy, "roll", "all", "--force", "--dry-marks", *timeouts])
+        argv, env = command({"kind": "upgrade", "tier": "all", "build": "next"})
+        self.assertEqual(argv, [deploy, "roll", "all", *timeouts])
+        self.assertEqual(env["NEEDLETAIL_AV_MESH_ROOT"], "/w/av-mesh-next")
+        with mock.patch.dict(scale.os.environ, {"NEEDLETAIL_AV_MESH_ROOT": "/w/av-mesh-first"}):
+            _argv, env = command({"kind": "upgrade", "tier": "all", "build": "first"})
+        self.assertEqual(env["NEEDLETAIL_AV_MESH_ROOT"], "/w/av-mesh-first")
+        self.assertEqual(command({"kind": "restart", "targets": ["contrib-lon"], "hold_s": 20,
+                                  "ready_timeout_s": 90})[0],
+                         [deploy, "restart", "--nodes", "contrib-lon", "--hold-s", "20",
+                          "--gate-timeout-s", "30", "--drain-timeout-s", "30",
+                          "--ready-timeout-s", "90"])
+        self.assertEqual(command({"kind": "replace", "targets": ["tok-dist-b"]})[0],
+                         [deploy, "replace", "--nodes", "tok-dist-b", "--mode", "rebuild",
+                          "--budget-usd", "60.0", *timeouts])
+        self.assertEqual(command({"kind": "change", "change": "kill", "targets": ["contrib-lon"],
+                                  "args": ["--unprotected"]})[0],
+                         [deploy, "kill", "--node", "contrib-lon", "--unprotected"])
+        self.assertEqual(command({"kind": "change", "change": "return",
+                                  "targets": ["lon-dist-a"]})[0],
+                         [deploy, "return", "--node", "lon-dist-a"])
+        self.assertEqual(command({"kind": "scale", "direction": "up", "site": "london"})[0],
+                         [autoscaler, "scale", "up", "--backend", "linode", "--site", "london",
+                          "--tier", "edges", "--stream", "3001", "--controller-state",
+                          "/tmp/step/autoscale-state.json", "--events",
+                          "/tmp/step/events.jsonl", "--budget-usd", "60.0"])
+        self.assertEqual(command({"kind": "autoscale", "until": "stopped",
+                                  "controller_args": ["--down-hold-s", 60, "--no-warm-pool"]},
+                                 840.5)[0],
+                         [autoscaler, "run", "--backend", "linode", "--until", "stopped",
+                          "--duration", "840", "--stream", "3001", "--controller-state",
+                          "/tmp/step/autoscale-state.json", "--events",
+                          "/tmp/step/events.jsonl", "--budget-usd", "60.0", "--down-hold-s",
+                          "60", "--no-warm-pool"])
+        args.budget_usd = None
+        with self.assertRaises(RuntimeError):
+            command({"kind": "replace", "targets": ["tok-dist-b"]})
+        # Each kind's keys are checked when the plan loads.
+        for bad in ({"kind": "roll"}, {"kind": "upgrade", "tier": "all"},
+                    {"kind": "replace", "targets": ["a", "b"]},
+                    {"kind": "scale", "direction": "sideways", "site": "london"},
+                    {"kind": "change", "change": "handover", "targets": ["contrib-lon"]},
+                    {"kind": "autoscale"}, {"kind": "kill", "targets": ["x"], "background": True},
+                    {"kind": "kill", "targets": ["x"], "at_s": 5,
+                     "after": {"event": "drain_end", "timeout_s": 5}}):
+            with self.assertRaises(ValueError, msg=bad):
+                scale.check_action("X", bad, False)
+        with self.assertRaises(ValueError):
+            scale.check_action("X", {"kind": "start", "targets": ["x"],
+                                     "after": {"event": "e", "timeout_s": 1}}, True)
+        # The bounds of the commands come from those timeouts.
+        state = {**lab(), "standby_edges": STANDBY}
+        per_node = 30 + 30 + 60 + scale.ENGINE_RESTART_S
+        self.assertEqual(scale.action_bound_s({"kind": "roll", "tier": "edges",
+                                               "sites": ["london"]}, state), 6 * per_node)
+        self.assertEqual(scale.tier_nodes(state, "edges", sites=["london"]),
+                         [f"lon-edge-{index}" for index in range(1, 6)])
+        self.assertEqual(scale.action_bound_s({"kind": "replace", "targets": ["tok-dist-b"]},
+                                              state),
+                         scale.REPLACE_BOUND_S["rebuild"] + scale.SLOT_BOUND_S)
+        self.assertEqual(scale.action_bound_s({"kind": "scale", "direction": "up",
+                                               "site": "london"}, state),
+                         scale.SCALE_JOIN_S + scale.SCALE_REBALANCE_S)
+        self.assertEqual(scale.action_bound_s({"kind": "kill", "targets": ["x"]}, state), 0)
+
+    def test_probes_hold_long_enough_for_the_referee_s_null(self):
+        """A scenario's probes run PROBE_LEAD_S before its change and long
+        enough after the bound of its change for change-window.py's 120
+        no-change windows of its length (notes-stage2), 360 s at least."""
+        self.assertEqual(scale.probe_tail_s(90), 234)
+        self.assertGreaterEqual(scale.null_windows(45, 90, 234), 130)
+        self.assertLess(scale.null_windows(45, 90, 233), 130)
+        # A short change: the windows before it count too, and the probe is
+        # 360 s whatever the arithmetic says.
+        self.assertEqual(45 + 5 + scale.probe_tail_s(5), 360)
+        self.assertGreaterEqual(scale.null_windows(45, 5, scale.probe_tail_s(5)), 130)
+        # A roll's bound and its probe: the change, twice over, and more.
+        span = 6 * 135.0
+        self.assertGreaterEqual(scale.probe_tail_s(span), span + 7 + 130)
+
+    def test_an_open_label_is_closed_when_its_command_dies(self):
+        """C 2.7: a command that died with its label open is closed when it
+        was reaped, with an `aborted` event; its exit status is logged."""
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F1"]), lab())
+        item = {"kind": "roll", "tier": "edges", "scenario": "F1", "t": 60.0}
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        logged = []
+        args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=None,
+                                  next_av_mesh_root=None, next_av_contrib_root=None)
+        runner = scale.PhaseRunner(lab(), timeline, time.time(), logged.append, args,
+                                   directory=directory)
+
+        def popen(command, **kwargs):
+            kwargs["stdout"].write(b"start 1790000000.000000001 roll.edges\n")
+            kwargs["stderr"].write(b"killed\n")
+            return FakeProcess(command, -9)
+
+        with mock.patch.object(scale.subprocess, "Popen", popen):
+            runner.act(item)
+        marks = scale.change_run().marks_of(
+            (directory / "scenarios" / "F1" / "marks.txt").read_text())
+        self.assertEqual([(kind, label) for kind, _t, label in marks],
+                         [("start", "roll.edges"), ("end", "roll.edges")])
+        self.assertGreater(marks[1][1], marks[0][1])
+        events = [item.get("event") for item in logged]
+        self.assertIn("aborted", events)
+        exit_ = next(item for item in logged if item.get("event") == "command_exit")
+        self.assertEqual((exit_["returncode"], exit_["output_tail"]), (-9, "killed\n"))
+        # The plain kinds: a drain's mark ends at drain_end; a kill's when
+        # its restore has brought the node back and it says ready.
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2"]), lab())
+        row = timeline["scenarios"][0]
+        runner = scale.PhaseRunner(lab(), timeline, time.time() - row["fault"], logged.append,
+                                   args, directory=directory)
+        with mock.patch.object(scale, "ssh", lambda node, command, **k: ""), \
+                mock.patch.object(scale, "http_get", lambda node, path, **k: {"ready": True}):
+            runner.act(row["actions"][0])
+            self.assertEqual(list(runner.open_marks["F2"]), ["F2.kill.new-edge-2"])
+            runner.act(row["restores"][0])
+            for thread in runner.threads:
+                thread.join(timeout=5)
+        self.assertEqual(runner.open_marks["F2"], {})
+        f2 = scale.change_run().marks_of((directory / "scenarios" / "F2" / "marks.txt").read_text())
+        self.assertEqual([(kind, label) for kind, _t, label in f2],
+                         [("start", "F2.kill.new-edge-2"), ("end", "F2.kill.new-edge-2")])
+
+    def waits_plan(self, timeout_s: float) -> dict:
+        plan = json.loads(PHASES.read_text())
+        plan["scenarios"] = [{"name": "W1", "group": "U", "actions": [
+            {"kind": "drain", "targets": ["lon-edge-1"]},
+            {"kind": "restart", "targets": ["lon-edge-1"],
+             "after": {"event": "drain_end", "node": "lon-edge-1", "timeout_s": timeout_s}}]}]
+        path = pathlib.Path(tempfile.mkdtemp()) / "plan.json"
+        self.addCleanup(shutil.rmtree, path.parent, True)
+        path.write_text(json.dumps(plan))
+        return scale.load_phase_plan(path, names=["W1"])
+
+    def test_an_action_waits_for_its_event(self):
+        """C 2.11: `after` an event, never a sleep: the restart starts once
+        the drain has ended; on a timeout the scenario's later actions are
+        skipped, its restores still run, and "event E within T s" fails."""
+        timeline = scale.phase_timeline(self.waits_plan(30), lab())
+        row = timeline["scenarios"][0]
+        # The restart waits up to 30 s, then may take its bound: the
+        # observation covers both.
+        self.assertEqual(row["observe_end"] - row["fault"], 30 + row["actions"][1]["bound_s"])
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        logged, commands = [], []
+        args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=None,
+                                  next_av_mesh_root=None, next_av_contrib_root=None)
+
+        def popen(command, **kwargs):
+            commands.append(command)
+            kwargs["stdout"].write(b"start 1790000100.000000000 restart.lon-edge-1\n"
+                                   b"end 1790000130.000000000 restart.lon-edge-1\n")
+            return FakeProcess(command, 0)
+
+        drained = threading.Event()
+
+        def http_get(node, path, **kwargs):
+            if drained.is_set():
+                return {"client_udp": {"subscribers": 0}, "edge_services": [
+                    {"node_id": node["name"], "active_playback_sessions": 0}]}
+            return {"client_udp": {"subscribers": 5}, "edge_services": []}
+
+        def run(drains: bool) -> list[dict]:
+            logged.clear()
+            commands.clear()
+            runner = scale.PhaseRunner(lab(), timeline, time.time() - row["fault"],
+                                       logged.append, args, directory=directory)
+            with mock.patch.object(scale.subprocess, "Popen", popen), \
+                    mock.patch.object(scale, "http_post", lambda *a, **k: 202), \
+                    mock.patch.object(scale, "http_get", http_get):
+                runner.begin()
+                deadline = time.time() + 10
+                while time.time() < deadline and not any(
+                        item.get("event") in ("command_exit", "after_timeout")
+                        for item in logged):
+                    if drains and any(item.get("event") == "action" for item in logged):
+                        drained.set()
+                    time.sleep(0.05)
+                runner.finish()
+            return list(logged)
+
+        events = run(True)
+        names = [item.get("event") for item in events]
+        self.assertLess(names.index("drain_end"), names.index("after_met"))
+        self.assertLess(names.index("after_met"), names.index("command_start"))
+        self.assertEqual(commands[0][2:5], ["restart", "--nodes", "lon-edge-1"])
+        # The drain's restore (resume) is owed and put back by finish.
+        self.assertIn(("resume", True), [(item.get("kind"), item.get("restore"))
+                                         for item in events if item.get("event") == "done"])
+        drained.clear()
+        timeline = scale.phase_timeline(self.waits_plan(0.5), lab())
+        row = timeline["scenarios"][0]
+        events = run(False)
+        self.assertIn("after_timeout", [item.get("event") for item in events])
+        self.assertEqual(commands, [])
+        self.assertIn(("resume", True), [(item.get("kind"), item.get("restore"))
+                                         for item in events if item.get("event") == "done"])
+        result = {"commands": [], "waits": [{"event": "after_timeout", "awaited": "drain_end",
+                                             "timeout_s": 0.5}]}
+        criteria = scale.change_criteria({**change_figures(), **result}, {"actions": []}, ROLES)
+        wait = next(item for item in criteria if item["criterion"].startswith("event drain_end"))
+        self.assertEqual((wait["criterion"], wait["ok"]), ("event drain_end within 0.5 s", False))
+
+    def test_windows_come_from_the_marks(self):
+        """A scenario's windows are its marks, widened as the referee widens
+        them (2 s before, 5 s after), not its planned times; a scenario
+        with no marks did not run and says so."""
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        plan = scale.load_phase_plan(PHASES, names=["F1", "F2"])
+        timeline = scale.phase_timeline(plan, lab())
+        start = 1_790_000_000.0
+        self.write_phase_step(directory, start, timeline)
+        marks = directory / "scenarios" / "F1" / "marks.txt"
+        marks.write_text(scale.mark_line("start", int((start + 70) * 1e9), "F1.drain.lon-edge-1")
+                         + scale.mark_line("end", int((start + 100) * 1e9),
+                                           "F1.drain.lon-edge-1"))
+        shutil.rmtree(directory / "scenarios" / "F2")
+        results = scale.analyse_phases(lab(), directory, timeline, start, plan, SERVING, "pcm-1",
+                                       [], readers_launched=start - 10)
+        f1, f2 = results
+        self.assertEqual(f1["windows"], {"before": [start, start + 68],
+                                         "during": [start + 68, start + 105],
+                                         "after": [start + 105, start + 414]})
+        self.assertEqual(f1["marks"][0][2], "F1.drain.lon-edge-1")
+        self.assertFalse(f2["ran"])
+        self.assertEqual([(item["criterion"], item["ok"]) for item in f2["criteria"]],
+                         [("the scenario ran (its marks)", False)])
+        self.assertIn("| F2 | new-edge-2 | not run |", scale.format_phases(results))
+
+    def test_each_scenario_is_scored_on_its_own_probes_and_marks(self):
+        """One scenario, one verdict (C 2.11): the referee's probe on every
+        view host and probed config, from the region's dist-a, for the
+        scenario's probe length; ingested with the referee's ntcmp on the
+        view host; change-window.py on that scenario's frames and its marks
+        only, its verdict the probe criterion (pass may be null)."""
+        state = lab()
+        step_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, step_dir, True)
+        probes = scale.ScenarioProbes(state, ["opus-1", "pcm-1"], "/r/run/6000", step_dir,
+                                      lambda item: None)
+        self.assertEqual([(view["name"], entry["name"]) for view, entry in probes.hosts],
+                         [("lon-view", "lon-dist-a"), ("new-view", "new-dist-a"),
+                          ("syd-view", "syd-dist-a"), ("tok-view", "tok-dist-a")])
+        start = probes.start_command("U1", "pcm-1", state["nodes"]["lon-dist-a"], 1200.4)
+        self.assertIn(f"--entry https://{state['nodes']['lon-dist-a']['vlan_ipv4']}:19444 "
+                      "--stream 4001", start)
+        for part in ("--duration-seconds 1201", "--arrivals /r/run/6000/probes/U1/pcm-1/"
+                     "arrivals.csv", "--write-parts /r/run/6000/probes/U1/pcm-1/parts.bin",
+                     "date +%s.%N >/r/run/6000/probes/U1/pcm-1/launch"):
+            self.assertIn(part, start)
+        ingest = probes.ingest_command("U1", "opus-1", "lon-view")
+        for part in ("ntcmp udp-ingest", "--audio-index /var/lib/compare/index/"
+                     "nt-popus-48s-la.index.json", "--lane nt-uc", "--skip-seconds 5",
+                     "--frames /r/run/6000/probes/U1/opus-1/probe.csv"):
+            self.assertIn(part, ingest)
+        frames = [step_dir / "scenarios" / "U1" / "probes" / "lon-view" / "opus-1" / "probe.csv"]
+        self.assertEqual(scale.cw_command(frames, step_dir / "m.txt", step_dir / "v.json")[1:],
+                         [str(scale.CHANGE_WINDOW), "--frames", str(frames[0]), "--marks",
+                          str(step_dir / "m.txt"), "--json", str(step_dir / "v.json")])
+        # The runner scores each scenario after its own probes, on its own
+        # directory (its marks only).
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F1", "F2"]), state)
+        collected, scored = [], []
+
+        class Probes:
+            hosts = probes.hosts
+
+            def start(self, scenario, seconds):
+                collected.append(("start", scenario, seconds))
+
+            def collect(self, scenario):
+                collected.append(("collect", scenario))
+                return frames
+
+        args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=None)
+        runner = scale.PhaseRunner(state, timeline, time.time() - 10_000, lambda item: None,
+                                   args, directory=step_dir, probes=Probes())
+        with mock.patch.object(scale, "ssh", lambda node, command, **k: ""), \
+                mock.patch.object(scale, "http_post", lambda *a, **k: 202), \
+                mock.patch.object(scale, "http_get", lambda node, path, **k: {}), \
+                mock.patch.object(scale, "score_scenario",
+                                  lambda directory, got: scored.append(directory.name) or 0):
+            runner.run()
+            runner.finish()
+        self.assertEqual(collected, [("start", "F1", 369.0), ("collect", "F1"),
+                                     ("start", "F2", 369.0), ("collect", "F2")])
+        self.assertEqual(scored, ["F1", "F2"])
+        for name in ("F1", "F2"):
+            labels = {label for _k, _t, label in scale.change_run().marks_of(
+                (step_dir / "scenarios" / name / "marks.txt").read_text())}
+            self.assertTrue(labels and all(label.startswith(name + ".") for label in labels))
+        # The verdict: one entry a label and probe; pass, fail or unscored.
+        directory = step_dir / "scenarios" / "F1"
+        verdict = {"F1.drain.lon-edge-1": {
+            str(frames[0]): {"pass": True, "change": {"missing": 0, "gap_ms": 1.2, "p99_ms": 2.0},
+                             "gap_bar_ms": 1.5, "p99_bar_ms": 2.1, "null_fail_rate": 0.07,
+                             "null_windows": 250},
+            str(frames[0]).replace("lon-view", "new-view"): {
+                "pass": None, "note": "null too short: 80 no-change windows of this length, "
+                                      "120 needed", "change": {"missing": 0}}}}
+        (directory / "change-window.json").write_text(json.dumps(verdict))
+        record = scale.probe_record(directory)
+        self.assertEqual(sorted(record), ["F1.drain.lon-edge-1 lon-view/opus-1",
+                                          "F1.drain.lon-edge-1 new-view/opus-1"])
+        probe = scale.change_criteria(change_figures(probe=record), {"actions": []}, ROLES)[0]
+        self.assertEqual((probe["criterion"], probe["ok"]),
+                         ("probe: pass on every lane and view host", None))
+        self.assertIn("null too short", probe["needs"])
+        self.assertEqual(probe["value"]["null_fail_rate_max"], 0.07)
+        record["F1.drain.lon-edge-1 new-view/opus-1"]["pass"] = False
+        probe = scale.change_criteria(change_figures(probe=record), {"actions": []}, ROLES)[0]
+        self.assertFalse(probe["ok"])
+        probe = scale.change_criteria(change_figures(), {"actions": []}, ROLES)[0]
+        self.assertIsNone(probe["ok"])
+
+    def test_the_controller_must_have_acted(self):
+        """A scenario with a controller or a scale verb: it acted (a join, or
+        a drain_end and a stop), and its command exited 0."""
+        spec = {"actions": [{"kind": "autoscale", "until": "join"}]}
+
+        def judged(**figures):
+            out = scale.change_criteria(change_figures(changes=["autoscale"], **figures), spec,
+                                        ROLES)
+            return {item["criterion"]: item["ok"] for item in out}
+
+        acted = "the controller acted (a join, or a drain_end and a stop)"
+        self.assertFalse(judged()[acted])
+        self.assertTrue(judged(controller={"decisions": ["join"], "kinds": ["decision"]})[acted])
+        self.assertTrue(judged(controller={"decisions": [],
+                                           "kinds": ["drain_end", "stopped"]})[acted])
+        self.assertFalse(judged(controller={"decisions": [], "kinds": ["drain_end"]})[acted])
+        criteria = judged(controller={"decisions": ["join"], "kinds": []},
+                          commands=[{"event": "controller_exit", "kind": "autoscale",
+                                     "returncode": 2}])
+        self.assertFalse(criteria["autoscale: the command exited 0"])
+        # A4p's events from inside the mesh.
+        out = scale.change_criteria(change_figures(changes=["autoscale"], controller={
+            "decisions": [], "kinds": ["lost", "replace_join"]}),
+            {"actions": [], "expect": {"events": ["lost", "replace_join", "recovered"]}}, ROLES)
+        self.assertEqual({item["criterion"]: item["ok"] for item in out
+                          if item["criterion"].startswith("controller event")},
+                         {"controller event lost": True, "controller event replace_join": True,
+                          "controller event recovered": False})
+
+    def test_the_crowd_is_judged_on_the_load_tool_s_new_fields_and_open_without_them(self):
+        """B Y4's fields (needletail.load.interval.v2), read where present:
+        listeners interrupted and with missing parts, gaps, resets, the
+        longest silence against the baseline's plus a unit, the latency p99
+        of the window's buckets against the baseline's plus 1 ms, the
+        single-path spans. Without them each is open, never passed."""
+        spec = {"actions": [{"kind": "drain", "targets": ["lon-edge-1"]}]}
+        open_ = {item["criterion"]: item for item in scale.change_criteria(
+            change_figures(), spec, ROLES)}
+        for name in ("crowd: listeners_interrupted = 0", "crowd: listeners_with_missing = 0",
+                     "crowd: gaps = 0", "crowd: resets = 0",
+                     "crowd: longest_silence_ms inside <= outside + one unit",
+                     "crowd: latency p99 inside <= outside + 1 ms", "crowd: single_path_ms <= 0"):
+            self.assertIsNone(open_[name]["ok"], name)
+            self.assertIn("B Y4", open_[name]["needs"])
+
+        def line(t, interrupted=0, silence=1.0, p99_bucket=2000, single=None):
+            total = {"up": 100, "parts": 100_000, "missing": 0, "listeners_interrupted":
+                     interrupted, "listeners_with_missing": 0, "gaps": 0, "resets": 0,
+                     "never_resumed": 0, "listeners_without_parts": 0,
+                     "longest_silence_ms": silence,
+                     "latency_ms": {"p50": 1.0, "buckets_us": [[1000, 98], [p99_bucket, 2]]},
+                     "paths": {"two": 100, "one": 0, "none": 0}}
+            if single is not None:
+                total["single_path_ms"] = {"buckets_us": [[single, 1]]}
+            return {"schema": "needletail.load.interval.v2",
+                    "unix_ms": int((1_790_000_000 + t) * 1000), "total": total}
+
+        rows = scale.interval_rows([line(t) for t in range(0, 60)]
+                                   + [line(t, silence=1.9, p99_bucket=2800) for t in range(60, 70)]
+                                   + [line(t) for t in range(70, 100)])
+        windows = {key: (1_790_000_000 + a, 1_790_000_000 + b) for key, (a, b) in
+                   {"before": (0, 60), "during": (60, 70), "after": (70, 100)}.items()}
+        crowd = {key: scale.crowd_window(rows, a, b, 1.5, False) for key, (a, b) in windows.items()}
+        self.assertEqual(crowd["during"]["longest_silence_ms"], 1.9)
+        self.assertEqual(crowd["during"]["latency_ms"]["p99"], 2.8)
+        judged = {item["criterion"]: item for item in scale.change_criteria(
+            change_figures(crowd=crowd), spec, ROLES)}
+        for name in ("crowd: listeners_interrupted = 0", "crowd: listeners_with_missing = 0",
+                     "crowd: gaps = 0", "crowd: never_resumed = 0",
+                     "crowd: longest_silence_ms inside <= outside + one unit",
+                     "crowd: latency p99 inside <= outside + 1 ms"):
+            self.assertTrue(judged[name]["ok"], name)
+        # One interrupted listener, a silence of a unit and more, the p99
+        # 1 ms and more over the baseline's, a single-path span on a planned
+        # change: each fails.
+        rows = scale.interval_rows([line(t) for t in range(0, 60)] + [
+            line(t, interrupted=1, silence=2.1, p99_bucket=3100, single=4000)
+            for t in range(60, 70)])
+        crowd = {key: scale.crowd_window(rows, a, b, 1.5, False) for key, (a, b) in windows.items()}
+        judged = {item["criterion"]: item for item in scale.change_criteria(
+            change_figures(crowd=crowd), spec, ROLES)}
+        for name in ("crowd: listeners_interrupted = 0",
+                     "crowd: longest_silence_ms inside <= outside + one unit",
+                     "crowd: latency p99 inside <= outside + 1 ms", "crowd: single_path_ms <= 0"):
+            self.assertFalse(judged[name]["ok"], name)
+        # The loss of an edge allows B's bound for its single-path spans.
+        kill = {"actions": [{"kind": "kill", "targets": ["lon-edge-2"]}]}
+        judged = {item["criterion"]: item for item in scale.change_criteria(
+            change_figures(crowd=crowd), kill, ROLES)}
+        self.assertTrue(judged["crowd: single_path_ms <= 100"]["ok"])
+
+    def test_the_six_criteria_once_open_are_judged(self):
+        """C 2.11: first_part_s from first_serving, warm_parts_pending_zero_s
+        and largest_burst_per_tick from the forwarders, watermark_stall_ms,
+        parent_change_share from the lease pairs before and after, and
+        trigger_to_fresh_s from the controller's serving event."""
+        spec = {"actions": [{"kind": "join", "targets": ["lon-edge-6"]}],
+                "expect": {"first_part_s": 20, "warm_parts_pending_zero_s": 10,
+                           "largest_burst_per_tick": 100000, "watermark_stall_ms": 250,
+                           "parent_change_share_max": 0.77, "trigger_to_fresh_s": 20}}
+        base = {"stranded": {"max": 0},
+                "udp": {key: {side: {"missing": 0, "parts": 1000} for side in
+                              ("unaffected", "faulted")} for key in ("before", "during", "after")},
+                "survivors": {key: {"nodes": 0, "cpu_max": 0.1, "core_max": 0.1,
+                                    "nic_share_max": 0.1} for key in ("before", "during", "after")},
+                "moves": {"udp": 0, "udp_spread_max_over_mean": None},
+                "mesh": {key: {"survivors": {}} for key in ("before", "during", "after")}}
+
+        def judged(**figures):
+            result = {**base, **change_figures(**figures)}
+            with mock.patch.object(scale, "deploy_settings", return_value={}):
+                out = scale.phase_criteria(result, spec, ROLES)
+            return {item["criterion"]: item for item in out}
+
+        good = judged(first_part_s=12.0, warm_parts_pending_zero_s=6.0,
+                      largest_burst_per_tick=80_000, watermark_stall_ms=40.0,
+                      watermark_stalls_over_250ms_rise=0, parent_change_share=0.66,
+                      trigger_to_fresh_s=14.0)
+        for name in ("first_part_s <= 20", "warm_parts_pending_zero_s <= 10",
+                     "largest_burst_per_tick <= 100000", "watermark_stall_ms <= 250",
+                     "parent_change_share_max <= 0.77", "trigger_to_fresh_s <= 20"):
+            self.assertTrue(good[name]["ok"], name)
+        bad = judged(first_part_s=None, warm_parts_pending_zero_s=False,
+                     largest_burst_per_tick=120_000, watermark_stall_ms=40.0,
+                     watermark_stalls_over_250ms_rise=1, parent_change_share=0.9,
+                     trigger_to_fresh_s=None)
+        for name in ("first_part_s <= 20", "warm_parts_pending_zero_s <= 10",
+                     "largest_burst_per_tick <= 100000", "watermark_stall_ms <= 250",
+                     "parent_change_share_max <= 0.77", "trigger_to_fresh_s <= 20"):
+            self.assertFalse(bad[name]["ok"], name)
+        blind = judged(largest_burst_per_tick=None)
+        self.assertIsNone(blind["largest_burst_per_tick <= 100000"]["ok"])
+        # The figures from the samplers: two forwarders' lease pairs before
+        # a third joins and after (2 of 3 pairs change one parent), and the
+        # backlog's way to 0.
+        mesh = {name: [{"t": t, "node": name, "warm_parts_pending": pending,
+                        "node": {"lease_pairs": pairs}} for t, pending, pairs in rows]
+                for name, rows in {
+                    "lon-dist-a": [(0, 0, [["e1", 3001], ["e2", 3001], ["e3", 3001]]),
+                                   (20, 0, [["e1", 3001]])],
+                    "lon-dist-b": [(0, 0, [["e1", 3001], ["e2", 3001], ["e3", 3001]]),
+                                   (20, 0, [["e1", 3001], ["e2", 3001], ["e3", 3001]])],
+                    "lon-dist-c": [(20, 0, [["e2", 3001], ["e3", 3001]])]}.items()}
+        forwarders = ["lon-dist-a", "lon-dist-b", "lon-dist-c"]
+        share = scale.parent_change_share(scale.lease_parents(mesh, forwarders, 5),
+                                          scale.lease_parents(mesh, forwarders, 25))
+        self.assertAlmostEqual(share, 0.667, places=3)
+        backlog = {"lon-dist-a": [{"t": t, "node": "lon-dist-a", "warm_parts_pending": value}
+                                  for t, value in ((11, 900), (12, 300), (13, 0))],
+                   "lon-dist-b": [{"t": t, "node": "lon-dist-b", "warm_parts_pending": 0}
+                                  for t in (11, 12, 13)]}
+        self.assertEqual(scale.warm_zero_s(backlog, ["lon-dist-a", "lon-dist-b"], 10.0, 60.0), 3.0)
+        self.assertFalse(scale.warm_zero_s(backlog, ["lon-dist-a", "lon-dist-b"], 10.0, 12.5))
+        self.assertIsNone(scale.warm_zero_s({}, ["lon-dist-a"], 10.0, 60.0))
+
+    def test_restarts_are_judged_from_the_nodes_boot_ids(self):
+        """The nodes a scenario restarts (a roll's tier, a kill's target) get
+        a new boot id, and no other node does; an upgrade leaves every node
+        on one build, and no node reads a frame it cannot."""
+        rows = {name: [{"t": t, "node": {"boot_id": boot, "build": build,
+                                         "rx_invalid_frames": 0}}
+                       for t, boot, build in series]
+                for name, series in {
+                    "lon-edge-1": [(0, 1, "aaa"), (100, 2, "bbb")],
+                    "lon-edge-2": [(0, 3, "aaa"), (100, 3, "aaa")],
+                    "lon-dist-a": [(0, 5, "aaa"), (100, 6, "bbb")]}.items()}
+        restarts = scale.boot_changes(rows, 10, 90)
+        self.assertEqual(restarts, {"lon-edge-1": [1, 2], "lon-edge-2": [3, 3],
+                                    "lon-dist-a": [5, 6]})
+        spec = {"actions": [{"kind": "upgrade", "tier": "all", "build": "next"}]}
+        out = {item["criterion"]: item for item in scale.change_criteria(change_figures(
+            restarts=restarts, restarted_expected=["lon-edge-1", "lon-edge-2"],
+            changes=["upgrade"], builds=scale.builds_around(rows, lab(), (10, 90))), spec, ROLES)}
+        restarted = out["restarts: the nodes it changes and no other"]
+        self.assertFalse(restarted["ok"])
+        self.assertEqual(restarted["value"], {"restarted": ["lon-dist-a", "lon-edge-1"],
+                                              "not_restarted": ["lon-edge-2"],
+                                              "others": ["lon-dist-a"]})
+        self.assertFalse(out["every node on one build after the upgrade"]["ok"])
+        self.assertTrue(out["rx_invalid_frames = 0 while the builds are mixed"]["ok"])
+
+    def test_the_proving_plan_runs_every_change_kind(self):
+        """C 7: phases-proving.json, group by group, with probes on opus-1
+        and pcm-1 beside an opus-1 crowd; every change kind of C CL7; A's
+        changes run only when named; its targets are nodes of the proving
+        lab's naming (topology-scale.json shares it)."""
+        proving = scale.ROOT / "deploy" / "low-latency" / "phases-proving.json"
+        groups = {group: [item["name"] for item in scale.load_phase_plan(proving, group)[
+            "scenarios"]] for group in "NUFRA"}
+        self.assertEqual(groups, {"N": ["N1"], "U": ["U1", "U2", "U4", "U5"], "F": ["F4", "F6"],
+                                  "R": ["RP1", "RP2"],
+                                  "A": ["S1", "S2", "A1p", "A2p", "A3p", "A4p"]})
+        every = scale.load_phase_plan(proving, names=["U3", "C1", "C2"])["scenarios"]
+        self.assertEqual([item["name"] for item in every], ["U3", "C1", "C2"])
+        kinds = {action["kind"] for item in json.loads(proving.read_text())["scenarios"]
+                 for action in item["actions"]}
+        self.assertTrue(set(scale.CHANGE_KINDS) <= kinds, set(scale.CHANGE_KINDS) - kinds)
+        state = lab()
+        for item in json.loads(proving.read_text())["scenarios"]:
+            for action in item["actions"]:
+                for target in action.get("targets", []):
+                    self.assertIn(target, state["nodes"], item["name"])
+        args = argparse.Namespace(phase_plan=str(proving), group="A", scenarios="", steps=None,
+                                  hls_share=None, config=None, probe_configs=None, load_args="")
+        phases = scale.phase_setup(args, {**state, "standby_edges": STANDBY})
+        self.assertEqual((args.steps, args.config, phases["probe_configs"]),
+                         ("900", "opus-1", ["opus-1", "pcm-1"]))
+        # An upgrade to `next` needs the roots it rolls to before the run.
+        timeline = scale.phase_timeline(scale.load_phase_plan(proving, "U"),
+                                        {**state, "standby_edges": STANDBY})
+        with self.assertRaises(ValueError):
+            scale.check_upgrade_roots(timeline, argparse.Namespace(
+                next_av_mesh_root=None, next_av_contrib_root=None))
+        scale.check_upgrade_roots(timeline, argparse.Namespace(
+            next_av_mesh_root="/w/next", next_av_contrib_root=None))
+        # The rolls are planned from their engine timeouts (70 s a node).
+        u1 = timeline["scenarios"][0]
+        self.assertEqual(u1["actions"][0]["bound_s"], (20 + 1) * 70.0)
+
+    def test_a_scenario_that_no_longer_fits_is_skipped_never_started(self):
+        """A change that ran past its bound: the next scenario, late, is
+        skipped and logged, never started."""
+        state = lab()
+        timeline = {"hold_s": 4.0, "scenarios": [
+            {"name": "S1", "probe_start": 0.0, "probe_s": 0.1, "fault": 0.0,
+             "observe_end": 0.0, "end": 0.0,
+             "actions": [{"kind": "kill", "targets": ["new-edge-2"], "t": 0.0,
+                          "scenario": "S1"}], "restores": []},
+            {"name": "S2", "probe_start": 0.3, "probe_s": 0.1, "fault": 0.3,
+             "observe_end": 0.3, "end": 0.4,
+             "actions": [{"kind": "kill", "targets": ["new-edge-3"], "t": 0.3,
+                          "scenario": "S2"}], "restores": []}]}
+        done, logged = [], []
+
+        def ssh(node, command, **kwargs):
+            done.append((node["name"], command.split(" ", 1)[1].split(" ", 1)[0]))
+            if "KILL" in command:
+                time.sleep(0.6)  # the kill of S1 runs long
+            return ""
+
+        args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=None)
+        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                   directory=pathlib.Path(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, runner.directory, True)
+        with mock.patch.object(scale, "ssh", ssh), \
+                mock.patch.object(scale, "SCENARIO_LATE_S", 0.1), \
+                mock.patch.object(scale, "PROBE_GRACE_S", 0.0), \
+                mock.patch.object(scale, "http_get", lambda node, path, **k: {}):
+            runner.run()
+            runner.finish(join_s=2)
+        # S1's kill, and its restore (owed, put back by finish); nothing of S2.
+        self.assertEqual(done, [("new-edge-2", "kill"), ("new-edge-2", "start")])
+        skipped = [item for item in logged if item.get("event") == "scenario_skipped"]
+        self.assertEqual([item["scenario"] for item in skipped], ["S2"])
 
     def test_a_slot_s_add_is_the_lab_tool_s_own_command_line(self):
         """The lab tool's add, as its own parser reads it (C CT3): the slot,
@@ -1816,18 +2493,52 @@ class Phases(unittest.TestCase):
         for group in ("F", "R", "A"):
             asked = argparse.Namespace(phase_plan=str(PHASES), group=group, scenarios="",
                                        steps=None, hls_share=None, config=None)
-            scale.phase_setup(asked)
+            scale.phase_setup(asked, lab())
             self.assertEqual(asked.steps, "6000", group)
         runs = [block["run"] for block in json.loads(PHASES.read_text())["schedule"]["blocks"]
                 if "--phase-plan" in block.get("run", "")]
         self.assertEqual([re.search(r"--steps (\S+)", run).group(1) for run in runs],
                          ["6000"] * 3)
-        self.assertEqual(plan["steps"][0]["hold_s"], 9 * 180)
+        # Each scenario holds its probes 369 s from 45 s before its fault,
+        # and its slot ends 30 s after them (C CL7): 414 s.
+        self.assertEqual(plan["steps"][0]["hold_s"], 9 * 414)
         self.assertIn("F8", out.getvalue())
         cost = plan["phases"]["cost"]
-        self.assertAlmostEqual(cost["scenarios"]["F1"]["minutes"], 3.0)
-        self.assertAlmostEqual(cost["minutes"], (plan["steps"][0]["ramp_s"] + 9 * 180 + 75) / 60,
+        self.assertAlmostEqual(cost["scenarios"]["F1"]["minutes"], 6.9)
+        self.assertAlmostEqual(cost["minutes"], (plan["steps"][0]["ramp_s"] + 9 * 414 + 75) / 60,
                                places=1)
+
+
+@unittest.skipUnless(scale.CHANGE_WINDOW.is_file(),
+                     "needs the referee's change-window.py (NEEDLETAIL_COMPARE_ROOT)")
+class RefereeScoring(unittest.TestCase):
+    """The referee's own change-window.py on a scenario's probe of the
+    planned length: it finds its 120 no-change windows and scores it."""
+
+    def test_a_probe_of_the_planned_length_is_scored(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        span = 90.0
+        seconds = scale.PROBE_LEAD_S + span + scale.probe_tail_s(span)
+        launch_us = 1_790_000_000 * 1_000_000
+        frames = directory / "probes" / "lon-view" / "opus-1" / "probe.csv"
+        frames.parent.mkdir(parents=True)
+        with frames.open("w") as handle:
+            handle.write("kind,index,latency_us,complete_unix_us,first_unix_us\n")
+            for n in range(int(seconds * 100)):
+                latency = 7000 + (n * 37) % 500
+                source = launch_us + n * 10_000
+                handle.write(f"a,{n},{latency},{source + latency},{n}\n")
+        first = (launch_us + int(scale.PROBE_LEAD_S * 1e6)) * 1000
+        (directory / "marks.txt").write_text(
+            scale.mark_line("start", first, "S.kill.lon-edge-2")
+            + scale.mark_line("end", first + int(span * 1e9), "S.kill.lon-edge-2"))
+        scale.score_scenario(directory, [frames])
+        record = scale.probe_record(directory)
+        result = record["S.kill.lon-edge-2 lon-view/opus-1"]
+        self.assertGreaterEqual(result["null_windows"], scale.MIN_NULL_WINDOWS)
+        self.assertIsNotNone(result["pass"])
+        self.assertIsNotNone(result["null_fail_rate"])
 
 
 REFEREE = (scale.COMPARE_ROOT / "scripts" / "compare" / "compare-audio.py").is_file()
@@ -2036,13 +2747,13 @@ class Joins(unittest.TestCase):
         args = argparse.Namespace(phase_plan=str(PHASES), group="R", scenarios="", steps=None,
                                   hls_share=None, config=None, hold=60.0, joins=None,
                                   lk_per_sfu=None)
-        scale.phase_setup(args)
+        scale.phase_setup(args, lab())
         self.assertEqual((args.joins, args.lk_per_sfu), (0, 0))
         args = argparse.Namespace(phase_plan=str(PHASES), group="F", scenarios="", steps=None,
                                   hls_share=None, config=None, hold=60.0, joins=20,
                                   lk_per_sfu=None)
         with self.assertRaises(ValueError) as caught:
-            scale.phase_setup(args)
+            scale.phase_setup(args, lab())
         self.assertIn("lon-dist-a", str(caught.exception))
         ramp = argparse.Namespace(steps=None, hls_share=None, config=None)
         scale.resolve_defaults(ramp)
@@ -2219,20 +2930,25 @@ class Schedule(unittest.TestCase):
         names = [row["name"] for row in self.schedule["blocks"]]
         self.assertEqual(names[:3], ["bring-up", "A-headline", "B-4k-gso"])
         self.assertEqual(names[-1], "down")
-        for kept in ("ph-f", "ph-r", "ph-a", "c1-opus1-mixed", "c2-pcm-udp", "c2-opus25-udp",
-                     "c2-opus25-mixed"):
+        for kept in ("ph-f", "ph-r", "ph-a", "c2-pcm-udp", "c2-opus25-udp", "c2-opus25-mixed"):
             self.assertIn(kept, names)
+        # Shed in the agreed order when C CL7 gave every scenario probes of
+        # its own: the joins, the reruns, c1-opus1-mixed, half of curve 2's
+        # steps, then F8, R5, F2r, F7 and F5.
+        self.assertNotIn("c1-opus1-mixed", names)
+        self.assertNotIn("reruns", names)
+        runs = {row["name"]: row["run"] for row in self.schedule["blocks"] if "run" in row}
+        self.assertIn("--scenarios F1,F2,F3,F4,F6 ", runs["ph-f"])
+        self.assertIn("--scenarios R1,R2,R3 ", runs["ph-r"])
+        self.assertIn("--scenarios A1,A2 ", runs["ph-a"])
         ramps = [row for row in self.schedule["blocks"] if row["kind"] == "ramp"]
         self.assertTrue(all(row["livekit_public_gb"] > 0 for row in ramps))
         phases = {row["name"]: row for row in self.schedule["blocks"] if row["kind"] == "phases"}
         self.assertEqual(sorted(phases), ["ph-a", "ph-f", "ph-r"])
         self.assertTrue(all(row["steps"] == [6000] for row in phases.values()))
-        # Joins only at the representative steps (the referee's own sessions
-        # of window A run theirs in full).
-        joins = {row["name"]: row["joins_steps"] for row in self.schedule["blocks"]
-                 if row.get("joins_steps")}
-        self.assertEqual(joins, {"c1-pcm-udp": [100, 10000], "c1-opus25-udp": [40000]})
-        self.assertEqual(self.schedule["joins_steps"], 3)
+        # No joins in the ramps (shed first; the referee's own sessions of
+        # window A run theirs in full).
+        self.assertEqual(self.schedule["joins_steps"], 0)
 
     def test_every_ramp_that_runs_a_step_over_the_listener_hosts_is_forced(self):
         # `run` refuses a step over the headroom without --force: a block

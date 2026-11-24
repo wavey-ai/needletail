@@ -21,10 +21,10 @@ minutes before that. A refused core stops the run with no retry, and
 nothing is added past the schedule. The run starts with two windows run
 with the referee's own tools, before curve 1: **(A) the wave 7 audio
 headline** and **(B) 4K with GSO** (see "The two windows before curve 1").
-The joins phase runs in the ramps only at three representative steps. The
+No ramp step runs the joins phase (shed, see "Cost and duration"). The
 whole schedule, from `up` to `down`, is the `schedule` of
 `deploy/low-latency/phases-scale.json`, and `scale-run.py plan
---topology-only --json` reports it (`schedule.total_min`): 341.1 minutes,
+--topology-only --json` reports it (`schedule.total_min`): 341.3 minutes,
 against a limit of 345 (6 hours less the 5 minutes and a margin of 10
 before the watchdog's `down`). See "Cost and duration".
 
@@ -408,23 +408,22 @@ command below); the fixed blocks are estimates.
 | Two edges per region: `e2-pcm-udp`, pcm-1 UDP-only, 7 steps, no joins | 111 | 16.9 |
 | Deploy restart: five edges per region (curve 1) | 128 | 2 |
 | Calibration (100, 1,000, 8,000 mixed, 30 s holds, no joins), then `plan --cost` | 130 | 5.8 |
-| Curve 1: `c1-pcm-udp`, joins at 100 and 10,000 | 136 | 17.2 |
-| Curve 1: `c1-pcm-mixed`, `c1-opus1-mixed`, `c1-opus25-mixed`, no joins | 153 | 36.3 |
-| Curve 1: `c1-opus25-udp`, joins at 40,000 (the top of curve 1) | 189 | 16.0 |
-| Phases F (failover), one held step of 6,000 listeners | 205 | 28.4 |
-| Phases R (redistribution), one held step of 6,000 | 233 | 13.4 |
-| Phases A (autoscale), one held step, 30% to 95% to 20% of 6,000 | 247 | 26.4 |
-| The standby edges into service (`start --nodes`) | 273 | 1 |
-| Curve 2, ten edges per region: `c2-pcm-udp`, `c2-opus25-udp`, `c2-opus25-mixed`, no joins | 274 | 46.8 |
+| Curve 1: `c1-pcm-udp`, no joins | 136 | 14.5 |
+| Curve 1: `c1-pcm-mixed`, `c1-opus25-mixed`, no joins | 150 | 24.2 |
+| Curve 1: `c1-opus25-udp`, no joins | 174 | 14.7 |
+| Phases F (failover) F1, F2, F3, F4, F6, one held step of 6,000 listeners | 189 | 35.9 |
+| Phases R (redistribution) R1, R2, R3, one held step of 6,000 | 225 | 22.1 |
+| Phases A (autoscale) A1, A2, one held step, 30% to 95% to 20% of 6,000 | 247 | 56.2 |
+| The standby edges into service (`start --nodes`) | 303 | 1 |
+| Curve 2, ten edges per region, half its steps: `c2-pcm-udp`, `c2-opus25-udp`, `c2-opus25-mixed`, no joins | 304 | 27.1 |
 | Self-hosted LiveKit control: in every ramp step above, no time of its own | | 0 |
-| Reruns of steps or scenarios that failed for reasons other than load | 321 | 10 |
 | `scale-run.py stop`, `down`, VLAN and leftover check | 331 | 10 |
-| **Total** | | **341.1 min, 5.69 h** |
+| **Total** | | **341.3 min, 5.69 h** |
 
 Rows are rounded; `plan` sums the exact figures. The limit is 345
 minutes: the watchdog's 6.0 hours (360 minutes of the lab's life) less
 the 5 minutes by which its `down` starts early, less a margin of 10. The
-schedule ends 3.9 minutes inside it and 13.9 before the watchdog's `down`.
+schedule ends 3.7 minutes inside it and 13.7 before the watchdog's `down`.
 
 **What was cut to fit** (in the order agreed, until it fitted). Before any
 cut, with (A), (B), the joins in every ramp step and 40 minutes of reruns,
@@ -437,9 +436,18 @@ the run was 437.7 minutes (8 billed hours):
    steps instead of 53: 66.6 minutes saved (371.1 left).
 2. **Reruns** from 40 minutes (10 of phases, 30 of steps) to 10: 30
    minutes saved (341.1).
+3. **C CL7 (24 Nov)**: every phase scenario has probes of its own, held
+   long enough after its change for the referee's 120 no-change windows
+   (360 s at least), and R4 and A3 are enabled (named out of the schedule:
+   R4 needs lon-dist-c created beforehand, A3 runs in place of A1 and A2).
+   The schedule grew to 421.6 minutes, and was shed in the agreed order
+   (below) until it fitted: the joins of the representative steps (417.6),
+   the 10 minutes of reruns (407.6), `c1-opus1-mixed` (395.5), half of
+   curve 2's steps (375.8), then the scenarios F8, R5, F2r, F7 and F5
+   (341.3).
 
-Not cut: `c1-opus1-mixed`, curve 2's steps, phases F, R and A, and the
-LiveKit control.
+Not cut: phases F (F1, F2, F3, F4, F6), R (R1, R2, R3) and A (A1, A2),
+the rest of curves 1 and 2, and the LiveKit control.
 
 **Hourly rounding.** Linode bills every instance each hour it has
 started, and a whole hour at least, however short its life (`lab billed`
@@ -506,32 +514,34 @@ hours; `plan` on that lab times its ramps again (the schedule's
 ### Each phase scenario
 
 Pro rata at $7.884 an hour (no Sydney); under hourly rounding each is $0 while the
-run ends inside its last planned hour. `needs` is the Phase AM work a scenario
-waits for before it can pass (until then it runs and measures what the
-current binaries do); `shed` is the order in which scenarios are dropped
+run ends inside its last planned hour. Minutes are C CL7's: each scenario's
+slot holds its probes (45 s before the fault, then the change and about
+twice its length after it) and 30 s more. `needs` was the Phase AM work a
+scenario waited for; C CL7 cleared it where the resilient-mesh builds judge
+it (only F9 still waits). `shed` is the order in which scenarios are dropped
 when time runs short (lowest first).
 
 | Scenario | Fault | Minutes | Pro rata | Needs (Phase AM) | Shed |
 | --- | --- | ---: | ---: | --- | ---: |
-| F1 | drain lon-edge-1 | 3.0 | $0.39 | 8, 9, 10 | 14 |
-| F2 | kill new-edge-2 (node loss) | 3.0 | $0.39 | 10 | 15 |
-| F2r | crash new-edge-3: the 2 s restart | 3.0 | $0.39 | 10 | 4 |
-| F3 | drain, then stop tok-dist-a | 3.0 | $0.39 | none | 8 |
-| F4 | kill tok-dist-a | 3.0 | $0.39 | none | 11 |
-| F5 | stop the ingress lon-dist-a | 3.0 | $0.39 | premise check | 7 |
-| F6 | kill the ingress lon-dist-a | 3.0 | $0.39 | premise check | 10 |
-| F7 | kill 2 of London's 5 edges | 3.0 | $0.39 | 9, 10 | 6 |
-| F8 | kill an edge and a distributor in every region | 3.0 | $0.39 | 10, premise check | 1 |
+| F1 | drain lon-edge-1 | 6.9 | $0.91 | none | 14 |
+| F2 | kill new-edge-2 (node loss) | 6.9 | $0.91 | none | 15 |
+| F2r | crash new-edge-3: the 2 s restart (shed) | 6.9 | $0.91 | none | 4 |
+| F3 | drain, then stop tok-dist-a | 6.9 | $0.91 | none | 8 |
+| F4 | kill tok-dist-a | 6.9 | $0.91 | none | 11 |
+| F5 | stop the ingress lon-dist-a (shed) | 6.9 | $0.91 | none | 7 |
+| F6 | kill the ingress lon-dist-a | 6.9 | $0.91 | none | 10 |
+| F7 | kill 2 of London's 5 edges (shed) | 6.9 | $0.91 | none | 6 |
+| F8 | kill an edge and a distributor in every region (shed) | 6.9 | $0.91 | none | 1 |
 | F9 | lose Tokyo (not run until AM 11) | - | - | 11, public-path Opus listeners | - |
-| R1 | standby lon-edge-6 joins under load | 3.0 | $0.39 | 10, 13 | 13 |
-| R2 | drain lon-edge-6, then hold it out | 3.0 | $0.39 | 8, 13 | 12 |
-| R3 | kill lon-edge-5 | 3.0 | $0.39 | 10, 13 | 9 |
-| R4 | lon-dist-c joins, then is killed (only when named) | 5.0 | $0.66 + $0.11 create | 12 | 5 |
-| R5 | 2 of London's 5 edges drain at once | 3.0 | $0.39 | 9, 13 | 2 |
-| A1 | controller alone; 30% to 95% over 8 min | 10.5 | $1.38 | 8, 10 | 17 |
-| A2 | controller alone; 95% to 20% over 8 min | 14.5 | $1.91 | 8, 10 | 16 |
-| A3 | dist-c added and drained, K = 6 (only when named) | 25.0 | $3.29 | 8, 10, 12 | - |
-| group F / R / A | with ramp and step overhead | 28.4 / 13.4 / 26.4 | $3.73 / $1.76 / $3.47 | | |
+| R1 | standby lon-edge-6 joins under load | 6.9 | $0.91 | none | 13 |
+| R2 | drain lon-edge-6, then hold it out | 6.9 | $0.91 | none | 12 |
+| R3 | kill lon-edge-5 | 6.9 | $0.91 | none | 9 |
+| R4 | lon-dist-c joins, then is killed (named out of the schedule) | 10.9 | $1.43 + $0.11 create | none | 5 |
+| R5 | 2 of London's 5 edges drain at once (shed) | 6.9 | $0.91 | none | 2 |
+| A1 | controller alone (`--until join`); 30% to 95% over 8 min | 22.9 | $3.01 | none | 17 |
+| A2 | controller alone (`--until stopped`); 95% to 20% over 8 min | 31.9 | $4.19 | none | 16 |
+| A3 | dist-c added and drained, K = 6 (named out of the schedule) | 50.9 | $6.69 | none | - |
+| group F / R / A as scheduled | with ramp and step overhead | 35.9 / 22.1 / 56.2 | $4.72 / $2.90 / $7.39 | | |
 
 **Shedding order.** When the run's projected end passes 345 minutes of
 the lab's life (5.75 h; the watchdog's `down` starts at 355), shed in this
@@ -881,10 +891,19 @@ Each run's results go to `target/compare/scale-<name>/`:
   and draining, the target; and `join`, `created`, `serving` with
   `trigger_to_fresh_s`, `drain_start`, `drain_end`, `stopped`, `deleted`,
   `resumed`, `failure`)
-- `phases.json` (a phase run): the scenarios, their timeline and cost
-- `steps/<step>/<node>/mesh.jsonl` (a phase run): each edge's and
-  distributor's /api/mesh/local, /api/assignment and /metrics, condensed,
-  once a second
+- `phases.json` (a phase run): the scenarios, their timeline (with each
+  scenario's probe start and length and the nodes it restarts) and cost,
+  and `serving_edges`
+- `steps/<step>/scenarios/<name>/` (a phase run): `marks.txt` (the
+  scenario's marks, its own only), each change command's
+  `command-N.out`/`.err`, the probes' files fetched from the view hosts
+  (`probes/<view host>/<config>/`: launch, arrivals, parts, the client's
+  report, `probe.csv`, `probe.json`, the ingest log), `change-window.json`
+  (the referee's verdict) and `cw.log`
+- `steps/<step>/<node>/mesh.jsonl` (a phase run): each edge's,
+  distributor's and contributor's /api/node (state, readiness, boot id,
+  build, frames it could not read, lease pairs), /api/mesh/local,
+  /api/assignment and /metrics, condensed, once a second
 - `steps/<step>/<node>/`: the sampler, needletail-load's `udp/`
   (intervals, summary, the sampled listeners' arrivals) and the readers'
   condensed reports
@@ -918,6 +937,52 @@ Each run's results go to `target/compare/scale-<name>/`:
 
 `scale-run.py analyse <name>` rebuilds `scale.json`, `summary.md` and
 `cost.json` from the files.
+
+## The proving run (phases-proving.json)
+
+`deploy/low-latency/phases-proving.json` is C-operations 7's proving run of
+every change kind on Linode, on `deploy/low-latency/topology-proving.json`
+(workstream C's CT5: three serving edges and one standby a region, two
+forwarders and a dist-c slot, two contributors, a view host a region), run
+group by group:
+
+```sh
+scripts/compare/scale-run.py run --phase-plan deploy/low-latency/phases-proving.json \
+    --group N --name prove-n --budget-usd 60          # then U (with --next-av-mesh-root
+                                                      # for U4), F, R, A
+```
+
+Every scenario's probes listen on opus-1 and pcm-1 (`probe_configs`) on
+every view host; the crowd is opus-1. Listeners are listeners (two legs
+each with two paths): 480 (120 a region) in N, U, F and R, 900 (225 a
+region) at the top of A. U3, C1 and C2 wait for workstream A (two
+contributors, its gate and its kill and return on the deploy tool) and run
+by name.
+
+| Group | Scenarios | Minutes (ramp and overhead included) |
+| --- | --- | ---: |
+| N | N1 roll all, dry: the deployed null | 59.0 |
+| U | U1 roll edges, U2 roll forwarders, U4 upgrade all to next, U5 back to first | 173.3 |
+| F | F4 crash tok-dist-a, F6 crash lon-dist-a | 14.9 |
+| R | RP1 replace new-edge-1, RP2 replace tok-dist-b through tok-dist-c | 99.2 |
+| A | S1 scale up, S2 scale down, A1p, A2p, A3p (the controller alone), A4p (an edge lost) | 112.8 |
+| **Total** | | **459.2 min, 7.65 h** |
+
+The figures are `scale-run.py plan --topology-only --topology
+deploy/low-latency/topology-proving.json --phase-plan
+deploy/low-latency/phases-proving.json --group G` at C CL7. They are not
+section 7's 2 h 50 min: that sum used each change's typical time; a
+scenario's probes are now planned from its commands' bounds (the engine's
+timeouts: gate 10 s, drain 15 s, readiness 30 s and 15 s to restart a node,
+70 s a node; a rebuild and its bootstrap 15 minutes, a forwarder's slot 15
+more) and must run twice the change's length and more after it for the
+referee's no-change windows. A roll of every node and its probes is about an
+hour. With 20 minutes of bring-up the run needs a watchdog of 9 hours, or
+two labs: 36 nodes at $2.970 an hour, $26.73 for nine hours, at most $3.89
+more for the eight slots. Shorter timeouts shorten it (they are the plan's
+`gate_timeout_s`, `drain_timeout_s`, `ready_timeout_s` per action), but a
+command that outlives one stops: the timeouts must stay above what the
+proving run measures.
 
 ## Limits of the tools
 
@@ -962,11 +1027,61 @@ Each run's results go to `target/compare/scale-<name>/`:
 ## Failover, redistribution and autoscaling
 
 `deploy/low-latency/phases-scale.json` is the plan, `scale-run.py run
---phase-plan` the driver. Each group is one held step of curve 1 (8,000
-listeners, 5% of them LL-HLS, about 60% of an edge's outbound cap at
-pcm-1; A: up to 14,000 UDP listeners). Each scenario: 60 s of baseline,
-the fault, 90 s of observation, the restore, 30 s to settle; the next
-scenario's baseline shows whether the mesh came back.
+--phase-plan` the driver. Each group is one held step of curve 1 (6,000
+listeners, 5% of them LL-HLS; A: 6,000 UDP listeners at its peak).
+Listener figures here are listeners; with two-path listeners (B) the edges'
+`client_udp.subscribers` and `load_permille` count legs, two a listener.
+Each scenario: 60 s of baseline, its probes from 45 s before the fault, the
+fault, at least 90 s of observation (longer when its change commands'
+bounds are), the restore, its probes held on after (below), 30 s to settle;
+the next scenario's baseline shows whether the mesh came back.
+
+**One scenario, one verdict (C CL7).** Every scenario has probes of its
+own: on each view host and probed config the referee's nt-uc probe
+(`needletail-udp-client --entry https://<site's dist-a>:19444 --stream S
+--arrivals A --write-parts P --duration-seconds D`), started 45 s before its
+first action; then `ntcmp udp-ingest` on the view host, the files fetched,
+and the referee's `change-window.py --frames ... --marks
+scenarios/NAME/marks.txt` on the dev box with that scenario's marks only.
+The referee's rule of 23 November scores a change against the same probe's
+own no-change windows (at least 120 of the change's length plus 7 s), so a
+probe runs on after the end of its change's bound for twice that bound and
+about 140 s more, and 360 s in all at least (`probe_tail_s`); a change that
+outlives its probes is unscored ("null too short"), never passed. Every
+verdict carries `null_fail_rate`. `--probe-configs opus-1,pcm-1` publishes
+and probes more than the run's config (the crowd stays on the run's); a
+plan's `defaults.probe_configs` sets it.
+
+**Marks and windows.** A change command's own `start`/`end` lines are the
+scenario's marks; a plain kind's mark starts when its signal or request
+went and ends when its wait did (a drain at `drain_end`, a kill or stop
+when its restore has the node back and ready, a crash when the node has a
+new boot id and is ready, a join at `first_serving`). A label that a dead
+command left open is closed when it was reaped, with an `aborted` event.
+A scenario's windows are its marks widened as the referee widens them (2 s
+before, 5 s after): `before` from its slot's start, `during`, `after` to
+its slot's end. A scenario with no marks did not run and fails "the
+scenario ran". A scenario whose probes would start more than 10 s late (a
+change before it ran past its bound) is skipped and logged, never started.
+
+**Change kinds** (one blocking command each, never cut; a stopped step
+sends it SIGINT): `roll` (`deploy roll TIER --force`, the same build;
+`dry`: `--dry-marks`), `upgrade` (`deploy roll TIER` with the roots of
+`--next-av-mesh-root`/`--next-av-contrib-root`, or the run's own for
+`first`), `restart` (`deploy restart --nodes`), `replace` (`deploy replace
+--nodes T --mode M` with the run's budget), `scale` (`linode-autoscale.py
+scale up|down --site S --tier T`), `change` (workstream A's `deploy kill
+--node X` and `return --node X`; its kill's restore is its return), and
+`autoscale` (`linode-autoscale.py run --until join|stopped` for the rest of
+the observation; `background` lets a plain fault run beside it). The
+engine's timeouts go to each deploy command and set its bound
+(`action_bound_s`). An action may wait `"after": {"event": E, "node": N,
+"label": L, "timeout_s": T}` in place of `at_s` (an event of the run's log:
+`drain_end`, `first_serving`, `first_advertised`, a mark's `end` with its
+label, a controller's line): on a timeout its scenario's later actions are
+skipped, its restores still run, and "event E within T s" fails. Kill,
+crash, stop and start act on a node of any role through its role's unit
+(`needletail-contrib` for a contributor).
 
 - **Faults.** A kill is SIGKILL and then the unit stopped: node loss (with
   `Restart=always` alone the node would be back in 2 s). The 2 s restart
@@ -986,7 +1101,31 @@ scenario's baseline shows whether the mesh came back.
   move when their cache fails or drains, and record each move and its
   reason. ntcmp's chase window does not re-steer, and no Go toolchain was
   on the dev box to change it.
-- **Pass criteria, every scenario.** Stranded 0 (needletail-load's own
+- **Pass criteria of C CL7, every scenario.** The referee's verdict on
+  every probe and label ("probe: pass on every lane and view host"; open
+  when it was not scored). The crowd, from needletail-load's v2 fields (B
+  Y4; each open, never passed, until the tool gives it):
+  `listeners_interrupted` 0 in the window, `listeners_with_missing` 0 in
+  and after it, `gaps`, `resets`, `never_resumed`, `listeners_without_parts`
+  0, the longest silence inside at most the baseline's plus one unit, the
+  latency p99 of the window's buckets at most the baseline's plus 1 ms, and
+  the longest single-path span 0 for a planned change (100 ms for the loss
+  of an edge: B's 80 ms and a round trip; a plan's `expect.single_path_ms`
+  otherwise). The steered readers: no stall in the window. The nodes the
+  scenario restarts got a new boot id and no other did (the mesh samplers
+  read each node's `/api/node`); after an upgrade every node runs one build
+  and none read a frame it could not (`rx_invalid_frames`). Every command
+  exited 0 (`expect.exit` otherwise), every wait was met, and a scenario
+  with the controller or a scale verb saw it act (a join, or a `drain_end`
+  and a stop). The six criteria reported open before are judged:
+  `first_part_s` (first serving after the action), `trigger_to_fresh_s`
+  (the controller's `serving`), `warm_parts_pending_zero_s` (the forwarders'
+  backlog back to 0), `largest_burst_per_tick` (their
+  `av_mesh_cache_mesh_warm_tick_max_bytes`), `watermark_stall_ms` (with no
+  rise of the stalls over 250 ms) and `parent_change_share_max` (the
+  forwarders' lease pairs before and after). And, as before:
+- **Pass criteria, every scenario.** Baseline: 0 missing (a loss before
+  the fault voids what the scenario shows). Stranded 0 (needletail-load's own
   gauge when it has one; until then listeners that exist but are not
   subscribed for 5 s from 10 s after the fault); no listener misses a
   part, the moved ones included (needletail-load books a moved listener's
@@ -1074,11 +1213,11 @@ scenario's baseline shows whether the mesh came back.
   `--cpu-load-full-percent`); `cpu_permille` beside it. The entry points'
   free capacity of an edge is the less of the bytes' headroom and the load's.
 
-### What waits for Phase AM (honestly)
+### What waited for Phase AM
 
-The phases run on the current binaries and measure what they do; these
-scenarios cannot pass until the av-mesh and playlists work of Phase AM
-lands:
+Written for the wave 8 binaries. C CL7 cleared `needs_am` on F5, F6, F8, R1,
+R2, R3 and R5 and enabled R4 and A3, as the resilient-mesh builds carry what
+they waited for; F9 still waits. The record of what each waited for:
 
 - **UDP egress is not in `load_permille` or `free_bps`** (only the HTTP
   path records egress). On a UDP-only step the controller's 700 permille
