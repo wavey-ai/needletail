@@ -127,3 +127,29 @@ syd-dist-b 2026-11-23T23:41:12.486020+00:00  INFO av_mesh: advanced canonical co
 syd-dist-b 2026-11-23T23:41:13.200882+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=88 deadline_drops_total=124
 tok-edge-2 2026-11-23T23:41:14.678932+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=89095 new_watermark=89112 skipped_parts=9 idle_flush=false gap_skips_total=1 skipped_parts_total=9
 tok-edge-2 2026-11-23T23:41:14.697732+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=2383 deadline_drops_total=2383
+
+4. Edge commit stops over 50 ms for the whole first session, from the server stamps (edge_committed_unix_us) that each LL-HLS probe carries; seconds after T0 = 1795477184 (23:39:44 UTC). Lanes with identical stops are served by the same edge: in London, the 14.304/17.137/25.529/48.295 set is lon-edge-1 and the 16.871/17.176 set is lon-edge-2 (from the probes' playlist host). The two overlap from 17.176 to 17.622.
+  lon-nano  nt-popus-h3  16.871->17.169 (298 ms); 17.176->17.622 (446 ms); 42.845->42.937 (92 ms)
+  lon-nano  nt-popus-w   14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  lon-nano  nt-popus     16.871->17.169 (298 ms); 17.176->17.622 (446 ms); 42.845->42.937 (92 ms)
+  lon-view  nt-popus-h3  14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  lon-view  nt-popus-w   14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  lon-view  nt-popus     14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  new-nano  nt-popus-h3  none
+  new-nano  nt-popus-w   18.581->18.644 (64 ms); 18.699->18.800 (102 ms); 34.984->35.035 (51 ms); 64.040->64.105 (65 ms)
+  new-nano  nt-popus     none
+  new-view  nt-popus-h3  none
+  new-view  nt-popus-w   none
+  new-view  nt-popus     none
+  syd-nano  nt-popus-h3  15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  syd-nano  nt-popus-w   23.813->23.980 (168 ms); 45.353->45.505 (152 ms)
+  syd-nano  nt-popus     15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  syd-view  nt-popus-h3  15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  syd-view  nt-popus-w   23.813->23.980 (168 ms); 45.353->45.505 (152 ms)
+  syd-view  nt-popus     15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  tok-nano  nt-popus-h3  46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-nano  nt-popus-w   46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-nano  nt-popus     46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-view  nt-popus-h3  29.050->29.108 (58 ms); 43.302->43.488 (187 ms)
+  tok-view  nt-popus-w   46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-view  nt-popus     29.050->29.108 (58 ms); 43.302->43.488 (187 ms)

@@ -99,6 +99,8 @@ STATS_SAMPLER = (
     "[ -f /var/tmp/compare-stats.pid ] && kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
     # A log not yet collected (a sampler started before the session) is kept.
     "[ -f /var/tmp/compare-stats.log ] && cat /var/tmp/compare-stats.log >>/var/tmp/compare-stats.carry; "
+    "[ -f /var/tmp/compare-meshlocal.log ] && cat /var/tmp/compare-meshlocal.log >>/var/tmp/compare-meshlocal.carry; "
+    "rm -f /var/tmp/compare-meshlocal.log; "
     "cat >/var/tmp/compare-stats.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-stats.pid\n"
     "while true; do\n"
@@ -107,7 +109,14 @@ STATS_SAMPLER = (
     # Each UDP socket's own drop counter (skmem d), cumulative: address=drops.
     "  drops=\"$(ss -uamn 2>/dev/null | awk 'NR>1{a=$4; getline; if (match($0,/,d[0-9]+\\)/)) "
     "printf \"%%s=%%s \", a, substr($0,RSTART+2,RLENGTH-3)}')\"\n"
-    "  echo \"$(date +%%s.%%N) | $udp| sockdrops $drops| $stats\"; sleep 1\n"
+    # Guest memory: first touches and reclaim by the kernel, which process RSS does not show
+    # (lead, 24 Nov).
+    "  vm=\"$(awk '/^(pgfault|pgmajfault|pgalloc_normal|thp_fault_alloc|compact_stall|allocstall_normal|allocstall_movable) /"
+    "{printf \"%%s=%%s \", $1, $2}' /proc/vmstat)MemFree_kB=$(awk '/^MemFree:/{print $2}' /proc/meminfo)\"\n"
+    "  echo \"$(date +%%s.%%N) | $udp| sockdrops $drops| vm $vm| $stats\"\n"
+    # The node's own mesh view (relay_session.fast_plane: faults and loop lag per class
+    # thread), in a file of its own: unix_s, a space, the JSON.
+    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(mesh)s' | tr -d '\\n')\" >>/var/tmp/compare-meshlocal.log; sleep 1\n"
     "done\n"
     "EOS\n"
     "(setsid nohup sh /var/tmp/compare-stats.sh >/var/tmp/compare-stats.log 2>&1 </dev/null &)")
@@ -125,7 +134,9 @@ def start_samplers(session: "Session") -> list[dict]:
                if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit", "load")]
     common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
     common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor", "edge")],
-                    lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item)}, check=False))
+                    lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item),
+                                                                    "mesh": stats_url(item).replace("/api/stats", "/api/mesh/local")},
+                                           check=False))
     return sampled
 
 
@@ -143,6 +154,10 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                           "cat /var/tmp/compare-stats.carry /var/tmp/compare-stats.log 2>/dev/null; "
                                           "rm -f /var/tmp/compare-stats.carry /var/tmp/compare-stats.log", check=False)
             (session.dir / "samplers" / f"{item['name']}.stats.{int(time.time())}.log").write_text(stats + "\n")
+            mesh = common.ssh_text(item, "cat /var/tmp/compare-meshlocal.carry /var/tmp/compare-meshlocal.log 2>/dev/null; "
+                                         "rm -f /var/tmp/compare-meshlocal.carry /var/tmp/compare-meshlocal.log",
+                                   check=False, timeout=300)
+            (session.dir / "samplers" / f"{item['name']}.meshlocal.{int(time.time())}.log").write_text(mesh + "\n")
             # The node's own stop journal (per-CPU ticks, each stop classed as
             # stopped, starved or own work), on builds that serve it.
             url = stats_url(item).replace("/api/stats", "/api/stalls")

@@ -76,41 +76,72 @@ The scoreboards are
 The raw data, including every node's journal and samplers, is archived as run
 `cmpd5`.
 
-**Where the stall is.** The listeners' records, the edges' hop journals and
-the node journals were set side by side. They are in
-[evidence/20261124-wave9-first-session-stalls.txt](evidence/20261124-wave9-first-session-stalls.txt),
-with each edge's gaps over 20 ms:
-- **It starts on the edge, upstream of the listeners.** Every Needletail lane
-  on both London listener hosts, UDP and LL-HLS alike, stalled together:
-  23:40:01.1 to 02.5, 23:40:10.86 to 12.65, and 23:40:32.63 to 32.89. LiveKit
-  on the same hosts did not.
-- **Each edge stalls when its first UDP client arrives.** At that moment the
-  edge logs that its fan-out to clients "runs off the ingest thread". In
-  London and Tokyo each such line falls at the start of a stall of about one
-  second on every lane through that edge:
-  - lon-edge-2 at 23:40:01.17 and lon-edge-1 at 23:40:01.81;
-  - tok-edge-2 at 23:40:30.83, with tok-nano stalling from 30.84 to 31.9.
-  - New York's (new-edge-2, 23:40:02.66) brought only 0.2 s episodes on the
-    2-vCPU listener.
-- **lon-edge-1's ingest stopped at 23:40:10.9.** It skipped its watermark past
-  15 parts it never received in time. It then reported 329 datagrams that had
-  expired before it read them. Its relay ingress had stopped while packets
-  kept arriving.
-- **tok-edge-2 stopped committing for 148 ms at 23:40:40.50 and 125 ms at
-  23:40:55.43.** Its arrivals from the distributors had no gap, and the Tokyo
-  listener's stalls follow both. This is the commit-side stop seen on
-  lon-edge-1 in waves 6 and 7. tok-edge-2 had its physical host to itself.
-- **The UDP-serving edges were the busy ones.** lon-edge-1 and tok-edge-2 ran
-  at about 0.9 of a core through the session; lon-edge-2 at 0.55. Every mesh
-  node's resident memory grew by about 1 MB/s.
-- **No drops at the socket.** Neither UDP buffer errors nor socket drops rose
-  on any edge or distributor.
-- **What this run could not see.** The edges' per-CPU stop journal
-  (`/api/stalls`) is not in this build (it returned 404). The fault and
-  loop-lag counters in `/api/mesh` were not sampled. The hop journals are rings
-  of about 40 s, fetched once at the end of the clean minute, so they missed
-  the stalls of the first 20 s. Next time they will be polled through the
-  first session.
+**Where the stall is.** The records were set side by side: the listeners'
+probes, the edges' commit times, and the node journals and samplers. The
+edges' commit times come from the server stamps that the LL-HLS probes carry
+for every part. Those cover the whole session; the hop journals cover only
+its last 31 to 44 s. The lead made an independent pass over the same data,
+and the referee checked its main figures against the raw files. The tables
+are in
+[evidence/20261124-wave9-first-session-stalls.txt](evidence/20261124-wave9-first-session-stalls.txt).
+Times below are seconds after T0 = 23:39:44 UTC, the epoch of the stream.
+- **The edges stopped committing; nothing upstream did.** The contributor
+  published every part within 4.4 ms of its instant. The distributors sent
+  each part on time. Every listener hold on the London view host is an edge
+  commit stop, to within a few milliseconds. LiveKit on the same hosts did not
+  stall.
+- **The stops, first session.** These are the commit stops of 50 ms or more
+  in the first minute:
+  - lon-edge-1: 670, 690, 1,337 and 335 ms;
+  - lon-edge-2: 298 and 446 ms;
+  - Tokyo: 488, 148 and 125 ms on tok-edge-2, and 187 ms on tok-edge-1;
+  - Sydney: up to 168 ms;
+  - New York: up to 102 ms on new-edge-2, and none on new-edge-1.
+- **In London, both edges were stopped at once,** from 17.176 to 17.622
+  s: 446 ms, on two different physical hosts. A listener taking the
+  first of the two edges would still have heard a hold of about 0.5 s
+  there (p99 6.7 ms, max 496 ms). In the other three regions, the twin edge
+  committed on time through every stop.
+- **The fan-out start comes at the end of a stop, not the start.** Each edge
+  starts its client fan-out threads when a backlog builds, and logs that the
+  fan-out "runs off the ingest thread". Each of those lines falls inside the
+  release of a stop that had already lasted hundreds of milliseconds:
+  - lon-edge-1 logged it at 17.809, in its 17.137 to 17.827 stop;
+  - tok-edge-2 logged it at 46.834, in its 46.348 to 46.836 stop.
+  The start runs on the real-time class thread. It adds 2 to 42 ms at the
+  release and may set off a second stop, but it does not cause the first.
+  What preceded lon-edge-1's 690 ms stop, 71 ms before, was a UDP client
+  moving onto it from lon-edge-2 (which had stopped). Other stops began with
+  no listener attached.
+- **The ingest thread stopped, while the rest of the process ran.** During
+  lon-edge-1's 1,337 ms stop (25.529 to 26.866), its 1 s sampler ran on time
+  at 26.314. av-mesh answered `/api/stats` then, but had read only 277
+  datagrams in that second, against about 1,040 normally. At the release it
+  skipped its watermark past 15 parts and dropped 329 expired datagrams.
+  tok-edge-2's 148 and 125 ms stops show the same split: the kernel stamped
+  every arriving datagram on time, and the class thread took them late.
+  Other stops held up the shell and the kernel stamps as well.
+- **Not steal, and not a busy process.** Steal was 0 to 4 ticks in every
+  interval that holds a London, Tokyo or Sydney stop. Neither av-mesh nor the
+  system used more CPU during the stops. There were no socket drops or UDP
+  buffer errors in the session.
+- **Later sessions.** The same edges stopped again at some later step starts
+  (for example lon-edge-1 for 744 ms at loss 1%, and tok-edge-1 for 2,018 ms
+  at burst loss), with flat memory. The PCM session (S2) was clean on every
+  edge.
+- **The 2-vCPU listener hosts** were saturated in the first seconds (lon-nano,
+  tok-nano). In S2 they stalled on LiveKit too. They are not evidence about
+  the mesh.
+- **What this run could not see.**
+  - The edges' per-CPU stop journal (`/api/stalls`) is not in this build (it
+    returned 404).
+  - The fault and loop-lag counters in `/api/mesh/local` were not sampled.
+  - The hop journals had already lost the first 27 to 39 s when they were
+    fetched. That fetch allocated 50 to 80 MB on every mesh node.
+  - Next time the 1 s sampler takes `/api/mesh/local` and the guest's
+    `/proc/vmstat` and MemFree. Each edge's threads (policy, CPU) are recorded
+    every 10 s. The hop journals are given room for the session and pulled
+    once after it.
 
 ## Wave 7 (22 November, evening)
 

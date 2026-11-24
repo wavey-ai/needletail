@@ -57,7 +57,8 @@ WHAT = [
     (r"\.arrivals\.csv$", "samples", "UDP client: every datagram's arrival", "us"),
     (r"\.(uc|udp)\.json$", "summary", "UDP client report: fast lane, FEC, repair counters", None),
     (r"analysis\.json$", "analysis", "cached analysis of the step (analysis_version inside)", "ms"),
-    (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors | socket drops | /api/stats", None),
+    (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors | socket drops | vm (guest /proc/vmstat, MemFree) | /api/stats", None),
+    (r"samplers/[^/]+\.meshlocal\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/mesh/local JSON (fast_plane faults, loop lag)", None),
     (r"samplers/[^/]+\.stalls\.\d+\.json$", "node-logs", "the node's stop journal (/api/stalls)", None),
     (r"samplers/hosts\.\d+\.txt$", "lab", "physical Linode host of every node", None),
     (r"samplers/[^/]+\.\d+\.log$", "samples", "5 s raw: /proc/stat ticks, /proc/net/dev bytes, service ticks, RSS", None),
@@ -92,10 +93,29 @@ def add_tree_described(run: ra.RunArchive, src: pathlib.Path, dest: str) -> int:
 CPU = ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice"]
 
 
+def v_ok(field: str) -> bool:
+    return field.split("=", 1)[1].isdigit()
+
+
 def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     for path in sorted(samplers.glob("*.log")):
         name = path.name
+        if ".meshlocal." in name:
+            lines = []
+            for line in path.read_text(errors="replace").splitlines():
+                head, _, body = line.partition(" ")
+                try:
+                    rec = {"unix_s": float(head)}
+                except ValueError:
+                    continue
+                try:
+                    rec["api_mesh_local"] = json.loads(body) if body.strip() else None
+                except json.JSONDecodeError:
+                    rec["api_mesh_local_raw"] = body
+                lines.append(json.dumps(rec))
+            (out / (name[:-4] + ".ndjson")).write_text("\n".join(lines) + "\n")
+            continue
         if ".stats." in name:
             lines = []
             for line in path.read_text(errors="replace").splitlines():
@@ -107,7 +127,10 @@ def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
                 except ValueError:
                     continue
                 for part in parts[1:]:
-                    if part.startswith("sockdrops"):
+                    if part.startswith("vm "):
+                        rec["guest_vm"] = {k: int(v) for k, v in
+                                           (x.split("=", 1) for x in part.split()[1:] if "=" in x and v_ok(x))}
+                    elif part.startswith("sockdrops"):
                         rec["socket_drops_total"] = {k: int(v) for k, v in
                                                      (x.rsplit("=", 1) for x in part.split()[1:] if "=" in x)}
                     elif part.startswith("{"):
