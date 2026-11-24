@@ -2372,14 +2372,15 @@ def udp_command(host: str, edges: list[str], stream: int, count: int, seconds: i
                 entries: list[str] | None = None) -> list[str]:
     """needletail-load in a reader host's namespace, as scale-run starts it
     on a listener host. With `entries` each listener asks /api/assignment
-    where to subscribe and where to move (`edges` is then the fallback)."""
+    where to subscribe and where to move; without them it starts at edge i
+    mod n of `edges` (needletail-load takes one or the other, never both)."""
+    targets = (["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
+                "--server-name", lab.SERVER_NAME] if entries
+               else ["--edges", ",".join(edges)])
     command = lab.enter(host) + [
-        lab.binary("needletail-load"), "--edges", ",".join(edges), "--stream", str(stream),
+        lab.binary("needletail-load"), *targets, "--stream", str(stream),
         "--listeners", str(count), "--ramp", ramp or f"{count}@0", "--duration", str(seconds),
         "--sample", str(min(5, count)), "--out", str(out), "--label", label, "--quiet"]
-    if entries:
-        command += ["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
-                    "--server-name", lab.SERVER_NAME]
     # An A/B of the client session's flags (needletail-load options).
     return command + os.environ.get("NEEDLETAIL_LOAD_EXTRA_ARGS", "").split()
 

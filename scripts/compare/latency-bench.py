@@ -902,7 +902,9 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
         count = args.load_listeners * len(edges)
         ramp = load_ramp(args.load_ramp, len(edges)) if args.load_ramp else f"{count}@0"
         directory = out / f"load-{site}"
-        assign = []
+        # needletail-load takes --edges or --entry, never both: the edges
+        # only without entry points.
+        assign = ["--edges", ",".join(targets)]
         if getattr(args, "load_assign", False):
             # Phase AM 10: every distributor and edge of the site answers
             # /api/assignment.
@@ -912,7 +914,7 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
                       "--server-name", lab.SERVER_NAME]
         items.append({"site": site, "host": LOAD_HOSTS[site], "edges": dict(zip(targets, edges)),
                       "per_edge": args.load_listeners, "ramp": ramp, "out": str(directory),
-                      "command": [str(LOAD_BIN), "--edges", ",".join(targets), *assign,
+                      "command": [str(LOAD_BIN), *assign,
                                   "--stream", str(PAYLOAD_STREAM[args.payload]),
                                   "--listeners", str(count), "--ramp", ramp,
                                   "--duration", str(args.seconds), "--out", str(directory),

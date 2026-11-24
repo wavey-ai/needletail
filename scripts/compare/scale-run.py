@@ -91,7 +91,8 @@ its record (record_step) and the run's files in the run archive
                                            its own marks (scenarios/NAME/)
 
 The UDP listeners are av-mesh's needletail-load (low-latency, scale-load merged):
---edges --stream --listeners --ramp --duration --sample --out DIR, which
+--entry (or --edges without entry points; never both) --stream --listeners
+--ramp --duration --sample --out DIR, which
 writes DIR/intervals.jsonl (needletail.load.interval.v1: a line a second,
 "unix_ms", "total", "edges" {edge: {...}}, "load_host",
 "load_host_saturated"),
@@ -772,15 +773,16 @@ def load_command(alloc: dict, edges: list[str], config: str, ramp_s: float,
     https://host:port of nodes not under fault): each listener asks one
     for its assignment when it starts and when it moves, as the real client
     does (Phase AM item 10); `edges`: the region's edges' VLAN host:port,
-    the fallback (without entries a listener starts at edge i mod n and
-    moves by rendezvous); `bind`: the host's VLAN address for the sockets;
-    `threads`: its workers, one per vCPU."""
+    given only without entries (needletail-load takes one or the other:
+    a listener then starts at edge i mod n and moves by rendezvous);
+    `bind`: the host's VLAN address for the sockets; `threads`: its
+    workers, one per vCPU."""
     if not alloc["udp"]:
         return ""
-    assign = (f"--entry {','.join(entries)} --tls-ca {CA} --server-name {SERVER_NAME} "
-              if entries else "")
+    targets = (f"--entry {','.join(entries)} --tls-ca {CA} --server-name {SERVER_NAME} "
+               if entries else f"--edges {','.join(edges)} ")
     return (f"ulimit -n 1048576; nohup {LOAD_PROCESS} "
-            f"--edges {','.join(edges)} {assign}--stream {CONFIGS[config]['stream']} "
+            f"{targets}--stream {CONFIGS[config]['stream']} "
             f"--listeners {alloc['udp']} --ramp {ramp or ramp_spec(alloc['udp'], ramp_s)} "
             f"--duration {int(round(duration_s))} --sample {min(sample, alloc['udp'])} "
             + (f"--bind {bind} " if bind else "")
@@ -1332,13 +1334,26 @@ COUNT_FIELDS = {
     "listeners_interrupted": ("listeners_interrupted",),
     "interruptions": ("interruptions",),
     "listeners_with_missing": ("listeners_with_missing",),
+    # B Y4, the party: listeners that joined (each new session, a rejoin
+    # among them), rejoined after their churn absence, and left.
+    "joins": ("joins",),
+    "rejoins": ("rejoins",),
+    "leaves": ("leaves",),
 }
 
 
 # Fields that are None, not 0, when the load tool does not give them.
 OPTIONAL_FIELDS = ("active", "stranded", "never_resumed", "moves_out", "missing_moved",
                    "move_lost", "left_lost", "gaps", "resets", "listeners_without_parts",
-                   "listeners_interrupted", "interruptions", "listeners_with_missing")
+                   "listeners_interrupted", "interruptions", "listeners_with_missing",
+                   "joins", "rejoins", "leaves")
+# The histograms of a v2 interval line (each {"buckets_us": [[low, count]]}
+# beside its quantiles): the gaps between parts delivered first (part_gap),
+# the time on one path, and the time to first audio of the interval's joins
+# and rejoins (B Y4).
+HISTOGRAM_FIELDS = {"part_gap_hist": "part_gap_ms", "single_path_hist": "single_path_ms",
+                    "join_first_audio_hist": "join_first_audio_ms",
+                    "rejoin_first_audio_hist": "rejoin_first_audio_ms"}
 
 
 def bucket_histogram(block) -> dict[float, int] | None:
@@ -1386,9 +1401,9 @@ def interval_rows(rows: list[dict]) -> list[dict]:
                         if isinstance(item, dict) else None,
                         "latency_hist": bucket_histogram(latency.get("buckets_us"))
                         if isinstance(latency, dict) and "buckets_us" in latency else None,
-                        "single_path_hist": bucket_histogram(item.get("single_path_ms"))
-                        if isinstance(item, dict) and item.get("single_path_ms") is not None
-                        else None,
+                        **{key: bucket_histogram(item.get(name))
+                           if isinstance(item, dict) and item.get(name) is not None else None
+                           for key, name in HISTOGRAM_FIELDS.items()},
                         "paths": item.get("paths") if isinstance(item, dict)
                         and isinstance(item.get("paths"), dict) else None,
                         # Wave 9 review: moves into the edge by the reason
@@ -2065,10 +2080,14 @@ UNMASK = "systemctl unmask --runtime {service}.service; "
 # is stranded (ops design 2).
 STRANDED_GAP_S = 5
 STRANDED_AFTER_S = 10
-# needletail-load counts a part missing when the newest part a listener
-# has is this many parts past it, in the interval line of that moment. It
-# is the tool's own default (--settle-parts), which the run leaves alone.
-SETTLE_PARTS = 1500
+# needletail-load counts a part missing this long after it was due (its
+# newest part is that far past it), in the interval line of that moment:
+# the tool's own default, --settle-ms 3500 (av-mesh load.rs
+# DEFAULT_SETTLE_MS, just past the 3 s give-up of a hole), which a phase
+# run leaves alone and the party passes as it is.
+LOAD_SETTLE_MS = 3500
+# needletail-load's --churn-absence-ms default.
+LOAD_CHURN_ABSENCE_MS = "10000-60000"
 # The bound of a change command, from the timeouts the run gives it (C
 # 2.11: never its typical time): the engine's gate, drain and readiness per
 # node, and its stop and start; a roll of a tier with edges adds the surge
@@ -2130,10 +2149,11 @@ def unix_us() -> int:
     return time.time_ns() // 1000
 
 
-def settle_seconds(config: str) -> float:
-    """How long after a part was due needletail-load counts it missing: 1.5 s
-    at 1 ms parts, 3.75 s at 2.5 ms."""
-    return SETTLE_PARTS / parts_per_s(config)
+def settle_seconds(config: str, settle_ms: float = LOAD_SETTLE_MS) -> float:
+    """How long after a part was due needletail-load counts it missing: its
+    --settle-ms (3.5 s by default) whatever the part's length (`config`
+    no longer changes it: the tool counts milliseconds, not parts)."""
+    return settle_ms / 1000.0
 
 
 def restore_of(action: dict) -> dict | None:
@@ -2957,8 +2977,10 @@ def crowd_window(rows: list[dict], start: float, end: float, settle_s: float,
     total lines: listeners interrupted, with missing parts (booked when they
     settled, as udp_window books missing), gaps, resets, never resumed and
     without parts (summed), the longest silence, the latency histogram of
-    the window's intervals and its p99, the longest single-path span. Each
-    None when the load tool does not give it."""
+    the window's intervals and its p99, the longest single-path span, the
+    joins, rejoins and leaves, and the quantiles of the gaps between parts
+    and of the joins' and rejoins' time to first audio. Each None when the
+    load tool does not give it."""
     counted, settled = [], []
     for row in rows:
         if row["edge"] is not None:
@@ -2973,6 +2995,10 @@ def crowd_window(rows: list[dict], start: float, end: float, settle_s: float,
         values = [row.get(key) for row in source if row.get(key) is not None]
         return sum(values) if values else None
 
+    def quantiles(key: str):
+        found = [row[key] for row in counted if row.get(key)]
+        return histogram_quantiles(merge_histograms(found)) if found else None
+
     latency = [row["latency_hist"] for row in counted if row.get("latency_hist")]
     single = [row["single_path_hist"] for row in counted if row.get("single_path_hist")]
     silence = [row["longest_silence_ms"] for row in counted
@@ -2980,6 +3006,11 @@ def crowd_window(rows: list[dict], start: float, end: float, settle_s: float,
     merged = merge_histograms(latency) if latency else None
     spans = histogram_quantiles(merge_histograms(single)) if single else None
     return {"listeners_interrupted": total("listeners_interrupted", counted),
+            "joins": total("joins", counted), "rejoins": total("rejoins", counted),
+            "leaves": total("leaves", counted),
+            "part_gap_ms": quantiles("part_gap_hist"),
+            "join_first_audio_ms": quantiles("join_first_audio_hist"),
+            "rejoin_first_audio_ms": quantiles("rejoin_first_audio_hist"),
             "interruptions": total("interruptions", counted),
             "listeners_with_missing": total("listeners_with_missing", settled),
             "gaps": total("gaps", counted), "resets": total("resets", counted),
@@ -5480,7 +5511,10 @@ def step_commands(lab: dict, plan: dict, step: dict, run: str, args,
                 f"mkdir -p {remote_dir}",
                 load_command(alloc, edges, args.config, step["ramp_s"], duration, args.sample,
                              remote_dir, label, lab["nodes"][name].get("vlan_ipv4"),
-                             args.load_args, vcpus(lab["nodes"][name]),
+                             " ".join(item for item in (
+                                 args.load_args,
+                                 (step.get("load_args_by_host") or {}).get(name)) if item),
+                             vcpus(lab["nodes"][name]),
                              (step.get("ramp_by_host") or {}).get(name)
                              or (profile_ramp(alloc["udp"], step["ramp_s"], timeline)
                                  if timeline else None),
@@ -6352,8 +6386,19 @@ def load_party(path: str | pathlib.Path) -> dict:
     waves, churn = spec["waves"], spec["churn"]
     if int(waves["count"]) < 1 or float(waves["every_s"]) <= 0:
         raise ValueError("waves: a count of 1 or more, every_s above 0")
-    if not 0.0 <= float(churn["share"]) < 1.0 or float(churn["rejoin_after_s"]) <= 0:
-        raise ValueError("churn: a share under 1 leaves, and rejoins after rejoin_after_s")
+    if not 0.0 <= float(churn["percent_per_min"]) <= 6000.0 or float(churn["hold_s"]) <= 0:
+        raise ValueError("churn: percent_per_min 0 to 6000 (needletail-load's "
+                         "--churn-percent-per-min) and a hold_s above 0")
+    absence = absence_range_ms(churn.get("absence_ms", LOAD_CHURN_ABSENCE_MS))
+    if absence is None:
+        raise ValueError("churn: absence_ms is MIN-MAX milliseconds, MIN <= MAX "
+                         "(needletail-load's --churn-absence-ms)")
+    unknown = sorted(set(spec.get("load") or {}) - set(PARTY_LOAD_SETTINGS))
+    if unknown:
+        raise ValueError(f"load: {', '.join(unknown)} is not one of "
+                         f"{', '.join(PARTY_LOAD_SETTINGS)}")
+    if (spec.get("load") or {}).get("interval_buckets", "total") == "off":
+        raise ValueError("load: interval_buckets off leaves the window's p99 unmerged")
     faults = spec.get("faults")
     if faults:
         if faults["at_step"] not in steps:
@@ -6364,39 +6409,40 @@ def load_party(path: str | pathlib.Path) -> dict:
     return spec
 
 
-def party_ramp(count: int, waves: int, every_s: float, churn_share: float,
-               leave_at_s: float, rejoin_after_s: float) -> str:
-    """needletail-load --ramp of one listener host for a party step: its
-    listeners join in `waves` equal waves `every_s` apart, then a share of
-    them leaves at `leave_at_s` and rejoins `rejoin_after_s` later (the
-    load tool holds each COUNT@SECOND from that second on). B Y4's churn
-    options will say the same thing with fresh sessions for the rejoiners."""
-    points, joined = [], 0
-    for index, size in enumerate(split(count, [1.0] * waves)):
-        joined += size
-        points.append((index * every_s, joined))
-    leavers = int(round(count * churn_share))
-    if leavers:
-        points.append((leave_at_s, count - leavers))
-        points.append((leave_at_s + rejoin_after_s, count))
-    return ",".join(f"{value}@{at:g}" for at, value in points)
+def absence_range_ms(text) -> tuple[int, int] | None:
+    """needletail-load's --churn-absence-ms: `MIN-MAX` or one value, in
+    milliseconds (None when it is neither or MIN is above MAX)."""
+    low, _, high = str(text).partition("-")
+    try:
+        low_ms, high_ms = int(low), int(high or low)
+    except ValueError:
+        return None
+    return (low_ms, high_ms) if 0 <= low_ms <= high_ms else None
+
+
+def party_host_load(count: int, waves: int, every_s: float) -> tuple[str, str]:
+    """needletail-load's --ramp and its wave flags for one listener host of
+    a party step: the host's `count` listeners are the target from the
+    start, reached --wave-size at a time every --wave-every-ms (the first
+    wave at once), so in `waves` waves `every_s` apart. The churn and the
+    rest of the party's flags are the party's own (party_load_args)."""
+    size = max(1, -(-count // max(1, waves)))
+    return f"{count}@0", f"--wave-size {size} --wave-every-ms {int(round(every_s * 1000))}"
 
 
 def party_times(spec: dict, faults_hold_s: float, joins: int) -> dict:
     """The times of a party step from its start (seconds): its waves' ramp
     (`ramp_s`, the last wave and one wave's time to settle); the faults'
-    scenarios from the end of the ramp; the churn after them (`leave_at_s`,
-    `rejoin_at_s`); the joins phase after the faults (`joins_after_s` from
-    the end of the ramp); and the hold, long enough for every one of them
-    and PARTY_TAIL_S after the rejoin."""
+    scenarios from the end of the ramp; the joins phase after the faults
+    (`joins_after_s` from the end of the ramp); and the hold, the churn's
+    `hold_s` or longer for the faults and the joins. The churn runs from
+    the start of the step to its end (needletail-load leaves listeners at
+    its rate from its start, each back as a new session)."""
     waves, churn = spec["waves"], spec["churn"]
     ramp_s = int(waves["count"]) * float(waves["every_s"])
-    leave_at = ramp_s + faults_hold_s + float(churn["leave_after_s"])
-    rejoin_at = leave_at + float(churn["rejoin_after_s"])
-    hold = max(rejoin_at - ramp_s + PARTY_TAIL_S,
+    hold = max(float(churn["hold_s"]),
                faults_hold_s + (joins_seconds(joins) if joins else 0.0))
-    return {"ramp_s": ramp_s, "leave_at_s": leave_at, "rejoin_at_s": rejoin_at,
-            "joins_after_s": faults_hold_s, "hold_s": hold}
+    return {"ramp_s": ramp_s, "joins_after_s": faults_hold_s, "hold_s": hold}
 
 
 def party_faults(spec: dict, lab: dict, config: str) -> dict | None:
@@ -6436,8 +6482,8 @@ def party_plan(spec: dict, lab: dict, standby: list[str], shares: dict[str, floa
                over_headroom: bool = False, cost_path: str | None = None) -> dict:
     """Every party step on `lab`: the allocation by `shares` over the
     regions and their listener hosts (plan_steps), sized for the
-    schedule's paths (party_costs), and each host's waves and churn
-    (`ramp_by_host`), the step's times (party_times; the fault step holds
+    schedule's paths (party_costs), and each host's target and waves
+    (`ramp_by_host`, `load_args_by_host`), the step's times (party_times; the fault step holds
     its scenarios), its joins and its LiveKit crowd; the party's duration
     and cost."""
     joins = int(spec.get("joins") or 0)
@@ -6456,17 +6502,14 @@ def party_plan(spec: dict, lab: dict, standby: list[str], shares: dict[str, floa
                      "seconds": times["ramp_s"] + times["hold_s"] + STEP_OVERHEAD_S,
                      "joins_after_s": times["joins_after_s"], "faults": faulted,
                      "party": {"shares": shares, "waves": waves, "churn": churn,
-                               "leave_at_s": times["leave_at_s"],
-                               "rejoin_at_s": times["rejoin_at_s"],
                                "by_region": {site: item["udp"] + item["hls"]
-                                             for site, item in step["sites"].items()}},
-                     "ramp_by_host": {name: party_ramp(item["udp"], int(waves["count"]),
-                                                       float(waves["every_s"]),
-                                                       float(churn["share"]),
-                                                       times["leave_at_s"],
-                                                       float(churn["rejoin_after_s"]))
-                                      for by_host in step["allocation"].values()
-                                      for name, item in by_host.items() if item["udp"]}})
+                                             for site, item in step["sites"].items()}}})
+        hosts = {name: party_host_load(item["udp"], int(waves["count"]),
+                                       float(waves["every_s"]))
+                 for by_host in step["allocation"].values()
+                 for name, item in by_host.items() if item["udp"]}
+        step["ramp_by_host"] = {name: ramp for name, (ramp, _flags) in hosts.items()}
+        step["load_args_by_host"] = {name: flags for name, (_ramp, flags) in hosts.items()}
         total += step["seconds"]
     plan["seconds"] = total
     plan["party"] = {"schema": PARTY_SCHEMA, "shares": shares, "config": config,
@@ -6477,32 +6520,89 @@ def party_plan(spec: dict, lab: dict, standby: list[str], shares: dict[str, floa
 
 
 def party_step_figures(step_dir: pathlib.Path, window: tuple[float, float], config: str,
-                       events: list[dict], controller_since: float) -> dict:
+                       events: list[dict], controller_since: float, spec: dict | None = None,
+                       sites: dict[str, str] | None = None) -> dict:
     """What a party step adds to the step's own figures: the crowd over the
     whole step, its waves and churn included (`window`: the step's start to
-    the end of its hold; B Y4's fields: nobody interrupted as the party grew
-    and churned; open while the load tool does not give them), and what the
+    the end of its hold), from needletail-load's v2 interval lines (B Y4:
+    interrupted listeners, listeners with missing parts, the gaps between
+    parts, the longest silence, the time on one path, joins, rejoins and
+    leaves and their time to first audio, the latency buckets of each
+    interval) and its summaries (listeners that never got a part), in all
+    and by region (`sites`: {listener host: site}); and what the
     controller did from `controller_since` (the end of the step before, or
     the controller's start) to the step's end: its joins, the edges that
-    came to serve, its drains."""
-    rows = [row for host in sorted(step_dir.iterdir()) if host.is_dir()
-            and (host / LOAD_DIR / "intervals.jsonl").is_file()
-            for row in interval_rows(read_jsonl((host / LOAD_DIR / "intervals.jsonl").read_text()))]
-    crowd = crowd_window(rows, window[0], window[1], settle_seconds(config), True)
+    came to serve, its drains. The criteria (`spec`: the party's schedule)
+    are judged when the load tool gave the figure, else open with what
+    they need."""
+    spec = spec or {}
+    hosts = [host for host in sorted(step_dir.iterdir()) if host.is_dir()
+             and (host / LOAD_DIR / "intervals.jsonl").is_file()]
+    by_host = {host.name: interval_rows(read_jsonl((host / LOAD_DIR / "intervals.jsonl")
+                                                   .read_text())) for host in hosts}
+    settle = settle_seconds(config, float((spec.get("load") or {}).get("settle_ms",
+                                                                        LOAD_SETTLE_MS)))
+    crowd = crowd_window([row for rows in by_host.values() for row in rows], window[0],
+                         window[1], settle, True)
+    regions = {}
+    for site in sorted({(sites or {}).get(name) for name in by_host} - {None}):
+        part = crowd_window([row for name, rows in by_host.items() if sites.get(name) == site
+                             for row in rows], window[0], window[1], settle, True)
+        regions[site] = {key: part[key] for key in ("latency_ms", "listeners_interrupted",
+                                                     "listeners_with_missing", "joins",
+                                                     "rejoins", "join_first_audio_ms")}
+    without = []
+    for host in hosts:
+        summary = host / LOAD_DIR / "summary.json"
+        try:
+            value = json.loads(summary.read_text()).get("listeners_without_parts")
+        except (OSError, ValueError, AttributeError):
+            value = None
+        without.append(value)
+    crowd["listeners_without_parts_run"] = (sum(without) if without and None not in without
+                                            else None)
     controller = [item for item in events if "kind" in item and item.get("source") != "scale-run"
                   and controller_since * 1e6 <= (item.get("unix_us") or 0) <= window[1] * 1e6]
-    interrupted = crowd["listeners_interrupted"]
-    return {"crowd": crowd,
+    churn = spec.get("churn") or {}
+    churning = float(churn.get("percent_per_min") or 0) > 0
+    bound = (spec.get("criteria") or {}).get("first_audio_p99_ms")
+
+    def zero(name: str, value, what: str) -> dict:
+        return check(what, None if value is None else value == 0, value,
+                     None if value is not None else f"needletail-load's {name} (B Y4)")
+
+    criteria = [
+        zero("listeners_interrupted", crowd["listeners_interrupted"],
+             "party: no listener interrupted as it grew and churned"),
+        zero("listeners_with_missing", crowd["listeners_with_missing"],
+             "party: no listener with a missing part"),
+        zero("listeners_without_parts", crowd["listeners_without_parts_run"],
+             "party: every listener and every rejoin got audio")]
+    if churning:
+        rejoins = crowd["rejoins"]
+        criteria.append(check("party: the churn ran (listeners left and came back as new "
+                              "sessions)", None if rejoins is None or crowd["leaves"] is None
+                              else rejoins > 0 and crowd["leaves"] > 0,
+                              {"leaves": crowd["leaves"], "rejoins": rejoins},
+                              None if rejoins is not None else
+                              "needletail-load's leaves and rejoins (B Y4 churn)"))
+    if bound is not None:
+        for name in ("join_first_audio_ms", "rejoin_first_audio_ms"):
+            if name == "rejoin_first_audio_ms" and not churning:
+                continue
+            p99 = (crowd[name] or {}).get("p99")
+            criteria.append(check(f"party: {name.replace('_ms', '')} p99 <= {bound:g} ms",
+                                  None if p99 is None else p99 <= float(bound),
+                                  crowd[name], None if p99 is not None else
+                                  f"needletail-load's {name} (B Y4)"))
+    return {"crowd": crowd, "regions": regions,
             "controller": {"joins": sum(1 for item in controller if item["kind"] == "decision"
                                         and item.get("action") == "join"),
                            "serving": [item.get("node") for item in controller
                                        if item["kind"] == "serving"],
                            "drains": [item.get("node") for item in controller
                                       if item["kind"] == "drain_start"]},
-            "criteria": [check("party: no listener interrupted as it grew and churned",
-                               None if interrupted is None else interrupted == 0, interrupted,
-                               None if interrupted is not None else
-                               "needletail-load's listeners_interrupted (B Y4)")]}
+            "criteria": criteria}
 
 
 def party_controller_command(args, directory: pathlib.Path, events_path: pathlib.Path,
@@ -6560,30 +6660,70 @@ def party_setup(args: argparse.Namespace, lab: dict, standby: list[str]) -> tupl
     return spec, faults, plan
 
 
+# needletail-load's flags that the party sets (av-mesh src/bin/needletail-load.rs,
+# B Y3 and Y4): the schedule's paths and spare, its churn, its raw sample,
+# the interval lines' buckets, the interruption and settle times; the waves
+# are per host (party_host_load).
+PARTY_LOAD_FLAGS = ("--paths", "--spare", "--wave-size", "--wave-every-ms",
+                    "--churn-percent-per-min", "--churn-absence-ms", "--raw-sample",
+                    "--interval-buckets", "--interrupt-ms", "--settle-ms")
+# The schedule's `load` block: its settings and needletail-load's defaults.
+PARTY_LOAD_SETTINGS = {"spare": True, "raw_sample": 0, "interval_buckets": "total",
+                       "interrupt_ms": 30, "settle_ms": 3500}
+
+
 def party_load_args(spec: dict, load_args: str) -> str:
     """needletail-load's arguments of the party: --load-args and the
-    schedule's --paths (B 2.4), so that the crowd holds what the record
-    says; a --load-args that names other paths is refused."""
+    schedule's --paths (B 2.4), --spare, churn (--churn-percent-per-min,
+    --churn-absence-ms: each listener that leaves comes back as a new
+    session), --raw-sample, --interval-buckets, --interrupt-ms and
+    --settle-ms, so that the crowd does what the record says. A --load-args
+    that names one of these with another value is refused; the waves are
+    each host's (load_args_by_host)."""
     paths = int(spec.get("paths") or 1)
+    churn = spec["churn"]
+    settings = {**PARTY_LOAD_SETTINGS, **(spec.get("load") or {})}
+    low, high = absence_range_ms(churn.get("absence_ms", LOAD_CHURN_ABSENCE_MS))
+    wanted = {"--paths": str(paths),
+              "--spare": "true" if settings["spare"] else "false",
+              "--churn-percent-per-min": f"{float(churn['percent_per_min']):g}",
+              "--churn-absence-ms": f"{low}-{high}",
+              "--raw-sample": str(int(settings["raw_sample"])),
+              "--interval-buckets": str(settings["interval_buckets"]),
+              "--interrupt-ms": str(int(settings["interrupt_ms"])),
+              "--settle-ms": str(int(settings["settle_ms"]))}
     tokens = shlex.split(load_args or "")
-    if any(token == "--paths" or token.startswith("--paths=") for token in tokens):
-        given = load_paths(argparse.Namespace(load_args=load_args))
-        if given != paths:
-            raise ValueError(f"--load-args gives --paths {given}; the party's schedule holds "
-                             f"{paths}")
-        return load_args
-    return " ".join(tokens + ["--paths", str(paths)])
+    given = {}
+    for index, token in enumerate(tokens):
+        flag, equals, value = token.partition("=")
+        if flag in PARTY_LOAD_FLAGS:
+            given[flag] = value if equals else (tokens[index + 1] if index + 1 < len(tokens)
+                                                else "")
+    for flag, value in given.items():
+        if flag in ("--wave-size", "--wave-every-ms"):
+            raise ValueError(f"--load-args gives {flag}; the party's waves are its schedule's")
+        if value != wanted[flag]:
+            raise ValueError(f"--load-args gives {flag} {value}; the party's schedule holds "
+                             f"{wanted[flag]}")
+    return " ".join(tokens + [item for flag, value in wanted.items() if flag not in given
+                              for item in (flag, value)])
 
 
-def load_tool_has(hosts: list[dict], flag: str) -> list[str]:
-    """The listener hosts whose needletail-load does not know `flag` (its
-    --help): a party asks for --paths, which needs B Y3's director."""
+def load_tool_lacks(hosts: list[dict], flags=PARTY_LOAD_FLAGS) -> dict[str, list[str]]:
+    """{listener host: the `flags` its needletail-load does not know} (its
+    --help, read once a host), for the hosts that lack one; a host that
+    does not answer lacks them all."""
+    pattern = "|".join(re.escape(flag) + r"\b" for flag in flags)
     found = common.parallel(hosts, lambda node: ssh_quiet(
-        node, f"{LOAD_PROCESS} --help 2>&1 | grep -c -- {shlex.quote(flag)}"), workers=64)
-    return sorted(name for name, text in found.items()
-                  if not (text or "").strip().splitlines()
-                  or not (text or "").strip().splitlines()[-1].strip().isdigit()
-                  or int((text or "").strip().splitlines()[-1].strip()) == 0)
+        node, f"{LOAD_PROCESS} --help 2>&1 | grep -oE -- {shlex.quote(pattern)} | sort -u"),
+        workers=64)
+    out = {}
+    for name, text in found.items():
+        known = {line.strip() for line in (text or "").splitlines()}
+        missing = [flag for flag in flags if flag not in known]
+        if missing:
+            out[name] = missing
+    return dict(sorted(out.items()))
 
 
 def command_party_plan(args: argparse.Namespace) -> dict:
@@ -6602,7 +6742,9 @@ def command_party_plan(args: argparse.Namespace) -> dict:
     print(f"party: {args.config}, shares "
           + ", ".join(f"{site} {weight:g}" for site, weight in sorted(plan["party"]["shares"].items()))
           + f"; {spec['waves']['count']} waves {spec['waves']['every_s']:g} s apart; "
-          f"{spec['churn']['share']:.0%} leave and rejoin; faults at "
+          f"churn {spec['churn']['percent_per_min']:g}% a minute, away "
+          f"{spec['churn'].get('absence_ms', LOAD_CHURN_ABSENCE_MS)} ms, back as new "
+          f"sessions; faults at "
           f"{plan['party']['faults_at']}")
     for step in plan["steps"]:
         print(f"step {step['listeners']:>6}: " + ", ".join(
@@ -6649,11 +6791,10 @@ def command_party(args: argparse.Namespace) -> None:
         sys.exit(str(error))
     listener_hosts = [lab["nodes"][name] for step in plan["steps"]
                       for by_host in step["allocation"].values() for name in by_host]
-    unable = load_tool_has(list({node["name"]: node for node in listener_hosts}.values()),
-                           "--paths")
+    unable = load_tool_lacks(list({node["name"]: node for node in listener_hosts}.values()))
     if unable:
-        sys.exit(f"needletail-load on {', '.join(unable)} has no --paths (B Y3's two-path "
-                 "director): the party's listeners would not hold the schedule's paths")
+        sys.exit("needletail-load is older than the party's flags (av-mesh B Y3, Y4): "
+                 + "; ".join(f"{name} lacks {' '.join(flags)}" for name, flags in unable.items()))
     run = args.name or time.strftime("%m%d%H%M", time.gmtime()) + f"-party-{args.config}"
     directory = OUT / f"scale-{run}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -6709,7 +6850,8 @@ def command_party(args: argparse.Namespace) -> None:
             ended = outcome["started"] + step["ramp_s"] + step["hold_s"]
             outcome["party"] = {**step["party"], **party_step_figures(
                 directory / "steps" / str(step["listeners"]), (outcome["started"], ended),
-                args.config, read_jsonl(events_path.read_text()), controller_since)}
+                args.config, read_jsonl(events_path.read_text()), controller_since, spec,
+                {name: node.get("site") for name, node in lab["nodes"].items()})}
             controller_since = ended
             result["steps"].append(outcome)
             write_results(directory, result)

@@ -1036,19 +1036,39 @@ scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,
   schedule's `paths`: a two-path listener costs its host twice the
   datagrams and twice the wire rate of one leg (the one-path figure times
   the paths, or `--cost` with a measured `cost.json` of a run at those
-  paths, taken as it is). needletail-load is given `--paths` from the
-  schedule (a `--load-args` that names others is refused), and `party`
-  refuses to start when a listener host's needletail-load has no `--paths`
-  (B Y3's two-path director): the record never claims paths the crowd did
-  not hold. `--config opus-2.5` probes the faults on opus-2.5 and the
-  schedule's probe configs of other streams.
-- **Waves and churn.** At every step each host's listeners join in five
-  equal waves 20 s apart (`waves`); 60 s after the last (and after the
-  faults' scenarios at the fault step) 10% of them leave and rejoin 30 s
-  later (`churn`); the step holds 60 s more. This is driven today with
-  needletail-load `--ramp` targets (`COUNT@SECOND`: up in waves, down and up
-  again for the churn); B Y4's churn options will give the rejoiners fresh
-  sessions and their own time to first audio.
+  paths, taken as it is). needletail-load is given the schedule's
+  `--paths`, `--spare`, churn, `--raw-sample`, `--interval-buckets`,
+  `--interrupt-ms` and `--settle-ms` (the `load` block; a `--load-args`
+  that names one of them with another value is refused), its entry points
+  and never `--edges` with them (the tool refuses both). `party` checks
+  each listener host's needletail-load `--help` for every one of these
+  flags and names a host whose tool lacks one (an av-mesh older than B Y3,
+  Y4): the record never claims paths or churn the crowd did not run.
+  `--config opus-2.5` probes the faults on opus-2.5 and the schedule's
+  probe configs of other streams.
+- **Waves and churn.** At every step each host's listeners are its target
+  from the step's start, reached in five waves 20 s apart (`waves`:
+  needletail-load `--wave-size`, a fifth of the host's listeners, and
+  `--wave-every-ms 20000`). From the start to the end of the step the
+  listeners leave at `churn.percent_per_min` (5% of those present a
+  minute, `--churn-percent-per-min`), each coming back as a new session
+  (its own session id, join and time to first audio) after an absence
+  drawn from `churn.absence_ms` (`--churn-absence-ms 10000-60000`). The
+  step holds `churn.hold_s` (150 s) after the waves, or longer for the
+  faults' scenarios and the joins at the fault step.
+- **What a step is judged on** (needletail-load's v2 interval lines and
+  summaries; each criterion open only when the tool did not give its
+  figure): no listener interrupted (`listeners_interrupted`, a silence of
+  `--interrupt-ms` 30 or more), none with a missing part
+  (`listeners_with_missing`, settled `--settle-ms` 3500 after it was due),
+  every listener and every rejoin with audio (the summaries'
+  `listeners_without_parts`), the churn ran (`leaves` and `rejoins` above
+  0), and the joins' and rejoins' time to first audio at p99 within
+  `criteria.first_audio_p99_ms` (1,000 ms; `join_first_audio_ms`,
+  `rejoin_first_audio_ms`). Beside them, in all and by region: the latency
+  quantiles merged from each interval's `latency_ms.buckets_us`, the gaps
+  between parts (`part_gap_ms`), the longest silence, the time on one path
+  (`single_path_ms`), and joins, rejoins and leaves.
 - **Time to first audio of joiners** at every step: the referee's joins
   phase (20 new listeners of each lane on each view host, timed to first
   audio) after the waves, and the load tool's own time to first part of
@@ -1059,14 +1079,13 @@ scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,
   lab as it stands at that step (`state()` read again: an edge the
   controller created is sampled and fetched), reports the controller's
   joins, the edges that came to serve and its drains from the end of the
-  step before, and judges "no listener interrupted as it grew and churned"
-  over the whole step, its waves and churn included (B Y4's
-  `listeners_interrupted`; open until the load tool gives it).
+  step before, and judges the step's criteria over the whole step, its
+  waves and churn included.
 - **An edge and a forwarder killed mid-party.** At `faults.at_step`
   (10,000) the step is a phase run of two scenarios, P1 (kill lon-edge-2)
   and P2 (kill new-dist-b), each with probes of its own on every view host
   and scored by the referee's change-window.py on its own marks, with every
-  criterion of C CL7. The joins and the churn of that step come after them.
+  criterion of C CL7. The churn runs through them; the joins come after.
 - **Controls.** The self-hosted LiveKit control runs on the listener hosts
   at the count its SFUs carry (`livekit.self_hosted_per_sfu`, 450 a
   region), with the referee's harness as in every ramp. LiveKit Cloud is
@@ -1087,7 +1106,7 @@ scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,
   scenario under way.
 
 `party-plan` on the party topology, equal shares: steps of 1,000, 5,000,
-10,000 (with the faults' 828 s) and 20,000 listeners take 35.5 minutes of
+10,000 (with the faults' 828 s) and 20,000 listeners take 35.3 minutes of
 steps; $19.062 an hour for the lab. Sized for two paths the 20,000 step
 loads its busiest listener host to 1.004 of the plan's headroom (it was
 0.53 at the one-path figure, at which the plan said "drivable"): `party`

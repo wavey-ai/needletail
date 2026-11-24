@@ -415,7 +415,10 @@ class Commands(unittest.TestCase):
             checked = subprocess.run(["bash", "-n", "-c", command], capture_output=True,
                                      text=True)
             self.assertEqual(checked.returncode, 0, f"{name}: {checked.stderr}")
-        self.assertIn("10.80.1.21:19446", commands["lon-load-1"])
+        # The crowd asks the entry points (VLAN), and so is not given the
+        # edges: needletail-load takes one or the other.
+        self.assertIn("--entry https://10.80.1.11:19444,", commands["lon-load-1"])
+        self.assertNotIn("--edges", commands["lon-load-1"])
         self.assertIn("ntcmp hls", commands["lon-load-1"])
         self.assertIn("needletail-load", commands["lon-load-1"])
 
@@ -1075,7 +1078,7 @@ class Phases(unittest.TestCase):
         listeners on lon-edge-1 and lon-edge-2, which move off lon-edge-1 at
         the fault onto lon-edge-2 (and two onto lon-edge-3), their missing
         parts booked on lon-edge-2 as needletail-load does, in the intervals
-        where it counts them (1.5 s after they were due); a survivor
+        where it counts them (3.5 s after they were due); a survivor
         sampler; the mesh samplers; a reader report with one move."""
         state = lab()
         address = {name: f"{state['nodes'][name]['vlan_ipv4']}:19446"
@@ -1088,9 +1091,10 @@ class Phases(unittest.TestCase):
             moving = fault <= t < fault + 2
             # needletail-load books a moved listener's missing parts on the
             # edge it moved to (src/load.rs mark(): the current edge's
-            # counters), never on the edge it left, and when the newest part
-            # is 1,500 past them (settle()): two intervals after the moves.
-            settled = fault + 2 <= t < fault + 4
+            # counters), never on the edge it left, and 3.5 s after they were
+            # due (--settle-ms, load.rs DEFAULT_SETTLE_MS): two intervals,
+            # from 4 s after the moves began.
+            settled = fault + 4 <= t < fault + 6
             edges = {address["lon-edge-1"]: {"up": 0 if t >= fault + 2 else 50,
                                              "parts": 0 if t >= fault + 2 else 50_000,
                                              "missing": 0, "moves": 0},
@@ -1303,7 +1307,7 @@ class Phases(unittest.TestCase):
         lines = [json.loads(line) for line in intervals.read_text().splitlines()]
         drained = f"{state['nodes']['lon-edge-1']['vlan_ipv4']}:19446"
         for line in lines:
-            if line["unix_ms"] == int((fault + 3) * 1000):
+            if line["unix_ms"] == int((fault + 5) * 1000):
                 line["edges"][drained]["missing"] = 600
         intervals.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
         window = (start, start + timeline["hold_s"])
@@ -1570,12 +1574,14 @@ class Phases(unittest.TestCase):
         self.assertIsNotNone(scale.phase_setup(args, lab()))
 
     def test_a_late_settle_is_booked_in_its_own_scenario(self):
-        """needletail-load counts a part missing 1,500 parts after it was due
-        and its final line carries what was still open when it stopped: a
+        """needletail-load counts a part missing 3.5 s after it was due
+        (--settle-ms, whatever the part's length) and its final line carries
+        what was still open when it stopped: a
         scenario's last losses are booked in that scenario, the final line
         in the last window, and a loss in a scenario's baseline voids it."""
-        self.assertEqual(scale.settle_seconds("pcm-1"), 1.5)
-        self.assertEqual(scale.settle_seconds("opus-2.5"), 3.75)
+        self.assertEqual(scale.settle_seconds("pcm-1"), 3.5)
+        self.assertEqual(scale.settle_seconds("opus-2.5"), 3.5)
+        self.assertEqual(scale.settle_seconds("opus-2.5", 5000), 5.0)
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         plan = scale.load_phase_plan(PHASES, names=["F1", "F2"])
@@ -1617,11 +1623,11 @@ class Phases(unittest.TestCase):
             return {item["criterion"]: item for item in result[name]["criteria"]}[text]
 
         every = "all listeners (moved ones included): 0 missing"
-        # A part due 0.8 s before F1 ends is counted 1.5 s later, in the
-        # first interval of F2's baseline; two more are open when the tool
+        # A part due 0.8 s before F1 ends is counted 3.5 s later, in the
+        # third interval of F2's baseline; two more are open when the tool
         # stops.
-        result = analyse({415: 1}, final_missing=2)
-        self.assertEqual(result["F1"]["settle_s"], 1.5)
+        result = analyse({417: 1}, final_missing=2)
+        self.assertEqual(result["F1"]["settle_s"], 3.5)
         self.assertEqual(missing(result, "F1", "after"), 1)
         self.assertEqual(criterion(result, "F1", every)["value"], 1)
         self.assertFalse(criterion(result, "F1", every)["ok"])
@@ -1635,16 +1641,17 @@ class Phases(unittest.TestCase):
         self.assertEqual(missing(result, "F1", "before") + missing(result, "F1", "during")
                          + missing(result, "F2", "during"), 0)
         # A part lost in F2's own baseline: whatever F2 shows is void.
-        result = analyse({415: 1, 437: 1})
+        result = analyse({417: 1, 437: 1})
         baseline = criterion(result, "F2", "baseline: 0 missing")
         self.assertFalse(baseline["ok"])
         self.assertEqual(baseline["value"], 1)
         self.assertTrue(criterion(result, "F2", every)["ok"])
         self.assertIn("FAIL baseline: 0 missing (1)", scale.format_phases(list(result.values())))
-        # At 2.5 ms a part is counted 3.75 s after it was due.
-        self.assertEqual(missing(analyse({417: 1}), "F2", "before"), 1)
+        # At 2.5 ms too a part is counted 3.5 s after it was due: one
+        # counted at 419 s was due in F2.
+        self.assertEqual(missing(analyse({419: 1}), "F2", "before"), 1)
         result = analyse({417: 1}, config="opus-2.5")
-        self.assertEqual(result["F1"]["settle_s"], 3.75)
+        self.assertEqual(result["F1"]["settle_s"], 3.5)
         self.assertEqual((missing(result, "F1", "after"), missing(result, "F2", "before")), (1, 0))
         # No listener intervals at all (a host's file not fetched): the
         # baseline is not known clean, so it is open, not passed.
@@ -1701,8 +1708,12 @@ class Phases(unittest.TestCase):
                                               "https://10.80.1.12:19444"])
         self.assertIn("--entry https://10.80.1.11:19444,https://10.80.1.12:19444 ", command)
         self.assertIn(f"--tls-ca {scale.CA} --server-name {scale.SERVER_NAME} ", command)
-        self.assertIn("--edges 10.80.1.21:19446 ", command)
-        self.assertNotIn("--entry", scale.load_command(alloc, ["a:1"], "pcm-1", 1, 1, 1, "/r"))
+        # needletail-load refuses --edges with --entry: the edges only
+        # without entry points.
+        self.assertNotIn("--edges", command)
+        alone = scale.load_command(alloc, ["a:1"], "pcm-1", 1, 1, 1, "/r")
+        self.assertNotIn("--entry", alone)
+        self.assertIn("--edges a:1 ", alone)
 
     def test_the_runner_acts_in_order_logs_unix_us_and_restores_what_it_owes(self):
         timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2", "F3"]), lab())
@@ -2929,8 +2940,11 @@ class Party(unittest.TestCase):
         for change, why in (({"steps": [5000, 1000]}, "rise"), ({"config": "flac"}, "config"),
                             ({"shares": {"london": -1}}, "shares"),
                             ({"waves": {"count": 0, "every_s": 20}}, "waves"),
-                            ({"churn": {"share": 1.0, "leave_after_s": 1, "rejoin_after_s": 1}},
-                             "churn"),
+                            ({"churn": {"percent_per_min": 7000, "hold_s": 150}}, "churn"),
+                            ({"churn": {"percent_per_min": 5, "absence_ms": "9-3",
+                                        "hold_s": 150}}, "absence"),
+                            ({"load": {"waves": 3}}, "load"),
+                            ({"load": {"interval_buckets": "off"}}, "buckets"),
                             ({"faults": {**spec["faults"], "at_step": 7}}, "at_step")):
             path = directory / f"{why}.json"
             path.write_text(json.dumps({**spec, **change}))
@@ -2943,24 +2957,32 @@ class Party(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 scale.parse_shares(bad)
 
-    def test_waves_and_churn_are_the_load_tool_s_ramp(self):
-        """Listeners join in equal waves; a share leaves and rejoins later;
-        each COUNT@SECOND holds from that second on."""
-        self.assertEqual(scale.party_ramp(1003, 5, 20.0, 0.1, 160.0, 30.0),
-                         "201@0,402@20,603@40,803@60,1003@80,903@160,1003@190")
-        self.assertEqual(scale.party_ramp(3, 5, 20.0, 0.1, 160.0, 30.0),
-                         "1@0,2@20,3@40,3@60,3@80")
-        times = scale.party_times(scale.load_party(scale.PARTY), 0.0, 20)
-        self.assertEqual(times, {"ramp_s": 100.0, "leave_at_s": 160.0, "rejoin_at_s": 190.0,
-                                 "joins_after_s": 0.0, "hold_s": 150.0})
+    def test_waves_and_churn_are_the_load_tool_s_flags(self):
+        """Each host's listeners are its target from the start, reached in
+        the schedule's waves (needletail-load --wave-size, --wave-every-ms,
+        the first wave at once); the churn runs the whole step
+        (--churn-percent-per-min, --churn-absence-ms: each back as a new
+        session), the step holding the churn's hold_s or longer for the
+        faults and the joins."""
+        self.assertEqual(scale.party_host_load(1003, 5, 20.0),
+                         ("1003@0", "--wave-size 201 --wave-every-ms 20000"))
+        self.assertEqual(scale.party_host_load(3, 5, 20.0),
+                         ("3@0", "--wave-size 1 --wave-every-ms 20000"))
+        spec = scale.load_party(scale.PARTY)
+        self.assertEqual(spec["churn"], {"percent_per_min": 5, "absence_ms": "10000-60000",
+                                         "hold_s": 150})
+        times = scale.party_times(spec, 0.0, 0)
+        self.assertEqual(times, {"ramp_s": 100.0, "joins_after_s": 0.0, "hold_s": 150.0})
         # The fault step: the faults' scenarios first, from the end of the
-        # waves; then the churn and the joins.
-        faulted = scale.party_times(scale.load_party(scale.PARTY), 828.0, 20)
-        self.assertEqual((faulted["leave_at_s"], faulted["joins_after_s"], faulted["hold_s"]),
-                         (988.0, 828.0, 978.0))
-        # Joins that take longer than the churn hold the step longer.
-        self.assertEqual(scale.party_times(scale.load_party(scale.PARTY), 0.0, 40)["hold_s"],
-                         scale.joins_seconds(40))
+        # waves, then the joins.
+        faulted = scale.party_times(spec, 828.0, 20)
+        self.assertEqual((faulted["joins_after_s"], faulted["hold_s"]),
+                         (828.0, 828.0 + scale.joins_seconds(20)))
+        # Joins that take longer than the churn's hold hold the step longer.
+        self.assertEqual(scale.party_times(spec, 0.0, 40)["hold_s"], scale.joins_seconds(40))
+        self.assertEqual(scale.absence_range_ms("2000-30000"), (2000, 30000))
+        self.assertEqual(scale.absence_range_ms("5000"), (5000, 5000))
+        self.assertIsNone(scale.absence_range_ms("9-3"))
 
     def test_the_party_s_steps_follow_the_shares_and_hold_its_faults(self):
         state = lab()
@@ -2975,19 +2997,17 @@ class Party(unittest.TestCase):
                          {"london": 400, "newyork": 300, "tokyo": 200, "sydney": 100})
         self.assertEqual(sum(second["party"]["by_region"].values()), 10000)
         self.assertEqual((first["faults"], second["faults"]), (False, True))
-        self.assertEqual(second["hold_s"], 978.0)
+        self.assertEqual(second["hold_s"], 828.0 + scale.joins_seconds(second["joins"]))
         self.assertEqual(second["joins_after_s"], 828.0)
-        # Each host's ramp: its own listeners in the step's waves, its share
-        # of the churn at the step's times.
+        # Each host's target from the start, in the step's five waves.
         for step in plan["steps"]:
             for by_host in step["allocation"].values():
                 for name, item in by_host.items():
                     if not item["udp"]:
                         continue
-                    points = [entry.split("@") for entry in step["ramp_by_host"][name].split(",")]
-                    self.assertEqual(int(points[4][0]), item["udp"])
-                    self.assertEqual(points[-1], [str(item["udp"]),
-                                                  f"{step['party']['rejoin_at_s']:g}"])
+                    self.assertEqual(step["ramp_by_host"][name], f"{item['udp']}@0")
+                    self.assertEqual(step["load_args_by_host"][name],
+                                     f"--wave-size {-(-item['udp'] // 5)} --wave-every-ms 20000")
         self.assertEqual(plan["seconds"], sum(step["seconds"] for step in plan["steps"]))
         self.assertGreater(plan["cost"]["instances_usd"], 0)
         # The run's commands take each host's party ramp.
@@ -2997,6 +3017,8 @@ class Party(unittest.TestCase):
         host = next(name for by_host in first["allocation"].values() for name, item
                     in by_host.items() if item["udp"])
         self.assertIn(f"--ramp {first['ramp_by_host'][host]} ", commands[host])
+        self.assertIn(first["load_args_by_host"][host], commands[host])
+        self.assertNotIn("--edges", commands[host])
         with self.assertRaises(ValueError):
             scale.party_plan(spec, state, STANDBY, {"atlantis": 1.0}, [1000], "opus-1", None)
 
@@ -3035,18 +3057,38 @@ class Party(unittest.TestCase):
         (directory / "cost.json").write_text(json.dumps({"udp_vcpu": 0.009}))
         costs, mbps = scale.party_costs(spec, "opus-1", str(directory / "cost.json"))
         self.assertEqual((costs["udp_vcpu"], mbps), (0.009, 2 * scale.CONFIGS["opus-1"]["udp_mbps"]))
-        # The crowd is told its paths; a --load-args that says otherwise is
-        # refused.
+        # The crowd is told its paths, spare, churn, raw sample, interval
+        # buckets, interruption and settle times (needletail-load's flags);
+        # a --load-args that says otherwise is refused, and the waves are
+        # each host's own.
+        party = ("--paths 2 --spare true --churn-percent-per-min 5 "
+                 "--churn-absence-ms 10000-60000 --raw-sample 100 --interval-buckets total "
+                 "--interrupt-ms 30 --settle-ms 3500")
         self.assertEqual(scale.party_load_args(spec, "--sample-arrivals 5"),
-                         "--sample-arrivals 5 --paths 2")
-        self.assertEqual(scale.party_load_args(spec, "--paths 2"), "--paths 2")
-        with self.assertRaises(ValueError):
-            scale.party_load_args(spec, "--paths=1")
-        answers = {"lon-load-1": "1\n", "new-load-1": "0\n", "tok-load-1": ""}
+                         "--sample-arrivals 5 " + party)
+        self.assertEqual(scale.party_load_args(spec, "--paths 2"), party)
+        self.assertEqual(scale.party_load_args(spec, "--settle-ms=3500"),
+                         "--settle-ms=3500 " + party.replace(" --settle-ms 3500", ""))
+        for bad in ("--paths=1", "--churn-percent-per-min 10", "--wave-size 5",
+                    "--interval-buckets off"):
+            with self.assertRaises(ValueError, msg=bad):
+                scale.party_load_args(spec, bad)
+        self.assertEqual(sorted(flag for flag in party.split() if flag.startswith("--"))
+                         + ["--wave-every-ms", "--wave-size"],
+                         sorted(scale.PARTY_LOAD_FLAGS))
+        # Every flag is one the integrated needletail-load has (its --help:
+        # grep -o of the flags, one a line); an older tool is named with
+        # what it lacks, and a host that does not answer lacks them all.
+        full = "\n".join(scale.PARTY_LOAD_FLAGS) + "\n"
+        answers = {"lon-load-1": full, "new-load-1": "--paths\n--spare\n", "tok-load-1": ""}
+        seen = []
         with mock.patch.object(scale, "ssh_quiet", lambda node, command, **k:
-                               answers[node["name"]]):
-            self.assertEqual(scale.load_tool_has([{"name": name} for name in answers], "--paths"),
-                             ["new-load-1", "tok-load-1"])
+                               seen.append(command) or answers[node["name"]]):
+            lacks = scale.load_tool_lacks([{"name": name} for name in answers])
+        self.assertEqual(sorted(lacks), ["new-load-1", "tok-load-1"])
+        self.assertNotIn("--paths", lacks["new-load-1"])
+        self.assertEqual(lacks["tok-load-1"], list(scale.PARTY_LOAD_FLAGS))
+        self.assertIn("--help", seen[0])
         # --config opus-2.5: the faults' probes on opus-2.5 and the
         # schedule's configs of other streams.
         faults = scale.party_faults({**spec, "probe_configs": "opus-1,pcm-1"},
@@ -3122,6 +3164,114 @@ class Party(unittest.TestCase):
         self.assertFalse(figures["criteria"][0]["ok"])
         self.assertEqual(figures["controller"]["joins"], 2)
 
+    def test_a_party_step_is_judged_on_the_load_tool_s_v2_lines(self):
+        """needletail-load's interval lines as av-mesh load.rs writes them
+        (needletail.load.interval.v2: `total` and `edges` with the Y4
+        fields, every histogram with its `buckets_us`) and its summary:
+        each criterion the party reported open for want of them is judged,
+        in all and by region."""
+        step_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, step_dir, True)
+        base = 1_790_000_000
+        spec = scale.load_party(scale.PARTY)
+
+        def hist(*pairs):
+            count = sum(n for _v, n in pairs)
+            return {"count": count, "p50": None, "p95": None, "p99": None, "p999": None,
+                    "max": None, "mean": None, "buckets_us": [list(pair) for pair in pairs]}
+
+        def write(host, interrupted=0, with_missing=0, rejoins=2, first_audio_us=180_000,
+                  without=0):
+            lines = []
+            for t in range(0, 120):
+                total = {"started": 10, "stopped": 0, "start_errors": 0, "parts": 100_000,
+                         "missing": 0, "missing_pct": 0.0, "gaps": 0, "late": 0,
+                         "duplicates": 0, "recovered": 0, "nack_parts": 0, "nack_datagrams": 0,
+                         "abandoned": 0, "datagrams": 200_000, "bytes_in": 9_000_000,
+                         "mbit_s_in": 72.0, "moves": 0, "decode_errors": 0, "socket_drops": 0,
+                         "truncated": 0, "resets": 0, "first_parts": 10,
+                         "compact_fallbacks": 0, "short_header_dropped": 0,
+                         "latency_ms": hist([4096, 99_000], [9216, 1000]),
+                         "ttfp_ms": hist([180_224, 10]), "ttok_ms": hist(),
+                         "recv_lag_ms": hist(), "moves_out": 0, "moves_by_reason": {},
+                         "moves_in_by_reason": {}, "time_to_move_ms": hist(), "move_lost": 0,
+                         "missing_moved": 0, "left_lost": 0, "never_resumed": 0,
+                         "assignments": 10, "assignment_errors": 0, "assignment_ms": hist(),
+                         "fallbacks": 0,
+                         "part_gap_ms": hist([1024, 99_000], [2048, 40]),
+                         "longest_silence_ms": 2.1, "interruptions": 0,
+                         "listeners_with_missing": with_missing if t == 70 else 0,
+                         "leg_replacements": {"by_reason": {}, "by_kind": {}},
+                         "handover_ms": hist(), "exposure_ms": hist(),
+                         "single_path_ms": hist([250_000, 1]), "hedges": 0,
+                         "hedges_released": 0, "listener_seconds": 1000.0,
+                         "leg_seconds": 2000.0, "datagrams_per_leg_s": 100.0,
+                         "wire_bytes_per_leg_s": 4500.0, "joins": 10 if t % 20 == 0 else 0,
+                         "rejoins": rejoins if t == 90 else 0, "leaves": 2 if t == 50 else 0,
+                         "join_first_audio_ms": hist([first_audio_us, 10]) if t % 20 == 0
+                         else hist(),
+                         "rejoin_first_audio_ms": hist([first_audio_us, rejoins])
+                         if t == 90 and rejoins else hist(),
+                         "listeners_interrupted": interrupted if t == 60 else 0,
+                         "active": 50, "up": 50, "stranded": 0, "resuming": 0, "legs": 100,
+                         "paths": {"two": 50, "one": 0, "none": 0}, "silent_now_max_ms": 1.0,
+                         "datagrams_per_listener_s": 200.0, "wire_bytes_per_listener_s": 9000.0}
+                lines.append({"schema": "needletail.load.interval.v2", "label": "p",
+                              "phase": "run", "t": float(t + 1), "load_host_saturated": False,
+                              "interval": t, "unix_ms": (base + t) * 1000, "target": 50,
+                              "wave_target": 50, "total": total,
+                              "edges": {"10.80.1.21:19446": {**total, "node": "lon-edge-1"}},
+                              "load_host": {"process_cpu_cores": 0.4, "host_cpu_busy": 0.1,
+                                            "saturated": False, "saturation": []}})
+            udp = step_dir / host / "udp"
+            udp.mkdir(parents=True, exist_ok=True)
+            (udp / "intervals.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+            (udp / "summary.json").write_text(json.dumps(
+                {"schema": "needletail.load.v2", "listeners_without_parts": without,
+                 "listeners_interrupted": interrupted, "joins": 60, "rejoins": rejoins,
+                 "leaves": 2}))
+
+        sites = {"lon-load-1": "london", "tok-load-1": "tokyo"}
+
+        def judged(**tokyo):
+            write("lon-load-1")
+            write("tok-load-1", **tokyo)
+            figures = scale.party_step_figures(step_dir, (base, base + 110), "opus-1", [],
+                                               base, spec, sites)
+            return figures, {item["criterion"]: item for item in figures["criteria"]}
+
+        figures, criteria = judged()
+        self.assertEqual(sorted(criteria), [
+            "party: every listener and every rejoin got audio",
+            "party: join_first_audio p99 <= 1000 ms",
+            "party: no listener interrupted as it grew and churned",
+            "party: no listener with a missing part",
+            "party: rejoin_first_audio p99 <= 1000 ms",
+            "party: the churn ran (listeners left and came back as new sessions)"])
+        self.assertTrue(all(item["ok"] is True for item in criteria.values()), criteria)
+        crowd = figures["crowd"]
+        self.assertEqual((crowd["joins"], crowd["rejoins"], crowd["leaves"]), (120, 4, 4))
+        self.assertEqual(crowd["latency_ms"]["p50"], 4.096)
+        self.assertEqual(crowd["part_gap_ms"]["max"], 2.048)
+        self.assertEqual(crowd["single_path_ms_max"], 250.0)
+        self.assertEqual(crowd["longest_silence_ms"], 2.1)
+        self.assertEqual(sorted(figures["regions"]), ["london", "tokyo"])
+        self.assertEqual(figures["regions"]["tokyo"]["join_first_audio_ms"]["p99"], 180.0)
+        for change, name in (({"interrupted": 3},
+                              "party: no listener interrupted as it grew and churned"),
+                             ({"with_missing": 2}, "party: no listener with a missing part"),
+                             ({"without": 1}, "party: every listener and every rejoin got audio"),
+                             ({"first_audio_us": 1_500_000},
+                              "party: join_first_audio p99 <= 1000 ms")):
+            _figures, criteria = judged(**change)
+            self.assertIs(criteria[name]["ok"], False, change)
+        write("lon-load-1", rejoins=0)
+        write("tok-load-1", rejoins=0)
+        criteria = {item["criterion"]: item for item in scale.party_step_figures(
+            step_dir, (base, base + 110), "opus-1", [], base, spec, sites)["criteria"]}
+        self.assertIs(criteria["party: the churn ran (listeners left and came back as new "
+                               "sessions)"]["ok"], False)
+
     def test_the_party_reads_the_lab_at_each_step_and_judges_the_whole_step(self):
         """Review of CL7: each step runs on the lab as it stands then (an
         edge the controller created is sampled and fetched), its crowd is
@@ -3143,7 +3293,7 @@ class Party(unittest.TestCase):
             return {"started": started[step["listeners"]], "stopped": None,
                     "gave_out_first": None, "regions": {}, "window": [0, 0]}
 
-        def step_figures(step_dir, window, config, events, since):
+        def step_figures(step_dir, window, config, events, since, spec=None, sites=None):
             figures.append((window, since))
             return {"criteria": []}
 
@@ -3155,7 +3305,7 @@ class Party(unittest.TestCase):
                 mock.patch.object(scale, "deploy_settings", return_value={
                     "playback_address": "vlan", "standby_edges": STANDBY}), \
                 mock.patch.object(scale, "check_vlan", lambda *a: []), \
-                mock.patch.object(scale, "load_tool_has", lambda hosts, flag: []), \
+                mock.patch.object(scale, "load_tool_lacks", lambda hosts: {}), \
                 mock.patch.object(scale, "OUT", directory), \
                 mock.patch.object(scale, "open_archive", lambda *a: None), \
                 mock.patch.object(scale, "begin_phases", lambda *a: None), \
@@ -3176,7 +3326,8 @@ class Party(unittest.TestCase):
             scale.command_party(args)
         self.assertEqual([(step, node) for step, node, _args in seen],
                          [(1000, False), (5000, True)])
-        self.assertTrue(all(load_args.endswith("--paths 2") for _s, _n, load_args in seen))
+        self.assertTrue(all("--paths 2 " in load_args and "--churn-percent-per-min 5 "
+                            in load_args for _s, _n, load_args in seen))
         plan = json.loads((directory / "scale-p" / "plan.json").read_text())
         ends = [started[step["listeners"]] + step["ramp_s"] + step["hold_s"]
                 for step in plan["steps"]]
