@@ -504,6 +504,52 @@ class Party(unittest.TestCase):
         self.assertFalse(over["fits_budget"])
         self.assertIn("**does not fit**", scale_topology.plan_text(over))
 
+    def test_the_plan_names_the_capacity_setting_and_the_trigger(self):
+        """Review of CT5, finding 6: the deploy line gives the datagram
+        capacity the plan assumes, and the plan says where its top step
+        sits against the autoscaler's trigger."""
+        plan = scale_topology.party_plan()
+        text = scale_topology.plan_text(plan)
+        self.assertIn("`--set client_udp_datagram_capacity=400000`", text)
+        # 10,000 legs on 37 edges: 270.3 x 1,031 / 400,000.
+        self.assertEqual(plan["edge_permille"], 697)
+        self.assertIn("mean load is up to 697 permille; the autoscaler adds an edge at a mean "
+                      "of 700", text)
+        self.assertIn("The top step runs at the trigger", text)
+        slack = scale_topology.party_plan(listeners=scale_topology.even_split(5000),
+                                          edge_fill=0.5, edge_datagrams_per_s=300_000)
+        text = scale_topology.plan_text(slack)
+        self.assertIn("client_udp_datagram_capacity=300000", text)
+        self.assertLess(slack["edge_permille"], 600)
+        self.assertIn("The top step runs below the trigger.", text)
+
+    def test_the_plan_prints_the_lab_without_sydney(self):
+        """Review of CT5, finding 4: what `up --optional-sites sydney`
+        leaves when Sydney refuses, priced as the lab tool prices it; the
+        recorded capacity stated as recorded."""
+        plan = scale_topology.party_plan()
+        document = scale_topology.party_document(plan)
+        rest = lab_tool.created_part(lab_tool.without_sites(document, ["sydney"]))
+        hourly, problems = lab_tool.topology_cost(rest, LabTool.TYPES, LabTool.REGIONS)
+        self.assertEqual(problems, [])
+        without = plan["without_sydney"]
+        self.assertEqual((without["listeners"], without["instances"]),
+                         (15000, len(rest["nodes"])))
+        self.assertAlmostEqual(without["hourly_usd"], hourly, places=6)
+        self.assertAlmostEqual(without["run_usd"], 4 * hourly, places=6)
+        text = scale_topology.plan_text(plan)
+        self.assertIn(f"- Without Sydney (`up --optional-sites sydney`", text)
+        self.assertIn(f"15,000 listeners, {len(rest['nodes'])} instances", text)
+        self.assertIn("every slot made once", text)
+        three = scale_topology.party_plan(sites=("london", "newyork", "tokyo"),
+                                          listeners=scale_topology.even_split(
+                                              3000, ("london", "newyork", "tokyo")))
+        self.assertIsNone(three["without_sydney"])
+        self.assertNotIn("Without Sydney", scale_topology.plan_text(three))
+        markdown = scale_topology.party_markdown()
+        self.assertIn("no g6-dedicated-4 or larger capacity on 22 November", markdown)
+        self.assertIn(f"| 163, {without['hourly_usd']:.3f} |", markdown)
+
     def test_refusals(self):
         for bad in ({"load_type": "g6-standard-8"}, {"load_type": "g6-dedicated-2"},
                     {"load_type_by_site": {"sydney": "g6-nanode-1"}}, {"paths": 3},

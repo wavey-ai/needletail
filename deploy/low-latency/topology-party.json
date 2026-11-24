@@ -2079,7 +2079,8 @@
         "load_hosts": 21,
         "load_vcpu": 58.6,
         "listeners_per_load_host": 254,
-        "lk_listeners": 450
+        "lk_listeners": 450,
+        "edge_permille": 697
       },
       "london": {
         "listeners": 5000,
@@ -2092,7 +2093,8 @@
         "load_hosts": 11,
         "load_vcpu": 58.6,
         "listeners_per_load_host": 509,
-        "lk_listeners": 450
+        "lk_listeners": 450,
+        "edge_permille": 697
       },
       "newyork": {
         "listeners": 5000,
@@ -2105,7 +2107,8 @@
         "load_hosts": 11,
         "load_vcpu": 58.6,
         "listeners_per_load_host": 509,
-        "lk_listeners": 450
+        "lk_listeners": 450,
+        "edge_permille": 697
       },
       "tokyo": {
         "listeners": 5000,
@@ -2118,7 +2121,8 @@
         "load_hosts": 11,
         "load_vcpu": 58.6,
         "listeners_per_load_host": 509,
-        "lk_listeners": 450
+        "lk_listeners": 450,
+        "edge_permille": 697
       }
     },
     "hourly_usd": 19.062,

@@ -10,7 +10,8 @@ Planning estimates, not measurements on Linode. The proving run (C-operations 7)
 
 - **An edge** (g6-dedicated-2) is full at about 400,000 client datagrams a second (wave 7: 3.0-3.3 us a datagram; scale-run's DATAGRAM_CAPACITY). The plan fills it to 70%, the autoscaler's trigger to add an edge (`--edge-datagrams-per-s`, `--edge-fill`). At that fill p99 may not stay within 1 ms of idle: wave 7 put that at 200-250 one-path 1 ms listeners an edge.
 - **A leg** (one subscription; a two-path listener is two legs on two edges) is 1.031 datagrams a part (repair rows; C 7: about 1,031 a second at 1 ms) and, on the wire, 1.2 Mbit/s at `opus-1` and 0.6 Mbit/s at `opus-2.5` (scale-run's planning figures; `--datagrams-per-part`, `--leg-mbps`).
-- **A listener host** (needletail-load) spends 0.0055 vCPU per one-path listener of 1,000 parts a second (in-process bench on the dev box: 3.96 us a datagram plus about 1.5 us of NIC softirq), scaled by the lane's parts a second and the paths, filled to 70% (`--load-vcpu-per-listener`, `--load-fill`). g6-dedicated-8 hosts, g6-dedicated-4 in sydney (no g6-dedicated-8 capacity there on 22 November; `--load-type`, `--load-type-in SITE=TYPE`).
+- **A listener host** (needletail-load) spends 0.0055 vCPU per one-path listener of 1,000 parts a second (in-process bench on the dev box: 3.96 us a datagram plus about 1.5 us of NIC softirq), scaled by the lane's parts a second and the paths, filled to 70% (`--load-vcpu-per-listener`, `--load-fill`). g6-dedicated-8 hosts, g6-dedicated-4 in sydney (`--load-type`, `--load-type-in SITE=TYPE`).
+- **Sydney** had no g6-dedicated-4 or larger capacity on 22 November and refused g6-dedicated-2 part way on several attempts (AGENTS.md). Listener hosts are g6-dedicated-4 or -8 only (owner), so the plans keep g6-dedicated-4 there and treat the region as optional: `up --optional-sites sydney` creates Sydney's core first and goes on without it when it is refused. Each plan prints the lab without Sydney (its listeners, instances, vCPUs and cost), and the summary its $/h.
 - **The LiveKit control**: one self-hosted SFU a region carrying 450 subscribers, its crowd on the listener hosts at 0.008 vCPU and 0.42 Mbit/s of public traffic each (`--lk-listeners-per-region`, `--lk-vcpu-per-listener`, `--lk-mbps`, `--no-livekit`). LiveKit Cloud's egress is billed by LiveKit, not Linode, and is not in these figures.
 - **Spares**: 1 standby edge a region (created, held out: the autoscaler's first join and the edge killed mid-party is replaced from it), 2 edge slots and 1 forwarder slot (`dist-c`) a region that only the autoscaler creates (`--standby-edges`, `--edge-slots`, `--forwarder-slots`). Serving edges are sized for the plan's listeners, at least two a region.
 - **Fixed nodes**: two forwarders a region (g6-dedicated-2), both contributors alone on a g6-dedicated-4 each, the source host (g6-dedicated-4), a view host a region (g6-dedicated-4) for the probes, LiveKit's Redis.
@@ -20,24 +21,24 @@ Planning estimates, not measurements on Linode. The proving run (C-operations 7)
 
 ## Budget
 
-About $300 for the whole work (owner, 23 November), $41.00 spent (`.resilient/ledger.md`: $40.65), $45.62 held for others (the cloud session's $40 and the stall hunt with one repeat, $5.62), and the proving run before the party: every node and slot of `topology-proving.json` for its watchdog's 4 hours, $14.47. **$198.91 is left for the party** (`--budget-usd`, `--spent-usd`, `--reserved-usd`, `--proving-hours`). Every plan below is judged at its worst: every slot alive for the whole run and every GB of public traffic past the pool.
+About $300 for the whole work (owner, 23 November), $41.00 spent (`.resilient/ledger.md`: $40.65), $45.62 held for others (the cloud session's $40 and the stall hunt with one repeat, $5.62), and the proving run before the party: every node and slot of `topology-proving.json` for its watchdog's 4 hours, $14.47. **$198.91 is left for the party** (`--budget-usd`, `--spent-usd`, `--reserved-usd`, `--proving-hours`). Every plan below is judged at its worst: every slot made once and alive for the whole run, and every GB of public traffic past the pool. A slot deleted and made again bills another whole hour; the worst does not count that, and the lab tool's budget guard bounds it.
 
 ## Summary
 
-| Listeners | Lane | Paths | Edges a region (serving) | Listener hosts | Instances | vCPUs | $/h | Run of 4 h | Worst | Fits the budget | max_edges_per_forwarder |
-| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| 5,000 | opus-1 | 2 | 10 | 19 | 83 | 266 | 7.182 | $28.73 | $31.32 | yes | default (16) |
-| 5,000 | opus-1 | 1 | 5 | 10 | 54 | 166 | 4.482 | $17.93 | $20.91 | yes | default (16) |
-| 5,000 | opus-2.5 | 2 | 4 | 10 | 50 | 158 | 4.266 | $17.06 | $20.42 | yes | default (16) |
-| 5,000 | opus-2.5 | 1 | 2 | 9 | 41 | 138 | 3.726 | $14.90 | $19.27 | yes | default (16) |
-| 10,000 | opus-1 | 2 | 19 | 30 | 130 | 406 | 10.962 | $43.85 | $46.44 | yes | 22 |
-| 10,000 | opus-1 | 1 | 10 | 19 | 83 | 266 | 7.182 | $28.73 | $31.32 | yes | default (16) |
-| 10,000 | opus-2.5 | 2 | 8 | 15 | 71 | 222 | 5.994 | $23.98 | $26.57 | yes | default (16) |
-| 10,000 | opus-2.5 | 1 | 4 | 10 | 50 | 158 | 4.266 | $17.06 | $20.42 | yes | default (16) |
-| 20,000 (topology-party.json) | opus-1 | 2 | 37 | 54 | 226 | 706 | 19.062 | $76.25 | $78.84 | yes | 40 |
-| 20,000 | opus-1 | 1 | 19 | 30 | 130 | 406 | 10.962 | $43.85 | $46.44 | yes | 22 |
-| 20,000 | opus-2.5 | 2 | 15 | 25 | 109 | 342 | 9.234 | $36.94 | $39.53 | yes | 18 |
-| 20,000 | opus-2.5 | 1 | 8 | 15 | 71 | 222 | 5.994 | $23.98 | $26.57 | yes | default (16) |
+| Listeners | Lane | Paths | Edges a region (serving) | Listener hosts | Instances | vCPUs | $/h | Run of 4 h | Worst | Fits the budget | max_edges_per_forwarder | Without Sydney (instances, $/h) |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 5,000 | opus-1 | 2 | 10 | 19 | 83 | 266 | 7.182 | $28.73 | $31.32 | yes | default (16) | 61, 5.562 |
+| 5,000 | opus-1 | 1 | 5 | 10 | 54 | 166 | 4.482 | $17.93 | $20.91 | yes | default (16) | 40, 3.456 |
+| 5,000 | opus-2.5 | 2 | 4 | 10 | 50 | 158 | 4.266 | $17.06 | $20.42 | yes | default (16) | 37, 3.294 |
+| 5,000 | opus-2.5 | 1 | 2 | 9 | 41 | 138 | 3.726 | $14.90 | $19.27 | yes | default (16) | 31, 2.970 |
+| 10,000 | opus-1 | 2 | 19 | 30 | 130 | 406 | 10.962 | $43.85 | $46.44 | yes | 22 | 94, 8.316 |
+| 10,000 | opus-1 | 1 | 10 | 19 | 83 | 266 | 7.182 | $28.73 | $31.32 | yes | default (16) | 61, 5.562 |
+| 10,000 | opus-2.5 | 2 | 8 | 15 | 71 | 222 | 5.994 | $23.98 | $26.57 | yes | default (16) | 52, 4.590 |
+| 10,000 | opus-2.5 | 1 | 4 | 10 | 50 | 158 | 4.266 | $17.06 | $20.42 | yes | default (16) | 37, 3.294 |
+| 20,000 (topology-party.json) | opus-1 | 2 | 37 | 54 | 226 | 706 | 19.062 | $76.25 | $78.84 | yes | 40 | 163, 14.472 |
+| 20,000 | opus-1 | 1 | 19 | 30 | 130 | 406 | 10.962 | $43.85 | $46.44 | yes | 22 | 94, 8.316 |
+| 20,000 | opus-2.5 | 2 | 15 | 25 | 109 | 342 | 9.234 | $36.94 | $39.53 | yes | 18 | 79, 7.020 |
+| 20,000 | opus-2.5 | 1 | 8 | 15 | 71 | 222 | 5.994 | $23.98 | $26.57 | yes | default (16) | 52, 4.590 |
 
 What the summary says: two paths cost about twice the edges and listener hosts of one; the 1 ms lane about two and a half times the 2.5 ms lane's. A plan whose region has more than 16 edges in its peer lists needs the deploy setting `max_edges_per_forwarder` raised: a forwarder then feeds that many edges, which no run has measured (the forwarders send each edge the whole stream; the proving run has four a region). The account's instance and vCPU limits are not known: check them before `up` and stage it.
 
@@ -67,11 +68,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 57 | 14 | 12 | **83** | **266** | **7.182** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $7.182 an hour; a run of 4 h bills 4 whole hours of every instance: **$28.73**, $31.32 at its worst (every slot alive the whole run and the overage below).
+- Cost: $7.182 an hour; a run of 4 h bills 4 whole hours of every instance: **$28.73**, $31.32 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 3,750 listeners, 61 instances, 206 vCPUs, $5.562 an hour, $22.25 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 83 instances, 266 vCPUs (95 and 290 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 3.03 Gbit/s, london 3.03 Gbit/s, newyork 3.03 Gbit/s, tokyo 3.03 Gbit/s; public 770 Mbit/s (347 GB an hour, 1387 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 2,027 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $31.32: **fits**.
-- Deploy: 13 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=95 NEEDLETAIL_LINODE_MAX_HOURLY_USD=7.85`.
+- Deploy: 13 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=95 NEEDLETAIL_LINODE_MAX_HOURLY_USD=7.85`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 5,000 listeners, opus-1 (1 ms Opus Custom), 1 path
 
@@ -95,11 +98,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 37 | 11 | 6 | **54** | **166** | **4.482** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $4.482 an hour; a run of 4 h bills 4 whole hours of every instance: **$17.93**, $20.91 at its worst (every slot alive the whole run and the overage below).
+- Cost: $4.482 an hour; a run of 4 h bills 4 whole hours of every instance: **$17.93**, $20.91 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 3,750 listeners, 40 instances, 128 vCPUs, $3.456 an hour, $13.82 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 54 instances, 166 vCPUs (66 and 190 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 1.51 Gbit/s, london 1.52 Gbit/s, newyork 1.51 Gbit/s, tokyo 1.51 Gbit/s; public 770 Mbit/s (347 GB an hour, 1387 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 1,310 GB to the transfer pool, so overage $0.39 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $20.91: **fits**.
-- Deploy: 8 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=66 NEEDLETAIL_LINODE_MAX_HOURLY_USD=5.15`.
+- Deploy: 8 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=66 NEEDLETAIL_LINODE_MAX_HOURLY_USD=5.15`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 5,000 listeners, opus-2.5 (standard 2.5 ms Opus), 2 paths
 
@@ -123,11 +128,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 33 | 11 | 6 | **50** | **158** | **4.266** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $4.266 an hour; a run of 4 h bills 4 whole hours of every instance: **$17.06**, $20.42 at its worst (every slot alive the whole run and the overage below).
+- Cost: $4.266 an hour; a run of 4 h bills 4 whole hours of every instance: **$17.06**, $20.42 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 3,750 listeners, 37 instances, 122 vCPUs, $3.294 an hour, $13.18 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 50 instances, 158 vCPUs (62 and 182 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 1.51 Gbit/s, london 1.51 Gbit/s, newyork 1.51 Gbit/s, tokyo 1.51 Gbit/s; public 763 Mbit/s (343 GB an hour, 1374 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 1,222 GB to the transfer pool, so overage $0.76 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $20.42: **fits**.
-- Deploy: 7 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=62 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.95`.
+- Deploy: 7 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=62 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.95`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 5,000 listeners, opus-2.5 (standard 2.5 ms Opus), 1 path
 
@@ -151,11 +158,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 25 | 10 | 6 | **41** | **138** | **3.726** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $3.726 an hour; a run of 4 h bills 4 whole hours of every instance: **$14.90**, $19.27 at its worst (every slot alive the whole run and the overage below).
+- Cost: $3.726 an hour; a run of 4 h bills 4 whole hours of every instance: **$14.90**, $19.27 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 3,750 listeners, 31 instances, 110 vCPUs, $2.970 an hour, $11.88 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 41 instances, 138 vCPUs (53 and 162 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 0.75 Gbit/s, london 0.76 Gbit/s, newyork 0.75 Gbit/s, tokyo 0.75 Gbit/s; public 763 Mbit/s (343 GB an hour, 1374 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 1,019 GB to the transfer pool, so overage $1.77 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $19.27: **fits**.
-- Deploy: 5 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=53 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.40`.
+- Deploy: 5 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=53 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.40`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 10,000 listeners, opus-1 (1 ms Opus Custom), 2 paths
 
@@ -179,11 +188,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 93 | 19 | 18 | **130** | **406** | **10.962** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $10.962 an hour; a run of 4 h bills 4 whole hours of every instance: **$43.85**, $46.44 at its worst (every slot alive the whole run and the overage below).
+- Cost: $10.962 an hour; a run of 4 h bills 4 whole hours of every instance: **$43.85**, $46.44 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 7,500 listeners, 94 instances, 308 vCPUs, $8.316 an hour, $33.26 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 130 instances, 406 vCPUs (142 and 430 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 6.05 Gbit/s, london 6.06 Gbit/s, newyork 6.05 Gbit/s, tokyo 6.05 Gbit/s; public 770 Mbit/s (347 GB an hour, 1387 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 3,151 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $46.44: **fits**.
-- Deploy: 22 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=22` (not yet run on Linode). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=142 NEEDLETAIL_LINODE_MAX_HOURLY_USD=11.65`.
+- Deploy: 22 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=22` (not yet run on Linode); `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=142 NEEDLETAIL_LINODE_MAX_HOURLY_USD=11.65`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 678 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 10,000 listeners, opus-1 (1 ms Opus Custom), 1 path
 
@@ -207,11 +218,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 57 | 14 | 12 | **83** | **266** | **7.182** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $7.182 an hour; a run of 4 h bills 4 whole hours of every instance: **$28.73**, $31.32 at its worst (every slot alive the whole run and the overage below).
+- Cost: $7.182 an hour; a run of 4 h bills 4 whole hours of every instance: **$28.73**, $31.32 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 7,500 listeners, 61 instances, 206 vCPUs, $5.562 an hour, $22.25 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 83 instances, 266 vCPUs (95 and 290 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 3.03 Gbit/s, london 3.03 Gbit/s, newyork 3.03 Gbit/s, tokyo 3.03 Gbit/s; public 770 Mbit/s (347 GB an hour, 1387 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 2,027 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $31.32: **fits**.
-- Deploy: 13 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=95 NEEDLETAIL_LINODE_MAX_HOURLY_USD=7.85`.
+- Deploy: 13 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=95 NEEDLETAIL_LINODE_MAX_HOURLY_USD=7.85`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 10,000 listeners, opus-2.5 (standard 2.5 ms Opus), 2 paths
 
@@ -235,11 +248,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 49 | 13 | 9 | **71** | **222** | **5.994** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $5.994 an hour; a run of 4 h bills 4 whole hours of every instance: **$23.98**, $26.57 at its worst (every slot alive the whole run and the overage below).
+- Cost: $5.994 an hour; a run of 4 h bills 4 whole hours of every instance: **$23.98**, $26.57 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 7,500 listeners, 52 instances, 170 vCPUs, $4.590 an hour, $18.36 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 71 instances, 222 vCPUs (83 and 246 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 3.01 Gbit/s, london 3.01 Gbit/s, newyork 3.01 Gbit/s, tokyo 3.01 Gbit/s; public 763 Mbit/s (343 GB an hour, 1374 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 1,726 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $26.57: **fits**.
-- Deploy: 11 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=83 NEEDLETAIL_LINODE_MAX_HOURLY_USD=6.65`.
+- Deploy: 11 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=83 NEEDLETAIL_LINODE_MAX_HOURLY_USD=6.65`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 10,000 listeners, opus-2.5 (standard 2.5 ms Opus), 1 path
 
@@ -263,11 +278,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 33 | 11 | 6 | **50** | **158** | **4.266** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $4.266 an hour; a run of 4 h bills 4 whole hours of every instance: **$17.06**, $20.42 at its worst (every slot alive the whole run and the overage below).
+- Cost: $4.266 an hour; a run of 4 h bills 4 whole hours of every instance: **$17.06**, $20.42 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 7,500 listeners, 37 instances, 122 vCPUs, $3.294 an hour, $13.18 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 50 instances, 158 vCPUs (62 and 182 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 1.51 Gbit/s, london 1.51 Gbit/s, newyork 1.51 Gbit/s, tokyo 1.51 Gbit/s; public 763 Mbit/s (343 GB an hour, 1374 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 1,222 GB to the transfer pool, so overage $0.76 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $20.42: **fits**.
-- Deploy: 7 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=62 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.95`.
+- Deploy: 7 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=62 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.95`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 20,000 listeners, opus-1 (1 ms Opus Custom), 2 paths
 
@@ -291,11 +308,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 165 | 28 | 33 | **226** | **706** | **19.062** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $19.062 an hour; a run of 4 h bills 4 whole hours of every instance: **$76.25**, $78.84 at its worst (every slot alive the whole run and the overage below).
+- Cost: $19.062 an hour; a run of 4 h bills 4 whole hours of every instance: **$76.25**, $78.84 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 15,000 listeners, 163 instances, 536 vCPUs, $14.472 an hour, $57.89 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 226 instances, 706 vCPUs (238 and 730 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 12.09 Gbit/s, london 12.10 Gbit/s, newyork 12.09 Gbit/s, tokyo 12.09 Gbit/s; public 770 Mbit/s (347 GB an hour, 1387 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 5,468 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $78.84: **fits**.
-- Deploy: 40 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=40` (not yet run on Linode). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=238 NEEDLETAIL_LINODE_MAX_HOURLY_USD=19.75`.
+- Deploy: 40 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=40` (not yet run on Linode); `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=238 NEEDLETAIL_LINODE_MAX_HOURLY_USD=19.75`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 697 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 20,000 listeners, opus-1 (1 ms Opus Custom), 1 path
 
@@ -319,11 +338,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 93 | 19 | 18 | **130** | **406** | **10.962** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $10.962 an hour; a run of 4 h bills 4 whole hours of every instance: **$43.85**, $46.44 at its worst (every slot alive the whole run and the overage below).
+- Cost: $10.962 an hour; a run of 4 h bills 4 whole hours of every instance: **$43.85**, $46.44 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 15,000 listeners, 94 instances, 308 vCPUs, $8.316 an hour, $33.26 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 130 instances, 406 vCPUs (142 and 430 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 6.05 Gbit/s, london 6.06 Gbit/s, newyork 6.05 Gbit/s, tokyo 6.05 Gbit/s; public 770 Mbit/s (347 GB an hour, 1387 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 3,151 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $46.44: **fits**.
-- Deploy: 22 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=22` (not yet run on Linode). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=142 NEEDLETAIL_LINODE_MAX_HOURLY_USD=11.65`.
+- Deploy: 22 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=22` (not yet run on Linode); `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=142 NEEDLETAIL_LINODE_MAX_HOURLY_USD=11.65`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 678 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 20,000 listeners, opus-2.5 (standard 2.5 ms Opus), 2 paths
 
@@ -347,11 +368,13 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 77 | 17 | 15 | **109** | **342** | **9.234** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $9.234 an hour; a run of 4 h bills 4 whole hours of every instance: **$36.94**, $39.53 at its worst (every slot alive the whole run and the overage below).
+- Cost: $9.234 an hour; a run of 4 h bills 4 whole hours of every instance: **$36.94**, $39.53 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 15,000 listeners, 79 instances, 260 vCPUs, $7.020 an hour, $28.08 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 109 instances, 342 vCPUs (121 and 366 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 6.02 Gbit/s, london 6.02 Gbit/s, newyork 6.02 Gbit/s, tokyo 6.02 Gbit/s; public 763 Mbit/s (343 GB an hour, 1374 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 2,647 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $39.53: **fits**.
-- Deploy: 18 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=18` (not yet run on Linode). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=121 NEEDLETAIL_LINODE_MAX_HOURLY_USD=9.90`.
+- Deploy: 18 edges in a region's peer lists, over the forwarder's 16: deploy with `--set max_edges_per_forwarder=18` (not yet run on Linode); `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=121 NEEDLETAIL_LINODE_MAX_HOURLY_USD=9.90`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 687 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.
 
 ### 20,000 listeners, opus-2.5 (standard 2.5 ms Opus), 1 path
 
@@ -375,8 +398,10 @@ The party is one lab: `topology-party.json` is the 20,000-listener `opus-1` plan
 | **created by up** | 49 | 13 | 9 | **71** | **222** | **5.994** |
 | slots, if all exist |  |  |  | 12 | 24 | 0.648 |
 
-- Cost: $5.994 an hour; a run of 4 h bills 4 whole hours of every instance: **$23.98**, $26.57 at its worst (every slot alive the whole run and the overage below).
+- Cost: $5.994 an hour; a run of 4 h bills 4 whole hours of every instance: **$23.98**, $26.57 at its worst (every slot made once and alive the whole run, and the overage below; a slot deleted and made again bills another whole hour, which this does not count and the lab tool's budget guard bounds).
+- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney refuses its core; on 22 November it had no g6-dedicated-4 or larger): 15,000 listeners, 52 instances, 170 vCPUs, $4.590 an hour, $18.36 for the run. To carry the whole audience in three regions, plan with `--sites london,newyork,tokyo`.
 - Instances and vCPUs: 71 instances, 222 vCPUs (83 and 246 with the slots). The account's instance and vCPU limits are not known: check them before `up`, and stage it (the core first, the listener hosts in batches, as `up` creates them).
 - Traffic: VLAN (not billed) sydney 3.01 Gbit/s, london 3.01 Gbit/s, newyork 3.01 Gbit/s, tokyo 3.01 Gbit/s; public 763 Mbit/s (343 GB an hour, 1374 GB in the run: 4 copies of the stream into each region outside London, LiveKit's crowd of up to 450 a region at 0.42 Mbit/s); the run's instances add 1,726 GB to the transfer pool, so overage $0.00 even with nothing else of the pool left.
 - Budget: $300 - $41.00 spent - $45.62 held - $14.47 for the proving run = $198.91 left; this run at its worst $26.57: **fits**.
-- Deploy: 11 edges in a region's peer lists, within the forwarder's 16. Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=83 NEEDLETAIL_LINODE_MAX_HOURLY_USD=6.65`.
+- Deploy: 11 edges in a region's peer lists, within the forwarder's 16; `--set client_udp_datagram_capacity=400000` (the edge capacity this plan assumes; the autoscaler's load is client datagrams over it, so any other value moves its trigger). Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES=83 NEEDLETAIL_LINODE_MAX_HOURLY_USD=6.65`.
+- Autoscaler: at the plan's listeners the serving edges' mean load is up to 644 permille; the autoscaler adds an edge at a mean of 700, or one edge at 850 with the mean at 600. The top step runs at the trigger: legs spread unevenly there make it take the region's standby edge and slots, and the edge killed mid-party may find no spare.

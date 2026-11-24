@@ -405,6 +405,12 @@ TRANSFER_USD_PER_GB = 0.005
 # linode-small-mesh-deploy.py check_edge_fanout) and passes the larger of the
 # two as --relay-max-lease-children.
 DEPLOY_EDGES_PER_FORWARDER = 16
+# The autoscaler's trigger to add an edge (linode-autoscale.py Config): a
+# region's mean edge load at up_permille of client_udp_datagram_capacity, or
+# one edge at up_max_permille with the mean at target_permille.
+AUTOSCALE_UP_PERMILLE = 700
+AUTOSCALE_UP_MAX_PERMILLE = 850
+AUTOSCALE_TARGET_PERMILLE = 600
 PARTY_DEFAULTS = {
     "sites": DEFAULT_SITES,
     "listeners": {site: 5000 for site in DEFAULT_SITES},
@@ -424,7 +430,10 @@ PARTY_DEFAULTS = {
     "load_vcpu_per_listener": 0.0055,
     "load_fill": 0.70,
     "load_type": "g6-dedicated-8",
-    # No g6-dedicated-8 capacity in Sydney on 22 November.
+    # Sydney's listener hosts g6-dedicated-4 (on 22 November it had no
+    # g6-dedicated-4 or larger and refused g6-dedicated-2 part way; listener
+    # hosts are -4 or -8 only, so the region is optional: up
+    # --optional-sites sydney).
     "load_type_by_site": {"sydney": "g6-dedicated-4"},
     "standby_edges": 1,
     "edge_slots": 2,
@@ -573,6 +582,21 @@ def party_plan(**given) -> dict:
     worst_usd = billed * (hourly + slots_hourly) + overage
     roster_edges = max(r["serving_edges"] + r["standby_edges"] + r["edge_slots"]
                        for r in regions.values())
+    # The serving edges' mean load at the plan's listeners, the gauge the
+    # autoscaler reads (client datagrams over the deploy's capacity).
+    for r in regions.values():
+        r["edge_permille"] = round(1000 * r["legs"] * leg_datagrams
+                                   / (r["serving_edges"] * p["edge_datagrams_per_s"]))
+    # What the lab is when `up --optional-sites sydney` goes on without
+    # Sydney: the same file less Sydney's nodes, and its listeners.
+    without_sydney = None
+    if "sydney" in regions:
+        rest = [node for node in created if node["site"] != "sydney"]
+        rest_hourly = sum(PRICES[node["type"]] for node in rest)
+        without_sydney = {
+            "listeners": sum(r["listeners"] for site, r in regions.items() if site != "sydney"),
+            "instances": len(rest), "vcpus": sum(vcpus(node["type"]) for node in rest),
+            "hourly_usd": rest_hourly, "run_usd": billed * rest_hourly}
     return {
         "inputs": {**p, "sites": list(sites), "listeners": listeners, "leg_mbps": leg_mbps,
                    "load_type_by_site": dict(p["load_type_by_site"])},
@@ -590,6 +614,8 @@ def party_plan(**given) -> dict:
         "overage_usd": overage, "proving_usd": before, "left_usd": left,
         "fits_budget": worst_usd <= left,
         "roster_edges": roster_edges,
+        "edge_permille": max(r["edge_permille"] for r in regions.values()),
+        "without_sydney": without_sydney,
         "max_edges_per_forwarder": roster_edges if roster_edges > DEPLOY_EDGES_PER_FORWARDER
         else None,
         "max_nodes": len(created) + len(slots),
@@ -666,8 +692,16 @@ def plan_text(plan: dict) -> str:
         "",
         f"- Cost: ${plan['hourly_usd']:.3f} an hour; a run of {p['hours']:g} h bills "
         f"{plan['billed_hours']} whole hours of every instance: **${plan['run_usd']:.2f}**, "
-        f"${plan['worst_usd']:.2f} at its worst (every slot alive the whole run and the "
-        "overage below).",
+        f"${plan['worst_usd']:.2f} at its worst (every slot made once and alive the whole "
+        "run, and the overage below; a slot deleted and made again bills another whole hour, "
+        "which this does not count and the lab tool's budget guard bounds).",
+        *([f"- Without Sydney (`up --optional-sites sydney` goes on without it when Sydney "
+            "refuses its core; on 22 November it had no g6-dedicated-4 or larger): "
+            f"{rest['listeners']:,} listeners, {rest['instances']} instances, "
+            f"{rest['vcpus']} vCPUs, ${rest['hourly_usd']:.3f} an hour, "
+            f"${rest['run_usd']:.2f} for the run. To carry the whole audience in three "
+            "regions, plan with `--sites london,newyork,tokyo`."]
+          if (rest := plan["without_sydney"]) else []),
         f"- Instances and vCPUs: {plan['instances']} instances, {plan['vcpus']} vCPUs "
         f"({plan['max_nodes']} and {plan['vcpus'] + plan['slot_vcpus']} with the slots). The "
         "account's instance and vCPU limits are not known: check them before `up`, and stage "
@@ -692,8 +726,19 @@ def plan_text(plan: dict) -> str:
            if plan["max_edges_per_forwarder"] else
            f"{plan['roster_edges']} edges in a region's peer lists, within the forwarder's "
            f"{DEPLOY_EDGES_PER_FORWARDER}")
-        + f". Lab ceilings: `NEEDLETAIL_LINODE_MAX_NODES={plan['max_nodes']} "
+        + f"; `--set client_udp_datagram_capacity={p['edge_datagrams_per_s']}` (the edge "
+        "capacity this plan assumes; the autoscaler's load is client datagrams over it, so "
+        "any other value moves its trigger). Lab ceilings: "
+        f"`NEEDLETAIL_LINODE_MAX_NODES={plan['max_nodes']} "
         f"NEEDLETAIL_LINODE_MAX_HOURLY_USD={plan['max_hourly_usd']:.2f}`.",
+        f"- Autoscaler: at the plan's listeners the serving edges' mean load is up to "
+        f"{plan['edge_permille']} permille; the autoscaler adds an edge at a mean of "
+        f"{AUTOSCALE_UP_PERMILLE}, or one edge at {AUTOSCALE_UP_MAX_PERMILLE} with the mean at "
+        f"{AUTOSCALE_TARGET_PERMILLE}. "
+        + ("The top step runs at the trigger: legs spread unevenly there make it take the "
+           "region's standby edge and slots, and the edge killed mid-party may find no spare."
+           if plan["edge_permille"] >= AUTOSCALE_TARGET_PERMILLE else
+           "The top step runs below the trigger."),
         "",
     ]
     return "\n".join(lines)
@@ -753,8 +798,13 @@ def party_markdown() -> str:
         f"the paths, filled to {d['load_fill']:.0%} (`--load-vcpu-per-listener`, "
         f"`--load-fill`). {d['load_type']} hosts, "
         + ", ".join(f"{kind} in {site}" for site, kind in d["load_type_by_site"].items())
-        + " (no g6-dedicated-8 capacity there on 22 November; `--load-type`, "
-        "`--load-type-in SITE=TYPE`).",
+        + " (`--load-type`, `--load-type-in SITE=TYPE`).",
+        "- **Sydney** had no g6-dedicated-4 or larger capacity on 22 November and refused "
+        "g6-dedicated-2 part way on several attempts (AGENTS.md). Listener hosts are "
+        "g6-dedicated-4 or -8 only (owner), so the plans keep g6-dedicated-4 there and treat "
+        "the region as optional: `up --optional-sites sydney` creates Sydney's core first and "
+        "goes on without it when it is refused. Each plan prints the lab without Sydney (its "
+        "listeners, instances, vCPUs and cost), and the summary its $/h.",
         f"- **The LiveKit control**: one self-hosted SFU a region carrying {d['lk_listeners']} "
         f"subscribers, its crowd on the listener hosts at {d['lk_vcpu_per_listener']} vCPU and "
         f"{d['lk_mbps']} Mbit/s of public traffic each (`--lk-listeners-per-region`, "
@@ -791,15 +841,17 @@ def party_markdown() -> str:
         f"of `topology-proving.json` for its watchdog's {d['proving_hours']:g} hours, "
         f"${first['proving_usd']:.2f}. **${first['left_usd']:.2f} is left for the party** "
         "(`--budget-usd`, `--spent-usd`, `--reserved-usd`, `--proving-hours`). Every plan "
-        "below is judged at its worst: every slot alive for the whole run and every GB of "
-        "public traffic past the pool.",
+        "below is judged at its worst: every slot made once and alive for the whole run, and "
+        "every GB of public traffic past the pool. A slot deleted and made again bills another "
+        "whole hour; the worst does not count that, and the lab tool's budget guard bounds it.",
         "",
         "## Summary",
         "",
         "| Listeners | Lane | Paths | Edges a region (serving) | Listener hosts | Instances "
         "| vCPUs | $/h | Run of "
-        f"{d['hours']:g} h | Worst | Fits the budget | max_edges_per_forwarder |",
-        "| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        f"{d['hours']:g} h | Worst | Fits the budget | max_edges_per_forwarder | Without Sydney "
+        "(instances, $/h) |",
+        "| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     for (listeners, lane, paths), plan in plans:
         serving = sorted({r["serving_edges"] for r in plan["regions"].values()})
@@ -809,7 +861,9 @@ def party_markdown() -> str:
             f"{sum(r['load_hosts'] for r in plan['regions'].values())} | {plan['instances']} | "
             f"{plan['vcpus']} | {plan['hourly_usd']:.3f} | ${plan['run_usd']:.2f} | "
             f"${plan['worst_usd']:.2f} | {'yes' if plan['fits_budget'] else 'no'} | "
-            f"{plan['max_edges_per_forwarder'] or 'default (16)'} |")
+            f"{plan['max_edges_per_forwarder'] or 'default (16)'} | "
+            f"{plan['without_sydney']['instances']}, "
+            f"{plan['without_sydney']['hourly_usd']:.3f} |")
     lines += [
         "",
         "What the summary says: two paths cost about twice the edges and listener hosts of "
