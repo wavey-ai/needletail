@@ -704,11 +704,27 @@ def open_archive(run_id: str):
     return run_archive.RunArchive.create(run_id, "local-lab", tool="latency-bench.py")
 
 
-def preflight() -> str | None:
+def own_cpu_layout(bench_args: list[str] | None) -> bool:
+    """The bench's lab settings ask for the own-CPU layout of the whole host
+    (`-- --set own_cpus=1`, C 6.3.1)."""
+    args = list(bench_args or [])
+    return any(value == "own_cpus=1" and args[index - 1] == "--set"
+               for index, value in enumerate(args) if index)
+
+
+def preflight(bench_args: list[str] | None = None) -> str | None:
     """Refuse to start while a run of this lab id is going, or without a lab id
-    and CPU range (the gate shares the host)."""
-    if not os.environ.get("NEEDLETAIL_EDGE_LAB_ID") or not os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS"):
-        return "set NEEDLETAIL_EDGE_LAB_ID and NEEDLETAIL_EDGE_LAB_CPUS (a lab of its own)"
+    and either a CPU range (the gate shares the host) or the own-CPU layout of
+    the whole host (`-- --set own_cpus=1`, which takes no range)."""
+    if not os.environ.get("NEEDLETAIL_EDGE_LAB_ID"):
+        return "set NEEDLETAIL_EDGE_LAB_ID (a lab of its own)"
+    own = own_cpu_layout(bench_args)
+    if own and os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS"):
+        return ("own_cpus=1 is the layout of one lab on the whole host: unset "
+                "NEEDLETAIL_EDGE_LAB_CPUS")
+    if not own and not os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS"):
+        return ("set NEEDLETAIL_EDGE_LAB_CPUS (a lab of its own), or give the own-CPU layout "
+                "of the whole host: -- --set own_cpus=1")
     ident = os.environ["NEEDLETAIL_EDGE_LAB_ID"]
     busy = subprocess.run(["pgrep", "-af", "latency-bench.py"], capture_output=True, text=True).stdout
     mine = [line for line in busy.splitlines() if f"/{ident}/" in line or f"elab-{ident}" in line]
@@ -718,7 +734,7 @@ def preflight() -> str | None:
 
 
 def cmd_run(args) -> int:
-    reason = preflight()
+    reason = preflight(args.bench_args)
     if reason:
         print(f"gate: {reason}", file=sys.stderr)
         return 2

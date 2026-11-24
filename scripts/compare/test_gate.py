@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -279,6 +280,39 @@ class Plan(unittest.TestCase):
         k = gate.bench_command(gate.plan(True)[3], "r1", pathlib.Path("/nowhere"), 40, [])
         self.assertEqual(k[k.index("--video-mbps") + 1], "247")
         self.assertEqual(k[k.index("--video-readers") + 1], "0")
+
+
+class Preflight(unittest.TestCase):
+
+    def run_with(self, env: dict, bench_args: list[str]) -> str | None:
+        keys = ("NEEDLETAIL_EDGE_LAB_ID", "NEEDLETAIL_EDGE_LAB_CPUS")
+        saved = {key: os.environ.pop(key, None) for key in keys}
+        try:
+            os.environ.update(env)
+            with unittest.mock.patch.object(gate.subprocess, "run") as run:
+                run.return_value.stdout = ""
+                return gate.preflight(bench_args)
+        finally:
+            for key in keys:
+                os.environ.pop(key, None)
+                if saved[key] is not None:
+                    os.environ[key] = saved[key]
+
+    def test_a_lab_in_a_range_needs_its_range(self):
+        self.assertIsNone(self.run_with({"NEEDLETAIL_EDGE_LAB_ID": "g",
+                                         "NEEDLETAIL_EDGE_LAB_CPUS": "2-15"}, []))
+        self.assertIn("NEEDLETAIL_EDGE_LAB_CPUS", self.run_with({"NEEDLETAIL_EDGE_LAB_ID": "g"}, []))
+        self.assertIn("NEEDLETAIL_EDGE_LAB_ID", self.run_with({}, ["--set", "own_cpus=1"]))
+
+    def test_the_own_cpu_layout_takes_no_range(self):
+        own = ["--set", "own_cpus=1", "--set", "leave_out=lon-edge-4"]
+        self.assertIsNone(self.run_with({"NEEDLETAIL_EDGE_LAB_ID": "g"}, own))
+        refused = self.run_with({"NEEDLETAIL_EDGE_LAB_ID": "g", "NEEDLETAIL_EDGE_LAB_CPUS": "2-15"},
+                                own)
+        self.assertIn("unset NEEDLETAIL_EDGE_LAB_CPUS", refused)
+        # A value that only looks like the setting is not the layout.
+        self.assertIn("NEEDLETAIL_EDGE_LAB_CPUS",
+                      self.run_with({"NEEDLETAIL_EDGE_LAB_ID": "g"}, ["--name", "own_cpus=1"]))
 
 
 class Baseline(unittest.TestCase):
