@@ -596,8 +596,9 @@ class Ledger(unittest.TestCase):
                       (LOW_LATENCY / "PARTY.md").read_text())
         # Each lab's groups fit its 5-hour watchdog with 20 minutes of
         # bring-up, the collect bound and the watchdog's lead before it.
-        minutes = {"N": 59.0, "U": 173.3, "F": 14.9, "R": 99.2, "A": 137.2}
-        for groups in (("N", "U"), ("F", "R", "A")):
+        minutes = {"N": 59.0, "U": 173.3, "F": 14.9, "R": 99.2, "A": 137.2,
+                   "U3,C1,C2": 25.1}
+        for groups in (("N", "U", "U3,C1,C2"), ("F", "R", "A")):
             needed_s = (sum(minutes[group] for group in groups) + 20) * 60
             self.assertLess(needed_s + lab_tool.COLLECT_TIMEOUT_S + lab_tool.WATCHDOG_LEAD_S,
                             5 * 3600, groups)

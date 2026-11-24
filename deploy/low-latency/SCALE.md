@@ -988,8 +988,8 @@ $3.618, so the ceilings are `NEEDLETAIL_LINODE_MAX_NODES=48` and
 `NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65` (the topology's own description says
 the same). With 20 minutes of bring-up each, the run is two labs of a 5-hour
 watchdog, under the lab tool's 6-hour limit (`NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS`):
-N and U (232.3 minutes, 4.2 hours) on the first, F, R and A (251.3 minutes,
-4.5 hours) on the second. That bills 10 hours: $31.86, at most $36.18 with
+N and U with U3, C1 and C2 by name (232.3 + 25.1 minutes, 4.6 hours) on the
+first, F, R and A (251.3 minutes, 4.5 hours) on the second. That bills 10 hours: $31.86, at most $36.18 with
 every slot alive throughout (the figure `scripts/scale_topology.py plan`
 holds for the proving run before the party). One lab of 9 hours bills $28.67
 ($32.56 at most) but needs `NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS=9`. Both
