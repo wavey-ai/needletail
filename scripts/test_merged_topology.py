@@ -195,7 +195,8 @@ class Render(Base):
         return program, plan, {name: item["args"] for name, item in rendered.items()}
 
     def test_three_links_in_the_contributors_region(self):
-        _program, _plan, args = self.render()
+        # The contributor alone (the lab's standby has its own tests below).
+        _program, _plan, args = self.render(state=one_contributor_state())
         contrib = args["contrib-lon"]
         # contributor -> lon-dist-a / lon-dist-b over the London VLAN.
         self.assertEqual(value_of(contrib, "--relay-primary-id"), "lon-dist-a")
@@ -208,7 +209,8 @@ class Render(Base):
         self.assertNotIn("--audio-epoch-mesh-lane", contrib)
         self.assertNotIn("--audio-epoch-ingress-target", contrib)
         self.assertNotIn("--audio-epoch-redundant-ingress-target", contrib)
-        _program, _plan, lane = self.render(["audio_epoch_lane=true"])
+        _program, _plan, lane = self.render(["audio_epoch_lane=true"],
+                                            state=one_contributor_state())
         self.assertNotIn("--audio-epoch-mesh-lane", lane["contrib-lon"])
         self.assertEqual(value_of(lane["contrib-lon"], "--audio-epoch-ingress-target"),
                          "10.77.1.11:22001")
@@ -732,7 +734,7 @@ class Render(Base):
                 self.assertEqual(args[name].count(flag), 1, (name, flag))
 
     def test_the_origin_has_two_children_both_first_forwarders_of_its_region(self):
-        program, plan, _args = self.render()
+        program, plan, _args = self.render(state=one_contributor_state())
         self.assertEqual(program["forwarding"], "merged")
         nodes = {node["node_id"]: node for node in program["topology"]["nodes"]}
         children = [link["child_node_id"] for link in program["topology"]["parent_links"]

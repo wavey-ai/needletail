@@ -93,7 +93,7 @@ class Render(unittest.TestCase):
             # The lab shares one host: never pinned.
             self.assertNotIn("--relay-class-cpus", args[name])
         for name, node_args in args.items():
-            if name == "contrib-lon":
+            if lab.node(name)["role"] == "contributor":
                 continue
             # Every node of a mesh uses the same offset.
             self.assertEqual(value_of(node_args, "--cache-mesh-class-port-offset"), "1000", name)
@@ -136,7 +136,7 @@ class Render(unittest.TestCase):
             self.assertEqual(value_of(args[name], "--relay-class-threads"), "false")
             self.assertNotIn("--relay-class-realtime", args[name])
         for name, node_args in args.items():
-            if name != "contrib-lon":
+            if lab.node(name)["role"] != "contributor":
                 self.assertEqual(value_of(node_args, "--cache-mesh-class-port-offset"), "0")
         self.assertEqual(value_of(args["lon-edge-3"], "--client-udp-class-sockets"), "false")
         # The audio hot path is item 3, a setting of its own.
@@ -265,7 +265,7 @@ class Render(unittest.TestCase):
         # every node that runs the class threads.
         args = self.render()
         for name, node_args in args.items():
-            if name == "contrib-lon":
+            if lab.node(name)["role"] == "contributor":
                 self.assertNotIn("--canonical-repair-horizon", node_args)
                 continue
             self.assertEqual(value_of(node_args, "--canonical-repair-horizon"), "auto", name)
