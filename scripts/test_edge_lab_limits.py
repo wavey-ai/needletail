@@ -906,6 +906,17 @@ class RealTime(Isolated):
         self.a_lab_that_is_up(plain, [lab.SOURCE_HOST])
         self.assertEqual(lab.source_prefix(video=True), lab.source_prefix())
 
+    def test_a_node_setting_that_does_not_take_is_named(self):
+        lab.save("sysctls.json", {"net.core.rmem_max": "134217728",
+                                  "net.ipv4.udp_mem": "1 2 3"})
+        read = {"net.core.rmem_max": "4194304", "net.ipv4.udp_mem": "1\t2\t3"}
+        with mock.patch.object(lab, "sh_in", lambda name, script, check=True, timeout=60:
+                               read[script.split()[-1].strip("'")]):
+            seen = lab.sysctl_values("lon-edge-1", ["net.core.rmem_max", "net.ipv4.udp_mem"])
+        self.assertEqual(seen, {"net.core.rmem_max": "4194304", "net.ipv4.udp_mem": "1 2 3"})
+        self.assertEqual(lab.sysctls_not_applied(lab.load("sysctls.json"), seen),
+                         {"net.core.rmem_max": {"wanted": "134217728", "node_has": "4194304"}})
+
     def test_the_node_raises_its_own_limits_and_runs_as_the_user(self):
         sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
         lab.save("rendered.json", {EDGE: {"rust_log": "info", "args": [

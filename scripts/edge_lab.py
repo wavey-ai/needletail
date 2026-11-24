@@ -1585,6 +1585,26 @@ def sh_in(name: str | None, script: str, check: bool = True, timeout: float = 60
     return run_in(name, ["bash", "-c", script], check=check, timeout=timeout)
 
 
+def sysctls_not_applied(wanted: dict, seen: dict) -> dict:
+    """{key: {"wanted", "node_has"}} of the settings a node does not have
+    as wanted (whitespace aside)."""
+    return {key: {"wanted": value, "node_has": seen.get(key)}
+            for key, value in wanted.items() if seen.get(key) != " ".join(str(value).split())}
+
+
+def sysctl_values(name: str, keys: list[str]) -> dict[str, str | None]:
+    """{key: value} of kernel settings as node `name` reads them (None when
+    it cannot read one)."""
+    out: dict[str, str | None] = {}
+    for key in keys:
+        try:
+            text = sh_in(name, f"sysctl -n {shlex.quote(key)}", check=False).strip()
+        except Exception:  # noqa: BLE001 - a setting the node cannot read is reported as None
+            text = ""
+        out[key] = " ".join(text.split()) or None
+    return out
+
+
 # ------------------------------------------------------------------ networks
 
 def link_names(name: str) -> dict:
@@ -2520,6 +2540,18 @@ def up(overrides: list[str], start: bool = True) -> dict:
         script = "; ".join(f"sysctl -qw {key}={value}" for key, value in sysctls.items())
         for name in rendered:
             sh_in(name, script, check=False)
+        # A setting that is not the namespace's own (net.core.rmem_max is
+        # the host's) cannot be written from inside the lab and failed
+        # silently: local proof 3's nodes kept the host's 4 MiB, so no
+        # socket buffer grew past 8 MiB and the 4K edges dropped on the
+        # cache mesh. Say which did not take, and what the nodes have.
+        if rendered:
+            short = sysctls_not_applied(sysctls, sysctl_values(rendered[0], list(sysctls)))
+            save("sysctls-not-applied.json", short)
+            for key, item in short.items():
+                print(f"edge_lab: node sysctl {key}={item['wanted']} did not take in the lab's "
+                      f"namespaces (they have {item['node_has']}); a host setting: "
+                      f"`sudo sysctl -w {key}={item['wanted']}` on the host", file=sys.stderr)
     # The host qdisc of this run's settings (the links were built before
     # they were rendered).
     save("qdisc.json", {})
