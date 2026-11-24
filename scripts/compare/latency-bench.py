@@ -253,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="every London distributor's fast-plane lease and cache-mesh "
                              "gauges and its served leases with their ranks, once a second "
                              "(Phase AM 12, 13)")
+    parser.add_argument("--sender-host", choices=("contrib-lon", lab.SOURCE_HOST),
+                        default="contrib-lon",
+                        help="where the AEP1 senders run: the contributor's own host, sending "
+                             "to itself (default), or the source host, sending every epoch to "
+                             "each contributor (A 6, with the standby contributor)")
     parser.add_argument("--load-assign", action="store_true",
                         help="needletail-load listeners subscribe and move through the site's "
                              "/api/assignment (every distributor and edge of the site an entry "
@@ -430,7 +435,7 @@ def unread_sender_commands(args, start: int, loop_file: str) -> list[list[str]]:
     for index, payload in enumerate(unread_payloads(args), start=1):
         samples = max(32, DEFAULT_EPOCH_SAMPLES[payload]) if payload == "flac" else DEFAULT_EPOCH_SAMPLES[payload]
         session_id = start * 1_000_000_000 + epoch_ns(samples) + index
-        out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+        out.append([lab.binary("aep1-48k-probe"), "send", *sender_targets(args),
                     # Group 0, as the main sender: the contributor numbers a
                     # rendition base + format offset + group, so PCM is 4001
                     # and FLAC 2001, the DAW lane's renditions of one source.
@@ -443,12 +448,25 @@ def unread_sender_commands(args, start: int, loop_file: str) -> list[list[str]]:
     return out
 
 
+def sender_place(args) -> tuple[str, list[str]]:
+    """Where the senders run and where they send (--sender-host): the
+    contributor's own host to itself (the default, the gate's baseline), or
+    the source host to every contributor (A 6: each epoch to both)."""
+    if getattr(args, "sender_host", "contrib-lon") == lab.SOURCE_HOST:
+        return lab.SOURCE_HOST, lab.contributor_targets()
+    return "contrib-lon", ["127.0.0.1:27100"]
+
+
+def sender_targets(args) -> list[str]:
+    return [item for target in sender_place(args)[1] for item in ("--target", target)]
+
+
 def sender_command(args, start: int, loop_file: str) -> list[str]:
     """The AEP1 sender. It sends epoch k when its last sample has been
     spoken: the session id is the loop start plus one epoch."""
     samples = epoch_samples(args)
     session_id = start * 1_000_000_000 + epoch_ns(samples)
-    return [lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+    return [lab.binary("aep1-48k-probe"), "send", *sender_targets(args),
             "--session-id", str(session_id), "--group-id", "0",
             # Long enough for the lab to go live first; it is stopped at the end.
             "--duration-seconds", str(args.seconds + max(0, start - int(time.time())) + 300),
@@ -1314,7 +1332,10 @@ def load_report(items: list[dict]) -> list[dict]:
                 "recovered", "duplicates", "nack_parts", "abandoned", "moves", "socket_drops",
                 "compact_fallbacks", "latency_ms", "ttfp_ms", "moves_out", "moves_by_reason",
                 "time_to_move_ms", "move_lost", "missing_moved", "never_resumed",
-                "assignments", "assignment_errors", "assignment_ms", "fallbacks")
+                "assignments", "assignment_errors", "assignment_ms", "fallbacks",
+                # B Y4: the two-path figures (needletail-load at av-mesh 1a38d4a).
+                "interruptions", "single_path_ms", "exposure_ms", "handover_ms", "hedges",
+                "datagrams_per_leg_s", "wire_bytes_per_leg_s")
         out.append({"site": item["site"], "per_edge": item["per_edge"], "ramp": item["ramp"],
                     "total": {key: slim(total.get(key)) for key in keys if key in total},
                     "edges": {item["edges"].get(edge, edge): {
@@ -1324,7 +1345,11 @@ def load_report(items: list[dict]) -> list[dict]:
                                                             "latency_ms")
                         if key in row}
                         for edge, row in (summary.get("per_edge") or {}).items()},
-                    "saturated": summary.get("load_host_saturated")})
+                    "saturated": summary.get("load_host_saturated"),
+                    **{key: slim(summary.get(key)) for key in (
+                        "paths", "spare", "listeners_interrupted", "listeners_with_missing",
+                        "longest_silence_ms", "never_resumed", "bytes_per_listener_second")
+                       if key in summary}})
     return out
 
 
@@ -1653,7 +1678,8 @@ def plan(args) -> dict:
         "media": {"loop": loop_file, "index": index, "from": args.pcm,
                   "index_command": index_command},
         "loop_start_unix": start,
-        "sender": {"namespace": "contrib-lon", "command": sender_command(args, start, loop_file)},
+        "sender": {"namespace": sender_place(args)[0],
+                   "command": sender_command(args, start, loop_file)},
         "readers": reader_commands(args, out, index),
         "udp_clients": audio_udp_commands(args, out),
         "video": {"source": video_source(args), "viewers": video_commands(args, out),
@@ -1911,14 +1937,15 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     if video["source"] is not None:
         lab.start_sources(args.seconds + 120, video=True, audio=None,
                           clip=pathlib.Path(video["source"]["path"]))
-    sender = subprocess.Popen(lab.enter("contrib-lon", source=True) + steps["sender"]["command"], stdout=sender_log,
+    sender_host = sender_place(args)[0]
+    sender = subprocess.Popen(lab.enter(sender_host, source=True) + steps["sender"]["command"], stdout=sender_log,
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")
     sources["bench-sender"] = sender.pid
     unread_senders = []
     for index, command in enumerate(unread_sender_commands(args, start, steps["media"]["loop"])):
         unread_log = open(out / f"sender-unread-{index}.log", "ab")
-        unread = subprocess.Popen(lab.enter("contrib-lon", source=True) + command, stdout=unread_log,
+        unread = subprocess.Popen(lab.enter(sender_host, source=True) + command, stdout=unread_log,
                                   stderr=unread_log, stdin=subprocess.DEVNULL,
                                   start_new_session=True)
         unread_log.close()

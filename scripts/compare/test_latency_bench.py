@@ -797,6 +797,18 @@ class UnreadPayloads(unittest.TestCase):
         with self.assertRaises(SystemExit):
             bench.unread_payloads(parse("--unread-payloads", "mp3"))
 
+    def test_the_source_host_sends_every_lane_to_each_contributor(self):
+        args = parse("--payload", "opus", "--unread-payloads", "pcm")
+        self.assertEqual(bench.sender_place(args), ("contrib-lon", ["127.0.0.1:27100"]))
+        args = parse("--payload", "opus", "--unread-payloads", "pcm", "--sender-host", "lon-src")
+        host, targets = bench.sender_place(args)
+        self.assertEqual(host, "lon-src")
+        self.assertEqual(targets, ["10.77.1.5:27100", "10.77.1.7:27100"])
+        for command in [bench.sender_command(args, 1_000, "/loop.s24le"),
+                        *bench.unread_sender_commands(args, 1_000, "/loop.s24le")]:
+            self.assertEqual([command[i + 1] for i, item in enumerate(command)
+                              if item == "--target"], targets)
+
 
 class NodeTraffic(unittest.TestCase):
     """Datagrams and bytes per node from /proc/PID/net/dev (wave 7)."""
