@@ -77,6 +77,9 @@ PATH = (("published", "viewer", "published"),
         ("edge.udp_sent", "edge", "udp_sent"),
         ("viewer.kernel", "viewer", "kernel"),
         ("viewer.arrival", "viewer", "arrival"))
+# Hops between two hosts' clocks (chrony, within a few ms here): their
+# times can be below zero, and are kept.
+CLOCK_HOPS = {"forwarder.relay_first", "viewer.kernel"}
 SHAPES = {"one": ("lon-dist-a", "lon-edge-1"), "two": ("lon-dist-a", "lon-edge-1"),
           "d4": ("lon-dist-c4", "lon-edge-c4")}
 CONTRIBUTOR = "contrib-lon"
@@ -208,10 +211,25 @@ def part_paths(parts: dict[int, dict], journals: dict[str, dict]) -> dict[int, l
 def lateness(paths: dict[int, list]) -> dict:
     """Worst and p99 lateness of the parts (end to end less its median), the
     hops' medians and p99s, and the late parts by the hop that held them."""
-    totals = {part: times[-1][1] - times[0][1] for part, times in paths.items()
-              if len(times) >= 2 and times[0][0] == "published" and times[-1][0] == "viewer.arrival"}
-    if not totals:
+    # Only parts with a real publication stamp and the run's usual path
+    # (the most common sequence of stages): a part that one journal lost
+    # would put a long hop beside short ones.
+    paths = {part: times for part, times in paths.items()
+             if len(times) >= 2 and times[0][0] == "published" and times[0][1] > 10**15
+             and times[-1][0] == "viewer.arrival"
+             and all(0 <= b - a < 60_000_000 or label_b in CLOCK_HOPS
+                     for (_, a), (label_b, b) in zip(times, times[1:]))}
+    shapes: dict[tuple, int] = {}
+    for times in paths.values():
+        key = tuple(label for label, _ in times)
+        shapes[key] = shapes.get(key, 0) + 1
+    if not shapes:
         return {}
+    usual = max(shapes, key=shapes.get)
+    skipped = len(paths) - shapes[usual]
+    paths = {part: times for part, times in paths.items()
+             if tuple(label for label, _ in times) == usual}
+    totals = {part: times[-1][1] - times[0][1] for part, times in paths.items()}
     median = statistics.median(totals.values())
     late = {part: (value - median) / 1000.0 for part, value in totals.items()}
     hops: dict[str, list[float]] = {}
@@ -230,7 +248,8 @@ def lateness(paths: dict[int, list]) -> dict:
             hop = max(excess, key=excess.get)
             by_hop[hop] = by_hop.get(hop, 0) + 1
     values = list(late.values())
-    return {"parts": len(values), "lateness_worst_ms": round(max(values), 1),
+    return {"parts": len(values), "parts_other_path": skipped,
+            "lateness_worst_ms": round(max(values), 1),
             "lateness_p99_ms": round(pct(values, 0.99), 1),
             "late_parts": sum(1 for value in values if value > LATE_MS),
             "late_by_hop": by_hop,

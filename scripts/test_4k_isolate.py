@@ -380,9 +380,17 @@ class Report(unittest.TestCase):
                      ("forwarder.relay_forward", 2_100 + hold), ("edge.relay_first", 3_000 + hold),
                      ("edge.udp_sent", 3_500 + hold), ("viewer.kernel", 4_500 + hold),
                      ("viewer.arrival", 5_000 + hold)]
-            paths[part] = [(label, at + part * 41_666) for label, at in times]
+            paths[part] = [(label, 1_795_000_000_000_000 + at + part * 41_666)
+                           for label, at in times]
+        # A part without a publication stamp, and one on another path, are
+        # left out.
+        paths[200] = [("published", 0), ("viewer.arrival", 1_795_000_000_000_000)]
+        paths[201] = [("published", 1_795_000_000_000_000), ("edge.relay_first", 1_795_000_000_900_000),
+                      ("viewer.arrival", 1_795_000_001_000_000)]
         figures = report.lateness(paths)
         self.assertEqual(figures["late_parts"], 1)
+        self.assertEqual(figures["parts"], 100)
+        self.assertEqual(figures["parts_other_path"], 1)
         self.assertEqual(figures["late_by_hop"],
                          {"forwarder.relay_first->forwarder.relay_forward": 1})
         self.assertEqual(figures["lateness_worst_ms"], 300.0)
