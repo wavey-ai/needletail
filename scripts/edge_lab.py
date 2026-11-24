@@ -130,6 +130,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import contributor_changes  # noqa: E402
 import mesh_ops  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -2764,6 +2765,33 @@ class EdgeLabOps(mesh_ops.Ops):
         self.lab.terminate_service(node)
         if node in self.lab.SLOT_CANDIDATES:
             self.lab.set_slot_in_service(node, False)
+
+    # ---------------------------------------------------------- workstream A's changes
+    def hold_down(self, node: str) -> None:
+        """Nothing to hold: the lab starts no service again by itself."""
+
+    def kill(self, node: str) -> None:
+        self.lab.kill_service(node)
+
+    def release(self, node: str) -> None:
+        """Start the node with what it was started with, unless it runs."""
+        if self.lab.service_pid(node) is None:
+            given = self.services().get(node) or {}
+            self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                   extra_args=given.get("extra_args"))
+
+    def freeze(self, node: str, frozen: bool) -> None:
+        self.lab.freeze_service(node, frozen)
+
+    def staged_identity(self, node: str) -> dict | None:
+        """`--print-fingerprint` of the build set staged for contributor
+        `node`, with the arguments it gets on that set; None when nothing
+        is staged."""
+        build = self.staged.get(node)
+        if build is None:
+            return None
+        return contributor_changes.identity_of(self.lab.binary("av-contrib", build),
+                                               self.args_of(node, build))
 
 
 ENGINE_VERBS = ("roll", "restart", "replace")

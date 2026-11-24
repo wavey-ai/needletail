@@ -976,33 +976,38 @@ class Deployed(FakeLab):
         self.assertEqual(self.args_of("lon-edge-11")[0],
                          f"/opt/needletail/builds/{key(NEW)}/av-mesh")
 
-    def test_a_contributor_change_waits_for_workstream_a(self):
+    def test_kill_and_return_are_workstream_a_s_under_the_ops_lock(self):
         self.push()
-        for namespace, command in ((self.namespace(kind="contrib-kill",
-                                                   arguments=["--node", "contrib-lon"]),
-                                    deploy.command_change),
-                                   (self.namespace(nodes="contrib-lon"), deploy.command_restart)):
-            with self.assertRaises(SystemExit) as code:
-                self.quietly(command, namespace)
-            self.assertEqual(code.exception.code, 2)
-            self.assertIn("workstream A's scripts/contributor_changes.py", self.stderr)
-        self.assertEqual(self.hosts.touched, [])
         seen = []
 
-        def change(ops, kind, arguments):
-            seen.append((type(ops).__name__, kind, arguments,
+        def run(ops, verb, args):
+            seen.append((type(ops).__name__, verb, args.node,
                          os.environ.get(deploy.mesh_ops.OpsLock.ENV) is not None))
             return 0
 
-        module = types.SimpleNamespace(change=change)
-        with mock.patch.object(deploy, "contributor_changes", lambda: module):
-            with self.assertRaises(SystemExit) as code:
-                self.quietly(deploy.command_restart, self.namespace(nodes="contrib-lon"))
-            self.assertEqual(code.exception.code, 0)
-            with self.assertRaises(SystemExit):
-                self.quietly(deploy.command_restart,
-                             self.namespace(nodes="contrib-lon,lon-edge-1"))
-        self.assertEqual(seen, [("LinodeOps", "contrib-restart", ["--node", "contrib-lon"], True)])
+        with mock.patch.object(deploy.contributor_changes, "run", run):
+            for verb in ("kill", "return"):
+                with self.assertRaises(SystemExit) as code:
+                    self.quietly(deploy.command_change,
+                                 self.namespace(command=verb, node="contrib-lon"))
+                self.assertEqual(code.exception.code, 0)
+        self.assertEqual(seen, [("LinodeOps", "kill", "contrib-lon", True),
+                                ("LinodeOps", "return", "contrib-lon", True)])
+        # This lab has one contributor: A's gate refuses its kill (exit 2),
+        # before any host is reached, and its restart by name (the engine's
+        # gate after its staging, exit 3): nothing is activated or killed.
+        with self.assertRaises(SystemExit) as code:
+            self.quietly(deploy.command_change, self.namespace(
+                command="kill", node="contrib-lon", unprotected=False, gate_timeout_s=1.0))
+        self.assertEqual(code.exception.code, 2)
+        self.assertIn("K1: contrib-lon is the lab's only contributor", self.stderr)
+        self.assertEqual(self.hosts.touched, [])
+        with self.assertRaises(SystemExit) as code:
+            self.quietly(deploy.command_restart, self.namespace(nodes="contrib-lon"))
+        self.assertEqual(code.exception.code, 3)
+        self.assertIn("K1: contrib-lon is the lab's only contributor", self.stderr)
+        self.assertEqual([script for scripts in self.hosts.scripts.values() for script in scripts
+                          if "systemd-run" in script or "systemctl" in script], [])
 
     def test_status_names_the_build_the_record_and_what_a_cut_off_command_left(self):
         self.push()
@@ -1500,19 +1505,6 @@ class Recorded(FakeLab):
             self.ops().expected("lon-edge-1", rollback=True)
         self.assertIn("not a build of /opt/needletail/builds", str(caught.exception))
 
-    def test_a_contributor_restart_takes_none_of_the_engine_s_options(self):
-        self.push()
-        seen = []
-        module = types.SimpleNamespace(change=lambda ops, kind, arguments: seen.append(kind) or 0)
-        with mock.patch.object(deploy, "contributor_changes", lambda: module):
-            for extra in ({"rollback": True}, {"hold_s": 5.0}, {"set": ["rust_log_contrib=info"]},
-                          {"resume": True}):
-                with self.assertRaises(SystemExit) as code:
-                    self.quietly(deploy.command_restart, self.namespace(nodes="contrib-lon", **extra))
-                self.assertEqual(code.exception.code, 2, extra)
-                self.assertIn("takes no --", self.stderr)
-        self.assertEqual(seen, [])
-
 
 class Replace(FakeLab):
     """`replace --nodes X` (C 3.7, CT4) on the engine: an edge is emptied,
@@ -1986,15 +1978,17 @@ class Replace(FakeLab):
         # An edge is named by its VLAN address: nothing depends on its public one.
         self.assertEqual(self.ops().address_dependents("lon-edge-1"), [])
 
-    def test_a_contributor_waits_for_workstream_a_and_one_node_at_a_time(self):
+    def test_a_contributor_goes_through_workstream_a_s_gate_and_one_node_at_a_time(self):
         self.push()
-        self.assertEqual(self.replace(nodes="contrib-lon"), 2)
-        self.assertIn("contributor_changes", self.stderr)
+        # One contributor in this lab: A's gate refuses before the node.
+        self.assertEqual(self.replace(nodes="contrib-lon"), 3)
+        self.assertIn("K1: contrib-lon is the lab's only contributor", self.stderr)
         self.assertEqual(self.replace(nodes="lon-edge-1,lon-edge-2"), 2)
         self.assertIn("one node", self.stderr)
         self.assertEqual(self.lab_calls, [])
+        # The clock reads, and the ssh refresh of the node in hand.
         self.assertEqual([name for name, scripts in self.hosts.scripts.items()
-                          if set(scripts) - {"date +%s.%N"}], [])
+                          if set(scripts) - {"date +%s.%N", "true"}], [])
 
     def test_without_the_lab_tool_of_ct3_replace_is_refused(self):
         lab = types.SimpleNamespace(change_state=self.change_state,
