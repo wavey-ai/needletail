@@ -35,6 +35,12 @@ network. With the processes restarted, 240 was whole everywhere, twice in a
 row. The memory use below means none of the rates above 160 can be held for
 long on these 4 GB nodes.
 
+The LL-HLS column is partly an edge sending 4K twice. At every rung, in at
+least one region, one edge served a viewer host both its UDP and its LL-HLS
+4K viewers. The lead's isolation lab (`iso11242128`, London) found LL-HLS 4K
+on a 2-vCPU edge whole to 164 Mbit/s and CPU-bound above that, in the edge's
+HTTP/3 replies. Where each viewer was served is in the scoreboard file.
+
 Highest rate carried whole (Mbit/s), sweep `video-w10`; in brackets, where
 lower, the highest of an unbroken run from the bottom:
 
