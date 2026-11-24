@@ -140,6 +140,7 @@ import json
 import math
 import os
 import pathlib
+import queue
 import re
 import signal
 import subprocess
@@ -270,7 +271,18 @@ class Events:
     samplers and the listeners' arrivals (referee R3). Also shown on stderr
     (stdout carries a change's marks and nothing else), and appended to the
     run archive's autoscale/events.ndjson with each change of the
-    controller's state to autoscale/state.ndjson (`record`)."""
+    controller's state to autoscale/state.ndjson (`record`). The archive's
+    appends rewrite its manifest, which a lab's run makes large, so they
+    are made off the decision loop by a writer thread, a batch at a time;
+    the record's close writes what is queued before the run ends."""
+
+    ARCHIVE_FILES = {
+        "events.ndjson": ("every decision with its inputs and every action of the autoscaler",
+                          {"unix_us": "us", "*_unix_s": "s", "*_s": "s", "*_ms": "ms"}),
+        "state.ndjson": ("the controller's state each time it changed (its actions, phases, "
+                         "regions, warm pool, losses and recoveries)",
+                         {"unix_us": "us", "*_unix": "s (Unix time)", "*_s": "s"}),
+    }
 
     def __init__(self, path: str | None, echo: bool = True, clock=time.time,
                  record: archived_run.Run | None = None):
@@ -281,8 +293,43 @@ class Events:
         self.lines: list[dict] = []
         self.lock = threading.Lock()
         self.last_state: str | None = None
+        self.queue: queue.Queue = queue.Queue()
+        self.writer: threading.Thread | None = None
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+        if record is not None:
+            self.writer = threading.Thread(target=self.write_archive, name="autoscale-archive",
+                                           daemon=True)
+            self.writer.start()
+            record.at_close(self.close)
+
+    def write_archive(self) -> None:
+        """The archive's appends: what queued meanwhile, one append per
+        file, until close() queues the end."""
+        done = False
+        while not done:
+            batch = [self.queue.get()]
+            while True:
+                try:
+                    batch.append(self.queue.get_nowait())
+                except queue.Empty:
+                    break
+            by_file: dict[str, list[dict]] = {}
+            for item in batch:
+                if item is None:
+                    done = True
+                else:
+                    by_file.setdefault(item[0], []).append(item[1])
+            for name, records in by_file.items():
+                description, units = self.ARCHIVE_FILES[name]
+                self.record.append_ndjson(name, records, "events", description, units)
+
+    def close(self) -> None:
+        """Every queued line into the archive; the writer ends."""
+        if self.writer is not None:
+            self.queue.put(None)
+            self.writer.join()
+            self.writer = None
 
     def __call__(self, kind: str, **fields) -> dict:
         item = {"unix_us": int(self.clock() * 1_000_000), "source": "autoscaler", "kind": kind,
@@ -293,11 +340,8 @@ class Events:
             if self.path:
                 with open(self.path, "a") as handle:
                     handle.write(text + "\n")
-            if self.record is not None:
-                self.record.append_ndjson(
-                    "events.ndjson", item, "events",
-                    "every decision with its inputs and every action of the autoscaler",
-                    {"unix_us": "us", "*_unix_s": "s", "*_s": "s", "*_ms": "ms"})
+            if self.writer is not None:
+                self.queue.put(("events.ndjson", json.loads(text)))
             if self.echo:
                 print(text, file=sys.stderr, flush=True)
         return item
@@ -305,18 +349,15 @@ class Events:
     def state(self, state: dict) -> None:
         """The controller's state, into the run archive each time it is
         saved changed: its state transitions."""
-        if self.record is None:
+        if self.writer is None:
             return
         text = json.dumps(state, sort_keys=True)
         with self.lock:
             if text == self.last_state:
                 return
             self.last_state = text
-            self.record.append_ndjson(
-                "state.ndjson", {"unix_us": int(self.clock() * 1_000_000), "state": state},
-                "events", "the controller's state each time it changed (its actions, phases, "
-                          "regions, warm pool, losses and recoveries)",
-                {"unix_us": "us", "*_unix": "s (Unix time)", "*_s": "s"})
+            self.queue.put(("state.ndjson", {"unix_us": int(self.clock() * 1_000_000),
+                                             "state": json.loads(text)}))
 
 
 # ------------------------------------------------------------------ backends
@@ -2951,7 +2992,11 @@ def main(argv: list[str] | None = None) -> None:
             # starts (deploy push, lab replace) carries its token.
             lock = OpsLock(backend.lock_path()).acquire()
             inner.lock_env = lock.env()
-            record = archive_record(args, inner, config, sites)
+            try:
+                record = archive_record(args, inner, config, sites)
+            except Exception as error:  # noqa: BLE001 - the controller never waits on the archive
+                print(f"run archive: not written ({type(error).__name__}: {error}); the "
+                      "controller runs without it", file=sys.stderr, flush=True)
         events = Events(args.events, record=record)
         state_path = pathlib.Path(args.controller_state or default_state_path(args.backend))
         controller = Controller(backend, config, state_path, events)

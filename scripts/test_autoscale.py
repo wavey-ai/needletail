@@ -2807,6 +2807,66 @@ class Archive(Base):
                                     backend, self.config, ["london"])
         self.assertFalse(named.made)
 
+    def test_the_archive_is_written_off_the_decision_loop(self):
+        record = auto.archived_run.Run("as2", "local-lab", "linode-autoscale", argv=["a"],
+                                       prefix="autoscale/")
+        appended = []
+        real = record.append_ndjson
+        loop = threading.current_thread()
+
+        def slow(name, records, *args, **kwargs):
+            appended.append((threading.current_thread() is loop, name, len(records)))
+            time.sleep(0.3)
+            return real(name, records, *args, **kwargs)
+
+        record.append_ndjson = slow
+        events = auto.Events(None, echo=False, clock=self.clock, record=record)
+        began = time.monotonic()
+        for index in range(20):
+            events("decision", index=index)
+        events.state({"phase": "steady"})
+        self.assertLess(time.monotonic() - began, 0.25, "an event never waits on the archive")
+        record.close()
+        self.assertFalse(any(on_loop for on_loop, _name, _count in appended))
+        self.assertLess(len(appended), 21, "queued lines go in batches")
+        self.assertEqual([item["index"] for item in self.lines("as2", "events.ndjson")],
+                         list(range(20)))
+        self.assertEqual(self.lines("as2", "state.ndjson")[0]["state"], {"phase": "steady"})
+        self.assertEqual(json.loads((self.root / "as2" / "manifest.json").read_text())["status"],
+                         "complete")
+
+    def test_a_state_is_kept_as_it_was_when_saved(self):
+        record = auto.archived_run.Run("as3", "local-lab", "linode-autoscale", argv=["a"],
+                                       prefix="autoscale/")
+        events = auto.Events(None, echo=False, clock=self.clock, record=record)
+        state = {"phase": "joining"}
+        events.state(state)
+        state["phase"] = "steady"
+        events.state(state)
+        record.close()
+        self.assertEqual([item["state"]["phase"] for item in self.lines("as3", "state.ndjson")],
+                         ["joining", "steady"])
+
+    def test_main_runs_the_controller_when_the_archive_refuses(self):
+        for sig in (signal.SIGINT, signal.SIGTERM):  # main() installs its own
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+
+        def refused(args, backend, config, sites):
+            raise auto.archived_run.ra.ArchiveError("run 'x' refused: disk full")
+
+        ran = []
+        with mock.patch.object(auto, "make_backend", lambda args, config, sites: self.sim), \
+                mock.patch.object(auto, "archive_record", refused), \
+                mock.patch.object(auto, "command_scale",
+                                  lambda *args, **kwargs: ran.append(args) or auto.EXIT_DONE), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit) as exit_:
+            auto.main(["scale", "up", "--site", "london", "--backend", "edge_lab",
+                       "--controller-state", str(self.state_path)])
+        self.assertEqual(exit_.exception.code, auto.EXIT_DONE)
+        self.assertEqual(len(ran), 1)
+        self.assertIn("run archive: not written (ArchiveError", err.getvalue())
+
     def test_main_ends_the_run_failed_when_the_controller_fails(self):
         for sig in (signal.SIGINT, signal.SIGTERM):  # main() installs its own
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
