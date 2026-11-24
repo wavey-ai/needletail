@@ -26,6 +26,23 @@ _spec = importlib.util.spec_from_file_location("latency_bench", HERE / "latency-
 bench = importlib.util.module_from_spec(_spec)
 sys.modules["latency_bench"] = bench
 _spec.loader.exec_module(bench)
+_ARCHIVE: list = []
+
+
+def setUpModule():
+    """A pass's run goes into a temporary archive, never ~/needletail-data."""
+    data = tempfile.mkdtemp()
+    _ARCHIVE.append(data)
+    for patcher in (mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": data}),
+                    mock.patch.object(bench.archived_run, "code_paths", lambda *_: [])):
+        patcher.start()
+        _ARCHIVE.append(patcher)
+
+
+def tearDownModule():
+    for patcher in _ARCHIVE[1:]:
+        patcher.stop()
+    shutil.rmtree(_ARCHIVE[0], ignore_errors=True)
 
 
 def parse(*argv: str):
@@ -868,7 +885,7 @@ class PerLab(unittest.TestCase):
     def test_a_pass_holds_its_lab(self):
         seen = {}
 
-        def run(args, steps):
+        def run(args, steps, record):
             seen["holder"] = bench.guard.holder(bench.lab.WORK)
             return 0
 

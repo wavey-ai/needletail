@@ -570,15 +570,14 @@ def archived(run_id: str, names: list[str]):
     inside it keep their records there as each ends (run_scenario), and the
     run ends failed when the campaign is cut off."""
     global _archive
+    topology, regions = archived_run.local_topology(lab.NODES)
     with archived_run.Run(
             run_id, "local-lab", "edge-campaign",
             code=archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT),
             settings={"scenarios": names, "lab_id": lab.LAB_ID, "lab_work": str(lab.WORK),
                       "limits_per_service": lab.NANODE,
                       "limits_of_contributor": lab.CONTRIBUTOR_LIMITS},
-            topology={"nodes": [{"name": name, "role": role, "site": site, "region": region}
-                                for name, role, site, region, *_ in lab.NODES]},
-            regions=sorted({region for *_, region, _public, _vlan in lab.NODES if region})) as run:
+            topology=topology, regions=regions) as run:
         record = CampaignRecord(run)
         run.at_close(record.close)
         _archive = record

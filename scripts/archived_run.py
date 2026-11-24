@@ -65,6 +65,14 @@ def code_paths(mesh_root, contrib_root) -> list[pathlib.Path]:
     return [ROOT, mesh, pathlib.Path(contrib_root), beside("playlists"), beside("daw-nexus")]
 
 
+def local_topology(nodes) -> tuple[dict, list[str]]:
+    """The local namespace lab's nodes (edge_lab.NODES: name, role, site,
+    region, addresses) as a topology for the manifest, and its regions."""
+    listed = [{"name": name, "role": role, "site": site, "region": region}
+              for name, role, site, region, *_addresses in nodes]
+    return {"nodes": listed}, sorted({item["region"] for item in listed if item["region"]})
+
+
 def fresh_files(directory: pathlib.Path, since_s: float) -> list[pathlib.Path]:
     """The regular files under `directory` written at `since_s` or later
     (not what an earlier pass left there); symlinks are left out."""
