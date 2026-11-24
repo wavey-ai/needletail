@@ -77,6 +77,11 @@ the cgroups are scopes of the user's systemd manager.
   --drain-timeout-s 30 --ready-timeout-s 60 --on-failure stop|rollback-all
   --surge auto|never --parity-ms 1.0. Exit status is the engine's (0 done, 2
   refused, 3 stopped, 4 rolled back, 5 no answer, 130 interrupted).
+  roll, restart, replace, kill, return and freeze also take --nice 10 (the
+  tool's own priority, lowered to it) and --poll-s 1.0 (a node is read at
+  most once a poll; a refusing gate backs off to 4 s). They reach the nodes
+  through one kept-open HTTPS helper in the lab's namespace (ns_http.py),
+  not a curl process and a TLS handshake a request.
 
 Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
 peer list naming them, but does not start, as the large mesh's autoscale
@@ -583,9 +588,85 @@ def enter(name: str | None, source: bool = False) -> list[str]:
     join_tools()
     sets = load("cpus.json")
     rest = sets.get("_source") if source and sets.get("_source") else sets.get("_rest")
+    tools = os.environ.get(TOOL_CPUS_ENV)
+    if tools and not source and rest:
+        # A runner keeps its tools on CPUs apart from its probes
+        # (change-run.py): what they start stays there.
+        rest = [cpu for cpu in expand_cpus(tools) if cpu in rest] or rest
     if rest:
         prefix += ["taskset", "-c", cpu_list(rest)]
     return prefix
+
+
+# The CPUs (a kernel CPU list) that a runner gives the tools it starts, out
+# of the lab's "_rest": enter() keeps their commands there.
+TOOL_CPUS_ENV = "NEEDLETAIL_EDGE_LAB_TOOL_CPUS"
+
+
+def rest_split(sets: dict) -> dict[str, list[int]]:
+    """The CPUs a runner (change-run.py) gives its own processes out of a
+    layout's "_rest" (and "_source"), so that the tools and the sender do
+    not take the probes' CPUs: {"probes", "tools", "sender"}. The sender
+    keeps "_source" when the layout has one (rt=1), else the last CPU of
+    "_rest" when three or more are left; the probes take the first half of
+    the others (at least one), the tools (the change's command, the crowd,
+    the readers) the rest. With fewer CPUs they share. {} without a
+    layout."""
+    rest = list(sets.get("_rest") or [])
+    if not rest:
+        return {}
+    # The source host's own CPUs when the layout gives it some (rt=1's
+    # "_source"; node_cpus gives lon-src a window of its own).
+    sender = list(sets.get("_source") or sets.get(SOURCE_HOST) or [])
+    if not sender and len(rest) >= 3:
+        sender, rest = rest[-1:], rest[:-1]
+    if len(rest) >= 2:
+        half = max(1, len(rest) // 2)
+        probes, tools = rest[:half], rest[half:]
+    else:
+        probes = tools = rest
+    return {"probes": probes, "tools": tools, "sender": sender or probes}
+
+
+# The lab's kept-open HTTP helper (scripts/ns_http.py), one per process.
+_KEPT_HTTP = None
+
+
+def kept_open_http():
+    """The helper that keeps one connection to each node open, started
+    once in the lab's namespace under the prefix curl has (the tools' scope
+    and CPUs); None when it cannot be started."""
+    global _KEPT_HTTP
+    if _KEPT_HTTP is not None and _KEPT_HTTP.alive():
+        return _KEPT_HTTP
+    try:
+        import atexit
+        import ns_http
+        _KEPT_HTTP = ns_http.Client(enter(None) + [
+            sys.executable, str(pathlib.Path(__file__).resolve().parent / "ns_http.py"),
+            "--ca", str(ca_file()), "--server-name", SERVER_NAME])
+        atexit.register(_KEPT_HTTP.close)
+    except Exception:  # noqa: BLE001 - curl is still there
+        _KEPT_HTTP = None
+    return _KEPT_HTTP
+
+
+def kept_http_json(name: str, path: str, method: str = "GET", body: dict | None = None,
+                   timeout: float = 5.0):
+    """http_json through the kept-open helper (one connection a node, no
+    process and no TLS handshake a request); curl when the helper is not
+    running. (status, JSON); status 0 when the node did not answer."""
+    client = kept_open_http()
+    if client is not None:
+        import ns_http
+        port = CONTRIB_HTTP_PORT if node(name)["role"] == "contributor" else HTTP_PORT
+        try:
+            code, document = client.request(node(name)["public_ipv4"], port, method, path, body,
+                                             timeout)
+            return code or 0, document
+        except ns_http.HelperGone:
+            pass
+    return http_json(name, path, method, body, timeout)
 
 
 # ------------------------------------------------------------------ the labs of the host
@@ -2965,8 +3046,17 @@ class EdgeLabOps(mesh_ops.Ops):
         return out
 
     # ---------------------------------------------------------- HTTP
+    def http(self, node: str, path: str, method: str = "GET", body: dict | None = None,
+             timeout: float = 2.0):
+        """The lab's kept-open HTTP when it has one (kept_http_json), else
+        curl (http_json)."""
+        call = getattr(self.lab, "kept_http_json", None) or self.lab.http_json
+        if method == "GET":
+            return call(node, path, timeout=timeout)
+        return call(node, path, method, body)
+
     def status(self, node: str):
-        code, body = self.lab.http_json(node, "/api/node", timeout=2.0)
+        code, body = self.http(node, "/api/node")
         return body if code == 200 and isinstance(body, dict) else None
 
     def statuses(self, nodes) -> dict:
@@ -2977,11 +3067,11 @@ class EdgeLabOps(mesh_ops.Ops):
             return dict(zip(nodes, pool.map(self.status, nodes)))
 
     def get(self, node: str, path: str) -> tuple:
-        code, body = self.lab.http_json(node, path, timeout=2.0)
+        code, body = self.http(node, path)
         return (code or None), body
 
     def post(self, node: str, path: str, body: dict) -> int | None:
-        code, _answer = self.lab.http_json(node, path, "POST", body)
+        code, _answer = self.http(node, path, "POST", body)
         return code or None
 
     # ---------------------------------------------------------- builds
@@ -3233,7 +3323,20 @@ def engine_parser(command: str) -> argparse.ArgumentParser:
     parser.add_argument("--on-failure", choices=("stop", "rollback-all"), default="stop")
     parser.add_argument("--surge", choices=("auto", "never"), default="auto")
     parser.add_argument("--parity-ms", type=float, default=1.0)
+    add_tool_options(parser)
     return parser
+
+
+def add_tool_options(parser: argparse.ArgumentParser) -> None:
+    """The change tools' own cost (local proof 2, F3): their priority and
+    how often they ask a node."""
+    parser.add_argument("--nice", type=int, default=mesh_ops.NICE,
+                        help=f"run at this nice level or lower priority (default "
+                             f"{mesh_ops.NICE}; 0 leaves it)")
+    parser.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S,
+                        help=f"seconds between a tool's reads of a node (default "
+                             f"{mesh_ops.POLL_S:g}; a refusing gate backs off to "
+                             f"{mesh_ops.POLL_MAX_S:g})")
 
 
 def names_of(text: str | None) -> list[str] | None:
@@ -3254,8 +3357,9 @@ def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
         drain_timeout_s=args.drain_timeout_s, ready_timeout_s=args.ready_timeout_s,
         on_failure=args.on_failure, surge=args.surge, parity_ms=args.parity_ms,
         hold_s=getattr(args, "hold_s", 0.0), rollback=getattr(args, "rollback", False),
-        marks_file=args.marks, node_marks_file=args.node_marks)
+        marks_file=args.marks, node_marks_file=args.node_marks, poll_s=args.poll_s)
     if ops is None:
+        mesh_ops.renice(args.nice)
         ops = EdgeLabOps(build=getattr(args, "build", None), gap_s=getattr(args, "gap_s", 30.0))
     if command == "roll":
         return mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes),
@@ -3275,7 +3379,11 @@ def change_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
     change's two marks only. Returns the change's exit status."""
     parser = argparse.ArgumentParser(prog=f"edge_lab.py {command}")
     contributor_changes.add_options(parser, command, positional=True)
+    add_tool_options(parser)
     args = parser.parse_args(arguments)
+    if ops is None:
+        mesh_ops.renice(args.nice)
+    change.setdefault("poll_s", args.poll_s)
     return contributor_changes.run(ops or EdgeLabOps(), command, args, **change)
 
 

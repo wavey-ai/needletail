@@ -838,13 +838,23 @@ class ForwarderGate(Base):
         self.assert_refused("lon-dist-a", "CG4: lon-dist-b runs 1/2 class threads", timeout_s=2)
 
     def test_the_first_distributor_needs_its_sibling_as_entry(self):
-        original = self.sim.get
-        self.sim.get = lambda name, path: (503, None) if name == "lon-dist-b" \
-            else original(name, path)
-        self.assert_refused("lon-dist-a", "entry: lon-dist-b's /api/assignment answered 503",
+        # Read from each one's /api/node (entry.caches_fresh), one request a
+        # node a poll.
+        self.sim.patch["lon-dist-b"] = lambda doc: {**doc, "entry": {**doc["entry"],
+                                                                     "caches_fresh": 1}}
+        self.assert_refused("lon-dist-a", "entry: lon-dist-b lists 1 fresh caches, lon-dist-a 3",
+                            timeout_s=2)
+        self.sim.patch["lon-dist-b"] = lambda doc: {**doc, "entry": {}}
+        self.assert_refused("lon-dist-a", "entry: parity unknown: lon-dist-b's entry.caches_fresh",
                             timeout_s=2)
         # dist-b is not the entry: no such check for it.
+        self.sim.patch.clear()
         self.assertTrue(self.gate("lon-dist-b").ok)
+        # A caller that gives /api/assignment answers is judged on them.
+        problems, _evidence, _pairs = mesh_ops.forwarder_check(
+            self.lab(), "lon-dist-a", {name: self.status(name) for name in self.sim.nodes_},
+            None, {"lon-dist-a": (200, {"caches": []}), "lon-dist-b": (503, None)})
+        self.assertIn("entry: lon-dist-b's /api/assignment answered 503", problems)
 
     def test_an_idle_mesh_passes_on_presence_alone(self):
         for child in [name for name in self.sim.nodes_]:
@@ -865,7 +875,8 @@ class ForwarderGate(Base):
         gate = self.gate("new-dist-b")
         self.assertTrue(gate.ok, gate.problems)
         self.assertGreaterEqual(self.clock() - began, 7.0)
-        self.assertLess(self.clock() - began, 8.0)
+        # Within a backed-off poll of its ten clean seconds.
+        self.assertLess(self.clock() - began, 7.0 + mesh_ops.POLL_MAX_S + mesh_ops.POLL_S)
 
     def test_a_missing_figure_at_x_fails_the_gate(self):
         self.sim.patch["new-dist-b"] = lambda doc: {

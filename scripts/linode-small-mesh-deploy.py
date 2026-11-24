@@ -5328,6 +5328,8 @@ def linode_ops(args: argparse.Namespace) -> LinodeOps:
 
 
 def engine_options(args: argparse.Namespace) -> mesh_ops.Options:
+    if getattr(args, "nice", 0):
+        mesh_ops.renice(args.nice)
     return mesh_ops.Options(
         force=getattr(args, "force", False), dry=getattr(args, "dry_marks", False),
         allow_dirty=getattr(args, "allow_dirty", False), gate_timeout_s=args.gate_timeout_s,
@@ -5335,7 +5337,7 @@ def engine_options(args: argparse.Namespace) -> mesh_ops.Options:
         on_failure=args.on_failure, surge=args.surge, parity_ms=args.parity_ms,
         video_gap=args.video_gap, hold_s=getattr(args, "hold_s", 0.0),
         rollback=getattr(args, "rollback", False), marks_file=args.marks,
-        node_marks_file=args.node_marks)
+        node_marks_file=args.node_marks, poll_s=getattr(args, "poll_s", mesh_ops.POLL_S))
 
 
 def names_of(text: str | None) -> list[str] | None:
@@ -6269,6 +6271,10 @@ def change_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--surge", choices=("auto", "never"), default="auto")
     parser.add_argument("--parity-ms", type=float, default=1.0)
     parser.add_argument("--video-gap", choices=("refuse", "accept"), default="refuse")
+    parser.add_argument("--nice", type=int, default=mesh_ops.NICE,
+                        help="run at this nice level or lower priority (0 leaves it)")
+    parser.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S,
+                        help="seconds between reads of a node; a refusing gate backs off")
 
 
 def build_parser() -> argparse.ArgumentParser:

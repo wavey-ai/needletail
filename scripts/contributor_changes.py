@@ -316,12 +316,54 @@ def _statuses(ops, names) -> dict:
     return {name: mesh_ops.status_of(document) for name, document in ops.statuses(names).items()}
 
 
-def _planes(ops, names) -> dict:
-    out = {}
-    for name in names:
+#: The counters of `plane_counters` as av-mesh is asked to serve them on
+#: `GET /api/node` (F3 of local proof 2): {duplicate_mismatch (the sum over
+#: the parent lanes), not_admitted, stale_media, canonical_conflicts,
+#: wide_hole_releases, skipped_parts}, the same counters as
+#: /api/mesh/local's. Read there when a node serves it; until then the
+#: tools read /api/mesh/local (about 53 kB and a replica plan on the node)
+#: on the polls that need the counters, and nowhere else.
+NODE_COUNTERS = "relay_counters"
+PLANE_KEYS = ("duplicate_mismatch", "not_admitted", "stale_media", "canonical_conflicts",
+              "wide_hole_releases", "skipped_parts")
+
+
+def node_planes(status: mesh_ops.Status | None) -> dict | None:
+    """The plane counters from a node's /api/node `relay_counters`, None
+    when it does not serve them."""
+    raw = status.raw.get(NODE_COUNTERS) if status is not None else None
+    if not isinstance(raw, dict):
+        return None
+    return {key: _age(raw.get(key)) for key in PLANE_KEYS}
+
+
+def _read(ops, names, firsts, want_planes: bool, carries: dict) -> tuple[dict, dict]:
+    """One poll, one request a node: /api/node of `names`; and with
+    `want_planes` the first forwarders' counters, from their /api/node when
+    it carries them (`carries`, learnt on the way), else from their
+    /api/mesh/local in place of their /api/node (its `status` is the node's
+    /api/node; a node of before without it is asked both). (statuses,
+    planes): planes {} when not wanted; a forwarder whose counters could not
+    be read maps to None."""
+    names = [name for name in dict.fromkeys(names) if name]
+    local = [name for name in firsts if want_planes and not carries.get(name)]
+    statuses = _statuses(ops, [name for name in names if name not in local])
+    planes: dict = {}
+    for name in local:
         code, document = ops.get(name, "/api/mesh/local")
-        out[name] = plane_counters(document) if code == 200 else None
-    return out
+        planes[name] = plane_counters(document) if code == 200 else None
+        inner = document.get("status") if code == 200 and isinstance(document, dict) else None
+        status = mesh_ops.status_of(inner) if isinstance(inner, dict) else None
+        if status is None and name in names:
+            status = mesh_ops.status_of(ops.status(name))
+        statuses[name] = status
+        if status is not None:
+            carries[name] = node_planes(status) is not None
+    if want_planes:
+        for name in firsts:
+            if name not in local:
+                planes[name] = node_planes(statuses.get(name))
+    return statuses, planes
 
 
 def _grew(now, before) -> bool:
@@ -395,8 +437,12 @@ def gate_check(lab: mesh_ops.Lab, x: str, y: str | None, firsts: list[str], stat
             ok, late = seen(lab, status, y, [x, y])
             if not ok:
                 problems.append(f"K2: {y} is not seen at {forwarder} for stream(s) {late}")
-    # K3: equal bytes.
+    # K3: equal bytes. The counters are read on the gate's first and
+    # deciding polls only (one request a node a poll): `previous[1]` is the
+    # last read, and a forwarder not in `planes` was not read this poll.
     for forwarder in firsts:
+        if forwarder not in planes:
+            continue
         plane = planes.get(forwarder)
         now = plane.get("duplicate_mismatch") if plane else None
         if now is None:
@@ -449,14 +495,20 @@ def contrib_gate(ops, node: str, *, timeout_s: float = 30.0, poll_s: float = mes
         except (ValueError, mesh_ops.Refused) as error:
             return False, f"K5: the identity of what is staged for {node}: {error}", evidence
         evidence["staged"] = staged
+    ops = mesh_ops.paced(ops, poll_s, clock, sleep)
     deadline = clock() + timeout_s
-    previous, streak = None, 0
+    previous, streak, read_planes, carries, said = None, 0, None, {}, []
+    backoff = mesh_ops.Backoff(poll_s)
     while True:
         began = clock()
-        statuses = _statuses(ops, [node, y, *firsts])
-        planes = _planes(ops, firsts)
+        # The counters on the first poll and on the one that would decide.
+        want = (read_planes is None or streak >= GATE_POLLS - 1) and not unprotected \
+            and y is not None
+        statuses, planes = _read(ops, [node, y, *firsts], firsts, want, carries)
         evidence["polls"] += 1
-        final, problems, facts = gate_check(lab, node, y, firsts, statuses, planes, previous,
+        evidence["counters_read"] = evidence.get("counters_read", 0) + bool(planes)
+        before = None if previous is None else (previous, read_planes or {})
+        final, problems, facts = gate_check(lab, node, y, firsts, statuses, planes, before,
                                             staged, video_gap=video_gap, unproven=unproven,
                                             unprotected=unprotected)
         evidence["last"] = {"problems": final + problems, **facts}
@@ -465,12 +517,17 @@ def contrib_gate(ops, node: str, *, timeout_s: float = 30.0, poll_s: float = mes
         streak = streak + 1 if not problems and previous is not None else 0
         if streak >= GATE_POLLS or (unprotected and not problems):
             return True, "", evidence
-        previous = (statuses, planes)
+        previous = statuses
+        if planes:
+            read_planes = planes
+        # What failed last, though the poll after it (which reads no
+        # counters) found nothing.
+        said = problems or said
         now = clock()
         if now >= deadline:
-            return False, "; ".join(problems or ["the gate did not pass three polls in a row"]), \
+            return False, "; ".join(said or ["the gate did not pass three polls in a row"]), \
                 evidence
-        sleep(max(0.0, poll_s - (now - began)))
+        sleep(max(0.0, min(backoff.next(not problems), deadline - now) - (now - began)))
 
 
 # ----------------------------------------------------------------- readiness
@@ -528,7 +585,8 @@ def ready_check(lab: mesh_ops.Lab, x: str, y: str | None, firsts: list[str], sta
     held = ["duplicate_mismatch", "not_admitted", "stale_media"]
     if state == "two-version":
         held += ["wide_hole_releases", "skipped_parts"]
-    for forwarder in firsts:
+    # `planes` None: the counters were not read this poll.
+    for forwarder in firsts if planes is not None else []:
         plane = planes.get(forwarder)
         for key in held:
             now = plane.get(key) if plane else None
@@ -560,26 +618,32 @@ def contrib_ready(ops, node: str, *, timeout_s: float = 60.0, poll_s: float = me
     firsts = ingresses(lab)
     alone = y is None or held_record(ops, y) is not None
     evidence = {"node": node, "other": y, "ingresses": firsts, "polls": 0, "alone": alone}
+    ops = mesh_ops.paced(ops, poll_s, clock, sleep)
     deadline = clock() + timeout_s
-    baseline, since = None, None
+    baseline, since, carries, grew = None, None, {}, []
     while True:
         began = clock()
-        statuses = _statuses(ops, [node, y, *firsts])
-        planes = _planes(ops, firsts)
+        # The counters when the still time starts and when it may end:
+        # they only grow, so the two reads say whether they stayed still.
+        want = baseline is None or began - since >= SETTLE_S
+        statuses, planes = _read(ops, [node, y, *firsts], firsts, want, carries)
         evidence["polls"] += 1
-        fatal, waiting, unsettled, facts = ready_check(lab, node, y, firsts, statuses, planes,
-                                                       baseline, alone)
+        evidence["counters_read"] = evidence.get("counters_read", 0) + bool(planes)
+        fatal, waiting, unsettled, facts = ready_check(lab, node, y, firsts, statuses,
+                                                       planes if want else None, baseline, alone)
         evidence["last"] = {"fatal": fatal, "waiting": waiting, "unsettled": unsettled, **facts}
         if fatal:
             return False, "; ".join(fatal), evidence
         now = clock()
-        if waiting or unsettled or baseline is None:
-            baseline, since = (planes, now) if not waiting else (None, None)
-        elif now - since >= SETTLE_S:
+        if waiting:
+            baseline, since = None, None
+        elif want and (unsettled or baseline is None):
+            baseline, since, grew = planes, now, unsettled or grew
+        elif want and now - since >= SETTLE_S:
             evidence["settled_s"] = round(now - since, 3)
             return True, "", evidence
         if now >= deadline:
-            return False, "; ".join(waiting + unsettled
+            return False, "; ".join(waiting + (unsettled or grew)
                                     or [f"not {SETTLE_S:g} s still before the timeout"]), evidence
         sleep(max(0.0, poll_s - (now - began)))
 
@@ -599,29 +663,27 @@ def ingress_gate(ops, node: str, *, timeout_s: float = 30.0, poll_s: float = mes
     if not others:
         return False, f"{node} is the only first forwarder", evidence, []
     sibling = others[0]
-    deadline = clock() + timeout_s
-    while True:
-        began = clock()
-        status = mesh_ops.status_of(ops.status(sibling))
-        evidence["polls"] += 1
-        problems = []
+
+    def sibling_problems(statuses: dict) -> list[str]:
+        # Read from the forwarder gate's own poll: one request a node.
+        status = statuses.get(sibling)
         if status is None:
-            problems.append(f"{sibling} does not answer /api/node")
-        else:
-            seen_by = redundancy(lab, status)
-            evidence["redundancy"] = seen_by
-            if status.ready is not True:
-                problems.append(f"{sibling} is not ready ({status.state})")
-            if seen_by != "idle" and not seen_by.startswith(f"{len(contributors(lab))} of "):
-                problems.append(f"{sibling} sees contributors {seen_by}")
-        if not problems:
-            break
-        now = clock()
-        if now >= deadline:
-            return False, "; ".join(problems), evidence, []
-        sleep(max(0.0, poll_s - (now - began)))
-    gate = mesh_ops.forwarder_gate(ops, node, lab=lab, timeout_s=max(0.0, deadline - clock()),
-                                   parity_ms=parity_ms, poll_s=poll_s, clock=clock, sleep=sleep)
+            status = mesh_ops.status_of(ops.status(sibling))
+        if status is None:
+            return [f"{sibling} does not answer /api/node"]
+        problems = []
+        seen_by = redundancy(lab, status)
+        evidence["redundancy"] = seen_by
+        if status.ready is not True:
+            problems.append(f"{sibling} is not ready ({status.state})")
+        if seen_by != "idle" and not seen_by.startswith(f"{len(contributors(lab))} of "):
+            problems.append(f"{sibling} sees contributors {seen_by}")
+        return problems
+
+    gate = mesh_ops.forwarder_gate(ops, node, lab=lab, timeout_s=timeout_s, parity_ms=parity_ms,
+                                   poll_s=poll_s, clock=clock, sleep=sleep,
+                                   extra=sibling_problems)
+    evidence["polls"] = gate.polls
     evidence["forwarder_gate"] = gate.evidence
     evidence["notes"] = gate.notes
     return gate.ok, "; ".join(gate.problems), evidence, gate.pairs
@@ -684,7 +746,8 @@ class Change:
 
     def __init__(self, ops, args: argparse.Namespace, out=None, err=None, clock=time.time,
                  sleep=time.sleep, poll_s: float = mesh_ops.POLL_S):
-        self.ops = ops
+        # Reads of a node at least a poll interval apart (F3).
+        self.ops = mesh_ops.paced(ops, poll_s, clock, sleep)
         self.args = args
         self.out = out or sys.stdout
         self.err = err or sys.stderr
@@ -746,7 +809,9 @@ class Change:
             self.keep("kill")
             raise mesh_ops.Refused(f"kill --node {node}: the {kind} gate refuses: {why}")
         clock_check(self.ops, lab)
-        status = mesh_ops.status_of(self.ops.status(node))
+        # The gate's last poll read it a moment ago.
+        found, recent = self.ops.recent(node, self.poll_s)
+        status = mesh_ops.status_of(recent if found else self.ops.status(node))
         before = None if status is None else {
             "boot_id": status.boot_id, "git": status.build_git, "unix": status.build_unix,
             "args_sha256": status.args_sha256, "caches_fresh": status.caches_fresh}

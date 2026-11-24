@@ -66,8 +66,18 @@ HTTP_PORT = 19444
 # av-mesh's --rebalance-target-permille default: an edge over it sends UDP
 # legs to an edge with room (the capacity gate's ceiling).
 REBALANCE_TARGET_PERMILLE = 800
-# Polls are this far apart, or one round trip of the farthest node.
-POLL_S = 0.2
+# Polls are this far apart, or one round trip of the farthest node (local
+# proof 2, F3: polls 200 ms apart, each a curl process and a TLS handshake
+# per node in the local lab, moved the probes' p99 by 2.5 to 3.4 ms while a
+# gate refused for 30 s and changed nothing). A gate that keeps refusing
+# backs off to POLL_MAX_S; a node is asked at most once a POLL_S whatever
+# asks it (`Paced`).
+POLL_S = 1.0
+POLL_MAX_S = 4.0
+POLL_BACKOFF = 1.5
+# The tools' own priority (`renice`, `--nice`): below the lab's probes,
+# senders and nodes when they share CPUs.
+NICE = 10
 # The operator's clock against one node of each region (2.7).
 CLOCK_LIMIT_S = 0.05
 # An activation must start within this of the last passing poll (3.5).
@@ -143,6 +153,93 @@ class Interrupted(BaseException):
 
 def natural(name: str) -> list:
     return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", name)]
+
+
+# ------------------------------------------------------- the tools' own cost
+
+def renice(level: int = NICE, nice=os.nice) -> int:
+    """Lower this process's priority to nice `level` (never raise it: an
+    unprivileged process cannot, and a lower level asked later keeps the
+    higher one). The niceness after."""
+    current = nice(0)
+    if level > current:
+        current = nice(level - current)
+    return current
+
+
+class Backoff:
+    """The wait before a gate's next poll: `base` after a poll that passed,
+    growing by POLL_BACKOFF after each that failed, at most `ceiling`."""
+
+    def __init__(self, base: float = POLL_S, ceiling: float = POLL_MAX_S):
+        self.base = base
+        self.ceiling = max(base, ceiling)
+        self.current = base
+
+    def next(self, passed: bool) -> float:
+        self.current = self.base if passed else min(self.ceiling, self.current * POLL_BACKOFF)
+        return self.current
+
+
+class Paced:
+    """An Ops whose reads of one node are at least `poll_s` apart: a read
+    that comes sooner waits for its turn (a poll of several nodes waits
+    once, for the latest of them). Control requests (POST) are not paced.
+    `recent(node, age)` is the last answer of a node read within `age`
+    seconds, so a step that follows a poll need not ask again."""
+
+    def __init__(self, inner, poll_s: float = POLL_S, clock=time.time, sleep=time.sleep):
+        self.inner = inner
+        self.poll_s = poll_s
+        self.clock = clock
+        self.sleep = sleep
+        self.asked: dict[str, float] = {}
+        self.answers: dict[str, tuple[float, object]] = {}
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def _turn(self, nodes) -> None:
+        now = self.clock()
+        wait = max([self.asked[node] + self.poll_s - now for node in nodes
+                    if node in self.asked] or [0.0])
+        if wait > 0:
+            self.sleep(wait)
+        now = self.clock()
+        for node in nodes:
+            self.asked[node] = now
+
+    def status(self, node):
+        self._turn([node])
+        document = self.inner.status(node)
+        self.answers[node] = (self.clock(), document)
+        return document
+
+    def statuses(self, nodes) -> dict:
+        nodes = list(nodes)
+        self._turn(nodes)
+        out = self.inner.statuses(nodes)
+        now = self.clock()
+        for node, document in out.items():
+            self.answers[node] = (now, document)
+        return out
+
+    def get(self, node, path):
+        self._turn([node])
+        return self.inner.get(node, path)
+
+    def recent(self, node: str, age: float) -> tuple[bool, object]:
+        """(read within `age`, its answer: None when the node did not
+        answer)."""
+        at, document = self.answers.get(node, (None, None))
+        if at is not None and self.clock() - at <= age:
+            return True, document
+        return False, None
+
+
+def paced(ops, poll_s: float = POLL_S, clock=time.time, sleep=time.sleep):
+    """`ops` paced (Paced), once: an Ops already paced is returned as it is."""
+    return ops if isinstance(ops, Paced) else Paced(ops, poll_s, clock, sleep)
 
 
 # ------------------------------------------------------- HTTP (moved from AUT)
@@ -1289,9 +1386,26 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
         if running != set(children):
             problems.append(f"CG3: {x} forwards to {sorted(running)}, the tree names {children}")
 
-    # The site's entry.
+    # The site's entry: the sibling lists at least as many fresh caches as
+    # X, from each one's /api/node (`entry.caches_fresh`, what its
+    # /api/assignment picks from), so that the gate asks a node once a
+    # poll; `assignments` ({name: (status, JSON)} of /api/assignment) is
+    # read instead when a caller gives it.
     firsts = lab.first_distributors(lab.site(x))
-    if firsts and firsts[0] == x and len(firsts) > 1:
+    if firsts and firsts[0] == x and len(firsts) > 1 and assignments is None:
+        sibling = firsts[1]
+        sibling_status = statuses.get(sibling)
+        theirs = sibling_status.caches_fresh if sibling_status else None
+        if sibling_status is None:
+            problems.append(f"entry: {sibling} does not answer /api/node")
+        elif theirs is None:
+            problems.append(f"entry: parity unknown: {sibling}'s entry.caches_fresh")
+        elif sx.caches_fresh is None:
+            problems.append(f"entry: parity unknown: {x}'s entry.caches_fresh")
+        elif theirs < sx.caches_fresh:
+            problems.append(f"entry: {sibling} lists {theirs} fresh caches, {x} "
+                            f"{sx.caches_fresh}")
+    elif firsts and firsts[0] == x and len(firsts) > 1:
         sibling = firsts[1]
         code, document = (assignments or {}).get(sibling, (None, None))
         mine = _fresh_caches((assignments or {}).get(x, (None, None))[1])
@@ -1325,22 +1439,25 @@ def _poll_statuses(ops: Ops, names) -> dict:
 
 def forwarder_gate(ops: Ops, x: str, *, lab: Lab | None = None, timeout_s: float = 30.0,
                    parity_ms: float = 1.0, poll_s: float = POLL_S, clock=time.time,
-                   sleep=time.sleep) -> Gate:
+                   sleep=time.sleep, extra=None) -> Gate:
     """May forwarder X stop now (3.3): passes on two polls in a row that both
-    pass, fails after `timeout_s` with the last poll's problems."""
+    pass, fails after `timeout_s` with the last poll's problems. One
+    /api/node of each node of `forwarder_scope` a poll, `poll_s` apart,
+    backing off while it refuses (Backoff). `extra(statuses)`: more
+    problems read from the same poll (the ingress gate's)."""
+    ops = paced(ops, poll_s, clock, sleep)
     lab = lab or Lab(ops.nodes())
     scope = forwarder_scope(lab, x)
-    firsts = lab.first_distributors(lab.site(x))
-    entry = firsts[:2] if firsts and firsts[0] == x else []
     deadline = clock() + timeout_s
     previous, previous_ok, polls = None, False, 0
+    backoff = Backoff(poll_s)
     while True:
         began = clock()
         statuses = _poll_statuses(ops, scope)
-        assignments = {name: ops.get(name, "/api/assignment") for name in entry}
         polls += 1
-        problems, evidence, pairs = forwarder_check(lab, x, statuses, previous, assignments,
-                                                    parity_ms)
+        problems, evidence, pairs = forwarder_check(lab, x, statuses, previous, None, parity_ms)
+        if extra is not None:
+            problems = list(extra(statuses)) + problems
         notes = list(dict.fromkeys(evidence.get("notes") or []))
         now = clock()
         if not problems and previous_ok:
@@ -1349,7 +1466,7 @@ def forwarder_gate(ops: Ops, x: str, *, lab: Lab | None = None, timeout_s: float
         if now >= deadline:
             return Gate(False, problems or ["the gate did not pass twice in a row"], evidence,
                         pairs, now, polls, notes)
-        sleep(max(0.0, poll_s - (now - began)))
+        sleep(max(0.0, min(backoff.next(not problems), deadline - now) - (now - began)))
 
 
 def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
@@ -1456,7 +1573,10 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
 def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = None,
               one_path: bool = False, timeout_s: float = 30.0, poll_s: float = POLL_S,
               clock=time.time, sleep=time.sleep, extra_room: dict | None = None) -> Gate:
-    """May edge X be drained now: `capacity_check` on two polls in a row."""
+    """May edge X be drained now: `capacity_check` on two polls in a row,
+    backing off while it refuses."""
+    ops = paced(ops, poll_s, clock, sleep)
+    backoff = Backoff(poll_s)
     lab = lab or Lab(ops.nodes())
     scope = lab.edges(lab.site(x))
     if x not in scope:
@@ -1475,7 +1595,7 @@ def edge_gate(ops: Ops, x: str, *, lab: Lab | None = None, cost: float | None = 
         if now >= deadline:
             return Gate(False, problems or ["the gate did not pass twice in a row"], evidence,
                         [], now, polls)
-        sleep(max(0.0, poll_s - (now - began)))
+        sleep(max(0.0, min(backoff.next(not problems), deadline - now) - (now - began)))
 
 
 @dataclasses.dataclass
@@ -1591,6 +1711,7 @@ def wait_ready(ops: Ops, name: str, *, expected: dict, before_boot: int, activat
     cause: "build" when R1, R2 or R4 fails, "other" otherwise. An NRestarts
     the backend cannot read is no evidence against the build: it fails the
     wait as "unit", cause "other"."""
+    ops = paced(ops, poll_s, clock, sleep)
     lab = lab or Lab(ops.nodes())
     scope = forwarder_scope(lab, name) if lab.tier(name) == "forwarders" else [name]
     deadline = clock() + timeout_s
@@ -1676,7 +1797,9 @@ class Engine:
 
     def __init__(self, ops: Ops, command: str, options: Options, out=None, err=None,
                  clock=time.time, sleep=time.sleep):
-        self.ops = ops
+        # Every read of a node at least a poll interval after the last
+        # (local proof 2, F3), whoever asks.
+        self.ops = paced(ops, options.poll_s, clock, sleep)
         self.command = command
         self.options = options
         self.out = out or sys.stdout
@@ -1994,7 +2117,12 @@ class Engine:
         held, rollback-gate), and after the second try it is given back or
         named (`not_activated`)."""
         entry = self.hand["phase"] if self.hand and self.hand.get("node") == name else "gate"
-        status = self.status(name)
+        # The gate's or the drain's last poll read the node a moment ago:
+        # its answer is taken rather than asked again (and waited for)
+        # inside the activation's deadline.
+        found, recent = self.ops.recent(name, self.options.poll_s) \
+            if isinstance(self.ops, Paced) else (False, None)
+        status = status_of(recent) if found else self.status(name)
         before_boot = status.boot_id if status else (self.before.get(name) or {}).get("boot_id")
         for attempt in (1, 2):
             start_us = self.now_us()
@@ -2268,6 +2396,7 @@ class Engine:
             if status is not None and any(status.udp(item) != 0 for item in DRAIN_GAUGES):
                 self.control(name, "drain-node")
                 self.wait_empty(name, give_back=False)
+                status = self.status(name)
             last = self.clock()
             regate = lambda: self.wait_empty(name, give_back=False)  # noqa: E731
         elif tier == "forwarders":
@@ -2296,7 +2425,9 @@ class Engine:
             def regate():
                 self.gate_contributor(name)
                 return self.clock()
-        status = self.status(name)
+        found, recent = self.ops.recent(name, self.options.poll_s) \
+            if isinstance(self.ops, Paced) else (False, None)
+        status = status_of(recent) if found else self.status(name)
         boot = status.boot_id if status and status.boot_id else before["boot_id"]
         previous = {"git": before["git"], "unix": before["unix"],
                     "args_sha256": before["args_sha256"]}

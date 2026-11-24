@@ -166,7 +166,9 @@ class ContribSim(Sim):
                                         "overflow": 0}},
                     "canonical_conflicts": counters["canonical_conflicts"],
                     "wide_hole_releases": counters["wide_hole_releases"]},
-                "canonical_gap_skip": {"skipped_parts": counters["skipped_parts"]}}
+                "canonical_gap_skip": {"skipped_parts": counters["skipped_parts"]},
+                # av-mesh's mesh_api_snapshot: the node's /api/node.
+                "status": self.doc(name)}
         return super().get(name, path)
 
     # ------------------------------------------------- A's backend methods
@@ -874,7 +876,7 @@ class Engine(Base):
     def test_a_quiet_roll_stops_at_the_second_contributor(self):
         self.sim.hears.update({"contrib-lon": False, "contrib-lon-b": False})
         self.sim.ids[NEW[0]] = identity("1111111111117777", envelope="ffff")
-        code = self.roll(gate_timeout_s=3)
+        code = self.roll(gate_timeout_s=6)
         self.assertEqual(code, mesh_ops.EXIT_STOPPED, self.err.getvalue())
         self.assertEqual(self.sim.activations(), [("contrib-lon-b", False)])
         self.assertEqual(self.sim.nodes_["contrib-lon-b"]["build"], NEW)

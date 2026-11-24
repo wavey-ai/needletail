@@ -68,6 +68,7 @@ class FakeLab:
         self.clock = Clock()
         self.store: dict = {"services.json": {"lon-edge-1": 1}}
         self.started: list = []
+        self.pins: list = []
         self.ran: list = []
         self.outcomes: list = []
         self.command = {"seconds": 20.0, "lines": ["start {start} roll.edges",
@@ -89,6 +90,17 @@ class FakeLab:
                 self.returncode = 0
                 self.signalled = False
                 self.behaviour = None
+                # The runner's own CPU and priority prefixes, recorded.
+                pins = []
+                while command[:1] in (["taskset"], ["nice"]):
+                    pins.append(command[:3])
+                    command = command[3:]
+                if command[:1] and command[0].startswith("@"):
+                    while command[1:2] in (["taskset"],):
+                        pins.append(command[1:4])
+                        command = command[:1] + command[4:]
+                fake.pins.append((command, pins, (_kwargs.get("env") or {}).get(
+                    "NEEDLETAIL_EDGE_LAB_TOOL_CPUS")))
                 fake.started.append(command)
                 # A command in a host's namespace is ["@host", ...] here.
                 body = command[1:] if command[0].startswith("@") else command
@@ -729,6 +741,43 @@ class Runs(unittest.TestCase):
         self.assertEqual(sum(1 for command in again if command[1] == str(cr.change_window())), 1)
         self.assertEqual(json.loads((self.scenario / "change-01" / "run.json").read_text())
                          ["status"], "pass")
+
+    def test_the_tools_and_the_sender_run_apart_from_the_probes(self):
+        # Local proof 2, F3: the tools, the sender and the probes shared the
+        # lab's "_rest". In a layout the runner splits it (edge_lab.rest_split):
+        # the sender on the source host's own CPUs, the probes on half of the
+        # rest, the command, the crowd and the readers on the other half.
+        self.fake.store["cpus.json"] = {"_first": 0, "lon-src": [26, 27],
+                                        "_rest": [28, 29, 30, 31]}
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll")
+        self.assertEqual(code, 0)
+
+        def pins_of(match):
+            return [(pins, env) for command, pins, env in self.fake.pins if match(command)]
+        probes = pins_of(lambda command: command[1:3] == ["bash", "-c"])
+        self.assertEqual(len(probes), 4)
+        self.assertTrue(all(pins == [["taskset", "-c", "28,29"]] for pins, _env in probes))
+        crowd = pins_of(lambda command: "/lab/bin/needletail-reader" in command
+                        or any("needletail-load" in item for item in command))
+        self.assertTrue(crowd)
+        self.assertTrue(all(pins == [["taskset", "-c", "30,31"]] for pins, _env in crowd), crowd)
+        senders = pins_of(lambda command: command[:1] == ["@contrib-lon"])
+        self.assertEqual({str(pins) for pins, _env in senders}, {str([["taskset", "-c", "26,27"]])})
+        # The change's command: the tools' CPUs, niced, and every lab
+        # command it starts kept there (TOOL_CPUS_ENV).
+        command = pins_of(lambda command: command[:1] == ["engine"])
+        self.assertEqual(command, [([["taskset", "-c", "30,31"], ["nice", "-n", "10"]], "30,31")])
+        run = json.loads((self.scenario / "change-01" / "run.json").read_text())
+        self.assertEqual(run["cpu_roles"], {"probes": [28, 29], "tools": [30, 31],
+                                            "sender": [26, 27]})
+        self.assertEqual(run["nice"], 10)
+
+    def test_without_a_layout_the_command_is_only_niced(self):
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--nice", "0", "--",
+                                    "engine", "roll")
+        self.assertEqual(code, 0)
+        self.assertEqual([(pins, env) for command, pins, env in self.fake.pins
+                          if command[:1] == ["engine"]], [([], None)])
 
     def test_the_senders_run_in_the_contributor_s_host_and_stop(self):
         self.fake.main("run", "--name", "roll-edges", "--", "engine")

@@ -107,6 +107,7 @@ sys.path.insert(0, str(SCRIPTS))
 import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import lab_guard as guard  # noqa: E402
+import mesh_ops  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("latency_bench", HERE / "latency-bench.py")
 bench = sys.modules.get("latency_bench") or importlib.util.module_from_spec(_spec)
@@ -248,6 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="where the senders run: auto = the source host, sending every epoch "
                           "to each contributor, when the lab runs more than one (A 6); else "
                           "the contributor's own host, to itself")
+    run.add_argument("--nice", type=int, default=mesh_ops.NICE,
+                     help="the change's command runs at this nice level (default "
+                          f"{mesh_ops.NICE}; 0 leaves it): below the probes and the sender")
     run.add_argument("--crowd-edges", action="store_true",
                      help="the crowd is answered from the edges' list (no entry, no spare) "
                           "instead of asking the site's entry points as a listener does")
@@ -1000,11 +1004,42 @@ def attempt(failures: list[str], what: str, action, *args) -> object:
 
 # ------------------------------------------------------------------ a run
 
+def cpu_roles() -> dict[str, list[int]]:
+    """Where this runner's own processes run (F3 of local proof 2: the
+    tools, the sender and the probes shared the lab's "_rest" and the
+    tools' polling moved the probes): edge_lab.rest_split of the lab's
+    layout, {} without one."""
+    return lab.rest_split(lab.load("cpus.json"))
+
+
+def pinned(role: str) -> list[str]:
+    cpus = cpu_roles().get(role)
+    return ["taskset", "-c", lab.cpu_list(cpus)] if cpus else []
+
+
 def popen(host: str | None, command: list[str], stdout, stderr,
-          source: bool = False) -> subprocess.Popen:
+          source: bool = False, role: str | None = None) -> subprocess.Popen:
+    """`command` in the namespace of `host` under the lab's prefix, and on
+    the CPUs of `role` (probes, tools, sender) when the layout has them."""
     prefix = lab.enter(host, source=True) if source else lab.enter(host)
+    prefix += pinned(role) if role else []
     return subprocess.Popen(prefix + command, stdout=stdout, stderr=stderr,
                             stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def command_process(command: list[str], nice: int, stdout, stderr) -> subprocess.Popen:
+    """The change's command: on the tools' CPUs (and every lab command it
+    starts there too, edge_lab.TOOL_CPUS_ENV), at nice `nice`."""
+    tools = cpu_roles().get("tools")
+    env = dict(os.environ)
+    prefix = []
+    if tools:
+        env[lab.TOOL_CPUS_ENV] = lab.cpu_list(tools)
+        prefix += ["taskset", "-c", lab.cpu_list(tools)]
+    if nice > 0:
+        prefix += ["nice", "-n", str(nice)]
+    return subprocess.Popen(prefix + command, stdout=stdout, stderr=stderr,
+                            stdin=subprocess.DEVNULL, start_new_session=True, env=env)
 
 
 def stop_command(process: subprocess.Popen) -> int | None:
@@ -1044,7 +1079,8 @@ def run_once(args, plan: dict, directory: pathlib.Path) -> dict:
     readers = reader_items(args, args.name, directory)
     crowds = crowd_items(args, args.name, directory)
     run = {**plan, "directory": str(directory), "layout": layout(), "probes": probes,
-           "readers": readers, "crowds": crowds, "run_reasons": [], "events": []}
+           "readers": readers, "crowds": crowds, "run_reasons": [], "events": [],
+           "cpu_roles": cpu_roles(), "nice": getattr(args, "nice", 0)}
     (directory / "run.json").write_text(json.dumps(run, indent=1) + "\n")
     (directory / "nodes-before.json").write_text(json.dumps(nodes_status(), indent=1) + "\n")
     handles, processes = [], []
@@ -1056,15 +1092,17 @@ def run_once(args, plan: dict, directory: pathlib.Path) -> dict:
                 pathlib.Path(item["out"]).mkdir(parents=True, exist_ok=True)
                 handle = open(pathlib.Path(item["out"]) / "load.log", "ab")
                 handles.append(handle)
-                processes.append(popen(item["host"], item["command"], handle, handle))
+                processes.append(popen(item["host"], item["command"], handle, handle,
+                                       role="tools"))
             for item in readers:
                 handle = open(item["log"], "ab")
                 handles.append(handle)
-                processes.append(popen(item["host"], item["command"], handle, handle))
+                processes.append(popen(item["host"], item["command"], handle, handle,
+                                       role="tools"))
             started = now()
             for item in probes:
                 processes.append(popen(item["host"], item["command"], subprocess.DEVNULL,
-                                       subprocess.DEVNULL))
+                                       subprocess.DEVNULL, role="probes"))
             log(f"{args.name}: {len(probes)} probes for {args.seconds} s; the change at "
                 f"{args.at:g} s")
             sleep(max(0.0, started + args.at - now()))
@@ -1073,9 +1111,8 @@ def run_once(args, plan: dict, directory: pathlib.Path) -> dict:
             handles += [out_handle, err_handle]
             log(f"{args.name}: {shlex.join(plan['command'])}")
             command["started_ns"] = now_ns()
-            command["process"] = subprocess.Popen(plan["command"], stdout=out_handle,
-                                                  stderr=err_handle, stdin=subprocess.DEVNULL,
-                                                  start_new_session=True)
+            command["process"] = command_process(plan["command"], getattr(args, "nice", 0),
+                                                 out_handle, err_handle)
             try:
                 run["command_exit"] = command["process"].wait(
                     timeout=max(0.0, started + args.seconds - now()))
@@ -1145,7 +1182,7 @@ def start_senders(args, lanes: list[str], directory: pathlib.Path) -> tuple[list
         handle = open(directory / f"sender-{lane}.log", "ab")
         handle.write((shlex.join([f"# on {host}:", *command]) + "\n").encode())
         handle.flush()
-        process = popen(host, command, handle, handle, source=True)
+        process = popen(host, command, handle, handle, source=True, role="sender")
         handle.close()
         senders.append(process)
         sources[f"change-run-{lane}"] = process.pid

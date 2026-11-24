@@ -967,7 +967,12 @@ roll.<tier>`.
 
 Cadence. The operator host is in us-east. A poll asks every node it needs at once over kept-open connections
 and takes one round trip of the farthest: about 0.1 s for London, 0.2 s for Tokyo, 0.25 s for Sydney. Polls
-are 200 ms apart or one round trip, whichever is longer. A gate is two polls: 0.4 to 0.6 s. Activation is one
+are 1 s apart (`--poll-s`) or one round trip, whichever is longer; a gate that keeps refusing backs off
+by 1.5 times a poll to 4 s, and no node is read twice within a poll interval, whoever asks (amended 24
+Nov, local proof 2 F3: 200 ms polls through a curl process and a TLS handshake a request moved the
+probes' p99 by 2.5 to 3.4 ms while a gate refused). A gate is two polls: 1 to 1.5 s. The tools run
+at nice 10 (`--nice`), and the local lab's reach the nodes through one kept-open HTTPS helper in the
+lab's namespace (scripts/ns_http.py). Activation is one
 command on an open ssh connection, 0.2 to 0.6 s, carrying `--not-after` = the time of the last passing poll +
 1.5 s: a slow or re-opened ssh makes the node refuse (`late`), and the tool gates again and tries once more.
 After any error in activation the tool reads `process.boot_id`: changed means go on to readiness; unchanged
