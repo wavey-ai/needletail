@@ -84,6 +84,46 @@ lon-dist-b --(public, source)--> new-dist-b <--(public, repair + failover)-- lon
 - Routes are measured again when `routes.json` was measured over the other
   topology. `hunt` probes the links from the first forwarders.
 
+### A standby contributor
+
+A topology may name a second contributor with `"standby": true`, at the
+contributor's site and on its VLAN (`contrib-lon-b` beside `contrib-lon`).
+Both contributors always publish the same parts, and nothing elects one of
+them. The first forwarders merge the two by first arrival.
+
+```text
+contrib-lon   (contrib)   10.77.1.5:22301 --> lon-dist-a:22001   10.77.1.5:22302 --> lon-dist-b:22002
+contrib-lon-b (contrib-b) 10.77.1.7:22301 --> lon-dist-a:22002   10.77.1.7:22302 --> lon-dist-b:22001
+```
+
+- The relay program carries the standby as `origin_standby`, a replica of
+  the origin and not a topology node. The compiler emits a second
+  `av_contrib` service with the same generation, subscription, deadline and
+  path observations. Each first forwarder gets a `standby_origin_parent`,
+  rendered as `--relay-secondary-bind`, `--relay-secondary-peer`,
+  `--relay-secondary-id contrib-b` and `--relay-secondary-promoted`.
+- The fan-out is fixed at two contributors by two first forwarders. `plan`
+  refuses a third contributor, two contributors of which none is the
+  standby, and a standby in another site or without a VLAN address of its
+  own. The compiler refuses a third first forwarder under a standby, a
+  standby lane to any other node and a first forwarder whose secondary lane
+  a parent holds.
+- Both contributors are rendered from the same settings.
+  `check_contributor_pair` refuses a render in which they differ in
+  packaging (it must be `opaque`), formats, stream ids, part, segment,
+  deadline, `contributor_clock_error_ms`, generation, subscription, the
+  compact form, the repair floor or the path observations. Where the
+  `av-contrib` being deployed has `--print-fingerprint`, the render runs it
+  with each contributor's arguments and refuses unequal fingerprints.
+- Two contributors in one region are the production-readiness gap
+  `origin_standby_shares_failure_domain:contrib-b`.
+- `plan` prints `contributor targets: <address>:27100 <address>:27100`. The
+  source sends every epoch to each of them.
+- `push` and `restart --roles contributor` start both contributors at once.
+- A flag that only newer binaries have (`--node-id` and `--region` of
+  av-contrib, `--relay-media-deadline-ms` of av-mesh) is rendered only when
+  the binary being deployed lists it in `--help`.
+
 | File | Nodes | Regions |
 | --- | ---: | --- |
 | `topology-core.json` | 13 | London, New York |
@@ -97,8 +137,10 @@ All tools read the Linode token from `LINODE_TOKEN`, `LINODE_PAT`, or the file
 
 ```sh
 # Create, grow, inspect, and delete the lab.
-scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-core.json
-scripts/linode-small-mesh-lab.py watchdog --hours 4
+# up arms the watchdog before the first instance and holds every create to the
+# budget (B: the work's budget in USD; earlier labs come from the ledger).
+scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-core.json \
+    --watchdog-hours 4 --budget-usd B
 scripts/linode-small-mesh-lab.py grow --topology deploy/linode-small-mesh/topology-global.json
 scripts/linode-small-mesh-lab.py replace new-dist-a
 scripts/linode-small-mesh-lab.py status
@@ -374,8 +416,8 @@ delay and loss on the cache network and the relay lanes instead. It needs the
 target=x86_64-unknown-linux-gnu.2.36
 (cd ../av-mesh && cargo zigbuild --release --target $target --bin av-mesh --bin needletail-reader)
 
-scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json
-scripts/linode-small-mesh-lab.py watchdog --hours 2.5
+scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json \
+    --watchdog-hours 2.5 --budget-usd B
 scripts/linode-small-mesh-lab.py hosts
 scripts/linode-small-mesh-deploy.py push $(scripts/linode-regional-cache.py settings)
 scripts/linode-regional-cache.py prepare

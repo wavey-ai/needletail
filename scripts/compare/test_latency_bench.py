@@ -5,14 +5,18 @@ python3 -m unittest scripts/compare/test_latency_bench.py"""
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import importlib.util
+import os
 import io
+import hashlib
 import json
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -22,6 +26,23 @@ _spec = importlib.util.spec_from_file_location("latency_bench", HERE / "latency-
 bench = importlib.util.module_from_spec(_spec)
 sys.modules["latency_bench"] = bench
 _spec.loader.exec_module(bench)
+_ARCHIVE: list = []
+
+
+def setUpModule():
+    """A pass's run goes into a temporary archive, never ~/needletail-data."""
+    data = tempfile.mkdtemp()
+    _ARCHIVE.append(data)
+    for patcher in (mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": data}),
+                    mock.patch.object(bench.archived_run, "code_paths", lambda *_: [])):
+        patcher.start()
+        _ARCHIVE.append(patcher)
+
+
+def tearDownModule():
+    for patcher in _ARCHIVE[1:]:
+        patcher.stop()
+    shutil.rmtree(_ARCHIVE[0], ignore_errors=True)
 
 
 def parse(*argv: str):
@@ -573,6 +594,9 @@ class Video(unittest.TestCase):
         lab = bench.lab
         patches = [
             mock.patch.object(bench, "OUT_ROOT", self.dir / "out"),
+            mock.patch.object(lab, "WORK", self.dir / "lab"),
+            mock.patch.object(lab, "LAB_ID", None),
+            mock.patch.dict(bench.os.environ, {"NEEDLETAIL_ALLOW_LIVE": "1"}),
             mock.patch.object(bench, "SKIP_SECONDS", 0),
             mock.patch.object(bench, "prepare_media", lambda item: None),
             mock.patch.object(bench, "prepare_video",
@@ -584,7 +608,7 @@ class Video(unittest.TestCase):
             mock.patch.object(lab, "up", lambda overrides: {}),
             mock.patch.object(lab, "down", lambda quiet=False: None),
             mock.patch.object(lab, "wait_live", lambda *a, **k: None),
-            mock.patch.object(lab, "enter", lambda name: []),
+            mock.patch.object(lab, "enter", lambda name, source=False: []),
             mock.patch.object(lab, "load", lambda name, default=None: {}),
             mock.patch.object(lab, "save", lambda name, value: None),
             mock.patch.object(lab, "Sampler", Sampler),
@@ -676,6 +700,8 @@ class EdgeLoad(unittest.TestCase):
         self.assertTrue(all(entry.startswith("https://") and entry.endswith(":19444")
                             for entry in entries), entries)
         self.assertEqual(command[command.index("--tls-ca") + 1], bench.lab.ca_file())
+        # needletail-load refuses --edges with --entry.
+        self.assertNotIn("--edges", command)
         rows = [{"t": 1.0, "lon-edge-1": {"subscribers": 64, "load_permille": 700,
                                           "egress_observed_bps": 70e6,
                                           "advertised_free_bps": 15e6}},
@@ -771,6 +797,18 @@ class UnreadPayloads(unittest.TestCase):
         with self.assertRaises(SystemExit):
             bench.unread_payloads(parse("--unread-payloads", "mp3"))
 
+    def test_the_source_host_sends_every_lane_to_each_contributor(self):
+        args = parse("--payload", "opus", "--unread-payloads", "pcm")
+        self.assertEqual(bench.sender_place(args), ("contrib-lon", ["127.0.0.1:27100"]))
+        args = parse("--payload", "opus", "--unread-payloads", "pcm", "--sender-host", "lon-src")
+        host, targets = bench.sender_place(args)
+        self.assertEqual(host, "lon-src")
+        self.assertEqual(targets, ["10.77.1.5:27100", "10.77.1.7:27100"])
+        for command in [bench.sender_command(args, 1_000, "/loop.s24le"),
+                        *bench.unread_sender_commands(args, 1_000, "/loop.s24le")]:
+            self.assertEqual([command[i + 1] for i, item in enumerate(command)
+                              if item == "--target"], targets)
+
 
 class NodeTraffic(unittest.TestCase):
     """Datagrams and bytes per node from /proc/PID/net/dev (wave 7)."""
@@ -805,6 +843,121 @@ class NodeTraffic(unittest.TestCase):
         self.assertIn("16.00/part", lines[-1])
         self.assertIn("2.00/part", lines[-1])
         self.assertEqual(bench.node_traffic_lines({"x": {"cpu_percent_mean": 1}}, 1000.0), [])
+
+
+class PerLab(unittest.TestCase):
+    """Two labs of one host (NEEDLETAIL_EDGE_LAB_ID): each pass under its
+    lab's id, the media shared and made under a lock, a pass holding its
+    lab and refusing binaries outside a frozen set."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        for patcher in (mock.patch.object(bench, "OUT_ROOT", self.dir / "out"),
+                        mock.patch.object(bench, "MEDIA", self.dir / "out" / "media"),
+                        mock.patch.object(bench.lab, "WORK", self.dir / "lab")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_pass_of_a_lab_with_an_id_goes_under_the_id(self):
+        with mock.patch.object(bench.lab, "LAB_ID", "a"):
+            plan = dry_run()
+        self.assertEqual(plan["out"], str(self.dir / "out" / "a" / "t"))
+        # The media are every lab's.
+        self.assertEqual(plan["media"]["loop"], str(self.dir / "out" / "media" / "loop64.s24le"))
+        with mock.patch.object(bench.lab, "LAB_ID", None):
+            self.assertEqual(dry_run()["out"], str(self.dir / "out" / "t"))
+        self.assertEqual(bench.bench_dir("n", "b"), self.dir / "out" / "b" / "n")
+
+    def test_the_media_are_made_once_under_the_lock_and_renamed(self):
+        source = self.dir / "audio.s24le"
+        source.write_bytes(bytes(range(12)) * 2)
+        index = bench.MEDIA / "nt-opus-48s.index.json"
+        item = {"loop": str(bench.MEDIA / "loop64.s24le"), "index": str(index), "from": str(source),
+                "index_command": [sys.executable, "-c",
+                                  "import sys; open(sys.argv[1], 'w').write('{}')", str(index)]}
+        bench.MEDIA.mkdir(parents=True)
+        done = threading.Event()
+        with open(bench.MEDIA / ".lock", "a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            worker = threading.Thread(target=lambda: (bench.prepare_media(item), done.set()))
+            with mock.patch.object(bench, "LOOP_BYTES", 12):
+                worker.start()
+                self.assertFalse(done.wait(0.5), "the media were made while another lab held the lock")
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                worker.join(10)
+        self.assertTrue(done.is_set())
+        self.assertEqual(pathlib.Path(item["loop"]).read_bytes(), bytes(range(12)))
+        self.assertEqual(index.read_text(), "{}")
+        self.assertEqual(sorted(path.name for path in bench.MEDIA.iterdir()),
+                         [".lock", "loop64.s24le", "nt-opus-48s.index.json"])
+        # Made once: a second pass finds them and runs nothing.
+        item["index_command"] = ["false"]
+        with mock.patch.object(bench, "LOOP_BYTES", 12):
+            bench.prepare_media(item)
+
+    def test_a_pass_holds_its_lab(self):
+        seen = {}
+
+        def run(args, steps, record):
+            seen["holder"] = bench.guard.holder(bench.lab.WORK)
+            return 0
+
+        with mock.patch.object(bench, "run", run), \
+                mock.patch.dict(os.environ, {"NEEDLETAIL_ALLOW_LIVE": "1"}):
+            self.assertEqual(bench.main(["--name", "held"]), 0)
+        self.assertEqual(seen["holder"]["pid"], os.getpid())
+        self.assertEqual(seen["holder"]["command"], "latency-bench.py --name held")
+        self.assertIsNone(bench.guard.holder(bench.lab.WORK))
+
+    def test_a_pass_refuses_a_binary_outside_a_frozen_set(self):
+        live = self.dir / "needletail-udp-client"
+        live.write_text("")
+        with mock.patch.object(bench, "run", side_effect=AssertionError("the pass ran")), \
+                mock.patch.object(bench.guard, "lab_binaries", side_effect=dict), \
+                mock.patch.dict(os.environ):
+            os.environ.pop("NEEDLETAIL_ALLOW_LIVE", None)
+            with self.assertRaisesRegex(SystemExit, r"not in a frozen set .*: needletail-udp-client "):
+                bench.main(["--name", "live", "--udp-client", str(live)])
+            # A pass without UDP listeners does not run the client.
+            with mock.patch.object(bench, "run", return_value=0):
+                self.assertEqual(bench.main(["--name", "live", "--udp-clients", "0",
+                                             "--udp-client", str(live)]), 0)
+
+    def test_a_pass_on_a_running_lab_checks_what_the_lab_runs(self):
+        """--no-up: the gate is the copies the lab's `up` took, not the
+        shell's exports."""
+        frozen_set = self.dir / "sets" / "w30"
+        frozen_set.mkdir(parents=True)
+        (frozen_set / "av-mesh").write_bytes(b"frozen build")
+        (frozen_set / "build.json").write_text(json.dumps(
+            {"schema": bench.guard.BIN_SET_SCHEMA, "label": "w30", "binaries": {"av-mesh": {
+                "sha256": hashlib.sha256(b"frozen build").hexdigest()}}}))
+        built = self.dir / "built"
+        built.mkdir()
+        (built / "av-mesh").write_bytes(b"live build")
+        running = self.dir / "lab" / "bin" / "a" / "av-mesh"
+        running.parent.mkdir(parents=True)
+        running.write_bytes(b"live build")
+        (self.dir / "lab" / "binaries.json").write_text(json.dumps({"a": {"av-mesh": str(running)}}))
+        arguments = ["--name", "x", "--no-up", "--udp-clients", "0"]
+        with mock.patch.object(bench.guard, "BIN_SETS", self.dir / "sets"), \
+                mock.patch.dict(os.environ):
+            os.environ.pop("NEEDLETAIL_ALLOW_LIVE", None)
+            # The shell exports a frozen set, but the lab was brought up
+            # from a live build: refused.
+            with mock.patch.object(bench, "run", side_effect=AssertionError("the pass ran")), \
+                    mock.patch.object(bench.guard, "lab_binaries",
+                                      return_value={"av-mesh": frozen_set / "av-mesh"}):
+                with self.assertRaisesRegex(SystemExit, r"av-mesh .*the running lab's"):
+                    bench.main(arguments)
+            # The lab runs a copy of a frozen binary: a shell without the
+            # exports passes.
+            running.write_bytes(b"frozen build")
+            with mock.patch.object(bench, "run", return_value=0), \
+                    mock.patch.object(bench.guard, "lab_binaries",
+                                      return_value={"av-mesh": built / "av-mesh"}):
+                self.assertEqual(bench.main(arguments), 0)
 
 
 if __name__ == "__main__":

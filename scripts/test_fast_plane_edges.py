@@ -89,7 +89,8 @@ class Feed(Base):
             "lon-edge-3": ("lon-dist-a", "lon-dist-b", 2),
             "lon-edge-4": ("lon-dist-b", "lon-dist-a", 3),
             "new-edge-1": ("new-dist-a", "new-dist-b", 0),
-            "new-edge-2": ("new-dist-b", "new-dist-a", 1)})
+            "new-edge-2": ("new-dist-b", "new-dist-a", 1),
+            "new-edge-3": ("new-dist-a", "new-dist-b", 2)})
         forwarders = {name: (item["primary_children"], item["children"])
                       for name, item in feed["forwarders"].items()}
         # lon-dist-c, the lab's forwarder slot, is a lease child of the two
@@ -102,7 +103,12 @@ class Feed(Base):
         self.assertEqual((slot["primary"]["name"], slot["secondary"]["name"], slot["rank"]),
                          ("lon-dist-a", "lon-dist-b", 4))
         self.assertEqual(forwarders["lon-dist-b"][0], ["10.77.1.22", "10.77.1.24"])
-        self.assertEqual(forwarders["new-dist-a"][0], ["10.77.2.21"])
+        # The far region has the same slots: new-edge-3, and new-dist-c
+        # after its edges, rank 3.
+        self.assertEqual(forwarders["new-dist-a"][0], ["10.77.2.21", "10.77.2.23", "10.77.2.13"])
+        slot = feed["slot_forwarders"]["new-dist-c"]
+        self.assertEqual((slot["primary"]["name"], slot["secondary"]["name"], slot["rank"]),
+                         ("new-dist-a", "new-dist-b", 3))
         # The backbone relays feed no edge.
         self.assertNotIn("relay-primary", forwarders)
 
@@ -122,14 +128,14 @@ class Feed(Base):
             self.assertEqual(feed["edges"][name]["primary"]["name"], "new-dist-a")
             self.assertIsNone(feed["edges"][name]["secondary"])
         self.assertEqual(feed["forwarders"]["new-dist-a"]["primary_children"],
-                         ["10.77.2.21", "10.77.2.22"])
+                         ["10.77.2.21", "10.77.2.22", "10.77.2.23", "10.77.2.13"])
 
     def test_an_edge_without_a_vlan_address_is_left_to_the_cache_mesh(self):
         state = lab.lab_state()
         state["nodes"]["lon-edge-4"]["vlan_ipv4"] = None
         feed = deploy.fast_plane_feed(state, deploy.class_plan(self.settings()))
         self.assertNotIn("lon-edge-4", feed["edges"])
-        self.assertEqual(len(feed["edges"]), 5)
+        self.assertEqual(len(feed["edges"]), 6)
 
 
 @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
@@ -175,7 +181,8 @@ class Render(Base):
         args = self.render()
         for name, primaries in (("lon-dist-a", "10.77.1.21,10.77.1.23,10.77.1.13"),
                                 ("lon-dist-b", "10.77.1.22,10.77.1.24"),
-                                ("new-dist-a", "10.77.2.21"), ("new-dist-b", "10.77.2.22")):
+                                ("new-dist-a", "10.77.2.21,10.77.2.23,10.77.2.13"),
+                                ("new-dist-b", "10.77.2.22")):
             node_args = args[name]
             address = lab.node(name)["vlan_ipv4"]
             self.assertEqual(value_of(node_args, "--relay-lease-children"), "true", name)

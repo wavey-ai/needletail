@@ -15,10 +15,23 @@ epoch is one part: 48 samples = 1 ms by default for PCM and FLAC, and for Opus
 records (hops.py), with the epoch that the sender reports. Linode is not
 used. scripts/compare/part-sweep.py runs this for each part size.
 
-Results: target/latency-bench/NAME/
+Results: target/latency-bench/NAME/, or target/latency-bench/ID/NAME/ for the lab
+of NEEDLETAIL_EDGE_LAB_ID. The loop, the indexes and the synthetic clips in
+target/latency-bench/media are shared by every lab: each is made under a lock
+(media/.lock), written beside and renamed. A pass holds its lab
+(scripts/lab_guard.py: it waits while another run holds it) and refuses
+binaries outside a frozen set (scripts/freeze-binaries.py) unless
+NEEDLETAIL_ALLOW_LIVE=1.
   hops.json      hops.py's report, with the run's settings under "bench"
   summary.txt    the hop table of each region, and each reader's latency
   hops.raw.ndjson, HOST.LANE.probe*.csv|json, sender.log, plan.json
+Each pass also keeps all of it in the run archive as it ends, whatever ends
+it (~/needletail-data/<run id>/<NAME>/, NEEDLETAIL_DATA_ROOT overrides; run
+id --run-id, else latency-bench-<UTC time>; a run id that exists is appended
+to): every file the pass wrote in its results directory (arrivals,
+hops.raw.ndjson, summaries, the per-socket drops in nodes.ndjson and
+hops.json, the load tool's output) and NAME/node-logs/, what each node's
+log gained in the pass, taken before the lab goes down.
 
 Flags reach the services through the lab's settings:
   --mesh-args "..."          every av-mesh node (backbone, distributor, edge)
@@ -77,7 +90,9 @@ e.g. latency-bench.py --name uc-burst --payload opus --client-loss "loss gemodel
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import fcntl
 import importlib.util
 import json
 import os
@@ -92,7 +107,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
+import lab_guard as guard  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("hops", HERE / "hops.py")
 hops = importlib.util.module_from_spec(_spec)
@@ -151,7 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
-    parser.add_argument("--name", required=True, help="results go to target/latency-bench/NAME")
+    parser.add_argument("--name", required=True,
+                        help="results go to target/latency-bench/[ID/]NAME")
     parser.add_argument("--seconds", type=int, default=60, help="D: how long the readers listen")
     parser.add_argument("--skip-seconds", type=int, default=None,
                         help=f"seconds at the start of the readers' window left out of every "
@@ -235,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="every London distributor's fast-plane lease and cache-mesh "
                              "gauges and its served leases with their ranks, once a second "
                              "(Phase AM 12, 13)")
+    parser.add_argument("--sender-host", choices=("contrib-lon", lab.SOURCE_HOST),
+                        default="contrib-lon",
+                        help="where the AEP1 senders run: the contributor's own host, sending "
+                             "to itself (default), or the source host, sending every epoch to "
+                             "each contributor (A 6, with the standby contributor)")
     parser.add_argument("--load-assign", action="store_true",
                         help="needletail-load listeners subscribe and move through the site's "
                              "/api/assignment (every distributor and edge of the site an entry "
@@ -259,6 +282,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pcm", default=str(lab.AUDIO_PCM),
                         help="stereo s24le PCM; its first 64 s are the loop")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; run nothing")
+    parser.add_argument("--run-id", default=None,
+                        help="the run in the archive (default latency-bench-<UTC time>; one that "
+                             "exists is appended to, under NAME/)")
     video = parser.add_argument_group("4K at a chosen rate (implies --video)")
     source = video.add_mutually_exclusive_group()
     source.add_argument("--video-clip", metavar="NAME|PATH",
@@ -409,7 +435,7 @@ def unread_sender_commands(args, start: int, loop_file: str) -> list[list[str]]:
     for index, payload in enumerate(unread_payloads(args), start=1):
         samples = max(32, DEFAULT_EPOCH_SAMPLES[payload]) if payload == "flac" else DEFAULT_EPOCH_SAMPLES[payload]
         session_id = start * 1_000_000_000 + epoch_ns(samples) + index
-        out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+        out.append([lab.binary("aep1-48k-probe"), "send", *sender_targets(args),
                     # Group 0, as the main sender: the contributor numbers a
                     # rendition base + format offset + group, so PCM is 4001
                     # and FLAC 2001, the DAW lane's renditions of one source.
@@ -422,12 +448,25 @@ def unread_sender_commands(args, start: int, loop_file: str) -> list[list[str]]:
     return out
 
 
+def sender_place(args) -> tuple[str, list[str]]:
+    """Where the senders run and where they send (--sender-host): the
+    contributor's own host to itself (the default, the gate's baseline), or
+    the source host to every contributor (A 6: each epoch to both)."""
+    if getattr(args, "sender_host", "contrib-lon") == lab.SOURCE_HOST:
+        return lab.SOURCE_HOST, lab.contributor_targets()
+    return "contrib-lon", ["127.0.0.1:27100"]
+
+
+def sender_targets(args) -> list[str]:
+    return [item for target in sender_place(args)[1] for item in ("--target", target)]
+
+
 def sender_command(args, start: int, loop_file: str) -> list[str]:
     """The AEP1 sender. It sends epoch k when its last sample has been
     spoken: the session id is the loop start plus one epoch."""
     samples = epoch_samples(args)
     session_id = start * 1_000_000_000 + epoch_ns(samples)
-    return [lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+    return [lab.binary("aep1-48k-probe"), "send", *sender_targets(args),
             "--session-id", str(session_id), "--group-id", "0",
             # Long enough for the lab to go live first; it is stopped at the end.
             "--duration-seconds", str(args.seconds + max(0, start - int(time.time())) + 300),
@@ -514,11 +553,28 @@ def video_source(args) -> dict | None:
                                              args.video_clip_seconds)}
     if args.video_clip:
         given = pathlib.Path(args.video_clip).expanduser()
+        referee = lab.referee_clip(given)
+        if referee:
+            # A clip directory of the referee's (prepare-media): sent as the
+            # referee sends it, ntcmp flv over RTMP (edge_lab.start_sources).
+            return {"label": f"referee {referee['rung']}", "path": str(given), "synthetic": False,
+                    "referee": True, "fps": referee["fps"],
+                    "video_mbps": round(referee["kbps"] / 1000, 2) if referee.get("kbps") else None}
         path = given if given.suffix or given.is_file() else CLIPS / f"{args.video_clip}.ts"
         return {"label": path.stem, "path": str(path), "synthetic": False}
     if args.video:
         return {"label": lab.VIDEO_CLIP.stem, "path": str(lab.VIDEO_CLIP), "synthetic": False}
     return None
+
+
+@contextlib.contextmanager
+def media_lock():
+    """The media directory is shared by the labs of every id: one of them
+    makes a file at a time."""
+    MEDIA.mkdir(parents=True, exist_ok=True)
+    with open(MEDIA / ".lock", "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 def prepare_video(item: dict | None) -> dict | None:
@@ -528,11 +584,14 @@ def prepare_video(item: dict | None) -> dict | None:
     if item is None:
         return None
     path = pathlib.Path(item["path"])
-    if item.get("synthetic") and not path.is_file():
-        MEDIA.mkdir(parents=True, exist_ok=True)
-        log(f"encoding the synthetic 4K clip {path.name}")
-        subprocess.run(["nice", "-n", "10", *item["prepare"]], check=True)
-        pathlib.Path(str(path) + ".part").replace(path)
+    if item.get("synthetic"):
+        with media_lock():
+            if not path.is_file():
+                log(f"encoding the synthetic 4K clip {path.name}")
+                subprocess.run(["nice", "-n", "10", *item["prepare"]], check=True)
+                pathlib.Path(str(path) + ".part").replace(path)
+    if item.get("referee"):
+        return item
     if not path.is_file():
         raise SystemExit(f"no 4K clip at {path} (clips: {', '.join(sorted(p.stem for p in CLIPS.glob('*.ts')))})")
     item.update(probe_clip(path))
@@ -870,7 +929,9 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
         count = args.load_listeners * len(edges)
         ramp = load_ramp(args.load_ramp, len(edges)) if args.load_ramp else f"{count}@0"
         directory = out / f"load-{site}"
-        assign = []
+        # needletail-load takes --edges or --entry, never both: the edges
+        # only without entry points.
+        assign = ["--edges", ",".join(targets)]
         if getattr(args, "load_assign", False):
             # Phase AM 10: every distributor and edge of the site answers
             # /api/assignment.
@@ -880,7 +941,7 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
                       "--server-name", lab.SERVER_NAME]
         items.append({"site": site, "host": LOAD_HOSTS[site], "edges": dict(zip(targets, edges)),
                       "per_edge": args.load_listeners, "ramp": ramp, "out": str(directory),
-                      "command": [str(LOAD_BIN), "--edges", ",".join(targets), *assign,
+                      "command": [str(LOAD_BIN), *assign,
                                   "--stream", str(PAYLOAD_STREAM[args.payload]),
                                   "--listeners", str(count), "--ramp", ramp,
                                   "--duration", str(args.seconds), "--out", str(directory),
@@ -1271,7 +1332,10 @@ def load_report(items: list[dict]) -> list[dict]:
                 "recovered", "duplicates", "nack_parts", "abandoned", "moves", "socket_drops",
                 "compact_fallbacks", "latency_ms", "ttfp_ms", "moves_out", "moves_by_reason",
                 "time_to_move_ms", "move_lost", "missing_moved", "never_resumed",
-                "assignments", "assignment_errors", "assignment_ms", "fallbacks")
+                "assignments", "assignment_errors", "assignment_ms", "fallbacks",
+                # B Y4: the two-path figures (needletail-load at av-mesh 1a38d4a).
+                "interruptions", "single_path_ms", "exposure_ms", "handover_ms", "hedges",
+                "datagrams_per_leg_s", "wire_bytes_per_leg_s")
         out.append({"site": item["site"], "per_edge": item["per_edge"], "ramp": item["ramp"],
                     "total": {key: slim(total.get(key)) for key in keys if key in total},
                     "edges": {item["edges"].get(edge, edge): {
@@ -1281,7 +1345,11 @@ def load_report(items: list[dict]) -> list[dict]:
                                                             "latency_ms")
                         if key in row}
                         for edge, row in (summary.get("per_edge") or {}).items()},
-                    "saturated": summary.get("load_host_saturated")})
+                    "saturated": summary.get("load_host_saturated"),
+                    **{key: slim(summary.get(key)) for key in (
+                        "paths", "spare", "listeners_interrupted", "listeners_with_missing",
+                        "longest_silence_ms", "never_resumed", "bytes_per_listener_second")
+                       if key in summary}})
     return out
 
 
@@ -1589,8 +1657,14 @@ def index_media(args, loop_file: str) -> tuple[str, list[str]]:
     return index, [args.ntcmp, "audio-index", f"numbered:{name}", index, ms, "0"]
 
 
+def bench_dir(name: str, ident: str | None) -> pathlib.Path:
+    """A pass's results: under the lab's id when it has one, so that two
+    labs' passes of one name do not meet."""
+    return OUT_ROOT / ident / name if ident else OUT_ROOT / name
+
+
 def plan(args) -> dict:
-    out = OUT_ROOT / args.name
+    out = bench_dir(args.name, lab.LAB_ID)
     loop_file = str(MEDIA / "loop64.s24le")
     index, index_command = index_media(args, loop_file)
     start = loop_start(time.time())
@@ -1604,7 +1678,8 @@ def plan(args) -> dict:
         "media": {"loop": loop_file, "index": index, "from": args.pcm,
                   "index_command": index_command},
         "loop_start_unix": start,
-        "sender": {"namespace": "contrib-lon", "command": sender_command(args, start, loop_file)},
+        "sender": {"namespace": sender_place(args)[0],
+                   "command": sender_command(args, start, loop_file)},
         "readers": reader_commands(args, out, index),
         "udp_clients": audio_udp_commands(args, out),
         "video": {"source": video_source(args), "viewers": video_commands(args, out),
@@ -1618,16 +1693,26 @@ def plan(args) -> dict:
 
 
 def prepare_media(item: dict) -> None:
+    """The loop and the run's index, each made once under the media lock,
+    written beside and renamed, so that a pass of another lab never reads
+    one half written."""
     loop = pathlib.Path(item["loop"])
-    if not loop.is_file() or loop.stat().st_size != LOOP_BYTES:
-        MEDIA.mkdir(parents=True, exist_ok=True)
-        with open(item["from"], "rb") as source:
-            data = source.read(LOOP_BYTES)
-        if len(data) != LOOP_BYTES:
-            raise SystemExit(f"{item['from']} is shorter than {LOOP_SECONDS} s of stereo s24le")
-        loop.write_bytes(data)
-    if not pathlib.Path(item["index"]).is_file():
-        subprocess.run(item["index_command"], check=True, capture_output=True)
+    index = pathlib.Path(item["index"])
+    with media_lock():
+        if not loop.is_file() or loop.stat().st_size != LOOP_BYTES:
+            with open(item["from"], "rb") as source:
+                data = source.read(LOOP_BYTES)
+            if len(data) != LOOP_BYTES:
+                raise SystemExit(f"{item['from']} is shorter than {LOOP_SECONDS} s of stereo s24le")
+            beside = loop.with_name(loop.name + ".part")
+            beside.write_bytes(data)
+            beside.replace(loop)
+        if not index.is_file():
+            beside = index.with_name(index.name + ".part")
+            command = [str(beside) if part == str(index) else part
+                       for part in item["index_command"]]
+            subprocess.run(command, check=True, capture_output=True)
+            beside.replace(index)
 
 
 def reader_summary(report: pathlib.Path) -> dict:
@@ -1655,7 +1740,7 @@ def journal_full(events: list[dict], capacity: int | None) -> list[str]:
     return sorted(node for node, count in counts.items() if count >= capacity)
 
 
-def run(args, steps: dict) -> int:
+def run(args, steps: dict, record: "PassRecord") -> int:
     out = pathlib.Path(steps["out"])
     out.mkdir(parents=True, exist_ok=True)
     for old in [*out.glob("*.probe*"), *out.glob("*.4k.*"), *out.glob("*.uc*"),
@@ -1682,6 +1767,7 @@ def run(args, steps: dict) -> int:
             lab.up(steps["lab_up"])
         nodes, events, since_us, ended_us, measured = measure(args, steps, out)
     finally:
+        record.node_logs()
         if not args.keep_up and steps["lab_up"] is not None:
             lab.down(quiet=True)
     # The epoch of the run: what the sender reports it sent, else the plan's.
@@ -1851,14 +1937,15 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
     if video["source"] is not None:
         lab.start_sources(args.seconds + 120, video=True, audio=None,
                           clip=pathlib.Path(video["source"]["path"]))
-    sender = subprocess.Popen(lab.enter("contrib-lon") + steps["sender"]["command"], stdout=sender_log,
+    sender_host = sender_place(args)[0]
+    sender = subprocess.Popen(lab.enter(sender_host, source=True) + steps["sender"]["command"], stdout=sender_log,
                               stderr=sender_log, stdin=subprocess.DEVNULL, start_new_session=True)
     sources = lab.load("sources.json")
     sources["bench-sender"] = sender.pid
     unread_senders = []
     for index, command in enumerate(unread_sender_commands(args, start, steps["media"]["loop"])):
         unread_log = open(out / f"sender-unread-{index}.log", "ab")
-        unread = subprocess.Popen(lab.enter("contrib-lon") + command, stdout=unread_log,
+        unread = subprocess.Popen(lab.enter(sender_host, source=True) + command, stdout=unread_log,
                                   stderr=unread_log, stdin=subprocess.DEVNULL,
                                   start_new_session=True)
         unread_log.close()
@@ -2056,13 +2143,92 @@ def main(argv: list[str] | None = None) -> int:
         client_loss_spec(args.client_loss)
     steps = plan(args)
     source = steps["video"]["source"]
-    if source and not source["synthetic"] and not pathlib.Path(source["path"]).is_file():
+    if source and not source["synthetic"] and not source.get("referee") \
+            and not pathlib.Path(source["path"]).is_file():
         raise SystemExit(f"no 4K clip at {source['path']} (clips in {CLIPS}: "
                          f"{', '.join(sorted(path.stem for path in CLIPS.glob('*.ts'))) or 'none'})")
+    loop = pathlib.Path(steps["media"]["loop"])
+    if not pathlib.Path(steps["media"]["from"]).is_file() and \
+            not (loop.is_file() and loop.stat().st_size == LOOP_BYTES):
+        # Refused before the lab comes up, not a traceback in every pass
+        # (local proof 2: a gate whose every pass crashed on it).
+        raise SystemExit(f"--pcm {steps['media']['from']} is missing: give --pcm or export "
+                         "NEEDLETAIL_AUDIO_PCM (docs/lab-environment.md)")
     if args.dry_run:
         print(json.dumps(steps, indent=1))
         return 0
-    return run(args, steps)
+    guard.require_frozen(run_binaries(args, steps))
+    # SIGTERM or SIGHUP (first-session's timeout, kill) unwinds the pass as
+    # Ctrl-C does: its files and node logs still go into the archive.
+    with archived_run.stopped_by_signals(), guard.hold(f"latency-bench.py --name {args.name}"):
+        if steps["lab_up"] is None:
+            # The lab runs already: what it runs is what its `up` took,
+            # checked once this pass holds it.
+            guard.require_frozen({}, running=guard.running_binaries())
+        with PassRecord(args, steps) as record:
+            return run(args, steps, record)
+
+
+class PassRecord(archived_run.Run):
+    """A pass in the run archive: NAME/ holds every file the pass wrote in
+    its results directory and NAME/node-logs/ what each node's log gained,
+    copied however the pass ends; its readers, UDP clients and load
+    listeners are the run's listener steps."""
+
+    def __init__(self, args, steps: dict):
+        topology, regions = archived_run.local_topology(lab.NODES)
+        super().__init__(args.run_id or archived_run.default_run_id("latency-bench"), "local-lab",
+                         "latency-bench",
+                         code=archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT),
+                         settings={key: value for key, value in vars(args).items()
+                                   if key != "run_id"},
+                         topology=topology, regions=regions)
+        self.name = args.name
+        self.steps = steps
+        self.began_s = time.time()
+        self.slices = archived_run.LogSlices(lab.WORK / "logs")
+        self.slices.mark()
+        self.logs_taken = False
+        self.at_close(self.copy)
+
+    def node_logs(self) -> None:
+        """The nodes' logs of the pass, before the lab goes down."""
+        self.slices.take(self, f"{self.name}/node-logs")
+        self.logs_taken = True
+
+    def copy(self) -> None:
+        if not self.logs_taken:
+            self.node_logs()
+        self.add_tree(self.steps["out"], self.name, "raw",
+                      f"latency-bench pass {self.name}: arrivals, probes, hops.raw.ndjson, "
+                      "hops.json, summary.txt, nodes.ndjson (per-socket drops), load output, "
+                      "sender.log, plan.json", {"t_us": "us", "latency_us": "us"},
+                      since_s=self.began_s)
+        lanes: dict[str, dict[str, int]] = {}
+        for item in self.steps.get("readers") or []:
+            by_site = lanes.setdefault(f"hls-{item['lane']}", {})
+            by_site[item["site"]] = by_site.get(item["site"], 0) + self.steps["readers_per_kind"]
+        for item in self.steps.get("udp_clients") or []:
+            by_site = lanes.setdefault("udp", {})
+            by_site[item["site"]] = by_site.get(item["site"], 0) + 1
+        for item in self.steps.get("load") or []:
+            by_site = lanes.setdefault("load", {})
+            by_site[item["site"]] = by_site.get(item["site"], 0) \
+                + item["per_edge"] * len(item["edges"])
+        for lane, by_site in sorted(lanes.items()):
+            self.record_step(self.name, lane, sum(by_site.values()), by_site)
+
+
+def run_binaries(args, steps: dict) -> dict:
+    """The binaries a pass takes from the environment: the lab's when it
+    brings the lab up, the UDP client when a pass has UDP listeners, the
+    load tool when it has a crowd."""
+    out = guard.lab_binaries() if steps["lab_up"] is not None else {}
+    if any(item["kind"] == "udp" for item in steps["video"]["viewers"] + steps["udp_clients"]):
+        out["needletail-udp-client"] = pathlib.Path(args.udp_client)
+    if args.load_listeners > 0 or args.load_ramp:
+        out["needletail-load"] = LOAD_BIN
+    return out
 
 
 if __name__ == "__main__":

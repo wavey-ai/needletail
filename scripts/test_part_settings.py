@@ -33,7 +33,8 @@ def value_of(args: list[str], flag: str) -> str | None:
 
 def contributor_service() -> dict:
     lane = {"target": "10.0.0.2:1", "bind": "0.0.0.0:2", "child_node_id": "relay"}
-    return {"primary": lane, "warm_secondary": lane, "audio_epoch_ingress_target": "10.0.0.2:3",
+    return {"node_id": "contrib", "primary": lane, "warm_secondary": lane,
+            "audio_epoch_ingress_target": "10.0.0.2:3",
             "topology_generation": 1, "subscription_id": 1, "media_deadline_ms": 1000}
 
 

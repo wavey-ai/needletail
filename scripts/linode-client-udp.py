@@ -19,8 +19,8 @@ port, so that SSH and HTTP are not shaped.
 
 The whole run:
 
-  scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-client-udp.json
-  scripts/linode-small-mesh-lab.py watchdog --hours 1.5
+  scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-client-udp.json \
+      --watchdog-hours 1.5 --budget-usd B
   scripts/linode-small-mesh-deploy.py push $(scripts/linode-client-udp.py settings)
   scripts/linode-client-udp.py prepare
   scripts/linode-client-udp.py run

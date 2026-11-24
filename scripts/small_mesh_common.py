@@ -74,6 +74,28 @@ def nodes_for(state: dict, purpose: str) -> list[dict]:
     return [node for node in nodes_by_role(state, "load") if load_purpose(node) == purpose]
 
 
+# The port on which a contributor takes its source's AEP1 epochs (av-contrib
+# --daw-media-bind).
+DAW_MEDIA_PORT = 27100
+
+
+def contributors(state: dict) -> list[dict]:
+    """The contributors of a lab: the origin first, then the standby (the
+    node its topology marks `"standby": true`), which publishes the same
+    parts beside it."""
+    return sorted(nodes_by_role(state, "contributor"),
+                  key=lambda node: bool(node.get("standby")))
+
+
+def contributor_targets(state: dict) -> list[str]:
+    """Where a source sends every AEP1 epoch: `address:27100` of each
+    contributor, the origin first (one `--target` each for aep1-48k-probe
+    send). A contributor's VLAN address where it has one: the source host is
+    on its site's VLAN."""
+    return [f"{node.get('vlan_ipv4') or node['public_ipv4']}:{DAW_MEDIA_PORT}"
+            for node in contributors(state)]
+
+
 def ssh_base() -> list[str]:
     CONTROL_DIR.mkdir(mode=0o700, exist_ok=True)
     KNOWN_HOSTS.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +125,23 @@ def ssh(node: dict, command: str, check: bool = True, timeout: int = 600,
 
 def ssh_text(node: dict, command: str, **kwargs) -> str:
     return ssh(node, command, **kwargs).stdout.decode(errors="replace").strip()
+
+
+def forget_host(*addresses: str | None) -> None:
+    """A host whose key changed: a rebuilt instance keeps its address and
+    gets a new host key, and Linode gives a released address to another
+    instance. Each address's entries go from the worktree's known_hosts
+    (`ssh-keygen -R`, plain and hashed) and its ssh control connection is
+    closed (`ssh -O exit`, which only speaks to a master that exists), so
+    that the next ssh learns the new key once (accept-new) and does not
+    reuse a connection to the old host."""
+    for address in sorted({address for address in addresses if address}):
+        subprocess.run(["ssh", *ssh_base(), "-O", "exit", f"root@{address}"],
+                       capture_output=True, timeout=15, check=False)
+        if KNOWN_HOSTS.is_file():
+            subprocess.run(["ssh-keygen", "-R", address, "-f", str(KNOWN_HOSTS)],
+                           capture_output=True, timeout=30, check=False)
+            KNOWN_HOSTS.with_name(KNOWN_HOSTS.name + ".old").unlink(missing_ok=True)
 
 
 def rsync_to(node: dict, sources: list[str], destination: str,

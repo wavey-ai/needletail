@@ -9,13 +9,26 @@ contributor), and what every node did (CPU, throttling, memory, descriptors,
 sockets, drops).
 
   edge-campaign.py list [group ...]
-  edge-campaign.py run [--out DIR] [--no-slow] [group or scenario ...]
+  edge-campaign.py run [--out DIR] [--run-id ID] [--no-slow] [group or scenario ...]
   edge-campaign.py summary [DIR]
-  edge-campaign.py down
+  edge-campaign.py down [--force]
 
 A result is PASS, FAIL, or GAP: a failure that the scenario knows to be a
 missing feature, with the name of the gap. Evidence is written under
-target/edge-campaign/<run>/<scenario>/evidence.json.
+target/edge-campaign/<run>/<scenario>/evidence.json, or for a lab with an id
+(NEEDLETAIL_EDGE_LAB_ID) under target/edge-campaign-<id>/<run>/, with the
+`latest` link of that lab's runs. A run holds its lab (scripts/lab_guard.py:
+it waits while another run holds it) and refuses binaries outside a frozen
+set (scripts/freeze-binaries.py) unless NEEDLETAIL_ALLOW_LIVE=1. `down`
+does not wait for a run that holds the lab: it refuses at once and names
+the holder, and --force tears the lab down anyway.
+
+A run also keeps all its raw data in the run archive as each scenario ends
+(~/needletail-data/<run id>/, NEEDLETAIL_DATA_ROOT overrides; run id
+--run-id, else edge-campaign-<UTC time>): every scenario's directory, the
+slice of each node's log it wrote, every node's hop and stop journals since
+it began, its readers as listener steps; the node logs between scenarios;
+the summary (scripts/edge_campaign_core.py, CampaignRecord).
 """
 
 from __future__ import annotations
@@ -30,8 +43,10 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import edge_campaign_core as core  # noqa: E402
+import mesh_ops  # noqa: E402
 from edge_campaign_core import AUDIO, HQ, VIDEO, scenario  # noqa: E402,F401
 
 LON_READERS = "lon-readers"
@@ -2357,14 +2372,15 @@ def udp_command(host: str, edges: list[str], stream: int, count: int, seconds: i
                 entries: list[str] | None = None) -> list[str]:
     """needletail-load in a reader host's namespace, as scale-run starts it
     on a listener host. With `entries` each listener asks /api/assignment
-    where to subscribe and where to move (`edges` is then the fallback)."""
+    where to subscribe and where to move; without them it starts at edge i
+    mod n of `edges` (needletail-load takes one or the other, never both)."""
+    targets = (["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
+                "--server-name", lab.SERVER_NAME] if entries
+               else ["--edges", ",".join(edges)])
     command = lab.enter(host) + [
-        lab.binary("needletail-load"), "--edges", ",".join(edges), "--stream", str(stream),
+        lab.binary("needletail-load"), *targets, "--stream", str(stream),
         "--listeners", str(count), "--ramp", ramp or f"{count}@0", "--duration", str(seconds),
         "--sample", str(min(5, count)), "--out", str(out), "--label", label, "--quiet"]
-    if entries:
-        command += ["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
-                    "--server-name", lab.SERVER_NAME]
     # An A/B of the client session's flags (needletail-load options).
     return command + os.environ.get("NEEDLETAIL_LOAD_EXTRA_ARGS", "").split()
 
@@ -3273,7 +3289,9 @@ def autoscale_edge_lab(ctx):
          str(AUTOSCALE_SECONDS + 20),
          "--poll-s", "1", "--up-samples", "3", "--cooldown-s", "20", "--down-hold-s", "40",
          "--no-flap-s", "60", "--join-timeout-s", "60", "--drain-timeout-s", "40",
-         "--min-edges", "2", "--no-warm-pool"],
+         "--min-edges", "2", "--no-warm-pool",
+         # Its events and state into the campaign's run in the archive.
+         *(["--run-id", core.archive_run_id()] if core.archive_run_id() else [])],
         stdout=open(ctx.directory / "autoscale.log", "ab"), stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL, start_new_session=True)
     ctx.defer(lambda: controller.poll() is None and controller.terminate())
@@ -3398,6 +3416,366 @@ def autoscale_edge_lab(ctx):
     ctx.expect_served(hls)
 
 
+# =================================================================== change
+#
+# C CL5: the scored changes of C-operations 6.3. Each scenario is a run of
+# scripts/compare/change-run.py on the campaign's lab (--no-up): the
+# referee's probes on lon-readers and new-readers, the crowd and the steered
+# readers, the change command at 45 s, then the referee's own ntcmp
+# udp-ingest and change-window.py. The scenario's null runs first (the
+# engine's --dry-marks, or `sleep` under the same label for a plain kind),
+# then the change; each NEEDLETAIL_CHANGE_REPEAT times (default 1: "proved
+# locally" is 10 of 10 of both, change-run.py's summary.json counts every
+# run of the name). The checks are the referee's verdicts: every run passes
+# by its rule on every probe and label, and the nodes that the change must
+# restart did (their /api/node boot id) and no other did. Each scenario's
+# probes are sized from its command's bound (the timeouts it is given, never
+# its typical time, as scale-run sizes its own): long enough after it for
+# the referee's 120 no-change windows of its length.
+
+CHANGE_RUN = pathlib.Path(__file__).resolve().parent / "compare" / "change-run.py"
+EDGE_LAB = [sys.executable, str(pathlib.Path(__file__).resolve().parent / "edge_lab.py")]
+AUTOSCALE = [sys.executable,
+             str(pathlib.Path(__file__).resolve().parent / "linode-autoscale.py")]
+CHANGE_REPEAT = int(os.environ.get("NEEDLETAIL_CHANGE_REPEAT") or 1)
+CHANGE_LANES = "opus-1,pcm-1"
+# The crowd of the autoscale scenarios against the lab's 40,000-datagram
+# edges (SCALE_NEEDS): 30 one-path 1 ms listeners an edge read about 790
+# permille, over the controller's 700 trigger; 10 read about 260, under its
+# 450 for a scale-down.
+AUTOSCALE_UP_LISTENERS = 30
+AUTOSCALE_DOWN_LISTENERS = 10
+# The engine's timeouts the change commands are given, the proving run's
+# (phases-proving.json), and what a node may take with them: its gate, drain
+# and readiness, and its stop and start (scale-run's ENGINE_RESTART_S).
+CHANGE_TIMEOUTS = ["--gate-timeout-s", "10", "--drain-timeout-s", "15", "--ready-timeout-s", "30"]
+CHANGE_NODE_S = 10.0 + 15.0 + 30.0 + 15.0
+# change-run.py's --at: the change starts this long after the probes.
+CHANGE_AT_S = 45
+# The bounds of the commands with no engine timeouts: a crash (the kill,
+# 5 s at most for the process to go, the 1 s restart, then wait_back's 60 s);
+# a replace's 30 s gap; the autoscaler's scale verbs (its join timeout, 120 s,
+# and the rebalance's 60 s; down: its drain timeout, 60 s, and the stop) and
+# the controller's runs below (3 samples a second apart, the join timeout
+# they give, 60 s, the rebalance's 60 s; down: the 20 s hold, the 40 s drain,
+# the stop).
+CRASH_BOUND_S = 5.0 + 1.0 + 60.0
+REPLACE_GAP_S = 30.0
+SCALE_UP_BOUND_S = 120.0 + 60.0
+SCALE_DOWN_BOUND_S = 60.0 + 30.0 + 30.0
+AUTOSCALE_UP_BOUND_S = 3.0 + 60.0 + 60.0
+AUTOSCALE_DOWN_BOUND_S = 3.0 + 20.0 + 40.0 + 30.0
+_change_run = {}
+
+
+def change_run():
+    """scripts/compare/change-run.py as a module (its out_root, runs_of and
+    lab_overrides), loaded once."""
+    if "module" not in _change_run:
+        import importlib.util  # noqa: PLC0415
+        spec = importlib.util.spec_from_file_location("change_run", CHANGE_RUN)
+        module = sys.modules.get("change_run") or importlib.util.module_from_spec(spec)
+        if "change_run" not in sys.modules:
+            sys.modules["change_run"] = module
+            spec.loader.exec_module(module)
+        _change_run["module"] = module
+    return _change_run["module"]
+
+
+def change_needs(lanes: str, extra=()) -> list[str]:
+    """The lab settings of a change scenario: change-run.py's own `up`
+    settings for its lanes (it runs with --no-up on the campaign's lab),
+    then the scenario's."""
+    import argparse  # noqa: PLC0415
+    return change_run().lab_overrides(argparse.Namespace(lanes=lanes, set=[])) + list(extra)
+
+
+def probe_seconds(bound_s: float) -> int:
+    """change-run.py's --seconds for a change of at most `bound_s` at
+    CHANGE_AT_S: change-run.py's own seconds_needed (the referee's 120
+    no-change windows of the change's length after it), and its 360 at
+    least."""
+    tool = change_run()
+    at_ns = int(CHANGE_AT_S * 1e9)
+    return max(tool.MIN_SECONDS, tool.seconds_needed((at_ns, at_ns + int(bound_s * 1e9)), 0))
+
+
+def engine_bound_s(nodes: list[str], sites: list[str]) -> float:
+    """The bound of an engine command over `nodes`: CHANGE_NODE_S a node,
+    and a surge edge in each of `sites` that holds an edge slot out."""
+    surges = {lab.node(name)["site"] for name in lab.held_slots()
+              if lab.node(name)["role"] == "edge"} & set(sites)
+    return (len(nodes) + len(surges)) * CHANGE_NODE_S
+
+
+def change_run_argv(name: str, command: list[str], lanes: str, options: list[str],
+                    seconds: int, dry: bool = False) -> list[str]:
+    """change-run.py's command line for one command of a scenario, its
+    probes `seconds` long with the change at CHANGE_AT_S (`dry`: the
+    engine's null, COMMAND with --dry-marks)."""
+    return ([sys.executable, str(CHANGE_RUN), "run", "--name", name, "--no-up",
+             "--lanes", lanes, "--repeat", str(CHANGE_REPEAT), "--seconds", str(seconds),
+             "--at", str(CHANGE_AT_S), *options]
+            + (["--dry"] if dry else []) + ["--", *command])
+
+
+def boot_ids(path: pathlib.Path) -> dict[str, int | None]:
+    """{node: /api/node boot id} of a change-run.py nodes-before.json or
+    nodes-after.json."""
+    try:
+        documents = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for name, document in documents.items():
+        status = mesh_ops.status_of(document or None)
+        out[name] = status.boot_id if status else None
+    return out
+
+
+def restart_checks(ctx, run: dict, restarted: list[str] | None) -> None:
+    """The nodes the change restarts got a new boot id, and no other node
+    present before and after did (a node that joined or left, a slot, is
+    not compared). `restarted` None: the scenario does not judge restarts."""
+    if restarted is None:
+        return
+    directory = pathlib.Path(run["directory"])
+    before, after = boot_ids(directory / "nodes-before.json"), boot_ids(directory / "nodes-after.json")
+    both = sorted(set(before) & set(after))
+    unknown = [name for name in both if before[name] is None or after[name] is None]
+    changed = [name for name in both if name not in unknown and before[name] != after[name]]
+    ctx.check(f"{directory.name}: every node /api/node answers with a boot id", not unknown,
+              unknown)
+    if restarted:
+        ctx.check(f"{directory.name}: {', '.join(restarted)} restarted (new boot id)",
+                  all(name in changed for name in restarted),
+                  {name: (before.get(name), after.get(name)) for name in restarted})
+    others = [name for name in changed if name not in restarted]
+    ctx.check(f"{directory.name}: no other node restarted", not others, others)
+
+
+def verdict_checks(ctx, run: dict) -> None:
+    """A run of change-run.py as checks: its status (the referee's rule on
+    every probe and label, the command's exit, the probe long enough), and
+    for a change every label on every probe, with CW's figures."""
+    name = pathlib.Path(run["directory"]).name
+    ctx.check(f"{name}: pass by the referee's rule", run.get("status") == "pass",
+              {"status": run.get("status"), "reasons": run.get("reasons"),
+               "command_exit": run.get("command_exit"), "hints": run.get("hints")})
+    figures = {}
+    for label, per in (run.get("labels") or {}).items():
+        for probe, result in per.items():
+            # CW's false-fail rate only where it could measure it (never a
+            # 0.0 by construction).
+            rate, unmeasured = change_run().null_fail_rate(result)
+            result = {**result, "null_fail_rate": rate,
+                      **({"null_fail_rate_unmeasured": unmeasured} if unmeasured else {})}
+            figures[f"{label} {probe}"] = result
+            if run["kind"] == "change":
+                ctx.check(f"{name}: {label} on {probe}", result.get("pass") is True
+                          and "error" not in result,
+                          {key: result.get(key) for key in (
+                              "pass", "missing", "gap_ms", "gap_bar_ms", "p99_ms", "p99_bar_ms",
+                              "null_fail_rate", "null_fail_rate_unmeasured", "note", "error")
+                           if result.get(key) is not None})
+    ctx.measure(f"cw_{name}", figures)
+
+
+def change_scenario(ctx, command: list[str], null: list[str] | None, lanes: str,
+                    options: list[str], restarted: list[str] | None, bound_s: float,
+                    setup=None) -> None:
+    """Run the scenario's null, then its change, through change-run.py, and
+    take the referee's verdicts as the scenario's checks; both with probes
+    sized from the change's bound. The campaign's own sources are stopped
+    for the runs (change-run.py starts the senders of its lanes) and
+    started again after."""
+    name = ctx.scenario.name
+    if setup is not None:
+        setup(ctx)
+    lab.stop_sources()
+    ctx.defer(lambda: lab.start_sources(6 * 3600, audio="daw"))
+    scenario_dir = change_run().out_root() / name
+    seconds = probe_seconds(bound_s)
+    ctx.measure("change_bound_s", bound_s)
+    ctx.measure("probe_seconds", seconds)
+    null_argv = (change_run_argv(name, command, lanes, options, seconds, dry=True)
+                 if null is None else change_run_argv(name, null, lanes, options, seconds))
+    for kind, argv in (("null", null_argv),
+                       ("change", change_run_argv(name, command, lanes, options, seconds))):
+        known = {run.get("directory") for run in change_run().runs_of(scenario_dir)}
+        ctx.event(f"change-run.py {kind}: {' '.join(argv[2:])}")
+        with open(ctx.directory / f"change-run-{kind}.log", "ab") as log:
+            done = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.DEVNULL)
+        runs = [run for run in change_run().runs_of(scenario_dir)
+                if run.get("directory") not in known and run.get("kind") == kind]
+        ctx.check(f"change-run.py made the {kind} runs ({CHANGE_REPEAT})",
+                  len(runs) == CHANGE_REPEAT, {"exit": done.returncode, "runs": len(runs)})
+        for run in runs:
+            verdict_checks(ctx, run)
+            if kind == "change":
+                restart_checks(ctx, run, restarted)
+    summary = scenario_dir / "summary.json"
+    if summary.is_file():
+        record = json.loads(summary.read_text())
+        ctx.measure("change_run_tally", record.get("tally"))
+        ctx.measure("proved_locally", record.get("proved"))
+
+
+def start_slot(name: str):
+    """A set-up: the slot taken into service before the change (a scenario
+    that needs one edge more than the lab serves), held out again after."""
+    def setup(ctx) -> None:
+        ctx.defer(lambda: (lab.terminate_service(name), lab.set_slot_in_service(name, False)))
+        lab.set_slot_in_service(name, True)
+        if lab.service_pid(name) is None:
+            lab.start_service(name)
+        ctx.event(f"{name} taken into service")
+    return setup
+
+
+def hold_out_after(*names: str):
+    """A set-up: slots that the change takes into service (a scale-up, the
+    controller's join) are held out again after the scenario."""
+    def setup(ctx) -> None:
+        for name in names:
+            ctx.defer(lambda name=name: (lab.terminate_service(name),
+                                         lab.set_slot_in_service(name, False)))
+    return setup
+
+
+def needs_set_b(ctx) -> None:
+    """A set-up: the lab runs a second build set (up with
+    NEEDLETAIL_AV_MESH_BIN_NEXT), or an upgrade has nothing to go to."""
+    if "b" not in lab.build_sets():
+        raise lab.LabError("the lab has no build set b: export NEEDLETAIL_AV_MESH_BIN_NEXT "
+                           "(and NEEDLETAIL_AV_CONTRIB_BIN_NEXT) before the campaign")
+
+
+def register_change(name: str, question: str, command: list[str], null: list[str] | None,
+                    restarted, bound, criterion: str = "", needs=(), lanes: str = CHANGE_LANES,
+                    options=(), setup=None) -> None:
+    """One scenario of the change group: `restarted` is the nodes the change
+    must restart (a callable of the lab, evaluated when the scenario runs),
+    [] for none, None when restarts are not judged; `bound` the most its
+    command may take in seconds (or a callable of the lab, likewise)."""
+    def run(ctx) -> None:
+        change_scenario(ctx, command, null, lanes, list(options),
+                        restarted() if callable(restarted) else restarted,
+                        bound() if callable(bound) else bound, setup)
+    scenario(name, "change", question,
+             criterion or ("change-run.py: the null and the change pass by the referee's rule "
+                           "(change-window.py: 0 missing, silence and p99 within the 97.5th "
+                           "percentile of the probe's own no-change windows) on every probe"),
+             needs=change_needs(lanes, needs), slow=True)(run)
+
+
+def london_edges() -> list[str]:
+    return [name for name in lab.edges("london") if name not in lab.held_slots()]
+
+
+def distributors_in_service() -> list[str]:
+    return [name for site in ("london", "newyork") for name in lab.distributors(site)
+            if name not in lab.held_slots()]
+
+
+def every_node() -> list[str]:
+    return [name for name in lab.standing_services()
+            if lab.node(name)["role"] in ("edge", "distributor", "contributor")]
+
+
+ROLL_EDGES = EDGE_LAB + ["roll", "edges", "--sites", "london", *CHANGE_TIMEOUTS]
+ROLL_FORWARDERS = EDGE_LAB + ["roll", "forwarders", *CHANGE_TIMEOUTS]
+UPGRADE_ALL = EDGE_LAB + ["roll", "all", "--build", "b", *CHANGE_TIMEOUTS]
+UPGRADE_BACK = EDGE_LAB + ["roll", "all", "--build", "a", *CHANGE_TIMEOUTS]
+FORWARDER_CRASH = EDGE_LAB + ["crash", "new-dist-a"]
+# The typical times of the commands that have no dry mode, for their
+# `sleep` nulls (C 6.2): a crash and its return, a replace with its 30 s
+# gap, a scale-up to the rebalance's end, a scale-down to the stop.
+CRASH_NULL = ["sleep", "5"]
+REPLACE_NULL = ["sleep", "45"]
+SCALE_NULL = ["sleep", "30"]
+AUTOSCALE_NULL = ["sleep", "60"]
+CELLS = (("opus25", "on 2.5 ms Opus", {"lanes": "opus-2.5"}),
+         ("client-loss", "with 1% loss on the probe hosts' links",
+          {"options": ["--client-loss", "loss 1%"]}),
+         ("wan-loss", "with 1% loss on New York's wide-area link",
+          {"options": ["--wan-loss", "newyork=loss 1%"]}))
+def roll_edges_bound_s() -> float:
+    return engine_bound_s(london_edges(), ["london"])
+
+
+def roll_forwarders_bound_s() -> float:
+    return engine_bound_s(distributors_in_service(), [])
+
+
+def every_node_bound_s() -> float:
+    return engine_bound_s(every_node(), ["london", "newyork"])
+
+
+for _name, _question, _command, _null, _restarted, _bound, _extra in (
+        ("roll-edges", "Is a rolling restart of London's edges hitless for every probe?",
+         ROLL_EDGES, None, london_edges, roll_edges_bound_s, {"needs": ["slots=lon-edge-4"]}),
+        ("roll-forwarders", "Is a rolling restart of every forwarder hitless for every probe?",
+         ROLL_FORWARDERS, None, distributors_in_service, roll_forwarders_bound_s, {}),
+        ("upgrade-all", "Is a rolling upgrade of every node to build b hitless?",
+         UPGRADE_ALL, None, every_node, every_node_bound_s, {"setup": needs_set_b}),
+        ("forwarder-kill-return", "Is a forwarder crash and its return hitless?",
+         FORWARDER_CRASH, CRASH_NULL, ["new-dist-a"], CRASH_BOUND_S, {})):
+    register_change(_name, _question, _command, _null, _restarted, _bound, **_extra)
+    for _cell, _words, _change in CELLS:
+        _options = {**_extra, **_change}
+        register_change(f"{_name}-{_cell}", f"{_question[:-1]} {_words}?", _command, _null,
+                        _restarted, _bound, **_options)
+register_change("upgrade-back", "Is a rolling upgrade of every node back to build a hitless?",
+                UPGRADE_BACK, None, every_node, every_node_bound_s, setup=needs_set_b)
+register_change("replace-edge", "Is a replace of lon-edge-1 hitless, and nothing else restarted?",
+                EDGE_LAB + ["replace", "lon-edge-1", "--gap-s", f"{REPLACE_GAP_S:g}",
+                            *CHANGE_TIMEOUTS], REPLACE_NULL,
+                ["lon-edge-1"], CHANGE_NODE_S + REPLACE_GAP_S)
+# A forwarder's replace: its slot started and made ready, then the node
+# itself.
+register_change("replace-forwarder",
+                "Is a replace of lon-dist-a through lon-dist-c hitless, nothing else restarted?",
+                EDGE_LAB + ["replace", "lon-dist-a", "--gap-s", f"{REPLACE_GAP_S:g}",
+                            *CHANGE_TIMEOUTS], REPLACE_NULL,
+                ["lon-dist-a"], 2 * CHANGE_NODE_S + REPLACE_GAP_S)
+register_change("scale-up", "Is the scale-up verb hitless (it ends when the rebalance is still)?",
+                AUTOSCALE + ["scale", "up", "--backend", "edge_lab", "--site", "london",
+                             "--stream", str(OPS_STREAM)], SCALE_NULL, [], SCALE_UP_BOUND_S,
+                needs=SCALE_NEEDS, setup=hold_out_after("lon-edge-4"))
+register_change("scale-down", "Is the scale-down verb hitless (it ends at the stop)?",
+                AUTOSCALE + ["scale", "down", "--backend", "edge_lab", "--site", "london",
+                             "--stream", str(OPS_STREAM)], SCALE_NULL, [], SCALE_DOWN_BOUND_S,
+                needs=SCALE_NEEDS, setup=start_slot("lon-edge-4"))
+register_change("autoscale-edges-up",
+                "Does the controller alone add an edge over its trigger, hitlessly?",
+                AUTOSCALE + ["run", "--backend", "edge_lab", "--until", "join", "--sites",
+                             "london", "--stream", str(OPS_STREAM), "--poll-s", "1",
+                             "--up-samples", "3", "--join-timeout-s", "60"],
+                AUTOSCALE_NULL, [], AUTOSCALE_UP_BOUND_S, needs=SCALE_NEEDS,
+                setup=hold_out_after("lon-edge-4"),
+                options=["--load-listeners", str(AUTOSCALE_UP_LISTENERS)])
+register_change("autoscale-edges-down",
+                "Does the controller alone drain and stop an edge under its trigger, hitlessly?",
+                AUTOSCALE + ["run", "--backend", "edge_lab", "--until", "stopped", "--sites",
+                             "london", "--stream", str(OPS_STREAM), "--poll-s", "1",
+                             "--down-hold-s", "20", "--drain-timeout-s", "40",
+                             "--no-warm-pool"],
+                AUTOSCALE_NULL, [], AUTOSCALE_DOWN_BOUND_S, needs=SCALE_NEEDS,
+                setup=start_slot("lon-edge-4"),
+                options=["--load-listeners", str(AUTOSCALE_DOWN_LISTENERS)])
+register_change("autoscale-forwarders",
+                "Does the controller alone join dist-c, warm, in London and New York?",
+                AUTOSCALE + ["run", "--backend", "edge_lab", "--until", "join", "--sites",
+                             "london,newyork", "--stream", str(OPS_STREAM), "--forwarders",
+                             "--lease-k", "2", "--poll-s", "1", "--up-samples", "3",
+                             "--join-timeout-s", "60"],
+                AUTOSCALE_NULL, [], AUTOSCALE_UP_BOUND_S, needs=SCALE_NEEDS,
+                setup=hold_out_after("lon-dist-c", "new-dist-c"),
+                options=["--load-listeners", str(AUTOSCALE_UP_LISTENERS)])
+
+
 # =================================================================== driver
 
 def select(arguments: list[str], slow: bool) -> list[core.Scenario]:
@@ -3437,6 +3815,7 @@ def main() -> None:
             print(f"{item.name:32} {item.group:20} {item.question}")
     elif command == "run":
         out = None
+        run_id = None
         slow = True
         rest = []
         index = 0
@@ -3444,31 +3823,53 @@ def main() -> None:
             if arguments[index] == "--out":
                 out = pathlib.Path(arguments[index + 1])
                 index += 2
+            elif arguments[index] == "--run-id":
+                run_id = arguments[index + 1]
+                index += 2
             elif arguments[index] == "--no-slow":
                 slow = False
                 index += 1
             else:
                 rest.append(arguments[index])
                 index += 1
-        directory = out or core.RUNS / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        directory.mkdir(parents=True, exist_ok=True)
-        (core.RUNS / "latest").unlink(missing_ok=True)
-        try:
-            (core.RUNS / "latest").symlink_to(directory.resolve())
-        except OSError:
-            pass
-        for item in select(rest, slow):
-            core.run_scenario(item, directory)
+        items = select(rest, slow)
+        core.guard.require_frozen(core.guard.lab_binaries())
+        # SIGTERM or SIGHUP (kill, timeout, a closed pane) unwinds the run
+        # as Ctrl-C does: the scenario in hand and the run's end still go
+        # into the archive.
+        with archived_run.stopped_by_signals(), \
+                core.guard.hold("edge-campaign.py run " + " ".join(arguments)):
+            directory = out or core.RUNS / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            directory.mkdir(parents=True, exist_ok=True)
+            core.RUNS.mkdir(parents=True, exist_ok=True)
+            (core.RUNS / "latest").unlink(missing_ok=True)
             try:
-                core.restore()
-            except lab.LabError as error:
-                print(f"  (restore failed: {error})")
+                (core.RUNS / "latest").symlink_to(directory.resolve())
+            except OSError:
+                pass
+            with core.archived(run_id or archived_run.default_run_id("edge-campaign"),
+                               [item.name for item in items]) as record:
+                record.directory = directory
+                print(f"run archive: {record.run.path}", flush=True)
+                for item in items:
+                    core.run_scenario(item, directory)
+                    try:
+                        core.restore()
+                    except lab.LabError as error:
+                        print(f"  (restore failed: {error})")
         print()
         print_summary(directory)
         print(f"evidence: {directory}")
     elif command == "summary":
         print_summary(pathlib.Path(arguments[0]) if arguments else core.RUNS / "latest")
     elif command == "down":
+        if arguments not in ([], ["--force"]):
+            sys.exit(__doc__)
+        entry = core.guard.holder()
+        inside = os.environ.get(core.guard.HELD_ENV) == str(lab.WORK.resolve())
+        if entry is not None and not inside and not arguments:
+            sys.exit(f"lab {lab.lab_key()} is held by {core.guard.describe(entry)}: `down` "
+                     "would pull it from under that run; --force tears it down anyway")
         lab.down()
     else:
         sys.exit(__doc__)

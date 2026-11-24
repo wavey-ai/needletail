@@ -441,6 +441,19 @@ mod tests {
         assert!(validate_source(&insecure, "/api/mesh/local").is_err());
     }
 
+    /// A self-signed CA (P-256, CN needletail-test-ca, its key discarded):
+    /// what the source client is built to trust.
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBbzCCARagAwIBAgIUfEzHXHnFB2jLakZWIKNmVNJLtDcwCgYIKoZIzj0EAwIw\n\
+HTEbMBkGA1UEAwwSbmVlZGxldGFpbC10ZXN0LWNhMCAXDTI2MTEyNDAwNTcyNloY\n\
+DzIxMjYxMDMxMDA1NzI2WjAdMRswGQYDVQQDDBJuZWVkbGV0YWlsLXRlc3QtY2Ew\n\
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ701u4EyHjha9rzURslTy1IAhiqY4c\n\
+KKTPU3AwS/6Nz7u2v6kOsVsUyls2PusQiVrDGlcn7ZfUSJw6f09YmiiEozIwMDAd\n\
+BgNVHQ4EFgQUzRyllnxAakCEcxF5Y5A3OfcVsyAwDwYDVR0TAQH/BAUwAwEB/zAK\n\
+BggqhkjOPQQDAgNHADBEAiB3I45PPUO/JLZ+tU1ZTZyp7m1QvIPjCtnmi2PSgi4n\n\
+VQIgANk4mweQydW7XF9YEqfJexpnVf8UUNG9XtvAv2IRhAc=\n\
+-----END CERTIFICATE-----\n";
+
     #[test]
     fn local_source_uses_loopback_instead_of_public_hairpinning() {
         let source = HttpSource {
@@ -448,7 +461,8 @@ mod tests {
             endpoint: "https://ops.example.com:19444/api/mesh/local".to_owned(),
             address: "192.0.2.1:19444".parse().unwrap(),
         };
-        let prepared = prepare_source_for_node(source, "edge-london").unwrap();
+        let tls_ca = Certificate::from_pem(TEST_CA_PEM.as_bytes()).unwrap();
+        let prepared = prepare_source_for_node(source, "edge-london", &tls_ca).unwrap();
         assert_eq!(prepared.source.address, "127.0.0.1:19444".parse().unwrap());
     }
 }

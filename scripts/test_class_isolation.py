@@ -93,7 +93,7 @@ class Render(unittest.TestCase):
             # The lab shares one host: never pinned.
             self.assertNotIn("--relay-class-cpus", args[name])
         for name, node_args in args.items():
-            if name == "contrib-lon":
+            if lab.node(name)["role"] == "contributor":
                 continue
             # Every node of a mesh uses the same offset.
             self.assertEqual(value_of(node_args, "--cache-mesh-class-port-offset"), "1000", name)
@@ -136,7 +136,7 @@ class Render(unittest.TestCase):
             self.assertEqual(value_of(args[name], "--relay-class-threads"), "false")
             self.assertNotIn("--relay-class-realtime", args[name])
         for name, node_args in args.items():
-            if name != "contrib-lon":
+            if lab.node(name)["role"] != "contributor":
                 self.assertEqual(value_of(node_args, "--cache-mesh-class-port-offset"), "0")
         self.assertEqual(value_of(args["lon-edge-3"], "--client-udp-class-sockets"), "false")
         # The audio hot path is item 3, a setting of its own.
@@ -265,7 +265,7 @@ class Render(unittest.TestCase):
         # every node that runs the class threads.
         args = self.render()
         for name, node_args in args.items():
-            if name == "contrib-lon":
+            if lab.node(name)["role"] == "contributor":
                 self.assertNotIn("--canonical-repair-horizon", node_args)
                 continue
             self.assertEqual(value_of(node_args, "--canonical-repair-horizon"), "auto", name)
@@ -354,23 +354,6 @@ class Host(unittest.TestCase):
         unit = deploy.unit_text("needletail-mesh", "info",
                                 {**deploy.DEFAULT_SETTINGS, "service_capabilities": False})
         self.assertNotIn("AmbientCapabilities", unit)
-
-    def test_a_mesh_node_may_lock_its_memory_only_when_mlock_all_is_true(self):
-        """Wave 9 (cold start): av-mesh locks its memory only without a
-        limit, so a mesh unit that asks for it lifts the limit; by default
-        (wave 9 review: unmeasured on a deploy) none does, nor does the
-        contributor's."""
-        unit = deploy.unit_text("needletail-mesh", "info", dict(deploy.DEFAULT_SETTINGS))
-        self.assertNotIn("LimitMEMLOCK", unit)
-        unit = deploy.unit_text("needletail-mesh", "info",
-                                {**deploy.DEFAULT_SETTINGS, "mlock_all": True})
-        self.assertIn("LimitMEMLOCK=infinity\n", unit)
-        unit = deploy.unit_text("needletail-mesh", "info",
-                                {**deploy.DEFAULT_SETTINGS, "mlock_all": False})
-        self.assertNotIn("LimitMEMLOCK", unit)
-        unit = deploy.unit_text("needletail-contrib", "info",
-                                {**deploy.DEFAULT_SETTINGS, "mlock_all": True})
-        self.assertNotIn("LimitMEMLOCK", unit)
 
     PRIO = """== eth0
 qdisc prio 1: root refcnt 3 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1

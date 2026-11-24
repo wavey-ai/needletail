@@ -8,10 +8,13 @@ python3 -m unittest scripts/test_campaign_merged.py"""
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import io
+import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -39,6 +42,10 @@ class Base(unittest.TestCase):
         self.work = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.work, True)
         patcher = mock.patch.object(lab, "WORK", self.work)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # A campaign's run goes into a temporary archive, never ~/needletail-data.
+        patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(self.work / "data")})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -187,6 +194,109 @@ class ManyStreams(Base):
                              "lon-edge-1": 0.0})
         self.assertIn("relay", ctx.measures["cpu_percent_by_role"])
         self.assertTrue(ctx.checks[0][1])
+
+
+class PerLab(Base):
+    """Two labs of one host (NEEDLETAIL_EDGE_LAB_ID) keep their runs apart,
+    a run holds its lab and takes frozen binaries, and one lab at a time
+    runs the players."""
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (mock.patch.object(lab, "REGISTRY", self.work / "registry"),
+                        mock.patch.object(core, "RUNS", self.work / "runs")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_the_runs_of_a_lab_with_an_id_are_its_own(self):
+        """The campaign as a lab's shell starts it: RUNS (where `run` puts
+        its runs and `latest`) follows NEEDLETAIL_EDGE_LAB_ID."""
+        def runs(**extra) -> pathlib.Path:
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("NEEDLETAIL_EDGE_LAB_ID", "NEEDLETAIL_EDGE_LAB_WORK")}
+            env.update(extra)
+            program = (f"import sys; sys.path.insert(0, {str(HERE)!r}); "
+                       "import edge_campaign_core as core; print(core.RUNS)")
+            ran = subprocess.run([sys.executable, "-c", program], env=env, capture_output=True,
+                                 text=True, check=True)
+            return pathlib.Path(ran.stdout.strip())
+
+        self.assertEqual(runs(NEEDLETAIL_EDGE_LAB_ID="a"), lab.ROOT / "target" / "edge-campaign-a")
+        self.assertEqual(runs(), lab.ROOT / "target" / "edge-campaign")
+
+    def run_campaign(self, *arguments: str, allow_live: bool = True) -> list:
+        seen = []
+
+        def scenario(item, directory, sample=True):
+            seen.append((item.name, directory, core.guard.holder(lab.WORK)))
+            return {}
+
+        with mock.patch.object(core, "run_scenario", scenario), \
+                mock.patch.object(core, "restore", lambda: None), \
+                mock.patch.dict(os.environ), \
+                mock.patch.object(sys, "argv", ["edge-campaign.py", *arguments]), \
+                redirect_stdout(io.StringIO()):
+            os.environ.pop("NEEDLETAIL_ALLOW_LIVE", None)
+            if allow_live:
+                os.environ["NEEDLETAIL_ALLOW_LIVE"] = "1"
+            campaign.main()
+        return seen
+
+    def test_a_run_holds_its_lab_and_points_its_own_latest(self):
+        seen = self.run_campaign("run", "--out", str(self.work / "r1"), "baseline")
+        self.assertEqual([name for name, *_ in seen], ["baseline"])
+        holder = seen[0][2]
+        self.assertEqual(holder["pid"], os.getpid())
+        self.assertIn("edge-campaign.py run", holder["command"])
+        self.assertIsNone(core.guard.holder(lab.WORK))
+        self.assertEqual((self.work / "runs" / "latest").resolve(), (self.work / "r1").resolve())
+
+    def test_a_run_refuses_live_binaries(self):
+        live = self.work / "av-mesh"
+        live.write_text("")
+        with mock.patch.object(core.guard, "lab_binaries", return_value={"av-mesh": live}):
+            with self.assertRaisesRegex(SystemExit, "not in a frozen set"):
+                self.run_campaign("run", "baseline", allow_live=False)
+        self.assertFalse((self.work / "runs").exists())
+
+    def test_down_refuses_at_once_while_another_run_holds_the_lab(self):
+        downs = []
+        with mock.patch.object(lab, "down", lambda: downs.append(True)):
+            with core.guard.hold("edge-campaign.py run baseline"):
+                # Inside the hold (a tool of the run): down goes ahead.
+                self.run_campaign("down")
+                self.assertEqual(len(downs), 1)
+                held = os.environ.pop(core.guard.HELD_ENV)
+                try:
+                    with self.assertRaisesRegex(SystemExit, r"held by pid .*edge-campaign.py run "
+                                                            r"baseline.*--force"):
+                        self.run_campaign("down")
+                    self.assertEqual(len(downs), 1)
+                    self.run_campaign("down", "--force")
+                    self.assertEqual(len(downs), 2)
+                finally:
+                    os.environ[core.guard.HELD_ENV] = held
+            self.run_campaign("down")
+            self.assertEqual(len(downs), 3)
+
+    def test_player_scenarios_take_the_players_lock(self):
+        held = {}
+
+        def evidence(item, directory, sample):
+            with open(lab.REGISTRY / core.guard.PLAYERS_LOCK, "a+") as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held[item.name] = False
+                except BlockingIOError:
+                    held[item.name] = True
+            return {}
+
+        lab.REGISTRY.mkdir(parents=True)
+        with mock.patch.object(core, "scenario_evidence", evidence):
+            for name in ("player-hlsjs-4k", "ladder-hlsjs-reorder", "baseline"):
+                core.run_scenario(core.REGISTRY[name], self.work)
+        self.assertEqual(held, {"player-hlsjs-4k": True, "ladder-hlsjs-reorder": True,
+                                "baseline": False})
 
 
 if __name__ == "__main__":

@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Vendored unchanged from needletail rm/arch f53eae8 (the lead's archive writer), so
-# the referee's runs and the lead's share one manifest schema. Replace with the
-# merged copy once it lands on low-latency.
 """The run archive: every local and Linode run keeps all its raw data in
 ~/needletail-data/<run id>/ (NEEDLETAIL_DATA_ROOT overrides the root),
 outside any repo or target directory, with a manifest.json that says what

@@ -26,51 +26,198 @@ the cgroups are scopes of the user's systemd manager.
 
   edge_lab.py up [key=value ...]        build the networks and start every service
   edge_lab.py down                      stop everything and remove the namespaces
-  edge_lab.py status                    one line for each node
+  edge_lab.py layout [up settings]      the CPU map `up` would make of its layout
+                                        settings (own_cpus, leave_out, node_cpus, cpus,
+                                        rt); nothing starts
+  edge_lab.py status                    the labs on this host, and one line for each
+                                        node: build set, build, state, drain reasons
   edge_lab.py sh <node> <command...>    run a command in the namespace of a node
   edge_lab.py net <node> <pub|vlan> <out|in|both> <netem spec | clear>
   edge_lab.py wan <site> <out|in|both> <netem spec | clear>
-  edge_lab.py sources <seconds>         start the 4K video and the audio sources
+  edge_lab.py sources <seconds>         start the 4K video and the audio sources in
+                                        lon-src: every AEP1 epoch to both contributors
   edge_lab.py start <node>              start a node's service (a slot: take it into
                                         service)
   edge_lab.py stop <node>               stop a node's service (SIGTERM; a slot: out of
                                         service again)
   edge_lab.py drain <node>              POST /api/control/drain-node for that node
   edge_lab.py resume <node>             POST /api/control/resume-node for that node
+  edge_lab.py crash <node> [--restart-s 1]
+                                        SIGKILL a node's service, start it again
+                                        after the unit's RestartSec, and return
+                                        when it is back (ready, or /up answers)
+  edge_lab.py burn <node> <seconds>     busy loops in the node's own cgroup, on its CPUs
+  edge_lab.py kill <node> [--unprotected] [--video-gap accept] [--gate-timeout-s 30]
+                                        a contributor or a first forwarder killed (SIGKILL)
+                                        and held down, behind workstream A's gate; exit 2
+                                        and nothing touched when the other contributor (or
+                                        forwarder) does not carry every stream
+  edge_lab.py return <node> [--ready-timeout-s 60]
+                                        the node `kill` held down started and made ready
+  edge_lab.py freeze <node> --ms N      a contributor or a first forwarder stopped
+                                        (SIGSTOP) for N ms and thawed
+                                        (kill, return, freeze: stdout is their two marks,
+                                        --marks FILE appends them; scripts/contributor_changes.py)
+  edge_lab.py roll <edges|forwarders|contributors|all> [--build a|b] [--nodes a,b]
+              [--sites s,..] [--force] [--dry-marks] [--resume] [engine options]
+                                        a roll through the change engine (mesh_ops):
+                                        one node at a time, gated, made ready, rolled
+                                        back on the build's failure; stdout is its two
+                                        marks. Without --build: a rolling restart of
+                                        each node on its own build set
+  edge_lab.py restart <node> [--hold-s 0] [--rollback] [--dry-marks] [--resume]
+                                        one node restarted through the engine's gates
+  edge_lab.py replace <node> [--gap-s 30] [--no-slot] [--resume]
+                                        the engine's replace: an edge drained, stopped,
+                                        "rebuilt" (--gap-s down, its drain file gone),
+                                        started and resumed; a forwarder through its
+                                        site's dist-c slot
+  edge_lab.py rt-check [node ...]       is each node's audio class thread SCHED_FIFO
+                                        and pinned (rt=1): its fast plane's counters
+                                        and the kernel's view of its threads; exit 1
+                                        when one is not
+  Engine options: --marks FILE --node-marks FILE --gate-timeout-s 30
+  --drain-timeout-s 30 --ready-timeout-s 60 --on-failure stop|rollback-all
+  --surge auto|never --parity-ms 1.0. Exit status is the engine's (0 done, 2
+  refused, 3 stopped, 4 rolled back, 5 no answer, 130 interrupted).
+  roll, restart, replace, kill, return and freeze also take --nice 10 (the
+  tool's own priority, lowered to it) and --poll-s 1.0 (a node is read at
+  most once a poll; a refusing gate backs off to 4 s). They reach the nodes
+  through one kept-open HTTPS helper in the lab's namespace (ns_http.py),
+  not a curl process and a TLS handshake a request.
 
 Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
 peer list naming them, but does not start, as the large mesh's autoscale
-slots: lon-dist-c always (a third London forwarder, a fast-plane lease child
-of lon-dist-a and lon-dist-b and a cache-mesh parent of the edges, never a
-compiled relay child), and lon-edge-4 with `up slots=lon-edge-4`. A slot is
-in service once `start` (or the autoscaler's edge_lab backend) takes it in;
-until then edges() and distributors() leave it out, and restore() does not
-start it. Starting one restarts no other service: their arguments already
-name it.
+slots: lon-dist-c and new-dist-c always (a third forwarder of its site, a
+fast-plane lease child of the site's dist-a and dist-b and a cache-mesh
+parent of its edges, never a compiled relay child), and lon-edge-4 and
+new-edge-3 with `up slots=lon-edge-4,new-edge-3`. A slot is in service once
+`start` (or the autoscaler's edge_lab backend) takes it in; until then
+edges() and distributors() leave it out, and restore() does not start it.
+Starting one restarts no other service: their arguments already name it.
+
+Several labs on one host. A lab is its state directory. NEEDLETAIL_EDGE_LAB_ID
+(one to eight of a-z and 0-9) names it: the state directory is then
+target/elab-<id> (NEEDLETAIL_EDGE_LAB_WORK still overrides the directory).
+Networks, addresses and ports are inside each lab's own namespaces; the
+systemd units carry the state directory's name and a hash of its path. `up`
+writes the lab into a registry that every worktree of the host shares
+($XDG_RUNTIME_DIR/needletail-labs/<id>.json) and `down` removes it:
+- `up` on a running lab of another owner (NEEDLETAIL_EDGE_LAB_OWNER, by
+  default the id), or on an id that runs from another state directory, is
+  refused unless `up take=1`, which stops that lab first.
+- `up cpus=A-B` (or NEEDLETAIL_EDGE_LAB_CPUS=A-B) keeps everything the lab
+  runs on host CPUs A to B: the last max(2, N // 4) of them for the reader
+  hosts, the load tool, probes, senders and the lab's own commands, the
+  others for the nodes, each a window of as many CPUs as its limit, taken
+  round robin (nodes share CPUs when the range is short; a held slot takes
+  its window when it is taken in). A lab without a range may run on every
+  CPU. CPUs that a registered lab has are refused unless `up
+  cpus_overlap=1`, and so is any CPU while a lab that the registry does not
+  know runs. The standing layout of two labs on the 32 CPU host: lab a on
+  2-15, lab b on 16-29.
+- `up node_cpus=FIRST` is the layout of one lab alone: each node its own
+  CPUs from FIRST on (the contributors 2 each, lon-src 2, lon-edge-4 and
+  new-edge-3 included, the two dist-c slots none: they cannot be taken in
+  under it), the reader hosts on every other CPU of the host: 4 CPUs on the
+  32 CPU host from 0.
+- `up own_cpus=1 [leave_out=a,b,site]` is the own-CPU layout of the whole
+  host for the change proofs (C 6.3.1): every mesh node two CPUs of its own
+  from CPU 0 (the contributors too), the source host's sender the last CPU
+  alone, the CPUs between them "_rest" (change-run.py splits it between its
+  probes and its tools). `leave_out=` names nodes, or a site for all of its
+  nodes, that the lab neither renders nor starts nor gives CPUs (default:
+  lon-dist-c and new-dist-c); a lab that does not fit is refused with what
+  to leave out. `edge_lab.py layout <settings>` prints the map only.
+- Whatever the lab runs beside a node's service is in one cgroup, the scope
+  needletail-lab-...-tools.scope, the process that drives the lab included,
+  so the lab's own CPU time can be read (scope_cpu_usec).
+
+Real time as on Linode (`up rt=1`, off by default). A Linode unit gives its
+service CAP_SYS_NICE: the audio class thread runs SCHED_FIFO 10 pinned to
+the instance's CPU 0, the video one nice -10 on CPU 1. Under rt=1:
+- every node has exactly two CPUs (RT_CPUS), the contributor too, and is
+  rendered as a g6-dedicated-2, so that the deploy's relay_class_cpus
+  "auto" gives it "0,1" as on Linode, which become its own two CPUs; in a
+  range the edges have CPUs of their own when they fit and the other nodes
+  share the rest of the ring (`up rt=1 slots=lon-edge-4,new-edge-3` fits
+  five edges and the rest in 16-31), and the source host (lon-src) has the
+  last CPU of the tail alone, for the sender (enter(..., source=True));
+- each service's scope first raises its own RLIMIT_RTPRIO (99) and
+  RLIMIT_NICE (40) with `sudo -n prlimit --pid $$` and then becomes the
+  service as the user (RT_GRANT): a capability would not reach a process
+  in the lab's user namespace, these limits do. Without passwordless sudo
+  for prlimit, or without a CPU layout, `up rt=1` is refused before
+  anything is stopped;
+- `up` returns only when every av-mesh node's audio class thread is seen
+  SCHED_FIFO 10 on its one CPU, by its fast plane's counters and by ps
+  (rt-check.json; `edge_lab.py rt-check` again at any time).
+`up rt=pin` is the same layout, render and pinning without the grant (the
+control: av-mesh is refused SCHED_FIFO and runs its fallback), checked the
+same way for the pinning alone.
+The host's own sched_rt_runtime_us is what it is (1000000 here: no
+throttling of real-time threads); a Linode guest's kernel has its own.
+
+Two builds in one lab. With NEEDLETAIL_AV_MESH_BIN_NEXT or
+NEEDLETAIL_AV_CONTRIB_BIN_NEXT, `up` keeps a second set of binaries (set b,
+beside set a) and renders it too, with its own binaries' flags; `up
+b.<setting>=<value>` gives set b a setting of its own. Every node starts on
+set a; start_service(name, build="b") starts one on set b.
 
 The fault campaign (`edge-campaign.py`) drives this module.
 
 Sibling checkouts are found under the workspace root. Override them with
-NEEDLETAIL_AV_MESH_ROOT, NEEDLETAIL_AV_CONTRIB_ROOT, NEEDLETAIL_PROBE_BIN and
-NEEDLETAIL_EDGE_LAB_WORK (the state directory, for a second lab on one host).
+NEEDLETAIL_AV_MESH_ROOT, NEEDLETAIL_AV_CONTRIB_ROOT and NEEDLETAIL_PROBE_BIN.
 """
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import fcntl
+import hashlib
 import importlib.util
 import json
 import os
 import pathlib
+import re
+import shlex
 import signal
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import contributor_changes  # noqa: E402
+import mesh_ops  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKSPACE = ROOT.parent
-WORK = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_EDGE_LAB_WORK", str(ROOT / "target" / "edge-lab")))
+
+
+def lab_id(environ=os.environ) -> str | None:
+    """NEEDLETAIL_EDGE_LAB_ID: the name of this lab among the labs of the
+    host, one to eight of a-z and 0-9, or None."""
+    value = environ.get("NEEDLETAIL_EDGE_LAB_ID") or None
+    if value is not None and not re.fullmatch(r"[a-z0-9]{1,8}", value):
+        sys.exit(f"NEEDLETAIL_EDGE_LAB_ID={value!r}: a lab id is one to eight of a-z and 0-9")
+    return value
+
+
+def work_dir(environ=os.environ) -> pathlib.Path:
+    """The state directory: NEEDLETAIL_EDGE_LAB_WORK, else target/elab-<id>
+    of this checkout for a lab with an id, else target/edge-lab."""
+    ident = lab_id(environ)
+    given = environ.get("NEEDLETAIL_EDGE_LAB_WORK")
+    if given:
+        return pathlib.Path(given)
+    return ROOT / "target" / (f"elab-{ident}" if ident else "edge-lab")
+
+
+LAB_ID = lab_id()
+WORK = work_dir()
 MESH_ROOT = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_MESH_ROOT", str(WORKSPACE / "av-mesh-features")))
 AV_MESH = pathlib.Path(os.environ.get(
@@ -88,6 +235,12 @@ AV_CONTRIB = pathlib.Path(os.environ.get(
     "NEEDLETAIL_AV_CONTRIB_BIN", str(CONTRIB_ROOT / "target" / "release" / "av-contrib")))
 PROBE = pathlib.Path(os.environ.get(
     "NEEDLETAIL_PROBE_BIN", str(CONTRIB_ROOT / "target" / "release" / "aep1-48k-probe")))
+# The second build set (set b) of a lab that runs two builds side by side:
+# the av-mesh and the av-contrib that a roll or an upgrade moves nodes to.
+AV_MESH_NEXT = (pathlib.Path(os.environ["NEEDLETAIL_AV_MESH_BIN_NEXT"])
+                if os.environ.get("NEEDLETAIL_AV_MESH_BIN_NEXT") else None)
+AV_CONTRIB_NEXT = (pathlib.Path(os.environ["NEEDLETAIL_AV_CONTRIB_BIN_NEXT"])
+                   if os.environ.get("NEEDLETAIL_AV_CONTRIB_BIN_NEXT") else None)
 VIDEO_CLIP = pathlib.Path(os.environ.get(
     "NEEDLETAIL_VIDEO_CLIP",
     str(pathlib.Path.home() / "media" / "4k-encodes" / "tos24-16m.ts")))
@@ -103,6 +256,30 @@ LADDER = [
     (13, LADDER_DIR / "tos24-360p-700k.ts", 1_100_000, 950_000, "640x360", 24_000),
 ]
 RTMP_PORT = 19350
+# ntcmp of the referee's harness (needletail-compare), which sends a clip of
+# its prepare-media to a contributor (`ntcmp flv`).
+NTCMP = pathlib.Path(os.environ.get(
+    "NEEDLETAIL_NTCMP_BIN", str(WORKSPACE / "needletail-compare" / "target" / "ntcmp")))
+
+
+def referee_clip(path: pathlib.Path) -> dict | None:
+    """A clip directory of needletail-compare's prepare-media (DIR/video.h264,
+    its media.json beside DIR): {"rung", "fps", "kbps"}, else None."""
+    path = pathlib.Path(path)
+    if not (path.is_dir() and (path / "video.h264").is_file()):
+        return None
+    out = {"rung": path.name, "fps": 24, "kbps": None}
+    for media in (path.parent / "media.json", path.parent.parent / "clips6" / "media.json"):
+        try:
+            data = json.loads(media.read_text())
+        except (OSError, ValueError):
+            continue
+        out["fps"] = int(data.get("fps") or 24)
+        out["kbps"] = ((data.get("rungs") or {}).get(path.name) or {}).get("kbps")
+        break
+    return out
+# The source host's 4K feed loop (A 3.6): one contributor at a time.
+VIDEO_FEED = pathlib.Path(__file__).resolve().parent / "video-feed.sh"
 
 
 def ladder_renditions() -> list[str]:
@@ -112,10 +289,55 @@ def ladder_renditions() -> list[str]:
             for stream, _path, peak, average, frame, rate in LADDER]
 
 
-AUDIO_PCM = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_AUDIO_PCM",
-    str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
-        / "daw-nexus-album-1-track-pcm-300s" / "source-track-00.s24le")))
+def main_checkout(root: pathlib.Path = ROOT) -> pathlib.Path | None:
+    """The repository's main checkout when `root` is a linked worktree (its
+    `.git` is a file naming .../<main>/.git/worktrees/<name>), else None."""
+    marker = root / ".git"
+    try:
+        text = marker.read_text() if marker.is_file() else ""
+    except OSError:
+        return None
+    match = re.match(r"gitdir:\s*(\S+)", text)
+    if not match:
+        return None
+    gitdir = pathlib.Path(match.group(1))
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    return gitdir.parents[2] if len(gitdir.parents) > 2 and gitdir.parent.name == "worktrees" \
+        else None
+
+
+# The lab's audio media, built in the main checkout's target/ by the
+# qualification tools; a worktree has none of its own (rm/<name>: its
+# WORKSPACE is rm/, local proof 2's gate crashed on it).
+MEDIA_DIR = ("target", "linode-qualification", "media")
+
+
+def media_path(variable: str, *parts: str, environ=os.environ,
+               root: pathlib.Path | None = None) -> pathlib.Path:
+    """`$variable`; else the first of WORKSPACE/needletail/<media>/<parts>,
+    this checkout's and its main checkout's <media>/<parts> that exists;
+    else the first of them (require_media then says what to export)."""
+    if environ.get(variable):
+        return pathlib.Path(environ[variable])
+    root = root or ROOT
+    bases = [root.parent / "needletail", root, main_checkout(root)]
+    found = [base.joinpath(*MEDIA_DIR, *parts) for base in dict.fromkeys(bases) if base]
+    return next((path for path in found if path.exists()), found[0])
+
+
+def require_media(path: pathlib.Path, variable: str) -> pathlib.Path:
+    """`path`, or LabError naming the variable to export (docs/lab-environment.md)."""
+    if not path.exists():
+        raise LabError(f"{path} is missing: export {variable} with the file or directory to "
+                       "use (the lab's environment is listed in docs/lab-environment.md; a "
+                       "worktree finds the main checkout's target/linode-qualification/media "
+                       "by itself)")
+    return path
+
+
+AUDIO_PCM = media_path("NEEDLETAIL_AUDIO_PCM", "daw-nexus-album-1-track-pcm-300s",
+                       "source-track-00.s24le")
 def newest_build(*paths: pathlib.Path) -> pathlib.Path:
     """The most recently built of `paths` that exists (else the first): a
     native build and a cross build (zigbuild, for Linode) of one checkout
@@ -132,10 +354,7 @@ DAW_SOURCE = pathlib.Path(os.environ.get(
         WORKSPACE / "daw-nexus" / "target" / "release" / "daw-test-source",
         WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
         / "daw-test-source"))))
-DAW_TRACKS = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_DAW_TRACKS",
-    str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
-        / "daw-nexus-album-1-track-pcm-600s")))
+DAW_TRACKS = media_path("NEEDLETAIL_DAW_TRACKS", "daw-nexus-album-1-track-pcm-600s")
 SERVER_NAME = "mesh.needletail.test"
 
 
@@ -144,7 +363,7 @@ def daw_tracks() -> pathlib.Path:
     of tracks that the settings of the lab name."""
     tracks = load("settings.json").get("daw_album_tracks") or 1
     if tracks == 1:
-        return DAW_TRACKS
+        return require_media(DAW_TRACKS, "NEEDLETAIL_DAW_TRACKS")
     found = sorted(DAW_TRACKS.parent.glob(f"daw-nexus-album-{tracks}-track-pcm-*"))
     if not found:
         raise LabError(f"no audio album with {tracks} tracks in {DAW_TRACKS.parent}")
@@ -172,7 +391,21 @@ NODES = [
     ("new-dist-b", "distributor", "newyork", "us-east", "10.90.2.12", "10.77.2.12"),
     ("new-edge-1", "edge", "newyork", "us-east", "10.90.2.21", "10.77.2.21"),
     ("new-edge-2", "edge", "newyork", "us-east", "10.90.2.22", "10.77.2.22"),
+    # The far region's slot candidates: an edge and a third forwarder, so
+    # that the forwarder tier and a second region scale in the lab too.
+    ("new-edge-3", "edge", "newyork", "us-east", "10.90.2.23", "10.77.2.23"),
+    ("new-dist-c", "distributor", "newyork", "us-east", "10.90.2.13", "10.77.2.13"),
+    # Workstream A (A 2.7, NT4): the standby contributor, publishing the
+    # same parts beside contrib-lon on lanes of its own to lon-dist-a and
+    # lon-dist-b, and the source host, which sends every AEP1 epoch to both
+    # over the London VLAN, as lon-src does on Linode.
+    ("contrib-lon-b", "contributor", "london", "gb-lon", "10.90.0.7", "10.77.1.7"),
+    ("lon-src", "load", "london", "gb-lon", "10.90.0.4", "10.77.1.4"),
 ]
+# The standby contributor (the topology's `"standby": true`) and the source
+# host (a load host of purpose "source").
+STANDBY_CONTRIBUTORS = ("contrib-lon-b",)
+SOURCE_HOST = "lon-src"
 # Reader hosts: a namespace on the public network of a site. They are not
 # mesh nodes and have no CPU or memory limit.
 READER_HOSTS = [
@@ -268,6 +501,14 @@ DEFAULT_OVERRIDES = {
     # A small edge: 100 Mbit/s of egress, admission at 85 Mbit/s.
     "edge_egress_capacity_bps": 100_000_000,
     "steering_ttl_seconds": 1,
+    # No warm pass at boot here (the deploy's default since hunt11241537):
+    # every node of this lab shares the dev box's one kernel and memory
+    # (32 CPUs, one guest that was touched long ago), so a pass per node
+    # would write the box's free memory over and over and find nothing; the
+    # first-touch stops are a property of fresh Linode guests. This lab runs
+    # no check unit either, so --node-warm-file would point at a record
+    # that never comes and no node would be ready.
+    "node_warm": False,
 }
 
 
@@ -281,8 +522,10 @@ SITE_DELAY_MS = site_delays(os.environ.get("NEEDLETAIL_EDGE_LAB_SITE_DELAY_MS"),
 def node(name: str) -> dict:
     for item, role, site, region, public, vlan in NODES:
         if item == name:
+            extra = ({"standby": True} if item in STANDBY_CONTRIBUTORS else
+                     {"purpose": "source"} if item == SOURCE_HOST else {})
             return {"name": item, "role": role, "site": site, "region": region,
-                    "public_ipv4": public, "vlan_ipv4": vlan}
+                    "public_ipv4": public, "vlan_ipv4": vlan, **extra}
     for item, site, public in READER_HOSTS:
         if item == name:
             return {"name": item, "role": "reader", "site": site, "region": None,
@@ -305,13 +548,13 @@ def service_names(role: str | None = None, site: str | None = None) -> list[str]
 
 
 # The nodes that can be slots, and those that are slots unless `up slots=`
-# names more: lon-dist-c is new and has no service unless taken in.
-SLOT_CANDIDATES = ("lon-edge-4", "lon-dist-c")
-DEFAULT_SLOTS = ("lon-dist-c",)
+# names more: a dist-c has no service unless taken in.
+SLOT_CANDIDATES = ("lon-edge-4", "lon-dist-c", "new-edge-3", "new-dist-c")
+DEFAULT_SLOTS = ("lon-dist-c", "new-dist-c")
 
 
 def slot_nodes() -> list[str]:
-    """The slots of this lab (`up slots=`), lon-dist-c always."""
+    """The slots of this lab (`up slots=`), the two dist-c always."""
     saved = load("slots.json", list(DEFAULT_SLOTS))
     return sorted(set(saved if isinstance(saved, list) else DEFAULT_SLOTS) | set(DEFAULT_SLOTS))
 
@@ -322,11 +565,21 @@ def slots_in_service() -> set[str]:
     return set(saved) if isinstance(saved, list) else set()
 
 
+def left_out() -> set[str]:
+    """The nodes `up leave_out=` left out of this lab: not rendered (no peer
+    names them), no CPUs, never started."""
+    saved = load("left-out.json", [])
+    return set(saved) if isinstance(saved, list) else set()
+
+
 def held_slots() -> set[str]:
-    return set(slot_nodes()) - slots_in_service()
+    """Slots out of service, and the nodes left out of the lab."""
+    return (set(slot_nodes()) - slots_in_service()) | left_out()
 
 
 def set_slot_in_service(name: str, in_service: bool) -> None:
+    if name in left_out():
+        raise LabError(f"{name} is left out of this lab (up leave_out=); it has no service")
     if name not in SLOT_CANDIDATES:
         raise LabError(f"{name} is not a slot of this lab")
     made = slots_in_service()
@@ -386,43 +639,616 @@ def ns_pid(name: str) -> int:
         raise LabError(f"no namespace for {name}")
 
 
-def enter(name: str | None) -> list[str]:
-    """Command prefix that runs a command in the namespace of a node, or in
-    the lab namespace (which holds the bridges) for `None`. With the lab's
-    CPU sets (`node_cpus`), a reader host's commands run on the CPUs that
-    no node has."""
+def nsenter(name: str | None) -> list[str]:
+    """Command prefix that enters the namespace of a node, or the lab
+    namespace (which holds the bridges) for `None`."""
     pid = lab_pid() if name is None else ns_pid(name)
-    prefix = ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
-    if name is not None and any(item == name for item, *_ in READER_HOSTS):
-        rest = load("cpus.json").get("_rest")
-        if rest:
-            prefix += ["taskset", "-c", ",".join(str(cpu) for cpu in rest)]
+    return ["nsenter", "--preserve-credentials", "-U", "-n", "-t", str(pid)]
+
+
+def enter(name: str | None, source: bool = False) -> list[str]:
+    """Command prefix that runs a command of the lab's own (a reader, the
+    load tool, a probe, a sender, tc, curl) in the namespace of a node, or
+    in the lab namespace for `None`. Such a command is in the lab's tools
+    scope with the process that starts it (join_tools) and, with the lab's
+    CPU sets (`cpus`, `node_cpus`), on the CPUs that are not the nodes'.
+    Only a node's service runs elsewhere: in its own scope, on its own CPUs
+    (start_service). `source`: a sender, on the source host's own CPU when
+    the layout gives it one (rt=1, "_source"), else as any command."""
+    prefix = nsenter(name)
+    join_tools()
+    sets = load("cpus.json")
+    rest = sets.get("_source") if source and sets.get("_source") else sets.get("_rest")
+    tools = os.environ.get(TOOL_CPUS_ENV)
+    if tools and not source and rest:
+        # A runner keeps its tools on CPUs apart from its probes
+        # (change-run.py): what they start stays there.
+        rest = [cpu for cpu in expand_cpus(tools) if cpu in rest] or rest
+    if rest:
+        prefix += ["taskset", "-c", cpu_list(rest)]
     return prefix
 
 
-def node_cpu_sets(first: int, names: list[str]) -> dict:
-    """`node_cpus=FIRST`: each node its own CPUs, as a Linode instance has
-    (a g6-dedicated-2 edge or distributor 2, the contributor 4), from host
-    CPU FIRST on in the order of NODES, and "_rest": the host's other CPUs
-    (the reader and load hosts). Without it every node shares every CPU of
-    the host under its CPU quota, and a pinned class thread
-    (--relay-class-cpus) of every node would land on the same host CPU."""
-    total = os.cpu_count() or 1
-    out, cpu = {}, first
-    for name, *_ in NODES:
-        if name not in names:
-            continue
-        count = max(1, default_limits(name)["cpu_percent"] // 100)
-        if cpu + count > total:
-            raise LabError(f"node_cpus={first}: the host has {total} CPUs, too few for "
-                           f"{name} ({count} from CPU {cpu})")
-        out[name] = list(range(cpu, cpu + count))
-        cpu += count
-    used = {cpu for cpus in out.values() for cpu in cpus}
-    out["_rest"] = [cpu for cpu in range(total) if cpu not in used]
-    if not out["_rest"]:
-        raise LabError(f"node_cpus={first}: no CPU is left for the reader hosts")
+# The CPUs (a kernel CPU list) that a runner gives the tools it starts, out
+# of the lab's "_rest": enter() keeps their commands there.
+TOOL_CPUS_ENV = "NEEDLETAIL_EDGE_LAB_TOOL_CPUS"
+
+
+def rest_split(sets: dict) -> dict[str, list[int]]:
+    """The CPUs a runner (change-run.py) gives its own processes out of a
+    layout's "_rest" (and "_source"), so that the tools and the sender do
+    not take the probes' CPUs: {"probes", "tools", "sender"}. The sender
+    keeps "_source" when the layout has one (rt=1), else the last CPU of
+    "_rest" when three or more are left; the probes take the first half of
+    the others (at least one), the tools (the change's command, the crowd,
+    the readers) the rest. With fewer CPUs they share. {} without a
+    layout."""
+    rest = list(sets.get("_rest") or [])
+    if not rest:
+        return {}
+    # The source host's own CPUs when the layout gives it some (rt=1's
+    # "_source"; node_cpus gives lon-src a window of its own).
+    sender = list(sets.get("_source") or sets.get(SOURCE_HOST) or [])
+    if not sender and len(rest) >= 3:
+        sender, rest = rest[-1:], rest[:-1]
+    if len(rest) >= 2:
+        half = max(1, len(rest) // 2)
+        probes, tools = rest[:half], rest[half:]
+    else:
+        probes = tools = rest
+    return {"probes": probes, "tools": tools, "sender": sender or probes}
+
+
+# The lab's kept-open HTTP helper (scripts/ns_http.py), one per process.
+_KEPT_HTTP = None
+
+
+def kept_open_http():
+    """The helper that keeps one connection to each node open, started
+    once in the lab's namespace under the prefix curl has (the tools' scope
+    and CPUs); None when it cannot be started."""
+    global _KEPT_HTTP
+    if _KEPT_HTTP is not None and _KEPT_HTTP.alive():
+        return _KEPT_HTTP
+    try:
+        import atexit
+        import ns_http
+        _KEPT_HTTP = ns_http.Client(enter(None) + [
+            sys.executable, str(pathlib.Path(__file__).resolve().parent / "ns_http.py"),
+            "--ca", str(ca_file()), "--server-name", SERVER_NAME])
+        atexit.register(_KEPT_HTTP.close)
+    except Exception:  # noqa: BLE001 - curl is still there
+        _KEPT_HTTP = None
+    return _KEPT_HTTP
+
+
+def kept_http_json(name: str, path: str, method: str = "GET", body: dict | None = None,
+                   timeout: float = 5.0):
+    """http_json through the kept-open helper (one connection a node, no
+    process and no TLS handshake a request); curl when the helper is not
+    running. (status, JSON); status 0 when the node did not answer."""
+    client = kept_open_http()
+    if client is not None:
+        import ns_http
+        port = CONTRIB_HTTP_PORT if node(name)["role"] == "contributor" else HTTP_PORT
+        try:
+            code, document = client.request(node(name)["public_ipv4"], port, method, path, body,
+                                             timeout)
+            return code or 0, document
+        except ns_http.HelperGone:
+            pass
+    return http_json(name, path, method, body, timeout)
+
+
+# ------------------------------------------------------------------ the labs of the host
+
+def work_tag(work: pathlib.Path) -> str:
+    """What names a state directory in a unit: its basename and the first
+    eight hex digits of the sha1 of its absolute path, so that two
+    directories with one basename are two labs."""
+    path = pathlib.Path(work).resolve()
+    return f"{path.name}-{hashlib.sha1(str(path).encode()).hexdigest()[:8]}"
+
+
+def unit_name(name: str) -> str:
+    return f"needletail-lab-{work_tag(WORK)}-{name}.scope"
+
+
+def lab_key() -> str:
+    """The lab's name in the registry: its id, or without one the tag of
+    its state directory (never the shape of an id)."""
+    return LAB_ID or work_tag(WORK)
+
+
+def lab_owner() -> str:
+    """Who runs this lab: NEEDLETAIL_EDGE_LAB_OWNER, by default the lab's
+    own name."""
+    return os.environ.get("NEEDLETAIL_EDGE_LAB_OWNER") or lab_key()
+
+
+# One file for each running lab of the host, whichever worktree it is run
+# from: {"id", "owner", "pid", "worktree", "work", "cpus", "since_unix"}.
+REGISTRY = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR")
+                        or f"/run/user/{os.getuid()}") / "needletail-labs"
+
+
+@contextlib.contextmanager
+def registry_lock():
+    """Every read-change-write of the registry holds this lock."""
+    REGISTRY.mkdir(parents=True, exist_ok=True)
+    with open(REGISTRY / ".lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def cpu_list(cpus: list[int]) -> str:
+    return ",".join(str(cpu) for cpu in cpus)
+
+
+def cpu_ranges(cpus: list[int]) -> str:
+    """CPUs as a person reads them: 2-15, or 0-3,8."""
+    out, cpus = [], sorted(cpus)
+    for cpu in cpus:
+        if out and cpu == out[-1][1] + 1:
+            out[-1][1] = cpu
+        else:
+            out.append([cpu, cpu])
+    return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
+
+
+def process_started_unix(pid: int) -> float | None:
+    """When a process started (unix seconds, to the clock tick, and the
+    boot time to the second), None when there is no such process."""
+    try:
+        stat = pathlib.Path(f"/proc/{int(pid)}/stat").read_text()
+        boot = next(float(line.split()[1]) for line in
+                    pathlib.Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime "))
+        # Field 22, counted after the command name, which may hold spaces.
+        ticks = int(stat.rpartition(")")[2].split()[19])
+    except (OSError, ValueError, IndexError, StopIteration, TypeError):
+        return None
+    return boot + ticks / os.sysconf("SC_CLK_TCK")
+
+
+def pid_alive(pid, written_unix: float | None = None) -> bool:
+    """Whether a process runs as `pid`. With `written_unix`, when the
+    record that names it was written, it must also have started by then:
+    a process that started later has only been given the same pid."""
+    try:
+        if not pathlib.Path(f"/proc/{int(pid)}/cmdline").read_bytes():
+            return False
+    except (OSError, TypeError, ValueError):
+        return False
+    if written_unix is None:
+        return True
+    started = process_started_unix(pid)
+    return started is not None and started <= written_unix + 1.0
+
+
+def active_scopes(pattern: str) -> list[str]:
+    """The active scopes of the user's systemd manager whose names match
+    `pattern`."""
+    result = subprocess.run(
+        ["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--no-legend",
+         "--plain", pattern], capture_output=True, text=True)
+    return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+
+
+def lab_scopes(work: str) -> list[str]:
+    """The systemd scopes of the lab in state directory `work` that are
+    alive: its nodes' services and its tools."""
+    return active_scopes(f"needletail-lab-{work_tag(pathlib.Path(work))}-*.scope")
+
+
+def live_entries() -> list[dict]:
+    """The registry's labs that run, read under registry_lock. An entry is
+    stale, and is dropped, when its process is gone (or its pid is another
+    process's now) and no scope of its lab is alive."""
+    out = []
+    for path in sorted(REGISTRY.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text())
+            entry = {"id": str(entry["id"]), "owner": str(entry["owner"]),
+                     "pid": int(entry["pid"]), "worktree": str(entry["worktree"]),
+                     "work": str(entry["work"]), "cpus": [int(cpu) for cpu in entry["cpus"]],
+                     "since_unix": float(entry["since_unix"])}
+            alive = (pid_alive(entry["pid"], path.stat().st_mtime)
+                     or bool(lab_scopes(entry["work"])))
+        except (OSError, ValueError, KeyError, TypeError):
+            alive = False
+        if alive:
+            out.append(entry)
+        else:
+            path.unlink(missing_ok=True)
     return out
+
+
+def registered_labs() -> list[dict]:
+    """The labs that run on this host, from every worktree."""
+    with registry_lock():
+        return live_entries()
+
+
+def write_entry(entry: dict) -> None:
+    temporary = REGISTRY / f"{entry['id']}.json.tmp"
+    temporary.write_text(json.dumps(entry, indent=1))
+    temporary.replace(REGISTRY / f"{entry['id']}.json")
+
+
+def claim(cpus: list[int], take: bool = False, overlap: bool = False) -> None:
+    """`up`, before anything is stopped or started: make this lab the one
+    that the registry knows by its name and its state directory, on `cpus`.
+    Refused, with every running lab left as it is:
+    - when the lab runs for another owner, or under the same id from
+      another state directory (another worktree), unless `take`, which
+      stops that lab;
+    - when another lab has one of `cpus`, unless `overlap`.
+    Otherwise the lab that ran in this state directory is stopped, as `up`
+    always did, and the entry is written with this process as its pid until
+    the lab's namespace holder exists (register_holder)."""
+    key, owner, work = lab_key(), lab_owner(), str(WORK.resolve())
+    with registry_lock():
+        entries = live_entries()
+        same = [entry for entry in entries if entry["id"] == key or entry["work"] == work]
+        for entry in same:
+            where = (f"lab {entry['id']} of {entry['owner']} runs from {entry['work']} "
+                     f"(worktree {entry['worktree']}, CPUs {cpu_ranges(entry['cpus'])})")
+            if entry["owner"] != owner and not take:
+                raise LabError(f"{where}; you are {owner}. `up take=1` stops it and takes "
+                               "its place")
+            if entry["work"] != work and not take:
+                raise LabError(f"{where}, not from {work}. Take another "
+                               "NEEDLETAIL_EDGE_LAB_ID, or `up take=1` stops that lab")
+        if not overlap:
+            for entry in entries:
+                shared = sorted(set(entry["cpus"]) & set(cpus))
+                if entry not in same and shared:
+                    taken = sorted({cpu for item in entries if item not in same
+                                    for cpu in item["cpus"]})
+                    raise LabError(
+                        f"CPUs {cpu_ranges(shared)} are lab {entry['id']}'s ({entry['owner']}, "
+                        f"worktree {entry['worktree']}); CPUs {cpu_ranges(taken)} are taken on "
+                        "this host. Give `up cpus=A-B` (or NEEDLETAIL_EDGE_LAB_CPUS) a range "
+                        "outside them, or `up cpus_overlap=1`")
+            # A lab that no entry names (brought up by the code before the
+            # registry) may run on any CPU.
+            known = [f"needletail-lab-{work_tag(pathlib.Path(item))}-"
+                     for item in [work] + [entry["work"] for entry in entries]]
+            unknown = [unit for unit in active_scopes("needletail-lab-*.scope")
+                       if not unit.startswith(tuple(known))]
+            if unknown:
+                raise LabError(
+                    f"a lab that is not registered runs on this host, on any of its CPUs: "
+                    f"{', '.join(unknown[:4])}{' ...' if len(unknown) > 4 else ''}. Stop it "
+                    "(`edge_lab.py down` from its worktree, with its NEEDLETAIL_EDGE_LAB_WORK), "
+                    "or `up cpus_overlap=1`")
+        for entry in same:
+            if entry["work"] != work:
+                kill_lab(pathlib.Path(entry["work"]))
+            (REGISTRY / f"{entry['id']}.json").unlink(missing_ok=True)
+        kill_lab(WORK)
+        write_entry({"id": key, "owner": owner, "pid": os.getpid(), "worktree": str(ROOT),
+                     "work": work, "cpus": sorted(cpus), "since_unix": time.time()})
+
+
+def register_holder(pid: int) -> None:
+    """The lab's entry lives as long as its namespace holder (or one of its
+    scopes) does."""
+    with registry_lock():
+        path = REGISTRY / f"{lab_key()}.json"
+        entry = json.loads(path.read_text())
+        write_entry({**entry, "pid": pid})
+
+
+def unregister() -> None:
+    """Remove this lab's entry: only the one of this state directory (the
+    same id may run from another worktree)."""
+    work = str(WORK.resolve())
+    with registry_lock():
+        for path in REGISTRY.glob("*.json"):
+            try:
+                if json.loads(path.read_text()).get("work") == work:
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError, AttributeError):
+                pass
+
+
+# ------------------------------------------------------------------ CPUs
+
+def cpu_range(text: str) -> tuple[int, int]:
+    """`cpus=A-B`: host CPUs A to B, at least three (two for the reader
+    hosts and the lab's own commands, one for the nodes)."""
+    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", text)
+    total = os.cpu_count() or 1
+    if not match:
+        raise LabError(f"cpus={text}: give a range of host CPUs, A-B")
+    first, last = int(match.group(1)), int(match.group(2))
+    if last >= total:
+        raise LabError(f"cpus={text}: the host has CPUs 0-{total - 1}")
+    if last - first + 1 < 3:
+        raise LabError(f"cpus={text}: a lab needs at least three CPUs")
+    return first, last
+
+
+# The layout of one lab alone (`node_cpus=FIRST`) on the 32 CPU host, with
+# workstream A's second contributor and source host: 22 CPUs for the
+# standing mesh nodes, 2 for each contributor, 2 for lon-src and 4 left for
+# the reader hosts, the probes and the lab's own commands. A contributor's 4
+# CPUs (its g6-dedicated-4) do not fit beside its standby's, so in this
+# layout each has 2 (its CPU limit 200%, unless `up limit.<node>.*` says
+# otherwise), and the dist-c slots have none: they cannot be taken in under
+# it (a scenario that needs one runs in a range, `cpus=A-B`). The range
+# layout is as it was: every node a window of its limit on the ring.
+PINNED_CONTRIBUTOR_CPUS = 2
+
+
+def take_window(sets: dict, name: str) -> list[int]:
+    """Give node `name` its CPUs in `sets` (changed in place), after the
+    nodes that have theirs. In a range: the next window of as many CPUs as
+    its limit on the ring of node CPUs, so nodes share when the ring is
+    short (an edge on the edges' own ring when the layout has one). With
+    `node_cpus`: the next CPUs of the host, its own, taken from "_rest" (a
+    contributor PINNED_CONTRIBUTOR_CPUS of them). With "_per_node" (rt=1):
+    exactly that many, whatever the node's limit."""
+    if name == SOURCE_HOST and "_source" in sets:
+        sets[name] = list(sets["_source"])
+        return sets[name]
+    count = sets.get("_per_node") or max(1, default_limits(name)["cpu_percent"] // 100)
+    if "_range" not in sets and node(name)["role"] == "contributor":
+        count = min(count, PINNED_CONTRIBUTOR_CPUS)
+    if "_range" in sets:
+        edge_ring = "_edge_cpus" in sets and node(name)["role"] == "edge"
+        ring = sets["_edge_cpus" if edge_ring else "_node_cpus"]
+        at = "_edge_next" if edge_ring else "_next"
+        count = min(count, len(ring))
+        window = [ring[(sets[at] + index) % len(ring)] for index in range(count)]
+        sets[at] = (sets[at] + count) % len(ring)
+    else:
+        window = list(range(sets["_next"], sets["_next"] + count))
+        rest = [cpu for cpu in sets["_rest"] if cpu not in window]
+        if window[-1] >= sets["_total"]:
+            raise LabError(f"node_cpus={sets['_first']}: the host has {sets['_total']} CPUs, "
+                           f"too few for {name} ({count} from CPU {window[0]})")
+        if not rest:
+            raise LabError(f"node_cpus={sets['_first']}: no CPU is left for the reader hosts")
+        sets["_next"] += count
+        sets["_rest"] = rest
+    sets[name] = window
+    return window
+
+
+def node_cpu_sets(names: list[str], first: int | None = None,
+                  cpus: tuple[int, int] | None = None, per_node: int | None = None) -> dict:
+    """The CPUs of the nodes `names` (in the order of NODES) and "_rest",
+    the CPUs of the reader and load hosts and of the lab's own commands.
+
+    `cpus=(A, B)` (`up cpus=A-B`): the lab stays on host CPUs A to B. The
+    last max(2, N // 4) of the N are "_rest"; the others are the node CPUs,
+    and each node has a window of them, as many as its limit (an edge or a
+    distributor 2, the contributor 4), taken round robin. A pinned class
+    thread (--relay-class-cpus) lands in its node's window.
+
+    `first` (`up node_cpus=FIRST`): each node its own CPUs, as a Linode
+    instance has, from host CPU FIRST on, and "_rest" is every other CPU of
+    the host: the layout of one lab alone (PINNED_CONTRIBUTOR_CPUS: the
+    contributors 2 CPUs each, the dist-c slots none).
+
+    In a range, a node that is not in `names` (a slot that is held out, a
+    backbone relay) takes its window on the ring when its service starts
+    (node_cpus). With `first` every node that is to have CPUs must be in
+    `names`: a window taken later could only come out of "_rest", which the
+    reader hosts and the lab's own commands already run on. With neither
+    layout: {}, and every node shares every CPU of the host under its CPU
+    quota.
+
+    `per_node` (rt=1, RT_CPUS): every node exactly that many CPUs, as a
+    g6-dedicated-2 has, whatever its limit (the contributor too). In a
+    range the edges then come first and have CPUs of their own, as an
+    instance has, when they fit with `per_node` CPUs left for the others
+    ("_edge_cpus"); the other nodes share what is left of the ring. An
+    edge taken in later wraps on the edges' ring."""
+    total = os.cpu_count() or 1
+    if cpus is not None:
+        low, high = cpus
+        count = high - low + 1
+        rest = max(2, count // 4)
+        out = {"_range": [low, high], "_node_cpus": list(range(low, high + 1 - rest)),
+               "_rest": list(range(high + 1 - rest, high + 1)), "_next": 0}
+        if per_node:
+            out["_per_node"] = per_node
+            # The source host's sender has a CPU of its own, the last of
+            # the tail, as lon-src is a host of its own on Linode: a sender
+            # starved by the readers is late, and its lateness looks like
+            # a stall of the whole mesh.
+            if len(out["_rest"]) >= 3:
+                out["_source"], out["_rest"] = out["_rest"][-1:], out["_rest"][:-1]
+            ring = out["_node_cpus"]
+            need = per_node * sum(1 for name in names if node(name)["role"] == "edge")
+            if need and need + per_node <= len(ring):
+                out.update({"_edge_cpus": ring[:need], "_node_cpus": ring[need:],
+                            "_edge_next": 0})
+    elif first is not None:
+        out = {"_first": first, "_total": total, "_rest": list(range(total)), "_next": first}
+        if per_node:
+            out["_per_node"] = per_node
+        names = [name for name in names if name not in DEFAULT_SLOTS]
+    else:
+        return {}
+    for name, *_ in NODES:
+        if name in names:
+            take_window(out, name)
+    return out
+
+
+# The own-CPU layout of the whole host (`up own_cpus=1`, local proof 2: on
+# shared CPUs half the nulls failed and no verdict meant anything): every
+# mesh node in the lab owns OWN_CPUS host CPUs from CPU 0, as a
+# g6-dedicated-2 has (the contributors too: their limit follows), the
+# source host's sender owns the last CPU, and what is between is "_rest":
+# the probes on its first half and the crowd, the readers and the tools on
+# the other (rest_split). Nodes that a scenario does not need are left out
+# (`leave_out=`: names, or a site for all of its nodes) so that the lab fits;
+# by default the two dist-c slots, which only replace-forwarder and
+# autoscale-forwarders take in.
+OWN_CPUS = 2
+# The sender's own CPU, and at least one each for the probes and the tools.
+OWN_REST_MIN = 3
+OWN_DEFAULT_LEFT_OUT = DEFAULT_SLOTS
+
+
+def leave_out_names(text: str | None) -> set[str]:
+    """`leave_out=a,b,newyork`: node names, or a site for every node of it.
+    The source host, the contributor and the first forwarders cannot be
+    left out (no lab carries anything without them)."""
+    out: set[str] = set()
+    sites = {site for _name, _role, site, *_ in NODES}
+    for item in (text or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item in sites:
+            out |= {name for name, _role, site, *_ in NODES if site == item}
+        elif any(name == item for name, *_ in NODES):
+            out.add(item)
+        else:
+            raise LabError(f"leave_out: {item} is neither a node nor a site of the lab")
+    kept = {SOURCE_HOST, "contrib-lon", "lon-dist-a", "lon-dist-b"}
+    if out & kept:
+        raise LabError(f"leave_out: {', '.join(sorted(out & kept))} cannot be left out: the lab "
+                       "carries nothing without the source host, the contributor and the first "
+                       "forwarders")
+    return out
+
+
+def own_cpu_sets(names: list[str], total: int | None = None,
+                 leave_out: set[str] | None = None) -> dict:
+    """The own-CPU layout (`up own_cpus=1`) of the nodes `names` on a host
+    of `total` CPUs: each mesh node not left out OWN_CPUS CPUs from 0 in the
+    order of NODES, the source host's sender the last CPU ("_source"), the
+    CPUs between them "_rest". LabError, with what to leave out, when it
+    does not fit: OWN_REST_MIN CPUs beyond the nodes'."""
+    total = total or os.cpu_count() or 1
+    leave_out = set(OWN_DEFAULT_LEFT_OUT if leave_out is None else leave_out)
+    nodes = [name for name, role, *_ in NODES
+             if name in names and name not in leave_out and role not in ("backbone", "load")]
+    need = OWN_CPUS * len(nodes) + OWN_REST_MIN
+    if need > total:
+        short = need - total
+        spare = [name for name, role, *_ in reversed(NODES)
+                 if name in nodes and role == "edge"][:max(1, -(-short // OWN_CPUS))]
+        raise LabError(f"own_cpus=1: {len(nodes)} nodes take {OWN_CPUS * len(nodes)} CPUs and "
+                       f"the sender, the probes and the tools {OWN_REST_MIN} more: {need} of the "
+                       f"host's {total}. Leave {-(-short // OWN_CPUS)} node(s) out, for example "
+                       f"leave_out={','.join(sorted(leave_out | set(spare)))}")
+    out = {"_first": 0, "_total": total, "_own": True, "_left_out": sorted(leave_out),
+           "_next": OWN_CPUS * len(nodes)}
+    for index, name in enumerate(nodes):
+        out[name] = [OWN_CPUS * index + offset for offset in range(OWN_CPUS)]
+    out["_source"] = [total - 1]
+    out[SOURCE_HOST] = [total - 1]
+    out["_rest"] = list(range(OWN_CPUS * len(nodes), total - 1))
+    return out
+
+
+def layout_lines(sets: dict) -> list[str]:
+    """The CPU map of a layout, as `edge_lab.py layout` prints it."""
+    if not sets:
+        return ["no layout: every node shares every CPU of the host under its quota"]
+    roles = rest_split(sets)
+    lines = [f"{name:<16} cpus {cpu_ranges(sets[name])}" for name, *_ in NODES
+             if isinstance(sets.get(name), list) and name != SOURCE_HOST]
+    lines += [f"{'sender':<16} cpus {cpu_ranges(roles.get('sender', []))} ({SOURCE_HOST})",
+              f"{'probes':<16} cpus {cpu_ranges(roles.get('probes', []))}",
+              f"{'tools':<16} cpus {cpu_ranges(roles.get('tools', []))} (the change's command, "
+              "the crowd, the readers, the lab's own commands)"]
+    if sets.get("_left_out"):
+        lines.append(f"left out: {', '.join(sets['_left_out'])}")
+    return lines
+
+
+def layout_of(overrides: list[str], total: int | None = None) -> dict:
+    """The CPU layout that `up` makes of its layout settings (own_cpus,
+    leave_out, slots, node_cpus, cpus, rt), computed only."""
+    own = rt = False
+    first = cpus = None
+    leave_out = None
+    for item in overrides:
+        key, _, value = item.partition("=")
+        if key == "own_cpus":
+            own = switch(key, value)
+        elif key == "leave_out":
+            leave_out = leave_out_names(value)
+        elif key == "node_cpus":
+            first = int(value)
+        elif key == "cpus":
+            cpus = cpu_range(value)
+        elif key == "rt":
+            rt = value in ("1", "pin")
+    if own:
+        sets = own_cpu_sets([name for name, role, *_ in NODES if role != "backbone"], total,
+                            leave_out)
+        if rt:
+            sets["_per_node"] = RT_CPUS
+        return sets
+    leave_out = leave_out or set()
+    sets = node_cpu_sets([name for name, role, *_ in NODES
+                          if role != "backbone" and name not in leave_out],
+                         first=first, cpus=cpus, per_node=RT_CPUS if rt else None)
+    if leave_out and sets:
+        sets["_left_out"] = sorted(leave_out)
+    return sets
+
+
+def pinned_limits(sets: dict, limits: dict) -> dict:
+    """`limits` (up's limit.<node>.*) with, in the `node_cpus` layout, each
+    contributor's CPU limit that of its window (PINNED_CONTRIBUTOR_CPUS)
+    unless given: its quota and worker threads follow the CPUs it has."""
+    out = {name: dict(value) for name, value in limits.items()}
+    if "_first" in sets:
+        for name in names("contributor"):
+            if name in sets:
+                out.setdefault(name, {}).setdefault("cpu_percent", 100 * len(sets[name]))
+    if sets.get("_per_node"):
+        # rt=1: every node's quota is its window, the contributor's too.
+        for name, *_ in NODES:
+            out.setdefault(name, {}).setdefault("cpu_percent", 100 * sets["_per_node"])
+    return out
+
+
+def node_cpus(name: str) -> list[int] | None:
+    """The CPUs of a node's service in this lab's layout, None without a
+    layout. In a range, a node that has none yet (a slot taken in, a
+    backbone relay of the legacy topology) takes its window on the ring
+    now, under a lock, so that two starts at once take two windows. With
+    `node_cpus` every node that has CPUs was given them at `up`; a backbone
+    relay of the legacy topology runs under its quota alone, as before."""
+    sets = load("cpus.json")
+    if name in sets.get("_left_out", []):
+        raise LabError(f"{name} is left out of this lab's layout (up leave_out=): it has no CPUs "
+                       "and no service")
+    if "_first" in sets and name not in sets and name in DEFAULT_SLOTS:
+        raise LabError(f"node_cpus={sets['_first']}: {name} has no CPUs of its own in this "
+                       "layout (PINNED_CONTRIBUTOR_CPUS); a lab that takes a dist-c in runs in "
+                       "a range, cpus=A-B")
+    if name in sets or "_range" not in sets:
+        return sets.get(name)
+    with open(WORK / "cpus.json.lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        sets = load("cpus.json")
+        if name not in sets:
+            take_window(sets, name)
+            save("cpus.json", sets)
+        return sets[name]
+
+
+def lab_cpus(sets: dict) -> list[int]:
+    """Every host CPU that a lab with the layout `sets` may use: its range;
+    with `node_cpus`, or without a layout, every CPU of the host (a node or
+    a command that a later shell starts may run on any of them)."""
+    if "_range" in sets:
+        return list(range(sets["_range"][0], sets["_range"][1] + 1))
+    return list(range(sets.get("_total") or os.cpu_count() or 1))
 
 
 def node_class_cpus(name: str, value: str) -> str:
@@ -433,6 +1259,316 @@ def node_class_cpus(name: str, value: str) -> str:
     if not cpus:
         return value
     return ",".join(str(cpus[int(item) % len(cpus)]) for item in value.split(",") if item)
+
+
+# ------------------------------------------------------------------ real time (rt=1)
+
+# `up rt=1`: each node's service may use real-time scheduling as a Linode
+# unit's does (AmbientCapabilities=CAP_SYS_NICE): the audio class thread
+# SCHED_FIFO 10, the video one nice -10, the fan-out threads nice -5. A
+# capability cannot reach the service here: it runs in the lab's rootless
+# user namespace, and a capability held there counts for nothing in the
+# host's (sched_setscheduler asks the host's). What does reach it are
+# RLIMIT_RTPRIO and RLIMIT_NICE, which allow the same calls to a process
+# that has no capability. So the node's start, inside its own scope, raises
+# both on its own shell (`sudo -n prlimit --pid $$`, root for that alone)
+# and then becomes the service, as the user, with the limits inherited.
+# Nothing else is run as root and no system file or setting is changed.
+RT_PRIO = 99    # what CAP_SYS_NICE allows: any SCHED_FIFO priority
+RT_NICE = 40    # RLIMIT_NICE 40: down to nice -20, as CAP_SYS_NICE allows
+RT_CPUS = 2     # every node a g6-dedicated-2 (2 vCPU) under rt=1
+RT_AUDIO_PRIO = 10   # av-mesh's AUDIO_FIFO_PRIORITY
+RT_AUDIO_COMM = "needletail-fast"
+RT_GRANT = ('sudo -n prlimit --pid $$ --rtprio={prio}:{prio} --nice={nice}:{nice} '
+            '|| {{ echo "rt=1: sudo -n prlimit could not raise the real-time limits of this '
+            'service" >&2; exit 126; }}; exec "$@"')
+
+
+def rt_preflight(run=subprocess.run) -> None:
+    """rt=1 needs `sudo -n prlimit`, and refuses clearly without it. `sudo
+    -n -l prlimit` only asks whether it may, and runs nothing."""
+    try:
+        result = run(["sudo", "-n", "-l", "prlimit"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise LabError(f"rt=1: sudo cannot be run ({error}); the lab needs `sudo -n prlimit` to "
+                       "give its nodes real-time limits. Leave rt=1 out")
+    if result.returncode != 0:
+        raise LabError("rt=1: `sudo -n prlimit` is not allowed here without a password "
+                       f"({(result.stderr or result.stdout).strip()[:200]}). The nodes cannot "
+                       "be given SCHED_FIFO without it; leave rt=1 out")
+
+
+def rt_grant() -> list[str]:
+    """The prefix, inside a node's scope, that raises the service's own
+    real-time limits before it becomes the service (rt=1); [] without."""
+    if not load("rt.json").get("rt"):
+        return []
+    return ["sh", "-c", RT_GRANT.format(prio=RT_PRIO, nice=RT_NICE), "needletail-rt"]
+
+
+def ps_threads(pid: int) -> list[dict]:
+    """Every thread of a process: tid, name, class (TS, FF, RR...), rtprio,
+    the CPU it last ran on and the CPUs it may run on."""
+    result = subprocess.run(["ps", "-L", "-o", "tid=,cls=,rtprio=,psr=,comm=", "-p", str(pid)],
+                            capture_output=True, text=True)
+    out = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 4)
+        if len(fields) < 5:
+            continue
+        tid, cls, rtprio, psr, comm = fields
+        allowed = None
+        try:
+            for item in pathlib.Path(f"/proc/{pid}/task/{tid}/status").read_text().splitlines():
+                if item.startswith("Cpus_allowed_list:"):
+                    allowed = item.split(":", 1)[1].strip()
+        except OSError:
+            pass
+        out.append({"tid": int(tid), "cls": cls, "rtprio": None if rtprio == "-" else int(rtprio),
+                    "psr": int(psr), "comm": comm.strip(), "allowed": allowed})
+    return out
+
+
+def expand_cpus(text: str | None) -> list[int]:
+    """A CPU list as the kernel prints it (0-3,8) as numbers."""
+    out = []
+    for item in (text or "").split(","):
+        low, _, high = item.strip().partition("-")
+        if low.strip().isdigit():
+            out += list(range(int(low), int(high or low) + 1))
+    return out
+
+
+def own_counters(snapshot, keys: tuple[str, ...]) -> dict:
+    """The largest value of each counter named in `keys` on this node's own
+    paths of /api/mesh/local (never under another node's telemetry)."""
+    out: dict = {}
+
+    def walk(item, top: str | None) -> None:
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if top is None and key in ("relay_nodes", "nodes", "peers", "edge_services",
+                                           "streams", "connections"):
+                    continue
+                if key in keys and isinstance(value, (int, float)):
+                    out[key] = max(out.get(key, value), value)
+                walk(value, key if top is None else top)
+        elif isinstance(item, list):
+            for value in item:
+                walk(value, top or "list")
+
+    walk(snapshot, None)
+    return out
+
+
+def rt_check(name: str, snapshot=None, threads=None, limits_text: str | None = None,
+             realtime: bool | None = None) -> dict:
+    """Is a node's audio class thread real-time and pinned, as on Linode?
+    From the fast plane's own counters (/api/mesh/local `realtime_threads`,
+    `pinned_threads`) and from the kernel (ps: SCHED_FIFO 10, and its CPU
+    list the one CPU that --relay-class-cpus names). A node rendered without
+    --relay-class-cpus (the contributor) is only described. Under rt=pin
+    (`realtime` False, or rt.json's) the thread must be pinned only."""
+    pid = service_pid(name)
+    args = service_args(name) if name in load("rendered.json") else []
+    class_cpus = (args[args.index("--relay-class-cpus") + 1]
+                  if "--relay-class-cpus" in args else "")
+    out = {"node": name, "pid": pid, "class_cpus": class_cpus, "node_cpus": node_cpus(name)}
+    if pid is None:
+        return {**out, "ok": False, "why": "the service does not run"}
+    if threads is None:
+        threads = ps_threads(pid)
+    if limits_text is None:
+        try:
+            limits_text = pathlib.Path(f"/proc/{pid}/limits").read_text()
+        except OSError:
+            limits_text = ""
+    rtprio_limit = next((line.split()[3] for line in limits_text.splitlines()
+                         if line.startswith("Max realtime priority")), None)
+    fifo = [item for item in threads if item["cls"] in ("FF", "RR")]
+    out.update({"rtprio_limit": rtprio_limit, "threads": len(threads),
+                "realtime": [{key: item[key] for key in ("tid", "comm", "cls", "rtprio", "psr",
+                                                         "allowed")} for item in fifo]})
+    if node(name)["role"] == "contributor" or not class_cpus:
+        return {**out, "ok": None, "why": "no class thread to pin (described only)"}
+    if snapshot is None:
+        try:
+            snapshot = mesh_local(name)
+        except LabError as error:
+            return {**out, "ok": False, "why": str(error)}
+    counts = own_counters(snapshot, ("realtime_threads", "pinned_threads", "threads"))
+    out["fast_plane"] = counts
+    audio_cpu = int(class_cpus.split(",")[0])
+    granted = load("rt.json").get("rt", True) if realtime is None else realtime
+    problems = []
+    if granted:
+        audio = [item for item in fifo if item["comm"] == RT_AUDIO_COMM
+                 and item["rtprio"] == RT_AUDIO_PRIO
+                 and expand_cpus(item["allowed"]) == [audio_cpu]]
+        if not counts.get("realtime_threads"):
+            problems.append(f"the fast plane counts {counts.get('realtime_threads')} real-time "
+                            "threads")
+        if not audio:
+            problems.append(f"no {RT_AUDIO_COMM} thread at SCHED_FIFO {RT_AUDIO_PRIO} allowed "
+                            f"only CPU {audio_cpu}")
+    else:
+        # rt=pin: pinned as the deploy pins it, at the normal policy.
+        audio = [item for item in threads if item["comm"] == RT_AUDIO_COMM
+                 and expand_cpus(item["allowed"]) == [audio_cpu]]
+        if not audio:
+            problems.append(f"no {RT_AUDIO_COMM} thread allowed only CPU {audio_cpu}")
+    if not counts.get("pinned_threads"):
+        problems.append(f"the fast plane counts {counts.get('pinned_threads')} pinned threads")
+    out["audio_thread"] = audio[0] if audio else None
+    policy = f"SCHED_FIFO {RT_AUDIO_PRIO}" if granted else f"{audio[0]['cls'] if audio else '?'}"
+    return {**out, "ok": not problems, "why": "; ".join(problems) or
+            f"audio class thread {audio[0]['tid']} {policy} on CPU {audio_cpu}"}
+
+
+def rt_verify(timeout: float = 30.0) -> list[dict]:
+    """After an rt=1 `up`: every node's check, waited for until each av-mesh
+    node with class CPUs passes (its class threads start with the service).
+    Kept in rt-check.json; a node that does not pass is an error."""
+    deadline = time.time() + timeout
+    while True:
+        checks = [rt_check(name) for name in standing_services()]
+        failed = [item for item in checks if item["ok"] is False]
+        if not failed or time.time() > deadline:
+            break
+        time.sleep(1.0)
+    save("rt-check.json", checks)
+    if failed:
+        raise LabError("rt=1: not real-time and pinned: " + "; ".join(
+            f"{item['node']}: {item['why']}" for item in failed))
+    return checks
+
+
+# ------------------------------------------------------------------ the tools scope
+
+def attach(unit: str, pid: int) -> None:
+    """Move a process into a scope of the user's systemd manager: what it
+    and its children use is counted, and limited, in that scope's cgroup
+    from then on. The scope must delegate (Delegate=yes)."""
+    result = subprocess.run(
+        ["busctl", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+         "org.freedesktop.systemd1.Manager", "AttachProcessesToUnit", "ssau", unit, "", "1",
+         str(pid)], capture_output=True, text=True)
+    if result.returncode != 0:
+        # The user's manager can move only a process of its own tree: one
+        # started from a login session's scope (a plain ssh shell) is not.
+        raise LabError(f"could not move process {pid} into {unit}: "
+                       f"{(result.stderr or result.stdout).strip()[:300]}. Run the lab's "
+                       "commands from a process of the user's systemd manager (a tmux pane, "
+                       "or under `systemd-run --user --scope`)")
+
+
+CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup")
+
+
+def cgroup_of(pid: int) -> pathlib.Path | None:
+    try:
+        path = pathlib.Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
+    except (OSError, IndexError):
+        return None
+    return CGROUP_ROOT / path.lstrip("/")
+
+
+def scope_state(unit: str) -> tuple[str, list[int]]:
+    """A scope's ActiveState and the processes in its cgroup."""
+    result = subprocess.run(["systemctl", "--user", "show", "--property=ActiveState",
+                             "--property=ControlGroup", unit], capture_output=True, text=True)
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    pids = []
+    if fields.get("ControlGroup"):
+        try:
+            pids = [int(pid) for pid in (CGROUP_ROOT / fields["ControlGroup"].lstrip("/")
+                                         / "cgroup.procs").read_text().split()]
+        except (OSError, ValueError):
+            pass
+    return fields.get("ActiveState") or "inactive", pids
+
+
+def start_tools() -> None:
+    """The lab's tools scope: one cgroup for everything the lab runs that is
+    not a node's service. A sleeping holder keeps it (and its CPU counter)
+    for the life of the lab; the processes that drive the lab join it."""
+    unit = unit_name("tools")
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+             "stderr": subprocess.DEVNULL, "start_new_session": True}
+    # The holder of the lab that ran here was killed a moment ago: wait
+    # until its scope has ended, or is held by a process that is still in
+    # it (this one, after a `down`), before taking it again or joining it.
+    deadline = time.time() + 5
+    state, pids = scope_state(unit)
+    while not (state in ("inactive", "failed") or state == "active" and pids):
+        if time.time() > deadline:
+            raise LabError(f"the tools scope {unit} is {state} with no process in it")
+        time.sleep(0.05)
+        state, pids = scope_state(unit)
+    joining = state == "active"
+    if joining:
+        holder = subprocess.Popen(["sleep", "infinity"], **quiet)
+    else:
+        subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True)
+        holder = subprocess.Popen(
+            ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
+             "-p", "Delegate=yes", "--", "sleep", "infinity"], **quiet)
+    try:
+        if joining:
+            attach(unit, holder.pid)
+        deadline = time.time() + 5
+        while not str(cgroup_of(holder.pid) or "").endswith("/" + unit):
+            if time.time() > deadline or holder.poll() is not None:
+                raise LabError(f"the tools scope {unit} did not start")
+            time.sleep(0.05)
+    except BaseException:
+        # A holder that is left would keep the scope, and the lab's entry,
+        # alive with nothing to stop it.
+        holder.kill()
+        raise
+    save("tools.json", {"pid": holder.pid, "unit": unit})
+
+
+_joined = threading.Lock(), set()
+
+
+def join_tools() -> None:
+    """Put this process into the lab's tools scope and, with the lab's CPU
+    sets, on the CPUs that are not the nodes': once for each lab instance
+    that this process drives. Its children are then there too: every reader,
+    probe, sender and command that it starts."""
+    lock, done = _joined
+    with lock:
+        tools = load("tools.json")
+        if not tools:
+            raise LabError("the lab has no tools scope: it is not up")
+        if tools["pid"] in done:
+            return
+        attach(tools["unit"], os.getpid())
+        rest = load("cpus.json").get("_rest")
+        for task in os.listdir("/proc/self/task") if rest else []:
+            try:
+                os.sched_setaffinity(int(task), rest)
+            except ProcessLookupError:
+                pass  # a thread that ended meanwhile
+            except OSError as error:
+                raise LabError(f"this process may not run on the lab's CPUs "
+                               f"{cpu_ranges(rest)}: {error}")
+        done.add(tools["pid"])
+
+
+def scope_cpu_usec() -> dict:
+    """CPU time, in microseconds, that each scope of the lab has used since
+    the scope began: {"tools": N, node: N for each running service}. A
+    restarted service's count begins again."""
+    out = {}
+    tools = load("tools.json").get("pid")
+    for name, directory in [("tools", cgroup_of(tools) if tools else None)] + [
+            (name, cgroup_dir(name)) for name, *_ in NODES]:
+        usage = read_cgroup(directory).get("usage_usec") if directory else None
+        if usage is not None:
+            out[name] = usage
+    return out
 
 
 def run_in(name: str | None, command: list[str], check: bool = True,
@@ -808,69 +1944,125 @@ def deploy_module():
 def lab_state() -> dict:
     """The lab as the deploy tool's state. Its "slots" are the slot
     candidates: the deploy renders them into every peer list, and a
-    distributor slot is a lease child, never a compiled relay child."""
+    distributor slot is a lease child, never a compiled relay child.
+    Under rt=1 every node is the Linode type of its RT_CPUS vCPUs, so that
+    the deploy's "auto" settings render what they render on Linode for it
+    (relay_class_cpus: the audio class thread on CPU 0, the video one on 1;
+    service_args puts them on the node's own CPUs)."""
+    kind = f"g6-dedicated-{RT_CPUS}" if load("rt.json").get("layout") else "local"
+    out_of_lab = left_out()
     return {"run_id": "edge-lab", "hourly_usd": 0.0,
-            "nodes": {name: {**node(name), "type": "local"} for name, *_ in NODES},
-            "slots": {name: {**node(name), "type": "local", "slot": True}
-                      for name in SLOT_CANDIDATES}}
+            "nodes": {name: {**node(name), "type": kind} for name, *_ in NODES
+                      if name not in out_of_lab},
+            "slots": {name: {**node(name), "type": kind, "slot": True}
+                      for name in SLOT_CANDIDATES if name not in out_of_lab}}
+
+
+def build_sources() -> dict:
+    """The binaries of each build set, where they are built: set a always;
+    set b (the build that a roll or an upgrade moves nodes to) when
+    NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT is given,
+    with set a's binary for the service that has no other."""
+    out = {"a": {"av-mesh": AV_MESH, "needletail-reader": READER, "av-contrib": AV_CONTRIB,
+                 "aep1-48k-probe": PROBE, "needletail-load": LOAD_BIN}}
+    if AV_MESH_NEXT or AV_CONTRIB_NEXT:
+        out["b"] = {"av-mesh": AV_MESH_NEXT or AV_MESH,
+                    "av-contrib": AV_CONTRIB_NEXT or AV_CONTRIB}
+    return out
 
 
 def snapshot_binaries() -> dict:
-    """Copy the binaries into the state directory and run them from there,
-    so that a build during a long run does not change the lab under it."""
+    """Copy the binaries into the state directory, a directory for each
+    build set (bin/a, and bin/b for a second build), and run them from
+    there, so that a build during a long run does not change the lab under
+    it. `binaries.json` is {set: {label: path}}."""
     import shutil
-    directory = WORK / "bin"
-    directory.mkdir(parents=True, exist_ok=True)
     out = {}
-    for label, source in (("av-mesh", AV_MESH), ("needletail-reader", READER),
-                          ("av-contrib", AV_CONTRIB), ("aep1-48k-probe", PROBE),
-                          ("needletail-load", LOAD_BIN)):
-        if label == "needletail-load" and not source.is_file():
-            continue
-        target = directory / label
-        temporary = directory / (label + ".new")
-        shutil.copy2(source, temporary)
-        temporary.replace(target)
-        out[label] = str(target)
+    for build, sources in build_sources().items():
+        directory = WORK / "bin" / build
+        directory.mkdir(parents=True, exist_ok=True)
+        out[build] = {}
+        for label, source in sources.items():
+            if label == "needletail-load" and not source.is_file():
+                continue
+            target = directory / label
+            temporary = directory / (label + ".new")
+            shutil.copy2(source, temporary)
+            temporary.replace(target)
+            out[build][label] = str(target)
     save("binaries.json", out)
     return out
 
 
-def binary(label: str) -> str:
-    """Path of a binary of the running lab."""
-    paths = load("binaries.json")
+def build_sets() -> list[str]:
+    """The build sets of the running lab: ["a"], or ["a", "b"]."""
+    return sorted(load("binaries.json")) or ["a"]
+
+
+def binary(label: str, build: str = "a") -> str:
+    """Path of a binary of the running lab: the tools and, without `build`,
+    the services of set a."""
+    paths = load("binaries.json").get(build, {})
     if label in paths:
         return paths[label]
-    return str({"av-mesh": AV_MESH, "needletail-reader": READER, "av-contrib": AV_CONTRIB,
-                "aep1-48k-probe": PROBE, "needletail-load": LOAD_BIN}[label])
+    sources = build_sources()
+    if build not in sources:
+        raise LabError(f"this lab has no build set {build}: `up` it with "
+                       "NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT")
+    return str(sources[build][label])
 
 
-def render(overrides: list[str]) -> dict:
-    """Service arguments of every node, as the Linode deploy tool renders
-    them. Only the paths of the binaries and of the TLS files differ."""
+def set_file(stem: str, build: str) -> str:
+    """The state file of a build set: `rendered.json` and `settings.json`
+    are set a's (the shape every reader of them knows), `rendered-b.json`
+    and `settings-b.json` set b's."""
+    return f"{stem}.json" if build == "a" else f"{stem}-{build}.json"
+
+
+# Settings of the lab's render that the deploy tool does not have, each for
+# a proof that needs a build to misbehave. `relay_lease_children=false`: the
+# distributors feed no edge on the fast plane (--relay-lease-children false).
+LAB_RENDER_SETTINGS = ("relay_lease_children",)
+
+
+def render(overrides: list[str], build: str = "a") -> dict:
+    """Service arguments of every node on a build set, as the Linode deploy
+    tool renders them for that set's binaries (their flags). Only the paths
+    of the binaries and of the TLS files differ."""
+    lab_only, given = {}, []
+    for item in overrides:
+        key, _, value = item.partition("=")
+        if key not in LAB_RENDER_SETTINGS:
+            given.append(item)
+        elif value in ("true", "false"):
+            lab_only[key] = value == "true"
+        else:
+            raise LabError(f"{key}={value}: true or false")
     deploy = deploy_module()
     deploy.ensure_tls()
     (WORK / "artifacts" / "settings.json").unlink(missing_ok=True)
     merged = [f"{key}={json.dumps(value)}" for key, value in DEFAULT_OVERRIDES.items()]
-    settings = deploy.load_settings(merged + overrides)
+    settings = deploy.load_settings(merged + given)
     lon_ny_us = int(2000 * (SITE_DELAY_MS["london"] + SITE_DELAY_MS["newyork"]))
     routes = {"best_direct_rtt_us": lon_ny_us, "primary_rtt_us": lon_ny_us,
               "primary_jitter_us": 1000, "secondary_rtt_us": lon_ny_us + 6000,
               "secondary_jitter_us": 1000}
     state = lab_state()
     plan = deploy.compile_plan(deploy.build_program(state, settings, routes))
-    # The render looks at the flags of the binaries that the lab runs.
+    # The render looks at the flags of the binaries that this set runs.
     deploy.RENDER_BINARIES.clear()
-    deploy.RENDER_BINARIES.update({"av-mesh": AV_MESH, "av-contrib": AV_CONTRIB})
+    deploy.RENDER_BINARIES.update({"av-mesh": binary("av-mesh", build),
+                                   "av-contrib": binary("av-contrib", build)})
     rendered = deploy.render(state, settings, plan)
-    save("sysctls.json", deploy.node_sysctls(settings))
-    save("settings.json", settings)
+    if build == "a":
+        save("sysctls.json", deploy.node_sysctls(settings))
+    save(set_file("settings", build), settings)
     tls = WORK / "artifacts" / "tls"
     out = {}
     for name, item in rendered.items():
         args = list(item["args"])
         contributor = item["service"] == "needletail-contrib"
-        args[0] = binary("av-contrib" if contributor else "av-mesh")
+        args[0] = binary("av-contrib" if contributor else "av-mesh", build)
         fixed = []
         index = 0
         while index < len(args):
@@ -878,69 +2070,142 @@ def render(overrides: list[str]) -> dict:
             if arg in ("--cert", "--key"):
                 fixed += [arg, str(tls / pathlib.Path(args[index + 1]).name)]
                 index += 2
+            elif arg == "--drain-state-file":
+                # The deploy's /var/lib/needletail/<service>.drained: a
+                # node's own file in this lab's state directory.
+                fixed += [arg, str(WORK / "state" / f"{name}.drained")]
+                index += 2
             else:
                 fixed.append(arg)
                 index += 1
-        if "--relay-class-cpus" in fixed:
-            at = fixed.index("--relay-class-cpus") + 1
-            fixed[at] = node_class_cpus(name, fixed[at])
         if contributor:
             fixed += ["--srt-bind", "0.0.0.0:27001", "--srt-stream-id", str(VIDEO_STREAM)]
         elif node(name)["role"] == "edge" and "--fec-bind" not in fixed:
             # An edge on the cache mesh alone; one fed by the fast plane
             # (edge_fast_plane) has its relay parents' --fec-bind already.
             fixed += ["--fec-bind", "0.0.0.0:12001"]
+        if (lab_only.get("relay_lease_children") is False
+                and node(name)["role"] == "distributor" and "--relay-lease-children" in fixed):
+            fixed[fixed.index("--relay-lease-children") + 1] = "false"
         out[name] = {"args": fixed, "rust_log": item["rust_log"]}
-    save("rendered.json", out)
+    if lab_only.get("relay_lease_children") is False and not any(
+            "--relay-lease-children" in out[name]["args"] for name in out
+            if node(name)["role"] == "distributor"):
+        raise LabError(f"relay_lease_children=false: no distributor of build set {build} is "
+                       "rendered with --relay-lease-children, so the setting would change "
+                       "nothing")
+    (WORK / "state").mkdir(parents=True, exist_ok=True)
+    save(set_file("rendered", build), out)
     return out
 
 
-def unit_name(name: str) -> str:
-    return f"needletail-lab-{WORK.name}-{name}.scope"
+def node_build(name: str) -> str:
+    """The build set that a node's service runs, and starts on again."""
+    return load("node-build.json").get(name, "a")
 
 
-def start_service(name: str, limits: dict | None = None, env: dict | None = None,
-                  extra_args: list[str] | None = None) -> int:
-    """Start the service of a node in its namespace and in its own cgroup."""
-    item = load("rendered.json").get(name)
+def set_node_build(name: str, build: str) -> None:
+    """Install a build on one node: its service runs set `build` from its
+    next start (`node-build.json`). Nothing is stopped or started."""
+    if build not in build_sets():
+        raise LabError(f"this lab has no build set {build} (it has {', '.join(build_sets())})")
+    if name not in load(set_file("rendered", build)):
+        raise LabError(f"{name} has no service in build set {build}")
+    builds = load("node-build.json")
+    builds[name] = build
+    save("node-build.json", builds)
+
+
+def rendered_service(name: str, build: str) -> dict:
+    """What a build set's render holds for a node: {"args", "rust_log"}."""
+    item = load(set_file("rendered", build)).get(name)
     if item is None:
         raise LabError(f"{name} has no service in this lab's topology"
                        + (" (merged: no backbone relay; up topology=legacy)"
                           if node(name)["role"] == "backbone" else ""))
+    return item
+
+
+def service_args(name: str, build: str | None = None) -> list[str]:
+    """The command line of a node's service on a build set (without one,
+    the node's own): the set's render, with --relay-class-cpus in the
+    node's own CPUs once it has them (start_service gives a slot its CPUs
+    before it asks)."""
+    args = list(rendered_service(name, build or node_build(name))["args"])
+    if "--relay-class-cpus" in args:
+        at = args.index("--relay-class-cpus") + 1
+        args[at] = node_class_cpus(name, args[at])
+    return args
+
+
+def start_service(name: str, limits: dict | None = None, env: dict | None = None,
+                  extra_args: list[str] | None = None, build: str | None = None) -> int:
+    """Start the service of a node in its namespace and in its own cgroup,
+    on its build set, or on `build`, which is then the node's set."""
+    if build is not None:
+        set_node_build(name, build)
+    build = node_build(name)
+    rust_log = rendered_service(name, build)["rust_log"]
+    # The node's own CPUs (cpus, node_cpus), as an instance has.
+    cpus = node_cpus(name)
+    args = service_args(name, build)
+    settings = load(set_file("settings", build))
+    given = {"limits": limits, "env": env, "extra_args": extra_args}
     limits = {**default_limits(name), **(limits or load("limits.json").get(name, {}))}
+    # The scope of the node's last start ends when its last process has
+    # gone (the service, or a burn's loops, which follow it within a few
+    # milliseconds); a scope that still runs cannot be started again.
+    deadline = time.time() + 5
+    while unit_active(unit_name(name)):
+        if time.time() > deadline:
+            raise LabError(f"{unit_name(name)} still runs: {name} cannot be started again "
+                           "until it has stopped")
+        time.sleep(0.1)
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     log = open(WORK / "logs" / f"{name}.log", "ab")
     subprocess.run(["systemctl", "--user", "reset-failed", unit_name(name)],
                    capture_output=True)
-    # The node's own CPUs (node_cpus), as an instance has.
-    cpus = load("cpus.json").get(name)
-    pin = ["taskset", "-c", ",".join(str(cpu) for cpu in cpus)] if cpus else []
+    pin = ["taskset", "-c", cpu_list(cpus)] if cpus else []
+    # rt=1: the scope's first process raises its own real-time limits and
+    # becomes the service (RT_GRANT); systemd-run must leave its $$ alone.
+    grant = rt_grant()
     command = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+               *(["--expand-environment=no"] if grant else []),
                "--unit", unit_name(name),
                "-p", f"CPUQuota={limits['cpu_percent']}%",
                "-p", f"MemoryMax={limits['memory_mb']}M",
                "-p", "MemorySwapMax=0",
-               "--", *enter(name), *pin, *item["args"], *(extra_args or [])]
+               # A process may be put into the node's cgroup (burn).
+               "-p", "Delegate=yes",
+               "--", *grant, *nsenter(name), *pin, *args, *(extra_args or [])]
     # A service on a Nanode sees one CPU and starts one worker thread. Here it
     # would see every CPU of the host, so it is told the number that its
     # limit stands for.
-    threads = load("settings.json").get("tokio_worker_threads") or max(
+    threads = settings.get("tokio_worker_threads") or max(
         1, limits["cpu_percent"] // 100)
     shim = ({"LD_PRELOAD": str(clock_shim()),
              "NEEDLETAIL_CLOCK_OFFSET_FILE": str(WORK / "clock" / name)}
             if clock_shim().is_file() else {})
     process = subprocess.Popen(
-        command, env={**os.environ, **shim, "RUST_LOG": item["rust_log"],
+        command, env={**os.environ, **shim, "RUST_LOG": rust_log,
                       "TOKIO_WORKER_THREADS": str(threads),
                       **{key: str(value) for key, value in
-                         (load("settings.json").get("node_env") or {}).items()},
+                         (settings.get("node_env") or {}).items()},
                       **(env or {})},
         stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    log.close()
     services = load("services.json")
-    services[name] = {"pid": process.pid, "started_unix": time.time(),
-                      "starts": services.get(name, {}).get("starts", 0) + 1}
+    # What it was started with, so that a crash brings it back the same.
+    services[name] = {"pid": process.pid, "started_unix": time.time(), "build": build,
+                      "starts": services.get(name, {}).get("starts", 0) + 1,
+                      "crashes": services.get(name, {}).get("crashes", 0), **given}
     save("services.json", services)
     return process.pid
+
+
+def unit_active(unit: str) -> bool:
+    return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
+                          capture_output=True).returncode == 0
 
 
 def service_pid(name: str) -> int | None:
@@ -956,13 +2221,7 @@ def service_pid(name: str) -> int | None:
 
 def cgroup_dir(name: str) -> pathlib.Path | None:
     pid = service_pid(name)
-    if pid is None:
-        return None
-    try:
-        path = pathlib.Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
-    except (OSError, IndexError):
-        return None
-    return pathlib.Path("/sys/fs/cgroup" + path)
+    return None if pid is None else cgroup_of(pid)
 
 
 def kill_service(name: str) -> None:
@@ -980,8 +2239,9 @@ def freeze_service(name: str, frozen: bool) -> None:
         os.kill(pid, signal.SIGSTOP if frozen else signal.SIGCONT)
 
 
-def terminate_service(name: str, wait: float = 10.0) -> None:
-    """Ask a service to stop, as `systemctl stop` does."""
+def terminate_service(name: str, wait: float = 15.0) -> None:
+    """Ask a service to stop, as `systemctl stop` does: SIGTERM, and SIGKILL
+    after the unit's TimeoutStopSec (15 s) if it is still there."""
     pid = service_pid(name)
     if not pid:
         return
@@ -1000,6 +2260,102 @@ def restart_service(name: str, **kwargs) -> int:
     return start_service(name, **kwargs)
 
 
+def wait_back(name: str, timeout: float = 60.0) -> str:
+    """Wait until a node that was started again is back: its `/api/node`
+    says `ready`, or, from a build without `/api/node` (it answers 404),
+    `/up` answers. Returns what was seen; LabError when the service stops
+    again or `timeout` (the tool's readiness bound) passes first."""
+    deadline = time.time() + timeout
+    seen = "no answer"
+    while True:
+        if service_pid(name) is None:
+            raise LabError(f"{name} stopped again after its start:\n{node_log(name)[-1200:]}")
+        code, body = http_json(name, "/api/node", timeout=2.0)
+        if code == 200 and isinstance(body, dict):
+            seen = f"state {body.get('state')}"
+            if body.get("state") == "ready":
+                return "ready"
+        elif code == 404:
+            up_code, _body = http_json(name, "/up", timeout=2.0)
+            seen = f"no /api/node, /up {up_code}"
+            if up_code == 200:
+                return "up"
+        if time.time() > deadline:
+            raise LabError(f"{name} was not back within {timeout:g} s ({seen})")
+        time.sleep(0.25)
+
+
+def crash_service(name: str, restart_s: float = 1.0, ready_timeout_s: float = 60.0) -> int:
+    """A crash of a node's service and its return: SIGKILL, and a start
+    `restart_s` after the process is gone, as systemd starts a unit again
+    after its RestartSec (1 s), with what it was started with (build set,
+    limits, environment, extra arguments). Returns, with the new pid, only
+    when the node is back (wait_back), so that a wrapper's marks around the
+    command hold the whole change."""
+    if service_pid(name) is None:
+        raise LabError(f"{name} is not running")
+    given = load("services.json").get(name, {})
+    kill_service(name)
+    deadline = time.time() + 5
+    while time.time() < deadline and service_pid(name):
+        time.sleep(0.02)
+    time.sleep(restart_s)
+    pid = start_service(name, limits=given.get("limits"), env=given.get("env"),
+                        extra_args=given.get("extra_args"))
+    # What systemd counts as NRestarts: a start after a crash (EdgeLabOps).
+    services = load("services.json")
+    services[name]["crashes"] = services[name].get("crashes", 0) + 1
+    save("services.json", services)
+    wait_back(name, ready_timeout_s)
+    return pid
+
+
+def burn(name: str, seconds: float) -> float:
+    """Busy loops in the cgroup of a node's service for `seconds`, one for
+    each CPU of its limit, on its CPUs: they take the node's own CPU time
+    under its quota, as a noisy neighbour inside an instance does. A loop
+    ends with the service, so that it does not keep the node's scope (and
+    the node's next start) after a kill, a crash or a `down`. Returns the
+    seconds they ran."""
+    pid = service_pid(name)
+    if pid is None:
+        raise LabError(f"{name} is not running")
+    cpus = load("cpus.json").get(name)
+    pin = ["taskset", "-c", cpu_list(cpus)] if cpus else []
+    # Each loop waits for a line, so that it is in the node's cgroup before
+    # it uses any CPU, and looks every few milliseconds whether the service
+    # still runs (a pid whose command line is gone has ended).
+    script = ("import sys, time\nsys.stdin.readline()\n"
+              "end = time.monotonic() + float(sys.argv[1])\n"
+              "service = '/proc/' + sys.argv[2] + '/cmdline'\n"
+              "turn = 0\n"
+              "while time.monotonic() < end:\n"
+              "    turn += 1\n"
+              "    if turn % 20000 == 0:\n"
+              "        try:\n"
+              "            if not open(service, 'rb').read():\n"
+              "                break\n"
+              "        except OSError:\n"
+              "            break\n")
+    loops = [subprocess.Popen([*pin, sys.executable, "-c", script, str(seconds), str(pid)],
+                              stdin=subprocess.PIPE, start_new_session=True)
+             for _ in range(max(1, service_limits(name)["cpu_percent"] // 100))]
+    started = time.monotonic()
+    try:
+        for loop in loops:
+            attach(unit_name(name), loop.pid)
+        for loop in loops:
+            loop.stdin.write(b"\n")
+            loop.stdin.close()
+        for loop in loops:
+            loop.wait()
+    finally:
+        for loop in loops:
+            if loop.poll() is None:
+                loop.kill()
+    return time.monotonic() - started
+
+
 def set_limits(name: str, cpu_percent: int | None = None,
                memory_mb: int | None = None) -> None:
     """Change the limits of a running service."""
@@ -1014,25 +2370,59 @@ def set_limits(name: str, cpu_percent: int | None = None,
         raise LabError(f"set-property {name}: {result.stderr.strip()}")
 
 
+def switch(key: str, value: str) -> bool:
+    """A lab setting that is on or off: `take=1`, `cpus_overlap=1`."""
+    if value not in ("0", "1"):
+        raise LabError(f"{key}={value}: 1 or 0")
+    return value == "1"
+
+
 def up(overrides: list[str], start: bool = True) -> dict:
-    for binary in (AV_MESH, READER, AV_CONTRIB, PROBE):
+    sources = build_sources()
+    for binary in (AV_MESH, READER, AV_CONTRIB, PROBE, *sources.get("b", {}).values()):
         if not binary.is_file():
             raise LabError(f"binary is missing: {binary}")
-    down(quiet=True)
-    (WORK / "logs").mkdir(parents=True, exist_ok=True)
-    for log in (WORK / "logs").glob("*"):
-        if log.is_file():
-            log.unlink()
     limits = {}
     plain = []
+    # Settings that set b alone renders with (`b.<setting>=<value>`).
+    next_only = []
     slots = set(DEFAULT_SLOTS)
     first_cpu = None
+    cpus = os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS") or None
+    take = overlap = realtime = layout = own = False
+    leave_out = None
     for item in overrides:
         key, _, value = item.partition("=")
+        if key == "own_cpus":
+            # A lab setting: the own-CPU layout of the whole host.
+            own = switch(key, value)
+            continue
+        if key == "leave_out":
+            # A lab setting: nodes (or sites) not rendered, started or given CPUs.
+            leave_out = leave_out_names(value)
+            continue
+        if key == "rt":
+            # A lab setting: the nodes may use real-time scheduling
+            # (RT_GRANT), on two CPUs each with their class threads pinned;
+            # rt=pin: the same layout and pinning without the grant.
+            if value not in ("0", "1", "pin"):
+                raise LabError(f"rt={value}: 1, pin or 0")
+            realtime, layout = value == "1", value in ("1", "pin")
+            continue
         if key == "node_cpus":
             # A lab setting: each node its own host CPUs (node_cpu_sets).
             value = value.strip().strip('"')
             first_cpu = int(value) if value not in ("", "null", "none") else None
+            continue
+        if key == "cpus":
+            # A lab setting: the host CPUs that the lab stays on.
+            cpus = value.strip().strip('"') or None
+            continue
+        if key == "take":
+            take = switch(key, value)
+            continue
+        if key == "cpus_overlap":
+            overlap = switch(key, value)
             continue
         if key == "slots":
             given = {name for name in value.split(",") if name}
@@ -1046,17 +2436,84 @@ def up(overrides: list[str], start: bool = True) -> dict:
             # limit.<node>.cpu_percent=50, limit.<node>.memory_mb=512
             _, name, field = key.split(".", 2)
             limits.setdefault(name, {})[field] = int(value)
+        elif key.startswith("b."):
+            if "b" not in sources:
+                raise LabError(f"{item}: this lab has one build set; set b needs "
+                               "NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT")
+            if key[2:] in ("node_cpus", "cpus", "take", "cpus_overlap", "slots", "rt", "own_cpus",
+                           "leave_out") \
+                    or key[2:].startswith(("limit.", "b.")):
+                raise LabError(f"{item}: {key[2:].split('.')[0]} is the lab's, not a build "
+                               "set's")
+            next_only.append(item[2:])
         else:
             plain.append(item)
+    if first_cpu is not None and cpus is not None:
+        raise LabError(f"node_cpus={first_cpu} is the layout of one lab on the whole host and "
+                       f"cpus={cpus} that of a lab in a range: give one")
+    if own and (first_cpu is not None or cpus is not None):
+        raise LabError("own_cpus=1 is the layout of one lab on the whole host: give it without "
+                       "node_cpus= or cpus= (and NEEDLETAIL_EDGE_LAB_CPUS unset)")
+    if leave_out is None:
+        leave_out = set(OWN_DEFAULT_LEFT_OUT) if own else set()
+    slots -= leave_out
+    if layout:
+        if first_cpu is None and cpus is None and not own:
+            raise LabError("rt=1 pins each node's class threads to CPUs of its own: give the "
+                           "lab a layout, cpus=A-B (or NEEDLETAIL_EDGE_LAB_CPUS) or node_cpus=FIRST")
+    if realtime:
+        rt_preflight()
+    # In a range, a slot that is held out takes its window when it is taken
+    # in; with node_cpus every slot has its own CPUs from the start, as the
+    # reader hosts are pinned to what is left (node_cpu_sets).
+    if own:
+        sets = own_cpu_sets([name for name, role, *_ in NODES if role != "backbone"],
+                            leave_out=leave_out)
+        if layout:
+            sets["_per_node"] = RT_CPUS
+    else:
+        sets = node_cpu_sets([name for name, role, *_ in NODES
+                              if role != "backbone" and name not in leave_out
+                              and (cpus is None or name not in slots)],
+                             first=first_cpu, cpus=None if cpus is None else cpu_range(cpus),
+                             per_node=RT_CPUS if layout else None)
+        if leave_out:
+            sets["_left_out"] = sorted(leave_out)
+    # Refused here, with nothing stopped yet, when the lab is another
+    # owner's or its CPUs are another lab's; else the lab that ran in this
+    # state directory is stopped.
+    claim(lab_cpus(sets), take=take, overlap=overlap)
+    limits = pinned_limits(sets, limits)
+    (WORK / "logs").mkdir(parents=True, exist_ok=True)
+    for log in (WORK / "logs").glob("*"):
+        if log.is_file():
+            log.unlink()
+    # New nodes: no operator's drain of the lab before is kept.
+    for kept in (WORK / "state").glob("*.drained"):
+        kept.unlink()
     save("limits.json", limits)
-    save("cpus.json", {} if first_cpu is None else node_cpu_sets(
-        first_cpu, [name for name, role, *_ in NODES if role != "backbone"]))
+    save("cpus.json", sets)
+    save("rt.json", {"rt": realtime, "layout": layout, "cpus_per_node": RT_CPUS,
+                     **({"rtprio": RT_PRIO, "nice": RT_NICE} if realtime else {})}
+         if layout else {"rt": False, "layout": False})
+    (WORK / "rt-check.json").unlink(missing_ok=True)
     save("slots.json", sorted(slots))
     save("slots-created.json", [])
+    save("left-out.json", sorted(leave_out))
+    start_tools()
+    join_tools()
     build_networks()
+    register_holder(lab_pid())
     snapshot_binaries()
     build_clock_shim()
+    # Set a last: the deploy tool's files in the state directory are then
+    # those of the set that every node starts on.
+    for stem in ("rendered", "settings"):
+        (WORK / set_file(stem, "b")).unlink(missing_ok=True)
+    if "b" in sources:
+        render(plain + next_only, build="b")
     rendered = render(plain)
+    save("node-build.json", {name: "a" for name in rendered})
     # The kernel settings that the deploy tool gives a node.
     sysctls = load("sysctls.json")
     if sysctls:
@@ -1085,25 +2542,39 @@ def up(overrides: list[str], start: bool = True) -> dict:
         tails = "\n".join(f"--- {name}\n" + (WORK / "logs" / f"{name}.log").read_text()[-1200:]
                           for name in dead)
         raise LabError(f"services did not start: {dead}\n{tails}")
+    if layout:
+        rt_verify()
     return rendered
 
 
-def down(quiet: bool = False) -> None:
-    for name, item in list(load("services.json").items()) + list(load("sources.json").items()):
-        pid = item["pid"] if isinstance(item, dict) else item
-        for target in (pid,):
-            try:
-                os.killpg(target, signal.SIGKILL)
-            except OSError:
-                pass
-    for _name, pid in load("namespaces.json").items():
+def kill_lab(work: pathlib.Path) -> None:
+    """Stop the lab whose state directory is `work`: every service, source
+    and namespace and the holder of its tools scope, and forget what ran."""
+    def saved(name: str) -> dict:
+        try:
+            found = json.loads((work / name).read_text())
+        except (OSError, ValueError):
+            return {}
+        return found if isinstance(found, dict) else {}
+
+    pids = [item["pid"] if isinstance(item, dict) else item
+            for item in list(saved("services.json").values())
+            + list(saved("sources.json").values())]
+    pids += list(saved("namespaces.json").values())
+    pids += [pid for pid in [saved("tools.json").get("pid")] if pid]
+    for pid in pids:
         try:
             os.killpg(pid, signal.SIGKILL)
         except OSError:
             pass
     for path in ("services.json", "namespaces.json", "sources.json", "links.json",
-                 "shaped.json", "qdisc.json", "cpus.json"):
-        (WORK / path).unlink(missing_ok=True)
+                 "shaped.json", "qdisc.json", "cpus.json", "tools.json"):
+        (work / path).unlink(missing_ok=True)
+
+
+def down(quiet: bool = False) -> None:
+    kill_lab(WORK)
+    unregister()
     if not quiet:
         print("down")
 
@@ -1127,46 +2598,88 @@ def opus_bitrate() -> int:
     return int(load("settings.json").get("opus_bitrate") or 320000)
 
 
+def contributor_targets() -> list[str]:
+    """`address:27100` of every contributor on the London VLAN, the origin
+    first: where a source sends each AEP1 epoch (the deploy's
+    contributor_targets of this lab)."""
+    import small_mesh_common
+    return small_mesh_common.contributor_targets(lab_state())
+
+
+def source_prefix() -> list[str]:
+    """Command prefix of a source: in lon-src's namespace and the lab's tools
+    scope, on lon-src's own CPUs (a starved sender looks like a mesh stall),
+    or on the readers' CPUs in a lab without them."""
+    prefix = nsenter(SOURCE_HOST)
+    join_tools()
+    cpus = node_cpus(SOURCE_HOST) or load("cpus.json").get("_rest")
+    if cpus:
+        prefix += ["taskset", "-c", cpu_list(cpus)]
+    return prefix
+
+
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
-    """Start the sources next to the contributor, as an encoder on its LAN.
+    """Start the sources in lon-src, an encoder on the contributors' VLAN as
+    on Linode: every AEP1 epoch to each contributor (contributor_targets),
+    the video to one contributor at a time through the feed loop
+    (scripts/video-feed.sh: contrib-lon first, the other when it fails).
     `audio` is `probe` (lossless FLAC), `daw` (FLAC and HQ SoundKit Opus) or
     None."""
     sources = load("sources.json")
+    targets = contributor_targets()
+    feed = [str(VIDEO_FEED), "--seconds", str(seconds),
+            *[target.rsplit(":", 1)[0] for target in targets], "--"]
     (WORK / "logs").mkdir(parents=True, exist_ok=True)
     if video and "video" not in sources and load("settings.json").get("hls_renditions"):
         # An encoder that sends a ladder: one process reads every rendition
         # at its own rate and publishes each under the key of its stream.
         log = open(WORK / "logs" / "source-video.log", "ab")
-        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        command = ["-hide_banner", "-loglevel", "error", "-nostdin"]
         for _stream, path, *_ in LADDER:
             command += ["-re", "-stream_loop", "-1", "-i", str(path)]
         for index, (stream, *_rest) in enumerate(LADDER):
             command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
-                        "-t", str(seconds), "-f", "flv",
-                        f"rtmp://127.0.0.1:{RTMP_PORT}/live/{stream}"]
-        process = subprocess.Popen(enter("contrib-lon") + command, stdout=log, stderr=log,
+                        "-f", "flv", f"rtmp://{{host}}:{RTMP_PORT}/live/{stream}"]
+        process = subprocess.Popen(source_prefix() + feed + command, stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
+        log.close()
+    if video and "video" not in sources and clip is not None and referee_clip(clip):
+        # A clip of the referee's (needletail-compare prepare-media: DIR/video.h264,
+        # Annex B, constant bit rate with filler): sent as the referee sends it to
+        # a Needletail contributor, `ntcmp flv` (frames paced at the clip's rate,
+        # filler dropped, no audio) into ffmpeg and RTMP.
+        log = open(WORK / "logs" / "source-video.log", "ab")
+        command = (f"{shlex.quote(str(NTCMP))} flv --clip {shlex.quote(str(clip))} --no-audio "
+                   f"--fps {referee_clip(clip)['fps']} | "
+                   + shlex.join(feed + ["-hide_banner", "-loglevel", "error", "-f", "flv",
+                                        "-i", "pipe:0", "-c", "copy", "-f", "flv",
+                                        f"rtmp://{{host}}:{RTMP_PORT}/live/needletail-lab"]))
+        process = subprocess.Popen(source_prefix() + ["sh", "-c", command], stdout=log, stderr=log,
+                                   stdin=subprocess.DEVNULL, start_new_session=True)
+        sources["video"] = process.pid
+        log.close()
     if video and "video" not in sources:
         log = open(WORK / "logs" / "source-video.log", "ab")
         process = subprocess.Popen(
-            enter("contrib-lon") + [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
+            source_prefix() + feed + [
+                "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
                 # A 4K clip of 120 Mbit/s or more holds its first audio
                 # packet past the default 5 MB probe: without a longer one
                 # ffmpeg finds no sample rate and sends nothing.
                 "-probesize", "64M", "-analyzeduration", "10000000",
-                "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP), "-t", str(seconds),
+                "-stream_loop", "-1", "-i", str(clip or VIDEO_CLIP),
                 "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-muxdelay", "0",
                 "-muxpreload", "0", "-f", "mpegts",
-                "srt://127.0.0.1:27001?mode=caller&transtype=live&latency=80"],
+                "srt://{host}:27001?mode=caller&transtype=live&latency=80"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
+        log.close()
     if audio == "daw" and "audio" not in sources:
         log = open(WORK / "logs" / "source-audio.log", "ab")
         process = subprocess.Popen(
-            enter("contrib-lon") + [
+            source_prefix() + [
                 str(DAW_SOURCE), "--direct-contributor", "--loop-prepared-pcm",
                 # The DAW lane's Opus frame and rate: 1 ms Opus Custom at
                 # 320 kb/s by default.
@@ -1176,25 +2689,30 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 # daw_hls_formats "flac,opus"); daw-nexus now sends PCM
                 # unless told, and the contributor then made no stream 2001.
                 "--lossless-payload", "flac",
-                "127.0.0.1:27100", str(seconds), str(daw_tracks())],
+                # Each contributor an upstream: daw-nexus sends every epoch
+                # to the first and then to each extra one (A DN1).
+                ",".join(targets), str(seconds), str(daw_tracks())],
             env={**os.environ, "RUST_LOG": "info",
                  "DAW_TEST_SOURCE_START_UNIX_NS": str(time.time_ns() + 3_000_000_000),
                  "DAW_TEST_SOURCE_CAPACITY_OUTPUT": str(WORK / "logs" / "daw-capacity.ndjson")},
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["audio"] = process.pid
+        log.close()
     elif audio == "probe" and "audio" not in sources:
         log = open(WORK / "logs" / "source-audio.log", "ab")
         process = subprocess.Popen(
-            enter("contrib-lon") + [
-                binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+            source_prefix() + [
+                binary("aep1-48k-probe"), "send",
+                *[item for target in targets for item in ("--target", target)],
                 "--session-id", str(time.time_ns() + 2_000_000_000), "--group-id", "0",
                 "--duration-seconds", str(seconds), "--payload", "flac",
                 "--epoch-samples", str(probe_epoch_samples("flac")),
                 "--channels", "2", "--group-channels", "8",
-                "--pcm-s24le-file", str(AUDIO_PCM),
+                "--pcm-s24le-file", str(require_media(AUDIO_PCM, "NEEDLETAIL_AUDIO_PCM")),
                 "--repair-percent", "12", "--min-repair-symbols", "1"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["audio"] = process.pid
+        log.close()
     save("sources.json", sources)
 
 
@@ -1602,8 +3120,502 @@ class Sampler:
 
 # ------------------------------------------------------------------ CLI
 
+def control(name: str, action: str) -> tuple[int, object]:
+    """POST /api/control/<action>-node (`drain`, `resume`, `close`) to the
+    node itself, naming it: av-mesh takes a request without a node as
+    global. Returns the HTTP status (202: accepted and queued) and the
+    answer."""
+    return http_json(name, f"/api/control/{action}-node", "POST", {"node_id": name})
+
+
+def node_status(name: str) -> dict:
+    """What a running mesh node says of itself (GET /api/node): its build,
+    state and drain reasons; {} from a node that does not answer it."""
+    code, body = http_json(name, "/api/node", timeout=2.0)
+    return body if code == 200 and isinstance(body, dict) else {}
+
+
+# ------------------------------------------------------------------ the engine's backend
+#
+# C 2.12 and 2.13 (Unit L-E, CL1): the verbs roll, restart and replace run
+# through the change engine (scripts/mesh_ops.py), as the deploy tool's do on
+# Linode, with this lab as the backend: EdgeLabOps.
+
+# Edges held out of service by a command (the autoscaler's edge_lab backend,
+# linode-autoscale.py EdgeLabBackend.HELD, and EdgeLabOps): standby edges.
+HELD_EDGES = "autoscale-held.json"
+# {node: build set} that each node ran before its last activation: what a
+# rollback puts back (the activation script's .args.prev).
+PREV_BUILDS = "node-build-prev.json"
+VERSION_BUILD = re.compile(r"\(([0-9a-f]{7,40}(?:-dirty)?) ([0-9]+)\)")
+_BUILD_IDS: dict[tuple, dict | None] = {}
+
+
+def build_id(label: str, build: str = "a") -> dict | None:
+    """{"git", "unix", "dirty"} of a build set's binary, from its --version
+    (C 2.2: `av-mesh 0.1.0 (3f2a9c1d77e0 1763900000)`); None for a binary
+    that prints no build id (one from before the build id)."""
+    path = binary(label, build)
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _BUILD_IDS:
+        try:
+            text = subprocess.run([path, "--version"], capture_output=True, text=True,
+                                  timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            text = ""
+        match = VERSION_BUILD.search(text)
+        _BUILD_IDS[key] = None if match is None else {
+            "git": match.group(1), "unix": int(match.group(2)),
+            "dirty": match.group(1).endswith("-dirty")}
+    return _BUILD_IDS[key]
+
+
+def relay_parents() -> dict[str, tuple[str | None, str | None]]:
+    """{level-2 forwarder: (primary, secondary)}: its compiled parents in
+    the relay DAG this lab was rendered with (the deploy tool's
+    relay_tree)."""
+    deploy = deploy_module()
+    tree = deploy.relay_tree(lab_state(), load("settings.json"))
+    return {child["node"]["name"]: (child["primary"]["name"], child["secondary"]["name"])
+            for child in tree["children"]}
+
+
+class EdgeLabOps(mesh_ops.Ops):
+    """This lab as the change engine's backend (mesh_ops.Ops). A node is
+    its service in its namespace; "staging" chooses the build set a node
+    starts on (`build`: the set a roll installs, None: each node's own),
+    the activation stops the service as the unit does (SIGTERM, 15 s), puts
+    the set in force and starts it with what it was started with, and keeps
+    the set it ran for a rollback (PREV_BUILDS, the script's .args.prev). A
+    standby edge is a slot edge out of service or an edge held out
+    (HELD_EDGES); a dist-c out of service is a slot not created: add_slot
+    takes it in and starts it. `rebuild` is the instance's absence: the node
+    stays down `gap_s` and loses its drain file (a new disk). The
+    namespaces share this host's clock. The lock is the autoscaler's
+    (WORK/ops.lock), so a roll and a controller of one lab exclude each
+    other. `lab` is this module (a fake in the tests); `clock` and `sleep`
+    the engine's."""
+
+    def __init__(self, build: str | None = None, gap_s: float = 30.0, lab=None,
+                 clock=time.time, sleep=time.sleep):
+        self.lab = lab if lab is not None else sys.modules[__name__]
+        self.build = build
+        self.gap_s = gap_s
+        self.clock = clock
+        self.sleep = sleep
+        self.lock_path = pathlib.Path(self.lab.WORK) / "ops.lock"
+        self.evidence_dir = pathlib.Path(self.lab.WORK) / "rolls"
+        self.staged: dict[str, str] = {}
+        self._parents: dict | None = None
+
+    # ---------------------------------------------------------- the lab
+    def role(self, name: str) -> str:
+        for item, role, *_ in self.lab.NODES:
+            if item == name:
+                return role
+        raise mesh_ops.Refused(f"{name} is not a node of the lab")
+
+    def label(self, name: str) -> str:
+        return "av-contrib" if self.role(name) == "contributor" else "av-mesh"
+
+    def held(self) -> set[str]:
+        return set(self.lab.load(HELD_EDGES, []) or [])
+
+    def set_held(self, name: str, held: bool) -> None:
+        names = self.held()
+        names = names | {name} if held else names - {name}
+        self.lab.save(HELD_EDGES, sorted(names))
+
+    def rendered(self, name: str, build: str | None = None) -> bool:
+        try:
+            self.lab.rendered_service(name, build or self.lab.node_build(name))
+            return True
+        except self.lab.LabError:
+            return False
+
+    def in_service(self, name: str) -> bool:
+        slots = set(self.lab.slot_nodes())
+        return (name not in slots or name in self.lab.slots_in_service()) \
+            and name not in self.held()
+
+    def services(self) -> dict:
+        return self.lab.load("services.json")
+
+    def prev_builds(self) -> dict:
+        return dict(self.lab.load(PREV_BUILDS))
+
+    def nodes(self) -> list[dict]:
+        if self._parents is None:
+            self._parents = self.lab.relay_parents()
+        slots = set(self.lab.slot_nodes())
+        made = self.lab.slots_in_service()
+        out = []
+        for name, role, site, _region, public, vlan in self.lab.NODES:
+            if role not in mesh_ops.ROLE_TIER or not self.rendered(name):
+                continue  # a backbone the topology does not use
+            slot = name in slots
+            taken = self.in_service(name)
+            primary, secondary = self._parents.get(name, (None, None))
+            out.append({"name": name, "role": role, "site": site, "vlan": vlan,
+                        "public": public, "serving": taken, "slot": slot,
+                        "standby": role == "edge" and not taken,
+                        "created": role == "edge" or not slot or name in made,
+                        "primary": primary, "secondary": secondary})
+        return out
+
+    # ---------------------------------------------------------- HTTP
+    def http(self, node: str, path: str, method: str = "GET", body: dict | None = None,
+             timeout: float = 2.0):
+        """The lab's kept-open HTTP when it has one (kept_http_json), else
+        curl (http_json)."""
+        call = getattr(self.lab, "kept_http_json", None) or self.lab.http_json
+        if method == "GET":
+            return call(node, path, timeout=timeout)
+        return call(node, path, method, body)
+
+    def status(self, node: str):
+        code, body = self.http(node, "/api/node")
+        return body if code == 200 and isinstance(body, dict) else None
+
+    def statuses(self, nodes) -> dict:
+        nodes = list(nodes)
+        if not nodes:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(16, len(nodes))) as pool:
+            return dict(zip(nodes, pool.map(self.status, nodes)))
+
+    def get(self, node: str, path: str) -> tuple:
+        code, body = self.http(node, path)
+        return (code or None), body
+
+    def post(self, node: str, path: str, body: dict) -> int | None:
+        code, _answer = self.http(node, path, "POST", body)
+        return code or None
+
+    # ---------------------------------------------------------- builds
+    def build_of(self, name: str, build: str) -> dict:
+        found = self.lab.build_id(self.label(name), build)
+        if found is None:
+            raise mesh_ops.Refused(f"the {self.label(name)} of build set {build} prints no build id "
+                                   "(--version): the engine needs a build with one (C 2.2)")
+        return found
+
+    def check(self, command: str, nodes: list[str]) -> None:
+        if not (self.lab.load("namespaces.json") or {}).get("lab"):
+            raise mesh_ops.Refused("the lab is not up")
+        sets = self.lab.build_sets()
+        if self.build is not None and self.build not in sets:
+            raise mesh_ops.Refused(f"this lab has no build set {self.build} (it has "
+                                   f"{', '.join(sets)}): up it with NEEDLETAIL_AV_MESH_BIN_NEXT")
+        for name in nodes:
+            build = self.build or self.lab.node_build(name)
+            if not self.rendered(name, build):
+                raise mesh_ops.Refused(f"{name} has no service in build set {build}")
+            self.build_of(name, build)
+
+    def target(self, tier: str) -> dict | None:
+        """The build a roll installs: build set `build`'s; None without one,
+        a rolling restart of each node on its own set (stage(None))."""
+        if self.build is None:
+            return None
+        found = self.lab.build_id("av-contrib" if tier == "contributors" else "av-mesh",
+                                  self.build)
+        if found is None:
+            raise mesh_ops.Refused(f"build set {self.build} prints no build id (--version)")
+        return dict(found)
+
+    def set_for(self, name: str, build: dict) -> str:
+        """The build set whose binary for `name` is `build`."""
+        for candidate in self.lab.build_sets():
+            found = self.lab.build_id(self.label(name), candidate)
+            if found and (found["git"], found["unix"]) == (build.get("git"), build.get("unix")):
+                return candidate
+        raise mesh_ops.Refused(f"no build set of this lab has {self.label(name)} "
+                               f"{build.get('git')} {build.get('unix')}")
+
+    def args_of(self, name: str, build: str) -> list[str]:
+        """The argv the node's process gets on build set `build`: its
+        render's, then the extra arguments it was started with."""
+        extra = (self.services().get(name) or {}).get("extra_args") or []
+        return list(self.lab.service_args(name, build)) + [str(arg) for arg in extra]
+
+    def expected(self, node: str, rollback: bool = False) -> dict:
+        if rollback:
+            build = self.prev_builds().get(node)
+            if build is None:
+                raise mesh_ops.Refused(f"{node} has no previous build set to roll back to")
+        else:
+            build = self.staged.get(node) or self.lab.node_build(node)
+        found = self.build_of(node, build)
+        args = self.args_of(node, build)
+        return {"git": found["git"], "unix": found["unix"],
+                "args_sha256": hashlib.sha256("\n".join(args).encode()).hexdigest()}
+
+    def stage(self, nodes: list[str], build: dict | None) -> None:
+        for name in nodes:
+            target = self.set_for(name, build) if build else self.lab.node_build(name)
+            if not self.rendered(name, target):
+                raise mesh_ops.Refused(f"{name} has no service in build set {target}")
+            self.staged[name] = target
+
+    # ---------------------------------------------------------- the service
+    def restart(self, name: str, build: str) -> None:
+        """Stop as the unit does, put `build` in force, start with what the
+        node was started with (limits, environment, extra arguments)."""
+        given = self.services().get(name) or {}
+        self.lab.terminate_service(name)
+        self.lab.set_node_build(name, build)
+        self.lab.start_service(name, limits=given.get("limits"), env=given.get("env"),
+                               extra_args=given.get("extra_args"))
+
+    def activate(self, node: str, not_after_ms: int, rollback: bool = False) -> dict:
+        if self.clock() * 1000 > not_after_ms:
+            return {"ok": False, "why": "late"}
+        current = self.lab.node_build(node)
+        prev = self.prev_builds()
+        if rollback:
+            target = prev.get(node)
+            if target is None:
+                return {"ok": False, "why": "no previous build set to put back"}
+        else:
+            target = self.staged.get(node, current)
+            prev[node] = current
+            self.lab.save(PREV_BUILDS, prev)
+        try:
+            self.restart(node, target)
+        except self.lab.LabError as error:
+            return {"ok": False, "why": str(error)}
+        return {"ok": True, "why": ""}
+
+    def boot_changed(self, node: str, since_ms: int) -> bool | None:
+        started = (self.services().get(node) or {}).get("started_unix")
+        return None if started is None else started * 1000 > since_ms
+
+    def unit_restarts(self, node: str) -> int | None:
+        """The lab's own count: starts after a crash (`crash`), as systemd's
+        NRestarts counts the unit's restarts after a failure."""
+        return int((self.services().get(node) or {}).get("crashes", 0))
+
+    def clock_offset(self, node: str) -> float | None:
+        return 0.0
+
+    def surge_candidates(self, site: str) -> list[str]:
+        slots = set(self.lab.slot_nodes())
+        return sorted((name for name, role, where, *_ in self.lab.NODES
+                       if role == "edge" and where == site and not self.in_service(name)
+                       and self.rendered(name)),
+                      key=lambda name: (name in slots, mesh_ops.natural(name)))
+
+    def start_node(self, node: str) -> None:
+        if not self.rendered(node):
+            raise mesh_ops.Refused(f"{node} has no service in this lab")
+        slot = node in self.lab.slot_nodes()
+        target = self.staged.get(node)
+        try:
+            if slot:
+                self.lab.set_slot_in_service(node, True)
+            current = self.lab.node_build(node)
+            if target is not None and target != current:
+                prev = self.prev_builds()
+                prev[node] = current
+                self.lab.save(PREV_BUILDS, prev)
+            if self.lab.service_pid(node) is not None:
+                if target is not None and target != current:
+                    self.restart(node, target)
+            else:
+                given = self.services().get(node) or {}
+                if target is not None:
+                    self.lab.set_node_build(node, target)
+                self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                       extra_args=given.get("extra_args"))
+        except self.lab.LabError as error:
+            if slot and self.lab.service_pid(node) is None:
+                self.lab.set_slot_in_service(node, False)
+            raise mesh_ops.Refused(f"{node}: {error}") from None
+        self.set_held(node, False)
+
+    def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
+        if not_after_ms is not None:
+            if self.clock() * 1000 > not_after_ms:
+                raise mesh_ops.Refused(f"{node}: the stop came after its deadline")
+            self.lab.terminate_service(node)
+            return
+        self.lab.terminate_service(node)
+        if node in self.lab.slot_nodes():
+            self.lab.set_slot_in_service(node, False)
+        elif self.role(node) == "edge":
+            self.set_held(node, True)
+
+    # ---------------------------------------------------------- replace
+    def rebuild(self, node: str, mode: str) -> None:
+        if mode != "rebuild":
+            raise mesh_ops.Refused("the local lab has no instance to make anew; replace "
+                                   "rebuilds in place")
+        self.sleep(self.gap_s)
+        (pathlib.Path(self.lab.WORK) / "state" / f"{node}.drained").unlink(missing_ok=True)
+
+    def push(self, node: str) -> None:
+        if self.lab.service_pid(node) is None:
+            given = self.services().get(node) or {}
+            self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                   extra_args=given.get("extra_args"))
+        if node in self.lab.slot_nodes():
+            self.lab.set_slot_in_service(node, True)
+        self.set_held(node, False)
+        self.staged.pop(node, None)
+
+    def add_slot(self, node: str) -> None:
+        if node not in self.lab.slot_nodes():
+            raise mesh_ops.Refused(f"{node} is not a slot of this lab")
+        self.lab.set_slot_in_service(node, True)
+        try:
+            self.lab.start_service(node)
+        except self.lab.LabError as error:
+            if self.lab.service_pid(node) is None:
+                self.lab.set_slot_in_service(node, False)
+                raise mesh_ops.Refused(f"{node}: {error}") from None
+            raise
+
+    def remove_slot(self, node: str) -> None:
+        self.lab.terminate_service(node)
+        if node in self.lab.SLOT_CANDIDATES:
+            self.lab.set_slot_in_service(node, False)
+
+    # ---------------------------------------------------------- workstream A's changes
+    def hold_down(self, node: str) -> None:
+        """Nothing to hold: the lab starts no service again by itself."""
+
+    def kill(self, node: str) -> None:
+        self.lab.kill_service(node)
+
+    def release(self, node: str) -> None:
+        """Start the node with what it was started with, unless it runs."""
+        if self.lab.service_pid(node) is None:
+            given = self.services().get(node) or {}
+            self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                   extra_args=given.get("extra_args"))
+
+    def freeze(self, node: str, frozen: bool) -> None:
+        self.lab.freeze_service(node, frozen)
+
+    def staged_identity(self, node: str) -> dict | None:
+        """`--print-fingerprint` of the build set staged for contributor
+        `node`, with the arguments it gets on that set; None when nothing
+        is staged."""
+        build = self.staged.get(node)
+        if build is None:
+            return None
+        return contributor_changes.identity_of(self.lab.binary("av-contrib", build),
+                                               self.args_of(node, build))
+
+
+ENGINE_VERBS = ("roll", "restart", "replace")
+
+
+def engine_parser(command: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"edge_lab.py {command}")
+    if command == "roll":
+        parser.add_argument("tier", choices=("edges", "forwarders", "contributors", "all"))
+        parser.add_argument("--build", default=None,
+                            help="the build set to install; without it, every node in scope "
+                                 "is restarted on its own set (a rolling restart)")
+        parser.add_argument("--nodes", default=None)
+        parser.add_argument("--sites", default=None)
+        parser.add_argument("--force", action="store_true")
+    else:
+        parser.add_argument("node")
+    if command == "restart":
+        parser.add_argument("--hold-s", type=float, default=0.0)
+        parser.add_argument("--rollback", action="store_true")
+    if command == "replace":
+        parser.add_argument("--gap-s", type=float, default=30.0)
+        parser.add_argument("--no-slot", action="store_true")
+    else:
+        parser.add_argument("--dry-marks", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--marks", default=None)
+    parser.add_argument("--node-marks", default=None)
+    parser.add_argument("--gate-timeout-s", type=float, default=30.0)
+    parser.add_argument("--drain-timeout-s", type=float, default=30.0)
+    parser.add_argument("--ready-timeout-s", type=float, default=60.0)
+    parser.add_argument("--on-failure", choices=("stop", "rollback-all"), default="stop")
+    parser.add_argument("--surge", choices=("auto", "never"), default="auto")
+    parser.add_argument("--parity-ms", type=float, default=1.0)
+    add_tool_options(parser)
+    return parser
+
+
+def add_tool_options(parser: argparse.ArgumentParser) -> None:
+    """The change tools' own cost (local proof 2, F3): their priority and
+    how often they ask a node."""
+    parser.add_argument("--nice", type=int, default=mesh_ops.NICE,
+                        help=f"run at this nice level or lower priority (default "
+                             f"{mesh_ops.NICE}; 0 leaves it)")
+    parser.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S,
+                        help=f"seconds between a tool's reads of a node (default "
+                             f"{mesh_ops.POLL_S:g}; a refusing gate backs off to "
+                             f"{mesh_ops.POLL_MAX_S:g})")
+
+
+def names_of(text: str | None) -> list[str] | None:
+    return [item for item in (text or "").split(",") if item] or None
+
+
+def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = None,
+                **engine) -> int:
+    """`roll`, `restart` and `replace` through the change engine on this
+    lab (C 2.12). stdout carries the change's two marks only. Returns the
+    engine's exit status."""
+    args = engine_parser(command).parse_args(arguments)
+    options = mesh_ops.Options(
+        # Without --build a roll restarts every node in scope on its own
+        # set: each is on its target already, so it is forced.
+        force=getattr(args, "force", False) or (command == "roll" and args.build is None),
+        dry=getattr(args, "dry_marks", False), gate_timeout_s=args.gate_timeout_s,
+        drain_timeout_s=args.drain_timeout_s, ready_timeout_s=args.ready_timeout_s,
+        on_failure=args.on_failure, surge=args.surge, parity_ms=args.parity_ms,
+        hold_s=getattr(args, "hold_s", 0.0), rollback=getattr(args, "rollback", False),
+        marks_file=args.marks, node_marks_file=args.node_marks, poll_s=args.poll_s)
+    if ops is None:
+        mesh_ops.renice(args.nice)
+        ops = EdgeLabOps(build=getattr(args, "build", None), gap_s=getattr(args, "gap_s", 30.0))
+    if command == "roll":
+        return mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes),
+                             sites=names_of(args.sites), options=options, resume=args.resume,
+                             **engine)
+    if command == "restart":
+        return mesh_ops.restart_nodes(ops, [args.node], options=options, resume=args.resume,
+                                      **engine)
+    return mesh_ops.replace(ops, args.node, mode="rebuild", no_slot=args.no_slot,
+                            resume=args.resume, options=options, **engine)
+
+
+def change_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = None,
+                **change) -> int:
+    """`kill`, `return` and `freeze` on this lab (workstream A, A 2.10):
+    contributor_changes on an EdgeLabOps backend. stdout carries the
+    change's two marks only. Returns the change's exit status."""
+    parser = argparse.ArgumentParser(prog=f"edge_lab.py {command}")
+    contributor_changes.add_options(parser, command, positional=True)
+    add_tool_options(parser)
+    args = parser.parse_args(arguments)
+    if ops is None:
+        mesh_ops.renice(args.nice)
+    change.setdefault("poll_s", args.poll_s)
+    return contributor_changes.run(ops or EdgeLabOps(), command, args, **change)
+
+
 def status() -> None:
+    work = str(WORK.resolve())
+    for entry in registered_labs():
+        print(f"lab {entry['id']:<10} owner {entry['owner']:<10} "
+              f"CPUs {cpu_ranges(entry['cpus']):<8} {entry['work']}"
+              + (" (this lab)" if entry["work"] == work else ""))
     held = held_slots()
+    services = load("services.json")
     for name, role, site, *_ in NODES:
         pid = service_pid(name)
         if pid is None:
@@ -1615,8 +3627,18 @@ def status() -> None:
         directory = cgroup_dir(name)
         stats = read_cgroup(directory) if directory else {}
         line = (f"{name:16} {role:12} pid {pid:<8} "
+                f"set {services.get(name, {}).get('build', 'a')} "
                 f"mem {stats.get('memory_bytes', 0) / 1e6:6.0f} MB "
                 f"throttled {stats.get('throttled_usec', 0) / 1e6:6.1f} s")
+        if role in ("edge", "distributor", "contributor"):
+            # One parser for both shapes of the build block (av-mesh's and
+            # av-contrib's, mesh_ops.status_of).
+            own = mesh_ops.status_of(node_status(name) or None)
+            if own:
+                reasons = ",".join(own.drain_reasons or []) or "none"
+                line += f" build {own.build_git} state {own.state} drain {reasons}"
+                if own.not_ready:
+                    line += f" not ready: {'; '.join(own.not_ready)}"
         if role in ("edge", "distributor"):
             try:
                 view = edge_view(name)
@@ -1635,6 +3657,9 @@ def main() -> None:
         if command == "up":
             rendered = up(arguments)
             print(f"started {len(rendered)} services, each in its own namespace and cgroup")
+            print(f"lab {lab_key()} of {lab_owner()}, "
+                  f"CPUs {cpu_ranges(lab_cpus(load('cpus.json')))}, "
+                  f"build sets {', '.join(build_sets())}, state in {WORK}")
         elif command == "down":
             down()
         elif command == "status":
@@ -1651,6 +3676,9 @@ def main() -> None:
             start_sources(int(arguments[0]) if arguments else 600)
         elif command == "start":
             name = arguments[0]
+            if name in left_out():
+                raise LabError(f"{name} is left out of this lab (up leave_out=); bring the lab up "
+                               "without it left out")
             if name in SLOT_CANDIDATES:
                 set_slot_in_service(name, True)
             pid = service_pid(name) or start_service(name)
@@ -1663,15 +3691,49 @@ def main() -> None:
             print(f"{name} stopped")
         elif command in ("drain", "resume"):
             name = arguments[0]
-            # Always naming the node: av-mesh takes a request without one
-            # as global.
             # Not `status`: that name is the status command's function, and
             # binding it here made `edge_lab.py status` fail (UnboundLocalError).
-            code, body = http_json(name, f"/api/control/{command}-node", "POST",
-                                   {"node_id": name})
+            code, body = control(name, command)
             print(f"{command} {name}: HTTP {code} {json.dumps(body)[:200]}")
             # av-mesh answers a control command with 202 Accepted (queued).
             if not 200 <= code < 300:
+                sys.exit(1)
+        elif command == "crash":
+            name = arguments[0]
+            restart_s = 1.0
+            if arguments[1:]:
+                if len(arguments) != 3 or arguments[1] != "--restart-s":
+                    sys.exit("usage: edge_lab.py crash <node> [--restart-s SECONDS]")
+                restart_s = float(arguments[2])
+            pid = crash_service(name, restart_s)
+            print(f"{name} was killed and is back (pid {pid})")
+        elif command == "layout":
+            # The CPU map `up` would make of these settings; nothing starts.
+            print("\n".join(layout_lines(layout_of(arguments))))
+        elif command in ENGINE_VERBS:
+            sys.exit(engine_verb(command, arguments))
+        elif command in contributor_changes.VERBS:
+            sys.exit(change_verb(command, arguments))
+        elif command == "burn":
+            if len(arguments) != 2:
+                sys.exit("usage: edge_lab.py burn <node> <seconds>")
+            burned = burn(arguments[0], float(arguments[1]))
+            print(f"{arguments[0]} burned for {burned:.1f} s"
+                  + ("" if burned >= float(arguments[1]) else ": its service stopped"))
+        elif command == "rt-check":
+            checks = [rt_check(name) for name in (arguments or standing_services())]
+            setting = load("rt.json")
+            print(f"rt={'1' if setting.get('rt') else 'pin' if setting.get('layout') else '0'}")
+            for item in checks:
+                verdict = {True: "ok", False: "NOT", None: "-"}[item["ok"]]
+                realtime = ", ".join(f"{thread['comm']}/{thread['tid']} {thread['cls']} "
+                                     f"{thread['rtprio']} cpus {thread['allowed']}"
+                                     for thread in item.get("realtime", []))
+                print(f"{item['node']:<14} {verdict:<3} cpus {cpu_ranges(item['node_cpus'] or [])}"
+                      f" class {item['class_cpus'] or '-'} rtprio-limit "
+                      f"{item.get('rtprio_limit')} fast-plane {item.get('fast_plane', {})}: "
+                      f"{item['why']}" + (f"; real-time threads: {realtime}" if realtime else ""))
+            if any(item["ok"] is False for item in checks):
                 sys.exit(1)
         else:
             sys.exit(__doc__)
