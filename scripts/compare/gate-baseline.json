@@ -1,0 +1,38 @@
+{
+ "hosts": {
+  "localhost": {
+   "_from_run": "gate-quick-int2-20261124",
+   "_recorded": "2026-11-24",
+   "opus1-clean": {
+    "london": {
+     "p50_ms": 2.53,
+     "p99_ms": 6.267
+    },
+    "newyork": {
+     "p50_ms": 39.697,
+     "p99_ms": 43.422
+    }
+   },
+   "opus25-burst": {
+    "london": {
+     "p50_ms": 2.329,
+     "p99_ms": 9.475
+    },
+    "newyork": {
+     "p50_ms": 39.525,
+     "p99_ms": 47.193
+    }
+   },
+   "pcm1-loss5": {
+    "london": {
+     "p50_ms": 2.37,
+     "p99_ms": 5.581
+    },
+    "newyork": {
+     "p50_ms": 39.601,
+     "p99_ms": 42.717
+    }
+   }
+  }
+ }
+}

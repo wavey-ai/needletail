@@ -83,7 +83,9 @@ while :; do
         fi
     done
     began=$(now_ms)
-    "${command[@]}" &
+    # <&0: a background job's standard input is /dev/null otherwise, and an
+    # ffmpeg that reads its input from the feed's own (-i pipe:0) needs it.
+    "${command[@]}" <&0 &
     child=$!
     wait "$child"
     code=$?
