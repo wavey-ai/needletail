@@ -60,7 +60,13 @@
           "ready_timeout_s": 30
         }
       ],
-      "expect": {}
+      "expect": {},
+      "open": [
+        {
+          "criterion": "the surge edges back on standby after the roll",
+          "needs": "the deploy record's standby_edges read after the roll (not in the samplers)"
+        }
+      ]
     },
     {
       "name": "U2",
@@ -113,7 +119,13 @@
           "ready_timeout_s": 30
         }
       ],
-      "expect": {}
+      "expect": {},
+      "open": [
+        {
+          "criterion": "every node on the target build (its git id) each way",
+          "needs": "the git ids of the run's roots beside the nodes' /api/node build; judged now as one build after the change"
+        }
+      ]
     },
     {
       "name": "U5",
@@ -129,7 +141,13 @@
           "ready_timeout_s": 30
         }
       ],
-      "expect": {}
+      "expect": {},
+      "open": [
+        {
+          "criterion": "every node on the target build (its git id) each way",
+          "needs": "the git ids of the run's roots beside the nodes' /api/node build; judged now as one build after the change"
+        }
+      ]
     },
     {
       "name": "F4",
@@ -145,7 +163,13 @@
       ],
       "expect": {
         "moves": 0
-      }
+      },
+      "open": [
+        {
+          "criterion": "leases back within 500 ms of the forwarder's first hello",
+          "needs": "lease timing finer than the 1 s mesh sampler (the node's own lease events)"
+        }
+      ]
     },
     {
       "name": "F6",
@@ -161,7 +185,13 @@
       ],
       "expect": {
         "moves": 0
-      }
+      },
+      "open": [
+        {
+          "criterion": "leases back within 500 ms of the forwarder's first hello",
+          "needs": "lease timing finer than the 1 s mesh sampler (the node's own lease events)"
+        }
+      ]
     },
     {
       "name": "C1",
@@ -219,7 +249,13 @@
           "ready_timeout_s": 30
         }
       ],
-      "expect": {}
+      "expect": {},
+      "open": [
+        {
+          "criterion": "both addresses as recorded after the rebuild",
+          "needs": "the lab state's public and VLAN addresses of new-edge-1 compared before and after the replace"
+        }
+      ]
     },
     {
       "name": "RP2",
@@ -237,7 +273,13 @@
           "ready_timeout_s": 30
         }
       ],
-      "expect": {}
+      "expect": {},
+      "open": [
+        {
+          "criterion": "the slot created, warm before it clears its bit, removed, within the budget",
+          "needs": "the deploy tool's replace journal (slot, warm, bit, delete) and the lab tool's ledger, read after the replace"
+        }
+      ]
     },
     {
       "name": "S1",
@@ -270,12 +312,24 @@
     {
       "name": "A1p",
       "group": "A",
-      "title": "the controller alone: 75, 150, 225 listeners a region; the standby joins, then edge-5 is created (the first create by the controller on Linode)",
+      "title": "the controller alone: 75, 150, 225 listeners a region; the standby joins (the first controller), then the next run creates edge-5 (the first create by the controller on Linode)",
       "actions": [
         {
           "kind": "autoscale",
           "until": "join",
           "controller_args": []
+        },
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "controller_args": [
+            "--create-timeout-s",
+            900
+          ],
+          "after": {
+            "event": "controller_exit",
+            "timeout_s": 60
+          }
         }
       ],
       "profile": [
@@ -300,9 +354,14 @@
           1.0
         ]
       ],
-      "observe_s": 600,
+      "observe_s": 1330,
       "expect": {
-        "trigger_to_fresh_s": 20
+        "trigger_to_fresh_s": 20,
+        "events": [
+          "join",
+          "created",
+          "serving"
+        ]
       }
     },
     {
@@ -331,7 +390,13 @@
         ]
       ],
       "observe_s": 600,
-      "expect": {}
+      "expect": {
+        "events": [
+          "drain_end",
+          "stopped",
+          "deleted"
+        ]
+      }
     },
     {
       "name": "A3p",
@@ -391,7 +456,7 @@
     {
       "name": "A4p",
       "group": "A",
-      "title": "the controller running; lon-edge-2 killed and held down: lost from in-mesh evidence, replace_join within 12 s",
+      "title": "the controller running; lon-edge-2 killed and its unit masked (held down): lost from in-mesh evidence, replace_join within 12 s",
       "actions": [
         {
           "kind": "autoscale",
@@ -404,7 +469,8 @@
           "targets": [
             "lon-edge-2"
           ],
-          "at_s": 30
+          "at_s": 30,
+          "mask": true
         }
       ],
       "observe_s": 240,
@@ -416,7 +482,13 @@
         "event_within_s": {
           "replace_join": 42
         }
-      }
+      },
+      "open": [
+        {
+          "criterion": "recovered after the replacement joined",
+          "needs": "a controller that runs on past replace_join (run --until join returns there)"
+        }
+      ]
     }
   ]
 }

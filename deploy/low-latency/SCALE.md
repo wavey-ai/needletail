@@ -965,8 +965,8 @@ by name.
 | U | U1 roll edges, U2 roll forwarders, U4 upgrade all to next, U5 back to first | 173.3 |
 | F | F4 crash tok-dist-a, F6 crash lon-dist-a | 14.9 |
 | R | RP1 replace new-edge-1, RP2 replace tok-dist-b through tok-dist-c | 99.2 |
-| A | S1 scale up, S2 scale down, A1p, A2p, A3p (the controller alone), A4p (an edge lost) | 112.8 |
-| **Total** | | **459.2 min, 7.65 h** |
+| A | S1 scale up, S2 scale down, A1p, A2p, A3p (the controller alone), A4p (an edge lost) | 137.2 |
+| **Total** | | **483.6 min, 8.06 h** |
 
 The figures are `scale-run.py plan --topology-only --topology
 deploy/low-latency/topology-proving.json --phase-plan
@@ -983,6 +983,20 @@ more for the eight slots. Shorter timeouts shorten it (they are the plan's
 `gate_timeout_s`, `drain_timeout_s`, `ready_timeout_s` per action), but a
 command that outlives one stops: the timeouts must stay above what the
 proving run measures.
+
+A1p runs the controller twice: `run --until join` returns when its first
+join is complete, which is the standby edge's at 150 listeners a region; the
+second run (`after` the first's `controller_exit`, `--create-timeout-s 900`)
+is the first create by the controller on Linode, at 225 a region, and its
+observation holds the create's 900 s (A grew from 112.8 to 137.2 minutes for
+it). A1p expects the controller's `join`, `created` and `serving`; A2p the
+slot's `drain_end`, `stopped` and `deleted`; A4p's kill masks lon-edge-2's
+unit (held down: the controller's recover ladder cannot start it) and its
+restore unmasks it. What section 7 expects and the run cannot judge yet
+(the surge edges back on standby, each node on the target git id, leases
+back within 500 ms, both addresses kept by a rebuild, the slot's journal and
+budget in RP2, A4p's `recovered`) is each scenario's `open` list: reported
+open with what it needs, never passed.
 
 ## The listening party (phases-party.json)
 
@@ -1108,9 +1122,28 @@ own no-change windows (at least 120 of the change's length plus 7 s), so a
 probe runs on after the end of its change's bound for twice that bound and
 about 140 s more, and 360 s in all at least (`probe_tail_s`); a change that
 outlives its probes is unscored ("null too short"), never passed. Every
-verdict carries `null_fail_rate`. `--probe-configs opus-1,pcm-1` publishes
+verdict carries `null_fail_rate` where change-window.py could measure it:
+it scores each no-change window against the others more than the window's
+length + 1 s away and skips one with fewer than 120 of them, yet divides by
+every window, so on fewer than 121 + 2 x (length + 1) windows (every
+long change of these plans) its rate is 0.0 by construction; the record
+then says "not measured" (`null_fail_rate_unmeasured`) and the scenario's
+`null_fail_rate_max` leaves it out. Which probes were meant to run is
+written before they start (`probes-expected.json`): a view host or config
+whose probe never started or never came back fails "probe: pass on every
+lane and view host", naming it. `--probe-configs opus-1,pcm-1` publishes
 and probes more than the run's config (the crowd stays on the run's); a
 plan's `defaults.probe_configs` sets it.
+
+**Two paths before a change (B's seam).** Before each scenario's probes the
+runner waits, 20 s at most, until every listener host's newest interval
+shows no listener on one path (`paths.one == 0`), so that one change's
+exposure is not charged to the next. The probes then start that much later
+and end on time. A timeout fails "crowd on two paths before the change"; a
+load tool without `paths` leaves it open; a one-path crowd (`--load-args
+"--paths 1"`) has no such criterion. The edges'
+`client_udp.assignment_confirms_limited` must not rise (open until the edges
+give it).
 
 **Marks and windows.** A change command's own `start`/`end` lines are the
 scenario's marks; a plain kind's mark starts when its signal or request
@@ -1124,12 +1157,19 @@ its slot's end. A scenario with no marks did not run and fails "the
 scenario ran". A scenario whose probes would start more than 10 s late (a
 change before it ran past its bound) is skipped and logged, never started.
 
-**Change kinds** (one blocking command each, never cut; a stopped step
-sends it SIGINT): `roll` (`deploy roll TIER --force`, the same build;
+**Change kinds** (one blocking command each, never cut: once the step has
+stopped a change under way is waited for up to its bound and 60 s more, and
+only then sent SIGINT; one that SIGINT does not end logs the `--resume` it
+owes, `resume_owed`; a restore, A's `return` among them, is never stopped by
+the step, only once past its own bound, loudly, `restore_unfinished`; a
+controller gets SIGINT): `roll` (`deploy roll TIER --force`, the same build;
 `dry`: `--dry-marks`), `upgrade` (`deploy roll TIER` with the roots of
 `--next-av-mesh-root`/`--next-av-contrib-root`, or the run's own for
-`first`), `restart` (`deploy restart --nodes`), `replace` (`deploy replace
---nodes T --mode M` with the run's budget), `scale` (`linode-autoscale.py
+`first`; a run with a roll or an upgrade refuses to start unless
+`NEEDLETAIL_AV_MESH_ROOT` and `NEEDLETAIL_AV_CONTRIB_ROOT` name the run's
+build), `restart` (`deploy restart --nodes`), `replace` (`deploy replace
+--nodes T --mode M` with the run's budget; a rebuilt node's samplers are
+started again after it), `scale` (`linode-autoscale.py
 scale up|down --site S --tier T`), `change` (workstream A's `deploy kill
 --node X` and `return --node X`; its kill's restore is its return), and
 `autoscale` (`linode-autoscale.py run --until join|stopped` for the rest of
@@ -1173,11 +1213,16 @@ crash, stop and start act on a node of any role through its role's unit
   of an edge: B's 80 ms and a round trip; a plan's `expect.single_path_ms`
   otherwise). The steered readers: no stall in the window. The nodes the
   scenario restarts got a new boot id and no other did (the mesh samplers
-  read each node's `/api/node`); after an upgrade every node runs one build
+  read each node's `/api/node`, and the runner reads those it restarts at
+  the probes' start and at scoring: a rebuild takes the node's sampler file
+  with its disk); one it restarts that does not answer after the change is
+  "not back", a failure; after an upgrade every node runs one build
   and none read a frame it could not (`rx_invalid_frames`). Every command
   exited 0 (`expect.exit` otherwise), every wait was met, and a scenario
-  with the controller or a scale verb saw it act (a join, or a `drain_end`
-  and a stop). The six criteria reported open before are judged:
+  with the controller or a scale verb saw it act in the direction each of
+  its actions asks (up: a join; down: a `drain_end` and a stop). A plan's
+  `open` list is reported open with what it needs. The six criteria
+  reported open before are judged:
   `first_part_s` (first serving after the action), `trigger_to_fresh_s`
   (the controller's `serving`), `warm_parts_pending_zero_s` (the forwarders'
   backlog back to 0), `largest_burst_per_tick` (their
@@ -1244,9 +1289,10 @@ crash, stop and start act on a node of any role through its role's unit
   every drain in flight, then exits. One controller per state file (a
   lock). In a phase run its state is `autoscale-state.json` in the step's
   directory (A1 hands its warm pool to A2), its output
-  `controller-<scenario>.log`, its exit code a `controller_exit` event; A2's
-  controller starts only once A1's has exited (waited for up to 5 min,
-  then SIGINT), and the step's end stops it the same way.
+  `scenarios/<scenario>/command-N.out` and `.err`, its exit code a
+  `controller_exit` event; a controller is one blocking action, so A2's
+  starts only once A1's has exited, and the step's end stops one still
+  running with SIGINT.
 - **The edges rebalance (wave 9 C1).** An edge over 800 permille
   (`--rebalance-target-permille`) sends some of its UDP listeners `MOVE
   rebalance`, paced over 2 s, a round every 3 s, when an edge of its region

@@ -2046,7 +2046,10 @@ RESTORE_OF = {"kill": "start", "drain": "resume", "stop": "start", "join": "leav
 CONTROLLER_STOP_S = 90
 # The service commands of a node, by its role's unit: a kill is SIGKILL and
 # then the unit stopped, or Restart=always would bring the node back in 2 s
-# (D4); a crash is the SIGKILL alone, the 2 s restart.
+# (D4); a crash is the SIGKILL alone, the 2 s restart. A kill with `mask`
+# masks the unit first (C 7, A4p: held down, so that nothing, the
+# controller's recover ladder included, can start it), and its restore
+# unmasks it before the start.
 SERVICES = {"contributor": "needletail-contrib"}
 SERVICE = "needletail-mesh"
 NODE_COMMANDS = {
@@ -2055,6 +2058,8 @@ NODE_COMMANDS = {
     "stop": "systemctl stop {service}.service",
     "start": "systemctl start {service}.service",
 }
+MASK = "systemctl mask --runtime {service}.service; "
+UNMASK = "systemctl unmask --runtime {service}.service; "
 # A listener with no part for this long, from this long after the fault,
 # is stranded (ops design 2).
 STRANDED_GAP_S = 5
@@ -2106,6 +2111,16 @@ PROBE_GRACE_S = 30.0
 # The longest single-path span of a listener when an edge is lost (B 6,
 # udp-edge-kill: 80 ms and the reader's round trip, 20 ms on a VLAN here).
 SINGLE_PATH_EDGE_LOSS_MS = 100.0
+# Before each scenario's probes the runner waits, at most this long, for
+# every listener host's latest interval to show no listener on one path
+# (B 5, the seam with C: paths.one == 0 before a fault; B's single legs
+# settle within 20 s). The probes then start that much later and end on
+# time: the lead before the change shrinks, the null after it does not.
+PATHS_WAIT_S = 20.0
+# How long past its bound a change command is waited for before it is
+# signalled: a blocking change once the step has stopped (never cut while
+# within its bound), and a restore at any time (never stopped otherwise).
+BOUND_GRACE_S = 60.0
 
 
 def unix_us() -> int:
@@ -2126,7 +2141,10 @@ def restore_of(action: dict) -> dict | None:
             return None
         return {"kind": "change", "change": "return", "targets": action["targets"]}
     if action["kind"] in RESTORE_OF:
-        return {"kind": RESTORE_OF[action["kind"]], "targets": action["targets"]}
+        restore = {"kind": RESTORE_OF[action["kind"]], "targets": action["targets"]}
+        if action.get("mask"):
+            restore["unmask"] = True
+        return restore
     return None
 
 
@@ -2162,6 +2180,8 @@ def check_action(name: str, action: dict, restore: bool) -> None:
                          "`--until stopped`")
     if action.get("background") and kind != "autoscale":
         raise ValueError(f"{name}: only the controller runs in the background")
+    if action.get("mask") and kind != "kill":
+        raise ValueError(f"{name}: only a kill masks its node's unit")
     if float(action.get("at_s", 0)) < 0:
         raise ValueError(f"{name}: at_s is negative")
     after = action.get("after")
@@ -2219,6 +2239,10 @@ def load_phase_plan(path: str | pathlib.Path, group: str | None = None,
         for point in scenario.get("profile") or []:
             if len(point) != 2 or float(point[0]) < 0 or not 0 <= float(point[1]) <= 1:
                 raise ValueError(f"{name}: a profile point is [seconds, share of the step]")
+        for item in scenario.get("open") or []:
+            if not (isinstance(item, dict) and item.get("criterion") and item.get("needs")):
+                raise ValueError(f"{name}: an open criterion is {{\"criterion\": C, "
+                                 "\"needs\": N}")
     # A scenario that is not enabled (it waits for work not landed) runs
     # only when it is named.
     chosen = [scenario for scenario in plan["scenarios"]
@@ -2894,7 +2918,9 @@ def marks_window(marks: list[tuple[str, int, str]]) -> tuple[float, float] | Non
 def probe_record(directory: pathlib.Path) -> dict | None:
     """The referee's verdict on a scenario (its change-window.json) per
     label and probe (`host/config`), with the figures beside its bar and
-    the null's own fail rate; None when the scenario was not scored."""
+    the null's own fail rate where CW could measure it (change-run.py's
+    null_fail_rate: never a 0.0 by construction); None when the scenario
+    was not scored."""
     path = directory / "change-window.json"
     try:
         verdict = json.loads(path.read_text())
@@ -2906,12 +2932,15 @@ def probe_record(directory: pathlib.Path) -> dict | None:
             parts = pathlib.PurePath(frames).parts
             key = "/".join(parts[-3:-1]) if len(parts) >= 3 else frames
             change = result.get("change") or {}
+            rate, unmeasured = change_run().null_fail_rate(result)
             out[f"{label} {key}"] = {
                 "pass": result.get("pass"), "missing": change.get("missing"),
                 "gap_ms": change.get("gap_ms"), "gap_bar_ms": result.get("gap_bar_ms"),
                 "p99_ms": change.get("p99_ms"), "p99_bar_ms": result.get("p99_bar_ms"),
-                "null_fail_rate": result.get("null_fail_rate"),
-                "null_windows": result.get("null_windows"),
+                "null_fail_rate": rate, "null_windows": result.get("null_windows"),
+                "window_s": result.get("window_s"),
+                **({"null_fail_rate_unmeasured": unmeasured}
+                   if result.get("null_fail_rate") is not None and unmeasured else {}),
                 **{name: result[name] for name in ("note", "error") if name in result}}
     return out
 
@@ -2989,17 +3018,43 @@ def node_value_at(rows: list[dict], key: str, t: float, before: bool):
     return (pool[-1] if before else pool[0])["node"][key]
 
 
-def boot_changes(meshes: dict[str, list[dict]], begin: float, end: float) -> dict:
+def boot_changes(meshes: dict[str, list[dict]], begin: float, end: float,
+                 expected=(), events=()) -> dict:
     """{node: [boot id before, boot id after]} of every sampled node that
-    answered /api/node before `begin` and after `end`."""
+    answered /api/node before `begin` and after `end`, and of every node of
+    `expected` (those the scenario restarts) whatever it answered, None
+    where it did not: from its mesh sampler, else from the runner's own
+    reads (`events`: the scenario's boot_ids, `before` and `after`; a
+    rebuilt node's sampler file went with its disk)."""
+    read = {"before": {}, "after": {}}
+    for item in events:
+        if item.get("event") == "boot_ids" and item.get("when") in read:
+            read[item["when"]].update(item.get("boot_ids") or {})
     out = {}
-    for name in meshes:
+    for name in sorted(set(meshes) | set(expected), key=natural):
         rows = node_rows(meshes, name)
-        before, after = node_value_at(rows, "boot_id", begin, True), \
-            node_value_at(rows, "boot_id", end, False)
-        if before is not None and after is not None:
+        before = node_value_at(rows, "boot_id", begin, True)
+        after = node_value_at(rows, "boot_id", end, False)
+        before = read["before"].get(name) if before is None else before
+        after = read["after"].get(name) if after is None else after
+        if name in expected or (before is not None and after is not None):
             out[name] = [before, after]
     return out
+
+
+def dotted_rise(meshes: dict[str, list[dict]], key: str,
+                window: tuple[float, float]) -> float | None:
+    """How much a counter of the mesh sampler's rows (dotted, as
+    `client_udp.assignment_confirms_limited`) rose over a window, summed
+    over the nodes; None when no node gives it."""
+    rises = []
+    for rows in meshes.values():
+        values = [value for value in (dotted(row, key) for row in rows
+                                      if window[0] <= row["t"] <= window[1])
+                  if value is not None]
+        if values:
+            rises.append(values[-1] - values[0])
+    return sum(rises) if rises else None
 
 
 def builds_around(meshes: dict[str, list[dict]], state: dict,
@@ -3292,6 +3347,13 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
         served = sorted(item["unix_us"] / 1e6 for item in own
                         if item.get("event") == "first_serving") + sorted(
             item["unix_us"] / 1e6 for item in controller if item.get("kind") == "serving")
+        try:
+            expected_probes = json.loads((step_dir / "scenarios" / row["name"]
+                                          / PROBES_EXPECTED).read_text())
+        except (OSError, ValueError):
+            expected_probes = None
+        paths_wait = [item for item in own if item.get("event") in (
+            "paths_settled", "paths_timeout", "paths_unknown", "paths_not_waited")]
         result.update({
             "ran": True, "marks": [list(item) for item in marks],
             "changes": row.get("changes") or [], "restarted_expected": row.get("restarted") or [],
@@ -3301,7 +3363,14 @@ def analyse_phases(state: dict, step_dir: pathlib.Path, timeline: dict, start: f
             "unit_ms": round(1000.0 / parts_per_s(config), 3),
             "readers": readers_window(reports, readers_launched or start, marked),
             "probe": probe_record(step_dir / "scenarios" / row["name"]),
-            "restarts": boot_changes(meshes, marked[0], windows["after"][1]),
+            "probe_expected": expected_probes,
+            "paths_wait": {key: paths_wait[-1].get(key) for key in (
+                "event", "waited_s", "paths", "why")} if paths_wait else None,
+            "assignment_confirms_limited_rise": dotted_rise(
+                meshes, "client_udp.assignment_confirms_limited",
+                (marked[0], windows["after"][1])),
+            "restarts": boot_changes(meshes, marked[0], windows["after"][1],
+                                     row.get("restarted") or [], own),
             "builds": builds_around(meshes, state, marked),
             "first_part_s": round(served[0] - first_act, 3) if served else None,
             "trigger_to_fresh_s": min((item["trigger_to_fresh_s"] for item in controller
@@ -3364,23 +3433,47 @@ def change_criteria(result: dict, spec: dict, state_roles: dict) -> list[dict]:
     expect = spec.get("expect") or {}
     out = []
     probe = result.get("probe")
-    if probe is None:
+    expected = result.get("probe_expected") or []
+    if probe is None and not expected:
         out.append(check("probe: pass on every lane and view host", None, None,
-                         "the scenario's probes were not scored (no view host, or the probes "
-                         "or their ingest failed)"))
+                         "the scenario's probes were not scored (the lab has no view host)"))
     else:
+        probe = probe or {}
         results = list(probe.values())
         failed = [key for key, item in probe.items() if item["pass"] is False or "error" in item]
         short = [key for key, item in probe.items() if item["pass"] is None and "error" not in item]
+        # Every label on every probe that was meant to run: one that never
+        # started or never came back is a missing verdict, not a pass on
+        # fewer hosts.
+        labels = sorted({key.rsplit(" ", 1)[0] for key in probe}) or ["(no label scored)"]
+        missing = [f"{label} {pair}" for label in labels for pair in expected
+                   if f"{label} {pair}" not in probe]
+        rates = [item["null_fail_rate"] for item in results
+                 if item.get("null_fail_rate") is not None]
         out.append(check("probe: pass on every lane and view host",
-                         False if failed or not results else None if short else True,
-                         {"failed": failed, "unscored": short,
-                          "null_fail_rate_max": max((item.get("null_fail_rate") or 0
-                                                     for item in results), default=None),
+                         False if failed or missing or not results else None if short else True,
+                         {"failed": failed, "missing": missing, "unscored": short,
+                          "null_fail_rate_max": max(rates, default=None),
+                          "null_fail_rate_unmeasured": sum(
+                              1 for item in results if item.get("null_fail_rate") is None),
                           "probes": probe},
-                         None if failed or not short else
+                         None if failed or missing or not short else
                          "change-window.py did not score it: null too short (a longer probe, "
                          "or a shorter change)"))
+    wait = result.get("paths_wait")
+    if not wait:
+        out.append(check("crowd on two paths before the change (paths.one = 0)", None, None,
+                         "the runner's wait for paths.one = 0 before the scenario (B 5)"))
+    elif wait["event"] != "paths_not_waited":
+        out.append(check("crowd on two paths before the change (paths.one = 0)",
+                         {"paths_settled": True, "paths_timeout": False}.get(wait["event"]),
+                         wait, "needletail-load's paths (B Y3)"
+                         if wait["event"] == "paths_unknown" else None))
+    confirms = result.get("assignment_confirms_limited_rise")
+    out.append(check("edges: assignment_confirms_limited = 0",
+                     None if confirms is None else confirms == 0, confirms,
+                     None if confirms is not None else
+                     "the edges' client_udp.assignment_confirms_limited (B Z3)"))
     crowd = result["crowd"]
     during, after, before = crowd["during"], crowd["after"], crowd["before"]
 
@@ -3422,11 +3515,21 @@ def change_criteria(result: dict, spec: dict, state_roles: dict) -> list[dict]:
         out.append(check("restarts: the nodes it changes and no other", None, None,
                          "the nodes' /api/node boot ids in the mesh samplers"))
     else:
-        changed = sorted(name for name, (a, b) in restarts.items() if a != b)
-        missed = [name for name in expected if name in restarts and name not in changed]
+        # A node it must restart that does not answer after the change is
+        # not back (a failure); one never read before cannot be judged.
+        both = {name: pair for name, pair in restarts.items() if None not in pair}
+        changed = sorted((name for name, (a, b) in both.items() if a != b), key=natural)
+        not_back = [name for name in expected if (restarts.get(name) or [None, None])[0]
+                    is not None and restarts[name][1] is None]
+        unknown = [name for name in expected if (restarts.get(name) or [None])[0] is None]
+        missed = [name for name in expected if name in both and name not in changed]
         others = [name for name in changed if name not in expected]
-        out.append(check("restarts: the nodes it changes and no other", not missed and not others,
-                         {"restarted": changed, "not_restarted": missed, "others": others}))
+        out.append(check("restarts: the nodes it changes and no other",
+                         False if missed or others or not_back else None if unknown else True,
+                         {"restarted": changed, "not_restarted": missed, "not_back": not_back,
+                          "not_read_before": unknown, "others": others},
+                         None if missed or others or not_back or not unknown else
+                         f"a boot id before the change of {', '.join(unknown)}"))
     if any(kind == "upgrade" for kind in result.get("changes") or []):
         builds = result["builds"]
         one = all(len(items) == 1 for items in builds["after"].values()) and builds["after"]
@@ -3450,12 +3553,24 @@ def change_criteria(result: dict, spec: dict, state_roles: dict) -> list[dict]:
     for wait in result.get("waits") or []:
         out.append(check(f"event {wait['awaited']} within {wait['timeout_s']:g} s",
                          wait["event"] == "after_met", wait.get("waited_s")))
-    if any(kind in ("autoscale", "scale") for kind in result.get("changes") or []):
-        kinds = set(result["controller"]["kinds"])
-        acted = "join" in result["controller"]["decisions"] or "serving" in kinds \
-            or {"drain_end", "stopped"} <= kinds
-        out.append(check("the controller acted (a join, or a drain_end and a stop)", acted,
-                         result["controller"]))
+    # The controller acted in the direction each of its actions asks: up (a
+    # run until join, a scale up) a join or a node that came to serve; down
+    # a drain_end and a stop.
+    kinds = set(result["controller"]["kinds"])
+    directions = []
+    for action in spec.get("actions") or []:
+        if action["kind"] == "autoscale":
+            directions.append("up" if action.get("until") == "join" else "down")
+        elif action["kind"] == "scale":
+            directions.append(action.get("direction"))
+    for direction in sorted(set(directions), reverse=True):
+        if direction == "up":
+            acted = "join" in result["controller"]["decisions"] or "serving" in kinds
+            what = "up: a join"
+        else:
+            acted = {"drain_end", "stopped"} <= kinds
+            what = "down: a drain_end and a stop"
+        out.append(check(f"the controller acted ({what})", acted, result["controller"]))
     for name in expect.get("events") or []:
         kinds = set(result["controller"]["kinds"])
         out.append(check(f"controller event {name}", name in kinds, sorted(kinds)))
@@ -3463,6 +3578,10 @@ def change_criteria(result: dict, spec: dict, state_roles: dict) -> list[dict]:
         value = (result["controller"].get("after_first_action_s") or {}).get(name)
         out.append(check(f"controller event {name} within {bound:g} s of the first action",
                          value is not None and value <= bound, value))
+    # What the plan expects and this tool cannot judge yet: open, with what
+    # it needs, never dropped.
+    for item in spec.get("open") or []:
+        out.append(check(item["criterion"], None, None, item["needs"]))
     return out
 
 
@@ -3671,6 +3790,8 @@ CHANGE_WINDOW = COMPARE_ROOT / "scripts" / "compare" / "change-window.py"
 # past its bound) no longer fits its place in the hold: it is skipped and
 # logged, never started (C 2.11).
 SCENARIO_LATE_S = 10.0
+# The probes a scenario was meant to have, written when they start.
+PROBES_EXPECTED = "probes-expected.json"
 _change_run: dict = {}
 
 
@@ -3712,9 +3833,13 @@ def node_list(flag: str, names) -> list[str]:
     return [flag, ",".join(names)] if names else []
 
 
-def node_command(kind: str, node: dict) -> str:
-    """A plain kind's service command on a node, by its role's unit."""
-    return NODE_COMMANDS[kind].format(service=SERVICES.get(node["role"], SERVICE))
+def node_command(kind: str, node: dict, action: dict | None = None) -> str:
+    """A plain kind's service command on a node, by its role's unit; a kill
+    that masks the unit, and the start that unmasks it, by its action."""
+    action = action or {}
+    prefix = (MASK if kind == "kill" and action.get("mask") else
+              UNMASK if kind == "start" and action.get("unmask") else "")
+    return (prefix + NODE_COMMANDS[kind]).format(service=SERVICES.get(node["role"], SERVICE))
 
 
 def action_command(action: dict, args, directory: pathlib.Path,
@@ -3850,7 +3975,18 @@ class ScenarioProbes:
                 f"--client {remote}/uc.json --report {remote}/probe.json "
                 f"--frames {remote}/probe.csv >{remote}/ingest.log 2>&1; true")
 
+    def expected(self) -> list[str]:
+        """Every probe a scenario must have a verdict for: `host/config`."""
+        return [f"{view['name']}/{config}" for view, _entry in self.hosts
+                for config in self.configs]
+
     def start(self, scenario: str, seconds: float) -> None:
+        """Start the probes, after writing down which were meant to run
+        (probes-expected.json): a probe that never started or never came
+        back is then a missing verdict, never a pass on fewer hosts."""
+        directory = self.step_dir / "scenarios" / scenario
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / PROBES_EXPECTED).write_text(json.dumps(self.expected()) + "\n")
         commands = {view["name"]: "\n".join(self.start_command(scenario, config, entry, seconds)
                                              for config in self.configs)
                     for view, entry in self.hosts}
@@ -3883,6 +4019,30 @@ class ScenarioProbes:
                 if (target / "probe.csv").is_file():
                     frames.append(target / "probe.csv")
         return frames
+
+
+def crowd_paths(hosts: list[dict], remote_dir: str, since: float) -> dict | None:
+    """The listeners by delivering legs (B 2.9's `paths`) in each listener
+    host's latest interval written at or after `since`, summed: {"known":
+    True, "two", "one", "none", "hosts"}; {"known": False} when those lines
+    carry no `paths` (a load tool before B Y3); None while no host has
+    written one."""
+    texts = common.parallel(hosts, lambda node: ssh_quiet(
+        node, f"tail -n 5 {remote_dir}/{LOAD_DIR}/intervals.jsonl 2>/dev/null"), workers=64)
+    fresh = []
+    for _name, text in sorted(texts.items()):
+        rows = [row for row in interval_rows(read_jsonl(text or ""))
+                if row["edge"] is None and row["phase"] != "final" and row["t"] >= since]
+        if rows:
+            fresh.append(rows[-1])
+    if not fresh:
+        return None
+    known = [row["paths"] for row in fresh if row.get("paths")]
+    if not known:
+        return {"known": False}
+    return {"known": True, "hosts": len(known),
+            **{key: sum(int(paths.get(key) or 0) for paths in known)
+               for key in ("two", "one", "none")}}
 
 
 def cw_command(frames: list[pathlib.Path], marks: pathlib.Path, out: pathlib.Path) -> list[str]:
@@ -3919,16 +4079,23 @@ class PhaseRunner:
     scenario writes its marks (scenarios/NAME/marks.txt in the step's
     directory): a change command's own, a plain kind's `start` when the
     signal or request went and `end` when its wait ended; a label left open
-    is closed before the scenario is scored. On stop every restore that a
-    fault still owes is put back (a fault is owed before it is carried out,
-    no new one starts once stopped, and finish() waits for the one under
-    way before it restores), and a command or controller still running gets
-    SIGINT. A scenario that would start late (a change before it ran past
-    its bound) is skipped and logged."""
+    is closed before the scenario is scored. Before each scenario's probes
+    it waits for the crowd to be on two paths again (`crowd_paths`, B 5's
+    seam), and it reads the boot ids of the nodes the scenario restarts
+    from here, at its probes' start and its scoring (a rebuilt node keeps no
+    sampler file). On stop every restore that a fault still owes is put back
+    (a fault is owed before it is carried out, no new one starts once
+    stopped, and finish() waits for the one under way before it restores),
+    a blocking change still running is waited for up to its bound and only
+    then sent SIGINT, a controller gets SIGINT, a restore is never stopped
+    within its bound, and a scenario whose probes ran is still scored. A
+    scenario that would start late (a change before it ran past its bound)
+    is skipped and logged."""
 
     def __init__(self, lab: dict, timeline: dict, start: float, log, args,
                  events_path: pathlib.Path | None = None,
-                 directory: pathlib.Path | None = None, probes: ScenarioProbes | None = None):
+                 directory: pathlib.Path | None = None, probes: ScenarioProbes | None = None,
+                 crowd_paths=None, paths: int = 2, resample=None):
         self.lab = lab
         self.timeline = timeline
         self.start = start
@@ -3952,6 +4119,14 @@ class PhaseRunner:
         self.open_marks: dict[str, dict[str, str]] = {}
         self.skip_rest: set[str] = set()
         self.not_run: set[str] = set()
+        # crowd_paths(since): the crowd's paths now (crowd_paths()); the
+        # legs each listener of the crowd holds; resample(name): the
+        # samplers started again on a node that a replace rebuilt.
+        self.crowd_paths = crowd_paths
+        self.paths = paths
+        self.resample = resample
+        self.probed: set[str] = set()
+        self.scored: set[str] = set()
 
     def log(self, item: dict) -> None:
         """Every event goes to the run's log, and is kept for the actions
@@ -4037,13 +4212,18 @@ class PhaseRunner:
                               "event": "scenario_skipped", "unix_us": unix_us(),
                               "why": f"it would start {late:.0f} s late: a change before it "
                                      "ran past its bound, and it no longer fits the hold"})
-                elif self.probes is not None:
-                    self.start_probes(name)
+                    continue
+                waited = self.wait_paths(name)
+                self.log_boot_ids(name, "before")
+                if self.probes is not None:
+                    self.start_probes(name, waited)
                 continue
             if name in self.not_run:
                 continue
             if item["kind"] == "_score":
+                self.log_boot_ids(name, "after")
                 self.close_open(name)
+                self.scored.add(name)
                 self.watch(self.score, name, item)
                 continue
             if not item.get("restore"):
@@ -4064,10 +4244,67 @@ class PhaseRunner:
                     self.owed.append(item)
             self.act(item)
 
-    def start_probes(self, scenario: str) -> None:
+    def wait_paths(self, scenario: str) -> float:
+        """Wait (never a sleep) until every listener host's latest interval
+        shows no listener on one path (B 5's seam: paths.one == 0 before a
+        fault), PATHS_WAIT_S at most; the seconds waited. Logged as
+        paths_settled, paths_timeout (the scenario runs, and its criterion
+        fails), paths_unknown (the load tool gives no paths: open) or
+        paths_not_waited (a one-path crowd)."""
+        base = {"source": "scale-run", "scenario": scenario}
+        if self.paths < 2:
+            self.log({**base, "event": "paths_not_waited", "unix_us": unix_us(),
+                      "why": f"the crowd holds {self.paths} path"})
+            return 0.0
+        if self.crowd_paths is None:
+            self.log({**base, "event": "paths_unknown", "unix_us": unix_us(),
+                      "why": "no listener host's intervals to read"})
+            return 0.0
+        began = time.time()
+        deadline = began + PATHS_WAIT_S
+        last = None
+        while True:
+            try:
+                last = self.crowd_paths(began)
+            except Exception as error:  # noqa: BLE001 - an ssh that fails: waited for again
+                last = {"known": True, "error": str(error)[-200:], "one": None}
+            waited = round(time.time() - began, 3)
+            if last is not None and not last.get("known"):
+                self.log({**base, "event": "paths_unknown", "unix_us": unix_us(),
+                          "waited_s": waited,
+                          "why": "needletail-load's intervals give no paths (B Y3)"})
+                return waited
+            if last is not None and last.get("one") == 0:
+                self.log({**base, "event": "paths_settled", "unix_us": unix_us(),
+                          "waited_s": waited, "paths": last})
+                return waited
+            if time.time() >= deadline or self.stop.is_set():
+                self.log({**base, "event": "paths_timeout", "unix_us": unix_us(),
+                          "waited_s": waited, "paths": last})
+                return waited
+            self.stop.wait(1.0)
+
+    def log_boot_ids(self, scenario: str, when: str) -> None:
+        """The /api/node boot ids of the nodes the scenario restarts, read
+        from here (a rebuilt node's own sampler file is gone with its disk):
+        `before` at its probes' start, `after` when it is scored."""
+        names = [name for name in self.row(scenario).get("restarted") or []
+                 if name in self.lab["nodes"]]
+        if not names:
+            return
+        found = common.parallel([self.lab["nodes"][name] for name in names],
+                                lambda node: boot_id_of(http_get(node, "/api/node")))
+        self.log({"source": "scale-run", "scenario": scenario, "event": "boot_ids",
+                  "when": when, "unix_us": unix_us(),
+                  "boot_ids": {name: found.get(name) for name in names}})
+
+    def start_probes(self, scenario: str, waited: float = 0.0) -> None:
+        """The scenario's probes, `waited` seconds late (the paths wait):
+        they end when planned, so the null after the change is whole."""
         row = self.row(scenario)
+        self.probed.add(scenario)
         try:
-            self.probes.start(scenario, row["probe_s"])
+            self.probes.start(scenario, row["probe_s"] - waited)
         except Exception as error:  # noqa: BLE001 - the scenario runs; its probe criterion fails
             self.log({"source": "scale-run", "scenario": scenario, "event": "probes_failed",
                       "unix_us": unix_us(), "error": str(error)[-400:]})
@@ -4186,7 +4423,7 @@ class PhaseRunner:
         self.log({**base, "event": "action", "node": target, "unix_us": at})
         try:
             if kind in NODE_COMMANDS:
-                ssh(self.node(target), node_command(kind, self.node(target)), timeout=60,
+                ssh(self.node(target), node_command(kind, self.node(target), item), timeout=60,
                     check=True)
             elif kind in ("drain", "resume"):
                 # Always naming the node: av-mesh takes a request with no
@@ -4232,14 +4469,19 @@ class PhaseRunner:
             self.mark_end(scenario, label, "done")
 
     def change(self, item: dict, base: dict) -> None:
-        """A change kind: its one command, blocking until it returns (a
-        blocking action is never cut; a stopped step sends it SIGINT, and it
-        closes what it opened). Its marks are the lines of its stdout; none:
-        `start`/`end` around it labelled <scenario>.<kind>; a label it left
-        open (it died) is closed when it was reaped, with an `aborted`
-        event."""
+        """A change kind: its one command, blocking until it returns. A
+        blocking change is never cut: once the step has stopped it is waited
+        for up to its bound (action_bound_s) and BOUND_GRACE_S more, and
+        only then sent SIGINT (it resumes what it drained and closes what it
+        opened; a SIGTERM or SIGKILL after that logs the --resume it owes).
+        A controller gets SIGINT when the step stops. A restore is never
+        stopped by the step: only once past its own bound and the grace,
+        loudly. Its marks are the lines of its stdout; none: `start`/`end`
+        around it labelled <scenario>.<kind>; a label it left open (it
+        died) is closed when it was reaped, with an `aborted` event."""
         scenario = item["scenario"]
         kind = item["kind"]
+        restore = bool(item.get("restore"))
         directory = self.scenario_dir(scenario)
         if self.stop.is_set() and not item.get("restore"):
             self.log({**base, "event": "skipped", "unix_us": unix_us(),
@@ -4257,19 +4499,47 @@ class PhaseRunner:
         self.log({**base, "event": "controller_start" if kind == "autoscale"
                   else "command_start", "unix_us": unix_us(), "command": command[1:]})
         started_ns = time.time_ns()
+        bound = action_bound_s(item, self.lab)
         with open(out, "wb") as stdout, open(err, "wb") as stderr:
             process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout,
                                        stderr=stderr, env=env, start_new_session=True)
-        entry = {"process": process, "scenario": scenario, "kind": kind}
+        entry = {"process": process, "scenario": scenario, "kind": kind, "restore": restore,
+                 "started": time.time(), "bound_s": bound}
         self.processes.append(entry)
+        signalled = waiting = False
         while True:
             try:
                 code = process.wait(timeout=1.0)
                 break
             except subprocess.TimeoutExpired:
-                if self.stop.is_set():
-                    self.stop_controller(entry)
+                if signalled:
+                    continue
+                overdue = time.time() - entry["started"] > bound + BOUND_GRACE_S
+                if restore and overdue:
+                    signalled = True
+                    self.log({**base, "event": "restore_unfinished", "unix_us": unix_us(),
+                              "command": command[1:],
+                              "why": f"the restore ran past its bound ({bound:.0f} s and "
+                                     f"{BOUND_GRACE_S:.0f} s more) and is stopped: the fault "
+                                     "it puts back may still be in place; run it by hand"})
+                    self.owe_resume(entry, command, self.stop_controller(entry))
+                elif not restore and self.stop.is_set():
+                    if kind == "autoscale" or overdue:
+                        signalled = True
+                        self.owe_resume(entry, command, self.stop_controller(entry))
+                    elif not waiting:
+                        waiting = True
+                        self.log({**base, "event": "command_waited", "unix_us": unix_us(),
+                                  "bound_s": bound, "why": "the step stopped; a blocking "
+                                  "change is never cut: waited for up to its bound"})
         reaped_ns = time.time_ns()
+        if kind == "replace" and code == 0 and self.resample is not None:
+            # A rebuild wiped the node's disk, and its samplers with it.
+            try:
+                self.resample(item["targets"][0])
+            except Exception as error:  # noqa: BLE001 - recorded; the run goes on
+                self.log({**base, "event": "resample_failed", "unix_us": unix_us(),
+                          "node": item["targets"][0], "error": str(error)[-300:]})
         tool = change_run()
         marks, aborted = tool.close_marks(tool.marks_of(out.read_text(errors="replace")),
                                           started_ns, reaped_ns, f"{scenario}.{kind}")
@@ -4388,17 +4658,19 @@ class PhaseRunner:
                         self.mark_end(item["scenario"], label, "first_serving")
             self.stop.wait(0.5)
 
-    def stop_controller(self, entry: dict) -> None:
-        """A command or controller still running when the step stops: SIGINT
-        (the engine and the controller resume what they drained and print
-        their end), then SIGTERM, then SIGKILL."""
+    def stop_controller(self, entry: dict) -> list[str]:
+        """A command or controller to stop: SIGINT (the engine and the
+        controller resume what they drained and print their end), then
+        SIGTERM, then SIGKILL; the signals it took."""
         process = entry["process"]
         steps = (("SIGINT", lambda: process.send_signal(signal.SIGINT)),
                  ("SIGTERM", process.terminate), ("SIGKILL", process.kill))
+        sent = []
         for name, send in steps:
             if process.poll() is not None:
-                return
+                break
             send()
+            sent.append(name)
             self.log({"source": "scale-run", "scenario": entry["scenario"],
                       "event": "controller_stop" if entry.get("kind") == "autoscale"
                       else "command_stop", "unix_us": unix_us(), "signal": name})
@@ -4406,27 +4678,52 @@ class PhaseRunner:
                 process.wait(timeout=CONTROLLER_STOP_S)
             except subprocess.TimeoutExpired:
                 continue
+        return sent
+
+    def owe_resume(self, entry: dict, command: list[str], sent: list[str]) -> None:
+        """An engine command that SIGINT did not end (SIGTERM, SIGKILL)
+        left its journal open and maybe a node drained: say loudly that its
+        --resume is owed."""
+        if entry["kind"] in ("roll", "upgrade", "restart", "replace") and len(sent) > 1:
+            self.log({"source": "scale-run", "scenario": entry["scenario"],
+                      "event": "resume_owed", "unix_us": unix_us(),
+                      "command": command[1:] + ["--resume"],
+                      "why": f"it took {sent[-1]}: its journal is open and a node may be left "
+                             "drained or half-changed; run the same command with --resume"})
 
     def finish(self, join_s: float = 120.0) -> None:
-        """Stop: let the action under way end (run() starts no other), then
-        put back every fault still owed its restore, then stop a command or
-        controller still running (SIGINT), close every label still open and
-        wait for the scorers."""
+        """Stop: let the action under way end (run() starts no other; a
+        blocking change is given its bound), then put back every fault still
+        owed its restore, then stop a controller still running (SIGINT; a
+        restore is never stopped here), close every label still open, score
+        each scenario whose probes ran and was not scored yet, and wait for
+        the scorers."""
         self.stop.set()
         if self.thread is not None and self.thread is not threading.current_thread():
-            self.thread.join(timeout=join_s)
+            now = time.time()
+            running = [entry["bound_s"] + BOUND_GRACE_S - (now - entry["started"])
+                       + 3 * CONTROLLER_STOP_S for entry in self.processes
+                       if entry["process"].poll() is None and entry["kind"] != "autoscale"]
+            timeout = max([join_s] + running)
+            self.thread.join(timeout=timeout)
             if self.thread.is_alive():
                 self.log({"source": "scale-run", "event": "runner_still_acting",
-                          "unix_us": unix_us(), "waited_s": join_s})
+                          "unix_us": unix_us(), "waited_s": round(timeout, 1)})
         with self.owed_lock:
             owed, self.owed = list(self.owed), []
         for item in owed:
             restore = {**restore_of(item), "scenario": item["scenario"], "restore": True, "t": 0}
             self.act(restore)
         for entry in list(self.processes):
-            self.stop_controller(entry)
+            if not entry.get("restore"):
+                self.stop_controller(entry)
         for scenario in list(self.open_marks):
             self.close_open(scenario)
+        # A step stopped early: the probes of the scenario under way are
+        # still fetched and scored (their files are the run's data).
+        for scenario in sorted(self.probed - self.scored):
+            self.scored.add(scenario)
+            self.watch(self.score, scenario, {})
         for thread in list(self.threads):
             thread.join(timeout=join_s)
 
@@ -5306,9 +5603,19 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
         if not probes.hosts:
             log({"step": step["listeners"], "probes": "none: the lab has no view host, so no "
                  "scenario is scored by the referee's rule"})
+
+        def resample(name: str) -> None:
+            # A rebuilt node: its samplers again, for the rest of the step.
+            node = lab["nodes"][name]
+            left = started + duration + 60 - time.time()
+            ssh(node, sampler_command(node, remote_dir, left), check=True)
+            ssh(node, mesh_sampler_command(node, remote_dir, left, stream), check=True)
+
         runner = PhaseRunner(lab, phases["timeline"], started + step["ramp_s"], log, args,
                              phases.get("events"), directory=step_dir,
-                             probes=probes if probes.hosts else None)
+                             probes=probes if probes.hosts else None,
+                             crowd_paths=lambda since: crowd_paths(hosts, remote_dir, since),
+                             paths=load_paths(args), resample=resample)
         runner.begin()
     try:
         saturated, why = monitor(hosts, remote_dir, started + duration + 5, args.poll, log)
@@ -5444,6 +5751,18 @@ def control_results(lab: dict, base: pathlib.Path, result: dict) -> dict:
     return out
 
 
+def load_paths(args: argparse.Namespace) -> int:
+    """The legs each listener of the crowd holds: needletail-load's --paths
+    in --load-args, else its default, 2 (B 2.4)."""
+    tokens = shlex.split(getattr(args, "load_args", "") or "")
+    for index, token in enumerate(tokens):
+        if token == "--paths" and index + 1 < len(tokens):
+            return int(tokens[index + 1])
+        if token.startswith("--paths="):
+            return int(token.split("=", 1)[1])
+    return 2
+
+
 def probe_configs(text: str | None, config: str) -> list[str]:
     """The configs each scenario's probes listen to: the run's own (the
     crowd's) and those of --probe-configs, which the run also publishes. Two
@@ -5507,12 +5826,23 @@ def phase_setup(args: argparse.Namespace, lab: dict) -> dict | None:
     return {"plan": plan, "timeline": timeline, "probe_configs": configs}
 
 
-def check_upgrade_roots(timeline: dict, args: argparse.Namespace) -> None:
-    """A run with an upgrade to `next` has the roots of the build it rolls
-    to, before anything starts."""
-    upgrades = [action for row in timeline["scenarios"] for action in row["actions"]
-                + row["restores"] if action["kind"] == "upgrade" and action["build"] == "next"]
-    if upgrades and not (args.next_av_mesh_root or args.next_av_contrib_root):
+BUILD_ROOTS = ("NEEDLETAIL_AV_MESH_ROOT", "NEEDLETAIL_AV_CONTRIB_ROOT")
+
+
+def check_build_roots(timeline: dict, args: argparse.Namespace) -> None:
+    """Before anything starts: a run with a roll or an upgrade has the roots
+    of the build it runs in the environment (the `first` build, what a roll
+    of the same build and an upgrade back install; without them the deploy
+    tool takes ~/wavey.ai's checkouts, which may be another build), and an
+    upgrade to `next` the roots of the build it rolls to."""
+    rolls = [action for row in timeline["scenarios"] for action in row["actions"]
+             + row["restores"] if action["kind"] in ("roll", "upgrade")]
+    unset = [name for name in BUILD_ROOTS if not os.environ.get(name)]
+    if rolls and unset:
+        raise ValueError(f"a roll or an upgrade installs the run's own build: export "
+                         f"{' and '.join(unset)} (C 7)")
+    if any(action["kind"] == "upgrade" and action["build"] == "next" for action in rolls) \
+            and not (args.next_av_mesh_root or args.next_av_contrib_root):
         raise ValueError("an upgrade to `next` needs --next-av-mesh-root or "
                          "--next-av-contrib-root (the build it rolls to)")
 
@@ -5619,7 +5949,7 @@ def command_run(args: argparse.Namespace) -> None:
     standby = list(settings.get("standby_edges") or [])
     phases = phase_setup(args, {**lab, "standby_edges": standby})
     if phases:
-        check_upgrade_roots(phases["timeline"], args)
+        check_build_roots(phases["timeline"], args)
     resolve_defaults(args)
     plan = build_plan(args, lab, standby)
     if not plan["steps"]:

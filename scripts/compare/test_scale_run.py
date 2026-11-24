@@ -824,6 +824,45 @@ class FakeProcess:
         pass
 
 
+class SlowProcess:
+    """A change command that takes `seconds` to exit by itself, or ends at
+    the first signal it does not ignore; every signal sent is recorded."""
+
+    def __init__(self, command, seconds, ignore=()):
+        self.command = command
+        self.ends = time.time() + seconds
+        self.ignore = set(ignore)
+        self.signals = []
+        self.returncode = None
+
+    def poll(self):
+        if self.returncode is None and time.time() >= self.ends:
+            self.returncode = 0
+        return self.returncode
+
+    def wait(self, timeout=None):
+        deadline = time.time() + (timeout if timeout is not None else 3600)
+        while self.poll() is None:
+            if time.time() >= deadline:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            time.sleep(0.02)
+        return self.returncode
+
+    def signal(self, name, code):
+        self.signals.append(name)
+        if name not in self.ignore and self.returncode is None:
+            self.returncode = code
+
+    def send_signal(self, number):
+        self.signal("SIGINT", 130)
+
+    def terminate(self):
+        self.signal("SIGTERM", -15)
+
+    def kill(self):
+        self.signal("SIGKILL", -9)
+
+
 ROLES = {name: node["role"] for name, node in lab()["nodes"].items()}
 
 
@@ -2176,7 +2215,7 @@ class Phases(unittest.TestCase):
         verdict = {"F1.drain.lon-edge-1": {
             str(frames[0]): {"pass": True, "change": {"missing": 0, "gap_ms": 1.2, "p99_ms": 2.0},
                              "gap_bar_ms": 1.5, "p99_bar_ms": 2.1, "null_fail_rate": 0.07,
-                             "null_windows": 250},
+                             "null_windows": 250, "window_s": 20.0},
             str(frames[0]).replace("lon-view", "new-view"): {
                 "pass": None, "note": "null too short: 80 no-change windows of this length, "
                                       "120 needed", "change": {"missing": 0}}}}
@@ -2189,28 +2228,81 @@ class Phases(unittest.TestCase):
                          ("probe: pass on every lane and view host", None))
         self.assertIn("null too short", probe["needs"])
         self.assertEqual(probe["value"]["null_fail_rate_max"], 0.07)
+        # A 20 s window needs 163 null windows for CW to score each against
+        # 120 others: with fewer its rate is not measured, never 0.0.
+        self.assertEqual(scale.change_run().null_fail_rate(
+            {"null_fail_rate": 0.07, "null_windows": 163, "window_s": 20.0}), (0.07, None))
+        rate, why = scale.change_run().null_fail_rate(
+            {"null_fail_rate": 0.0, "null_windows": 162, "window_s": 20.0})
+        self.assertIsNone(rate)
+        self.assertIn("not measured", why)
         record["F1.drain.lon-edge-1 new-view/opus-1"]["pass"] = False
         probe = scale.change_criteria(change_figures(probe=record), {"actions": []}, ROLES)[0]
         self.assertFalse(probe["ok"])
         probe = scale.change_criteria(change_figures(), {"actions": []}, ROLES)[0]
         self.assertIsNone(probe["ok"])
+        # Review of CL7: every probe that was meant to run must have its
+        # verdict. Two expected, both pass: a pass; one view host's probe
+        # never came back: a failure naming it, not a pass on fewer hosts.
+        record["F1.drain.lon-edge-1 new-view/opus-1"]["pass"] = True
+        expected = ["lon-view/opus-1", "new-view/opus-1"]
+        probe = scale.change_criteria(change_figures(probe=record, probe_expected=expected),
+                                      {"actions": []}, ROLES)[0]
+        self.assertTrue(probe["ok"])
+        probe = scale.change_criteria(change_figures(
+            probe=record, probe_expected=expected + ["tok-view/opus-1"]), {"actions": []},
+            ROLES)[0]
+        self.assertFalse(probe["ok"])
+        self.assertEqual(probe["value"]["missing"], ["F1.drain.lon-edge-1 tok-view/opus-1"])
+        probe = scale.change_criteria(change_figures(probe_expected=expected), {"actions": []},
+                                      ROLES)[0]
+        self.assertFalse(probe["ok"])
+        # The probes write down which were meant to run before they start,
+        # so a host whose ssh fails is still expected.
+        def failing_ssh(node, command, **kwargs):
+            if node["name"] == "tok-view":
+                raise RuntimeError("ssh: connect to host tok-view: timed out")
+            return ""
+
+        with mock.patch.object(scale, "ssh", failing_ssh), self.assertRaises(RuntimeError):
+            probes.start("F9", 400)
+        self.assertEqual(json.loads((step_dir / "scenarios" / "F9" / scale.PROBES_EXPECTED)
+                                    .read_text()), probes.expected())
+        self.assertIn("tok-view/pcm-1", probes.expected())
 
     def test_the_controller_must_have_acted(self):
-        """A scenario with a controller or a scale verb: it acted (a join, or
-        a drain_end and a stop), and its command exited 0."""
+        """A scenario with a controller or a scale verb: it acted in the
+        direction its action asks (up: a join; down: a drain_end and a stop;
+        review of CL7: a join never passes a run until stopped), and its
+        command exited 0."""
         spec = {"actions": [{"kind": "autoscale", "until": "join"}]}
 
-        def judged(**figures):
+        def judged(spec=spec, **figures):
             out = scale.change_criteria(change_figures(changes=["autoscale"], **figures), spec,
                                         ROLES)
             return {item["criterion"]: item["ok"] for item in out}
 
-        acted = "the controller acted (a join, or a drain_end and a stop)"
+        acted = "the controller acted (up: a join)"
         self.assertFalse(judged()[acted])
         self.assertTrue(judged(controller={"decisions": ["join"], "kinds": ["decision"]})[acted])
-        self.assertTrue(judged(controller={"decisions": [],
-                                           "kinds": ["drain_end", "stopped"]})[acted])
-        self.assertFalse(judged(controller={"decisions": [], "kinds": ["drain_end"]})[acted])
+        self.assertFalse(judged(controller={"decisions": [],
+                                            "kinds": ["drain_end", "stopped"]})[acted])
+        down = {"actions": [{"kind": "autoscale", "until": "stopped"}]}
+        stopped = "the controller acted (down: a drain_end and a stop)"
+        self.assertTrue(judged(down, controller={"decisions": [],
+                                                 "kinds": ["drain_end", "stopped"]})[stopped])
+        self.assertFalse(judged(down, controller={"decisions": [], "kinds": ["drain_end"]})[stopped])
+        self.assertFalse(judged(down, controller={"decisions": ["join"],
+                                                  "kinds": ["serving"]})[stopped])
+        self.assertNotIn(acted, judged(down))
+        scale_down = judged({"actions": [{"kind": "scale", "direction": "down",
+                                          "site": "london"}]})
+        self.assertIn(stopped, scale_down)
+        # A3p: up, then down; each is judged.
+        both = judged({"actions": [{"kind": "autoscale", "until": "join"},
+                                   {"kind": "autoscale", "until": "stopped"}]},
+                      controller={"decisions": ["join"], "kinds": ["serving"]})
+        self.assertEqual((both[acted], both[stopped]), (True, False))
         criteria = judged(controller={"decisions": ["join"], "kinds": []},
                           commands=[{"event": "controller_exit", "kind": "autoscale",
                                      "returncode": 2}])
@@ -2371,10 +2463,39 @@ class Phases(unittest.TestCase):
         restarted = out["restarts: the nodes it changes and no other"]
         self.assertFalse(restarted["ok"])
         self.assertEqual(restarted["value"], {"restarted": ["lon-dist-a", "lon-edge-1"],
-                                              "not_restarted": ["lon-edge-2"],
-                                              "others": ["lon-dist-a"]})
+                                              "not_restarted": ["lon-edge-2"], "not_back": [],
+                                              "not_read_before": [], "others": ["lon-dist-a"]})
         self.assertFalse(out["every node on one build after the upgrade"]["ok"])
         self.assertTrue(out["rx_invalid_frames = 0 while the builds are mixed"]["ok"])
+
+        def restarts_ok(restarts, expected):
+            item = next(item for item in scale.change_criteria(change_figures(
+                restarts=restarts, restarted_expected=expected), {"actions": []}, ROLES)
+                if item["criterion"] == "restarts: the nodes it changes and no other")
+            return item["ok"], item["value"]
+
+        # Review of CL7: a node it must restart that does not answer after
+        # the change is not back (a failure, never a pass); one not read
+        # before cannot be judged (open).
+        rows = {"lon-edge-1": rows["lon-edge-1"],
+                "new-edge-1": [{"t": 0, "node": {"boot_id": 7}}]}
+        restarts = scale.boot_changes(rows, 10, 90, ["lon-edge-1", "new-edge-1", "tok-dist-b"])
+        self.assertEqual(restarts, {"lon-edge-1": [1, 2], "new-edge-1": [7, None],
+                                    "tok-dist-b": [None, None]})
+        ok, value = restarts_ok(restarts, ["lon-edge-1", "new-edge-1", "tok-dist-b"])
+        self.assertFalse(ok)
+        self.assertEqual((value["not_back"], value["not_read_before"]),
+                         (["new-edge-1"], ["tok-dist-b"]))
+        self.assertIsNone(restarts_ok({"lon-edge-1": [1, 2], "tok-dist-b": [None, None]},
+                                      ["lon-edge-1", "tok-dist-b"])[0])
+        # A rebuilt node (RP1) has no sampler file from before its replace:
+        # the runner's own reads of its boot id stand in.
+        events = [{"event": "boot_ids", "when": "before", "boot_ids": {"new-edge-1": 7}},
+                  {"event": "boot_ids", "when": "after", "boot_ids": {"new-edge-1": 8}}]
+        restarts = scale.boot_changes({"new-edge-1": [{"t": 95, "node": {"boot_id": 8}}]}, 10, 90,
+                                      ["new-edge-1"], events)
+        self.assertEqual(restarts, {"new-edge-1": [7, 8]})
+        self.assertTrue(restarts_ok(restarts, ["new-edge-1"])[0])
 
     def test_the_proving_plan_runs_every_change_kind(self):
         """C 7: phases-proving.json, group by group, with probes on opus-1
@@ -2402,17 +2523,289 @@ class Phases(unittest.TestCase):
         phases = scale.phase_setup(args, {**state, "standby_edges": STANDBY})
         self.assertEqual((args.steps, args.config, phases["probe_configs"]),
                          ("900", "opus-1", ["opus-1", "pcm-1"]))
-        # An upgrade to `next` needs the roots it rolls to before the run.
+        # An upgrade to `next` needs the roots it rolls to before the run,
+        # and any roll or upgrade the run's own roots in the environment
+        # (review of CL7: else the deploy tool takes ~/wavey.ai's checkouts).
         timeline = scale.phase_timeline(scale.load_phase_plan(proving, "U"),
                                         {**state, "standby_edges": STANDBY})
-        with self.assertRaises(ValueError):
-            scale.check_upgrade_roots(timeline, argparse.Namespace(
-                next_av_mesh_root=None, next_av_contrib_root=None))
-        scale.check_upgrade_roots(timeline, argparse.Namespace(
-            next_av_mesh_root="/w/next", next_av_contrib_root=None))
+        roots = {"NEEDLETAIL_AV_MESH_ROOT": "/w/av-mesh", "NEEDLETAIL_AV_CONTRIB_ROOT": "/w/av-c"}
+        with mock.patch.dict(scale.os.environ, roots):
+            with self.assertRaises(ValueError):
+                scale.check_build_roots(timeline, argparse.Namespace(
+                    next_av_mesh_root=None, next_av_contrib_root=None))
+            scale.check_build_roots(timeline, argparse.Namespace(
+                next_av_mesh_root="/w/next", next_av_contrib_root=None))
+        for unset in roots:
+            with mock.patch.dict(scale.os.environ, {**roots, unset: ""}):
+                with self.assertRaises(ValueError, msg=unset) as raised:
+                    scale.check_build_roots(timeline, argparse.Namespace(
+                        next_av_mesh_root="/w/next", next_av_contrib_root=None))
+                self.assertIn(unset, str(raised.exception))
+        n1 = scale.phase_timeline(scale.load_phase_plan(proving, "N"), state)
+        with mock.patch.dict(scale.os.environ, {key: "" for key in roots}):
+            with self.assertRaises(ValueError):
+                scale.check_build_roots(n1, argparse.Namespace(next_av_mesh_root=None,
+                                                               next_av_contrib_root=None))
+            scale.check_build_roots(scale.phase_timeline(scale.load_phase_plan(proving, "F"),
+                                                         state),
+                                    argparse.Namespace(next_av_mesh_root=None,
+                                                       next_av_contrib_root=None))
         # The rolls are planned from their engine timeouts (70 s a node).
         u1 = timeline["scenarios"][0]
         self.assertEqual(u1["actions"][0]["bound_s"], (20 + 1) * 70.0)
+        # Review of CL7: A1p's controller runs twice, the standby's join and
+        # then the first create on Linode (`run --until join` returns at its
+        # first join), with the create's bound in its observation; A2p
+        # expects the slot's drain, stop and delete; A4p holds its edge's
+        # unit masked, and its restore unmasks it.
+        plan = {item["name"]: item for item in json.loads(proving.read_text())["scenarios"]}
+        a1 = plan["A1p"]
+        self.assertEqual([(item["until"], (item.get("after") or {}).get("event"))
+                          for item in a1["actions"]], [("join", None), ("join", "controller_exit")])
+        self.assertIn("--create-timeout-s", a1["actions"][1]["controller_args"])
+        create = a1["actions"][1]["controller_args"][1]
+        self.assertGreaterEqual(a1["observe_s"], 360 + create)
+        self.assertEqual(a1["expect"]["events"], ["join", "created", "serving"])
+        self.assertEqual(plan["A2p"]["expect"]["events"], ["drain_end", "stopped", "deleted"])
+        kill = plan["A4p"]["actions"][1]
+        self.assertTrue(kill["mask"])
+        self.assertEqual(scale.restore_of(kill), {"kind": "start", "targets": ["lon-edge-2"],
+                                                  "unmask": True})
+        edge = state["nodes"]["lon-edge-2"]
+        self.assertEqual(scale.node_command("kill", edge, kill),
+                         "systemctl mask --runtime needletail-mesh.service; "
+                         "systemctl kill -s KILL needletail-mesh.service; "
+                         "systemctl stop needletail-mesh.service; true")
+        self.assertEqual(scale.node_command("start", edge, scale.restore_of(kill)),
+                         "systemctl unmask --runtime needletail-mesh.service; "
+                         "systemctl start needletail-mesh.service")
+        with self.assertRaises(ValueError):
+            scale.check_action("X", {"kind": "crash", "targets": ["x"], "mask": True}, False)
+        # What section 7 expects and the run cannot judge yet is open, with
+        # what it needs (review of CL7: never dropped).
+        for name in ("U1", "U4", "U5", "F4", "F6", "RP1", "RP2", "A4p"):
+            self.assertTrue(plan[name]["open"], name)
+        criteria = scale.change_criteria(change_figures(), plan["RP2"], ROLES)
+        opened = [item for item in criteria if item["criterion"].startswith("the slot created")]
+        self.assertEqual(len(opened), 1)
+        self.assertIsNone(opened[0]["ok"])
+        self.assertIn("journal", opened[0]["needs"])
+
+    def test_a_restore_is_never_stopped_and_a_blocking_change_is_never_cut(self):
+        """Review of CL7. A's kill is owed its return: finish() plays it and
+        lets it run to its end (it used to get SIGINT a second after it
+        started, leaving the contributor held down). A blocking change that
+        is under way when the step stops is waited for up to its bound, and
+        only then sent SIGINT; one that SIGINT does not end owes its
+        --resume, loudly. A restore past its own bound is stopped, loudly."""
+        proving = scale.ROOT / "deploy" / "low-latency" / "phases-proving.json"
+        state = lab()
+        timeline = scale.phase_timeline(scale.load_phase_plan(proving, names=["C2", "U1"]),
+                                        {**state, "standby_edges": STANDBY})
+        rows = {row["name"]: row for row in timeline["scenarios"]}
+        kill, roll = rows["C2"]["actions"][0], rows["U1"]["actions"][0]
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        args = argparse.Namespace(stream=3001, budget_usd=None, spent_before_usd=None,
+                                  next_av_mesh_root=None, next_av_contrib_root=None)
+        processes, logged = [], []
+
+        def popen(seconds, ignore=()):
+            def make(command, **kwargs):
+                processes.append(SlowProcess(command, seconds, ignore))
+                return processes[-1]
+            return make
+
+        # The owed return, 1.5 s long, under finish().
+        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                   directory=directory)
+        runner.owed.append(kill)
+        with mock.patch.object(scale.subprocess, "Popen", popen(1.5)):
+            runner.finish()
+        self.assertEqual([process.command[2:5] for process in processes],
+                         [["return", "--node", "contrib-lon"]])
+        self.assertEqual(processes[0].signals, [])
+        exit_ = next(item for item in logged if item.get("event") == "command_exit")
+        self.assertEqual((exit_["returncode"], exit_["restore"]), (0, True))
+        # A roll under way when the step stops: never cut within its bound.
+        processes.clear()
+        logged.clear()
+        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                   directory=directory)
+        base = {"source": "scale-run", "scenario": "U1", "kind": "roll", "restore": False}
+        with mock.patch.object(scale.subprocess, "Popen", popen(1.5)):
+            thread = threading.Thread(target=runner.change, args=(roll, base))
+            thread.start()
+            time.sleep(0.3)
+            runner.stop.set()
+            thread.join(timeout=10)
+        self.assertEqual(processes[0].signals, [])
+        events = [item.get("event") for item in logged]
+        self.assertIn("command_waited", events)
+        self.assertEqual(next(item for item in logged
+                              if item.get("event") == "command_exit")["returncode"], 0)
+        # Past its bound, once stopped: SIGINT; it ignores it, SIGTERM; its
+        # --resume is owed.
+        processes.clear()
+        logged.clear()
+        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                   directory=directory)
+        with mock.patch.object(scale.subprocess, "Popen", popen(60, ignore={"SIGINT"})), \
+                mock.patch.object(scale, "action_bound_s", lambda action, lab: 0.0), \
+                mock.patch.object(scale, "BOUND_GRACE_S", 0.0), \
+                mock.patch.object(scale, "CONTROLLER_STOP_S", 0.2):
+            thread = threading.Thread(target=runner.change, args=(roll, base))
+            thread.start()
+            time.sleep(0.2)
+            runner.stop.set()
+            thread.join(timeout=10)
+        self.assertEqual(processes[0].signals, ["SIGINT", "SIGTERM"])
+        owed = next(item for item in logged if item.get("event") == "resume_owed")
+        self.assertEqual(owed["command"][-1], "--resume")
+        self.assertEqual(owed["command"][1:3], ["roll", "edges"])
+        # A restore past its own bound is stopped, and says so.
+        processes.clear()
+        logged.clear()
+        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                   directory=directory)
+        restore = {**scale.restore_of(kill), "scenario": "C2", "restore": True, "t": 0}
+        with mock.patch.object(scale.subprocess, "Popen", popen(60)), \
+                mock.patch.object(scale, "action_bound_s", lambda action, lab: 0.0), \
+                mock.patch.object(scale, "BOUND_GRACE_S", 0.5), \
+                mock.patch.object(scale, "CONTROLLER_STOP_S", 0.2):
+            runner.change(restore, {**base, "scenario": "C2", "kind": "change",
+                                    "restore": True})
+        self.assertEqual(processes[0].signals, ["SIGINT"])
+        self.assertIn("restore_unfinished", [item.get("event") for item in logged])
+
+    def test_the_runner_waits_for_two_paths_before_each_scenario(self):
+        """B 5's seam with C: before a fault, every listener host's latest
+        interval shows paths.one == 0. The runner waits for it (an event,
+        never a sleep) before each scenario's probes, which then start late
+        by the wait and end on time; a timeout fails the criterion, a load
+        tool without `paths` leaves it open, a one-path crowd has none. And
+        `assignment_confirms_limited` stays 0 on the edges."""
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F1"]), lab())
+        args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=None)
+        started = []
+
+        class Probes:
+            hosts = [None]
+
+            def start(self, scenario, seconds):
+                started.append(seconds)
+
+        def run(answers, paths=2, wait_s=5.0):
+            logged = []
+            answers = iter(answers)
+            runner = scale.PhaseRunner(lab(), timeline, time.time(), logged.append, args,
+                                       directory=pathlib.Path(tempfile.mkdtemp()),
+                                       probes=Probes(), paths=paths,
+                                       crowd_paths=lambda since: next(answers))
+            self.addCleanup(shutil.rmtree, runner.directory, True)
+            with mock.patch.object(scale, "PATHS_WAIT_S", wait_s), \
+                    mock.patch.object(scale, "http_get", lambda node, path, **k: {}):
+                waited = runner.wait_paths("F1")
+                runner.start_probes("F1", waited)
+            return [item for item in logged if item.get("event", "").startswith("paths_")], waited
+
+        one = {"known": True, "two": 90, "one": 10, "none": 0, "hosts": 2}
+        two = {"known": True, "two": 100, "one": 0, "none": 0, "hosts": 2}
+        events, waited = run([None, one, two])
+        self.assertEqual([item["event"] for item in events], ["paths_settled"])
+        self.assertEqual(events[0]["paths"], two)
+        self.assertGreaterEqual(waited, 2.0)
+        self.assertAlmostEqual(started[-1], timeline["scenarios"][0]["probe_s"] - waited,
+                               places=6)
+        events, _waited = run(iter(lambda: one, None), wait_s=0.3)
+        self.assertEqual([item["event"] for item in events], ["paths_timeout"])
+        events, waited = run([{"known": False}])
+        self.assertEqual(([item["event"] for item in events], waited < 1), (["paths_unknown"], True))
+        events, waited = run([], paths=1)
+        self.assertEqual(([item["event"] for item in events], waited), (["paths_not_waited"], 0.0))
+
+        def judged(**figures):
+            return {item["criterion"]: item for item in scale.change_criteria(
+                change_figures(**figures), {"actions": []}, ROLES)}
+
+        name = "crowd on two paths before the change (paths.one = 0)"
+        self.assertTrue(judged(paths_wait={"event": "paths_settled"})[name]["ok"])
+        self.assertFalse(judged(paths_wait={"event": "paths_timeout"})[name]["ok"])
+        unknown = judged(paths_wait={"event": "paths_unknown"})[name]
+        self.assertIsNone(unknown["ok"])
+        self.assertIn("B Y3", unknown["needs"])
+        self.assertNotIn(name, judged(paths_wait={"event": "paths_not_waited"}))
+        self.assertIsNone(judged()[name]["ok"])
+        # The crowd's paths, from each listener host's newest interval since
+        # the wait began; stale lines and the final line do not count.
+        base = 1_790_000_000
+
+        def line(t, paths=None, phase=None):
+            total = {"up": 100, **({"paths": paths} if paths else {})}
+            return json.dumps({"unix_ms": (base + t) * 1000, "total": total,
+                               **({"phase": phase} if phase else {})})
+
+        texts = {"lon-load-1": "\n".join([line(1, {"two": 50, "one": 0, "none": 0}),
+                                          line(9, {"two": 48, "one": 2, "none": 0})]),
+                 "new-load-1": "\n".join([line(9, {"two": 50, "one": 1, "none": 0}),
+                                          line(10, {"two": 50, "one": 0, "none": 0},
+                                               phase="final")]),
+                 "tok-load-1": line(2, {"two": 50, "one": 50, "none": 0})}
+        hosts = [{"name": name} for name in texts]
+        with mock.patch.object(scale, "ssh_quiet", lambda node, command, **k: texts[node["name"]]):
+            self.assertEqual(scale.crowd_paths(hosts, "/r", base + 5),
+                             {"known": True, "hosts": 2, "two": 98, "one": 3, "none": 0})
+            self.assertIsNone(scale.crowd_paths(hosts, "/r", base + 20))
+        texts = {"lon-load-1": line(9)}
+        with mock.patch.object(scale, "ssh_quiet", lambda node, command, **k: texts[node["name"]]):
+            self.assertEqual(scale.crowd_paths([{"name": "lon-load-1"}], "/r", base + 5),
+                             {"known": False})
+        self.assertEqual(scale.load_paths(argparse.Namespace(load_args="--paths 1 --spare false")),
+                         1)
+        self.assertEqual(scale.load_paths(argparse.Namespace(load_args="")), 2)
+        # The edges' confirmations turned away (B Z3): 0, or open without
+        # the counter.
+        meshes = {"lon-edge-1": [{"t": t, "client_udp": {"assignment_confirms_limited": value}}
+                                 for t, value in ((0, 4), (10, 4), (20, 6))]}
+        self.assertEqual(scale.dotted_rise(meshes, "client_udp.assignment_confirms_limited",
+                                           (5, 25)), 2)
+        self.assertIsNone(scale.dotted_rise({"lon-edge-1": [{"t": 1}]},
+                                            "client_udp.assignment_confirms_limited", (0, 5)))
+        confirms = "edges: assignment_confirms_limited = 0"
+        self.assertFalse(judged(assignment_confirms_limited_rise=2)[confirms]["ok"])
+        self.assertTrue(judged(assignment_confirms_limited_rise=0)[confirms]["ok"])
+        self.assertIn("B Z3", judged()[confirms]["needs"])
+
+    def test_a_step_stopped_early_still_scores_the_probes_that_ran(self):
+        """Review of CL7: the scenario under way when a step stops has its
+        probes fetched and scored all the same; the nodes it restarts have
+        their boot ids read at its probes' start and its scoring."""
+        timeline = scale.phase_timeline(scale.load_phase_plan(PHASES, names=["F2"]), lab())
+        collected, logged = [], []
+
+        class Probes:
+            hosts = [None]
+
+            def start(self, scenario, seconds):
+                pass
+
+            def collect(self, scenario):
+                collected.append(scenario)
+                return []
+
+        args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=None)
+        runner = scale.PhaseRunner(lab(), timeline, time.time() - 10_000, logged.append, args,
+                                   directory=pathlib.Path(tempfile.mkdtemp()), probes=Probes())
+        self.addCleanup(shutil.rmtree, runner.directory, True)
+        with mock.patch.object(scale, "http_get", lambda node, path, **k:
+                               {"process": {"boot_id": 41}}):
+            runner.log_boot_ids("F2", "before")
+            runner.start_probes("F2")
+            runner.finish()
+        self.assertEqual(collected, ["F2"])
+        boots = [item for item in logged if item.get("event") == "boot_ids"]
+        self.assertEqual([(item["when"], item["boot_ids"]) for item in boots],
+                         [("before", {"new-edge-2": 41})])
 
     def test_a_scenario_that_no_longer_fits_is_skipped_never_started(self):
         """A change that ran past its bound: the next scenario, late, is
@@ -2715,12 +3108,12 @@ class Party(unittest.TestCase):
                      "needs the referee's change-window.py (NEEDLETAIL_COMPARE_ROOT)")
 class RefereeScoring(unittest.TestCase):
     """The referee's own change-window.py on a scenario's probe of the
-    planned length: it finds its 120 no-change windows and scores it."""
+    planned length: it finds its 120 no-change windows and scores it; its
+    null_fail_rate is kept only where it could measure it."""
 
-    def test_a_probe_of_the_planned_length_is_scored(self):
+    def score(self, span: float) -> dict:
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
-        span = 90.0
         seconds = scale.PROBE_LEAD_S + span + scale.probe_tail_s(span)
         launch_us = 1_790_000_000 * 1_000_000
         frames = directory / "probes" / "lon-view" / "opus-1" / "probe.csv"
@@ -2736,11 +3129,22 @@ class RefereeScoring(unittest.TestCase):
             scale.mark_line("start", first, "S.kill.lon-edge-2")
             + scale.mark_line("end", first + int(span * 1e9), "S.kill.lon-edge-2"))
         scale.score_scenario(directory, [frames])
-        record = scale.probe_record(directory)
-        result = record["S.kill.lon-edge-2 lon-view/opus-1"]
+        return scale.probe_record(directory)["S.kill.lon-edge-2 lon-view/opus-1"]
+
+    def test_a_probe_of_the_planned_length_is_scored(self):
+        result = self.score(90.0)
         self.assertGreaterEqual(result["null_windows"], scale.MIN_NULL_WINDOWS)
         self.assertIsNotNone(result["pass"])
+        # Review of CL7: on 130-odd null windows of a 97 s window, CW scores
+        # none against 120 others and its rate reads 0.0 by construction:
+        # recorded as not measured.
+        self.assertIsNone(result["null_fail_rate"])
+        self.assertIn("not measured", result["null_fail_rate_unmeasured"])
+        # A short change on a 360 s probe: every null window is scored, and
+        # the rate is CW's own.
+        result = self.score(10.0)
         self.assertIsNotNone(result["null_fail_rate"])
+        self.assertNotIn("null_fail_rate_unmeasured", result)
 
 
 REFEREE = (scale.COMPARE_ROOT / "scripts" / "compare" / "compare-audio.py").is_file()
