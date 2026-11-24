@@ -75,6 +75,7 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -3662,12 +3663,51 @@ def lab_tool_checked() -> None:
 def run_lab(*arguments: str) -> subprocess.CompletedProcess:
     """The lab tool's command line, for what bills (replace, add, remove):
     its own watchdog and budget checks apply. Its output goes to stderr
-    (a change command's stdout is its marks)."""
-    result = subprocess.run([sys.executable, str(common.ROOT / "scripts" /
-                                                 "linode-small-mesh-lab.py"), *arguments],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            check=False)
-    sys.stderr.write(result.stdout)
+    (a change command's stdout is its marks).
+
+    The lab tool runs a sequence of billing API calls (a create and then
+    its state write, a rebuild and then its config and boot), so no signal
+    of this command may cut it: it is spawned in a session of its own with
+    no signal blocked (signals are held in this process across the spawn,
+    so an interrupt cannot land between the fork and its pid), and an
+    interrupt of this command (the engine's Interrupted, or Ctrl-C) waits
+    for it to end, by its own timeouts, and is raised after its result is
+    read."""
+    command = [sys.executable, str(common.ROOT / "scripts" / "linode-small-mesh-lab.py"),
+               *arguments]
+    read_end, write_end = os.pipe()
+    try:
+        with mesh_ops.signals_held():
+            pid = os.posix_spawn(command[0], command, os.environ, setsid=True, setsigmask=(),
+                                 setsigdef=(signal.SIGINT, signal.SIGTERM, signal.SIGHUP,
+                                            signal.SIGPIPE),
+                                 file_actions=[(os.POSIX_SPAWN_DUP2, write_end, 1),
+                                               (os.POSIX_SPAWN_DUP2, write_end, 2),
+                                               (os.POSIX_SPAWN_CLOSE, read_end)])
+    finally:
+        os.close(write_end)
+    chunks: list[bytes] = []
+    interrupted: BaseException | None = None
+    status = None
+    with os.fdopen(read_end, "rb") as output:
+        while status is None:
+            try:
+                chunk = output.read1(65536)
+                if chunk:
+                    chunks.append(chunk)
+                    continue
+                status = os.waitpid(pid, 0)[1]
+            except (mesh_ops.Interrupted, KeyboardInterrupt) as caught:
+                if interrupted is None:
+                    print(f"interrupted ({caught!r}): the lab tool's {arguments[0]} runs to its "
+                          "end first (it is never cut part-way through a create or a rebuild)",
+                          file=sys.stderr, flush=True)
+                interrupted = caught
+    text = b"".join(chunks).decode(errors="replace")
+    sys.stderr.write(text)
+    result = subprocess.CompletedProcess(command, os.waitstatus_to_exitcode(status), text)
+    if interrupted is not None:
+        raise interrupted
     return result
 
 

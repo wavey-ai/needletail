@@ -1659,6 +1659,53 @@ class Replace(FakeLab):
                           if set(scripts) - {"date +%s.%N"}], [])
 
 
+class RunLab(unittest.TestCase):
+    def test_an_interrupt_waits_for_the_lab_tool_and_reads_its_result(self):
+        """The lab tool runs in a session of its own and is never cut: an
+        interrupt of the deploy (the engine's handler raises Interrupted)
+        waits for it, its output is read, and the interrupt comes after."""
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "scripts").mkdir()
+        done = directory / "done"
+        (directory / "scripts" / "linode-small-mesh-lab.py").write_text(
+            "import os, pathlib, sys, time\n"
+            "print('session', os.getsid(0) == os.getpid(), flush=True)\n"
+            "time.sleep(0.6)\n"
+            f"pathlib.Path({str(done)!r}).write_text(' '.join(sys.argv[1:]))\n"
+            "print('rebuilt', flush=True)\n")
+
+        def handler(signum, _frame):
+            raise deploy.mesh_ops.Interrupted(deploy.signal.Signals(signum).name)
+
+        previous = deploy.signal.signal(deploy.signal.SIGINT, handler)
+        self.addCleanup(deploy.signal.signal, deploy.signal.SIGINT, previous)
+        timer = threading.Timer(0.2, lambda: os.kill(os.getpid(), deploy.signal.SIGINT))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        err = io.StringIO()
+        with mock.patch.object(deploy.common, "ROOT", directory), redirect_stderr(err):
+            with self.assertRaises(deploy.mesh_ops.Interrupted):
+                deploy.run_lab("replace", "lon-edge-1", "--mode", "rebuild")
+        self.assertEqual(done.read_text(), "replace lon-edge-1 --mode rebuild")
+        self.assertIn("runs to its end first", err.getvalue())
+        self.assertIn("session True", err.getvalue())
+        self.assertIn("rebuilt", err.getvalue())
+
+    def test_the_exit_status_and_output_are_returned(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "scripts").mkdir()
+        (directory / "scripts" / "linode-small-mesh-lab.py").write_text(
+            "import sys\nprint('add refused: over the budget')\nsys.exit(1)\n")
+        err = io.StringIO()
+        with mock.patch.object(deploy.common, "ROOT", directory), redirect_stderr(err):
+            result = deploy.run_lab("add", "lon-dist-c")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "add refused: over the budget\n")
+        self.assertEqual(err.getvalue(), "add refused: over the budget\n")
+
+
 class ForgetHost(unittest.TestCase):
     def test_a_host_is_forgotten_in_known_hosts_and_its_control_connection_closed(self):
         directory = pathlib.Path(tempfile.mkdtemp())
