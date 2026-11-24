@@ -23,7 +23,9 @@ Subcommands:
   restart   --nodes a,b: one node at a time, gated, on its recorded build
             (--rollback: its previous arguments); --roles: every node of a
             role at once, re-rendered from the current settings
-  start     --nodes a,b: take held-out nodes (standby edges, autoscale
+  replace   --nodes X --budget-usd B: X on a new disk (or --mode new: a new
+            instance), gated, on its tier's recorded build (C 3.7)
+  start    --nodes a,b: take held-out nodes (standby edges, autoscale
             slots) into service and start them, and nothing else
   stop      --nodes a,b: hold nodes out and stop their service, and nothing
             else
@@ -4452,10 +4454,47 @@ class LinodeOps(mesh_ops.Ops):
             common.ssh_text(record, f"systemctl stop {service}.service")
 
     # ---------------------------------------------------------- instances (replace)
+    # `--budget-usd B [--spent-before-usd S]` of the command (replace), passed
+    # to the lab tool's replace and add, which hold every create to them.
+    budget_args: tuple[str, ...] = ()
+
     def rebuild(self, node: str, mode: str) -> None:
-        if run_lab("replace", node, "--mode", mode).returncode != 0:
-            raise RuntimeError(f"the lab tool's replace of {node} failed")
+        """The lab tool's `replace NODE --mode M` with the command's budget,
+        then the host's key forgotten (common.forget_host) at its address
+        before and after: a rebuild keeps the address and changes the key, a
+        new instance has another address. Forgotten whatever the lab tool's
+        result, for it may have rebuilt part-way."""
+        old = (self.full["nodes"].get(node) or {}).get("public_ipv4")
+        result = run_lab("replace", node, "--mode", mode, *self.budget_args)
         self.reload()
+        common.forget_host(old, (self.full["nodes"].get(node) or {}).get("public_ipv4"))
+        if result.returncode != 0:
+            raise RuntimeError(f"the lab tool's replace of {node} failed")
+
+    def address_dependents(self, node: str) -> list[str]:
+        """The running nodes (recorded, not held out) whose arguments name
+        `node`'s public address: each rendered on its recorded build with
+        that address and with another (TEST-NET-1), the ones that differ.
+        What a new instance of `node` (`replace --mode new`) would make
+        restart-bound (C 3.7); peers that name it by its VLAN address are
+        not among them."""
+        other = json.loads(json.dumps(self.full))
+        other["nodes"][node]["public_ipv4"] = "192.0.2.1"
+        moved = LinodeOps(other, self.base)
+        out = []
+        for name in sorted(self.deployed().get("nodes") or {}, key=mesh_ops.natural):
+            key = self.recorded(name)
+            if name == node or name not in self.full["nodes"] or self.held_out(name) \
+                    or key is None:
+                continue
+            settings = self.node_settings(name)
+            try:
+                here = self.node_args(name, settings, key)[0]
+            except mesh_ops.Refused:
+                continue  # no service (a backbone the topology does not use)
+            if render_sha256(here) != render_sha256(moved.node_args(name, settings, key)[0]):
+                out.append(name)
+        return out
 
     def push(self, node: str) -> None:
         """Bootstrap, the node's tier's recorded build, its arguments, start;
@@ -4466,7 +4505,7 @@ class LinodeOps(mesh_ops.Ops):
         self.install([node], None)
 
     def add_slot(self, node: str) -> None:
-        failed = run_lab("add", node).returncode != 0
+        failed = run_lab("add", node, *self.budget_args).returncode != 0
         self.reload()
         if node not in self.full["nodes"]:
             raise mesh_ops.Refused(f"the lab tool did not create {node}")
@@ -4663,6 +4702,47 @@ def command_roll(args: argparse.Namespace) -> None:
     ops = linode_ops(args)
     sys.exit(mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
                            options=engine_options(args), resume=args.resume))
+
+
+def command_replace(args: argparse.Namespace) -> None:
+    """`replace --nodes X` (C 3.7): one node on a new disk (`--mode
+    rebuild`, the default: both addresses kept) or a new instance (`--mode
+    new`), through the engine (mesh_ops.replace): an edge emptied first, a
+    forwarder through its region's slot (`--no-slot`: without), a
+    contributor through workstream A's gate and readiness; then pushed on
+    its tier's recorded build. Every instance the lab tool rebuilds or
+    creates (the node, the slot) is held to `--budget-usd` and
+    `--spent-before-usd`. A new instance whose public address other nodes'
+    arguments name (a compiled forwarder: its parents' --relay-forward, its
+    children's peers, the other regions' --failover-entry) is refused before
+    anything, naming them: their arguments and its address cannot agree
+    while it is replaced, so no gate or readiness could pass between them.
+    stdout carries the change's two marks only; the exit status is the
+    engine's."""
+    names = names_of(args.nodes) or []
+    if len(names) != 1:
+        print("replace --nodes takes one node", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    name = names[0]
+    ops = linode_ops(args)
+    ops.budget_args = ("--budget-usd", str(args.budget_usd)) + (
+        ("--spent-before-usd", str(args.spent_before_usd))
+        if args.spent_before_usd is not None else ())
+    if args.mode == "new" and name in ops.full["nodes"]:
+        try:
+            dependents = ops.address_dependents(name)
+        except mesh_ops.Refused as refused:
+            print(refused, file=sys.stderr)
+            sys.exit(mesh_ops.EXIT_REFUSED)
+        if dependents:
+            print(f"replace --mode new: the arguments of {', '.join(dependents)} name "
+                  f"{name}'s public address, which a new instance changes; they and it cannot "
+                  f"agree while {name} is replaced. Use --mode rebuild (both addresses kept)",
+                  file=sys.stderr)
+            sys.exit(mesh_ops.EXIT_REFUSED)
+    sys.exit(mesh_ops.replace(ops, name, mode=args.mode, no_slot=args.no_slot,
+                              keep_slot=args.keep_slot, resume=args.resume,
+                              options=engine_options(args)))
 
 
 def contributor_changes():
@@ -4910,6 +4990,32 @@ def main() -> None:
     roll.add_argument("--sites", default=None)
     change_options(roll)
     roll.set_defaults(handler=command_roll)
+    replace = sub.add_parser("replace", help="one node on a new disk or a new instance, "
+                                             "gated (C 3.7)")
+    replace.add_argument("--nodes", required=True, help="the node to replace (one)")
+    replace.add_argument("--mode", choices=("rebuild", "new"), default="rebuild",
+                         help="rebuild: a new disk, both addresses kept (the lab tool's "
+                              "replace); new: a new instance with a new public address")
+    replace.add_argument("--no-slot", action="store_true",
+                         help="a forwarder without its region's slot standing in")
+    replace.add_argument("--keep-slot", action="store_true",
+                         help="leave the slot stopped afterwards, not deleted")
+    replace.add_argument("--budget-usd", type=float, required=True,
+                         help="what the work may cost in all, for the lab tool's creates")
+    replace.add_argument("--spent-before-usd", type=float, default=None,
+                         help="what the work cost before this lab (the lab tool's default)")
+    replace.add_argument("--marks", default=None, help="append the change's two marks here")
+    replace.add_argument("--node-marks", default=None, help="per-node marks go here")
+    replace.add_argument("--resume", action="store_true",
+                         help="go on after the last step done of a cut-off replace of the node")
+    replace.add_argument("--adopt-settings", action="store_true",
+                         help="go on with settings that do not reproduce what is deployed")
+    replace.add_argument("--gate-timeout-s", type=float, default=30.0)
+    replace.add_argument("--drain-timeout-s", type=float, default=30.0)
+    replace.add_argument("--ready-timeout-s", type=float, default=60.0)
+    replace.add_argument("--surge", choices=("auto", "never"), default="auto")
+    replace.add_argument("--parity-ms", type=float, default=1.0)
+    replace.set_defaults(handler=command_replace, on_failure="stop", video_gap="refuse")
     change = sub.add_parser("change", help="workstream A's contributor and ingress changes")
     change.add_argument("kind")
     change.add_argument("arguments", nargs=argparse.REMAINDER)

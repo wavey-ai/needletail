@@ -1514,6 +1514,179 @@ class Recorded(FakeLab):
         self.assertEqual(seen, [])
 
 
+class Replace(FakeLab):
+    """`replace --nodes X` (C 3.7, CT4) on the engine: an edge is emptied,
+    stopped, rebuilt by the lab tool with the command's budget, its host key
+    forgotten, pushed on its recorded build and resumed, and nothing else
+    restarts; a forwarder's slot that the lab tool refuses leaves the
+    forwarder untouched; a new instance whose public address other nodes
+    name is refused before anything, naming them."""
+
+    engine = Deployed.engine
+
+    def setUp(self):
+        super().setUp()
+        self.lab_calls: list[list[str]] = []
+        self.refuse: set[str] = set()
+        self.forgotten: list[tuple] = []
+        for target, name, value in (
+                (deploy, "run_lab", self.fake_lab),
+                (deploy.common, "forget_host", lambda *addresses: self.forgotten.append(addresses))):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def fake_lab(self, *arguments):
+        """The lab tool's command line: `replace` gives the node a new disk
+        (nothing of ours on it, not running; `--mode new` also a new public
+        address), `add` creates a slot; a verb in `refuse` changes nothing
+        and fails, as a refusal does."""
+        self.lab_calls.append(list(arguments))
+        verb, node = arguments[0], arguments[1]
+        if verb in self.refuse:
+            return deploy.subprocess.CompletedProcess(list(arguments), 1, "refused\n")
+        state = self.state()
+        if verb == "replace":
+            if arguments[arguments.index("--mode") + 1] == "new":
+                state["nodes"][node]["public_ipv4"] = "203.0.113.77"
+                self.hosts.by_address["203.0.113.77"] = state["nodes"][node]
+            self.hosts.files.pop(node, None)
+            self.hosts.running[node] = False
+        self.state_file.write_text(json.dumps(state))
+        return deploy.subprocess.CompletedProcess(list(arguments), 0, "")
+
+    def replace(self, **kwargs) -> int:
+        """command_replace on the fake clock; its exit status."""
+        run = self.engine()
+        real = deploy.mesh_ops.replace
+
+        def on_fake_clock(*args, **more):
+            return real(*args, **more, clock=run["clock"], sleep=run["sleep"])
+
+        namespace = self.namespace(**{"mode": "rebuild", "no_slot": False, "keep_slot": False,
+                                      "budget_usd": 60.0, "spent_before_usd": None, **kwargs})
+        with mock.patch.object(deploy.mesh_ops, "replace", on_fake_clock):
+            with self.assertRaises(SystemExit) as code:
+                self.quietly(deploy.command_replace, namespace)
+        return code.exception.code
+
+    def test_replace_of_an_edge_restarts_nothing_else(self):
+        for mode in ("rebuild", "new"):
+            with self.subTest(mode=mode):
+                self.push()
+                address = self.state()["nodes"]["lon-edge-1"]["public_ipv4"]
+                boots = dict(self.hosts.boots)
+                self.lab_calls.clear()
+                self.forgotten.clear()
+                code = self.replace(nodes="lon-edge-1", mode=mode, spent_before_usd=38.0)
+                self.assertEqual(code, 0, self.stderr)
+                self.assertEqual(self.lab_calls, [["replace", "lon-edge-1", "--mode", mode,
+                                                   "--budget-usd", "60.0",
+                                                   "--spent-before-usd", "38.0"]])
+                new = self.state()["nodes"]["lon-edge-1"]["public_ipv4"]
+                self.assertEqual(new != address, mode == "new")
+                self.assertEqual([set(item) for item in self.forgotten], [{address, new}])
+                # Pushed again on its recorded build, in service, recorded.
+                self.assertEqual(self.args_of("lon-edge-1")[0],
+                                 f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+                self.assertNotEqual(self.hosts.boots["lon-edge-1"], boots["lon-edge-1"])
+                self.assertNotIn("lon-edge-1", self.saved_standby())
+                self.assertEqual(self.hosts.drained, set())
+                self.assertEqual(self.state()["deployed"]["nodes"]["lon-edge-1"]["build"],
+                                 key(OLD))
+                # No other node restarted: each is only asked the time.
+                for name, scripts in self.hosts.scripts.items():
+                    if name != "lon-edge-1":
+                        self.assertEqual(set(scripts), {"date +%s.%N"}, name)
+                self.assertEqual({name: boot for name, boot in self.hosts.boots.items()
+                                  if name != "lon-edge-1"},
+                                 {name: boot for name, boot in boots.items()
+                                  if name != "lon-edge-1"})
+
+    def test_a_refused_slot_leaves_the_forwarder_untouched(self):
+        self.push()
+        files = dict(self.hosts.fs("lon-dist-a"))
+        boots = dict(self.hosts.boots)
+        self.refuse.add("add")
+        passed = deploy.mesh_ops.Gate(True, [], {}, [], 0.0, 2)
+        with mock.patch.object(deploy.mesh_ops.Engine, "gate_forwarder",
+                               lambda engine, node: passed):
+            code = self.replace(nodes="lon-dist-a", budget_usd=45.5)
+        self.assertEqual(code, 3, self.stderr)
+        self.assertIn("the slot lon-dist-c was refused", self.stderr)
+        self.assertIn("lon-dist-a is untouched", self.stderr)
+        self.assertEqual(self.lab_calls, [["add", "lon-dist-c", "--budget-usd", "45.5"]])
+        self.assertEqual(self.hosts.fs("lon-dist-a"), files)
+        self.assertEqual(self.hosts.boots, boots)
+        self.assertEqual(self.hosts.drained, set())
+        # Asked the time, and lon-dist-a's ssh connection opened for its gate.
+        for name, scripts in self.hosts.scripts.items():
+            self.assertLessEqual(set(scripts), {"date +%s.%N", "true"}, name)
+        # --no-slot where the region has none is the operator's choice; a
+        # region without a slot refuses before anything.
+        self.lab_calls.clear()
+        self.assertEqual(self.replace(nodes="tok-dist-b"), 2)
+        self.assertIn("tokyo has no forwarder slot (--no-slot)", self.stderr)
+        self.assertEqual(self.lab_calls, [])
+
+    def test_a_new_forwarder_address_names_its_dependents(self):
+        self.push()
+        dependents = self.ops().address_dependents("tok-dist-a")
+        # Its parents forward to it, and the other regions' nodes take it as
+        # a failover entry: by its public address.
+        for name in ("lon-dist-a", "lon-dist-b"):
+            self.assertIn(name, dependents)
+        # Its own region names it by its VLAN address.
+        self.assertFalse([name for name in dependents if name.startswith("tok-")], dependents)
+        self.hosts.touched.clear()
+        code = self.replace(nodes="tok-dist-a", mode="new")
+        self.assertEqual(code, 2, self.stderr)
+        self.assertIn(f"the arguments of {', '.join(dependents)} name tok-dist-a's public "
+                      "address", self.stderr)
+        self.assertEqual(self.lab_calls, [])
+        self.assertEqual(self.hosts.touched, [])
+        # An edge is named by its VLAN address: nothing depends on its public one.
+        self.assertEqual(self.ops().address_dependents("lon-edge-1"), [])
+
+    def test_a_contributor_waits_for_workstream_a_and_one_node_at_a_time(self):
+        self.push()
+        self.assertEqual(self.replace(nodes="contrib-lon"), 2)
+        self.assertIn("contributor_changes", self.stderr)
+        self.assertEqual(self.replace(nodes="lon-edge-1,lon-edge-2"), 2)
+        self.assertIn("one node", self.stderr)
+        self.assertEqual(self.lab_calls, [])
+        self.assertEqual([name for name, scripts in self.hosts.scripts.items()
+                          if set(scripts) - {"date +%s.%N"}], [])
+
+
+class ForgetHost(unittest.TestCase):
+    def test_a_host_is_forgotten_in_known_hosts_and_its_control_connection_closed(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        known = directory / "known_hosts"
+        key = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl")
+        known.write_text(f"198.51.100.7 {key}\n198.51.100.8 {key}\n")
+        calls = []
+        real = deploy.common.subprocess.run
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == "ssh":
+                return deploy.subprocess.CompletedProcess(command, 255, b"", b"")
+            return real(command, **kwargs)
+
+        with mock.patch.object(deploy.common, "KNOWN_HOSTS", known), \
+                mock.patch.object(deploy.common, "CONTROL_DIR", directory / "control"), \
+                mock.patch.object(deploy.common.subprocess, "run", run):
+            deploy.common.forget_host("198.51.100.7", None, "198.51.100.7")
+        self.assertEqual(known.read_text().split(), ["198.51.100.8", *key.split()])
+        self.assertFalse((directory / "known_hosts.old").exists())
+        exits = [command for command in calls if command[0] == "ssh"]
+        self.assertEqual(len(exits), 1)
+        self.assertEqual(exits[0][-3:], ["-O", "exit", "root@198.51.100.7"])
+        self.assertIn(f"ControlPath={directory / 'control'}/%C", exits[0])
+
+
 class Limits(Base):
     def test_more_relay_children_than_the_port_plan_holds_are_refused(self):
         nodes = {"contrib-lon": {"name": "contrib-lon", "role": "contributor", "site": "london",
