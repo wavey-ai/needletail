@@ -2791,6 +2791,7 @@ class LabTool(unittest.TestCase):
             ssh_public_key=str(key), without_sites="", optional_sites="", watchdog_hours=5.5,
             budget_usd=300.0, spent_before_usd=0.0)
         with mock.patch.object(lab_tool, "Api", FakeApi), \
+                mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(tmp / "data")}), \
                 mock.patch.object(lab_tool, "MAX_NODES", 200), \
                 mock.patch.object(lab_tool, "MAX_HOURLY_USD", 20.0), \
                 mock.patch.object(lab_tool, "LEDGER", tmp / "ledger.jsonl"), \

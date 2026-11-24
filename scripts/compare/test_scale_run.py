@@ -1930,10 +1930,11 @@ class Phases(unittest.TestCase):
                           "--budget-usd", "60.0", *timeouts])
         self.assertEqual(command({"kind": "change", "change": "kill", "targets": ["contrib-lon"],
                                   "args": ["--unprotected"]})[0],
-                         [deploy, "kill", "--node", "contrib-lon", "--unprotected"])
+                         [deploy, "kill", "--node", "contrib-lon", "--gate-timeout-s", "30",
+                          "--unprotected"])
         self.assertEqual(command({"kind": "change", "change": "return",
                                   "targets": ["lon-dist-a"]})[0],
-                         [deploy, "return", "--node", "lon-dist-a"])
+                         [deploy, "return", "--node", "lon-dist-a", "--ready-timeout-s", "60"])
         self.assertEqual(command({"kind": "scale", "direction": "up", "site": "london"})[0],
                          [autoscaler, "scale", "up", "--backend", "linode", "--site", "london",
                           "--tier", "edges", "--stream", "3001", "--controller-state",

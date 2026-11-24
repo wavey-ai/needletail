@@ -25,7 +25,7 @@ run = ra.RunArchive.create(run_id, "linode-lab", tool="scale-run",
 run.set_lab(run_tag="needletail-small-mesh-" + run_id, instances=[...],
             created_at_utc=...)
 run.record_step("ramp-1000", "opus-1ms-udp", 1000,
-                {"gb-lon": 250, "us-east": 250, "ap-northeast": 250, "ap-southeast": 250}, 2)
+                {"london": 250, "newyork": 250, "tokyo": 250, "sydney": 250}, 2)
 run.append_ndjson("listeners/lon-load-1.arrivals.ndjson", rows, "samples",
                   "per-unit arrival lag of every listener", {"lag_ms": "ms", "t_us": "us"})
 run.add_tree(node_dir, f"nodes/{node}", "node-logs", "journal, hop journal, /api/stalls")
@@ -51,7 +51,7 @@ $A --tool lab.sh create "$RUN" --kind linode-lab --code . --topology "$TOPO" --c
 $A --tool lab.sh add "$RUN" /tmp/x/cpu.csv --as nodes/lon-edge-1/cpu.csv --kind samples \
    --description "CPU every 1 s" --units '{"t_s":"s","cpu_pct":"%"}'
 $A add-tree "$RUN" "$DIR" --as nodes/lon-edge-1 --kind node-logs --exclude '*.core'
-$A step "$RUN" --step ramp-1000 --lane opus-1ms-udp --listeners 1000 --by-region gb-lon=500,us-east=500
+$A step "$RUN" --step ramp-1000 --lane opus-1ms-udp --listeners 1000 --by-region london=500,newyork=500
 $A lab "$RUN" --run-tag "$TAG" --instances @instances.json --deleted-at-utc "$NOW"
 $A collected "$RUN" --complete        # or --incomplete --missing tok-edge-2
 $A check-collected "$RUN" || exit 1   # in `down`: exit 1 and the refusal unless collected
@@ -186,6 +186,33 @@ for the journal, `api-stats` and `api-stalls`. Its other files differ:
   `collect` takes the sampler files from each node as they are, under
   `nodes/<node>/samplers/`.
 
+## One lab, one run
+
+A Linode lab and everything run on it are one run: `~/needletail-data/<run id>/`
+with one `manifest.json`, the run id being the lab's (`linode-small-mesh-lab.py up
+--run-id`, 1 to 24 of a-z and 0-9, default the UTC `mmddHHMM`; the hunt's
+`hunt<mmddHHMM>`). It is the one way a run id is made for a lab: the labels, tags,
+watchdog unit and archive all carry it, and no tool on the lab makes another. A tool
+run without a lab (the local labs) takes `--run-id` or `archived_run.default_run_id`
+(`<tool>-<UTC yyyymmddThhmmssZ>`).
+
+| Step | Who | What it does to the run |
+| --- | --- | --- |
+| `lab up` | linode-small-mesh-lab.py | Before anything is billed: makes the run (kind `linode-lab`, this checkout's head, the topology under `topology/`, the regions), or appends to one a tool made for this lab and has not ended (the hunt). A run of that id that has ended is refused (give another `--run-id`), as is a lab whose run cannot be written. After the creates: `lab.run_tag`, `lab.instances`, `lab.created_at_utc`. The state records the collect the watchdog runs (`collect.command`). |
+| `deploy push` and the change commands | linode-small-mesh-deploy.py | nothing (the deployed record and settings reach the run at collect) |
+| `scale-run.py run\|party` | scripts/compare/scale-run.py | `scale-run/<run>/`, listener steps, and at its end the lab's collect |
+| the autoscaler (on its own or under scale-run) | linode-autoscale.py | `autoscale/` |
+| the hunt | linode-stall-hunt.py | `hunt/`, its collect mark, and the run's end |
+| `deploy collect --run-id` | linode-small-mesh-deploy.py | `nodes/<node>/`, `lab/`, `topology/`, `collect/`, `deploy_settings`, the `collected` mark |
+| the watchdog at its deadline | linode-small-mesh-lab.py | the same collect, `--timeout-s` inside its bound; a collect that failed, timed out or left the run incomplete ends the run failed |
+| `lab down` | linode-small-mesh-lab.py | refused until the run is collected (`--uncollected` deletes and ends it failed); then `lab.deleted_at_utc`, every instance's `hours_billed` (removed ones too), `lab.hours_billed` (instance-hours) and `lab.cost_usd` (the lab tool's `billed`, as in the ledger), and a run that `up` made and that is still running is ended (`complete`, or `failed` when not collected) |
+
+Each tool writes under its own top directory (`scale-run/`, `autoscale/`, `hunt/`;
+collect's `nodes/`, `lab/`, `collect/`, `topology/`), so tools never write over each
+other. `regions` holds Linode regions (`gb-lon`); a listener step's
+`listeners_by_region` is keyed by site (`london`, `newyork`, `tokyo`, `sydney`), as
+every tool writes it. `invocations` lists every tool that opened the run, in order.
+
 ## The run tools (`scripts/archived_run.py`)
 
 Every local and Linode run tool writes its raw data into the archive as it runs,
@@ -210,6 +237,7 @@ it: the tool's outcome goes to `outcomes.ndjson` under its prefix.
 | `compare/latency-bench.py --name NAME [--run-id ID]` | `latency-bench-<t>` (a run that exists is appended to) | `NAME/`: every file the pass wrote in its results directory (UDP clients' arrivals and reports, probes, `hops.raw.ndjson`, `hops.json`, `summary.txt`, `nodes.ndjson` with per-socket drops, the load tool's output, `sender.log`, `plan.json`), and `NAME/node-logs/` (what each node's log gained in the pass, taken before the lab goes down). Readers, UDP clients and load listeners are listener steps. |
 | `compare/change-run.py run --name NAME [--run-id ID]` | `change-run-<t>` | `NAME/<change-NN\|null-NN>/`: each run's directory as it ends (the probes' CSV and JSON, launch times, `marks.txt`, `command.out` and `.err`, `verdict.json` and `cw.log` from the referee's scorer, the crowd and readers, the nodes before and after) with `node-logs/`. Also `NAME/senders/`, `NAME/node-logs-end/` (up to the lab's down), and `NAME/summary.json`. Each run's probes are a listener step. A null run is one of these directories too. |
 | `linode-autoscale.py run\|scale [--run-id ID]` (not `--dry-run`) | the lab's own run on the linode backend (never ended by the controller), else `linode-autoscale-<t>`. The campaign's autoscale scenario passes the campaign's run. | `autoscale/events.ndjson` (every decision and action, `unix_us`; time fields carry their unit, such as `until_unix_s`), `autoscale/state.ndjson` (the controller's state each time it changed, `unix_us`), `autoscale/outcomes.ndjson` in a run the controller did not make. The appends are made by a writer thread, off the decision loop, and flushed when the run closes; when the archive refuses the run, the controller runs without it and says so on stderr. |
-| `linode-stall-hunt.py run` | `hunt<mmddHHMM>` or `--run-id` | Before the lab is billed, the run is created with the five code heads and the topology. At collect, the deploy tool's `collect --run-id` brings in every node's journal, API, samplers and the lab's files, then the hunt's own records go in. The hunt marks the run collected with the union of what both found missing. |
+| `linode-stall-hunt.py run` | `hunt<mmddHHMM>` or `--run-id` (also the lab's run id: it is given to `up`) | Before the lab is billed, the run is created with the five code heads and the topology; `up` then appends to it. At collect, the deploy tool's `collect --run-id` brings in every node's journal, API, samplers and the lab's files, then the hunt's own records go in under `hunt/` (hunt.json, every node's sampler, stall and watch records, the sessions' probes, the route survey). The hunt marks the run collected with the union of what both found missing, and ends the run itself. |
+| `compare/scale-run.py run\|party` (scripts/compare) | the lab's run id (a lab without one: `scale-run-<t>`) | `scale-run/<run>/`: `steps/<listeners>/` whole as each step ends (the load tool's intervals, summary and sampled arrivals, the samplers, the mesh samplers, the readers' reports, the scenarios' marks, probes and verdicts), `events.jsonl` appended after every step (its own events and the controller's), `plan.json`, `party.json`, `phases.json`, `scale.json`, `summary.md`, `cost.json`, `controller-party.log`, `autoscale-state.json`. Each step is a listener step (`listeners_by_region` by site; `stopped` and `listeners_measured_by_region` when the load tool counted). At its end, unless `--no-collect`, it runs the lab's collect (the command the watchdog runs, `--collect-timeout-s`, default 300 s) into the same run. It never ends the run. |
 | `compare/first-session.py run --name N` | `N` | `lab<i>/` as each lab ends (a lab that was cut off is kept too), each latency-bench pass (`--run-id N`) under `N-lab<i>-first\|warm/`, and `first-session.json`. The run ends failed when it is cut off. |
 | `compare/source-check.py run --name N` | `N` | The check's directory, kept in a `finally` even when the check is cut off, with the five code heads. |

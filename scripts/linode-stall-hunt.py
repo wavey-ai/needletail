@@ -1267,7 +1267,8 @@ class Hunt:
         began_utc = run_archive.utc_now()
         collected = self.deploy("collect", "--run-id", self.run_id)
         missing = {line.split(":", 1)[0] for line in failures}
-        if self.archive("add-tree", self.run_id, relative(self.out()), "--kind", "raw",
+        if self.archive("add-tree", self.run_id, relative(self.out()), "--as", "hunt",
+                        "--kind", "raw",
                         "--description", "the stall hunt: hunt.json, every node's sampler, stall "
                         "and watch records, the sessions' probes, the route survey") != 0:
             missing.add(f"{relative(self.out())} (add-tree)")

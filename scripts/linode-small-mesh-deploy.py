@@ -6261,7 +6261,9 @@ def change_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--video-gap", choices=("refuse", "accept"), default="refuse")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The deploy tool's command line (main's), for the tools that build
+    its commands to check them against it."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     plan = sub.add_parser("plan")
@@ -6351,7 +6353,11 @@ def main() -> None:
                          help="the bound of the nodes' pulls, together, from collect's start "
                               "(each node is moved into the archive as its pull ends)")
     collect.set_defaults(handler=command_collect)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     args.handler(args)
 
 

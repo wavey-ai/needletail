@@ -64,9 +64,15 @@ Cost controls are part of the tool, not an operator convention:
   are missing (`listeners_missing`), for scale-run.py to fit its ramp to
   the hosts that exist. Account limits (instances, vCPUs), capacity and
   transient errors are told apart from the API's message (refusal_kind);
-* the run archive (scripts/run_archive.py, ~/needletail-data/<run id>/):
-  when a run of the lab's id is in the archive, the operator's `down`
-  refuses until that run is marked collected; `down --uncollected` deletes
+* the run archive (scripts/run_archive.py, ~/needletail-data/<run id>/,
+  docs/run-archive.md): `up` opens the run of the lab's id before anything
+  is billed (makes it, a linode-lab run, or appends to one that a tool such
+  as the hunt made for this lab and has not ended; a run of that id that
+  has ended is refused: give another --run-id), and records the lab's
+  instances in it; every tool on the lab (deploy collect, scale-run, the
+  autoscaler, the hunt) writes into that one run; `down` records the
+  deletion and the bill, and ends a run that `up` made. The operator's
+  `down` refuses until that run is marked collected; `down --uncollected` deletes
   all the same and records the run as failed. The watchdog's own delete is
   never refused for data: at its deadline it first runs the collect
   command that `up` recorded in the state (the deploy tool's `collect
@@ -1099,6 +1105,13 @@ def create_lab(args: argparse.Namespace) -> None:
     if figures["total_usd"] > budget + 1e-9:
         sys.exit("up refused: over the budget (the lab is every node and every slot of the "
                  f"topology, {whole_hours} billed hour(s) each): {json.dumps(figures)}")
+    try:
+        # The lab's run in the archive, before anything is billed: a lab
+        # whose data cannot be kept is not made.
+        open_lab_run(run_id, pathlib.Path(args.topology).resolve(),
+                     sorted({node["region"] for node in topology["nodes"]}))
+    except (run_archive.ArchiveError, OSError) as error:
+        sys.exit(f"up refused: the run archive: {error}")
     image = topology.get("image", "linode/debian13")
     state = {
         "provider": "linode", "schema": "needletail.linode-small-mesh-lab.v1",
@@ -1169,6 +1182,7 @@ def create_lab(args: argparse.Namespace) -> None:
         api.call("POST", f"/networking/firewalls/{firewall['id']}/devices",
                  {"id": node["id"], "type": "linode"})
     print("Attached one lab-only Cloud Firewall to every lab Linode")
+    record_lab_run(state)
 
     deadline = time.time() + 600
     pending = set(state["nodes"])
@@ -1893,8 +1907,8 @@ def removed_record(state: dict, node: dict, deleted: float) -> dict:
     """What billing keeps of an instance deleted before `down` (and its
     address, which `down` takes out of known_hosts)."""
     return {"name": node["name"], "id": node["id"], "label": node.get("label"),
-            "role": node.get("role"), "site": node.get("site"), "type": node.get("type"),
-            "public_ipv4": node.get("public_ipv4"),
+            "role": node.get("role"), "site": node.get("site"), "region": node.get("region"),
+            "type": node.get("type"), "public_ipv4": node.get("public_ipv4"),
             "hourly_usd": node.get("hourly_usd", 0.0),
             "created_unix": created_unix(node, state.get("created_unix")),
             "deleted_unix": int(deleted)}
@@ -2903,6 +2917,7 @@ def command_down(args: argparse.Namespace) -> None:
         state["billed_usd"] = total["usd"]
         write_state(archive, state)
         state_path.unlink(missing_ok=True)
+    record_lab_run(state, total)
     ledger_append([{"run_id": state["run_id"], "tag": tag, "worktree": str(ROOT),
                     "topology": state.get("topology_file"),
                     "created_unix": state["created_unix"],
@@ -2920,6 +2935,80 @@ def command_down(args: argparse.Namespace) -> None:
 
 
 ARCHIVE_TOOL = "linode-small-mesh-lab.py"
+
+
+def open_lab_run(run_id: str, topology_file: pathlib.Path, regions: list[str]):
+    """The lab's run in the run archive, opened by `up` before anything is
+    billed: one run per lab, the lab's run id, which every tool on the lab
+    writes into (docs/run-archive.md). Made (a linode-lab run of this tool,
+    with this checkout's head, the topology and the regions) when the
+    archive has none; appended to when a tool made it for this lab and has
+    not ended it (the hunt makes its run before `up`); refused
+    (ArchiveError) when a run of that id has ended: another lab's data."""
+    archive = archived_run(run_id)
+    if archive is None:
+        return run_archive.RunArchive.create(run_id, "linode-lab", tool=ARCHIVE_TOOL,
+                                             code_paths=[ROOT], topology=topology_file,
+                                             regions=regions)
+    status = archive.manifest.get("status")
+    if status != "running":
+        raise run_archive.ArchiveError(
+            f"run {run_id!r} is in the archive already and has ended ({status}): a lab's data "
+            "goes into a run of its own; give another --run-id")
+    archive = run_archive.RunArchive.open(run_id, tool=ARCHIVE_TOOL)
+    archive.set_regions(regions)
+    return archive
+
+
+def lab_run_instances(state: dict, total: dict | None = None) -> list[dict]:
+    """The lab's instances as the archive's manifest keeps them (`lab`), the
+    ones deleted before `down` included; with `total` (billed), each with
+    the hours it was billed."""
+    hours = {row["name"]: row["hours"] for row in (total or {}).get("rows", [])}
+    out = []
+    for name, node in sorted(state.get("nodes", {}).items()):
+        out.append({"label": node.get("label"), "id": node.get("id"), "plan": node.get("type"),
+                    "region": node.get("region"), "role": node.get("role"),
+                    "hourly_usd": node.get("hourly_usd"), "hours_billed": hours.get(name)})
+    for item in state.get("removed", []):
+        out.append({"label": item.get("label"), "id": item.get("id"), "plan": item.get("type"),
+                    "region": item.get("region"), "role": item.get("role"),
+                    "hourly_usd": item.get("hourly_usd"),
+                    "hours_billed": hours.get(item.get("name")), "removed": True})
+    return out
+
+
+def record_lab_run(state: dict, total: dict | None = None) -> None:
+    """The lab's facts in its run (when the archive has it): after `up`,
+    its tag, instances and creation; after `down` (`total`: billed), the
+    deletion, each instance's billed hours and the cost; then a run that
+    `up` made and that is still running is ended (a run whose data was not
+    collected ends failed: run_archive's rule). A run another tool made
+    (the hunt) is ended by that tool. Never raises: neither `up` nor
+    `down` waits on the archive."""
+    def utc(unix) -> str | None:
+        return None if unix is None else dt.datetime.fromtimestamp(
+            unix, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    try:
+        archive = archived_run(state["run_id"])
+        if archive is None:
+            return
+        archive = run_archive.RunArchive.open(state["run_id"], tool=ARCHIVE_TOOL, record=False)
+        archive.set_lab(run_tag=state.get("tag"), instances=lab_run_instances(state, total),
+                        created_at_utc=utc(state.get("created_unix")),
+                        deleted_at_utc=None if total is None else utc(state.get("removed_unix")),
+                        cost_usd=None if total is None else total["usd"],
+                        hours_billed=None if total is None else total["instance_hours"])
+        manifest = archive.manifest
+        if total is not None and manifest.get("tool") == ARCHIVE_TOOL \
+                and manifest.get("status") == "running":
+            status = archive.finish("complete", "the lab's down")
+            print(f"run archive: run {state['run_id']} ended {status}", file=sys.stderr,
+                  flush=True)
+    except Exception as error:  # noqa: BLE001 - the lab goes on whatever the archive does
+        print(f"run archive: run {state['run_id']} could not record the lab ({error!r})",
+              file=sys.stderr, flush=True)
 
 
 def archived_run(run_id: str):

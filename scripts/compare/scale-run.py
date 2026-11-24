@@ -2087,9 +2087,11 @@ SCALE_JOIN_S = 120.0
 SCALE_CREATE_S = 1800.0
 SCALE_REBALANCE_S = 60.0
 SCALE_DOWN_S = 60.0 + 30.0 + 30.0
-# A's kill (its gate, the kill, the end seen at both first forwarders) and
-# return (start, readiness).
-CHANGE_BOUND_S = {"kill": 30.0 + 10.0, "return": 60.0 + 15.0}
+# A's kill: its gate (--gate-timeout-s), the kill, and its end seen at both
+# first forwarders within contributor_changes.END_S; A's return: the start
+# and readiness (--ready-timeout-s). The command is given the timeouts its
+# bound is made of (contributor_change_command, action_bound_s).
+CONTRIB_KILL_END_S = 10.0
 # One scenario, one verdict (C 2.11): probes of its own on every view host
 # and probed config, started PROBE_LEAD_S before its first action (no other
 # action in that time; scenarios start at least SCENARIO_GAP_S apart), and
@@ -2310,7 +2312,10 @@ def action_bound_s(action: dict, lab: dict) -> float:
         return SCALE_JOIN_S + SCALE_REBALANCE_S + (0.0 if standby and action.get(
             "tier", "edges") == "edges" else SCALE_CREATE_S)
     if kind == "change":
-        return CHANGE_BOUND_S[action["change"]]
+        timeouts = engine_timeouts(action)
+        if action["change"] == "kill":
+            return timeouts["gate_timeout_s"] + CONTRIB_KILL_END_S
+        return timeouts["ready_timeout_s"] + ENGINE_RESTART_S
     return 0.0
 
 
@@ -3813,12 +3818,20 @@ def deploy_command(*words: str) -> list[str]:
     return [sys.executable, str(DEPLOY), *words]
 
 
-def contributor_change_command(verb: str, node: str, extra=()) -> list[str]:
+def contributor_change_command(verb: str, node: str, extra=(),
+                               timeouts: dict | None = None) -> list[str]:
     """Workstream A's contributor and ingress changes (A 2.10, built in
     scripts/contributor_changes.py), reached by the deploy tool's command
-    line: `kill --node X` (gated; the node held down) and `return --node X`
-    (started and made ready). Each prints its two marks."""
-    return deploy_command(verb, "--node", node, *[str(item) for item in extra])
+    line: `kill --node X --gate-timeout-s G` (gated; the node held down) and
+    `return --node X --ready-timeout-s R` (started and made ready), G and R
+    the timeouts the change's bound is made of (action_bound_s). Each
+    prints its two marks."""
+    timeouts = timeouts or {}
+    own = (["--gate-timeout-s", f"{timeouts['gate_timeout_s']:g}"]
+           if verb == "kill" and "gate_timeout_s" in timeouts else
+           ["--ready-timeout-s", f"{timeouts['ready_timeout_s']:g}"]
+           if verb == "return" and "ready_timeout_s" in timeouts else [])
+    return deploy_command(verb, "--node", node, *own, *[str(item) for item in extra])
 
 
 def engine_flags(action: dict) -> list[str]:
@@ -3895,7 +3908,8 @@ def action_command(action: dict, args, directory: pathlib.Path,
         return deploy_command(*words, *engine_flags(action)), env
     if kind == "change":
         return contributor_change_command(action["change"], action["targets"][0],
-                                          action.get("args", [])), env
+                                          action.get("args", []),
+                                          engine_timeouts(action)), env
     command = [sys.executable, str(AUTOSCALER)]
     if kind == "scale":
         command += ["scale", action["direction"], "--backend", "linode", "--site",
@@ -6037,6 +6051,7 @@ def command_run(args: argparse.Namespace) -> None:
         if control is not None:
             stop_livekit(control["ref"], control["session"])
         archive_run(archive, run, directory, log)
+        collect_lab(lab, args, log)
         archive_events(archive, run, events_path, sent, log)
         events.close()
     print(directory / "summary.md")
@@ -6129,19 +6144,24 @@ def open_events(path: pathlib.Path):
 
 
 def open_archive(lab: dict, run: str, log):
-    """The run archive's run of the lab's id (appended to when another tool
-    made it), or a new one; None, logged loudly, when the archive refuses
-    (the run goes on: its files stay under target/compare)."""
+    """The run archive's run of the lab's id (docs/run-archive.md: one run
+    per lab, which the lab tool's `up` opens and every tool on the lab
+    appends to, each under its own directory: here scale-run/<run>/), or a
+    new one when the archive has none (a lab made before `up` opened its
+    run; a lab without a run id takes archived_run's default id); None,
+    logged loudly, when the archive refuses (the run goes on: its files stay
+    under target/compare). The manifest's regions are Linode regions."""
+    import archived_run  # noqa: PLC0415 - scripts/ is on the path
     import run_archive  # noqa: PLC0415 - scripts/ is on the path
-    run_id = lab.get("run_id") or f"scale-{run}"
+    run_id = lab.get("run_id") or archived_run.default_run_id("scale-run")
     try:
         try:
             archive = run_archive.RunArchive.open(run_id, tool=ARCHIVE_TOOL)
         except run_archive.ArchiveError:
             archive = run_archive.RunArchive.create(run_id, "linode-lab", tool=ARCHIVE_TOOL,
                                                     deploy_settings=deploy_settings())
-        archive.set_regions(sorted({node["site"] for node in lab["nodes"].values()
-                                    if node.get("site")}))
+        archive.set_regions(sorted({node["region"] for node in lab["nodes"].values()
+                                    if node.get("region")}))
     except (run_archive.ArchiveError, OSError) as error:
         log({"archive": "refused", "run_id": run_id, "error": str(error)})
         return None
@@ -6218,6 +6238,58 @@ def archive_run(archive, run: str, directory: pathlib.Path, log) -> None:
                              description=f"scale-run {run}: {name}")
         except Exception as error:  # noqa: BLE001 - loud, and the run's end goes on
             log({"archive": f"{name} not archived", "error": str(error)})
+
+
+# The lab's collect at the end of a run or a party: the very command the
+# lab's watchdog runs before its delete (the lab state's `collect.command`,
+# recorded by the lab tool's `up`: the deploy tool's `collect --run-id <the
+# lab's run id>`), into the same run of the archive, with its own bound.
+COLLECT_TIMEOUT_S = 300.0
+
+
+def collect_command(lab: dict, timeout_s: float = COLLECT_TIMEOUT_S) -> list[str]:
+    """The lab's collect with `--timeout-s`: the command `up` recorded for
+    the watchdog, or (a lab made before it recorded one) the deploy tool's
+    `collect --run-id <run id>` that it records."""
+    recorded = (lab.get("collect") or {}).get("command") if isinstance(lab.get("collect"),
+                                                                        dict) else None
+    if not (isinstance(recorded, list) and recorded
+            and all(isinstance(item, str) for item in recorded)):
+        recorded = deploy_command("collect", "--run-id", str(lab.get("run_id")))
+    return [*recorded, "--timeout-s", f"{timeout_s:g}"]
+
+
+def collect_lab(lab: dict, args, log) -> int | None:
+    """Collect the lab into its run when the run ends (unless --no-collect):
+    every node's journal, API and samplers before anyone deletes the lab.
+    Logs the command and its exit (0 complete, 1 incomplete, 2 refused, 70
+    failed: the deploy tool's codes); never raises. None when not run."""
+    if getattr(args, "no_collect", False) or not lab.get("run_id"):
+        log({"event": "collect_skipped", "why": "--no-collect" if lab.get("run_id")
+             else "the lab has no run id"})
+        return None
+    timeout_s = float(getattr(args, "collect_timeout_s", None) or COLLECT_TIMEOUT_S)
+    command = collect_command(lab, timeout_s)
+    log({"event": "collect_start", "command": command[1:]})
+    try:
+        code = subprocess.run(command, stdin=subprocess.DEVNULL, timeout=timeout_s + 60,
+                              check=False).returncode
+    except (OSError, subprocess.TimeoutExpired) as error:
+        log({"event": "collect_exit", "returncode": None, "error": str(error)})
+        return None
+    log({"event": "collect_exit", "returncode": code,
+         "complete": code == 0, "note": None if code == 0 else
+         "the lab's run is not collected: collect again (deploy collect --run-id "
+         f"{lab['run_id']}) before `down`"})
+    return code
+
+
+def collect_options(item: argparse.ArgumentParser) -> None:
+    item.add_argument("--no-collect", action="store_true",
+                      help="do not collect the lab into its run at the end (the deploy "
+                           "tool's collect, as the watchdog runs it)")
+    item.add_argument("--collect-timeout-s", type=float, default=COLLECT_TIMEOUT_S,
+                      help=f"the end's collect bound (default {COLLECT_TIMEOUT_S:g})")
 
 
 # ---------------------------------------------------------------- the listening party
@@ -6663,6 +6735,7 @@ def command_party(args: argparse.Namespace) -> None:
         if control is not None:
             stop_livekit(control["ref"], control["session"])
         archive_run(archive, run, directory, log)
+        collect_lab(lab, args, log)
         archive_events(archive, run, events_path, sent, log)
         events.close()
     print(directory / "summary.md")
@@ -6819,6 +6892,7 @@ def build_parser() -> argparse.ArgumentParser:
                           "are `first`)")
     run.add_argument("--next-av-contrib-root", default=None,
                      help="the av-contrib checkout an `upgrade` to `next` rolls to")
+    collect_options(run)
     run.set_defaults(handler=command_run)
     analyse = sub.add_parser("analyse", help="aggregate a run's files again")
     analyse.add_argument("run", help="the run's name or directory")
@@ -6847,6 +6921,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="the shared budget, for the controller's creates")
     party.add_argument("--spent-before-usd", type=float, default=None,
                        help="what earlier labs of the work cost (default: the lab tool's)")
+    collect_options(party)
     party.set_defaults(handler=command_party)
     sub.add_parser("stop", help="stop sources, listeners, samplers").set_defaults(
         handler=command_stop)
