@@ -17,7 +17,7 @@
 # cleanly (its input or its time is done) or on SIGTERM/SIGINT; 2 on a usage
 # error. ffmpeg is $FFMPEG, else ffmpeg on the PATH. Installed on the source
 # host as /usr/local/bin/needletail-video-feed for needletail-video-feed.service
-# (deploy/video-feed/).
+# (deploy/linode-small-mesh/needletail-video-feed.service and video-feed.env.example).
 set -u
 
 seconds=""
