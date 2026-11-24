@@ -1366,15 +1366,36 @@ class Allow(Base):
     every rewrite of the rules."""
 
     def lab(self, api, public_ports=None) -> dict:
+        """A lab as `up` leaves it, of a topology that marks `public_ports`
+        (recorded in the state, as up records them)."""
         state = lab_state(self.tmp, api)
         if public_ports is not None:
-            topology = json.loads(SCALE.read_text())
-            topology["public_ports"] = public_ports
-            path = self.tmp / "topology-public.json"
-            path.write_text(json.dumps(topology))
+            path = self.topology(public_ports)
             state["topology_file"] = str(path)
+            state["public_ports"] = lab_tool.public_ports(public_ports)[0]
             pathlib.Path(self.args.state).write_text(json.dumps(state))
         return state
+
+    def topology(self, public_ports, name="topology-public.json") -> pathlib.Path:
+        topology = json.loads(SCALE.read_text())
+        if public_ports is not None:
+            topology["public_ports"] = public_ports
+        path = self.tmp / name
+        path.write_text(json.dumps(topology))
+        return path
+
+    def grow_args(self, topology) -> argparse.Namespace:
+        return argparse.Namespace(state=self.args.state, topology=str(topology),
+                                  without_sites="", ssh_public_key=self.args.ssh_public_key,
+                                  budget_usd=None, spent_before_usd=None)
+
+    def drop_nodes(self, api, *names) -> None:
+        """Take nodes out of the lab, as if never grown."""
+        path = pathlib.Path(self.args.state)
+        state = lab_tool.read_state(path)
+        for name in names:
+            api.instances.pop(state["nodes"].pop(name)["id"])
+        path.write_text(json.dumps(state))
 
     def allow(self, api, *argv) -> tuple[int | str | None, str, str]:
         args = lab_tool.build_parser().parse_args(["--state", self.args.state, "allow", *argv])
@@ -1462,12 +1483,27 @@ class Allow(Base):
         code = self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
                           "--ports", "19446", "--ipv4", "0.0.0.0/0")[0]
         self.assertIn("this lab's topology marks none", str(code))
-        # A topology that marks a control port public: not taken, and said.
-        self.lab(api, public_ports=[{"protocol": "TCP", "ports": "19444"},
-                                    {"protocol": "UDP", "ports": "19446"}])
+        # A topology that marks a control port public: up refuses it, and
+        # said why, before anything is made.
+        marks = [{"protocol": "TCP", "ports": "19444"}, {"protocol": "UDP", "ports": "19446"}]
+        self.assertIn("19444 also serves /api/control/*", lab_tool.public_ports(marks)[1][0])
+        fresh = FakeApi()
+        self.systemd.active.clear()
+        with mock.patch.object(lab_tool, "Api", lambda public=False: fresh):
+            refusal = self.refused(lab_tool.command_up, self.up_args(
+                topology=str(self.topology(marks, "topology-19444.json")), spent_before_usd=0.0,
+                state=str(self.tmp / "other-state.json"), run_id="t2"))
+        self.assertIn("up refused: the topology marks TCP 19444 public", refusal)
+        self.assertFalse(fresh.calls)
+        self.assertFalse((self.tmp / "other-state.json").exists())
+        self.systemd.active.add(UNIT)
+        # Such a mark edited into the state by hand makes nothing public.
+        state = self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        state["public_ports"] = marks
+        pathlib.Path(self.args.state).write_text(json.dumps(state))
         code = self.allow(api, "add", "--label", "hls", "--protocol", "TCP", "--ports", "19444",
                           "--ipv4", "0.0.0.0/0")[0]
-        self.assertIn("19444 also serves /api/control/*", str(code))
+        self.assertIn("would be open to the world", str(code))
         self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
                                      "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
         # Named ranges are not the world: TCP 19444 from a /16 is let in.
@@ -1529,10 +1565,36 @@ class Allow(Base):
         code = self.allow(api, "add", "--label", "office", "--protocol", "TCP", "--ports", "22",
                           "--ipv4", "198.51.100.0/24")[0]
         self.assertIn("as it was", str(code))
+        self.assertIn("could not be put back", str(code))
         self.assertEqual(self.allowed(), [PUBLISHER])
         code = self.allow(api, "remove", "publisher")[0]
         self.assertIn("as it was", str(code))
         self.assertEqual(self.allowed(), [PUBLISHER])
+        # A put that fails once (a timeout after Linode applied it, or a
+        # refusal): the state is put back and its rules are put again, so
+        # the firewall holds what the state says; a removed entry goes back
+        # to its place (review of lab2, finding 6).
+        api.call = real
+        self.assertIsNone(self.allow(api, "add", "--label", "office", "--protocol", "TCP",
+                                     "--ports", "22", "--ipv4", "198.51.100.0/24")[0])
+        failed = []
+
+        def once(method, path, body=None, allow_404=False):
+            answer = real(method, path, body, allow_404)
+            if path.endswith("/rules") and not failed:
+                failed.append(body)
+                raise RuntimeError("timed out")
+            return answer
+
+        api.call = once
+        code = self.allow(api, "remove", "publisher")[0]
+        self.assertIn("and so are the firewall's rules", str(code))
+        self.assertEqual([entry["label"] for entry in self.allowed()], ["publisher", "office"])
+        self.assertEqual([rule["label"] for rule in failed[0]["inbound"]][-1:], ["office"])
+        self.assertEqual(self.last_rules(api), lab_tool.firewall_rules(
+            lab_tool.read_state(pathlib.Path(self.args.state)))["inbound"])
+        self.assertEqual([rule["label"] for rule in self.last_rules(api)][-2:],
+                         ["publisher", "office"])
 
     def test_a_lab_whose_firewall_is_not_made_yet_gets_the_list_with_it(self):
         api = FakeApi()
@@ -1585,16 +1647,10 @@ class Allow(Base):
         self.replace(api, ["lon-edge-2"], mode="new")
         kept("replace --mode new")
         # grow: two nodes the lab does not have.
-        state = lab_tool.read_state(path)
-        for name in ("lon-edge-3", "lon-edge-4"):
-            api.instances.pop(state["nodes"].pop(name)["id"])
-        path.write_text(json.dumps(state))
-        args = argparse.Namespace(state=self.args.state, topology=state["topology_file"],
-                                  without_sites="", ssh_public_key=self.args.ssh_public_key,
-                                  budget_usd=None, spent_before_usd=None)
+        self.drop_nodes(api, "lon-edge-3", "lon-edge-4")
         with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            lab_tool.command_grow(args)
+            lab_tool.command_grow(self.grow_args(state["topology_file"]))
         kept("grow")
         self.assertIn("lon-edge-3", lab_tool.read_state(path)["nodes"])
         # The autoscaler puts lab.firewall_rules(state), the same rules.
@@ -1639,6 +1695,213 @@ class Allow(Base):
         self.assertEqual(len(inbound[3]["addresses"]["ipv4"]), len(created))
         self.assertEqual(state["operator_ipv4"], "203.0.113.9")
         self.assertEqual(posted[0]["rules"], lab_tool.firewall_rules(state))
+
+    def test_the_world_is_counted_over_every_network_and_every_entry(self):
+        """Many /8s in one entry, or entries that together let more than a
+        /8 in on a port, are the world (review of lab2, finding 2)."""
+        api = FakeApi()
+        self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        eights = ",".join(f"{first}.0.0.0/8" for first in range(1, 224))
+        code = self.allow(api, "add", "--label", "ssh-all", "--protocol", "TCP", "--ports", "22",
+                          "--ipv4", eights)[0]
+        self.assertIn("TCP 22 would be open to the world", str(code))
+        code = self.allow(api, "add", "--label", "udp-all", "--protocol", "UDP",
+                          "--ports", "1-65535", "--ipv4", "8.0.0.0/8,9.0.0.0/8")[0]
+        # Only the public port is not the world: every other one is.
+        self.assertIn("UDP 1-19445 would be open to the world (33554432 addresses", str(code))
+        self.assertIn("UDP 19447-65535 would be open to the world", str(code))
+        self.assertEqual(str(code).count("SSH, control and relay ports never"), 1)
+        # One /8 is a named range; a second on the same port, in another
+        # entry over a range of ports, adds up to the world there.
+        self.assertIsNone(self.allow(api, "add", "--label", "ctl-a", "--protocol", "TCP",
+                                     "--ports", "19444", "--ipv4", "64.0.0.0/8")[0])
+        code = self.allow(api, "add", "--label", "ctl-b", "--protocol", "TCP",
+                          "--ports", "19000-20000", "--ipv4", "65.0.0.0/8")[0]
+        self.assertIn("TCP 19444 would be open to the world", str(code))
+        self.assertIn("with the entries ctl-a", str(code))
+        # Addresses already let in are not counted twice; another port and
+        # another protocol are counted on their own.
+        self.assertIsNone(self.allow(api, "add", "--label", "ctl-c", "--protocol", "TCP",
+                                     "--ports", "19444", "--ipv4", "64.0.0.0/9")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "web", "--protocol", "TCP",
+                                     "--ports", "443", "--ipv4", "65.0.0.0/8")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "ctl-udp", "--protocol", "UDP",
+                                     "--ports", "19444", "--ipv4", "65.0.0.0/8")[0])
+        # The world on the public port, and the same /8 as ctl-udp on the
+        # ports around it, are let in; another /8 there adds up on 19444.
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        code = self.allow(api, "add", "--label", "near", "--protocol", "UDP",
+                          "--ports", "19440-19450", "--ipv4", "10.0.0.0/8")[0]
+        self.assertIn("UDP 19444 would be open to the world (33554432 addresses, more than a "
+                      "/8, with the entries ctl-udp)", str(code))
+        self.assertIsNone(self.allow(api, "add", "--label", "near", "--protocol", "UDP",
+                                     "--ports", "19440-19450", "--ipv4", "65.0.0.0/8")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "ping-a", "--protocol", "ICMP",
+                                     "--ipv4", "10.0.0.0/8")[0])
+        code = self.allow(api, "add", "--label", "ping-b", "--protocol", "ICMP",
+                          "--ipv4", "11.0.0.0/8")[0]
+        self.assertIn("ICMP would be open to the world", str(code))
+        self.assertEqual([entry["label"] for entry in self.allowed()],
+                         ["ctl-a", "ctl-c", "web", "ctl-udp", "listeners", "near", "ping-a"])
+        # A state edited by hand whose entries add up: the later one is
+        # left out of the firewall, and said.
+        state = lab_tool.read_state(pathlib.Path(self.args.state))
+        state["allow"] += [{"label": "ssh-a", "protocol": "TCP", "ports": "22",
+                            "ipv4": ["1.0.0.0/8"]},
+                           {"label": "ssh-b", "protocol": "TCP", "ports": "20-30",
+                            "ipv4": ["2.0.0.0/8"]}]
+        with redirect_stderr(io.StringIO()) as err:
+            labels = [rule["label"] for rule in lab_tool.firewall_rules(state)["inbound"]]
+        self.assertIn("ssh-a", labels)
+        self.assertNotIn("ssh-b", labels)
+        self.assertIn("'ssh-b'", err.getvalue())
+
+    def test_the_public_marks_are_the_state_s_and_grow_keeps_them(self):
+        """The marks are read from the state, where up and grow record
+        them: a topology file changed later never closes the listeners'
+        rule, and grow refuses a topology that would (review of lab2,
+        finding 3)."""
+        api = FakeApi()
+        marks = [{"protocol": "UDP", "ports": "19446"}]
+        self.lab(api, public_ports=marks)
+        path = pathlib.Path(self.args.state)
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        # The topology file loses its marks (another branch checked out).
+        self.topology(None)
+        with redirect_stderr(io.StringIO()) as err:
+            rules = lab_tool.firewall_rules(lab_tool.read_state(path))["inbound"]
+        self.assertEqual(rules[-1]["label"], "listeners")
+        self.assertEqual(err.getvalue(), "")
+        # grow with a topology that does not mark the port: refused before
+        # anything is created or recorded.
+        self.drop_nodes(api, "lon-edge-3")
+        before = lab_tool.read_state(path)
+        calls = len(api.calls)
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api):
+            refusal = self.refused(lab_tool.command_grow,
+                                   self.grow_args(self.topology(None, "topology-plain.json")))
+        self.assertIn("grow refused", refusal)
+        self.assertIn("allow entries listeners", refusal)
+        self.assertNotIn(("POST", "/linode/instances"), api.calls[calls:])
+        self.assertEqual(lab_tool.read_state(path), before)
+        # A topology that marks something it may not: refused too.
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api):
+            refusal = self.refused(lab_tool.command_grow, self.grow_args(self.topology(
+                [*marks, {"protocol": "TCP", "ports": "22"}], "topology-ssh.json")))
+        self.assertIn("marks TCP 22 public", refusal)
+        # A topology that keeps the mark: grown, recorded, the rule kept.
+        kept = self.topology(marks, "topology-kept.json")
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.command_grow(self.grow_args(kept))
+        state = lab_tool.read_state(path)
+        self.assertIn("lon-edge-3", state["nodes"])
+        self.assertEqual((state["topology_file"], state["public_ports"]), (str(kept), marks))
+        self.assertEqual(self.last_rules(api)[-1]["label"], "listeners")
+
+    def test_concurrent_rewrites_of_the_rules_keep_every_change(self):
+        """Every writer puts the rules from the state on disk under the
+        firewall's lock, so the last put holds every change recorded before
+        it (review of lab2, finding 4)."""
+        api = FakeApi()
+        self.lab(api)
+        path = pathlib.Path(self.args.state)
+        real_change = lab_tool.change_state
+        adopted = {"id": 4242, "name": "lon-edge-11", "label": "ntsm-t1-lon-edge-11",
+                   "role": "edge", "site": "london", "region": "gb-lon",
+                   "type": "g6-dedicated-2", "hourly_usd": 0.054, "public_ipv4": "192.0.2.77",
+                   "vlan_ipv4": None, "slot": True}
+        fired = []
+
+        def adopt_after_allow_records(path_, state_, change, creating=False):
+            # allow add has recorded its entry; before it puts, the
+            # autoscaler adopts a slot and puts the rules.
+            real_change(path_, state_, change, creating)
+            if not fired:
+                fired.append(True)
+                current = lab_tool.read_state(path)
+                real_change(path, current, lambda now: now["nodes"].update(
+                    {"lon-edge-11": adopted}), creating=True)
+                lab_tool.put_firewall_rules(api, path, current)
+
+        with mock.patch.object(lab_tool, "change_state", adopt_after_allow_records):
+            self.assertIsNone(self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                         "--ports", "27100", "--ipv4", "203.0.113.40")[0])
+        rules = self.last_rules(api)
+        self.assertIn("192.0.2.77/32", rules[3]["addresses"]["ipv4"])
+        self.assertEqual(rules[-1]["label"], "publisher")
+
+        # An add that records its slot; then `allow add` from another shell
+        # records and puts; then the add puts: the entry stays.
+        creating_calls = []
+
+        def allow_after_add_records(path_, state_, change, creating=False):
+            real_change(path_, state_, change, creating)
+            if creating:
+                creating_calls.append(True)
+                if len(creating_calls) == 2:  # record_node, then the hourly price
+                    self.assertIsNone(self.allow(
+                        api, "add", "--label", "office", "--protocol", "TCP", "--ports", "22",
+                        "--ipv4", "198.51.100.0/24")[0])
+
+        with mock.patch.object(lab_tool, "change_state", allow_after_add_records):
+            self.add(api, lab_tool.read_state(path), ["lon-edge-12"])
+        self.assertEqual(len(creating_calls), 2)
+        rules = self.last_rules(api)
+        self.assertEqual([rule["label"] for rule in rules][-2:], ["publisher", "office"])
+        self.assertEqual(len(rules[3]["addresses"]["ipv4"]),
+                         len(lab_tool.read_state(path)["nodes"]))
+        self.assertEqual(lab_tool.firewall_rules(lab_tool.read_state(path))["inbound"], rules)
+
+    def test_up_puts_the_rules_again_for_an_entry_added_after_its_post(self):
+        """An `allow add` that lands between up's POST of the firewall and
+        its record of the firewall's id is only recorded (no firewall id
+        yet); up puts the rules once more with it (review of lab2, finding
+        5)."""
+        api = FakeApi()
+        self.systemd.active.clear()
+        path = pathlib.Path(self.args.state)
+        real = api.call
+
+        def call(method, where, body=None, allow_404=False):
+            answer = real(method, where, body, allow_404)
+            if (method, where) == ("POST", "/networking/firewalls"):
+                code, out, _err = self.allow(api, "add", "--label", "publisher", "--protocol",
+                                             "TCP", "--ports", "27100", "--ipv4", "203.0.113.40")
+                self.assertIsNone(code)
+                self.assertIn("up makes it with the list", out)
+            return answer
+
+        api.call = call
+        created = []
+
+        def create(api_, run_id, tag, image, key, node):
+            created.append(node["name"])
+            ident = 100 + len(created)
+            api.instances[ident] = {"id": ident, "status": "running", "tags": [tag]}
+            return {"id": ident, "name": node["name"], "label": node["name"],
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": f"192.0.2.{len(created) % 250}", "vlan_ipv4": None,
+                    "created": "x"}
+
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_status", lambda args: None), \
+                mock.patch.object(lab_tool, "watchdog_ensure", lambda state, state_path: []):
+            state = self.up(api, spent_before_usd=0.0)
+        posted = [body for method, where, body in api.bodies
+                  if (method, where) == ("POST", "/networking/firewalls")]
+        self.assertEqual([rule["label"] for rule in posted[0]["rules"]["inbound"]],
+                         list(lab_tool.LAB_RULE_LABELS))
+        puts = [body for method, where, body in api.bodies
+                if method == "PUT" and where.endswith("/rules")]
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(puts[0], lab_tool.firewall_rules(state))
+        self.assertEqual(puts[0]["inbound"][-1]["label"], "publisher")
+        self.assertEqual(state["allow"], [PUBLISHER])
+        self.assertTrue(path.exists())
 
 
 class Ledger(Base):
