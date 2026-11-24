@@ -8,7 +8,9 @@ dist-a and dist-b and never as a compiled relay child; a second build set is
 kept beside the first, rendered with its own binaries' flags and settings,
 and a node starts on the set it is given; `drain` names its node; `crash`,
 `burn` and `status`; the campaign's needletail-load command, UDP report and
-move spread; the scenarios are registered.
+move spread; the scenarios are registered; the change group runs each
+change's null and the change through change-run.py and takes the referee's
+verdicts and the nodes' boot ids as its checks.
 python3 -m unittest scripts/test_edge_lab_slots.py"""
 
 from __future__ import annotations
@@ -833,6 +835,155 @@ class Campaign(Base):
         self.assertEqual(campaign.move_spread(report["moves_by_edge"],
                                               ["lon-edge-2", "lon-edge-3", "lon-edge-4"]), 2.88)
         self.assertIsNone(campaign.move_spread({}, ["lon-edge-2"]))
+
+    def test_the_change_scenarios_are_registered(self):
+        """C CL5: the scored changes of C 6.3, the three rolls and the
+        forwarder crash again in the three more cells, all in the `change`
+        group, slow, on change-run.py's lab settings for their lanes."""
+        names = {item.name for item in campaign.select(["change"], True)}
+        scored = {"roll-edges", "roll-forwarders", "upgrade-all", "upgrade-back",
+                  "forwarder-kill-return", "replace-edge", "replace-forwarder", "scale-up",
+                  "scale-down", "autoscale-edges-up", "autoscale-edges-down",
+                  "autoscale-forwarders"}
+        cells = {f"{name}-{cell}" for name in ("roll-edges", "roll-forwarders", "upgrade-all",
+                                               "forwarder-kill-return")
+                 for cell in ("opus25", "client-loss", "wan-loss")}
+        self.assertEqual(names, scored | cells)
+        items = {item.name: item for item in campaign.select(["change"], True)}
+        self.assertTrue(all(item.slow and item.group == "change" for item in items.values()))
+        self.assertEqual(campaign.select(["change"], False), [])
+        self.assertEqual(items["roll-edges"].needs, [
+            "daw_hls_formats=opus,pcm", "opus_epoch_samples=48", "pcm_epoch_samples=48",
+            "slots=lon-edge-4"])
+        self.assertEqual(items["roll-forwarders-opus25"].needs,
+                         ["daw_hls_formats=opus", "opus_epoch_samples=120"])
+        for name in ("scale-up", "scale-down", "autoscale-edges-up"):
+            self.assertTrue(set(campaign.SCALE_NEEDS) <= set(items[name].needs), name)
+
+    def change_runs(self, ctx_name, command_exit=0, cw_pass=True, before=None, after=None):
+        """The scenario of `ctx_name` run with change-run.py faked: each call
+        writes one run of its kind as change-run.py does (run.json with the
+        referee's verdict, nodes-before.json and nodes-after.json)."""
+        root = pathlib.Path(tempfile.mkdtemp(dir=self.work)) / "change-run"
+        calls = []
+        module = campaign.change_run()
+        before = before or {"lon-edge-1": 1, "lon-edge-2": 2, "lon-dist-a": 3}
+        after = after or {"lon-edge-1": 11, "lon-edge-2": 12, "lon-dist-a": 3}
+
+        def node_docs(boots):
+            return {name: {"node_id": name, "process": {"boot_id": boot}}
+                    for name, boot in boots.items()}
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            kind = "null" if "--dry" in argv or argv[argv.index("--") + 1] == "sleep" \
+                else "change"
+            scenario = root / argv[argv.index("--name") + 1]
+            directory = scenario / f"{kind}-{len(list(scenario.glob(kind + '-*'))) + 1:02d}"
+            directory.mkdir(parents=True)
+            passed = cw_pass if kind == "change" else True
+            result = {"pass": passed, "missing": 0 if passed else 3, "gap_ms": 2.1,
+                      "gap_bar_ms": 2.4, "p99_ms": 1.5, "p99_bar_ms": 1.6,
+                      "null_fail_rate": 0.07}
+            (directory / "run.json").write_text(json.dumps({
+                "directory": str(directory), "kind": kind, "layout": "cpus=2-15",
+                "status": "pass" if passed and (kind == "null" or command_exit == 0) else "fail",
+                "command_exit": command_exit if kind == "change" else 0,
+                "reasons": [], "labels": {"roll.edges": {
+                    "lon-readers-opus-1-1": result, "new-readers-pcm-1-1": result}}}))
+            (directory / "nodes-before.json").write_text(json.dumps(node_docs(before)))
+            (directory / "nodes-after.json").write_text(json.dumps(
+                node_docs(after if kind == "change" else before)))
+            return subprocess.CompletedProcess(argv, 0 if passed else 1)
+
+        class Ctx:
+            def __init__(self, directory):
+                self.scenario = campaign.core.REGISTRY[ctx_name]
+                self.directory = directory
+                self.checks = []
+                self.measurements = {}
+                self.deferred = []
+
+            def event(self, text):
+                pass
+
+            def check(self, what, ok, detail=""):
+                self.checks.append((what, bool(ok)))
+                return bool(ok)
+
+            def measure(self, key, value):
+                self.measurements[key] = value
+
+            def defer(self, function):
+                self.deferred.append(function)
+
+        ctx = Ctx(root.parent / "evidence")
+        ctx.directory.mkdir()
+        with mock.patch.object(module, "out_root", lambda: root), \
+                mock.patch.object(campaign.subprocess, "run", run), \
+                mock.patch.object(campaign.lab, "stop_sources", lambda: None), \
+                mock.patch.object(campaign.lab, "edges", lambda site="london":
+                                  ["lon-edge-1", "lon-edge-2"]), \
+                mock.patch.object(campaign.lab, "held_slots", lambda: set()):
+            campaign.core.REGISTRY[ctx_name].function(ctx)
+        return ctx, calls
+
+    def test_a_change_scenario_runs_its_null_then_its_change_through_change_run(self):
+        ctx, calls = self.change_runs("roll-edges")
+        self.assertEqual(len(calls), 2)
+        null, change = calls
+        for argv in calls:
+            self.assertEqual(argv[1], str(campaign.CHANGE_RUN))
+            self.assertEqual(argv[2:6], ["run", "--name", "roll-edges", "--no-up"])
+            self.assertIn("--lanes", argv)
+            self.assertEqual(argv[argv.index("--lanes") + 1], "opus-1,pcm-1")
+        # The engine's null: the same command with --dry (change-run.py
+        # appends --dry-marks); then the change itself.
+        self.assertEqual(null[null.index("--") - 1], "--dry")
+        self.assertEqual(null[null.index("--") + 1:], campaign.ROLL_EDGES)
+        self.assertNotIn("--dry", change)
+        self.assertEqual(change[change.index("--") + 1:], campaign.ROLL_EDGES)
+        self.assertEqual(ctx.checks and all(ok for _what, ok in ctx.checks), True, ctx.checks)
+        names = [what for what, _ok in ctx.checks]
+        self.assertIn("null-01: pass by the referee's rule", names)
+        self.assertIn("change-01: roll.edges on lon-readers-opus-1-1", names)
+        self.assertIn("change-01: lon-edge-1, lon-edge-2 restarted (new boot id)", names)
+        self.assertEqual(ctx.measurements["cw_change-01"]["roll.edges new-readers-pcm-1-1"][
+            "null_fail_rate"], 0.07)
+        # The campaign's own sources come back after the runs.
+        self.assertEqual(len(ctx.deferred), 1)
+        # A plain kind's null is `sleep` under the scenario's name.
+        _ctx, calls = self.change_runs("forwarder-kill-return", after={
+            "lon-edge-1": 1, "lon-edge-2": 2, "lon-dist-a": 3, "new-dist-a": 9},
+            before={"lon-edge-1": 1, "lon-edge-2": 2, "lon-dist-a": 3, "new-dist-a": 4})
+        self.assertEqual(calls[0][calls[0].index("--") + 1:], campaign.CRASH_NULL)
+        self.assertEqual(calls[1][calls[1].index("--") + 1:], campaign.FORWARDER_CRASH)
+        _ctx, calls = self.change_runs("roll-forwarders-client-loss")
+        self.assertEqual(calls[1][calls[1].index("--client-loss") + 1], "loss 1%")
+
+    def test_a_change_scenario_fails_on_the_referee_s_verdict_and_on_restarts(self):
+        ctx, _calls = self.change_runs("roll-edges", cw_pass=False)
+        failed = [what for what, ok in ctx.checks if not ok]
+        self.assertIn("change-01: pass by the referee's rule", failed)
+        self.assertIn("change-01: roll.edges on lon-readers-opus-1-1", failed)
+        self.assertNotIn("null-01: pass by the referee's rule", failed)
+        # The roll restarted a node outside London's edges: a failure.
+        ctx, _calls = self.change_runs("roll-edges", after={
+            "lon-edge-1": 11, "lon-edge-2": 12, "lon-dist-a": 13})
+        self.assertIn("change-01: no other node restarted",
+                      [what for what, ok in ctx.checks if not ok])
+        # An edge that kept its boot id was not rolled.
+        ctx, _calls = self.change_runs("roll-edges", after={
+            "lon-edge-1": 11, "lon-edge-2": 2, "lon-dist-a": 3})
+        self.assertIn("change-01: lon-edge-1, lon-edge-2 restarted (new boot id)",
+                      [what for what, ok in ctx.checks if not ok])
+        # A scale-up restarts nothing; the slot that joined is not compared.
+        with mock.patch.object(campaign.lab, "terminate_service", lambda name: None), \
+                mock.patch.object(campaign.lab, "set_slot_in_service", lambda name, on: None):
+            ctx, _calls = self.change_runs("scale-up", after={
+                "lon-edge-1": 1, "lon-edge-2": 2, "lon-dist-a": 3, "lon-edge-4": 7})
+        self.assertTrue(all(ok for _what, ok in ctx.checks), ctx.checks)
+        self.assertEqual(len(ctx.deferred), 2)
 
 
 if __name__ == "__main__":
