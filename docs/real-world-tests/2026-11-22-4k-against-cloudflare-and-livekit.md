@@ -29,9 +29,20 @@ arrived at 25 and 40 Mbit/s. The regions failed the tail rule: a stall of
 0.8 to 2.4 s within the step, where the rule allows 0.5 s over the median.
 
 What changed since wave 7:
-- **The processor regression is gone.** At 25 Mbit/s the contributor used 13%
-  of one vCPU and the London forwarders 14% each (wave 6: 72% and 108%; wave 5:
-  12% and 14%).
+- **There was no processor regression to recover.** The FLAC audio source of
+  each step (the 1 ms lane) starts on the next 64-second boundary after the
+  video source, so it switched on at a different point in each step. Wave 6's
+  72% and 108% at 25 Mbit/s were measured with it on, and wave 5's 12% and 14%
+  without it. Correction, 24 November: the lead found this and the samplers
+  confirm it.
+  - At 40 Mbit/s, with the audio on in both, wave 5's contributor read 72% to
+    84% of one vCPU and wave 6's 74% to 76%. The London forwarders read 105% to
+    128% and 113% to 135%.
+  - The 1 ms lane costs much less on waves 7 and 9: about 12% on the
+    contributor and 35% to 45% on each London forwarder, against about 60%
+    and 95% on waves 5 and 6.
+  - Video alone at 25 Mbit/s: contributor 12% on waves 5, 6 and 9; London
+    forwarders 13% to 16% on wave 5 and about 10% on wave 9.
 - **The socket drops are gone at 25 Mbit/s.** There were none except 24 on one
   New York forwarder; wave 7 already dropped about 900 a step there. At 40
   Mbit/s the New York edge dropped 4,859 datagrams. At 80 every edge dropped
@@ -90,7 +101,8 @@ CPU of one vCPU over each whole step (1 s sampler), the service's:
 | Sydney edge | 17% | 21% | 35% | 49% |
 
 The New York forwarders' figures include the time charged to them inside
-their stops.
+their stops. The audio source switched on 37 and 38 s into the 25 and 40
+Mbit/s steps, so those two columns are video alone for most of the step.
 
 Build, lab and cost:
 - Build: the wave 9 binaries, byte for byte those of the audio run (`av-mesh`
@@ -124,7 +136,9 @@ Build, lab and cost:
 What changed, and where the loss is:
 - **The contributor is no longer the problem.** Its output held steady at
   about 2.7 times the media rate through each step (69 Mbit/s at 25, 300 at
-  120), with none of wave 6's mid-step surge.
+  120), with none of wave 6's mid-step surge. (Correction, 24 November: that
+  surge was the 1 ms FLAC source switching on within the step, not a fault;
+  see wave 9.)
 - **The forwarders and edges drop at their sockets.** Their receive queues
   (16 MB each; the system allows 64 MB) overflowed. Each socket's own drop
   counter, cumulative since the deploy, read just after the sweep:
@@ -147,8 +161,10 @@ London had 92% to 94% of frames on time, and at 40 and 81 Mbit/s no region
 was whole (London 61% to 88%, New York 22% to 72%, Tokyo 72% to 99%). The medians of what arrived stayed near wave 5's (London 8 to 32 ms, New
 York 40 to 101, one HLS viewer 557 at 81 Mbit/s).
 Its contributor used 72% of one vCPU at 25 Mbit/s and its London distributor
-108% (wave 5: 12% and 14%), with no other source running and the audio-only
-load unchanged from wave 5. Sweep `video-w6`, 15:10 UTC, Needletail alone;
+108% (wave 5: 12% and 14%). Correction, 24 November: this compared unlike
+steps. The 1 ms FLAC source switched on 12 s into wave 6's step and after the
+end of wave 5's; with the audio on in both, at 40 Mbit/s, the two waves used
+the same processor (see wave 9 above). Sweep `video-w6`, 15:10 UTC, Needletail alone;
 the clips were encoded again from the same source with the same script. The
 cause is with the product session.
 
