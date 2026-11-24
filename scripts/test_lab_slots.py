@@ -24,6 +24,7 @@ import argparse
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("lab_slots", HERE / "linode-small-mesh-lab.py")
 lab_tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lab_tool)
+run_archive = lab_tool.run_archive
 
 SCALE = HERE.parent / "deploy" / "low-latency" / "topology-scale.json"
 TYPES = {"g6-dedicated-2": {"id": "g6-dedicated-2", "class": "dedicated",
@@ -264,6 +266,10 @@ class Base(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         patcher = mock.patch.object(lab_tool.time, "sleep", lambda seconds: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The run archive of these tests: never ~/needletail-data.
+        patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(self.tmp / "data")})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -933,6 +939,121 @@ class Watchdog(Base):
         self.assertNotIn(UNIT, self.systemd.enabled)
         self.assertFalse((lab_tool.WATCHDOG_UNIT_DIR / UNIT).exists())
         self.assertEqual(self.systemd.commands[-1][2:], ["stop", UNIT])
+
+
+class Archive(Base):
+    """The run archive at `down` (notes-stage2, "keep all the data" and the
+    watchdog rule agreed with the referee): the operator's `down` refuses a
+    lab whose run is in the archive and not collected, `--uncollected`
+    deletes it and records the run as failed; the watchdog never waits for
+    data, and records such a run as failed. A lab with no run in the archive
+    goes down as before."""
+
+    def down(self, api, uncollected: bool = False) -> tuple[int | str | None, str]:
+        args = argparse.Namespace(state=self.args.state, uncollected=uncollected)
+        code = None
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            try:
+                lab_tool.command_down_operator(args)
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, err.getvalue()
+
+    def lab_instances(self, api) -> list:
+        return [ident for ident, item in api.instances.items() if api.tag in item.get("tags", [])]
+
+    def test_an_uncollected_run_holds_the_operator_s_down(self):
+        api = FakeApi()
+        lab_state(self.tmp, api)
+        archive = run_archive.RunArchive.create("t1", "linode-lab", tool="linode-stall-hunt.py",
+                                                argv=["hunt"])
+        code, _err = self.down(api)
+        self.assertIn("refusing: run 't1' is not collected", str(code))
+        self.assertIn("--uncollected", str(code))
+        self.assertTrue(self.lab_instances(api))
+        self.assertTrue(pathlib.Path(self.args.state).is_file())
+        self.assertEqual(archive.manifest["status"], "running")
+        # Collected: down goes ahead, and the run is left as its tool has it.
+        archive.mark_collected(True)
+        code, _err = self.down(api)
+        self.assertIsNone(code)
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertFalse(pathlib.Path(self.args.state).exists())
+        self.assertEqual(archive.manifest["status"], "running")
+
+    def test_uncollected_deletes_and_records_a_failed_run(self):
+        api = FakeApi()
+        lab_state(self.tmp, api)
+        archive = run_archive.RunArchive.create("t1", "linode-lab", tool="linode-stall-hunt.py",
+                                                argv=["hunt"])
+        code, err = self.down(api, uncollected=True)
+        self.assertIsNone(code)
+        self.assertEqual(self.lab_instances(api), [])
+        manifest = archive.manifest
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("down --uncollected", manifest["status_reason"])
+        self.assertIn("recorded as failed", err)
+        parsed = lab_tool.build_parser().parse_args(["down", "--uncollected"])
+        self.assertTrue(parsed.uncollected)
+        self.assertIs(parsed.handler, lab_tool.command_down_operator)
+
+    def test_a_lab_without_a_run_in_the_archive_goes_down_as_before(self):
+        api = FakeApi()
+        lab_state(self.tmp, api)
+        code, _err = self.down(api)
+        self.assertIsNone(code)
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertFalse((self.tmp / "data" / "t1").exists())
+
+    def test_the_watchdog_deletes_an_uncollected_lab_and_records_the_run_failed(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        archive = run_archive.RunArchive.create("t1", "linode-lab", tool="linode-stall-hunt.py",
+                                                argv=["hunt"])
+        path = pathlib.Path(self.args.state)
+        deadline = state["watchdog_deadline_unix"]
+        now = [deadline - lab_tool.WATCHDOG_LEAD_S + 1]
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                mock.patch.object(lab_tool, "watchdog_disarm", lambda run_id: None), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1", deadline,
+                                      clock=lambda: now[0], sleep=lambda seconds: None)
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertFalse(path.exists())
+        self.assertEqual(archive.manifest["status"], "failed")
+        self.assertIn("the watchdog deleted the lab", archive.manifest["status_reason"])
+
+    def test_the_watchdog_by_the_tag_records_the_run_failed_and_deletes(self):
+        api = FakeApi()
+        lab_state(self.tmp, api)
+        archive = run_archive.RunArchive.create("t1", "linode-lab", tool="linode-stall-hunt.py",
+                                                argv=["hunt"])
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.down_by_tag(api, "t1", None)
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertEqual(archive.manifest["status"], "failed")
+        self.assertIn("by its tag", archive.manifest["status_reason"])
+
+    def test_an_archive_that_cannot_be_written_never_holds_the_watchdog(self):
+        api = FakeApi()
+        lab_state(self.tmp, api)
+        run_archive.RunArchive.create("t1", "linode-lab", tool="linode-stall-hunt.py",
+                                      argv=["hunt"])
+
+        def broken(*args, **kwargs):
+            raise OSError("disk full")
+
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                mock.patch.object(lab_tool, "watchdog_disarm", lambda run_id: None), \
+                mock.patch.object(run_archive.RunArchive, "finish", broken), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            lab_tool.watchdog_down(argparse.Namespace(state=self.args.state))
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertIn("could not be recorded as failed", err.getvalue())
 
 
 class Ledger(Base):

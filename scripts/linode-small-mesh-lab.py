@@ -63,7 +63,12 @@ Cost controls are part of the tool, not an operator convention:
   among the listener hosts keeps what exists and records the hosts that
   are missing (`listeners_missing`), for scale-run.py to fit its ramp to
   the hosts that exist. Account limits (instances, vCPUs), capacity and
-  transient errors are told apart from the API's message (refusal_kind).
+  transient errors are told apart from the API's message (refusal_kind);
+* the run archive (scripts/run_archive.py, ~/needletail-data/<run id>/):
+  when a run of the lab's id is in the archive, the operator's `down`
+  refuses until that run is marked collected; `down --uncollected` deletes
+  all the same and records the run as failed. The watchdog's own delete is
+  never refused for data: it records such a run as failed and deletes.
 
 The Linode token is read from LINODE_TOKEN, LINODE_PAT, or the token file. It
 is never written to state, logs, or generated output. The watchdog unit
@@ -94,6 +99,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import run_archive  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 API_BASE = "https://api.linode.com/v4"
@@ -2502,6 +2510,68 @@ def command_down(args: argparse.Namespace) -> None:
     watchdog_disarm(state["run_id"])
 
 
+ARCHIVE_TOOL = "linode-small-mesh-lab.py"
+
+
+def archived_run(run_id: str):
+    """The run of the lab's id in the run archive (read only), or None when
+    the archive has no such run."""
+    try:
+        return run_archive.RunArchive.open(run_id, tool=ARCHIVE_TOOL, record=False)
+    except run_archive.ArchiveError:
+        return None
+
+
+def record_uncollected(run_id: str, why: str) -> None:
+    """Record the archive's run of this id as failed (its lab is deleted
+    with its data not collected: notes-stage2, "keep all the data"). Nothing
+    when the archive has no such run, or it is collected, or failed already.
+    Never raises: no delete waits on the archive."""
+    try:
+        archive = archived_run(run_id)
+        if archive is None:
+            return
+        manifest = archive.manifest
+        if (manifest.get("collected") or {}).get("complete") or manifest.get("status") == "failed":
+            return
+        archive.finish("failed", why)
+        print(f"run archive: run {run_id} recorded as failed ({why})", file=sys.stderr,
+              flush=True)
+    except Exception as error:  # noqa: BLE001 - the delete goes on whatever happens here
+        print(f"run archive: run {run_id} could not be recorded as failed ({error!r})",
+              file=sys.stderr, flush=True)
+
+
+def command_down_operator(args: argparse.Namespace) -> None:
+    """The `down` command: when the run archive holds a run of the lab's id,
+    refused until that run is collected (run_archive.require_collected);
+    `--uncollected` deletes all the same and records the run as failed. Only
+    this command refuses: up's own clean-up of a refused core and the
+    watchdog call command_down, never held for data."""
+    state = read_state(pathlib.Path(args.state))
+    if state is not None and archived_run(state["run_id"]) is not None:
+        refusal = run_archive.require_collected(state["run_id"])
+        if refusal:
+            if not getattr(args, "uncollected", False):
+                sys.exit(f"down {refusal} (`down --uncollected` deletes the lab all the same "
+                         "and records the run as failed)")
+            record_uncollected(state["run_id"], "the lab was deleted before its data was "
+                                                "collected (down --uncollected)")
+    command_down(args)
+
+
+def watchdog_down(args: argparse.Namespace) -> None:
+    """The watchdog's `down` at its deadline: never refused for data. A run
+    of the lab's id in the archive that is not collected is recorded as
+    failed first (the delete ends with the unit, and so with this
+    process)."""
+    state = read_state(pathlib.Path(args.state))
+    if isinstance(state, dict) and state.get("run_id"):
+        record_uncollected(state["run_id"], "the watchdog deleted the lab at its deadline "
+                                            "before its data was collected")
+    command_down(args)
+
+
 def delete_instances(api: "Api", instance_ids, workers: int = DELETE_WORKERS) -> None:
     """Delete instances by id, several at a time (the watchdog's `down` must
     be done before its deadline). Raises when any delete failed, after
@@ -2644,7 +2714,7 @@ def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id:
     loop read)."""
     clock = clock or time.time
     sleep = sleep or time.sleep
-    down = down or command_down
+    down = down or watchdog_down
     tag = f"needletail-small-mesh-{run_id}"
     last: dict | None = None
     api = None
@@ -2696,6 +2766,8 @@ def down_by_tag(api: "Api", run_id: str, last: dict | None) -> None:
     instances found) and takes their addresses out of known_hosts. Raises
     when tagged instances remain."""
     tag = f"needletail-small-mesh-{run_id}"
+    record_uncollected(run_id, "the watchdog deleted the lab by its tag at its deadline "
+                               "(its state was lost) before its data was collected")
     prices = plan_prices(api)
     found = {item["id"]: item for item in api.list_all("/linode/instances", tag)}
     delete_instances(api, set(found))
@@ -2820,7 +2892,12 @@ def build_parser() -> argparse.ArgumentParser:
                                          "that back each other up share one")
     hosts.add_argument("--json", action="store_true")
     hosts.set_defaults(handler=command_hosts)
-    sub.add_parser("down").set_defaults(handler=command_down)
+    down = sub.add_parser("down", help="delete the lab; refused while the run archive holds "
+                                       "this run uncollected")
+    down.add_argument("--uncollected", action="store_true",
+                      help="delete a lab whose run in the archive is not collected, and record "
+                           "that run as failed")
+    down.set_defaults(handler=command_down_operator)
     watchdog = sub.add_parser("watchdog", help="move the lab's deadline")
     watchdog.add_argument("--hours", type=float, default=None,
                           help="the lab must be gone this many hours from now")
