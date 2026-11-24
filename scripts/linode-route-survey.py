@@ -259,14 +259,14 @@ def start_commands(configs: dict[str, dict], start_ns: int) -> list[tuple[str, s
         for name in sorted(configs):
             if mode in configs[name]:
                 out.append((name, (
-                    f"pkill -f '{REMOTE}/agent.py {mode}' ; "
+                    f"pkill -f '^python3 {REMOTE}/agent.py {mode}' ; "
                     f"(setsid nohup python3 {REMOTE}/agent.py {mode} {directory}/{mode}.json "
                     f">{directory}/{mode}.log 2>&1 </dev/null &)")))
     return out
 
 
 def stop_commands(names: list[str]) -> list[tuple[str, str]]:
-    return [(name, f"pkill -f '{REMOTE}/agent.py' ; true") for name in sorted(names)]
+    return [(name, f"pkill -f '^python3 {REMOTE}/agent.py' ; true") for name in sorted(names)]
 
 
 def say(node: str, command: str) -> None:
