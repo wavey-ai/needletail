@@ -148,7 +148,32 @@ class FakeLab:
                 return {"seconds": 360.0, "cpus": 14, "outside_share_pct": fake.share,
                         "steal_pct": 0.0}
 
+        self.guard: list = []
+
+        class Guard:
+            """lab_guard: every frozen check and hold recorded."""
+
+            @staticmethod
+            def lab_binaries():
+                return {"av-mesh": pathlib.Path("/lab/src/av-mesh")}
+
+            @staticmethod
+            def running_binaries():
+                return {"av-mesh": pathlib.Path("/lab/work/bin/a/av-mesh")}
+
+            @staticmethod
+            def require_frozen(binaries, running=None):
+                fake.guard.append(("frozen", sorted(binaries), sorted(running or {})))
+
+            @staticmethod
+            @contextlib.contextmanager
+            def hold(label):
+                fake.guard.append(("hold", label))
+                yield
+                fake.guard.append(("released", label))
+
         patches = [
+            mock.patch.object(cr, "guard", Guard),
             mock.patch.object(cr, "out_root", lambda: directory / "out"),
             mock.patch.object(cr, "ntcmp", lambda: tools / "ntcmp"),
             mock.patch.object(cr, "change_window", lambda: tools / "change-window.py"),
@@ -458,6 +483,12 @@ class Runs(unittest.TestCase):
                                    "--", "engine", "roll", "edges")
         self.assertEqual(code, 0)
         self.assertIn("roll-edges: null 2 of 2 pass", out)
+        # CL2: the binaries the run takes are frozen, and the run holds its
+        # lab from before its up until after its down.
+        self.assertEqual(self.fake.guard[:2], [
+            ("frozen", ["av-mesh", "needletail-load", "needletail-udp-client"], []),
+            ("hold", "change-run.py run --name roll-edges")])
+        self.assertEqual(self.fake.guard[2:], [("released", "change-run.py run --name roll-edges")])
         dry = [command for command in self.fake.started if command[:1] == ["engine"]]
         self.assertEqual(dry, [["engine", "roll", "edges", "--dry-marks"]] * 2)
         # The lab came up once with the lanes' settings and went down once;
@@ -626,6 +657,13 @@ class Runs(unittest.TestCase):
     def test_no_up_uses_the_running_lab(self):
         self.fake.main("run", "--name", "roll-edges", "--no-up", "--", "engine")
         self.assertIn(("join_tools",), self.fake.ran)
+        # CL2: what the running lab runs is checked once the run holds the
+        # lab; the environment's lab binaries are not this run's.
+        self.assertEqual(self.fake.guard, [
+            ("frozen", ["needletail-load", "needletail-udp-client"], []),
+            ("hold", "change-run.py run --name roll-edges"),
+            ("frozen", [], ["av-mesh"]),
+            ("released", "change-run.py run --name roll-edges")])
         self.assertFalse([item for item in self.fake.ran if item[0] in ("up", "down")])
         self.fake.store.pop("services.json")
         with self.assertRaises(SystemExit):

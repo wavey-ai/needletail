@@ -95,6 +95,7 @@ SCRIPTS = HERE.parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import edge_lab as lab  # noqa: E402
+import lab_guard as guard  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("latency_bench", HERE / "latency-bench.py")
 bench = sys.modules.get("latency_bench") or importlib.util.module_from_spec(_spec)
@@ -1114,6 +1115,27 @@ def run(args) -> int:
     scenario.mkdir(parents=True, exist_ok=True)
     if args.no_up and not lab.load("services.json"):
         raise SystemExit("--no-up: the lab is not running")
+    # C 2.12 (CL2): the binaries a run takes are frozen, and the run holds
+    # its lab (a second run on it waits). With --no-up, what the running
+    # lab runs is checked once this run holds it.
+    guard.require_frozen(run_binaries(args))
+    with guard.hold(f"change-run.py run --name {args.name}"):
+        if args.no_up:
+            guard.require_frozen({}, running=guard.running_binaries())
+        return run_held(args, plan, lanes, kind, scenario)
+
+
+def run_binaries(args) -> dict:
+    """The binaries a run takes from the environment: the lab's when it
+    brings the lab up, the UDP client, and the load tool for a crowd."""
+    out = guard.lab_binaries() if not args.no_up else {}
+    out["needletail-udp-client"] = pathlib.Path(bench.UDP_CLIENT)
+    if args.load_listeners:
+        out["needletail-load"] = pathlib.Path(bench.LOAD_BIN)
+    return out
+
+
+def run_held(args, plan: dict, lanes: list[str], kind: str, scenario: pathlib.Path) -> int:
     results, senders, shaped, per_packet = [], [], [], False
     failures: list[str] = []
     previous = install_stops()
