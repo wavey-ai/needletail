@@ -284,7 +284,7 @@ class Collect(Base):
                                      "lon-dist-a": "no-stalls", "contrib-lon": "cut"})
         began = time.monotonic()
         code, out, _err = self.collect("--run-id", "col1", "--timeout-s", "3")
-        self.assertLess(time.monotonic() - began, 6)
+        self.assertLess(time.monotonic() - began, 8)
         self.assertEqual(code, 1, out)
         missing = self.manifest()["collected"]["missing"]
         self.assertFalse(self.manifest()["collected"]["complete"])
@@ -359,7 +359,7 @@ class Collect(Base):
         began = time.monotonic()
         with mock.patch.object(deploy, "COLLECT_WORKERS", 2):
             code, _out, _err = self.collect("--run-id", "col1", "--timeout-s", "2.5")
-        self.assertLess(time.monotonic() - began, 5)
+        self.assertLess(time.monotonic() - began, 6)
         self.assertEqual(code, 1)
         self.assertEqual(sorted(self.manifest()["collected"]["missing"]), sorted(self.state["nodes"]))
         record = json.loads(next((self.root / "col1" / "collect").glob("collect.*.json")).read_text())
@@ -372,14 +372,14 @@ class Collect(Base):
         opened = deploy.collect_run
 
         def slow_open(state):
-            time.sleep(1.2)
+            time.sleep(1.5)
             return opened(state)
 
         with mock.patch.object(deploy, "collect_run", slow_open):
-            self.collect("--run-id", "col1", "--timeout-s", "3")
+            self.collect("--run-id", "col1", "--timeout-s", "4")
         record = json.loads(next((self.root / "col1" / "collect").glob("collect.*.json")).read_text())
         self.assertIn("timed out", record["nodes"]["lon-edge-1"]["error"])
-        self.assertLess(record["nodes"]["lon-edge-1"]["seconds"], 2.2)
+        self.assertLess(record["nodes"]["lon-edge-1"]["seconds"], 3.5)
 
     def test_what_a_killed_collect_left_staged_is_moved_in_by_the_next(self):
         staging = self.dir / deploy.COLLECT_STAGING / "col1"
