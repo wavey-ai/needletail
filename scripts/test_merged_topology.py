@@ -450,18 +450,19 @@ class Render(Base):
         self.assertIn("--client-udp-repair-thread", args["lon-edge-1"])
 
     def test_the_wave9_cold_start_settings_reach_their_nodes_only_when_given(self):
-        """Wave 9 (cold start): mlock_all, malloc_tune and prefault render on
-        every mesh node, client_udp_prompt_sender on the nodes that serve UDP
-        clients, each only when given."""
-        mesh = ("--mlock-all", "--malloc-tune", "--prefault")
+        """Wave 9 (cold start): malloc_tune and prefault render on every
+        mesh node, client_udp_prompt_sender on the nodes that serve UDP
+        clients, each only when given. --mlock-all is gone (D 2.3)."""
+        mesh = ("--malloc-tune", "--prefault")
         _program, _plan, args = self.render()
         for name, node_args in args.items():
             for flag in mesh + ("--client-udp-prompt-sender",):
                 self.assertNotIn(flag, node_args, name)
         _program, _plan, args = self.render([
-            "mlock_all=false", "malloc_tune=false", "prefault=false",
+            "malloc_tune=false", "prefault=false",
             "client_udp_prompt_sender=false"])
         for name, node_args in args.items():
+            self.assertNotIn("--mlock-all", node_args, name)
             if "--mesh-bind" in node_args:
                 for flag in mesh:
                     self.assertEqual(value_of(node_args, flag), "false", (name, flag))
@@ -1015,6 +1016,21 @@ class Activation(unittest.TestCase):
         self.assertEqual(applied.read_text(), "echo applied\n")
         self.assertNotIn("systemctl", self.calls())
 
+    def test_a_staged_check_unit_is_installed_before_the_unit_that_requires_it(self):
+        """D 2.4: the check at boot's unit goes in with the service's unit,
+        once; staged again as it is, nothing is reloaded for it."""
+        check = self.units / "needletail-node-check.service"
+        (self.etc / f"{self.SERVICE}.check.next").write_text("check 30\n")
+        self.stage("b", unit="unit b\nRequires=needletail-node-check.service\n")
+        self.assertTrue(self.activate()[1]["ok"])
+        self.assertEqual(check.read_text(), "check 30\n")
+        self.assertIn("Requires=needletail-node-check.service",
+                      (self.units / f"{self.SERVICE}.service").read_text())
+        self.log.unlink()
+        self.stage("a", unit="unit b\nRequires=needletail-node-check.service\n")
+        self.assertTrue(self.activate()[1]["ok"])
+        self.assertNotIn("daemon-reload", self.calls())
+
     def test_the_staged_host_qdisc_checks_every_nic(self):
         """The qdisc the deploy stages (node_files) fails when a NIC does
         not show it, so the activation refuses before it puts anything in
@@ -1108,7 +1124,7 @@ class Rollable(Base):
         "extra_edge_args": (["--test-local-flag", "1"], {LOCAL}),
         "extra_distributor_args": (["--test-local-flag", "1"], {LOCAL}),
         "extra_contributor_args": (["--test-local-flag", "1"], {LOCAL}),
-        "mlock_all": (True, {"--mlock-all"}),
+        "mlock": ("rings", {"--mlock"}),
         "malloc_tune": (True, {"--malloc-tune"}),
         "prefault": (True, {"--prefault"}),
         "relay_class_cpus": ("2,3", {"--relay-class-cpus"}),
@@ -1132,7 +1148,7 @@ class Rollable(Base):
         "extra_edge_args": ({"edge"}, set()),
         "extra_distributor_args": ({"distributor"}, set()),
         "extra_contributor_args": ({"contributor"}, set()),
-        "mlock_all": ({"edge", "distributor"}, {MESH}),
+        "mlock": ({"edge", "distributor", "contributor"}, set()),
         "malloc_tune": EDGE_AND_FORWARDER,
         "prefault": EDGE_AND_FORWARDER,
         "relay_class_cpus": EDGE_AND_FORWARDER,

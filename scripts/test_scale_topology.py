@@ -1117,10 +1117,10 @@ class Deployed(FakeLab):
 
     def test_a_set_that_changes_a_node_outside_the_tier_is_refused(self):
         self.push()
-        # mlock_all renders on every mesh node: the forwarders are outside
+        # malloc_tune renders on every mesh node: the forwarders are outside
         # a roll of the edges.
         with self.assertRaises(deploy.mesh_ops.Refused) as caught:
-            self.ops(set=["mlock_all=true"]).check("roll", self.edges())
+            self.ops(set=["malloc_tune=false"]).check("roll", self.edges())
         self.assertIn("lon-dist-a", str(caught.exception))
         self.assertNotIn("lon-edge-1", str(caught.exception))
         # The edges' own extra arguments stay inside it.

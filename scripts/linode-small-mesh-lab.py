@@ -1343,38 +1343,84 @@ def command_billed(args: argparse.Namespace) -> None:
     print_billed(state)
 
 
-def command_hosts(args: argparse.Namespace) -> None:
-    """Show the physical host of every node and each shared failure domain.
+def host_check(nodes: dict[str, dict]) -> dict:
+    """The failure domains of the lab's nodes by physical host (`host_uuid`;
+    D 2.10). Nodes that back each other up protect each other only on
+    different hosts: one stall of a shared host stops both at once. A
+    conflict: two distributors or backbones of a region on one host, two
+    contributors on one host, or a region's edges (two or more) all on one
+    host. Edges that share a host while their region has another are listed
+    apart ("shared_edges"); a node with no known host is listed ("unknown")
+    and judged by nothing."""
+    regions: dict[str, dict[str, list[str]]] = {}
+    roles: dict[str, dict[str, dict[str, list[str]]]] = {}
+    unknown = []
+    for name in sorted(nodes):
+        node = nodes[name]
+        host = node.get("host_uuid")
+        if not host:
+            unknown.append(name)
+            continue
+        regions.setdefault(node["region"], {}).setdefault(host, []).append(name)
+        kind = {"backbone": "relay", "distributor": "relay"}.get(node["role"], node["role"])
+        roles.setdefault(kind, {}).setdefault(node["region"], {}).setdefault(host, []).append(name)
+    conflicts, shared_edges = [], []
+    for kind, what in (("relay", "distributors and backbones"), ("contributor", "contributors")):
+        for region, hosts in sorted(roles.get(kind, {}).items()):
+            for host, names in sorted(hosts.items()):
+                if len(names) > 1:
+                    conflicts.append(f"SHARED HOST in {region}: {what} {', '.join(names)} on "
+                                     f"{host[:12]}; replace all but one")
+    edge_regions = {}
+    for name, node in nodes.items():
+        if node["role"] == "edge":
+            edge_regions.setdefault(node["region"], []).append(name)
+    for region, hosts in sorted(roles.get("edge", {}).items()):
+        edges = sorted(edge_regions[region])
+        if len(edges) > 1 and len(hosts) < 2 and not set(edges) & set(unknown):
+            conflicts.append(f"ONE HOST for the edges of {region}: {', '.join(edges)}; "
+                             "replace all but one")
+            continue
+        for host, names in sorted(hosts.items()):
+            if len(names) > 1:
+                shared_edges.append(f"SHARED HOST edges in {region}: {', '.join(names)} on "
+                                    f"{host[:12]}")
+    return {"regions": regions, "conflicts": conflicts, "shared_edges": shared_edges,
+            "unknown": unknown}
 
-    Two distributors of one region protect each other only when they are on
-    different hosts: one stall of a shared host stops both at the same time.
-    The command exits with status 1 when relay nodes that back each other up
-    share a host.
-    """
+
+def command_hosts(args: argparse.Namespace) -> None:
+    """Record the physical host of every node (`host_uuid`, which the deploy
+    renders as each av-mesh's --host-tag) and check the failure domains
+    (host_check). Exits with status 1 on a conflict. Run after `up`, `add`,
+    `grow` and `replace`, and before `push`."""
     state = read_state(pathlib.Path(args.state))
     if state is None:
         sys.exit("No active Needletail small-mesh lab")
     api = Api()
-    by_host: dict[tuple[str, str], list[dict]] = {}
     for name in sorted(state["nodes"]):
         node = state["nodes"][name]
         live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
         node["host_uuid"] = live.get("host_uuid")
-        by_host.setdefault((node["region"], node["host_uuid"] or "unknown"), []).append(node)
     write_state(pathlib.Path(args.state), state)
-    conflicts = []
-    for (region, host), nodes in sorted(by_host.items()):
-        names = ", ".join(node["name"] for node in nodes)
-        print(f"{region:<13} {host[:12]:<12} {names}")
-        relays = [node["name"] for node in nodes
-                  if node["role"] in ("distributor", "backbone")]
-        if len(relays) > 1:
-            conflicts.append((region, relays))
-    for region, relays in conflicts:
-        print(f"SHARED HOST in {region}: {', '.join(relays)}; replace all but one")
-    if conflicts:
+    check = host_check(state["nodes"])
+    if args.json:
+        print(json.dumps({**check, "nodes": {
+            name: {"region": node["region"], "role": node["role"],
+                   "host_uuid": node.get("host_uuid")}
+            for name, node in sorted(state["nodes"].items())}}, indent=2, sort_keys=True))
+    else:
+        for region, hosts in sorted(check["regions"].items()):
+            for host, names in sorted(hosts.items()):
+                print(f"{region:<13} {host[:12]:<12} {', '.join(names)}")
+        if check["unknown"]:
+            print(f"host unknown: {', '.join(check['unknown'])}")
+        for line in check["shared_edges"] + check["conflicts"]:
+            print(line)
+        if not check["conflicts"]:
+            print("every pair that backs each other up is on two hosts")
+    if check["conflicts"]:
         sys.exit(1)
-    print("every distributor and backbone relay has its own host")
 
 
 def command_status(args: argparse.Namespace) -> None:
@@ -1614,7 +1660,10 @@ def main() -> None:
     billed_parser.add_argument("--json", action="store_true")
     billed_parser.set_defaults(handler=command_billed)
     sub.add_parser("status").set_defaults(handler=command_status)
-    sub.add_parser("hosts").set_defaults(handler=command_hosts)
+    hosts = sub.add_parser("hosts", help="record each node's physical host; exit 1 when nodes "
+                                         "that back each other up share one")
+    hosts.add_argument("--json", action="store_true")
+    hosts.set_defaults(handler=command_hosts)
     sub.add_parser("down").set_defaults(handler=command_down)
     watchdog = sub.add_parser("watchdog")
     watchdog.add_argument("--hours", type=float, default=6.0)
