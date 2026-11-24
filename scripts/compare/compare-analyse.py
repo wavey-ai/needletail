@@ -337,7 +337,9 @@ def analyse_step_now(path: pathlib.Path) -> dict | None:
         for name, record in records.items():
             if "callbacks" in record:
                 host.setdefault("players", {})[name] = analyse_player(record, end_ms)
-            elif "video_frames" in record:
+            elif "video_frames" in record and not name.startswith("nt-"):
+                # (nt-pcm.probe, nt-uc.probe: the audio listeners of a 4K step,
+                # scored by compare-audio-analyse.py)
                 host.setdefault("probes", {})[name] = analyse_probe(
                     record, host_dir / f"{name}.csv", end_ms)
                 if name.endswith(".uc"):

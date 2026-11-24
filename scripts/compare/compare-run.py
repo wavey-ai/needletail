@@ -283,6 +283,7 @@ class Session:
         self.steps: list[dict] = []
         self.rungs: list[str] | None = None      # the rungs of a throughput sweep, when not all
         self.pace = 2.5                          # pacing factor of the WebRTC senders
+        self.audio = "pcm"                       # the nt lane's 1 ms audio: pcm, flac or off
 
     def node(self, name: str) -> dict:
         return self.nodes[name]
@@ -370,19 +371,50 @@ class Lane:
             common.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
                                     "systemctl is-active needletail-contrib.service")
             target = f"rtmp://{contributor['vlan_ipv4']}:19350/live/needletail-lab"
+            video_started = time.time()
             src(s, background("nt", (
                 f"ntcmp flv --clip {clip} --no-audio | ffmpeg -hide_banner -loglevel warning "
                 f"-nostdin -f flv -i pipe:0 -c copy -f flv {target}")))
-            # Lossless audio: FLAC from the same 64-second PCM, started on a
-            # loop boundary so that sample 0 is sent at a multiple of 64 s.
-            src(s, background("nt-audio", (
-                "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
-                "[ $(( START - NOW )) -lt 5 ] && START=$(( START + 64 )); "
-                f"/usr/local/bin/aep1-48k-probe send --target {contributor['vlan_ipv4']}:27100 "
-                "--session-id ${START}000000000 --group-id 0 --duration-seconds 3600 "
-                f"--payload flac --channels 2 --group-channels 8 --pcm-s24le-file {REMOTE}/clips/audio.s24le "
-                "--repair-percent 12 --min-repair-symbols 1")))
-            self.warm = 12
+            self.audio_start = None
+            if s.audio != "off":
+                # The 1 ms audio lane, from the same 64-second PCM, started on a
+                # loop boundary so that sample 0 is sent at a multiple of 64 s.
+                # pcm (the default since 24 Nov): the audio headline's lane (stream
+                # 4001, 48-sample epochs, session one epoch after START as in
+                # compare-audio.py), so its probes in a 4K step are scored as in the
+                # audio sessions. flac: the lane of waves 5 to 9.
+                if s.audio == "pcm":
+                    formats = str(json.loads((common.ARTIFACT_DIR / "settings.json").read_text())
+                                  .get("daw_hls_formats") or "")
+                    if "pcm" not in formats.split(","):
+                        raise RuntimeError(f"--audio pcm needs pcm in daw_hls_formats (deployed: {formats!r}); "
+                                           "deploy with --set daw_hls_formats=flac,opus,pcm")
+                payload, session_ns = ("pcm", "001000000") if s.audio == "pcm" else ("flac", "000000000")
+                src(s, "rm -f nt-audio.start; " + background("nt-audio", (
+                    "NOW=$(date +%s); START=$(( (NOW / 64 + 1) * 64 )); "
+                    "[ $(( START - NOW )) -lt 5 ] && START=$(( START + 64 )); echo $START >nt-audio.start; "
+                    f"/usr/local/bin/aep1-48k-probe send --target {contributor['vlan_ipv4']}:27100 "
+                    f"--session-id ${{START}}{session_ns} --group-id 0 --duration-seconds 3600 "
+                    f"--payload {payload} --epoch-samples 48 --channels 2 --group-channels 8 "
+                    f"--pcm-s24le-file {REMOTE}/clips/audio.s24le --repair-percent 12 --min-repair-symbols 1")))
+                # Audio on before the probes (lead, 24 Nov): every step is measured
+                # with the 1 ms lane already flowing. Waves 5 to 9 started it on the
+                # next boundary and probed at once, so it switched on mid-step.
+                start = ""
+                for _ in range(20):
+                    start = src(s, "cat nt-audio.start 2>/dev/null", check=False).strip()
+                    if start:
+                        break
+                    time.sleep(0.5)
+                if not start:
+                    raise RuntimeError("nt: the audio source wrote no start: "
+                                       + src(s, "tail -c 400 nt-audio.log", check=False))
+                self.audio_start = int(start)
+                time.sleep(max(0.0, self.audio_start + 3 - time.time()))
+                if src(s, "pgrep -c -x aep1-48k-probe", check=False).strip() in ("", "0"):
+                    raise RuntimeError("nt: the audio source is not running: "
+                                       + src(s, "tail -c 400 nt-audio.log", check=False))
+            self.warm = max(0.0, 12 - (time.time() - video_started))
         elif self.name == "cf":
             src(s, "rm -f cf.session; " + background("cf", (
                 f"ntcmp pub --lane cf --clip {clip} --pace {s.pace} --session-out cf.session --status cf.status")))
@@ -506,6 +538,26 @@ class Lane:
                     + common_args)
         raise ValueError(self.name)
 
+    def audio_hls(self, site: str, seconds: int, tag: str) -> str:
+        """compare-audio.py's nt-pcm listener: LL-HLS of stream 4001, a 5 ms window."""
+        return (f"ntcmp hls --lane nt-pcm --mode chase --window 5 "
+                f"--url '{self.entry(site)}/live/4001/master.m3u8?sid={tag}-nt-pcm-{{i}}' --ca {CA} "
+                f"--server-name {SERVER_NAME} --audio-index {REMOTE}/index/nt-pcm-48s.index.json "
+                f"--duration {seconds} --skip-seconds 5 --report nt-pcm.probe.json --label {tag} "
+                "--count 1 --frames nt-pcm.probe.csv")
+
+    def audio_uc(self, site: str, seconds: int, tag: str) -> str:
+        """compare-audio.py's nt-uc listener of the PCM lane: RaptorQ FEC over UDP."""
+        index = f"{REMOTE}/index/nt-pcm-48s.index.json"
+        return (f"date +%s.%N >nt-uc.launch; /usr/local/bin/needletail-udp-client --entry {self.entry(site)} "
+                f"--stream 4001 --tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
+                f"--session {tag}-uc-0 --arrivals nt-uc.arrivals.csv --write-parts nt-uc.parts.bin "
+                f">nt-uc.uc.json 2>nt-uc.uc.err; ntcmp udp-ingest --arrivals nt-uc.arrivals.csv "
+                f"--parts nt-uc.parts.bin --started $(cat nt-uc.launch) --audio-index {index} "
+                f"--skip-seconds 5 --lane nt-uc --label {tag} --client nt-uc.uc.json "
+                f"--report nt-uc.probe.json --frames nt-uc.probe.csv >>nt-uc.ingest.log 2>&1; "
+                "rm -f nt-uc.parts.bin nt-uc.launch")
+
     def player(self, site: str, seconds: int, out: str, tag: str, variant: str = "",
                token_line: int = 1) -> str:
         s = self.session
@@ -590,6 +642,11 @@ def step(session: Session, lane: Lane, phase: str, detail: str, rung: str, scrip
     result = run_hosts(session, name, scripts, seconds)
     meta = {"step": name, "lane": lane.name, "phase": phase, "detail": detail, "rung": rung,
             "session": session.name, "source": lane.source_status(), **result, **(extra or {})}
+    if lane.name == "nt":
+        # When the 1 ms audio lane started (unix s; its first epoch is one
+        # epoch later), and which; None: off.
+        meta["audio"] = session.audio
+        meta["audio_start_unix"] = getattr(lane, "audio_start", None)
     (session.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     session.steps.append({"step": name, "seconds": result["seconds"],
                           "host_errors": len(result["host_errors"])})
@@ -739,12 +796,21 @@ def throughput(session: Session, lane: Lane, seconds: int, rungs: list[str] | No
                 view.append(lane.player(site, seconds, "player", tag))
             if lane.name == "nt":
                 view.append(lane.reader(site, seconds, "reader", tag))
+            if lane.name == "nt" and session.audio == "pcm":
+                # What 4K costs an audio listener: the audio headline's 1 ms PCM
+                # lane read through the step, LL-HLS from the -nano host and the
+                # UDP client from the -view host (compare-audio.py's probes).
+                nano.append(lane.audio_hls(site, seconds, tag + "-nano"))
+                view.append(lane.audio_uc(site, seconds, tag + "-view"))
             sample = ("S0=$(grep '^cpu ' /proc/stat)\n{body}\necho \"$S0\" >cpu.txt; "
                       "grep '^cpu ' /proc/stat >>cpu.txt")
             if lane.name != "lkcloud":       # LiveKit Cloud's free allowance: one viewer for each region
                 scripts[f"{site}-nano"] = sample.format(body=together(*nano))
             scripts[f"{site}-view"] = sample.format(body=together(*view))
-        step(session, lane, "throughput", rung, rung, scripts, seconds)
+        audio_meta = ({"config": "pcm", "lanes": ["nt-pcm", "nt-uc"], "nt_uc_base": "nt-pcm",
+                       "nt_pcm_epoch_samples": 48, "nt_frame_ms": {"nt-pcm": 1.0}}
+                      if lane.name == "nt" and session.audio == "pcm" else None)
+        step(session, lane, "throughput", rung, rung, scripts, seconds, audio_meta)
         verdict = carried(session, f"{lane.name}.throughput.{rung}", seconds)
         log(f"  carried whole: {' '.join(site for site, ok in verdict.items() if ok) or 'nowhere'}")
         failed = 0 if any(verdict.values()) else failed + 1
@@ -802,6 +868,11 @@ def main() -> None:
     parser.add_argument("--phases", default="baseline,ttff,impair,fanout,ramp")
     parser.add_argument("--seconds", type=int, default=60, help="length of the baseline")
     parser.add_argument("--rungs", default="", help="rungs of the throughput sweep (default all)")
+    parser.add_argument("--audio", choices=("pcm", "flac", "off"), default="pcm",
+                        help="the Needletail lane's 1 ms audio source, on before the probes start: "
+                             "pcm (the audio headline's lane, stream 4001, with an LL-HLS and a UDP "
+                             "audio probe in each region of a throughput step), flac (waves 5 to 9's "
+                             "lane, no audio probes) or off (pure video: label the session so)")
     parser.add_argument("--pace", type=float, default=2.5,
                         help="a WebRTC sender spreads a frame at this multiple of the clip bit rate")
     args = parser.parse_args()
@@ -809,6 +880,7 @@ def main() -> None:
     session = Session(args.session)
     session.rungs = args.rungs.split(",") if args.rungs else None
     session.pace = args.pace
+    session.audio = args.audio
     started = time.time()
     sampled = start_samplers(session)
     for name in args.lanes.split(","):
