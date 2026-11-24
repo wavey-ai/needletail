@@ -128,6 +128,48 @@ def rss_by_step(session: str) -> dict:
     return out
 
 
+def node_report_by_step(session: str, stream_id: int = 1) -> dict:
+    """{step: {node: {window_parts, video_cache_mb, shed_mb, memory_state}}}: the
+    peaks in the step of each mesh node's own /api/node (1 s,
+    samplers/NODE.apinode.T.log): the video stream's window in parts, and,
+    on builds that report `memory`, its video cache and bytes shed."""
+    base = run.RUNS / session
+    series = {}
+    for path in sorted((base / "samplers").glob("*.apinode.*.log")):
+        node = path.name.split(".")[0]
+        for line in path.read_text(errors="replace").splitlines():
+            head, _, body = line.partition(" ")
+            try:
+                at, report = float(head), json.loads(body)
+            except ValueError:
+                continue
+            window = next((s.get("window_parts") for s in report.get("streams") or []
+                           if s.get("stream_id") == stream_id), None)
+            memory = report.get("memory") or {}
+            series.setdefault(node, []).append((at, window, memory.get("video_cache_bytes"),
+                                                memory.get("shed_bytes"), memory.get("state")))
+    out = {}
+    for meta_path in sorted(base.glob("*/meta.json")):
+        meta = json.loads(meta_path.read_text())
+        start = meta.get("started_unix")
+        if start is None:
+            continue
+        end = start + float(meta.get("seconds") or 0)
+        nodes = {}
+        for node, rows in series.items():
+            inside = [r for r in rows if start <= r[0] <= end]
+            if not inside:
+                continue
+            def peak(i, scale=1):
+                values = [r[i] for r in inside if isinstance(r[i], (int, float))]
+                return round(max(values) / scale) if values else None
+            states = sorted({r[4] for r in inside if r[4]})
+            nodes[node] = {"window_parts": peak(1), "video_cache_mb": peak(2, 1 << 20),
+                           "shed_mb": peak(3, 1 << 20), "memory_state": states or None}
+        out[meta_path.parent.name] = nodes
+    return out
+
+
 def board(analysis: dict, session: str, host_stops: dict | None) -> dict:
     steps = analysis["sessions"][session]["steps"]
     rungs = sorted({s["rung"] for s in steps.values() if s.get("phase") == "throughput"}, key=rung_mbit)
@@ -177,7 +219,7 @@ def board(analysis: dict, session: str, host_stops: dict | None) -> dict:
                              "result": verdict(None if a is None else round(a, 1),
                                                None if b is None else round(b, 1), higher)})
     return {"session": session, "rungs": rungs, "ceilings": ceilings, "rows": rows,
-            "rss_mb": rss_by_step(session)}
+            "rss_mb": rss_by_step(session), "node_report": node_report_by_step(session)}
 
 
 def markdown(b: dict) -> str:
@@ -233,6 +275,27 @@ def markdown(b: dict) -> str:
         out.append("| --- |" + " ---: |" * len(steps))
         for node in nodes:
             cells = [f"{rss[st][node][0]} → {rss[st][node][1]}" if node in rss[st] else "–" for st in steps]
+            out.append(f"| {node} | " + " | ".join(cells) + " |")
+    report = b.get("node_report") or {}
+    steps = [f"nt.throughput.{r}" for r in b["rungs"] if report.get(f"nt.throughput.{r}")]
+    if steps:
+        nodes = sorted({n for st in steps for n in report[st]})
+        out.append("")
+        out.append("**The video stream's window in each step** (peak parts held, from the node's own /api/node; "
+                   "with the video cache's peak MB and MB shed where the build reports `memory`):\n")
+        out.append("| Node | " + " | ".join(st.split(".")[-1][5:] + " Mbit/s" for st in steps) + " |")
+        out.append("| --- |" + " ---: |" * len(steps))
+        for node in nodes:
+            cells = []
+            for st in steps:
+                r = report[st].get(node)
+                if not r:
+                    cells.append("–")
+                    continue
+                text = "–" if r["window_parts"] is None else str(r["window_parts"])
+                if r["video_cache_mb"] is not None:
+                    text += f" ({r['video_cache_mb']} MB" + (f", shed {r['shed_mb']}" if r["shed_mb"] else "") + ")"
+                cells.append(text)
             out.append(f"| {node} | " + " | ".join(cells) + " |")
     return "\n".join(out) + "\n"
 

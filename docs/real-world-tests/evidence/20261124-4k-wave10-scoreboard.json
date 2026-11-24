@@ -2050,5 +2050,1151 @@
     1702
    ]
   }
+ },
+ "node_report": {
+  "lkregion.throughput.2160p120": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 972,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1062,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1061,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1032,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1060,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "lkregion.throughput.2160p25": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 972,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1062,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 1058,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 1018,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1061,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1105,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1032,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1060,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 1019,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "lkregion.throughput.2160p40": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 972,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1062,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1061,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1032,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1060,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "lkregion.throughput.2160p80": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 972,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1062,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1061,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1032,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1060,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 0,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p120": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p160": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1114,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p240": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 812,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 740,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 566,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 570,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 778,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 600,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 566,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 585,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 675,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 610,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 603,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 611,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 657,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 603,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 480,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 604,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p25": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1042,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1033,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 1059,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 1039,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1028,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1049,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1037,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 1034,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p320": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 985,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 968,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 984,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1111,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1048,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 874,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p40": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  },
+  "nt.throughput.2160p80": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "new-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "syd-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-a": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-dist-b": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-1": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "tok-edge-2": {
+    "window_parts": 1117,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   }
+  }
  }
 }
