@@ -1,0 +1,47 @@
+{
+  "schema": "needletail.scale.party.v1",
+  "description": "The capacity curve of the proving run (SCALE.md \"The proving run\", step 5): what London's three serving edges and its two g6-dedicated-8 listener hosts carry, to size the listening party. One stream of 1 ms Opus Custom (opus-1, the party's costlier lane), two-path listeners (needletail-load --paths 2 --spare true), all in London (shares london 1), stepped 150, 300, 450, 600, 750 and 900 listeners (300 to 1,800 legs: 100 to 600 legs an edge, a quarter to 1.55 times the 400,000 datagrams a second that scale-run takes as a full edge), each step joined in three waves 10 s apart and held 90 s (19.4 minutes in all) with no churn, until an edge or a listener host gives out (scale-run's gave_out_first ends the curve). The autoscaler runs with --dry-run: it records when it would add an edge at each step, and adds none, so every step is on the same three edges. No LiveKit crowd, no faults, no joins phase (needletail-load's own time to first part per wave is kept). scale-run.py party --plan deploy/low-latency/party-capacity.json --budget-usd 100 --name cap-<run id>.",
+  "config": "opus-1",
+  "probe_configs": "opus-1",
+  "paths": 2,
+  "hls_share": 0.0,
+  "shares": {
+    "london": 1.0
+  },
+  "steps": [
+    150,
+    300,
+    450,
+    600,
+    750,
+    900
+  ],
+  "waves": {
+    "count": 3,
+    "every_s": 10
+  },
+  "churn": {
+    "percent_per_min": 0,
+    "absence_ms": "10000-60000",
+    "hold_s": 90
+  },
+  "load": {
+    "spare": true,
+    "raw_sample": 100,
+    "interval_buckets": "total",
+    "interrupt_ms": 30,
+    "settle_ms": 3500
+  },
+  "criteria": {
+    "first_audio_p99_ms": 1000
+  },
+  "joins": 0,
+  "autoscale": {
+    "controller_args": [
+      "--dry-run"
+    ]
+  },
+  "livekit": {
+    "self_hosted_per_sfu": 0
+  }
+}

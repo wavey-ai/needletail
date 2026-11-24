@@ -2519,7 +2519,7 @@ class Phases(unittest.TestCase):
         and pcm-1 beside an opus-1 crowd; every change kind of C CL7; A's
         changes run only when named; its targets are nodes of the proving
         lab's naming (topology-scale.json shares it)."""
-        proving = scale.ROOT / "deploy" / "low-latency" / "phases-proving.json"
+        proving = scale.ROOT / "deploy" / "low-latency" / "phases-proving-full.json"
         groups = {group: [item["name"] for item in scale.load_phase_plan(proving, group)[
             "scenarios"]] for group in "NUFRA"}
         self.assertEqual(groups, {"N": ["N1"], "U": ["U1", "U2", "U4", "U5"], "F": ["F4", "F6"],
@@ -2615,7 +2615,7 @@ class Phases(unittest.TestCase):
         is under way when the step stops is waited for up to its bound, and
         only then sent SIGINT; one that SIGINT does not end owes its
         --resume, loudly. A restore past its own bound is stopped, loudly."""
-        proving = scale.ROOT / "deploy" / "low-latency" / "phases-proving.json"
+        proving = scale.ROOT / "deploy" / "low-latency" / "phases-proving-full.json"
         state = lab()
         timeline = scale.phase_timeline(scale.load_phase_plan(proving, names=["C2", "U1"]),
                                         {**state, "standby_edges": STANDBY})

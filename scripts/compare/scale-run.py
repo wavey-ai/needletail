@@ -79,8 +79,18 @@ its record (record_step) and the run's files in the run archive
                                            forwarder killed at the fault step
                                            (each scored by the referee's rule),
                                            every step into the run archive
-  scale-run.py run --phase-plan deploy/low-latency/phases-proving.json --group N|U|F|R|A
-        [--probe-configs opus-1,pcm-1] [--next-av-mesh-root R] [--next-av-contrib-root R]
+  scale-run.py run --phase-plan deploy/low-latency/phases-proving.json --group C1|C2
+        [--next-av-mesh-root R] [--next-av-contrib-root R] [--no-collect]
+                                           the proving run's changes: each
+                                           scenario one shared probe
+                                           (`"probe": "shared"`), its changes
+                                           one after another, each its own
+                                           label (span_s, label_hold_s,
+                                           label), scored with the null
+                                           outside every label; the full set
+                                           of the first design is
+                                           phases-proving-full.json
+                                           (--group N|U|F|R|A):
                                            the change kinds (C CL7): roll,
                                            upgrade, restart, replace, scale,
                                            A's kill and return, the
@@ -2131,6 +2141,18 @@ MIN_NULL_WINDOWS = 120
 NULL_MARGIN = 10
 # The probes' clients write their records as they exit: the time they get.
 PROBE_GRACE_S = 30.0
+# A shared probe (`"probe": "shared"`, the proving run): several changes one
+# after another inside one probe, each scored on its own label against the
+# probe's no-change windows outside EVERY label (the referee's
+# change-window.py with the shared-probe patch). Each action states its
+# label's length (`span_s`: its wait or command and `label_hold_s`); the
+# widened labels (2 s before, 5 s after, 1 s tail) are at least
+# SHARED_GAP_S apart, and the probe runs until every label's length has
+# MIN_NULL_WINDOWS + SHARED_NULL_MARGIN no-change windows in the gaps and the
+# tail (more margin than a probe of its own: a change that overruns its
+# span eats into a gap).
+SHARED_GAP_S = 30.0
+SHARED_NULL_MARGIN = 30
 # The longest single-path span of a listener when an edge is lost (B 6,
 # udp-edge-kill: 80 ms and the reader's round trip, 20 ms on a VLAN here).
 SINGLE_PATH_EDGE_LOSS_MS = 100.0
@@ -2208,6 +2230,9 @@ def check_action(name: str, action: dict, restore: bool) -> None:
         raise ValueError(f"{name}: only a kill masks its node's unit")
     if float(action.get("at_s", 0)) < 0:
         raise ValueError(f"{name}: at_s is negative")
+    for key in ("span_s", "label_hold_s"):
+        if key in action and float(action[key]) < 0:
+            raise ValueError(f"{name}: {key} is negative")
     after = action.get("after")
     if after is not None:
         if restore:
@@ -2263,6 +2288,22 @@ def load_phase_plan(path: str | pathlib.Path, group: str | None = None,
         for point in scenario.get("profile") or []:
             if len(point) != 2 or float(point[0]) < 0 or not 0 <= float(point[1]) <= 1:
                 raise ValueError(f"{name}: a profile point is [seconds, share of the step]")
+        if scenario.get("probe") == "shared":
+            for action in scenario["actions"]:
+                if action["kind"] in PLAIN_KINDS and "span_s" not in action:
+                    raise ValueError(f"{name}: a shared probe's {action['kind']} states its "
+                                     "label's span_s")
+                if action.get("after") or action.get("background"):
+                    raise ValueError(f"{name}: a shared probe's actions start at their at_s")
+            faults = [action for action in scenario["actions"] if action["kind"] in RESTORE_OF]
+            for fault in faults:
+                back = RESTORE_OF[fault["kind"]]
+                if not any(other["kind"] == back and other["targets"] == fault["targets"]
+                           and float(other.get("at_s", 0)) > float(fault.get("at_s", 0))
+                           for other in scenario["actions"]):
+                    raise ValueError(f"{name}: in a shared probe the {fault['kind']} of "
+                                     f"{fault['targets']} is put back by a later {back} "
+                                     "action of its own (its label then ends in time)")
         for item in scenario.get("open") or []:
             if not (isinstance(item, dict) and item.get("criterion") and item.get("needs")):
                 raise ValueError(f"{name}: an open criterion is {{\"criterion\": C, "
@@ -2359,6 +2400,63 @@ def probe_tail_s(span_s: float, lead_s: float = PROBE_LEAD_S) -> float:
     return max(tail, PROBE_MIN_S - lead_s - span_s)
 
 
+def in_lab(action: dict, lab: dict) -> bool:
+    """Whether a shared probe's action has anything to act on in `lab`: a
+    roll or an upgrade a node of its tier in its sites, any other kind its
+    targets (a scale or the controller: its site's nodes)."""
+    if action["kind"] in ("roll", "upgrade"):
+        return bool(action_targets(action, lab))
+    if action["kind"] in ("scale",):
+        return any(node.get("site") == action["site"] for node in lab["nodes"].values())
+    targets = action.get("targets")
+    return not targets or all(name in lab["nodes"] for name in targets)
+
+
+def shared_label_windows(actions: list[dict]) -> list[tuple[float, float]]:
+    """The widened windows of a shared probe's labels, as change-window.py
+    takes them: each action with a span (its label) from 2 s before it to
+    5 s after its span, in time order. An action of span 0 (a start that
+    ends a kill's label) has no label of its own."""
+    return sorted((action["t"] - CW_BEFORE_S, action["t"] + float(action["span_s"]) + CW_AFTER_S)
+                  for action in actions if float(action.get("span_s") or 0) > 0)
+
+
+def shared_null_windows(windows: list[tuple[float, float]], probe_start: float,
+                        probe_end: float, length: float) -> int:
+    """change-window.py's no-change windows of `length` on a probe from
+    `probe_start` to `probe_end` (its first CW_SKIP_S skipped) that clear
+    every label's window and its 1 s tail: slid by 1 s."""
+    count, a = 0, probe_start + CW_SKIP_S
+    while a + length + CW_TAIL_S < probe_end:
+        b = a + length
+        if all(b + CW_TAIL_S < start or a > end + CW_TAIL_S for start, end in windows):
+            count += 1
+        a += 1.0
+    return count
+
+
+def shared_probe_tail(windows: list[tuple[float, float]], probe_start: float) -> float:
+    """Seconds the probe runs after its last label's window, so that every
+    label's length has MIN_NULL_WINDOWS + SHARED_NULL_MARGIN windows."""
+    last = max(end for _start, end in windows)
+    lengths = sorted({round(end - start, 3) for start, end in windows})
+    tail = 0.0
+    while any(shared_null_windows(windows, probe_start, last + tail, length)
+              < MIN_NULL_WINDOWS + SHARED_NULL_MARGIN for length in lengths):
+        tail += 5.0
+    return max(tail, PROBE_MIN_S - (last - probe_start))
+
+
+def check_shared(name: str, actions: list[dict]) -> None:
+    """A shared probe's labels do not overlap: SHARED_GAP_S between one
+    widened window and the next."""
+    windows = shared_label_windows(actions)
+    for (_a, end), (start, _b) in zip(windows, windows[1:]):
+        if start - end < SHARED_GAP_S:
+            raise ValueError(f"{name}: two labels of the shared probe are {start - end:.0f} s "
+                             f"apart, under {SHARED_GAP_S:g} s (they would confound each other)")
+
+
 def phase_timeline(plan: dict, lab: dict) -> dict:
     """When each scenario's parts happen, in seconds from the start of the
     hold (after the listeners' ramp): "base_start", "probe_start" (its
@@ -2380,8 +2478,13 @@ def phase_timeline(plan: dict, lab: dict) -> dict:
         baseline, observe, settle = (value("baseline_s", 60), value("observe_s", 90),
                                      value("settle_s", 30))
         fault = t + baseline
+        shared = scenario.get("probe") == "shared"
         actions, cursor = [], fault
         for action in scenario["actions"]:
+            if shared and not in_lab(action, lab):
+                # A site the lab was made without (up --optional-sites
+                # sydney refused): its rolls and faults are left out.
+                continue
             if "after" in action:
                 at = cursor
                 busy = float(action["after"]["timeout_s"])
@@ -2392,8 +2495,17 @@ def phase_timeline(plan: dict, lab: dict) -> dict:
             actions.append({**action, "t": at, "bound_s": bound, "scenario": scenario["name"]})
             cursor = max(cursor, at + busy + bound)
         last = max(action["t"] for action in actions)
+        if shared:
+            # Each action's own label: its stated span (a change command's
+            # typical length, its bound when none is stated), the hold in.
+            for action in actions:
+                action.setdefault("span_s", action["bound_s"])
+            check_shared(scenario["name"], actions)
+            cursor = max(action["t"] + float(action["span_s"]) for action in actions)
         observe_end = max(fault + observe, cursor, last + float(scenario.get("after_last_s", 0)))
         restore = scenario.get("restore")
+        if restore is None and shared:
+            restore = []
         if restore is None:
             restore = [item for item in (restore_of(action) for action in scenario["actions"])
                        if item is not None]
@@ -2403,7 +2515,12 @@ def phase_timeline(plan: dict, lab: dict) -> dict:
         # scenario's marks: its bound is the probes' too.
         span = observe_end - fault + sum(action_bound_s(item, lab) for item in restore)
         probe_start = fault - PROBE_LEAD_S
-        probe_s = PROBE_LEAD_S + span + probe_tail_s(span)
+        if shared:
+            windows = shared_label_windows(actions)
+            probe_s = (max(end for _start, end in windows) - probe_start
+                       + shared_probe_tail(windows, probe_start))
+        else:
+            probe_s = PROBE_LEAD_S + span + probe_tail_s(span)
         end = max(observe_end + settle, probe_start + probe_s + PROBE_GRACE_S)
         targets = sorted({target for action in scenario["actions"]
                           if action["kind"] not in ("join", "add", "start", "resume", "scale",
@@ -2419,6 +2536,8 @@ def phase_timeline(plan: dict, lab: dict) -> dict:
                             if not action.get("dry")
                             for target in action_targets(action, lab)}, key=natural)
         rows.append({"name": scenario["name"], "group": scenario.get("group"),
+                     "shared": shared,
+                     "labels": (len(shared_label_windows(actions)) if shared else None),
                      "restarted": restarted,
                      "profile": profile, "base_start": t, "probe_start": probe_start,
                      "fault": fault, "observe_end": observe_end, "probe_s": probe_s, "end": end,
@@ -4164,6 +4283,7 @@ class PhaseRunner:
         self.seen_lock = threading.Lock()
         self.marks_lock = threading.Lock()
         self.open_marks: dict[str, dict[str, str]] = {}
+        self.label_holds: dict[tuple[str, str], float] = {}
         self.skip_rest: set[str] = set()
         self.not_run: set[str] = set()
         # crowd_paths(since): the crowd's paths now (crowd_paths()); the
@@ -4197,12 +4317,26 @@ class PhaseRunner:
             for kind, ns, label in marks:
                 handle.write(mark_line(kind, ns, label))
 
-    def mark_start(self, scenario: str, label: str, kind: str, node: str) -> None:
+    def mark_start(self, scenario: str, label: str, kind: str, node: str,
+                   hold_s: float = 0.0) -> None:
         with self.marks_lock:
             self.open_marks.setdefault(scenario, {})[label] = f"{kind}:{node}"
+            if hold_s > 0:
+                self.label_holds[(scenario, label)] = hold_s
         self.write_marks(scenario, [("start", time.time_ns(), label)])
 
-    def mark_end(self, scenario: str, label: str, why: str) -> None:
+    def mark_end(self, scenario: str, label: str, why: str, held: bool = True) -> None:
+        """End a label; one with a hold (an action's label_hold_s: the
+        rebalance after a node is back belongs to its change) ends that many
+        seconds later, unless the scenario is being closed."""
+        with self.marks_lock:
+            hold = self.label_holds.pop((scenario, label), 0.0)
+        if hold > 0 and held and not self.stop.is_set():
+            def later(_target, _item):
+                self.stop.wait(hold)
+                self.mark_end(scenario, label, f"{why}, held {hold:g} s", held=False)
+            self.watch(later, "", {})
+            return
         with self.marks_lock:
             if label not in self.open_marks.get(scenario, {}):
                 return
@@ -4224,7 +4358,7 @@ class PhaseRunner:
             labels = list(self.open_marks.get(scenario, {}))
         for label in labels:
             self.mark_end(scenario, label, "closed at the end of the scenario: its wait "
-                                           "never ended")
+                                           "never ended", held=False)
 
     # -------------------------------------------------------------- the schedule
 
@@ -4288,6 +4422,14 @@ class PhaseRunner:
             with self.owed_lock:
                 if item.get("restore"):
                     self.owed = [owed for owed in self.owed if owed["scenario"] != name]
+                elif any((restore_of(owed) or {}).get("kind") == item["kind"]
+                         and owed["scenario"] == name and owed.get("targets") == item.get("targets")
+                         for owed in self.owed):
+                    # A shared probe's own put-back (a start after its kill,
+                    # a resume after its drain): nothing is owed any more.
+                    self.owed = [owed for owed in self.owed if not (
+                        (restore_of(owed) or {}).get("kind") == item["kind"]
+                        and owed["scenario"] == name and owed.get("targets") == item.get("targets"))]
                 elif restore_of(item) is not None:
                     # Owed before it is carried out: a step stopped while
                     # it runs still puts it back.
@@ -4465,8 +4607,13 @@ class PhaseRunner:
         if kind == "crash" and target in self.lab["nodes"]:
             boot = boot_id_of(http_get(self.lab["nodes"][target], "/api/node"))
         label = f"{scenario}.{kind}.{target}"
-        if not restore:
-            self.mark_start(scenario, label, kind, target)
+        # A start that puts back a kill or stop of this scenario (a shared
+        # probe's own put-back) ends that label when the node is ready, as
+        # a restore does, and has none of its own.
+        closing = (kind == "start" and not restore
+                   and self.open_labels(scenario, ("kill", "stop"), target))
+        if not restore and not closing:
+            self.mark_start(scenario, label, kind, target, float(item.get("label_hold_s") or 0))
         at = unix_us()
         if started is not None:
             started[target] = at
@@ -4498,12 +4645,12 @@ class PhaseRunner:
         except Exception as error:  # noqa: BLE001 - the run records it and goes on
             self.log({**base, "event": "failed", "node": target, "unix_us": unix_us(),
                       "error": str(error)[-400:]})
-            if not restore:
-                self.mark_end(scenario, label, "the action failed")
+            if not restore and not closing:
+                self.mark_end(scenario, label, "the action failed", held=False)
             return
         # The end of a plain kind's mark: when the scenario's wait for it
         # ends (C 2.11).
-        if restore:
+        if restore or closing:
             waiting = self.open_labels(scenario, ("kill", "stop"), target) \
                 if kind == "start" else []
             if waiting:
@@ -4593,6 +4740,20 @@ class PhaseRunner:
         tool = change_run()
         marks, aborted = tool.close_marks(tool.marks_of(out.read_text(errors="replace")),
                                           started_ns, reaped_ns, f"{scenario}.{kind}")
+        if item.get("label"):
+            # A shared probe's command (a roll of one site of several):
+            # its marks under the action's own label, so that two rolls of
+            # one tier are two changes.
+            marks = [(mark_kind, ns, f"{scenario}.{item['label']}")
+                     for mark_kind, ns, _label in marks]
+        hold = float(item.get("label_hold_s") or 0) if not restore else 0.0
+        if hold > 0 and code == 0 and not self.stop.is_set():
+            # The settling after the command (listeners moved back) is the
+            # change's: its end marks move that much later.
+            self.stop.wait(hold)
+            held_ns = time.time_ns()
+            marks = [(mark_kind, held_ns if mark_kind == "end" else ns, label)
+                     for mark_kind, ns, label in marks]
         self.write_marks(scenario, marks)
         for event in aborted:
             self.log({**base, **event, "unix_us": unix_us()})
@@ -7059,7 +7220,8 @@ def add_planning_args(item: argparse.ArgumentParser) -> None:
                            f"step ({PHASES.relative_to(ROOT)})")
     item.add_argument("--group", default=None,
                       help="the phase plan's scenarios of one group (F, R, A of "
-                           "phases-scale.json; N, U, F, R, A of phases-proving.json)")
+                           "phases-scale.json; C1, C2 of phases-proving.json; N, U, F, R, A "
+                           "of phases-proving-full.json)")
     item.add_argument("--scenarios", default="", help="comma-separated scenario names")
     item.add_argument("--probe-configs", default=None,
                       help="configs each scenario's probes listen to beside the run's own (the "
