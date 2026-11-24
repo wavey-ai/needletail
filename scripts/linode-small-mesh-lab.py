@@ -70,10 +70,11 @@ Cost controls are part of the tool, not an operator convention:
   all the same and records the run as failed. The watchdog's own delete is
   never refused for data: at its deadline it first runs the collect
   command that `up` recorded in the state (the deploy tool's `collect
-  --run-id <id>`) under a hard time bound (`--collect-timeout-s`, 4 min by
-  default, ending when `down` starts), then deletes whatever happened; a
-  collect that failed, timed out or left the run incomplete records the run
-  as failed. `up` refuses a watchdog too short to hold that bound;
+  --run-id <id>`, given `--timeout-s` for its pulls from what is left)
+  under a hard time bound (`--collect-timeout-s`, 4 min by default, ending
+  when `down` starts), then deletes whatever happened; a collect that
+  failed, timed out or left the run incomplete records the run as failed.
+  `up` refuses a watchdog too short to hold that bound;
 * the lab firewall admits the operator's address and the lab's nodes, and
   the lab's `allow` list (`allow add|remove|list`: {label, protocol, ports,
   ipv4 CIDRs}), which every rewrite of the rules keeps (firewall_rules). No
@@ -158,6 +159,12 @@ WATCHDOG_POLL_S = 5
 # delete.
 COLLECT_TIMEOUT_S = 240
 DEPLOY_TOOL = ROOT / "scripts" / "linode-small-mesh-deploy.py"
+# The watchdog gives the collect's pulls (its `--timeout-s`) what is left
+# of the bound less a margin to move the files into the archive and mark
+# the run before the kill: COLLECT_MARGIN_SHARE of it, at least
+# COLLECT_MARGIN_S (half of it when that is less).
+COLLECT_MARGIN_S = 30.0
+COLLECT_MARGIN_SHARE = 0.2
 # The lab's `allow` list: extra inbound rules of its Cloud Firewall that
 # every rewrite of the rules keeps (firewall_rules). An address range wider
 # than /WORLD_PREFIX counts as the world, and the world is let in only on a
@@ -2849,8 +2856,17 @@ def watchdog_down(args: argparse.Namespace) -> None:
 
 def collect_command(run_id: str) -> list[str]:
     """The collect that `up` records for the watchdog: the deploy tool's
-    `collect --run-id <id>` of this checkout."""
+    `collect --run-id <id>` of this checkout. The watchdog adds the time
+    its pulls get (collect_pull_s) when it runs it."""
     return [sys.executable, str(DEPLOY_TOOL), "collect", "--run-id", run_id]
+
+
+def collect_pull_s(left: float) -> float:
+    """The collect's `--timeout-s` when `left` seconds remain before it is
+    killed: the rest of the time moves what was pulled into the archive and
+    marks the run, so one node that does not answer costs only its own
+    data, never the others'."""
+    return left - max(min(COLLECT_MARGIN_S, left / 2), COLLECT_MARGIN_SHARE * left)
 
 
 def lab_collect(state: dict) -> tuple[list[str], float]:
@@ -2899,12 +2915,21 @@ def run_collect(command: list[str], state_path: pathlib.Path, timeout_s: float) 
 
 def watchdog_collect(state_path: pathlib.Path, state: dict, until: float, clock=None) -> None:
     """The watchdog's collect before its `down`: the lab's collect command
-    (lab_collect), given what is left of its bound before `until` (when
-    `down` starts) and killed then. A run that the archive holds collected
-    already is not collected again. A collect that could not run in time,
-    failed, or ended without the archive's run marked complete records the
-    run as failed (made if the archive has none). Never raises and never
-    runs past `until`: the delete goes ahead whatever happens here."""
+    (lab_collect) with `--timeout-s` for its pulls (collect_pull_s of what
+    is left of its bound before `until`, when `down` starts), killed at
+    `until`. A run that the archive holds collected already is not
+    collected again. A collect that could not run in time, failed, or ended
+    without the archive's run marked complete records the run as failed
+    (made if the archive has none). Never raises and never runs past
+    `until`: the delete goes ahead whatever happens here.
+
+    After `watchdog --hours` moves the deadline, the new deadline gets a
+    collect of its own, with two limits, accepted: a run collected before
+    the move is not collected again (the extra hours' node data is not
+    pulled unless the operator collects), and a run recorded failed by the
+    first collect stays failed even when the second completes (the
+    watchdog never finishes a run as complete; the tool that owns the run
+    may finish it again)."""
     clock = clock or time.time
     run_id = state["run_id"]
     try:
@@ -2917,6 +2942,7 @@ def watchdog_collect(state_path: pathlib.Path, state: dict, until: float, clock=
         if left <= 0:
             why = "no time was left for it before the delete"
         else:
+            command = [*command, "--timeout-s", f"{collect_pull_s(left):.1f}"]
             print(f"watchdog: collecting run {run_id} for at most {left:.0f} s before the "
                   f"delete: {' '.join(command)}", flush=True)
             why = run_collect(command, state_path, left)

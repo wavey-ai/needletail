@@ -1230,7 +1230,8 @@ class WatchdogCollect(Base):
             lab_tool.watchdog_collect(path, state, until)
         self.assertIn("run t1 is collected", out.getvalue())
         command, state_path, timeout_s = self.collects[-1]
-        self.assertEqual(command, lab_tool.collect_command("t1"))
+        self.assertEqual(command[:-2], lab_tool.collect_command("t1"))
+        self.assertEqual(command[-2], "--timeout-s")
         self.assertEqual(state_path, path)
         self.assertAlmostEqual(timeout_s, 100, delta=2)
         with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
@@ -1245,6 +1246,46 @@ class WatchdogCollect(Base):
         with redirect_stdout(io.StringIO()):
             lab_tool.watchdog_collect(path, state, until)
         self.assertEqual(len(self.collects), calls)
+
+    def test_the_collect_s_pulls_end_before_it_is_killed(self):
+        """The collector waits for its slowest node only as long as its
+        --timeout-s, then moves what it has into the archive: the watchdog
+        gives it what is left of the bound less a margin for that, so one
+        node that does not answer never costs the others' data (review of
+        lab2, finding 1)."""
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        now = [1_000_000.0]
+        for until, bound in ((now[0] + 240, 240.0), (now[0] + 90, 90.0),
+                             (now[0] + 600, 600.0), (now[0] + 4, 4.0)):
+            state["collect"] = {"command": lab_tool.collect_command("t1"), "timeout_s": bound}
+            self.collects.clear()
+            shutil.rmtree(self.tmp / "data", ignore_errors=True)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                lab_tool.watchdog_collect(path, state, until, clock=lambda: now[0])
+            command, _state_path, killed_at = self.collects[-1]
+            self.assertEqual(killed_at, bound)
+            self.assertEqual(command[-2], "--timeout-s")
+            pulls = float(command[-1])
+            # At least 30 s (half the bound when it is shorter) and a fifth
+            # of it are left to move the files and mark the run.
+            self.assertLessEqual(pulls, bound - min(30.0, bound / 2) + 1e-9, bound)
+            self.assertLessEqual(pulls, 0.8 * bound + 1e-9, bound)
+            self.assertGreater(pulls, 0, bound)
+        self.assertEqual(lab_tool.collect_pull_s(240), 192)
+        self.assertEqual(lab_tool.collect_pull_s(100), 70)
+        # Started late (a watchdog restarted 3 min into its window): the
+        # pulls shrink with what is left, the kill stays at `until`.
+        state["collect"] = {"command": lab_tool.collect_command("t1"), "timeout_s": 240}
+        self.collects.clear()
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_collect(path, state, now[0] + 60, clock=lambda: now[0])
+        command, _state_path, killed_at = self.collects[-1]
+        self.assertEqual((killed_at, command[-2:]), (60, ["--timeout-s", "30.0"]))
+        # The state records the command without the time: it is added when
+        # the collect runs, in one place.
+        self.assertNotIn("--timeout-s", lab_tool.lab_collect(state)[0])
 
     def test_a_collect_that_exits_0_with_nodes_missing_is_a_failed_run(self):
         api = FakeApi()
