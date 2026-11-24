@@ -7,7 +7,9 @@ token is read, nothing is created, no unit is started).
 node and slot of the topology for the watchdog's whole hours, what the
 ledger says was spent and the other live labs to their deadline tags; the
 ceilings that `up` recorded hold from another shell. The watchdog is a user
-unit that every command checks and arms again. The ledger is reconciled
+unit that every command checks and arms again; at its deadline it runs the
+lab's collect under a hard bound and deletes whatever happened, recording a
+failed collect as a failed run. The ledger is reconciled
 from the account's events. `replace` rebuilds in place (the id and both
 addresses kept, the interfaces put in place before one boot) or makes a
 node anew. `add` creates only a slot of this lab, refuses a shared plan, a
@@ -40,6 +42,9 @@ _spec = importlib.util.spec_from_file_location("lab_slots", HERE / "linode-small
 lab_tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lab_tool)
 run_archive = lab_tool.run_archive
+# The real collector call and sleep, for the tests that run a process.
+RUN_COLLECT = lab_tool.run_collect
+REAL_SLEEP = time.sleep
 
 SCALE = HERE.parent / "deploy" / "low-latency" / "topology-scale.json"
 TYPES = {"g6-dedicated-2": {"id": "g6-dedicated-2", "class": "dedicated",
@@ -270,6 +275,17 @@ class Base(unittest.TestCase):
         self.addCleanup(patcher.stop)
         # The run archive of these tests: never ~/needletail-data.
         patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(self.tmp / "data")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The watchdog's collect never starts a process here unless a test
+        # says so: the collector is "absent".
+        self.collects: list[tuple] = []
+
+        def no_collector(command, state_path, timeout_s):
+            self.collects.append((command, state_path, timeout_s))
+            return "it could not be started (no collector in this test)"
+
+        patcher = mock.patch.object(lab_tool, "run_collect", no_collector)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -757,7 +773,7 @@ class Watchdog(Base):
         # Once `down` has removed the state, the account lists nothing with
         # the run's tag: the loop returns.
         with mock.patch.object(lab_tool, "Api", lambda public=False: FakeApi()), \
-                redirect_stderr(io.StringIO()):
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1",
                                       deadline, clock=lambda: now[0], sleep=sleep, down=down)
         self.assertEqual(len(downs), 2)
@@ -1024,7 +1040,10 @@ class Archive(Base):
         self.assertEqual(self.lab_instances(api), [])
         self.assertFalse(path.exists())
         self.assertEqual(archive.manifest["status"], "failed")
-        self.assertIn("the watchdog deleted the lab", archive.manifest["status_reason"])
+        # Started a second after `down` was due: no time was left to collect.
+        self.assertEqual(self.collects, [])
+        self.assertIn("the watchdog's collect before its delete failed: no time was left",
+                      archive.manifest["status_reason"])
 
     def test_the_watchdog_by_the_tag_records_the_run_failed_and_deletes(self):
         api = FakeApi()
@@ -1054,6 +1073,835 @@ class Archive(Base):
             lab_tool.watchdog_down(argparse.Namespace(state=self.args.state))
         self.assertEqual(self.lab_instances(api), [])
         self.assertIn("could not be recorded as failed", err.getvalue())
+
+
+class WatchdogCollect(Base):
+    """At its deadline the watchdog runs the lab's collect command (the
+    deploy tool's `collect --run-id <id>`, recorded by `up`) under a hard
+    time bound that ends when `down` is due, then deletes whatever
+    happened: a collect that failed, hung, could not run or left the run
+    incomplete records the run as failed in the archive (made if absent).
+    `up` refuses a watchdog too short to hold the bound."""
+
+    def lab_instances(self, api) -> list:
+        return [ident for ident, item in api.instances.items() if api.tag in item.get("tags", [])]
+
+    def manifest(self, run_id: str = "t1") -> dict:
+        return run_archive.RunArchive.open(run_id, record=False).manifest
+
+    def test_up_refuses_a_watchdog_too_short_for_the_collect_and_records_it(self):
+        api = FakeApi()
+        self.systemd.active.clear()
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api):
+            # 6 min of life: 4 min of collect and 5 min of delete do not fit.
+            self.assertIn("cannot hold the collect",
+                          self.refused(lab_tool.command_up, self.up_args(watchdog_hours=0.1)))
+            self.assertIn("cannot hold the collect", self.refused(
+                lab_tool.command_up, self.up_args(watchdog_hours=0.5, collect_timeout_s=1500)))
+            self.assertIn("must be above 0", self.refused(
+                lab_tool.command_up, self.up_args(collect_timeout_s=0)))
+        self.assertEqual(api.calls, [])
+        self.assertFalse(pathlib.Path(self.args.state).exists())
+        self.assertFalse(self.systemd.active)
+        parsed = lab_tool.build_parser().parse_args(
+            ["up", "--watchdog-hours", "2", "--budget-usd", "50"])
+        self.assertEqual(parsed.collect_timeout_s, 240)
+
+        def create(api_, run_id, tag, image, key, node):
+            ident = 100 + len(api.instances)
+            api.instances[ident] = {"id": ident, "status": "running", "tags": [tag]}
+            return {"id": ident, "name": node["name"], "label": node["name"],
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": "192.0.2.1", "vlan_ipv4": None, "created": "x"}
+
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_status", lambda args: None):
+            state = self.up(api, spent_before_usd=0.0, collect_timeout_s=120.0)
+        self.assertEqual(state["collect"], {
+            "command": [sys.executable, str(HERE / "linode-small-mesh-deploy.py"), "collect",
+                        "--run-id", "t1"],
+            "timeout_s": 120.0})
+        # The unit carries the archive's root (the collect and the failed
+        # record land where the arming shell's archive is), never the token.
+        unit = (lab_tool.WATCHDOG_UNIT_DIR / UNIT).read_text()
+        self.assertIn(f"NEEDLETAIL_DATA_ROOT={(self.tmp / 'data').resolve()}", unit)
+        self.assertNotIn(TOKEN, unit)
+
+    def test_the_collect_runs_once_per_deadline_and_ends_before_down(self):
+        path = self.tmp / "state.json"
+        deadline = 1_000_000 + 3 * 3600
+        bound = 240
+        path.write_text(json.dumps({"run_id": "t1", "watchdog_deadline_unix": deadline,
+                                    "collect": {"command": ["c"], "timeout_s": bound}}))
+        now = [deadline - lab_tool.WATCHDOG_LEAD_S - bound - 30.0]
+        events = []
+        moved = []
+
+        def collect(state_path, state, until, clock):
+            events.append(("collect", clock(), until))
+            now[0] += 100  # the collect takes its time, within its bound
+
+        def down(args):
+            events.append(("down", now[0], None))
+            path.unlink()
+
+        def sleep(seconds):
+            self.assertLessEqual(seconds, 5)
+            now[0] += seconds
+            # Once collected, `watchdog --hours` moves the deadline an hour
+            # later: a collect for the new deadline, then down.
+            if len(events) == 1 and not moved:
+                moved.append(deadline + 3600)
+                path.write_text(json.dumps({**json.loads(path.read_text()),
+                                            "watchdog_deadline_unix": moved[0]}))
+
+        with mock.patch.object(lab_tool, "Api", lambda public=False: FakeApi()), \
+                redirect_stderr(io.StringIO()):
+            lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1",
+                                      deadline, clock=lambda: now[0], sleep=sleep, down=down,
+                                      collect=collect)
+        self.assertEqual([kind for kind, _at, _until in events], ["collect", "collect", "down"])
+        for (_kind, at, until), last in zip(events[:2], (deadline, moved[0])):
+            self.assertEqual(until, last - lab_tool.WATCHDOG_LEAD_S)
+            self.assertGreaterEqual(at, until - bound)
+            self.assertLess(at, until - bound + 5)
+        self.assertGreaterEqual(events[2][1], moved[0] - lab_tool.WATCHDOG_LEAD_S)
+        self.assertLess(events[2][1], moved[0] - lab_tool.WATCHDOG_LEAD_S + 5)
+
+    def test_a_hung_collect_is_killed_at_its_bound_and_the_lab_deleted_as_failed(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        pids = self.tmp / "pids"
+        # The collector starts a child (as ssh would) and both hang.
+        hang = ("import subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                f"open({str(pids)!r}, 'w').write(f'{{child.pid}}')\n"
+                "time.sleep(60)\n")
+        state["collect"] = {"command": [sys.executable, "-c", hang], "timeout_s": 1.0}
+        path.write_text(json.dumps(state))
+        deadline = state["watchdog_deadline_unix"]
+        now = [deadline - lab_tool.WATCHDOG_LEAD_S - 1.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        started = time.monotonic()
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "run_collect", RUN_COLLECT), \
+                mock.patch.object(lab_tool.time, "sleep", REAL_SLEEP), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                mock.patch.object(lab_tool, "watchdog_disarm", lambda run_id: None), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1", deadline,
+                                      clock=lambda: now[0], sleep=sleep)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertFalse(path.exists())
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("did not end within 1 s and was killed", manifest["status_reason"])
+        self.assertEqual(manifest["tool"], "linode-small-mesh-lab.py")
+        # The collector's child went with it.
+        child = pathlib.Path(f"/proc/{pids.read_text()}/status")
+        for _ in range(100):
+            if not child.exists() or "\nState:\tZ" in child.read_text():
+                break
+            REAL_SLEEP(0.02)
+        self.assertTrue(not child.exists() or "\nState:\tZ" in child.read_text())
+
+    def test_a_collect_that_completes_leaves_the_run_to_its_tool(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        until = time.time() + 100
+
+        def collector(complete, missing=()):
+            def run(command, state_path, timeout_s):
+                self.collects.append((command, state_path, timeout_s))
+                archive = run_archive.RunArchive.create(
+                    "t1", "linode-lab", tool="linode-small-mesh-deploy.py", argv=command)
+                archive.mark_collected(complete, missing)
+            return run
+
+        with mock.patch.object(lab_tool, "run_collect", collector(True)), \
+                redirect_stdout(io.StringIO()) as out:
+            lab_tool.watchdog_collect(path, state, until)
+        self.assertIn("run t1 is collected", out.getvalue())
+        command, state_path, timeout_s = self.collects[-1]
+        self.assertEqual(command[:-2], lab_tool.collect_command("t1"))
+        self.assertEqual(command[-2], "--timeout-s")
+        self.assertEqual(state_path, path)
+        self.assertAlmostEqual(timeout_s, 100, delta=2)
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                mock.patch.object(lab_tool, "watchdog_disarm", lambda run_id: None), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_down(argparse.Namespace(state=self.args.state))
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertEqual(self.manifest()["status"], "running")
+        # Collected already: not collected again.
+        calls = len(self.collects)
+        with redirect_stdout(io.StringIO()):
+            lab_tool.watchdog_collect(path, state, until)
+        self.assertEqual(len(self.collects), calls)
+
+    def test_the_collect_s_pulls_end_before_it_is_killed(self):
+        """The collector waits for its slowest node only as long as its
+        --timeout-s, then moves what it has into the archive: the watchdog
+        gives it what is left of the bound less a margin for that, so one
+        node that does not answer never costs the others' data (review of
+        lab2, finding 1)."""
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        now = [1_000_000.0]
+        for until, bound in ((now[0] + 240, 240.0), (now[0] + 90, 90.0),
+                             (now[0] + 600, 600.0), (now[0] + 4, 4.0)):
+            state["collect"] = {"command": lab_tool.collect_command("t1"), "timeout_s": bound}
+            self.collects.clear()
+            shutil.rmtree(self.tmp / "data", ignore_errors=True)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                lab_tool.watchdog_collect(path, state, until, clock=lambda: now[0])
+            command, _state_path, killed_at = self.collects[-1]
+            self.assertEqual(killed_at, bound)
+            self.assertEqual(command[-2], "--timeout-s")
+            pulls = float(command[-1])
+            # At least 30 s (half the bound when it is shorter) and a fifth
+            # of it are left to move the files and mark the run.
+            self.assertLessEqual(pulls, bound - min(30.0, bound / 2) + 1e-9, bound)
+            self.assertLessEqual(pulls, 0.8 * bound + 1e-9, bound)
+            self.assertGreater(pulls, 0, bound)
+        self.assertEqual(lab_tool.collect_pull_s(240), 192)
+        self.assertEqual(lab_tool.collect_pull_s(100), 70)
+        # Started late (a watchdog restarted 3 min into its window): the
+        # pulls shrink with what is left, the kill stays at `until`.
+        state["collect"] = {"command": lab_tool.collect_command("t1"), "timeout_s": 240}
+        self.collects.clear()
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_collect(path, state, now[0] + 60, clock=lambda: now[0])
+        command, _state_path, killed_at = self.collects[-1]
+        self.assertEqual((killed_at, command[-2:]), (60, ["--timeout-s", "30.0"]))
+        # The state records the command without the time: it is added when
+        # the collect runs, in one place.
+        self.assertNotIn("--timeout-s", lab_tool.lab_collect(state)[0])
+
+    def test_a_collect_that_exits_0_with_nodes_missing_is_a_failed_run(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+
+        def run(command, state_path, timeout_s):
+            run_archive.RunArchive.create("t1", "linode-lab", tool="linode-small-mesh-deploy.py",
+                                          argv=command).mark_collected(False, ["tok-edge-2"])
+
+        with mock.patch.object(lab_tool, "run_collect", run), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_collect(pathlib.Path(self.args.state), state, time.time() + 240)
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("without marking the run collected (missing: tok-edge-2)",
+                      manifest["status_reason"])
+
+    def test_a_missing_collector_or_one_without_collect_is_a_failed_collect(self):
+        path = pathlib.Path(self.args.state)
+        path.write_text("{}")
+        self.assertIn("could not be started",
+                      RUN_COLLECT([str(self.tmp / "no-such-tool")], path, 5))
+        # A deploy tool from before `collect` (argparse: invalid choice).
+        older = self.tmp / "deploy.py"
+        older.write_text("import argparse\n"
+                         "parser = argparse.ArgumentParser()\n"
+                         "parser.add_subparsers(dest='command', required=True).add_parser('push')\n"
+                         "parser.parse_args()\n")
+        with redirect_stderr(io.StringIO()):
+            why = RUN_COLLECT([sys.executable, str(older), "collect", "--run-id", "t1"], path, 30)
+        self.assertEqual(why, "it exited with status 2")
+        # Through the watchdog: no run in the archive yet, so one is made to
+        # say the run failed; the delete is not held.
+        state = {"run_id": "t1", "collect": {"command": [sys.executable, str(older), "collect"],
+                                             "timeout_s": 30}}
+        with mock.patch.object(lab_tool, "run_collect", RUN_COLLECT), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            lab_tool.watchdog_collect(path, state, time.time() + 60)
+        self.assertIn("deleting all the same", err.getvalue())
+        manifest = self.manifest()
+        self.assertEqual((manifest["kind"], manifest["status"]), ("linode-lab", "failed"))
+        self.assertIn("exited with status 2", manifest["status_reason"])
+        # No time left before the delete: nothing is started.
+        shutil.rmtree(self.tmp / "data" / "t1")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_collect(path, {"run_id": "t1"}, time.time() - 1)
+        self.assertEqual(self.collects, [])
+        self.assertIn("no time was left", self.manifest()["status_reason"])
+
+    def test_the_collector_gets_the_lab_state_and_never_the_token(self):
+        path = pathlib.Path(self.args.state)
+        path.write_text("{}")
+        seen = self.tmp / "env.json"
+        command = [sys.executable, "-c",
+                   f"import json, os; open({str(seen)!r}, 'w').write(json.dumps(dict(os.environ)))"]
+        with mock.patch.dict(os.environ, {"LINODE_TOKEN": TOKEN, "LINODE_PAT": TOKEN}):
+            self.assertIsNone(RUN_COLLECT(command, path, 30))
+        env = json.loads(seen.read_text())
+        self.assertEqual(env["NEEDLETAIL_LINODE_LAB_STATE"], str(path.resolve()))
+        self.assertNotIn(TOKEN, json.dumps(env))
+        self.assertEqual(env["NEEDLETAIL_DATA_ROOT"], str(self.tmp / "data"))
+
+    def test_a_malformed_collect_in_the_state_falls_back_to_the_defaults(self):
+        for collect in (None, "x", {"command": "c", "timeout_s": "soon"},
+                        {"command": [1], "timeout_s": -4}):
+            self.assertEqual(lab_tool.lab_collect({"run_id": "t1", "collect": collect}),
+                             (lab_tool.collect_command("t1"), 240.0))
+
+
+PUBLISHER = {"label": "publisher", "protocol": "TCP", "ports": "27100",
+             "ipv4": ["203.0.113.40/32"]}
+
+
+class Allow(Base):
+    """The lab's `allow` list: extra inbound rules of its firewall, checked
+    (the world only on a port that faces listeners and that the topology
+    marks public; CIDRs; Linode's limits), recorded in the state and kept by
+    every rewrite of the rules."""
+
+    def lab(self, api, public_ports=None) -> dict:
+        """A lab as `up` leaves it, of a topology that marks `public_ports`
+        (recorded in the state, as up records them)."""
+        state = lab_state(self.tmp, api)
+        if public_ports is not None:
+            path = self.topology(public_ports)
+            state["topology_file"] = str(path)
+            state["public_ports"] = lab_tool.public_ports(public_ports)[0]
+            pathlib.Path(self.args.state).write_text(json.dumps(state))
+        return state
+
+    def topology(self, public_ports, name="topology-public.json") -> pathlib.Path:
+        topology = json.loads(SCALE.read_text())
+        if public_ports is not None:
+            topology["public_ports"] = public_ports
+        path = self.tmp / name
+        path.write_text(json.dumps(topology))
+        return path
+
+    def grow_args(self, topology) -> argparse.Namespace:
+        return argparse.Namespace(state=self.args.state, topology=str(topology),
+                                  without_sites="", ssh_public_key=self.args.ssh_public_key,
+                                  budget_usd=None, spent_before_usd=None)
+
+    def drop_nodes(self, api, *names) -> None:
+        """Take nodes out of the lab, as if never grown."""
+        path = pathlib.Path(self.args.state)
+        state = lab_tool.read_state(path)
+        for name in names:
+            api.instances.pop(state["nodes"].pop(name)["id"])
+        path.write_text(json.dumps(state))
+
+    def allow(self, api, *argv) -> tuple[int | str | None, str, str]:
+        args = lab_tool.build_parser().parse_args(["--state", self.args.state, "allow", *argv])
+        code = None
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+            try:
+                args.handler(args)
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, out.getvalue(), err.getvalue()
+
+    def allowed(self) -> list:
+        return lab_tool.read_state(pathlib.Path(self.args.state)).get("allow", [])
+
+    def last_rules(self, api) -> list[dict]:
+        bodies = [body for method, path, body in api.bodies
+                  if path.endswith("/rules") or path == "/networking/firewalls"]
+        body = bodies[-1]
+        return (body.get("rules") or body)["inbound"]
+
+    def test_add_list_and_remove_put_the_firewall_s_rules(self):
+        api = FakeApi()
+        self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        code, out, _err = self.allow(api, "add", "--label", "publisher", "--protocol", "tcp",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40")
+        self.assertIsNone(code, out)
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        rules = self.last_rules(api)
+        self.assertEqual([rule["label"] for rule in rules],
+                         list(lab_tool.LAB_RULE_LABELS) + ["publisher"])
+        self.assertEqual(rules[-1], {"label": "publisher", "action": "ACCEPT", "protocol": "TCP",
+                                     "ports": "27100",
+                                     "addresses": {"ipv4": ["203.0.113.40/32"]}})
+        # Listeners from anywhere on the client UDP lane: the topology marks
+        # it public. An office pings the lab.
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "office.icmp", "--protocol", "ICMP",
+                                     "--ipv4", "198.51.100.0/24,192.0.2.7",
+                                     "--ipv4", "198.18.0.0/15")[0])
+        self.assertEqual(self.allowed()[-1]["ipv4"],
+                         ["192.0.2.7/32", "198.18.0.0/15", "198.51.100.0/24"])
+        self.assertNotIn("ports", self.last_rules(api)[-1])
+        code, out, _err = self.allow(api, "list", "--json")
+        self.assertEqual([entry["label"] for entry in json.loads(out)],
+                         ["publisher", "listeners", "office.icmp"])
+        self.assertIn("publisher", self.allow(api, "list")[1])
+        puts = len(api.bodies)
+        self.assertIsNone(self.allow(api, "remove", "listeners")[0])
+        self.assertEqual([entry["label"] for entry in self.allowed()],
+                         ["publisher", "office.icmp"])
+        self.assertNotIn("listeners", [rule["label"] for rule in self.last_rules(api)])
+        self.assertEqual(len(api.bodies), puts + 1)
+        self.assertIn("no entry", str(self.allow(api, "remove", "listeners")[0]))
+
+    def test_the_world_is_refused_on_ssh_control_and_relay_ports(self):
+        api = FakeApi()
+        self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        cases = [
+            ("TCP", "22", "0.0.0.0/0"),            # SSH
+            ("TCP", "19444", "0.0.0.0/0"),         # LL-HLS, and /api/control/*
+            ("UDP", "19444", "0.0.0.0/0"),         # WebTransport, and /api/control/*
+            ("UDP", "22001-22002", "0.0.0.0/1"),   # relay lanes, half the world
+            ("UDP", "29101", "128.0.0.0/1"),       # the cache mesh
+            ("TCP", "27100", "0.0.0.0/0"),         # the AEP1 ingest
+            ("UDP", "19446,22", "0.0.0.0/0"),      # a public port with SSH
+            ("TCP", "1-65535", "0.0.0.0/0"),
+        ]
+        for protocol, ports, cidr in cases:
+            code, _out, _err = self.allow(api, "add", "--label", "open", "--protocol", protocol,
+                                          "--ports", ports, "--ipv4", f"198.51.100.0/24,{cidr}")
+            self.assertIn("to the world", str(code), (protocol, ports))
+            self.assertIn("SSH, control and relay ports never", str(code))
+        code = self.allow(api, "add", "--label", "ping", "--protocol", "ICMP",
+                          "--ipv4", "0.0.0.0/0")[0]
+        self.assertIn("to the world", str(code))
+        self.assertEqual(self.allowed(), [])
+        self.assertFalse([body for _method, path, body in api.bodies if path.endswith("/rules")])
+
+    def test_the_world_needs_the_topology_s_mark_and_a_listener_port(self):
+        api = FakeApi()
+        # The scale topology marks nothing public.
+        self.lab(api)
+        code = self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                          "--ports", "19446", "--ipv4", "0.0.0.0/0")[0]
+        self.assertIn("this lab's topology marks none", str(code))
+        # A topology that marks a control port public: up refuses it, and
+        # said why, before anything is made.
+        marks = [{"protocol": "TCP", "ports": "19444"}, {"protocol": "UDP", "ports": "19446"}]
+        self.assertIn("19444 also serves /api/control/*", lab_tool.public_ports(marks)[1][0])
+        fresh = FakeApi()
+        self.systemd.active.clear()
+        with mock.patch.object(lab_tool, "Api", lambda public=False: fresh):
+            refusal = self.refused(lab_tool.command_up, self.up_args(
+                topology=str(self.topology(marks, "topology-19444.json")), spent_before_usd=0.0,
+                state=str(self.tmp / "other-state.json"), run_id="t2"))
+        self.assertIn("up refused: the topology marks TCP 19444 public", refusal)
+        self.assertFalse(fresh.calls)
+        self.assertFalse((self.tmp / "other-state.json").exists())
+        self.systemd.active.add(UNIT)
+        # Such a mark edited into the state by hand makes nothing public.
+        state = self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        state["public_ports"] = marks
+        pathlib.Path(self.args.state).write_text(json.dumps(state))
+        code = self.allow(api, "add", "--label", "hls", "--protocol", "TCP", "--ports", "19444",
+                          "--ipv4", "0.0.0.0/0")[0]
+        self.assertIn("would be open to the world", str(code))
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        # Named ranges are not the world: TCP 19444 from a /16 is let in.
+        self.assertIsNone(self.allow(api, "add", "--label", "viewers", "--protocol", "TCP",
+                                     "--ports", "19444", "--ipv4", "10.20.0.0/16")[0])
+
+    def test_entries_are_checked_before_anything_is_recorded(self):
+        api = FakeApi()
+        self.lab(api)
+        self.assertIsNone(self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40/32")[0])
+        cases = {
+            "host bits": ["--protocol", "TCP", "--ports", "1", "--ipv4", "203.0.113.40/24"],
+            "not an IPv4 CIDR": ["--protocol", "TCP", "--ports", "1", "--ipv4", "300.1.1.1"],
+            "IPv4": ["--protocol", "TCP", "--ports", "1", "--ipv4", "::/0"],
+            "within 1-65535": ["--protocol", "TCP", "--ports", "0", "--ipv4", "192.0.2.1"],
+            "a below b": ["--protocol", "UDP", "--ports", "5-3", "--ipv4", "192.0.2.1"],
+            "is not a port": ["--protocol", "UDP", "--ports", "a", "--ipv4", "192.0.2.1"],
+            "no ports given": ["--protocol", "UDP", "--ipv4", "192.0.2.1"],
+            "ICMP takes no ports": ["--protocol", "ICMP", "--ports", "1", "--ipv4", "192.0.2.1"],
+            "at most 15": ["--protocol", "UDP", "--ports", ",".join(map(str, range(1, 17))),
+                           "--ipv4", "192.0.2.1"],
+        }
+        for why, argv in cases.items():
+            code = self.allow(api, "add", "--label", "other", *argv)[0]
+            self.assertIn(why, str(code), argv)
+        for label, why in (("x", "3 to 32"), ("lab-tcp", "taken"), ("publisher", "taken"),
+                           ("a b", "3 to 32")):
+            code = self.allow(api, "add", "--label", label, "--protocol", "TCP", "--ports", "1",
+                              "--ipv4", "192.0.2.1")[0]
+            self.assertIn(why, str(code), label)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            lab_tool.build_parser().parse_args(["allow", "add", "--label", "x", "--protocol",
+                                                "GRE", "--ipv4", "192.0.2.1"])
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        # Linode's 25 inbound rules: six are the lab's own.
+        for index in range(1, 19):
+            self.assertIsNone(self.allow(api, "add", "--label", f"host-{index}", "--protocol",
+                                         "TCP", "--ports", "443",
+                                         "--ipv4", f"192.0.2.{index}")[0])
+        code = self.allow(api, "add", "--label", "host-19", "--protocol", "TCP", "--ports", "443",
+                          "--ipv4", "192.0.2.19")[0]
+        self.assertIn("26 inbound rules", str(code))
+        self.assertEqual(len(self.last_rules(api)), 25)
+
+    def test_a_firewall_that_refuses_the_rules_leaves_the_list_as_it_was(self):
+        api = FakeApi()
+        self.lab(api)
+        self.assertIsNone(self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40")[0])
+        real = api.call
+
+        def call(method, path, body=None, allow_404=False):
+            if path.endswith("/rules"):
+                raise RuntimeError("HTTP 400: too many rules")
+            return real(method, path, body, allow_404)
+
+        api.call = call
+        code = self.allow(api, "add", "--label", "office", "--protocol", "TCP", "--ports", "22",
+                          "--ipv4", "198.51.100.0/24")[0]
+        self.assertIn("as it was", str(code))
+        self.assertIn("could not be put back", str(code))
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        code = self.allow(api, "remove", "publisher")[0]
+        self.assertIn("as it was", str(code))
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        # A put that fails once (a timeout after Linode applied it, or a
+        # refusal): the state is put back and its rules are put again, so
+        # the firewall holds what the state says; a removed entry goes back
+        # to its place (review of lab2, finding 6).
+        api.call = real
+        self.assertIsNone(self.allow(api, "add", "--label", "office", "--protocol", "TCP",
+                                     "--ports", "22", "--ipv4", "198.51.100.0/24")[0])
+        failed = []
+
+        def once(method, path, body=None, allow_404=False):
+            answer = real(method, path, body, allow_404)
+            if path.endswith("/rules") and not failed:
+                failed.append(body)
+                raise RuntimeError("timed out")
+            return answer
+
+        api.call = once
+        code = self.allow(api, "remove", "publisher")[0]
+        self.assertIn("and so are the firewall's rules", str(code))
+        self.assertEqual([entry["label"] for entry in self.allowed()], ["publisher", "office"])
+        self.assertEqual([rule["label"] for rule in failed[0]["inbound"]][-1:], ["office"])
+        self.assertEqual(self.last_rules(api), lab_tool.firewall_rules(
+            lab_tool.read_state(pathlib.Path(self.args.state)))["inbound"])
+        self.assertEqual([rule["label"] for rule in self.last_rules(api)][-2:],
+                         ["publisher", "office"])
+
+    def test_a_lab_whose_firewall_is_not_made_yet_gets_the_list_with_it(self):
+        api = FakeApi()
+        state = self.lab(api)
+        state["firewall_id"] = None
+        pathlib.Path(self.args.state).write_text(json.dumps(state))
+        code, out, _err = self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40")
+        self.assertIsNone(code)
+        self.assertIn("up makes it with the list", out)
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        self.assertEqual(api.calls, [])
+
+    def test_an_entry_edited_into_the_state_by_hand_is_left_out_if_it_opens_ssh(self):
+        api = FakeApi()
+        state = self.lab(api)
+        state["allow"] = [PUBLISHER,
+                          {"label": "ssh-world", "protocol": "TCP", "ports": "22",
+                           "ipv4": ["0.0.0.0/0"]},
+                          {**PUBLISHER, "ipv4": ["203.0.113.41/32"]}]
+        with redirect_stderr(io.StringIO()) as err:
+            rules = lab_tool.firewall_rules(state)["inbound"]
+        self.assertEqual([rule["label"] for rule in rules],
+                         list(lab_tool.LAB_RULE_LABELS) + ["publisher"])
+        self.assertIn("ssh-world", err.getvalue())
+        self.assertIn("is left out", err.getvalue())
+
+    def test_every_rewrite_of_the_firewall_keeps_the_list(self):
+        api = FakeApi()
+        state = self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        listeners = {"label": "listeners", "protocol": "UDP", "ports": "19446",
+                     "ipv4": ["0.0.0.0/0"]}
+        state["allow"] = [PUBLISHER, listeners]
+        path = pathlib.Path(self.args.state)
+        path.write_text(json.dumps(state))
+
+        def kept(verb):
+            labels = [rule["label"] for rule in self.last_rules(api)]
+            self.assertEqual(labels[-2:], ["publisher", "listeners"], verb)
+            self.assertEqual(labels.count("publisher"), 1, verb)
+
+        # add: an autoscale slot.
+        self.add(api, state, ["lon-edge-11"])
+        kept("add")
+        # remove: the slot again.
+        with redirect_stdout(io.StringIO()):
+            lab_tool.remove_nodes(api, path, state, ["lon-edge-11"])
+        kept("remove")
+        # replace --mode new.
+        self.replace(api, ["lon-edge-2"], mode="new")
+        kept("replace --mode new")
+        # grow: two nodes the lab does not have.
+        self.drop_nodes(api, "lon-edge-3", "lon-edge-4")
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.command_grow(self.grow_args(state["topology_file"]))
+        kept("grow")
+        self.assertIn("lon-edge-3", lab_tool.read_state(path)["nodes"])
+        # The autoscaler puts lab.firewall_rules(state), the same rules.
+        self.assertEqual(lab_tool.firewall_rules(lab_tool.read_state(path))["inbound"],
+                         self.last_rules(api))
+
+    def test_up_makes_the_firewall_with_an_entry_added_while_it_creates(self):
+        api = FakeApi()
+        self.systemd.active.clear()
+        path = pathlib.Path(self.args.state)
+        created = []
+        once = [PUBLISHER]
+
+        def create(api_, run_id, tag, image, key, node):
+            try:
+                entry = once.pop()  # the creates run four at a time
+            except IndexError:
+                entry = None
+            if entry:
+                # `allow add` from another shell while up creates the nodes.
+                lab_tool.change_state(path, {"run_id": "t1"}, lambda current: current.setdefault(
+                    "allow", []).append(entry))
+            created.append(node["name"])
+            ident = 100 + len(created)
+            api.instances[ident] = {"id": ident, "status": "running", "tags": [tag]}
+            return {"id": ident, "name": node["name"], "label": node["name"],
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": f"192.0.2.{len(created) % 250}", "vlan_ipv4": None,
+                    "created": "x"}
+
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_status", lambda args: None):
+            state = self.up(api, spent_before_usd=0.0)
+        posted = [body for method, where, body in api.bodies
+                  if (method, where) == ("POST", "/networking/firewalls")]
+        self.assertEqual(len(posted), 1)
+        inbound = posted[0]["rules"]["inbound"]
+        self.assertEqual([rule["label"] for rule in inbound],
+                         list(lab_tool.LAB_RULE_LABELS) + ["publisher"])
+        self.assertEqual(inbound[0]["addresses"]["ipv4"], ["203.0.113.9/32"])
+        self.assertEqual(len(inbound[3]["addresses"]["ipv4"]), len(created))
+        self.assertEqual(state["operator_ipv4"], "203.0.113.9")
+        self.assertEqual(posted[0]["rules"], lab_tool.firewall_rules(state))
+
+    def test_the_world_is_counted_over_every_network_and_every_entry(self):
+        """Many /8s in one entry, or entries that together let more than a
+        /8 in on a port, are the world (review of lab2, finding 2)."""
+        api = FakeApi()
+        self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        eights = ",".join(f"{first}.0.0.0/8" for first in range(1, 224))
+        code = self.allow(api, "add", "--label", "ssh-all", "--protocol", "TCP", "--ports", "22",
+                          "--ipv4", eights)[0]
+        self.assertIn("TCP 22 would be open to the world", str(code))
+        code = self.allow(api, "add", "--label", "udp-all", "--protocol", "UDP",
+                          "--ports", "1-65535", "--ipv4", "8.0.0.0/8,9.0.0.0/8")[0]
+        # Only the public port is not the world: every other one is.
+        self.assertIn("UDP 1-19445 would be open to the world (33554432 addresses", str(code))
+        self.assertIn("UDP 19447-65535 would be open to the world", str(code))
+        self.assertEqual(str(code).count("SSH, control and relay ports never"), 1)
+        # One /8 is a named range; a second on the same port, in another
+        # entry over a range of ports, adds up to the world there.
+        self.assertIsNone(self.allow(api, "add", "--label", "ctl-a", "--protocol", "TCP",
+                                     "--ports", "19444", "--ipv4", "64.0.0.0/8")[0])
+        code = self.allow(api, "add", "--label", "ctl-b", "--protocol", "TCP",
+                          "--ports", "19000-20000", "--ipv4", "65.0.0.0/8")[0]
+        self.assertIn("TCP 19444 would be open to the world", str(code))
+        self.assertIn("with the entries ctl-a", str(code))
+        # Addresses already let in are not counted twice; another port and
+        # another protocol are counted on their own.
+        self.assertIsNone(self.allow(api, "add", "--label", "ctl-c", "--protocol", "TCP",
+                                     "--ports", "19444", "--ipv4", "64.0.0.0/9")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "web", "--protocol", "TCP",
+                                     "--ports", "443", "--ipv4", "65.0.0.0/8")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "ctl-udp", "--protocol", "UDP",
+                                     "--ports", "19444", "--ipv4", "65.0.0.0/8")[0])
+        # The world on the public port, and the same /8 as ctl-udp on the
+        # ports around it, are let in; another /8 there adds up on 19444.
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        code = self.allow(api, "add", "--label", "near", "--protocol", "UDP",
+                          "--ports", "19440-19450", "--ipv4", "10.0.0.0/8")[0]
+        self.assertIn("UDP 19444 would be open to the world (33554432 addresses, more than a "
+                      "/8, with the entries ctl-udp)", str(code))
+        self.assertIsNone(self.allow(api, "add", "--label", "near", "--protocol", "UDP",
+                                     "--ports", "19440-19450", "--ipv4", "65.0.0.0/8")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "ping-a", "--protocol", "ICMP",
+                                     "--ipv4", "10.0.0.0/8")[0])
+        code = self.allow(api, "add", "--label", "ping-b", "--protocol", "ICMP",
+                          "--ipv4", "11.0.0.0/8")[0]
+        self.assertIn("ICMP would be open to the world", str(code))
+        self.assertEqual([entry["label"] for entry in self.allowed()],
+                         ["ctl-a", "ctl-c", "web", "ctl-udp", "listeners", "near", "ping-a"])
+        # A state edited by hand whose entries add up: the later one is
+        # left out of the firewall, and said.
+        state = lab_tool.read_state(pathlib.Path(self.args.state))
+        state["allow"] += [{"label": "ssh-a", "protocol": "TCP", "ports": "22",
+                            "ipv4": ["1.0.0.0/8"]},
+                           {"label": "ssh-b", "protocol": "TCP", "ports": "20-30",
+                            "ipv4": ["2.0.0.0/8"]}]
+        with redirect_stderr(io.StringIO()) as err:
+            labels = [rule["label"] for rule in lab_tool.firewall_rules(state)["inbound"]]
+        self.assertIn("ssh-a", labels)
+        self.assertNotIn("ssh-b", labels)
+        self.assertIn("'ssh-b'", err.getvalue())
+
+    def test_the_public_marks_are_the_state_s_and_grow_keeps_them(self):
+        """The marks are read from the state, where up and grow record
+        them: a topology file changed later never closes the listeners'
+        rule, and grow refuses a topology that would (review of lab2,
+        finding 3)."""
+        api = FakeApi()
+        marks = [{"protocol": "UDP", "ports": "19446"}]
+        self.lab(api, public_ports=marks)
+        path = pathlib.Path(self.args.state)
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        # The topology file loses its marks (another branch checked out).
+        self.topology(None)
+        with redirect_stderr(io.StringIO()) as err:
+            rules = lab_tool.firewall_rules(lab_tool.read_state(path))["inbound"]
+        self.assertEqual(rules[-1]["label"], "listeners")
+        self.assertEqual(err.getvalue(), "")
+        # grow with a topology that does not mark the port: refused before
+        # anything is created or recorded.
+        self.drop_nodes(api, "lon-edge-3")
+        before = lab_tool.read_state(path)
+        calls = len(api.calls)
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api):
+            refusal = self.refused(lab_tool.command_grow,
+                                   self.grow_args(self.topology(None, "topology-plain.json")))
+        self.assertIn("grow refused", refusal)
+        self.assertIn("allow entries listeners", refusal)
+        self.assertNotIn(("POST", "/linode/instances"), api.calls[calls:])
+        self.assertEqual(lab_tool.read_state(path), before)
+        # A topology that marks something it may not: refused too.
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api):
+            refusal = self.refused(lab_tool.command_grow, self.grow_args(self.topology(
+                [*marks, {"protocol": "TCP", "ports": "22"}], "topology-ssh.json")))
+        self.assertIn("marks TCP 22 public", refusal)
+        # A topology that keeps the mark: grown, recorded, the rule kept.
+        kept = self.topology(marks, "topology-kept.json")
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.command_grow(self.grow_args(kept))
+        state = lab_tool.read_state(path)
+        self.assertIn("lon-edge-3", state["nodes"])
+        self.assertEqual((state["topology_file"], state["public_ports"]), (str(kept), marks))
+        self.assertEqual(self.last_rules(api)[-1]["label"], "listeners")
+
+    def test_concurrent_rewrites_of_the_rules_keep_every_change(self):
+        """Every writer puts the rules from the state on disk under the
+        firewall's lock, so the last put holds every change recorded before
+        it (review of lab2, finding 4)."""
+        api = FakeApi()
+        self.lab(api)
+        path = pathlib.Path(self.args.state)
+        real_change = lab_tool.change_state
+        adopted = {"id": 4242, "name": "lon-edge-11", "label": "ntsm-t1-lon-edge-11",
+                   "role": "edge", "site": "london", "region": "gb-lon",
+                   "type": "g6-dedicated-2", "hourly_usd": 0.054, "public_ipv4": "192.0.2.77",
+                   "vlan_ipv4": None, "slot": True}
+        fired = []
+
+        def adopt_after_allow_records(path_, state_, change, creating=False):
+            # allow add has recorded its entry; before it puts, the
+            # autoscaler adopts a slot and puts the rules.
+            real_change(path_, state_, change, creating)
+            if not fired:
+                fired.append(True)
+                current = lab_tool.read_state(path)
+                real_change(path, current, lambda now: now["nodes"].update(
+                    {"lon-edge-11": adopted}), creating=True)
+                lab_tool.put_firewall_rules(api, path, current)
+
+        with mock.patch.object(lab_tool, "change_state", adopt_after_allow_records):
+            self.assertIsNone(self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                         "--ports", "27100", "--ipv4", "203.0.113.40")[0])
+        rules = self.last_rules(api)
+        self.assertIn("192.0.2.77/32", rules[3]["addresses"]["ipv4"])
+        self.assertEqual(rules[-1]["label"], "publisher")
+
+        # An add that records its slot; then `allow add` from another shell
+        # records and puts; then the add puts: the entry stays.
+        creating_calls = []
+
+        def allow_after_add_records(path_, state_, change, creating=False):
+            real_change(path_, state_, change, creating)
+            if creating:
+                creating_calls.append(True)
+                if len(creating_calls) == 2:  # record_node, then the hourly price
+                    self.assertIsNone(self.allow(
+                        api, "add", "--label", "office", "--protocol", "TCP", "--ports", "22",
+                        "--ipv4", "198.51.100.0/24")[0])
+
+        with mock.patch.object(lab_tool, "change_state", allow_after_add_records):
+            self.add(api, lab_tool.read_state(path), ["lon-edge-12"])
+        self.assertEqual(len(creating_calls), 2)
+        rules = self.last_rules(api)
+        self.assertEqual([rule["label"] for rule in rules][-2:], ["publisher", "office"])
+        self.assertEqual(len(rules[3]["addresses"]["ipv4"]),
+                         len(lab_tool.read_state(path)["nodes"]))
+        self.assertEqual(lab_tool.firewall_rules(lab_tool.read_state(path))["inbound"], rules)
+
+    def test_up_puts_the_rules_again_for_an_entry_added_after_its_post(self):
+        """An `allow add` that lands between up's POST of the firewall and
+        its record of the firewall's id is only recorded (no firewall id
+        yet); up puts the rules once more with it (review of lab2, finding
+        5)."""
+        api = FakeApi()
+        self.systemd.active.clear()
+        path = pathlib.Path(self.args.state)
+        real = api.call
+
+        def call(method, where, body=None, allow_404=False):
+            answer = real(method, where, body, allow_404)
+            if (method, where) == ("POST", "/networking/firewalls"):
+                code, out, _err = self.allow(api, "add", "--label", "publisher", "--protocol",
+                                             "TCP", "--ports", "27100", "--ipv4", "203.0.113.40")
+                self.assertIsNone(code)
+                self.assertIn("up makes it with the list", out)
+            return answer
+
+        api.call = call
+        created = []
+
+        def create(api_, run_id, tag, image, key, node):
+            created.append(node["name"])
+            ident = 100 + len(created)
+            api.instances[ident] = {"id": ident, "status": "running", "tags": [tag]}
+            return {"id": ident, "name": node["name"], "label": node["name"],
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": f"192.0.2.{len(created) % 250}", "vlan_ipv4": None,
+                    "created": "x"}
+
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_status", lambda args: None), \
+                mock.patch.object(lab_tool, "watchdog_ensure", lambda state, state_path: []):
+            state = self.up(api, spent_before_usd=0.0)
+        posted = [body for method, where, body in api.bodies
+                  if (method, where) == ("POST", "/networking/firewalls")]
+        self.assertEqual([rule["label"] for rule in posted[0]["rules"]["inbound"]],
+                         list(lab_tool.LAB_RULE_LABELS))
+        puts = [body for method, where, body in api.bodies
+                if method == "PUT" and where.endswith("/rules")]
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(puts[0], lab_tool.firewall_rules(state))
+        self.assertEqual(puts[0]["inbound"][-1]["label"], "publisher")
+        self.assertEqual(state["allow"], [PUBLISHER])
+        self.assertTrue(path.exists())
 
 
 class Ledger(Base):

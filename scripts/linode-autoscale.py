@@ -896,8 +896,7 @@ class LinodeBackend(Backend):
             raise Refused(f"adopt {name}: {gone}") from None
         api = self.api()
         try:
-            api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
-                     self.lab.firewall_rules(state))
+            self.lab.put_firewall_rules(api, self.state_path, state)
             api.call("POST", f"/networking/firewalls/{state['firewall_id']}/devices",
                      {"id": item["id"], "type": "linode"})
         except Exception as error:  # noqa: BLE001 - no node serves without the firewall
