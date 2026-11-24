@@ -12,6 +12,7 @@ python3 -m unittest scripts/test_stall_deploy.py"""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import io
 import json
@@ -26,6 +27,7 @@ from unittest import mock
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import edge_lab as lab  # noqa: E402
+import test_scale_topology as scale  # noqa: E402
 
 
 def load_module(name: str, file: str):
@@ -240,6 +242,54 @@ class Render(Base):
         deploy.RENDER_BINARIES["av-mesh"] = self.fake_binary("av-mesh", "--prefault")
         args = self.render(state=state)
         self.assertNotIn("--host-tag", args["lon-edge-1"])
+
+
+class OverridesShipped(scale.FakeLab):
+    """Per-node overrides reach the files that push and a roll ship
+    (LinodeOps.install, stage), not only render: the overridden node's unit
+    and check unit are staged, the record holds that unit, and no other
+    node gets them. On FakeHosts: nothing leaves the process."""
+
+    OVERRIDES = {"lon-edge-1": {"node_check_seconds": 20,
+                                "node_env": {"NEEDLETAIL_HOP_JOURNAL_CAPACITY": "2097152"}}}
+
+    def files(self, name: str) -> dict:
+        return self.hosts.fs(name)
+
+    def assert_shipped(self, staged: bool) -> None:
+        etc, unit = "/etc/needletail/needletail-mesh", "/etc/systemd/system/needletail-mesh.service"
+        own = self.files("lon-edge-1")
+        self.assertIn(f"{etc}.check.next", own)
+        self.assertIn(b"--check-seconds 20 ", own[f"{etc}.check.next"])
+        text = own[f"{etc}.unit.next" if staged else unit].decode()
+        self.assertIn(f"\nWants={CHECK}\nAfter={CHECK}\n", text)
+        self.assertIn("\nEnvironment=NEEDLETAIL_HOP_JOURNAL_CAPACITY=2097152\n", text)
+        other = self.files("lon-edge-2")
+        self.assertNotIn(f"{etc}.check.next", other)
+        text = other[f"{etc}.unit.next" if staged else unit].decode()
+        self.assertNotIn(CHECK, text)
+        self.assertNotIn("NEEDLETAIL_HOP_JOURNAL_CAPACITY", text)
+
+    def test_push_and_roll_ship_a_node_s_overrides_to_that_node_only(self):
+        overrides = f"node_overrides={json.dumps(self.OVERRIDES)}"
+        self.quietly(scale.deploy.command_push,
+                     self.namespace(skip_bootstrap=True, set=[overrides]))
+        self.assert_shipped(staged=False)
+        # The record is of the unit that node runs, so the reproduce check
+        # of a later roll holds.
+        recorded = self.state()["deployed"]["nodes"]
+        for name in ("lon-edge-1", "lon-edge-2"):
+            unit = self.files(name)["/etc/systemd/system/needletail-mesh.service"]
+            self.assertEqual(recorded[name]["unit_sha256"], hashlib.sha256(unit).hexdigest(), name)
+        self.assertNotEqual(recorded["lon-edge-1"]["unit_sha256"],
+                            recorded["lon-edge-2"]["unit_sha256"])
+        # A roll stages the same files.
+        for name in ("lon-edge-1", "lon-edge-2"):
+            self.files(name).pop("/etc/needletail/needletail-mesh.check.next", None)
+        self.set_root("av-mesh", scale.NEW)
+        ops = self.ops()
+        ops.stage(["lon-edge-1", "lon-edge-2"], ops.target("edges"))
+        self.assert_shipped(staged=True)
 
 
 class Hosts(unittest.TestCase):
