@@ -51,6 +51,7 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import stall_records as sr  # noqa: E402
 
@@ -149,37 +150,47 @@ def command_run(args: argparse.Namespace) -> int:
     if not args.dry:
         out.mkdir(parents=True, exist_ok=True)
     archive = [sys.executable, str(ARCHIVE_TOOL), "--tool", "source-check"]
-    steps.run(archive + ["create", args.name, "--kind", "local-lab", "--code", str(ROOT),
-                         "--code", str(lab.MESH_ROOT), "--code", str(lab.CONTRIB_ROOT)])
-    if not args.no_up:
-        steps.run([sys.executable, str(EDGE_LAB), "up"])
-    watch = steps.background([str(NODECHECK), "watch", "--out", str(out / "host-watch.ndjson")])
-    now = time.time()
-    start = loop_start(now)
-    since_us = int(now * 1e6)
-    record = {"schema": "needletail.source-check.v1", "name": args.name, "start_unix": start,
-              "since_us": since_us, "payload": args.payload, "epoch_samples": args.epoch_samples,
-              "stream": STREAMS[args.payload], "seconds": args.seconds}
-    pcm = compare_root() / "target" / "compare-media" / "audio" / "audio.s24le"
-    steps.run([sys.executable, str(EDGE_LAB), "sh", CONTRIBUTOR,
-               *sender_command(start, args.seconds, args.payload, args.epoch_samples, out, pcm)],
-              stdout=out / "sender.json", timeout=args.seconds + 180)
-    for path, file in ((f"/api/stalls?since_us={since_us}", "contributor-stalls.ndjson"),
-                       (f"/api/hops?since_us={since_us}&stream={STREAMS[args.payload]}",
-                        "contributor-hops.ndjson"),
-                       ("/api/pacing", "contributor-pacing.json")):
-        steps.run([sys.executable, str(EDGE_LAB), "sh", CONTRIBUTOR, "curl", "-sk",
-                   "--max-time", "60", contributor_url(path)], stdout=out / file, timeout=120)
-    if watch is not None:
-        watch.terminate()
-        watch.wait(timeout=30)
-    if not args.dry:
-        (out / "source-check.json").write_text(json.dumps(record, indent=1) + "\n")
-    steps.run(archive + ["add-tree", args.name, str(out), "--kind", "raw", "--description",
-                         "the source check: sender journal, the contributor's stalls, hops and "
-                         "pacing, the host's watch"])
-    steps.run(archive + ["finish", args.name, "--status",
-                         "failed" if steps.failed else "complete"])
+    steps.run(archive + ["create", args.name, "--kind", "local-lab",
+                         *[item for path in archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT)
+                           for item in ("--code", str(path))]])
+    done = False
+    try:
+        if not args.no_up:
+            steps.run([sys.executable, str(EDGE_LAB), "up"])
+        watch = steps.background([str(NODECHECK), "watch", "--out",
+                                  str(out / "host-watch.ndjson")])
+        now = time.time()
+        start = loop_start(now)
+        since_us = int(now * 1e6)
+        record = {"schema": "needletail.source-check.v1", "name": args.name,
+                  "start_unix": start, "since_us": since_us, "payload": args.payload,
+                  "epoch_samples": args.epoch_samples, "stream": STREAMS[args.payload],
+                  "seconds": args.seconds}
+        pcm = compare_root() / "target" / "compare-media" / "audio" / "audio.s24le"
+        steps.run([sys.executable, str(EDGE_LAB), "sh", CONTRIBUTOR,
+                   *sender_command(start, args.seconds, args.payload, args.epoch_samples, out,
+                                   pcm)],
+                  stdout=out / "sender.json", timeout=args.seconds + 180)
+        for path, file in ((f"/api/stalls?since_us={since_us}", "contributor-stalls.ndjson"),
+                           (f"/api/hops?since_us={since_us}&stream={STREAMS[args.payload]}",
+                            "contributor-hops.ndjson"),
+                           ("/api/pacing", "contributor-pacing.json")):
+            steps.run([sys.executable, str(EDGE_LAB), "sh", CONTRIBUTOR, "curl", "-sk",
+                       "--max-time", "60", contributor_url(path)], stdout=out / file, timeout=120)
+        if watch is not None:
+            watch.terminate()
+            watch.wait(timeout=30)
+        if not args.dry:
+            (out / "source-check.json").write_text(json.dumps(record, indent=1) + "\n")
+        done = True
+    finally:
+        # Whatever the check got, also when it was cut off.
+        steps.run(archive + ["add-tree", args.name, str(out), "--kind", "raw", "--description",
+                             "the source check: sender journal, the contributor's stalls, hops "
+                             "and pacing, the host's watch"])
+        steps.run(archive + ["finish", args.name, "--status",
+                             "failed" if steps.failed or not done else "complete",
+                             *([] if done else ["--reason", "the check was cut off"])])
     if not args.dry:
         print(format_report(analyse(out)))
     for failure in steps.failed:

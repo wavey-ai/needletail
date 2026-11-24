@@ -51,7 +51,8 @@ Timeline, minutes after `up` returns (7.3):
       is replaced at 76 instead and only soaked
   40  S4 Opus Custom 1 ms, 70 s    45  S5 the same, steady, 600 s
   57  S6 PCM 1 ms, 600 s           70  S7 Opus 2.5 ms, 300 s
-  82  collect; `lab hosts` again
+  82  collect (the deploy tool's collect too: every node's journal since
+      boot, its API and samplers into the run archive); `lab hosts` again
   88  down (inside the second billed hour; the watchdog is at 1.9 h)
 A session is the referee's: the contributor restarted, the AEP1 sender at
 the next 64 s boundary (with --lateness-journal), listeners from 12 s after
@@ -82,6 +83,8 @@ import threading
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import archived_run  # noqa: E402
+import run_archive  # noqa: E402
 import small_mesh_common as common  # noqa: E402
 import stall_records  # noqa: E402
 
@@ -665,8 +668,8 @@ class Hunt:
     def archive_create(self) -> None:
         """The run's entry in the archive, before anything is billed."""
         status = self.archive("create", self.run_id, "--kind", "linode-lab",
-                              "--code", str(ROOT), "--code", str(mesh_root()),
-                              "--code", str(contrib_root()),
+                              *[item for path in archived_run.code_paths(mesh_root(), contrib_root())
+                                for item in ("--code", str(path))],
                               "--topology", relative(self.topology_path))
         if status != 0:
             raise RuntimeError("the run archive refused the run: nothing was created")
@@ -1218,14 +1221,33 @@ class Hunt:
         if failures:
             self.runner.say("collect: " + "; ".join(failures))
         # Into the archive before the lab is deleted (a lab whose data was
-        # not collected is a failed run).
-        missing = sorted({line.split(":", 1)[0] for line in failures})
-        self.archive("add-tree", self.run_id, relative(self.out()), "--kind", "raw",
-                     "--description", "the stall hunt: hunt.json, every node's stall and watch "
-                     "records, the sessions' probes, the route survey")
+        # not collected is a failed run): every node's journal since boot,
+        # its API at the end and its samplers' files, and the lab's files,
+        # by the deploy tool's collect; then this hunt's own records. The
+        # run is collected when both are.
+        collected = self.deploy("collect", "--run-id", self.run_id)
+        missing = {line.split(":", 1)[0] for line in failures}
+        if self.archive("add-tree", self.run_id, relative(self.out()), "--kind", "raw",
+                        "--description", "the stall hunt: hunt.json, every node's stall and "
+                        "watch records, the sessions' probes, the route survey") != 0:
+            missing.add(f"{relative(self.out())} (add-tree)")
+        missing = sorted(missing | set(self.deploy_missing(collected)))
         self.archive("collected", self.run_id,
                      *(["--complete"] if not missing else
                        ["--incomplete", *[item for name in missing for item in ("--missing", name)]]))
+
+    def deploy_missing(self, status: int) -> list[str]:
+        """What the deploy tool's collect could not have, as it recorded it
+        in the run (exit 0 or 1), or the collect itself when it was refused."""
+        if self.runner.dry:
+            return []
+        if status not in (0, 1):
+            return [f"deploy collect (exit {status})"]
+        try:
+            manifest = run_archive.RunArchive.open(self.run_id, record=False).manifest
+        except run_archive.ArchiveError as error:
+            return [f"deploy collect ({error})"]
+        return list((manifest.get("collected") or {}).get("missing") or [])
 
     def down(self) -> None:
         """The lab tool's `down`, then this checkout's deploy settings of
