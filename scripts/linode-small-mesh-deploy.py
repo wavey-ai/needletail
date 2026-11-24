@@ -5930,7 +5930,7 @@ def scrubbed_record(deployed: dict) -> dict:
     nodes' build keys and digests kept as they are."""
     if not isinstance(deployed.get("settings"), dict):
         return dict(deployed)
-    return {**deployed, "settings": run_archive.scrub_obj(deployed["settings"])}
+    return {**deployed, "settings": archived_run.scrub_settings(deployed["settings"])}
 
 
 def mesh_worktree() -> pathlib.Path:
@@ -5998,7 +5998,8 @@ def collect_run(state: dict) -> archived_run.Run:
         finish=False)
     settings = (state.get("deployed") or {}).get("settings")
     if settings:
-        run.guarded("record the deploy settings", run.archive.set_deploy_settings, settings)
+        run.guarded("record the deploy settings", run.archive.set_deploy_settings,
+                    archived_run.scrub_settings(settings))
     return run
 
 
@@ -6041,7 +6042,7 @@ def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
         if isinstance(document, dict) and document.get("lab_run_id") == state["run_id"]:
             own[label] = document
     if "settings" in own:
-        run.write_json(f"lab/settings.{stamp}.json", run_archive.scrub_obj(own.pop("settings")),
+        run.write_json(f"lab/settings.{stamp}.json", archived_run.scrub_settings(own.pop("settings")),
                        "settings", "this checkout's settings.json for the lab (scrubbed)")
     elif not deployed.get("settings"):
         missing.append("lab/settings")

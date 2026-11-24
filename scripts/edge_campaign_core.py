@@ -526,6 +526,13 @@ class CampaignRecord:
         (directory / "stalls" / "http-status.json").write_text(json.dumps(statuses, indent=1) + "\n")
 
     def scenario(self, item: Scenario, directory: pathlib.Path, since_us: int) -> None:
+        """The scenario's records into the run. Never raises: it runs in
+        run_scenario's `finally`, where an error would replace the
+        scenario's own result and end the campaign; a failure is kept and
+        fails the run."""
+        self.run.guarded(f"keep scenario {item.name}", self.keep, item, directory, since_us)
+
+    def keep(self, item: Scenario, directory: pathlib.Path, since_us: int) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         try:
             self.journals(directory, since_us)

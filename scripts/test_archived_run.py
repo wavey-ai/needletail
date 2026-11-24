@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -97,6 +98,42 @@ class Runs(Base):
         self.assertEqual((outcome["tool"], outcome["status"], outcome["reason"]),
                          ("linode-autoscale", "failed", "the controller failed"))
 
+    def test_an_opened_run_s_settings_are_scrubbed(self):
+        ra.RunArchive.create("lab3", "linode-lab", tool="linode-stall-hunt.py", argv=["h"],
+                             root=self.root)
+        with archived_run.Run("lab3", "local-lab", "latency-bench", argv=["b"], prefix="p1/",
+                              settings={"name": "p1", "livekit_api_secret": "s3cret-value",
+                                        "args": ["--token", "tok-value-123"]}):
+            pass
+        text = (self.root / "lab3" / "p1" / "settings.json").read_text()
+        self.assertNotIn("s3cret-value", text)
+        self.assertNotIn("tok-value-123", text)
+        self.assertEqual(json.loads(text)["name"], "p1")
+        with archived_run.Run("r10", "local-lab", "change-run", argv=["c"],
+                              settings={"command": ["roll", "--api-key", "k-value-456"]}):
+            pass
+        self.assertEqual(self.manifest("r10")["deploy_settings"]["command"],
+                         ["roll", "--api-key", ra.SCRUBBED])
+
+    def test_a_close_step_that_raises_anything_still_ends_the_run_failed(self):
+        with redirect_stderr(StringIO()):
+            with archived_run.Run("r8", "local-lab", "latency-bench", argv=["x"]) as run:
+                run.at_close(lambda: {}["lane"])
+                run.at_close(lambda: run.write_json("after.json", {}))
+        manifest = self.manifest("r8")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("KeyError", manifest["status_reason"])
+        self.assertIn("after.json", {item["path"] for item in manifest["files"]})
+
+    def test_an_opened_run_whose_settings_cannot_be_written_is_still_made(self):
+        ra.RunArchive.create("lab4", "linode-lab", tool="linode-stall-hunt.py", argv=["h"],
+                             root=self.root)
+        with redirect_stderr(StringIO()) as err:
+            with archived_run.Run("lab4", "local-lab", "change-run", argv=["c"],
+                                  settings={"plan": {1, 2}}) as run:
+                self.assertEqual(run.run_id, "lab4")
+        self.assertIn("run archive lab4: write settings.json failed", err.getvalue())
+
     def test_finish_false_leaves_a_run_it_made_running(self):
         with archived_run.Run("lab2", "linode-lab", "linode-autoscale", argv=["a"],
                               finish=False) as run:
@@ -117,6 +154,29 @@ class Runs(Base):
             run.add_tree(work, "bench", "raw", "a pass", since_s=since)
         paths = {item["path"] for item in self.manifest("r4")["files"]}
         self.assertEqual(paths, {"bench/hops.json", "bench/sub/plan.json"})
+
+
+class Signals(Base):
+    def test_sigterm_unwinds_the_run_and_a_second_one_waits_for_its_copies(self):
+        with redirect_stderr(StringIO()) as err:
+            with self.assertRaises(SystemExit) as stop:
+                with archived_run.stopped_by_signals():
+                    with archived_run.Run("r9", "local-lab", "edge-campaign", argv=["x"]) as run:
+
+                        def close_step():
+                            os.kill(os.getpid(), signal.SIGTERM)
+                            run.write_json("kept.json", {"ok": True})
+
+                        run.at_close(close_step)
+                        os.kill(os.getpid(), signal.SIGTERM)
+                        time.sleep(5)
+        self.assertEqual(stop.exception.code, 128 + signal.SIGTERM)
+        manifest = self.manifest("r9")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["status_reason"], "Stopped: SIGTERM")
+        self.assertIn("kept.json", {item["path"] for item in manifest["files"]})
+        self.assertIn("still keeping the run's data", err.getvalue())
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
 
 
 class CodeHeads(Base):

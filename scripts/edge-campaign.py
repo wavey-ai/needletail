@@ -3472,7 +3472,11 @@ def main() -> None:
                 index += 1
         items = select(rest, slow)
         core.guard.require_frozen(core.guard.lab_binaries())
-        with core.guard.hold("edge-campaign.py run " + " ".join(arguments)):
+        # SIGTERM or SIGHUP (kill, timeout, a closed pane) unwinds the run
+        # as Ctrl-C does: the scenario in hand and the run's end still go
+        # into the archive.
+        with archived_run.stopped_by_signals(), \
+                core.guard.hold("edge-campaign.py run " + " ".join(arguments)):
             directory = out or core.RUNS / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
             directory.mkdir(parents=True, exist_ok=True)
             core.RUNS.mkdir(parents=True, exist_ok=True)

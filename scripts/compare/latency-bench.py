@@ -2112,7 +2112,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(steps, indent=1))
         return 0
     guard.require_frozen(run_binaries(args, steps))
-    with guard.hold(f"latency-bench.py --name {args.name}"):
+    # SIGTERM or SIGHUP (first-session's timeout, kill) unwinds the pass as
+    # Ctrl-C does: its files and node logs still go into the archive.
+    with archived_run.stopped_by_signals(), guard.hold(f"latency-bench.py --name {args.name}"):
         if steps["lab_up"] is None:
             # The lab runs already: what it runs is what its `up` took,
             # checked once this pass holds it.

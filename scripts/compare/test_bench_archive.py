@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -128,6 +129,30 @@ class Pass(Base):
         self.assertIn("p1/lon-readers.uc0.arrivals.csv", paths)
         self.assertIn("p1/node-logs/lon-edge-1.log", paths)
         self.assertEqual(self.order, ["up", ("down", True)])
+
+    def test_a_pass_ended_by_sigterm_is_kept_and_its_run_failed(self):
+        # first-session ends a pass past its time with SIGTERM.
+        def measured(args, steps, out):
+            self.write_pass(out)
+            os.kill(os.getpid(), signal.SIGTERM)
+            raise AssertionError("SIGTERM did not stop the pass")
+
+        with mock.patch.object(bench, "measure", measured), \
+                mock.patch.object(bench.hops, "read_sender_summary", lambda path: None), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as stop:
+            bench.main(["--name", "p1", "--ntcmp", str(self.dir / "ntcmp"), "--udp-clients", "1",
+                        "--udp-client", str(self.dir / "ntcmp"), "--run-id", "b4"])
+        self.assertEqual(stop.exception.code, 128 + signal.SIGTERM)
+        manifest = self.manifest("b4")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["status_reason"], "Stopped: SIGTERM")
+        paths = {entry["path"] for entry in manifest["files"]}
+        self.assertIn("p1/lon-readers.uc0.arrivals.csv", paths)
+        self.assertIn("p1/node-logs/lon-edge-1.log", paths)
+        self.assertEqual(self.order, ["up", ("down", True)])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
 
     def test_a_run_that_exists_is_appended_to_under_the_pass_s_name(self):
         ra.RunArchive.create("fs1", "local-lab", tool="first-session", argv=["fs"], root=self.root)

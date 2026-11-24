@@ -195,7 +195,13 @@ that already exists is opened to append to (another tool's run, under a prefix).
 The manifest records the heads of the five worktrees in use
 (`archived_run.code_paths`), the settings, the topology, the regions and the
 listener steps that apply. A run ends failed when an exception ends it or when a
-write into the archive failed. A run that the tool did not make is not ended by
+write into the archive failed. SIGTERM and SIGHUP (`kill`, `timeout`, a closed tmux
+pane) unwind `edge-campaign.py run` and `latency-bench.py` as Ctrl-C does
+(`archived_run.stopped_by_signals`; change-run has its own): the copies are made, the
+run ends failed, and the tool exits 128 + the signal. `first-session.py` gives a
+step past its time SIGTERM, and SIGKILL only 120 s later. Settings are scrubbed as
+the archive scrubs deploy settings, and a list of strings (a command a tool runs) as
+a command line. A run that the tool did not make is not ended by
 it: the tool's outcome goes to `outcomes.ndjson` under its prefix.
 
 | Tool | Run id | What it keeps |

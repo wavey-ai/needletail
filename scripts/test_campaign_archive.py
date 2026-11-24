@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import sys
 import tempfile
 import unittest
@@ -160,6 +161,59 @@ class CampaignRun(Base):
         self.assertIn("scenarios/baseline/audio.reader.log", paths)
         self.assertIn("scenarios/baseline/node-logs/lon-edge-1.log", paths)
         self.assertIn("scenarios/baseline/hops.raw.ndjson", paths)
+
+    def test_a_campaign_ended_by_sigterm_keeps_the_scenario_and_fails_the_run(self):
+        def evidence(item, directory, sample):
+            self.evidence(item, directory, sample)
+            os.kill(os.getpid(), signal.SIGTERM)
+            raise AssertionError("SIGTERM did not stop the scenario")
+
+        with mock.patch.object(core, "scenario_evidence", evidence), \
+                mock.patch.object(sys, "argv", ["edge-campaign.py", "run", "--out",
+                                                str(self.work / "r6"), "--run-id", "camp6",
+                                                "baseline", "reader-delay-20ms"]), \
+                redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stop:
+            campaign.main()
+        self.assertEqual(stop.exception.code, 128 + signal.SIGTERM)
+        manifest = self.manifest("camp6")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["status_reason"], "Stopped: SIGTERM")
+        paths = {entry["path"] for entry in manifest["files"]}
+        self.assertIn("scenarios/baseline/evidence.json", paths)
+        self.assertIn("scenarios/baseline/node-logs/lon-edge-1.log", paths)
+        self.assertIn("summary.json", paths)
+        self.assertFalse(any(path.startswith("scenarios/reader-delay-20ms/") for path in paths))
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+
+    def test_a_scenario_s_archive_step_that_raises_never_replaces_its_result(self):
+        def node(name):
+            raise lab.LabError(f"no node {name}")
+
+        with mock.patch.object(lab, "node", node), redirect_stdout(io.StringIO()), \
+                mock.patch.object(sys, "stderr", io.StringIO()):
+            self.run_campaign("run", "--out", str(self.work / "r7"), "--run-id", "camp7",
+                              "baseline", "reader-delay-20ms")
+        manifest = self.manifest("camp7")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("keep scenario baseline: LabError", manifest["status_reason"])
+        self.assertTrue((self.work / "r7" / "reader-delay-20ms" / "evidence.json").is_file(),
+                        "the campaign went on to its next scenario")
+
+    def test_the_run_records_the_five_worktrees_of_the_lab_s_binaries(self):
+        asked = []
+        trees = [self.work / name for name in ("needletail-x", "av-mesh-x", "av-contrib-x",
+                                               "playlists-x", "daw-nexus-x")]
+
+        def code_paths(mesh, contrib):
+            asked.append((mesh, contrib))
+            return trees
+
+        with mock.patch.object(archived_run, "code_paths", code_paths):
+            self.run_campaign("run", "--out", str(self.work / "r8"), "--run-id", "camp8",
+                              "baseline")
+        self.assertEqual(asked, [(lab.MESH_ROOT, lab.CONTRIB_ROOT)])
+        self.assertEqual(sorted(self.manifest("camp8")["code_heads"]),
+                         sorted(tree.name for tree in trees))
 
     def test_a_failed_journal_pull_fails_the_run_and_keeps_the_rest(self):
         def broken():

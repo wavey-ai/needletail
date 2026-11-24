@@ -15,6 +15,8 @@ import importlib.util
 import io
 import json
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -236,6 +238,21 @@ class FirstSession(unittest.TestCase):
         self.assertTrue(archive[2][2].endswith("lab2"))
         self.assertEqual(archive[3][2:], ["--status", "failed", "--reason",
                                           "the run was cut off"])
+
+    def test_a_step_past_its_timeout_gets_sigterm_before_sigkill(self):
+        # A latency-bench pass then keeps its files in the run archive.
+        with tempfile.TemporaryDirectory() as directory:
+            said = pathlib.Path(directory) / "said"
+            program = ("import pathlib, signal, sys, time\n"
+                       f"def term(*_):\n    pathlib.Path({str(said)!r}).write_text('term')\n"
+                       "    sys.exit(3)\n"
+                       "signal.signal(signal.SIGTERM, term)\n"
+                       "time.sleep(30)\n")
+            steps = first_session.Steps(False)
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaises(subprocess.TimeoutExpired):
+                steps.run([sys.executable, "-c", program], timeout=1.0)
+            self.assertEqual(said.read_text(), "term")
 
     def test_the_preflight_reads_the_lab_s_dispatch_not_its_usage(self):
         with tempfile.TemporaryDirectory() as directory:

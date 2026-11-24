@@ -65,6 +65,8 @@ BENCH = HERE / "latency-bench.py"
 BENCH_OUT = ROOT / "target" / "latency-bench"
 ARCHIVE_TOOL = ROOT / "scripts" / "run_archive.py"
 OUT = ROOT / "target" / "first-session"
+# A step past its timeout gets SIGTERM, then SIGKILL this much later.
+STOP_GRACE_S = 120.0
 CONTRIBUTOR = "contrib-lon"
 MESH_ROLES = ("contributor", "distributor", "edge")
 # What workstream C's CL1 gives the lab (C-operations.md 2.12) and this
@@ -110,8 +112,19 @@ class Steps:
         if self.dry:
             return 0
         with open(stdout, "wb") if stdout else open(os.devnull, "wb") as handle:
-            status = subprocess.run(command, stdout=handle if stdout else None,
-                                    timeout=timeout).returncode
+            process = subprocess.Popen(command, stdout=handle if stdout else None)
+            try:
+                status = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # SIGTERM first: a latency-bench pass then keeps its files
+                # in the run archive before it ends; SIGKILL after a grace.
+                process.terminate()
+                try:
+                    process.wait(timeout=STOP_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise
         if status != 0:
             self.failed.append(f"{line}: exit {status}")
         return status

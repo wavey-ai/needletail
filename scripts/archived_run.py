@@ -20,6 +20,10 @@ the one way the tools do it:
   finish=False (a Linode lab's run, which its collect and down end), is
   not ended here: the tool's outcome is appended to `outcomes.ndjson`
   under its prefix instead.
+- `stopped_by_signals()`: while held, SIGTERM and SIGHUP unwind the tool
+  as an exception does (`Stopped`), so that its close steps and the
+  run's end still happen when it is killed politely (`kill`, `timeout`,
+  a closed tmux pane); it then exits 128 + the signal.
 - `LogSlices`: the local lab's node logs (edge_lab's WORK/logs) copied
   into the run as slices of what each gained since the last slice; the
   lab's `up` deletes its logs, so a tool takes a slice before each `up`
@@ -28,12 +32,15 @@ the one way the tools do it:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import pathlib
 import shutil
+import signal
 import sys
 import tempfile
+import threading
 import time
 
 import run_archive as ra
@@ -74,6 +81,19 @@ def local_topology(nodes) -> tuple[dict, list[str]]:
     return {"nodes": listed}, sorted({item["region"] for item in listed if item["region"]})
 
 
+def scrub_settings(value, key: str = ""):
+    """A tool's settings as the archive keeps them: run_archive.scrub_obj
+    (secret-named keys, token-shaped strings), and a list of strings, such
+    as a command a tool runs, scrubbed as a command line (`--token X`)."""
+    if isinstance(value, dict):
+        return {name: scrub_settings(item, str(name)) for name, item in value.items()}
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        return ra.scrub_obj(ra.scrub_argv(value), key)
+    if isinstance(value, list):
+        return [scrub_settings(item, key) for item in value]
+    return ra.scrub_obj(value, key)
+
+
 def fresh_files(directory: pathlib.Path, since_s: float) -> list[pathlib.Path]:
     """The regular files under `directory` written at `since_s` or later
     (not what an earlier pass left there); symlinks are left out."""
@@ -101,20 +121,21 @@ class Run:
         self.closers: list = []
         self.status = "complete"
         self.reason: str | None = None
+        self.run_id = run_id
         self.made = not (self.root / run_id / ra.MANIFEST).is_file()
         if self.made:
             self.archive = ra.RunArchive.create(
-                run_id, kind, tool=tool, argv=argv, code_paths=code, deploy_settings=settings,
+                run_id, kind, tool=tool, argv=argv, code_paths=code,
+                deploy_settings=None if settings is None else scrub_settings(settings),
                 topology=topology, topology_nodes=topology_nodes, regions=regions, root=self.root)
         else:
             self.archive = ra.RunArchive.open(run_id, tool=tool, argv=argv, root=self.root)
             if settings is not None:
-                self.write_json("settings.json", ra.scrub_obj(settings), "settings",
+                self.write_json("settings.json", scrub_settings(settings), "settings",
                                 f"{tool}'s settings in this run")
             if code:
                 self.write_json("code-heads.json", ra.code_heads(code), "settings",
                                 f"the code heads of {tool}'s worktrees")
-        self.run_id = run_id
         self.finish_run = finish and self.made
 
     @property
@@ -124,9 +145,12 @@ class Run:
     # -- writes: never raise; a failure is kept and fails the run
 
     def guarded(self, what: str, function, *args, **kwargs):
+        """function(...), or None when it raised an Exception (a bug in a
+        copy included): said and kept, so the run still ends, failed."""
         try:
             return function(*args, **kwargs)
-        except (ra.ArchiveError, OSError, ValueError, TypeError) as error:
+        except Exception as error:  # noqa: BLE001 - the run's end must still happen
+            error = f"{type(error).__name__}: {error}"
             self.problems.append(f"{what}: {error}")
             print(f"run archive {self.run_id}: {what} failed: {error}", file=sys.stderr, flush=True)
             return None
@@ -220,6 +244,50 @@ def head_digest(path: pathlib.Path, length: int) -> str | None:
     except OSError:
         return None
     return hashlib.sha256(head).hexdigest() if len(head) == length else None
+
+
+class Stopped(BaseException):
+    """SIGTERM or SIGHUP, raised in the main thread so that the tool
+    unwinds (its `finally` and close steps run) as on Ctrl-C."""
+
+    def __init__(self, signum: int):
+        super().__init__(signal.Signals(signum).name)
+        self.signum = signum
+
+
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+@contextlib.contextmanager
+def stopped_by_signals():
+    """While held, the first SIGTERM or SIGHUP raises Stopped; another one
+    while the tool cleans up is only said, so the copies into the archive
+    finish (SIGKILL still stops it at once). Stopped ends the block as
+    SystemExit(128 + the signal). Off the main thread, where Python takes
+    no handler, nothing is installed."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {signum: signal.getsignal(signum) for signum in STOP_SIGNALS}
+
+    def later(signum, _frame) -> None:
+        print(f"{signal.Signals(signum).name}: still keeping the run's data (SIGKILL stops it "
+              "now)", file=sys.stderr, flush=True)
+
+    def first(signum, _frame) -> None:
+        for item in STOP_SIGNALS:
+            signal.signal(item, later)
+        raise Stopped(signum)
+
+    for signum in STOP_SIGNALS:
+        signal.signal(signum, first)
+    try:
+        yield
+    except Stopped as stop:
+        raise SystemExit(128 + stop.signum) from None
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 class LogSlices:
