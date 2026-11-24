@@ -9,8 +9,9 @@ from the same host in London to the same viewers in London, New York, Tokyo
 and Sydney, on a lab of dedicated-CPU instances only. The same lab measured
 the mesh itself hop by hop and the three tiers of Needletail's design.
 
-Needletail was measured on eight builds of `low-latency`; the latest four,
-waves 9, 7, 6 and 5, are first below (wave 8 had no 4K run). The earlier four: wave 1 (21 November,
+Needletail was measured on eight builds of `low-latency` and then on the
+lead's `resilient-mesh` build; the latest five (resilient-mesh, waves 9, 7, 6
+and 5) are first below (wave 8 had no 4K run). The earlier four: wave 1 (21 November,
 evening), wave 2 (night, the smallest-frame defaults), wave 3 (a new relay
 receive loop and class-isolated lanes, measured on 22 November at 02:38) and
 wave 4 (edge and forwarder changes and UDP GSO for 4K, measured at 03:18, with
@@ -20,7 +21,122 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Latest: wave 9 (24 November, morning)
+## Latest: the resilient-mesh build against LiveKit (24 November, evening)
+
+**On the lead's resilient-mesh build, Needletail's UDP client carried 4K
+whole to every region at every rate up to 160 Mbit/s. In London, New York and
+Tokyo it was also whole at 320. Self-hosted LiveKit (an SFU in each region),
+in the same lab and the same hour, carried 80 Mbit/s in London and New York,
+40 in Tokyo and 120 in Sydney.** The rule is this record's: the better of a
+region's two listeners had 99.5% of frames on time and no stall over 500 ms.
+
+The 240 Mbit/s step was lost to the out-of-memory killer, not to the
+network. With the processes restarted, 240 was whole everywhere, twice in a
+row. The memory use below means none of the rates above 160 can be held for
+long on these 4 GB nodes.
+
+Highest rate carried whole (Mbit/s), sweep `video-w10`; in brackets, where
+lower, the highest of an unbroken run from the bottom:
+
+| Region | Needletail, UDP | LiveKit, SFU in each region | Needletail, LL-HLS (not scored) |
+| --- | ---: | ---: | ---: |
+| London | 320 (160) | 80 | 160 |
+| New York | 320 (160) | 80 | 160 |
+| Tokyo | 320 (160) | 40 | 160 |
+| Sydney | 160 | 120 (40) | 320 (160) |
+
+Frames on time and median delay after the frame was due, at the better
+listener, Needletail UDP against LiveKit:
+
+| Mbit/s | London | New York | Tokyo | Sydney |
+| --- | --- | --- | --- | --- |
+| 25 | 100%, 10.5 ms / 100%, 18.7 ms | 100%, 46.7 / 100%, 53.8 | 100%, 116.7 / 100%, 127.4 | 100%, 139.7 / 100%, 144.0 |
+| 40 | 100%, 12.4 / 100%, 18.7 | 100%, 49.1 / 100%, 53.7 | 100%, 119.1 / 100%, 127.5 | 100%, 139.7 / 100%, 143.4 |
+| 80 | 100%, 17.6 / 100%, 20.2 | 100%, 56.3 / 100%, 55.5 | 100%, 125.6 / 92.3% (stall 1.96 s) | 100%, 146.8 / 96.8% (stall 1.0 s) |
+| 120 | 100%, 23.4 / 65.1% (stall 3.5 s) | 100%, 65.0 / 57.8% (stall 3.1 s) | 100%, 132.7 / 56.1% (stall 4.6 s) | 100%, 155.6 / 100%, 144.8 |
+| 160 | 100%, 26.4 / – | 100%, 70.9 / – | 100%, 141.7 / – | 100%, 162.3 / – |
+| 240 | 62.6% (OOM) / – | 62.6% (OOM) / – | 44.7% (OOM) / – | 52.3% (OOM) / – |
+| 320 | 100%, 56.9 / – | 100%, 101.4 / – | 100%, 185.6 / – | stuck clients / – |
+
+LiveKit's sweep ended at 120, its second rung in a row that the sweep's own
+check found whole nowhere.
+
+What happened at 240 and 320:
+- **Memory.** av-mesh's resident memory grew with every rung and was never
+  returned. On lon-dist-a: 1.4 GB at 25 Mbit/s, then 1.7, 2.2, 2.9 and 3.6 GB
+  by the end of 160.
+- **The kill.** During the 240 step the kernel killed every mesh node's
+  av-mesh for memory, about 3.8 GB resident on a 4 GB node, and systemd
+  restarted it. It went down the tree: London forwarders 10 to 13 s into the
+  step, the regional forwarders by 19 s, the edges at 27 to 40 s.
+  - Every mesh node's heartbeat stopped for 2 to 6 s in that step.
+  - The measurement hosts did not stop (none over 26 ms in any scored step).
+- **320 on fresh processes.** The restarted processes carried 320 whole, but
+  one 40 s step at 320 took lon-dist-a from 2.1 to 3.6 GB.
+- **240 on fresh processes.** After a restart of every mesh service, one 240
+  step was whole over UDP in all four regions, and so was a second step
+  straight after it. One 40 s step took the nodes from 0.45 to 2.0–2.5 GB,
+  and the second to 3.3–3.7 GB. tok-dist-a was killed again in the last
+  second of the second step. So a 4 GB node runs out in its third 40 s step
+  at 240.
+- **The lead's reading.** The video window is sized in time, not bytes, and
+  the allocator keeps 256 MB of freed memory. A fix is being built: the
+  window bounded in bytes, memory returned, and a guard that sheds cache
+  before the kernel kills the process.
+- **Sydney's UDP viewers at 320 were stuck.** Each received one part (1,124
+  datagrams) from syd-edge-2 and nothing after, on both hosts. Sydney's
+  LL-HLS listeners were whole at 320. This looks like the lead's known fault:
+  a listener that joins as a source session starts can stick, and the
+  contributor restarts at every rung.
+
+The 1 ms audio lane ran through every 4K step, on before the probes. It was
+the audio headline's PCM, 48-sample parts, with two-path listeners (one leg
+on the 4K edge).
+- The UDP audio listener lost nothing, and its p99 mouth to ear stayed
+  within 1 to 10 ms of its 25 Mbit/s figure at every rate up to 320
+  (London 3.6 to 7.2 ms, Sydney 129 to 137 ms). The exception is the
+  out-of-memory step, where it lost 12% to 49% of units.
+- The LL-HLS audio listener on the -nano hosts, also on those edges, lost
+  next to nothing but slowed as the 4K rate rose:
+  - p99 56 to 265 ms at 160 Mbit/s;
+  - medians of 1.5 to 16 s at 320;
+  - in Tokyo, 3.0 s median at 240 on fresh processes.
+
+  The nano hosts were 55% to 65% busy. The cause is open.
+- Table: `evidence/20261124-4k-wave10-video-audio.md`.
+
+Warm-up:
+- Every guest was warmed before any measured window. Every node ran the
+  build's own pass, and the harness ran a second pass on every non-mesh
+  host. Then one unscored 4K pass at 25 and 80 ran on both systems.
+- The build's pass took 0.4 to 213 s a node, with worst single writes of 2
+  to 7,479 ms. All four Sydney mesh nodes, among others, took 0.4 s. The
+  table, with each node's physical host, is in
+  `evidence/20261124-4k-wave10-warm-table.txt`.
+- Its slow-host rule replaced four edges at deploy. It marks a host slow on
+  any one write of 1 s or more, and the lead found that too strict; the rest
+  of the run used `--slow-host report`.
+
+Build, lab and cost:
+- Build: av-mesh `df6414c`, playlists `84e5429`, av-contrib `703fe82`,
+  daw-nexus `852b0e7`, needletail `c818421` (merged into compare-cloudflare
+  as `15b8bf6`). Settings: deploy defaults plus PCM in `daw_hls_formats`;
+  GSO and GRO on, THP unchanged, 1,316-byte symbols.
+- Lab `cmpd7`, 20:04 to 21:04 UTC: 31 dedicated instances in London, New
+  York, Tokyo and Sydney (`deploy/compare-cloudflare/topology-4k-lk.json`).
+  Two forwarders and two edges a region, an SFU a region and its Redis, the
+  usual measurement hosts.
+- Cost: $2.16 (35 instance-hours, the replaced edges included).
+- Sessions: `warmup-4k10` (not scored), `video-w10`, `video-w10-240fresh`,
+  `video-w10-240second`.
+- Evidence:
+  - `evidence/20261124-4k-wave10-scoreboard.md` and `.json`: per region and
+    rung, with host-stop marks;
+  - `-analysis.json`, `-host-stops.md` and `.json`, `-video-audio.md` and
+    `.json`, `-warm-table.txt`;
+  - raw data in the archive, run `cmpd7`.
+
+## Wave 9 (24 November, morning)
 
 **By this record's rule, wave 9 carried nothing whole over UDP, and over
 LL-HLS only Sydney at 25 and 40 Mbit/s.** (The rule: the better of a region's

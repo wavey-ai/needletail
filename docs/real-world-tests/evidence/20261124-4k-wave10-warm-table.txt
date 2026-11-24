@@ -1,0 +1,32 @@
+node         role         region        host          warm_s worst_ms  flag
+tok-dist-a   distributor  ap-northeast  06b7abc1ae05    32.3     1320  SLOW HOST page-stall
+tok-dist-b   distributor  ap-northeast  e6512204a1fa    24.8      699  
+tok-edge-1   edge         ap-northeast  7397da49e99a    97.4     5301  SLOW HOST page-stall
+tok-edge-2   edge         ap-northeast  2800c4525f3c    33.8      829  
+tok-lk       livekit      ap-northeast  70d4556a31d4   212.9     7479  SLOW HOST page-stall,slow-pass
+tok-nano     load         ap-northeast  be1e9ad570f6    83.6     4848  SLOW HOST page-stall
+tok-view     load         ap-northeast  37e90ad1c319    49.9     1200  SLOW HOST page-stall
+syd-dist-a   distributor  ap-southeast  3c782e260448     0.4        4  
+syd-dist-b   distributor  ap-southeast  12acb0c35e23     0.4        8  
+syd-edge-1   edge         ap-southeast  12acb0c35e23     0.4        5  
+syd-edge-2   edge         ap-southeast  b16724f3cfde     0.4        7  
+syd-lk       livekit      ap-southeast  880efba02e64    26.8     2082  SLOW HOST page-stall
+syd-nano     load         ap-southeast  652c5274c136    53.8     2161  SLOW HOST page-stall
+syd-view     load         ap-southeast  b16724f3cfde     0.4        9  
+contrib-lon  contributor  gb-lon        cbb29c0e83f9    40.5     1174  SLOW HOST page-stall
+lk-redis     livekit      gb-lon        ba3d0f8271c4    59.9     1444  SLOW HOST page-stall
+lon-dist-a   distributor  gb-lon        e272bb529fe6    20.5      507  
+lon-dist-b   distributor  gb-lon        63696a2f60ac    18.7      437  
+lon-edge-1   edge         gb-lon        cdb895e57a99    22.5     1574  SLOW HOST page-stall
+lon-edge-2   edge         gb-lon        8cec76ff6464     0.4        2  
+lon-lk       livekit      gb-lon        61ad92789db7    20.4      511  
+lon-nano     load         gb-lon        895a4e7b45ce    45.3     1283  SLOW HOST page-stall
+lon-src      load         gb-lon        c1075c2f0e27    58.7     1464  SLOW HOST page-stall
+lon-view     load         gb-lon        dabf04f5d803    43.4     1377  SLOW HOST page-stall
+new-dist-a   distributor  us-east       9fc719cedd83    28.5     2396  SLOW HOST page-stall
+new-dist-b   distributor  us-east       13ddbd8046b4     0.4        8  
+new-edge-1   edge         us-east       9fc719cedd83    34.0      626  
+new-edge-2   edge         us-east       5695612899ac    22.0      204  
+new-lk       livekit      us-east       9ebabf5e265a    31.5     1637  SLOW HOST page-stall
+new-nano     load         us-east       b5f1282a6607    20.9      445  
+new-view     load         us-east       6f50c475362a    15.9      399  

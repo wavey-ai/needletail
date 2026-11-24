@@ -1,0 +1,1326 @@
+{
+ "analysis": "target/compare/evidence-4k10/video-w10-analysis.json",
+ "session": "video-w10",
+ "rungs": [
+  "2160p25",
+  "2160p40",
+  "2160p80",
+  "2160p120",
+  "2160p160",
+  "2160p240",
+  "2160p320"
+ ],
+ "ceilings": [
+  {
+   "region": "London",
+   "needletail": {
+    "highest": 320,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 80,
+    "unbroken": 80,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": false
+    },
+    "ran": true
+   },
+   "needletail_llhls": {
+    "highest": 160,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": false
+    },
+    "ran": true
+   },
+   "result": "win"
+  },
+  {
+   "region": "New York",
+   "needletail": {
+    "highest": 320,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 80,
+    "unbroken": 80,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": false
+    },
+    "ran": true
+   },
+   "needletail_llhls": {
+    "highest": 160,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": false
+    },
+    "ran": true
+   },
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "needletail": {
+    "highest": 320,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 40,
+    "unbroken": 40,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": false,
+     "2160p120": false
+    },
+    "ran": true
+   },
+   "needletail_llhls": {
+    "highest": 160,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": false
+    },
+    "ran": true
+   },
+   "result": "win"
+  },
+  {
+   "region": "Sydney",
+   "needletail": {
+    "highest": 160,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": false
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 120,
+    "unbroken": 40,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": false,
+     "2160p120": true
+    },
+    "ran": true
+   },
+   "needletail_llhls": {
+    "highest": 320,
+    "unbroken": 160,
+    "by_rung": {
+     "2160p25": true,
+     "2160p40": true,
+     "2160p80": true,
+     "2160p120": true,
+     "2160p160": true,
+     "2160p240": false,
+     "2160p320": true
+    },
+    "ran": true
+   },
+   "result": "win"
+  }
+ ],
+ "rows": [
+  {
+   "region": "London",
+   "rung": "2160p25",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "London",
+   "rung": "2160p25",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 10.5,
+   "livekit": 18.7,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "London",
+   "rung": "2160p25",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "London",
+   "rung": "2160p40",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "London",
+   "rung": "2160p40",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 12.4,
+   "livekit": 18.7,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "London",
+   "rung": "2160p40",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "London",
+   "rung": "2160p80",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "London",
+   "rung": "2160p80",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 17.6,
+   "livekit": 20.2,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "London",
+   "rung": "2160p80",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "London",
+   "rung": "2160p120",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 65.107,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "London",
+   "rung": "2160p120",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 23.4,
+   "livekit": 23.3,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "loss"
+  },
+  {
+   "region": "London",
+   "rung": "2160p120",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 3542,
+   "needletail_host": "lon-view",
+   "livekit_host": "lon-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "London",
+   "rung": "2160p160",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "lon-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p160",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 26.4,
+   "livekit": null,
+   "needletail_host": "lon-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p160",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "lon-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 62.581,
+   "livekit": null,
+   "needletail_host": "lon-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 41.9,
+   "livekit": null,
+   "needletail_host": "lon-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 7500,
+   "livekit": null,
+   "needletail_host": "lon-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p320",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "lon-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p320",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 56.9,
+   "livekit": null,
+   "needletail_host": "lon-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p320",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "lon-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p25",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p25",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 46.7,
+   "livekit": 53.8,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p25",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p40",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": {
+    "new-view": 25.7
+   },
+   "livekit_stopped": {
+    "new-view": 22.4
+   },
+   "result": "tie"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p40",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 49.1,
+   "livekit": 53.7,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": {
+    "new-view": 25.7
+   },
+   "livekit_stopped": {
+    "new-view": 22.4
+   },
+   "result": "win"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p40",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": {
+    "new-view": 25.7
+   },
+   "livekit_stopped": {
+    "new-view": 22.4
+   },
+   "result": "tie"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p80",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p80",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 56.3,
+   "livekit": 55.5,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "loss"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p80",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p120",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 57.76,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p120",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 65.0,
+   "livekit": 56.6,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "loss"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p120",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 3125,
+   "needletail_host": "new-view",
+   "livekit_host": "new-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p160",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p160",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 70.9,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p160",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 62.63,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 87.3,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 6083,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p320",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "new-view": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p320",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 101.4,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "new-view": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p320",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "new-view": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p25",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p25",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 116.7,
+   "livekit": 127.4,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p25",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p40",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p40",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 119.1,
+   "livekit": 127.5,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p40",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p80",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 92.287,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p80",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 125.6,
+   "livekit": 126.7,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p80",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 1958,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-view",
+   "needletail_stopped": {
+    "lon-src": 24.8
+   },
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p120",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 56.133,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-nano",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p120",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 132.7,
+   "livekit": 134.2,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-nano",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p120",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 4583,
+   "needletail_host": "tok-view",
+   "livekit_host": "tok-nano",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p160",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p160",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 141.7,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p160",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 44.706,
+   "livekit": null,
+   "needletail_host": "tok-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 172.8,
+   "livekit": null,
+   "needletail_host": "tok-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 10838,
+   "livekit": null,
+   "needletail_host": "tok-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p320",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p320",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 185.6,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p320",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p25",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p25",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 139.7,
+   "livekit": 144.0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p25",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p40",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p40",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 139.7,
+   "livekit": 143.4,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p40",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-view",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p80",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 96.817,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-nano",
+   "needletail_stopped": {
+    "lon-src": 24.8,
+    "syd-nano": 20.5
+   },
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p80",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 146.8,
+   "livekit": 144.0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-nano",
+   "needletail_stopped": {
+    "lon-src": 24.8,
+    "syd-nano": 20.5
+   },
+   "livekit_stopped": null,
+   "result": "loss"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p80",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 1000,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-nano",
+   "needletail_stopped": {
+    "lon-src": 24.8,
+    "syd-nano": 20.5
+   },
+   "livekit_stopped": null,
+   "result": "win"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p120",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": 100.0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-nano",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p120",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 155.6,
+   "livekit": 144.8,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-nano",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "loss"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p120",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": 0,
+   "needletail_host": "syd-view",
+   "livekit_host": "syd-nano",
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "tie"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p160",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "syd-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p160",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 162.3,
+   "livekit": null,
+   "needletail_host": "syd-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p160",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "syd-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 52.282,
+   "livekit": null,
+   "needletail_host": "syd-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 214.5,
+   "livekit": null,
+   "needletail_host": "syd-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 9583,
+   "livekit": null,
+   "needletail_host": "syd-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p320",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": null,
+   "livekit": null,
+   "needletail_host": "syd-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p320",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": null,
+   "livekit": null,
+   "needletail_host": "syd-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p320",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": null,
+   "livekit": null,
+   "needletail_host": "syd-view",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  }
+ ]
+}
