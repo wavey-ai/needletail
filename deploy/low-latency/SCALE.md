@@ -1016,7 +1016,16 @@ scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,
   standard lane), its listeners over the regions by `--shares` (weights;
   a region not named takes none), in a region over its listener hosts by
   their vCPUs. Listeners are listeners; with two paths each holds two legs
-  (`paths` in the record).
+  (`paths` in the record). The plan sizes the load hosts for the
+  schedule's `paths`: a two-path listener costs its host twice the
+  datagrams and twice the wire rate of one leg (the one-path figure times
+  the paths, or `--cost` with a measured `cost.json` of a run at those
+  paths, taken as it is). needletail-load is given `--paths` from the
+  schedule (a `--load-args` that names others is refused), and `party`
+  refuses to start when a listener host's needletail-load has no `--paths`
+  (B Y3's two-path director): the record never claims paths the crowd did
+  not hold. `--config opus-2.5` probes the faults on opus-2.5 and the
+  schedule's probe configs of other streams.
 - **Waves and churn.** At every step each host's listeners join in five
   equal waves 20 s apart (`waves`); 60 s after the last (and after the
   faults' scenarios at the fault step) 10% of them leave and rejoin 30 s
@@ -1030,10 +1039,13 @@ scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,
   every listener in the step's figures.
 - **The autoscaler** runs through the whole party (`run --duration` the
   party and a margin, its decisions in `events.jsonl`, held to
-  `--budget-usd`) and adds edges as the party grows; each step reports its
-  joins, the edges that came to serve and its drains, and "no listener
-  interrupted as it grew and churned" (B Y4's `listeners_interrupted`; open
-  until the load tool gives it).
+  `--budget-usd`) and adds edges as the party grows; each step runs on the
+  lab as it stands at that step (`state()` read again: an edge the
+  controller created is sampled and fetched), reports the controller's
+  joins, the edges that came to serve and its drains from the end of the
+  step before, and judges "no listener interrupted as it grew and churned"
+  over the whole step, its waves and churn included (B Y4's
+  `listeners_interrupted`; open until the load tool gives it).
 - **An edge and a forwarder killed mid-party.** At `faults.at_step`
   (10,000) the step is a phase run of two scenarios, P1 (kill lon-edge-2)
   and P2 (kill new-dist-b), each with probes of its own on every view host
@@ -1050,13 +1062,21 @@ scripts/compare/scale-run.py party --shares london=0.25,newyork=0.25,tokyo=0.25,
   samplers, the readers' reports, the fault scenarios' marks, probes and
   verdicts), the step recorded with `record_step` (listeners in all and by
   region, the lane, the paths, the waves, the churn, the crowd's and the
-  controller's figures), and the run's plan, party schedule, events
-  (the controller's lines among them), results and summary. `scale-run.py
-  run` writes its steps there too.
+  controller's figures, and for a step stopped early why it stopped and
+  the listeners the load tool counted), the run's events (the controller's
+  lines among them) appended after every step, and at the end the run's
+  plan, party schedule, results, summary, `controller-party.log` and
+  `autoscale-state.json`. `scale-run.py run` writes its steps there too. A
+  phase step stopped early still fetches and scores the probes of the
+  scenario under way.
 
-`party-plan` on the party topology, at C CL7, equal shares: steps of 1,000,
-5,000, 10,000 (with the faults' 828 s) and 20,000 listeners take 35.5
-minutes of steps; $19.062 an hour for the lab.
+`party-plan` on the party topology, equal shares: steps of 1,000, 5,000,
+10,000 (with the faults' 828 s) and 20,000 listeners take 35.5 minutes of
+steps; $19.062 an hour for the lab. Sized for two paths the 20,000 step
+loads its busiest listener host to 1.004 of the plan's headroom (it was
+0.53 at the one-path figure, at which the plan said "drivable"): `party`
+refuses it without `--force`; a measured two-path `--cost`, or a load host
+more, settles it.
 
 ## Limits of the tools
 

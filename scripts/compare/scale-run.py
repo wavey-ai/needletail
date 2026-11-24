@@ -574,7 +574,7 @@ def plan_steps(state: dict, steps: list[int], config: str, hls_share: float = 0.
     hosts = {node["name"]: node for site in regions.values() for node in site["listeners"]}
     cfg = CONFIGS[config]
     out = {"config": config, "hls_share": hls_share, "hls_cap_per_host": hls_cap_per_host,
-           "costs": costs, "standby": list(standby),
+           "costs": costs, "udp_mbps": udp_mbps, "standby": list(standby),
            "regions": {site: {"edges": [node["name"] for node in item["edges"]],
                               "listeners": [node["name"] for node in item["listeners"]]}
                        for site, item in regions.items()},
@@ -704,8 +704,9 @@ def cost_estimate(state: dict, plan: dict, bring_up_hours: float = 1.0) -> dict:
     gigabytes = 0.0
     livekit = 0.0
     cfg = CONFIGS[plan["config"]]
+    udp_mbps = plan.get("udp_mbps") or cfg["udp_mbps"]
     for step in plan["steps"]:
-        mbps = step["udp"] * cfg["udp_mbps"] + step["hls"] * cfg["hls_mbps"]
+        mbps = step["udp"] * udp_mbps + step["hls"] * cfg["hls_mbps"]
         gigabytes += mbps / 8 / 1000 * (step["ramp_s"] / 2 + step["hold_s"])
         livekit += (step.get("livekit", 0) * LK_MBPS[plan["config"]] / 8 / 1000
                     * (step["ramp_s"] / 2 + step["hold_s"]))
@@ -5695,6 +5696,7 @@ def run_step(lab: dict, run: str, plan: dict, step: dict, args: argparse.Namespa
                           (started + step["ramp_s"], min(ended, started + duration)), args.config,
                           exclude)
     result["stopped"] = stopped
+    result["started"] = started
     result["ramp_s"], result["hold_s"] = step["ramp_s"], step["hold_s"]
     if audio is not None:
         result["control"] = {"session": audio.session.name, "room": control["room"],
@@ -5972,6 +5974,7 @@ def command_run(args: argparse.Namespace) -> None:
     events_path = directory / "events.jsonl"
     events, log = open_events(events_path)
     archive = open_archive(lab, run, log)
+    sent: dict = {}
 
     if plan.get("fit"):
         log({"fit": plan["fit"], "steps": [step["listeners"] for step in plan["steps"]],
@@ -6012,7 +6015,8 @@ def command_run(args: argparse.Namespace) -> None:
             outcome = run_step(lab, run, plan, step, args, directory, log, phases, control)
             result["steps"].append(outcome)
             write_results(directory, result)
-            archive_step(archive, run, directory, step, args.config, None, log)
+            archive_step(archive, run, directory, step, args.config, None, log, outcome)
+            archive_events(archive, run, events_path, sent, log)
             first = outcome.get("gave_out_first")
             log({"step": step["listeners"], "gave_out_first": first,
                  "stopped": outcome["stopped"]})
@@ -6029,8 +6033,9 @@ def command_run(args: argparse.Namespace) -> None:
         ssh(source, "pkill -x aep1-48k-probe; true")
         if control is not None:
             stop_livekit(control["ref"], control["session"])
-        events.close()
         archive_run(archive, run, directory, log)
+        archive_events(archive, run, events_path, sent, log)
+        events.close()
     print(directory / "summary.md")
 
 
@@ -6142,13 +6147,19 @@ def open_archive(lab: dict, run: str, log):
 
 
 def archive_step(archive, run: str, directory: pathlib.Path, step: dict, config: str,
-                 paths: int | None, log, **extra) -> None:
+                 paths: int | None, log, outcome: dict | None = None, **extra) -> None:
     """One listener step into the archive: its directory whole, and the step
-    recorded (listeners in all and by region, the lane, the paths a
-    listener holds, and what `extra` says of it)."""
+    recorded (the listeners planned in all and by region, the lane, the
+    paths a listener holds, whether it stopped early and why, the listeners
+    the load tool counted by region, and what `extra` says of it)."""
     if archive is None:
         return
     step_dir = directory / "steps" / str(step["listeners"])
+    if outcome is not None:
+        extra = {"stopped": outcome.get("stopped"),
+                 "listeners_measured_by_region": {
+                     site: ((region.get("udp") or {}).get("listeners"))
+                     for site, region in (outcome.get("regions") or {}).items()}, **extra}
     try:
         if step_dir.is_dir():
             archive.add_tree(step_dir, f"scale-run/{run}/steps/{step['listeners']}", kind="raw",
@@ -6164,13 +6175,38 @@ def archive_step(archive, run: str, directory: pathlib.Path, step: dict, config:
         log({"archive": "step not archived", "step": step["listeners"], "error": str(error)})
 
 
+def archive_events(archive, run: str, path: pathlib.Path, sent: dict, log) -> None:
+    """The run's events (the controller's lines among them) appended to the
+    archive's copy as they come, after every step and at the end, so that a
+    run that dies keeps them there up to its last step. `sent`: the bytes
+    already sent, kept by the caller."""
+    if archive is None or not path.is_file():
+        return
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(sent.get("bytes", 0))
+            data = handle.read()
+        whole = data[:data.rfind(b"\n") + 1]
+        if whole:
+            archive.append_ndjson(f"scale-run/{run}/events.jsonl",
+                                  [json.loads(line) for line in whole.decode().splitlines()
+                                   if line.strip()],
+                                  description=f"scale-run {run}: its events and the "
+                                              "controller's, unix_us")
+            sent["bytes"] = sent.get("bytes", 0) + len(whole)
+    except Exception as error:  # noqa: BLE001 - loud, and the paid run goes on
+        log({"archive": "events not archived", "error": str(error)})
+
+
 def archive_run(archive, run: str, directory: pathlib.Path, log) -> None:
-    """The run's own files into the archive, as they stand at its end."""
+    """The run's own files into the archive, as they stand at its end (its
+    events go by archive_events)."""
     if archive is None:
         return
     for name, kind in (("plan.json", "plan"), ("party.json", "plan"), ("phases.json", "plan"),
-                       ("events.jsonl", "samples"), ("scale.json", "result"),
-                       ("summary.md", "result"), ("cost.json", "result")):
+                       ("scale.json", "result"), ("summary.md", "result"),
+                       ("cost.json", "result"), ("controller-party.log", "raw"),
+                       ("autoscale-state.json", "raw")):
         path = directory / name
         if not path.is_file():
             continue
@@ -6288,28 +6324,51 @@ def party_times(spec: dict, faults_hold_s: float, joins: int) -> dict:
             "joins_after_s": faults_hold_s, "hold_s": hold}
 
 
-def party_faults(spec: dict, lab: dict) -> dict | None:
+def party_faults(spec: dict, lab: dict, config: str) -> dict | None:
     """The party's fault step as a phase run: its scenarios, their timeline
-    on `lab` and the configs their probes listen to; None without faults."""
+    on `lab` and the configs their probes listen to: the party's own
+    `config` (its stream), and the schedule's probe configs on other
+    streams (opus-1 and opus-2.5 share one: `--config opus-2.5` probes
+    opus-2.5); None without faults."""
     faults = spec.get("faults")
     if not faults:
         return None
     plan = {"schema": PHASE_SCHEMA, "defaults": spec.get("fault_defaults") or {},
             "scenarios": faults["scenarios"]}
+    others = [item.strip() for item in (spec.get("probe_configs") or "").split(",")
+              if item.strip() and item.strip() in CONFIGS
+              and CONFIGS[item.strip()]["stream"] != CONFIGS[config]["stream"]]
     return {"at_step": faults["at_step"], "plan": plan, "timeline": phase_timeline(plan, lab),
-            "probe_configs": probe_configs(spec.get("probe_configs"), spec["config"])}
+            "probe_configs": probe_configs(",".join(others), config)}
+
+
+def party_costs(spec: dict, config: str, cost_path: str | None) -> tuple[dict, float]:
+    """The cost of a party listener on a load host and its wire rate, for
+    the schedule's `paths`: each path is a leg, its datagrams received and
+    counted on the host (notes-stage2: two-path listeners cost about twice
+    the datagrams). COSTS' one-path figure times the paths, or a measured
+    cost file (`--cost`: a run's cost.json at the party's paths) as it is;
+    the wire rate is always the paths times one leg's."""
+    paths = int(spec.get("paths") or 1)
+    costs = load_costs(cost_path)
+    if not cost_path:
+        costs["udp_vcpu"] = COSTS["udp_vcpu"] * paths
+    return costs, CONFIGS[config]["udp_mbps"] * paths
 
 
 def party_plan(spec: dict, lab: dict, standby: list[str], shares: dict[str, float],
                steps: list[int], config: str, faults: dict | None, fit: bool = False,
-               over_headroom: bool = False) -> dict:
+               over_headroom: bool = False, cost_path: str | None = None) -> dict:
     """Every party step on `lab`: the allocation by `shares` over the
-    regions and their listener hosts (plan_steps), and each host's waves and
-    churn (`ramp_by_host`), the step's times (party_times; the fault step
-    holds its scenarios), its joins and its LiveKit crowd; the party's
-    duration and cost."""
+    regions and their listener hosts (plan_steps), sized for the
+    schedule's paths (party_costs), and each host's waves and churn
+    (`ramp_by_host`), the step's times (party_times; the fault step holds
+    its scenarios), its joins and its LiveKit crowd; the party's duration
+    and cost."""
     joins = int(spec.get("joins") or 0)
+    costs, udp_mbps = party_costs(spec, config, cost_path)
     plan = plan_steps(lab, steps, config, float(spec.get("hls_share", 0.0)), None, standby,
+                      costs=costs, udp_mbps=udp_mbps,
                       lk_per_sfu=int((spec.get("livekit") or {}).get("self_hosted_per_sfu") or 0),
                       joins=joins, fit=fit, over_headroom=over_headroom, shares=shares)
     total = 0.0
@@ -6343,17 +6402,20 @@ def party_plan(spec: dict, lab: dict, standby: list[str], shares: dict[str, floa
 
 
 def party_step_figures(step_dir: pathlib.Path, window: tuple[float, float], config: str,
-                       events: list[dict]) -> dict:
-    """What a party step adds to the step's own figures: the crowd over its
-    hold (B Y4's fields: nobody interrupted as the party grew and churned;
-    open while the load tool does not give them), and what the controller
-    did in it (its joins, the edges that came to serve, its drains)."""
+                       events: list[dict], controller_since: float) -> dict:
+    """What a party step adds to the step's own figures: the crowd over the
+    whole step, its waves and churn included (`window`: the step's start to
+    the end of its hold; B Y4's fields: nobody interrupted as the party grew
+    and churned; open while the load tool does not give them), and what the
+    controller did from `controller_since` (the end of the step before, or
+    the controller's start) to the step's end: its joins, the edges that
+    came to serve, its drains."""
     rows = [row for host in sorted(step_dir.iterdir()) if host.is_dir()
             and (host / LOAD_DIR / "intervals.jsonl").is_file()
             for row in interval_rows(read_jsonl((host / LOAD_DIR / "intervals.jsonl").read_text()))]
     crowd = crowd_window(rows, window[0], window[1], settle_seconds(config), True)
     controller = [item for item in events if "kind" in item and item.get("source") != "scale-run"
-                  and window[0] * 1e6 <= (item.get("unix_us") or 0) <= window[1] * 1e6]
+                  and controller_since * 1e6 <= (item.get("unix_us") or 0) <= window[1] * 1e6]
     interrupted = crowd["listeners_interrupted"]
     return {"crowd": crowd,
             "controller": {"joins": sum(1 for item in controller if item["kind"] == "decision"
@@ -6416,10 +6478,37 @@ def party_setup(args: argparse.Namespace, lab: dict, standby: list[str]) -> tupl
     args.config = args.config or spec["config"]
     shares = parse_shares(args.shares) or spec["shares"]
     steps = parse_steps(args.steps) if args.steps else list(spec["steps"])
-    faults = party_faults({**spec, "config": args.config}, {**lab, "standby_edges": standby})
+    faults = party_faults(spec, {**lab, "standby_edges": standby}, args.config)
     plan = party_plan(spec, lab, standby, shares, steps, args.config, faults,
-                      fit=fit_wanted(args, lab), over_headroom=bool(getattr(args, "force", False)))
+                      fit=fit_wanted(args, lab), over_headroom=bool(getattr(args, "force", False)),
+                      cost_path=getattr(args, "cost", None))
     return spec, faults, plan
+
+
+def party_load_args(spec: dict, load_args: str) -> str:
+    """needletail-load's arguments of the party: --load-args and the
+    schedule's --paths (B 2.4), so that the crowd holds what the record
+    says; a --load-args that names other paths is refused."""
+    paths = int(spec.get("paths") or 1)
+    tokens = shlex.split(load_args or "")
+    if any(token == "--paths" or token.startswith("--paths=") for token in tokens):
+        given = load_paths(argparse.Namespace(load_args=load_args))
+        if given != paths:
+            raise ValueError(f"--load-args gives --paths {given}; the party's schedule holds "
+                             f"{paths}")
+        return load_args
+    return " ".join(tokens + ["--paths", str(paths)])
+
+
+def load_tool_has(hosts: list[dict], flag: str) -> list[str]:
+    """The listener hosts whose needletail-load does not know `flag` (its
+    --help): a party asks for --paths, which needs B Y3's director."""
+    found = common.parallel(hosts, lambda node: ssh_quiet(
+        node, f"{LOAD_PROCESS} --help 2>&1 | grep -c -- {shlex.quote(flag)}"), workers=64)
+    return sorted(name for name, text in found.items()
+                  if not (text or "").strip().splitlines()
+                  or not (text or "").strip().splitlines()[-1].strip().isdigit()
+                  or int((text or "").strip().splitlines()[-1].strip()) == 0)
 
 
 def command_party_plan(args: argparse.Namespace) -> dict:
@@ -6456,8 +6545,9 @@ def command_party_plan(args: argparse.Namespace) -> dict:
 
 def command_party(args: argparse.Namespace) -> None:
     """The listening party on the deployed lab: every step in turn (run_step,
-    the fault step as a phase run), the controller through it all, every
-    step into the run archive."""
+    the fault step as a phase run) on the lab as it stands at that step (the
+    edges the controller created are sampled and fetched), the controller
+    through it all, every step into the run archive."""
     lab = state()
     settings = deploy_settings()
     standby = list(settings.get("standby_edges") or [])
@@ -6478,6 +6568,17 @@ def command_party(args: argparse.Namespace) -> None:
     if undrivable and not args.force:
         sys.exit(f"party steps {undrivable} need more than the listener hosts can drive "
                  "(scale-run.py party-plan): drop them with --steps, or --force")
+    try:
+        args.load_args = party_load_args(spec, args.load_args)
+    except ValueError as error:
+        sys.exit(str(error))
+    listener_hosts = [lab["nodes"][name] for step in plan["steps"]
+                      for by_host in step["allocation"].values() for name in by_host]
+    unable = load_tool_has(list({node["name"]: node for node in listener_hosts}.values()),
+                           "--paths")
+    if unable:
+        sys.exit(f"needletail-load on {', '.join(unable)} has no --paths (B Y3's two-path "
+                 "director): the party's listeners would not hold the schedule's paths")
     run = args.name or time.strftime("%m%d%H%M", time.gmtime()) + f"-party-{args.config}"
     directory = OUT / f"scale-{run}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -6486,6 +6587,7 @@ def command_party(args: argparse.Namespace) -> None:
     events_path = directory / "events.jsonl"
     events, log = open_events(events_path)
     archive = open_archive(lab, run, log)
+    sent: dict = {}
     phases = None
     if faults:
         phases = {**faults, "events": events_path}
@@ -6518,20 +6620,27 @@ def command_party(args: argparse.Namespace) -> None:
                                            (spec.get("autoscale") or {}).get("controller_args")
                                            or [])
         log({"event": "controller_start", "command": command[1:]})
+        controller_since = time.time()
         with open(directory / "controller-party.log", "ab") as output:
             controller = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
                                           stderr=subprocess.STDOUT)
         for step in plan["steps"]:
             cloud = livekit_cloud_hook(spec, step, log)
+            # The lab as it stands now: the edges the controller created are
+            # sampled and fetched, the slots it deleted are not.
+            lab = state()
             outcome = run_step(lab, run, plan, step, args, directory, log,
                                phases if step["faults"] else None, control)
+            ended = outcome["started"] + step["ramp_s"] + step["hold_s"]
             outcome["party"] = {**step["party"], **party_step_figures(
-                directory / "steps" / str(step["listeners"]), tuple(outcome["window"]),
-                args.config, read_jsonl(events_path.read_text()))}
+                directory / "steps" / str(step["listeners"]), (outcome["started"], ended),
+                args.config, read_jsonl(events_path.read_text()), controller_since)}
+            controller_since = ended
             result["steps"].append(outcome)
             write_results(directory, result)
             archive_step(archive, run, directory, step, args.config, spec.get("paths"), log,
-                         party=step["party"], faults=step["faults"], **(cloud or {}))
+                         outcome, party=step["party"], faults=step["faults"], **(cloud or {}))
+            archive_events(archive, run, events_path, sent, log)
             log({"step": step["listeners"], "gave_out_first": outcome.get("gave_out_first"),
                  "stopped": outcome["stopped"]})
             if outcome["stopped"]:
@@ -6550,8 +6659,9 @@ def command_party(args: argparse.Namespace) -> None:
         ssh(source, "pkill -x aep1-48k-probe; true")
         if control is not None:
             stop_livekit(control["ref"], control["session"])
-        events.close()
         archive_run(archive, run, directory, log)
+        archive_events(archive, run, events_path, sent, log)
+        events.close()
     print(directory / "summary.md")
 
 
@@ -6634,6 +6744,10 @@ def party_args(item: argparse.ArgumentParser) -> None:
                            "it has")
     item.add_argument("--force", action="store_true",
                       help="run steps over the listener hosts' headroom")
+    item.add_argument("--cost", default=None,
+                      help="a measured cost.json of a run at the party's paths (vCPU per "
+                           "listener, taken as it is); default: the one-path figure times the "
+                           "schedule's paths")
 
 
 def build_parser() -> argparse.ArgumentParser:
