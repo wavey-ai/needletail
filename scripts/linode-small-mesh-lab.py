@@ -73,7 +73,13 @@ Cost controls are part of the tool, not an operator convention:
   --run-id <id>`) under a hard time bound (`--collect-timeout-s`, 4 min by
   default, ending when `down` starts), then deletes whatever happened; a
   collect that failed, timed out or left the run incomplete records the run
-  as failed. `up` refuses a watchdog too short to hold that bound.
+  as failed. `up` refuses a watchdog too short to hold that bound;
+* the lab firewall admits the operator's address and the lab's nodes, and
+  the lab's `allow` list (`allow add|remove|list`: {label, protocol, ports,
+  ipv4 CIDRs}), which every rewrite of the rules keeps (firewall_rules). No
+  entry opens SSH, a control or a relay port to the world: only a port
+  that faces listeners (UDP 19446) and that the topology marks public
+  (`public_ports`) may be.
 
 The Linode token is read from LINODE_TOKEN, LINODE_PAT, or the token file. It
 is never written to state, logs, or generated output. The watchdog unit
@@ -92,6 +98,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -151,6 +158,29 @@ WATCHDOG_POLL_S = 5
 # delete.
 COLLECT_TIMEOUT_S = 240
 DEPLOY_TOOL = ROOT / "scripts" / "linode-small-mesh-deploy.py"
+# The lab's `allow` list: extra inbound rules of its Cloud Firewall that
+# every rewrite of the rules keeps (firewall_rules). An address range wider
+# than /WORLD_PREFIX counts as the world, and the world is let in only on a
+# port that faces listeners and that the topology marks public
+# (`public_ports`: [{"protocol": "UDP", "ports": "19446"}]). The ports that
+# face listeners and carry nothing else (the deploy tool's port plan): UDP
+# 19446, the client UDP lane (client_udp_port: SUB/ASSIGN and the parts to
+# listeners). TCP and UDP 19444 serve LL-HLS and WebTransport but also
+# /api/control/* without authentication (drain, close: C 2.4), so they are
+# control ports here; SSH, the cache mesh, telemetry, the relay, lease and
+# contributor lanes and the AEP1 ingest take named ranges only.
+LISTENER_PORTS = {"UDP": ((19446, 19446),)}
+WORLD_PREFIX = 8
+ALLOW_PROTOCOLS = ("TCP", "UDP", "ICMP")
+ALLOW_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,31}")
+# The labels of the lab's own rules (firewall_rules).
+LAB_RULE_LABELS = ("operator-all", "operator-udp", "operator-icmp", "lab-tcp", "lab-udp",
+                   "lab-icmp")
+# Linode's limits: inbound rules a firewall, addresses a rule, ports or
+# ranges a rule.
+MAX_INBOUND_RULES = 25
+MAX_RULE_ADDRESSES = 255
+MAX_RULE_PORTS = 15
 # A watchdog whose lab state is gone asks the account for the run's
 # instances this often until its deadline nears (watch_until_down).
 WATCHDOG_ORPHAN_POLL_S = 60
@@ -1100,30 +1130,17 @@ def create_lab(args: argparse.Namespace) -> None:
     create_staged(args, api, state, state_path, topology["nodes"], optional, key)
 
     operator = operator_ipv4()
-    node_addresses = [f"{node['public_ipv4']}/32" for node in state["nodes"].values()]
+    change_state(state_path, state, lambda current: current.update(operator_ipv4=operator))
+    rules = firewall_rules(state)
     firewall = api.call("POST", "/networking/firewalls", {
         "label": f"ntsm-{run_id}",
         "tags": ["needletail-qualification", tag],
-        "rules": {
-            "inbound_policy": "DROP", "outbound_policy": "ACCEPT", "outbound": [],
-            "inbound": [
-                {"label": "operator-all", "action": "ACCEPT", "protocol": "TCP",
-                 "ports": "1-65535", "addresses": {"ipv4": [f"{operator}/32"]}},
-                {"label": "operator-udp", "action": "ACCEPT", "protocol": "UDP",
-                 "ports": "1-65535", "addresses": {"ipv4": [f"{operator}/32"]}},
-                {"label": "operator-icmp", "action": "ACCEPT", "protocol": "ICMP",
-                 "addresses": {"ipv4": [f"{operator}/32"]}},
-                {"label": "lab-tcp", "action": "ACCEPT", "protocol": "TCP",
-                 "ports": "1-65535", "addresses": {"ipv4": node_addresses}},
-                {"label": "lab-udp", "action": "ACCEPT", "protocol": "UDP",
-                 "ports": "1-65535", "addresses": {"ipv4": node_addresses}},
-                {"label": "lab-icmp", "action": "ACCEPT", "protocol": "ICMP",
-                 "addresses": {"ipv4": node_addresses}},
-            ],
-        },
+        "rules": rules,
     })
-    change_state(state_path, state, lambda current: current.update(
-        firewall_id=firewall["id"], operator_ipv4=operator))
+    change_state(state_path, state, lambda current: current.update(firewall_id=firewall["id"]))
+    if firewall_rules(state) != rules:
+        # An `allow add` landed while the firewall was being made.
+        api.call("PUT", f"/networking/firewalls/{firewall['id']}/rules", firewall_rules(state))
     for node in state["nodes"].values():
         api.call("POST", f"/networking/firewalls/{firewall['id']}/devices",
                  {"id": node["id"], "type": "linode"})
@@ -1145,9 +1162,155 @@ def create_lab(args: argparse.Namespace) -> None:
     command_status(args)
 
 
+def parse_ports(text) -> list[tuple[int, int]]:
+    """A rule's ports as Linode writes them ("22", "80,443", "1000-2000"),
+    as ranges. Raises ValueError on anything else."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("no ports given")
+    ranges = []
+    for piece in text.split(","):
+        bounds = piece.strip().split("-")
+        if len(bounds) > 2 or not all(bound.strip().isdigit() for bound in bounds):
+            raise ValueError(f"ports {text!r}: {piece.strip()!r} is not a port or a range a-b")
+        low, high = int(bounds[0]), int(bounds[-1])
+        if not 1 <= low <= 65535 or not 1 <= high <= 65535 or (len(bounds) == 2 and low >= high):
+            raise ValueError(f"ports {text!r}: {piece.strip()!r} is not within 1-65535 (a "
+                             "range a-b with a below b)")
+        ranges.append((low, high))
+    if len(ranges) > MAX_RULE_PORTS:
+        raise ValueError(f"ports {text!r}: {len(ranges)} ports or ranges, Linode takes at most "
+                         f"{MAX_RULE_PORTS} a rule")
+    return ranges
+
+
+def ports_text(ranges: list[tuple[int, int]]) -> str:
+    return ",".join(str(low) if low == high else f"{low}-{high}" for low, high in ranges)
+
+
+def within(ranges: list[tuple[int, int]], allowed) -> bool:
+    """Whether every port of `ranges` lies in one range of `allowed`."""
+    return all(any(a_low <= low and high <= a_high for a_low, a_high in allowed)
+               for low, high in ranges)
+
+
+def topology_public_ports(state: dict) -> tuple[dict[str, list[tuple[int, int]]], list[str]]:
+    """The ports that the lab's topology marks public (`public_ports`) and
+    that face listeners (LISTENER_PORTS): {protocol: ranges}; and what the
+    topology marks that is not such a port. A topology that cannot be read
+    marks nothing public."""
+    try:
+        marked = json.loads(pathlib.Path(state.get("topology_file") or "").read_text()).get(
+            "public_ports") or []
+    except (OSError, ValueError, AttributeError):
+        return {}, []
+    public: dict[str, list[tuple[int, int]]] = {}
+    problems = []
+    for item in marked if isinstance(marked, list) else [marked]:
+        try:
+            protocol = str(item["protocol"]).upper()
+            ranges = parse_ports(item["ports"])
+        except (KeyError, TypeError, ValueError) as error:
+            problems.append(f"the topology's public_ports entry {item!r} is malformed ({error})")
+            continue
+        if not within(ranges, LISTENER_PORTS.get(protocol, ())):
+            problems.append(f"the topology marks {protocol} {ports_text(ranges)} public, but only "
+                            "ports that face listeners and carry nothing else can be ("
+                            + ", ".join(f"{name} {ports_text(list(allowed))}"
+                                        for name, allowed in LISTENER_PORTS.items())
+                            + "; 19444 also serves /api/control/* without authentication)")
+            continue
+        public.setdefault(protocol, []).extend(ranges)
+    return public, problems
+
+
+def allow_entry(raw, public: dict, taken=()) -> tuple[dict, list[str]]:
+    """An `allow` entry ({label, protocol, ports, ipv4}) in its canonical
+    form, and what is wrong with it: a label of 3 to 32 letters, digits,
+    `.`, `_` or `-` that no lab rule or other entry (`taken`) has; TCP, UDP
+    or ICMP; ports for TCP and UDP only; one to MAX_RULE_ADDRESSES IPv4
+    CIDRs with no host bits (a bare address is a /32). A range wider than
+    /WORLD_PREFIX is the world: refused unless the protocol is TCP or UDP
+    and every port is one the topology marks public (`public`,
+    topology_public_ports). So SSH, control and relay ports are never open
+    to the world."""
+    raw = raw if isinstance(raw, dict) else {}
+    problems = []
+    label = str(raw.get("label") or "")
+    if not ALLOW_LABEL.fullmatch(label):
+        problems.append(f"label {label!r}: 3 to 32 of letters, digits, '.', '_' and '-', "
+                        "starting with a letter or digit")
+    elif label in LAB_RULE_LABELS or label in taken:
+        problems.append(f"label {label!r} is taken (the lab's own rules: "
+                        f"{', '.join(LAB_RULE_LABELS)}; or another entry)")
+    protocol = str(raw.get("protocol") or "").upper()
+    ranges: list[tuple[int, int]] = []
+    if protocol not in ALLOW_PROTOCOLS:
+        problems.append(f"protocol {raw.get('protocol')!r}: one of {', '.join(ALLOW_PROTOCOLS)}")
+    elif protocol == "ICMP":
+        if raw.get("ports"):
+            problems.append("ICMP takes no ports")
+    else:
+        try:
+            ranges = parse_ports(raw.get("ports"))
+        except ValueError as error:
+            problems.append(f"{protocol}: {error}")
+    given = raw.get("ipv4")
+    networks = []
+    for text in given if isinstance(given, list) else [given]:
+        try:
+            networks.append(ipaddress.IPv4Network(str(text).strip(), strict=True))
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError) as error:
+            problems.append(f"ipv4 {text!r} is not an IPv4 CIDR with no host bits ({error})")
+    if not given:
+        problems.append("no ipv4 CIDR given")
+    elif len(networks) > MAX_RULE_ADDRESSES:
+        problems.append(f"{len(networks)} CIDRs: Linode takes at most {MAX_RULE_ADDRESSES} a rule")
+    world = [str(network) for network in networks if network.prefixlen < WORLD_PREFIX]
+    if world and protocol in ALLOW_PROTOCOLS:
+        where = protocol + (f" {ports_text(ranges)}" if ranges else "")
+        if protocol == "ICMP" or not ranges or not within(ranges, public.get(protocol, ())):
+            problems.append(f"{', '.join(world)} opens {where} to the world: only ports that face "
+                            "listeners and that the topology marks public may be ("
+                            + (", ".join(f"{name} {ports_text(marked)}"
+                                         for name, marked in sorted(public.items()))
+                               or "this lab's topology marks none")
+                            + "); SSH, control and relay ports never")
+    entry = {"label": label, "protocol": protocol,
+             "ports": ports_text(ranges) if ranges else None,
+             "ipv4": sorted({str(network) for network in networks},
+                            key=lambda text: ipaddress.IPv4Network(text))}
+    return entry, problems
+
+
+def allow_rule(entry: dict) -> dict:
+    """An `allow` entry as a rule of the Cloud Firewall."""
+    rule = {"label": entry["label"], "action": "ACCEPT", "protocol": entry["protocol"],
+            "addresses": {"ipv4": list(entry["ipv4"])}}
+    if entry.get("ports"):
+        rule["ports"] = entry["ports"]
+    return rule
+
+
 def firewall_rules(state: dict) -> dict:
+    """The lab firewall's rules: the operator's address and the lab's nodes
+    on every port, then the lab's `allow` list. Every rewrite of the rules
+    (up, grow, add, remove, replace --mode new, the autoscaler) is this, so
+    the list survives them all. An entry that is not valid now (a state
+    edited by hand, a topology that no longer marks its port public) is left
+    out and said: leaving it out only closes."""
     operator = state["operator_ipv4"]
     node_addresses = [f"{node['public_ipv4']}/32" for node in state["nodes"].values()]
+    public, _problems = topology_public_ports(state)
+    allowed = []
+    taken: set[str] = set()
+    for raw in state.get("allow") or []:
+        entry, problems = allow_entry(raw, public, taken)
+        if problems:
+            print(f"firewall: the allow entry {raw!r} is left out: {'; '.join(problems)}",
+                  file=sys.stderr, flush=True)
+            continue
+        taken.add(entry["label"])
+        allowed.append(allow_rule(entry))
     return {
         "inbound_policy": "DROP", "outbound_policy": "ACCEPT", "outbound": [],
         "inbound": [
@@ -1163,6 +1326,7 @@ def firewall_rules(state: dict) -> dict:
              "ports": "1-65535", "addresses": {"ipv4": node_addresses}},
             {"label": "lab-icmp", "action": "ACCEPT", "protocol": "ICMP",
              "addresses": {"ipv4": node_addresses}},
+            *allowed,
         ],
     }
 
@@ -2302,6 +2466,82 @@ def command_remove(args: argparse.Namespace) -> None:
     print_billed(state)
 
 
+def command_allow(args: argparse.Namespace) -> None:
+    """`allow add|remove|list`: the lab's `allow` list, extra inbound rules
+    of its firewall that every rewrite keeps (firewall_rules). `add` checks
+    the entry (allow_entry: the world only on a port that faces listeners
+    and that the topology marks public; CIDRs; Linode's limits) and records
+    it, `remove` takes it out, and either then puts the firewall's rules;
+    when that fails the state is put back as it was. A lab whose firewall
+    `up` has not made yet gets it with the firewall."""
+    state_path = pathlib.Path(args.state)
+    state = read_state(state_path)
+    if state is None:
+        sys.exit("No active Needletail small-mesh lab")
+    entries = state.get("allow") or []
+    if args.allow_command == "list":
+        if args.json:
+            print(json.dumps(entries, indent=2))
+            return
+        for entry in entries:
+            print(f"{entry['label']:<20} {entry['protocol']:<5} {entry.get('ports') or '-':<16} "
+                  f"{', '.join(entry['ipv4'])}")
+        if not entries:
+            print("the lab's allow list is empty")
+        return
+    watchdog_ensure(state, state_path)
+    if args.allow_command == "add":
+        public, marked_wrong = topology_public_ports(state)
+        given = [text.strip() for item in args.ipv4 for text in item.split(",") if text.strip()]
+        entry, problems = allow_entry({"label": args.label, "protocol": args.protocol,
+                                       "ports": args.ports, "ipv4": given},
+                                      public, {item.get("label") for item in entries})
+        if any("to the world" in problem for problem in problems):
+            problems += marked_wrong
+        if len(LAB_RULE_LABELS) + len(entries) + 1 > MAX_INBOUND_RULES:
+            problems.append(f"the firewall would have {len(LAB_RULE_LABELS) + len(entries) + 1} "
+                            f"inbound rules; Linode takes at most {MAX_INBOUND_RULES}")
+        if problems:
+            sys.exit("allow refused: " + "; ".join(problems))
+
+        def change(current: dict) -> None:
+            if any(item.get("label") == entry["label"] for item in current.get("allow") or []):
+                sys.exit(f"allow refused: label {entry['label']!r} is taken")
+            current.setdefault("allow", []).append(entry)
+
+        def undo(current: dict) -> None:
+            current["allow"] = [item for item in current.get("allow") or []
+                                if item.get("label") != entry["label"]]
+    else:
+        found = [item for item in entries if item.get("label") == args.label]
+        if not found:
+            sys.exit(f"allow: the lab's allow list has no entry {args.label!r}")
+        entry = found[0]
+
+        def change(current: dict) -> None:
+            current["allow"] = [item for item in current.get("allow") or []
+                                if item.get("label") != entry["label"]]
+
+        def undo(current: dict) -> None:
+            current.setdefault("allow", []).append(entry)
+
+    change_state(state_path, state, change)
+    if not (state.get("firewall_id") and state.get("operator_ipv4")):
+        print(f"allow {args.allow_command}: {entry['label']} recorded; the lab's firewall is not "
+              "made yet, and up makes it with the list")
+        return
+    try:
+        Api().call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",
+                   firewall_rules(state))
+    except Exception as error:  # noqa: BLE001 - the state must say what the firewall holds
+        change_state(state_path, state, undo)
+        sys.exit(f"allow {args.allow_command}: the firewall's rules could not be put ({error}); "
+                 "the allow list is as it was")
+    print(f"allow {args.allow_command}: {entry['label']} ({entry['protocol']} "
+          f"{entry.get('ports') or ''} from {', '.join(entry['ipv4'])}); the lab firewall has "
+          f"{len(firewall_rules(state)['inbound'])} inbound rules")
+
+
 def print_billed(state: dict) -> None:
     now = billed(state)
     line = (f"billed so far ${now['usd']:.2f} ({now['instance_hours']} instance-hours, "
@@ -3025,7 +3265,26 @@ def build_parser() -> argparse.ArgumentParser:
     remove.add_argument("--any-lab-node", action="store_true",
                         help="allow a lab node that is not an autoscale slot")
     remove.set_defaults(handler=command_remove)
-    billed_parser = sub.add_parser("billed", help="what the lab has cost, in whole hours")
+    allow = sub.add_parser("allow", help="extra inbound rules of the lab firewall, kept by every "
+                                         "rewrite of its rules")
+    allow_sub = allow.add_subparsers(dest="allow_command", required=True)
+    allow_add = allow_sub.add_parser("add", help="let IPv4 CIDRs in on a protocol and ports")
+    allow_add.add_argument("--label", required=True,
+                           help="the rule's label: 3 to 32 of letters, digits, '.', '_', '-'")
+    allow_add.add_argument("--protocol", required=True, type=str.upper, choices=ALLOW_PROTOCOLS)
+    allow_add.add_argument("--ports", default=None,
+                           help="TCP and UDP: ports and ranges as Linode writes them "
+                                "(19446, 80,443, 22300-22310); none for ICMP")
+    allow_add.add_argument("--ipv4", action="append", required=True,
+                           help="CIDRs, comma-separated or repeated (a bare address is a /32); "
+                                f"a range wider than /{WORLD_PREFIX} only on a port that faces "
+                                "listeners and that the topology marks public (public_ports)")
+    allow_remove = allow_sub.add_parser("remove", help="take an entry out by its label")
+    allow_remove.add_argument("label")
+    allow_list = allow_sub.add_parser("list", help="the lab's allow list")
+    allow_list.add_argument("--json", action="store_true")
+    allow.set_defaults(handler=command_allow)
+    billed_parser =sub.add_parser("billed", help="what the lab has cost, in whole hours")
     billed_parser.add_argument("--json", action="store_true")
     billed_parser.set_defaults(handler=command_billed)
     sub.add_parser("status").set_defaults(handler=command_status)

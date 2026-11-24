@@ -1314,6 +1314,292 @@ class WatchdogCollect(Base):
                              (lab_tool.collect_command("t1"), 240.0))
 
 
+PUBLISHER = {"label": "publisher", "protocol": "TCP", "ports": "27100",
+             "ipv4": ["203.0.113.40/32"]}
+
+
+class Allow(Base):
+    """The lab's `allow` list: extra inbound rules of its firewall, checked
+    (the world only on a port that faces listeners and that the topology
+    marks public; CIDRs; Linode's limits), recorded in the state and kept by
+    every rewrite of the rules."""
+
+    def lab(self, api, public_ports=None) -> dict:
+        state = lab_state(self.tmp, api)
+        if public_ports is not None:
+            topology = json.loads(SCALE.read_text())
+            topology["public_ports"] = public_ports
+            path = self.tmp / "topology-public.json"
+            path.write_text(json.dumps(topology))
+            state["topology_file"] = str(path)
+            pathlib.Path(self.args.state).write_text(json.dumps(state))
+        return state
+
+    def allow(self, api, *argv) -> tuple[int | str | None, str, str]:
+        args = lab_tool.build_parser().parse_args(["--state", self.args.state, "allow", *argv])
+        code = None
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+            try:
+                args.handler(args)
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, out.getvalue(), err.getvalue()
+
+    def allowed(self) -> list:
+        return lab_tool.read_state(pathlib.Path(self.args.state)).get("allow", [])
+
+    def last_rules(self, api) -> list[dict]:
+        bodies = [body for method, path, body in api.bodies
+                  if path.endswith("/rules") or path == "/networking/firewalls"]
+        body = bodies[-1]
+        return (body.get("rules") or body)["inbound"]
+
+    def test_add_list_and_remove_put_the_firewall_s_rules(self):
+        api = FakeApi()
+        self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        code, out, _err = self.allow(api, "add", "--label", "publisher", "--protocol", "tcp",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40")
+        self.assertIsNone(code, out)
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        rules = self.last_rules(api)
+        self.assertEqual([rule["label"] for rule in rules],
+                         list(lab_tool.LAB_RULE_LABELS) + ["publisher"])
+        self.assertEqual(rules[-1], {"label": "publisher", "action": "ACCEPT", "protocol": "TCP",
+                                     "ports": "27100",
+                                     "addresses": {"ipv4": ["203.0.113.40/32"]}})
+        # Listeners from anywhere on the client UDP lane: the topology marks
+        # it public. An office pings the lab.
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        self.assertIsNone(self.allow(api, "add", "--label", "office.icmp", "--protocol", "ICMP",
+                                     "--ipv4", "198.51.100.0/24,192.0.2.7",
+                                     "--ipv4", "198.18.0.0/15")[0])
+        self.assertEqual(self.allowed()[-1]["ipv4"],
+                         ["192.0.2.7/32", "198.18.0.0/15", "198.51.100.0/24"])
+        self.assertNotIn("ports", self.last_rules(api)[-1])
+        code, out, _err = self.allow(api, "list", "--json")
+        self.assertEqual([entry["label"] for entry in json.loads(out)],
+                         ["publisher", "listeners", "office.icmp"])
+        self.assertIn("publisher", self.allow(api, "list")[1])
+        puts = len(api.bodies)
+        self.assertIsNone(self.allow(api, "remove", "listeners")[0])
+        self.assertEqual([entry["label"] for entry in self.allowed()],
+                         ["publisher", "office.icmp"])
+        self.assertNotIn("listeners", [rule["label"] for rule in self.last_rules(api)])
+        self.assertEqual(len(api.bodies), puts + 1)
+        self.assertIn("no entry", str(self.allow(api, "remove", "listeners")[0]))
+
+    def test_the_world_is_refused_on_ssh_control_and_relay_ports(self):
+        api = FakeApi()
+        self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        cases = [
+            ("TCP", "22", "0.0.0.0/0"),            # SSH
+            ("TCP", "19444", "0.0.0.0/0"),         # LL-HLS, and /api/control/*
+            ("UDP", "19444", "0.0.0.0/0"),         # WebTransport, and /api/control/*
+            ("UDP", "22001-22002", "0.0.0.0/1"),   # relay lanes, half the world
+            ("UDP", "29101", "128.0.0.0/1"),       # the cache mesh
+            ("TCP", "27100", "0.0.0.0/0"),         # the AEP1 ingest
+            ("UDP", "19446,22", "0.0.0.0/0"),      # a public port with SSH
+            ("TCP", "1-65535", "0.0.0.0/0"),
+        ]
+        for protocol, ports, cidr in cases:
+            code, _out, _err = self.allow(api, "add", "--label", "open", "--protocol", protocol,
+                                          "--ports", ports, "--ipv4", f"198.51.100.0/24,{cidr}")
+            self.assertIn("to the world", str(code), (protocol, ports))
+            self.assertIn("SSH, control and relay ports never", str(code))
+        code = self.allow(api, "add", "--label", "ping", "--protocol", "ICMP",
+                          "--ipv4", "0.0.0.0/0")[0]
+        self.assertIn("to the world", str(code))
+        self.assertEqual(self.allowed(), [])
+        self.assertFalse([body for _method, path, body in api.bodies if path.endswith("/rules")])
+
+    def test_the_world_needs_the_topology_s_mark_and_a_listener_port(self):
+        api = FakeApi()
+        # The scale topology marks nothing public.
+        self.lab(api)
+        code = self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                          "--ports", "19446", "--ipv4", "0.0.0.0/0")[0]
+        self.assertIn("this lab's topology marks none", str(code))
+        # A topology that marks a control port public: not taken, and said.
+        self.lab(api, public_ports=[{"protocol": "TCP", "ports": "19444"},
+                                    {"protocol": "UDP", "ports": "19446"}])
+        code = self.allow(api, "add", "--label", "hls", "--protocol", "TCP", "--ports", "19444",
+                          "--ipv4", "0.0.0.0/0")[0]
+        self.assertIn("19444 also serves /api/control/*", str(code))
+        self.assertIsNone(self.allow(api, "add", "--label", "listeners", "--protocol", "UDP",
+                                     "--ports", "19446", "--ipv4", "0.0.0.0/0")[0])
+        # Named ranges are not the world: TCP 19444 from a /16 is let in.
+        self.assertIsNone(self.allow(api, "add", "--label", "viewers", "--protocol", "TCP",
+                                     "--ports", "19444", "--ipv4", "10.20.0.0/16")[0])
+
+    def test_entries_are_checked_before_anything_is_recorded(self):
+        api = FakeApi()
+        self.lab(api)
+        self.assertIsNone(self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40/32")[0])
+        cases = {
+            "host bits": ["--protocol", "TCP", "--ports", "1", "--ipv4", "203.0.113.40/24"],
+            "not an IPv4 CIDR": ["--protocol", "TCP", "--ports", "1", "--ipv4", "300.1.1.1"],
+            "IPv4": ["--protocol", "TCP", "--ports", "1", "--ipv4", "::/0"],
+            "within 1-65535": ["--protocol", "TCP", "--ports", "0", "--ipv4", "192.0.2.1"],
+            "a below b": ["--protocol", "UDP", "--ports", "5-3", "--ipv4", "192.0.2.1"],
+            "is not a port": ["--protocol", "UDP", "--ports", "a", "--ipv4", "192.0.2.1"],
+            "no ports given": ["--protocol", "UDP", "--ipv4", "192.0.2.1"],
+            "ICMP takes no ports": ["--protocol", "ICMP", "--ports", "1", "--ipv4", "192.0.2.1"],
+            "at most 15": ["--protocol", "UDP", "--ports", ",".join(map(str, range(1, 17))),
+                           "--ipv4", "192.0.2.1"],
+        }
+        for why, argv in cases.items():
+            code = self.allow(api, "add", "--label", "other", *argv)[0]
+            self.assertIn(why, str(code), argv)
+        for label, why in (("x", "3 to 32"), ("lab-tcp", "taken"), ("publisher", "taken"),
+                           ("a b", "3 to 32")):
+            code = self.allow(api, "add", "--label", label, "--protocol", "TCP", "--ports", "1",
+                              "--ipv4", "192.0.2.1")[0]
+            self.assertIn(why, str(code), label)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            lab_tool.build_parser().parse_args(["allow", "add", "--label", "x", "--protocol",
+                                                "GRE", "--ipv4", "192.0.2.1"])
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        # Linode's 25 inbound rules: six are the lab's own.
+        for index in range(1, 19):
+            self.assertIsNone(self.allow(api, "add", "--label", f"host-{index}", "--protocol",
+                                         "TCP", "--ports", "443",
+                                         "--ipv4", f"192.0.2.{index}")[0])
+        code = self.allow(api, "add", "--label", "host-19", "--protocol", "TCP", "--ports", "443",
+                          "--ipv4", "192.0.2.19")[0]
+        self.assertIn("26 inbound rules", str(code))
+        self.assertEqual(len(self.last_rules(api)), 25)
+
+    def test_a_firewall_that_refuses_the_rules_leaves_the_list_as_it_was(self):
+        api = FakeApi()
+        self.lab(api)
+        self.assertIsNone(self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40")[0])
+        real = api.call
+
+        def call(method, path, body=None, allow_404=False):
+            if path.endswith("/rules"):
+                raise RuntimeError("HTTP 400: too many rules")
+            return real(method, path, body, allow_404)
+
+        api.call = call
+        code = self.allow(api, "add", "--label", "office", "--protocol", "TCP", "--ports", "22",
+                          "--ipv4", "198.51.100.0/24")[0]
+        self.assertIn("as it was", str(code))
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        code = self.allow(api, "remove", "publisher")[0]
+        self.assertIn("as it was", str(code))
+        self.assertEqual(self.allowed(), [PUBLISHER])
+
+    def test_a_lab_whose_firewall_is_not_made_yet_gets_the_list_with_it(self):
+        api = FakeApi()
+        state = self.lab(api)
+        state["firewall_id"] = None
+        pathlib.Path(self.args.state).write_text(json.dumps(state))
+        code, out, _err = self.allow(api, "add", "--label", "publisher", "--protocol", "TCP",
+                                     "--ports", "27100", "--ipv4", "203.0.113.40")
+        self.assertIsNone(code)
+        self.assertIn("up makes it with the list", out)
+        self.assertEqual(self.allowed(), [PUBLISHER])
+        self.assertEqual(api.calls, [])
+
+    def test_an_entry_edited_into_the_state_by_hand_is_left_out_if_it_opens_ssh(self):
+        api = FakeApi()
+        state = self.lab(api)
+        state["allow"] = [PUBLISHER,
+                          {"label": "ssh-world", "protocol": "TCP", "ports": "22",
+                           "ipv4": ["0.0.0.0/0"]},
+                          {**PUBLISHER, "ipv4": ["203.0.113.41/32"]}]
+        with redirect_stderr(io.StringIO()) as err:
+            rules = lab_tool.firewall_rules(state)["inbound"]
+        self.assertEqual([rule["label"] for rule in rules],
+                         list(lab_tool.LAB_RULE_LABELS) + ["publisher"])
+        self.assertIn("ssh-world", err.getvalue())
+        self.assertIn("is left out", err.getvalue())
+
+    def test_every_rewrite_of_the_firewall_keeps_the_list(self):
+        api = FakeApi()
+        state = self.lab(api, public_ports=[{"protocol": "UDP", "ports": "19446"}])
+        listeners = {"label": "listeners", "protocol": "UDP", "ports": "19446",
+                     "ipv4": ["0.0.0.0/0"]}
+        state["allow"] = [PUBLISHER, listeners]
+        path = pathlib.Path(self.args.state)
+        path.write_text(json.dumps(state))
+
+        def kept(verb):
+            labels = [rule["label"] for rule in self.last_rules(api)]
+            self.assertEqual(labels[-2:], ["publisher", "listeners"], verb)
+            self.assertEqual(labels.count("publisher"), 1, verb)
+
+        # add: an autoscale slot.
+        self.add(api, state, ["lon-edge-11"])
+        kept("add")
+        # remove: the slot again.
+        with redirect_stdout(io.StringIO()):
+            lab_tool.remove_nodes(api, path, state, ["lon-edge-11"])
+        kept("remove")
+        # replace --mode new.
+        self.replace(api, ["lon-edge-2"], mode="new")
+        kept("replace --mode new")
+        # grow: two nodes the lab does not have.
+        state = lab_tool.read_state(path)
+        for name in ("lon-edge-3", "lon-edge-4"):
+            api.instances.pop(state["nodes"].pop(name)["id"])
+        path.write_text(json.dumps(state))
+        args = argparse.Namespace(state=self.args.state, topology=state["topology_file"],
+                                  without_sites="", ssh_public_key=self.args.ssh_public_key,
+                                  budget_usd=None, spent_before_usd=None)
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.command_grow(args)
+        kept("grow")
+        self.assertIn("lon-edge-3", lab_tool.read_state(path)["nodes"])
+        # The autoscaler puts lab.firewall_rules(state), the same rules.
+        self.assertEqual(lab_tool.firewall_rules(lab_tool.read_state(path))["inbound"],
+                         self.last_rules(api))
+
+    def test_up_makes_the_firewall_with_an_entry_added_while_it_creates(self):
+        api = FakeApi()
+        self.systemd.active.clear()
+        path = pathlib.Path(self.args.state)
+        created = []
+        once = [PUBLISHER]
+
+        def create(api_, run_id, tag, image, key, node):
+            try:
+                entry = once.pop()  # the creates run four at a time
+            except IndexError:
+                entry = None
+            if entry:
+                # `allow add` from another shell while up creates the nodes.
+                lab_tool.change_state(path, {"run_id": "t1"}, lambda current: current.setdefault(
+                    "allow", []).append(entry))
+            created.append(node["name"])
+            ident = 100 + len(created)
+            api.instances[ident] = {"id": ident, "status": "running", "tags": [tag]}
+            return {"id": ident, "name": node["name"], "label": node["name"],
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": f"192.0.2.{len(created) % 250}", "vlan_ipv4": None,
+                    "created": "x"}
+
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_status", lambda args: None):
+            state = self.up(api, spent_before_usd=0.0)
+        posted = [body for method, where, body in api.bodies
+                  if (method, where) == ("POST", "/networking/firewalls")]
+        self.assertEqual(len(posted), 1)
+        inbound = posted[0]["rules"]["inbound"]
+        self.assertEqual([rule["label"] for rule in inbound],
+                         list(lab_tool.LAB_RULE_LABELS) + ["publisher"])
+        self.assertEqual(inbound[0]["addresses"]["ipv4"], ["203.0.113.9/32"])
+        self.assertEqual(len(inbound[3]["addresses"]["ipv4"]), len(created))
+        self.assertEqual(state["operator_ipv4"], "203.0.113.9")
+        self.assertEqual(posted[0]["rules"], lab_tool.firewall_rules(state))
+
+
 class Ledger(Base):
     """What the work has spent: `down` writes its lab, `up` adds the labs
     that the account's events show made and removed elsewhere."""
