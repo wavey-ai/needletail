@@ -15,7 +15,13 @@ epoch is one part: 48 samples = 1 ms by default for PCM and FLAC, and for Opus
 records (hops.py), with the epoch that the sender reports. Linode is not
 used. scripts/compare/part-sweep.py runs this for each part size.
 
-Results: target/latency-bench/NAME/
+Results: target/latency-bench/NAME/, or target/latency-bench/ID/NAME/ for the lab
+of NEEDLETAIL_EDGE_LAB_ID. The loop, the indexes and the synthetic clips in
+target/latency-bench/media are shared by every lab: each is made under a lock
+(media/.lock), written beside and renamed. A pass holds its lab
+(scripts/lab_guard.py: it waits while another run holds it) and refuses
+binaries outside a frozen set (scripts/freeze-binaries.py) unless
+NEEDLETAIL_ALLOW_LIVE=1.
   hops.json      hops.py's report, with the run's settings under "bench"
   summary.txt    the hop table of each region, and each reader's latency
   hops.raw.ndjson, HOST.LANE.probe*.csv|json, sender.log, plan.json
@@ -77,7 +83,9 @@ e.g. latency-bench.py --name uc-burst --payload opus --client-loss "loss gemodel
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import fcntl
 import importlib.util
 import json
 import os
@@ -93,6 +101,7 @@ SCRIPTS = HERE.parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import edge_lab as lab  # noqa: E402
+import lab_guard as guard  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("hops", HERE / "hops.py")
 hops = importlib.util.module_from_spec(_spec)
@@ -151,7 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
-    parser.add_argument("--name", required=True, help="results go to target/latency-bench/NAME")
+    parser.add_argument("--name", required=True,
+                        help="results go to target/latency-bench/[ID/]NAME")
     parser.add_argument("--seconds", type=int, default=60, help="D: how long the readers listen")
     parser.add_argument("--skip-seconds", type=int, default=None,
                         help=f"seconds at the start of the readers' window left out of every "
@@ -521,6 +531,16 @@ def video_source(args) -> dict | None:
     return None
 
 
+@contextlib.contextmanager
+def media_lock():
+    """The media directory is shared by the labs of every id: one of them
+    makes a file at a time."""
+    MEDIA.mkdir(parents=True, exist_ok=True)
+    with open(MEDIA / ".lock", "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
 def prepare_video(item: dict | None) -> dict | None:
     """Encode the synthetic clip if it is not there, check that the clip
     exists, and measure its video rate and frame rate (ffprobe, the first
@@ -528,11 +548,12 @@ def prepare_video(item: dict | None) -> dict | None:
     if item is None:
         return None
     path = pathlib.Path(item["path"])
-    if item.get("synthetic") and not path.is_file():
-        MEDIA.mkdir(parents=True, exist_ok=True)
-        log(f"encoding the synthetic 4K clip {path.name}")
-        subprocess.run(["nice", "-n", "10", *item["prepare"]], check=True)
-        pathlib.Path(str(path) + ".part").replace(path)
+    if item.get("synthetic"):
+        with media_lock():
+            if not path.is_file():
+                log(f"encoding the synthetic 4K clip {path.name}")
+                subprocess.run(["nice", "-n", "10", *item["prepare"]], check=True)
+                pathlib.Path(str(path) + ".part").replace(path)
     if not path.is_file():
         raise SystemExit(f"no 4K clip at {path} (clips: {', '.join(sorted(p.stem for p in CLIPS.glob('*.ts')))})")
     item.update(probe_clip(path))
@@ -1589,8 +1610,14 @@ def index_media(args, loop_file: str) -> tuple[str, list[str]]:
     return index, [args.ntcmp, "audio-index", f"numbered:{name}", index, ms, "0"]
 
 
+def bench_dir(name: str, ident: str | None) -> pathlib.Path:
+    """A pass's results: under the lab's id when it has one, so that two
+    labs' passes of one name do not meet."""
+    return OUT_ROOT / ident / name if ident else OUT_ROOT / name
+
+
 def plan(args) -> dict:
-    out = OUT_ROOT / args.name
+    out = bench_dir(args.name, lab.LAB_ID)
     loop_file = str(MEDIA / "loop64.s24le")
     index, index_command = index_media(args, loop_file)
     start = loop_start(time.time())
@@ -1618,16 +1645,26 @@ def plan(args) -> dict:
 
 
 def prepare_media(item: dict) -> None:
+    """The loop and the run's index, each made once under the media lock,
+    written beside and renamed, so that a pass of another lab never reads
+    one half written."""
     loop = pathlib.Path(item["loop"])
-    if not loop.is_file() or loop.stat().st_size != LOOP_BYTES:
-        MEDIA.mkdir(parents=True, exist_ok=True)
-        with open(item["from"], "rb") as source:
-            data = source.read(LOOP_BYTES)
-        if len(data) != LOOP_BYTES:
-            raise SystemExit(f"{item['from']} is shorter than {LOOP_SECONDS} s of stereo s24le")
-        loop.write_bytes(data)
-    if not pathlib.Path(item["index"]).is_file():
-        subprocess.run(item["index_command"], check=True, capture_output=True)
+    index = pathlib.Path(item["index"])
+    with media_lock():
+        if not loop.is_file() or loop.stat().st_size != LOOP_BYTES:
+            with open(item["from"], "rb") as source:
+                data = source.read(LOOP_BYTES)
+            if len(data) != LOOP_BYTES:
+                raise SystemExit(f"{item['from']} is shorter than {LOOP_SECONDS} s of stereo s24le")
+            beside = loop.with_name(loop.name + ".part")
+            beside.write_bytes(data)
+            beside.replace(loop)
+        if not index.is_file():
+            beside = index.with_name(index.name + ".part")
+            command = [str(beside) if part == str(index) else part
+                       for part in item["index_command"]]
+            subprocess.run(command, check=True, capture_output=True)
+            beside.replace(index)
 
 
 def reader_summary(report: pathlib.Path) -> dict:
@@ -2062,7 +2099,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps(steps, indent=1))
         return 0
-    return run(args, steps)
+    guard.require_frozen(run_binaries(args, steps))
+    with guard.hold(f"latency-bench.py --name {args.name}"):
+        if steps["lab_up"] is None:
+            # The lab runs already: what it runs is what its `up` took,
+            # checked once this pass holds it.
+            guard.require_frozen({}, running=guard.running_binaries())
+        return run(args, steps)
+
+
+def run_binaries(args, steps: dict) -> dict:
+    """The binaries a pass takes from the environment: the lab's when it
+    brings the lab up, the UDP client when a pass has UDP listeners, the
+    load tool when it has a crowd."""
+    out = guard.lab_binaries() if steps["lab_up"] is not None else {}
+    if any(item["kind"] == "udp" for item in steps["video"]["viewers"] + steps["udp_clients"]):
+        out["needletail-udp-client"] = pathlib.Path(args.udp_client)
+    if args.load_listeners > 0 or args.load_ramp:
+        out["needletail-load"] = LOAD_BIN
+    return out
 
 
 if __name__ == "__main__":
