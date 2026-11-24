@@ -172,8 +172,12 @@ class FirstSession(unittest.TestCase):
         lines = dry(first_session, labs=2, idle_s=990.0, burn_s=20, seconds=70, payload="opus",
                     name="fs-test")
         commands = [line for line in lines if line.startswith(("$ ", "# idle"))]
-        ups = [index for index, line in enumerate(commands) if line.endswith("edge_lab.py up")]
+        ups = [index for index, line in enumerate(commands) if "edge_lab.py up " in line]
         self.assertEqual(len(ups), 2)
+        # The up gives what the bench's own would: the opus lane and hop
+        # journals sized to the session (the first seconds are kept).
+        self.assertIn("daw_hls_formats=opus", commands[ups[0]])
+        self.assertIn("--hop-journal-capacity", commands[ups[0]])
         lab = commands[ups[0]:ups[1]]
         kinds = []
         for line in lab:
@@ -204,6 +208,17 @@ class FirstSession(unittest.TestCase):
             self.assertIn(flag, first)
         self.assertIn("# idle, as the referee's lab before its first session: 990 s", lines)
         self.assertFalse((first_session.OUT / "fs-test").exists())
+
+    def test_rt_and_the_first_session_alone(self):
+        lines = dry(first_session, labs=1, idle_s=1.0, burn_s=1, seconds=70, payload="opus",
+                    name="fs-test", up_args="rt=1 slots=lon-edge-4,new-edge-3",
+                    bench_args="--sample-nodes", load_sites="london", no_warm=True)
+        up = next(line for line in lines if "edge_lab.py up " in line)
+        self.assertTrue(up.endswith("rt=1 slots=lon-edge-4,new-edge-3"))
+        passes = [line for line in lines if "latency-bench.py --name fs-test-lab1-" in line]
+        self.assertEqual(len(passes), 1)
+        self.assertIn("-first --no-up", passes[0])
+        self.assertTrue(passes[0].endswith("--load-sites london --sample-nodes"))
 
     def test_each_pass_writes_into_the_first_session_run(self):
         lines = dry(first_session, labs=1, idle_s=1.0, burn_s=1, seconds=70, payload="opus",
@@ -325,3 +340,46 @@ class FirstSession(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommitStops(unittest.TestCase):
+    """A commit gap of 100 ms or more on a node of a pass's hop journals,
+    with its kernel stamps and wakes over the same window and the 10 ms
+    sampler's view of the class thread."""
+
+    def test_a_stop_is_found_and_typed(self):
+        import tempfile
+        bench = pathlib.Path(tempfile.mkdtemp())
+        lab_dir = pathlib.Path(tempfile.mkdtemp())
+        events = [{"_meta": {}}]
+        base = 1_000_000_000
+        for seq in range(400):
+            # Commits stop for 300 ms after part 200; the kernel stamps go on.
+            at = base + seq * 1000
+            commit = at + (300_000 if seq >= 200 else 0)
+            for stage, t_us in (("relay_first", at), ("relay_woken", commit),
+                                ("committed", commit)):
+                events.append({"node": "lon-edge-1", "_node": "lon-edge-1", "stage": stage,
+                               "stream": 3001, "seq": seq, "t_us": t_us})
+            events.append({"node": "lon-edge-1", "_node": "lon-edge-1", "stage": "committed",
+                           "stream": 4001, "seq": seq, "t_us": base})
+        (bench / "hops.raw.ndjson").write_text("\n".join(json.dumps(item) for item in events) + "\n")
+        fine = [{"meta": {}}]
+        for step in range(60):
+            t_us = base + 150_000 + step * 10_000
+            # Run delay (ns) only grows while the thread waits runnable.
+            delay = 5_000_000 + 1000 * max(0, min(t_us, base + 500_000) - (base + 200_000))
+            state = ["R", "", 1_000_000, delay, 10, step, 16] \
+                if base + 199_000 < t_us <= base + 500_000 else \
+                ["S", "poll_schedule_timeout", 1_000_000, delay, 10, 0, 16]
+            fine.append({"t_us": t_us, "n": {"lon-edge-1": state}})
+        (lab_dir / "class-threads.ndjson").write_text("\n".join(json.dumps(item) for item in fine))
+        found = first_session.session_stops(lab_dir, bench, 3001)["lon-edge-1"]
+        self.assertEqual(found["commits"], 400)
+        (stop,) = found["stops"]
+        self.assertAlmostEqual(stop["ms"], 301.0)
+        self.assertAlmostEqual(stop["relay_first_gap_ms"], 1.0, "the input did not stop")
+        self.assertAlmostEqual(stop["relay_woken_gap_ms"], 301.0)
+        self.assertEqual(set(stop["fine"]["states"]), {"R"})
+        self.assertGreater(stop["fine"]["run_delay_ms"], 250, "runnable and not run")
+        self.assertEqual(first_session.commit_stops(bench, 4001)["lon-edge-1"]["stops"], [])

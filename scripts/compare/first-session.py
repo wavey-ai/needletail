@@ -5,6 +5,8 @@ stall journal see?
 
     first-session.py run [--labs 5] [--idle-s 990] [--burn-s 20] [--seconds 70]
                          [--payload opus|pcm] [--name NAME] [--dry]
+                         [--up-args "rt=1 slots=..."] [--bench-args "..."]
+                         [--load-sites london] [--fine-ms 10] [--stack] [--no-warm]
     first-session.py report DIR [--json OUT]
 
 `run` builds --labs fresh labs, one after another, each in the referee's
@@ -25,6 +27,20 @@ the contributor restarted, the first stream):
  6. every node's /api/stalls since the lab's start;
  7. the warm session: the same pass again, and the journals since it began;
  8. `edge_lab.py down`; the lab's files into the run archive.
+`up` takes the settings that latency-bench's own `up` would give the same
+pass (its lab_overrides: the payload's formats and epoch, and hop journals
+sized to the session, so that the first seconds are kept) and --up-args
+(e.g. `rt=1 slots=lon-edge-4,new-edge-3`: edge_lab.py's real time as on
+Linode); --bench-args go to every pass. The mesh nodes are the lab's
+standing services (a slot held out is not one). The host watch runs on the
+lab's CPUs only (NEEDLETAIL_EDGE_LAB_CPUS). With --fine-ms (10, the
+default; 0: none) class-thread-sampler.py reads every mesh node's class
+thread that often from the contributor's restart on (lab<i>/class-threads
+.ndjson: state, wait channel, run and run delay); --stack runs it under
+`sudo -n` and keeps the kernel stack of every sample whose thread is not
+asleep in its poll (read-only diagnostics on the lab's own processes).
+Before `down` the lab's rendered arguments, CPU layout, limits and rt
+check are kept in lab<i>/lab-state/.
 Every command goes through the lab's own command line; `--dry` prints them
 all and runs none. Output in target/first-session/<name>/lab<i>/ (the
 passes themselves in target/latency-bench/<name>-lab<i>-first|warm/). The
@@ -45,7 +61,11 @@ warm (wave 9's gate: p99 within 0.3 ms, 0 missing); per node and session
 the stall journal's stops by cause and stopped ms, and the class thread's
 stops of 100 ms or more that its sampler shows, each classified as on the
 Linode lab (not run, blocked in our code, ...: stall_records.classify); the
-null of every reader probe (null-window.py, the referee's arithmetic).
+null of every reader probe (null-window.py, the referee's arithmetic); per
+session and mesh node, every commit stop of 100 ms or more from the pass's
+hop journals (hops.raw.ndjson), with the kernel's receive stamps
+(relay_first) and the class thread's wakes (relay_woken) over the same
+window and, from the 10 ms sampler, what the class thread was doing.
 Exit 0; `run` exits 1 when a step failed.
 """
 
@@ -86,15 +106,75 @@ SESSIONS = ("first", "warm")
 SAMPLER = ROOT / "scripts" / "hunt-sampler.sh"
 # A class thread's stop that its sampler shows, from this length.
 SAMPLER_STOP_MS = 100.0
+# A commit stop in the hop journals, from this length.
+COMMIT_STOP_MS = 100.0
+FINE_SAMPLER = HERE / "class-thread-sampler.py"
 NODECHECK = pathlib.Path(os.environ.get(
     "NEEDLETAIL_NODECHECK_BIN", str(lab.MESH_ROOT / "target" / "release" / "needletail-nodecheck")))
 
 
 def mesh_nodes() -> list[str]:
-    """The nodes whose service runs in a default lab: the slots held out
-    and the backbone relays (no service in the merged topology) left out."""
+    """The nodes whose service runs: the lab's standing services once it is
+    rendered (a slot held out by `up slots=` is not one); before that, a
+    default lab's (the dist-c slots and the backbone relays left out)."""
+    if lab.load("rendered.json"):
+        return [name for name in lab.standing_services()
+                if lab.node(name)["role"] in MESH_ROLES]
     return [name for name in lab.names() if lab.node(name)["role"] in MESH_ROLES
             and name not in lab.DEFAULT_SLOTS]
+
+
+def split(text: str | None) -> list[str]:
+    return shlex.split(text or "")
+
+
+def bench_module():
+    spec = importlib.util.spec_from_file_location("latency_bench", BENCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def up_command(args: argparse.Namespace) -> list[str]:
+    """edge_lab.py up with what latency-bench's own `up` would give the
+    first pass (lab_overrides: formats, epoch, hop journals sized to the
+    session) and --up-args."""
+    bench = bench_module()
+    parsed = bench.build_parser().parse_args(
+        bench_command("first", args.payload, args.seconds, args.name, args)[2:])
+    return [sys.executable, str(EDGE_LAB), "up", *bench.lab_overrides(parsed),
+            *split(args.up_args)]
+
+
+def host_pin() -> list[str]:
+    """taskset to the lab's CPU range, when it has one."""
+    cpus = os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS")
+    return ["taskset", "-c", cpus] if cpus else []
+
+
+def fine_command(args: argparse.Namespace, out: pathlib.Path) -> list[str] | None:
+    """The 10 ms class-thread sampler on every mesh node's service, on the
+    lab's own CPUs (its tail), as the user or, with --stack, under sudo."""
+    if not args.fine_ms:
+        return None
+    nodes = [f"{name}={lab.service_pid(name) or 0}" for name in mesh_nodes()]
+    rest = lab.load("cpus.json").get("_rest")
+    pin = ["taskset", "-c", lab.cpu_list(rest)] if rest else []
+    root = ["sudo", "-n"] if args.stack else []
+    return [*pin, *root, sys.executable, "-I", str(FINE_SAMPLER),
+            str(out / "class-threads.ndjson"), *nodes, "--period-ms", str(args.fine_ms),
+            *(["--stack"] if args.stack else [])]
+
+
+def keep_lab_state(out: pathlib.Path) -> None:
+    """The lab's render, layout, limits and rt check, before `down`."""
+    target = out / "lab-state"
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("rendered.json", "cpus.json", "limits.json", "rt.json", "rt-check.json",
+                 "binaries.json", "services.json", "settings.json"):
+        source = lab.WORK / name
+        if source.is_file():
+            (target / name).write_bytes(source.read_bytes())
 
 
 def stalls_url(name: str, since_us: int) -> str:
@@ -115,11 +195,14 @@ def sampler_command(name: str, out: pathlib.Path) -> list[str]:
             "/api/pacing" if contributor else ""]
 
 
-def bench_command(name: str, payload: str, seconds: int, run_id: str) -> list[str]:
+def bench_command(name: str, payload: str, seconds: int, run_id: str,
+                  args: argparse.Namespace | None = None) -> list[str]:
     return [sys.executable, str(BENCH), "--name", name, "--no-up", "--keep-up",
             "--payload", payload, "--seconds", str(seconds), "--skip-seconds", "0",
             "--udp-clients", "2", "--load-listeners", "40", "--load-assign",
-            "--load-args=--sample 8", "--run-id", run_id]
+            "--load-args=--sample 8", "--run-id", run_id,
+            *(["--load-sites", args.load_sites] if args is not None and args.load_sites else []),
+            *split(getattr(args, "bench_args", None))]
 
 
 class Steps:
@@ -214,9 +297,15 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
     if not steps.dry:
         out.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    entry = {"lab": index, "started_unix": round(started, 3), "sessions": {}}
-    steps.run([sys.executable, str(EDGE_LAB), "up"])
-    watch = steps.background([str(NODECHECK), "watch", "--out", str(out / "host-watch.ndjson")])
+    entry = {"lab": index, "started_unix": round(started, 3), "sessions": {},
+             "payload": args.payload,
+             "up_args": split(args.up_args), "bench_args": split(args.bench_args),
+             "load_sites": args.load_sites, "fine_ms": args.fine_ms, "stack": args.stack,
+             "binaries": {key: os.environ.get(key) for key in (
+                 "NEEDLETAIL_AV_MESH_BIN", "NEEDLETAIL_AV_CONTRIB_BIN")}}
+    steps.run(up_command(args))
+    watch = steps.background([*host_pin(), str(NODECHECK), "watch", "--out",
+                              str(out / "host-watch.ndjson")])
     steps.wait(args.idle_s, "idle, as the referee's lab before its first session")
     steps.together([[sys.executable, str(EDGE_LAB), "burn", name, str(args.burn_s)]
                     for name in mesh_nodes()], timeout=args.burn_s + 120)
@@ -224,13 +313,16 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
     steps.run([sys.executable, str(EDGE_LAB), "start", CONTRIBUTOR])
     samplers = [steps.background(sampler_command(name, out / "samplers"))
                 for name in mesh_nodes()]
-    for session in SESSIONS:
+    fine = fine_command(args, out) if not steps.dry else None
+    if fine:
+        samplers.append(steps.background(fine))
+    for session in SESSIONS[:1] if args.no_warm else SESSIONS:
         began = time.time()
         # The first session's journals from the lab's start (its idle, the
         # burn and the restart included), the warm one's from its own.
         since = int((started if session == "first" else began) * 1e6)
         bench = f"{args.name}-lab{index}-{session}"
-        steps.run(bench_command(bench, args.payload, args.seconds, args.name),
+        steps.run(bench_command(bench, args.payload, args.seconds, args.name, args),
                   timeout=args.seconds + 600)
         directory = out / session
         if not steps.dry:
@@ -240,13 +332,24 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
                                       "to_unix": round(time.time(), 3), "stalls_since_us": since}
     for process in samplers + [watch]:
         steps.stop(process)
+    if not steps.dry:
+        keep_lab_state(out)
     steps.run([sys.executable, str(EDGE_LAB), "down"])
     if not steps.dry:
         (out / "lab.json").write_text(json.dumps(entry, indent=1) + "\n")
     return entry
 
 
+# The options that came after the first version, with their defaults, for a
+# caller that builds its own Namespace.
+RUN_DEFAULTS = {"up_args": "", "bench_args": "", "load_sites": "", "fine_ms": 10.0,
+                "stack": False, "no_warm": False}
+
+
 def command_run(args: argparse.Namespace) -> int:
+    for key, value in RUN_DEFAULTS.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
     problems = preflight()
     if problems and not args.dry:
         sys.exit("the first-session runs do not start:\n  " + "\n  ".join(problems))
@@ -272,7 +375,8 @@ def command_run(args: argparse.Namespace) -> int:
         if not args.dry:
             record = {"schema": "needletail.first-session.v1", "name": args.name,
                       "payload": args.payload, "seconds": args.seconds, "idle_s": args.idle_s,
-                      "burn_s": args.burn_s, "labs": labs}
+                      "burn_s": args.burn_s, "up_args": split(args.up_args),
+                      "bench_args": split(args.bench_args), "labs": labs}
             (OUT / args.name / "first-session.json").write_text(json.dumps(record, indent=1) + "\n")
             steps.run(archive + ["add", args.name, str(OUT / args.name / "first-session.json"),
                                  "--kind", "result"])
@@ -327,6 +431,146 @@ def journals(directory: pathlib.Path) -> dict[str, dict]:
     return out
 
 
+def bench_dir(name: str) -> pathlib.Path:
+    """A pass's results: target/latency-bench/[ID/]NAME (latency-bench's)."""
+    return BENCH_OUT / lab.LAB_ID / name if lab.LAB_ID else BENCH_OUT / name
+
+
+PAYLOAD_STREAM = {"flac": 2001, "opus": 3001, "pcm": 4001}
+JOURNAL_STAGES = ("committed", "relay_first", "relay_woken", "udp_sent", "relay_forward")
+
+
+def longest_gap(times: list[int], start_us: int, end_us: int) -> float | None:
+    """The longest gap (ms) between consecutive `times` (sorted) that
+    overlaps [start_us, end_us], the events just outside it included."""
+    import bisect
+    if not times:
+        return None
+    low = max(0, bisect.bisect_left(times, start_us) - 1)
+    high = min(len(times), bisect.bisect_right(times, end_us) + 1)
+    window = times[low:high]
+    if len(window) < 2:
+        return None
+    return round(max(b - a for a, b in zip(window, window[1:])) / 1000, 3)
+
+
+def journal_times(bench: pathlib.Path, stream: int) -> dict[str, dict[str, list[int]]]:
+    """{node: {stage: sorted t_us}} of the stream in a pass's hops.raw.ndjson."""
+    out: dict[str, dict[str, list[int]]] = {}
+    path = bench / "hops.raw.ndjson"
+    if not path.is_file():
+        return out
+    with open(path) as handle:
+        for line in handle:
+            if '"stage"' not in line:
+                continue
+            item = json.loads(line)
+            if item.get("stream") != stream or item.get("stage") not in JOURNAL_STAGES:
+                continue
+            node = item.get("_node") or item.get("node")
+            out.setdefault(node, {}).setdefault(item["stage"], []).append(int(item["t_us"]))
+    for stages in out.values():
+        for values in stages.values():
+            values.sort()
+    return out
+
+
+def commit_stops(bench: pathlib.Path, stream: int,
+                 min_ms: float = COMMIT_STOP_MS) -> dict[str, dict]:
+    """Per node of the pass's hop journals: its commits (count, first and
+    last) and every gap of `min_ms` or more between two of them, with the
+    longest gap of its kernel receive stamps (relay_first: did the input
+    stop too?), of its class thread's wakes (relay_woken) and of its sends
+    to clients (udp_sent) over the same window."""
+    out = {}
+    for node, stages in sorted(journal_times(bench, stream).items()):
+        commits = stages.get("committed") or []
+        stops = []
+        for a, b in zip(commits, commits[1:]):
+            if (b - a) / 1000 >= min_ms:
+                stops.append({"from_us": a, "to_us": b, "ms": round((b - a) / 1000, 3),
+                              **{f"{stage}_gap_ms": longest_gap(stages.get(stage) or [], a, b)
+                                 for stage in ("relay_first", "relay_woken", "udp_sent")}})
+        out[node] = {"commits": len(commits), "first_us": commits[0] if commits else None,
+                     "last_us": commits[-1] if commits else None, "stops": stops}
+    return out
+
+
+def fine_lines(lab_dir: pathlib.Path) -> list[dict]:
+    path = lab_dir / "class-threads.ndjson"
+    if not path.is_file():
+        return []
+    return [item for item in sr.read_ndjson(path) if "t_us" in item]
+
+
+def fine_view(lines: list[dict], node: str, start_us: int, end_us: int) -> dict | None:
+    """What the 10 ms sampler saw of a node's class thread over a stop:
+    its states and wait channels, run and run delay grown, switches, and
+    the kernel stacks it kept."""
+    import collections
+    inside = [line for line in lines if start_us <= line["t_us"] <= end_us
+              and line["n"].get(node) and line["n"][node][0] is not None]
+    before = [line for line in lines if line["t_us"] < start_us and line["n"].get(node)
+              and line["n"][node][0] is not None]
+    after = [line for line in lines if line["t_us"] > end_us and line["n"].get(node)
+             and line["n"][node][0] is not None]
+    if not inside and not (before and after):
+        return None
+    states = collections.Counter(line["n"][node][0] for line in inside)
+    waits = collections.Counter(f"{line['n'][node][0]} {line['n'][node][1]}" for line in inside)
+    stacks = collections.Counter(" < ".join(line["stack"][node][:6]) for line in inside
+                                 if (line.get("stack") or {}).get(node))
+    out = {"samples": len(inside), "states": dict(states), "waits": dict(waits.most_common(4)),
+           "stacks": dict(stacks.most_common(3))}
+    if before and after:
+        a, b = before[-1]["n"][node], after[0]["n"][node]
+        out.update({"span_ms": round((after[0]["t_us"] - before[-1]["t_us"]) / 1000, 1),
+                    "run_ms": round((b[2] - a[2]) / 1e6, 1),
+                    "run_delay_ms": round((b[3] - a[3]) / 1e6, 1),
+                    "voluntary": None if a[4] is None else b[4] - a[4],
+                    "involuntary": None if a[5] is None else b[5] - a[5],
+                    "cpus": sorted({line["n"][node][6] for line in before[-1:] + inside + after[:1]})})
+    return out
+
+
+def watch_ticks(lab_dir: pathlib.Path, cpus: list[int], start_us: int, end_us: int) -> dict:
+    """The host watch's late ticks on `cpus` that overlap a stop: the
+    longest, and how many (a tick thread on the class thread's CPU that ran
+    on time says the CPU ran)."""
+    path = lab_dir / "host-watch.ndjson"
+    found = []
+    if path.is_file() and cpus:
+        for item in sr.read_ndjson(path):
+            if item.get("kind") != "tick" or item.get("cpu") not in cpus:
+                continue
+            end = int(item["t_us"])
+            begin = end - int(item.get("dur_us") or 0)
+            if begin <= end_us and end >= start_us:
+                found.append(item)
+    return {"late_ticks": len(found),
+            "longest_ms": round(max((int(item.get("dur_us") or 0) for item in found),
+                                    default=0) / 1000, 1),
+            "causes": sorted({str(item.get("cause")) for item in found})}
+
+
+def session_stops(lab_dir: pathlib.Path, bench: pathlib.Path, stream: int,
+                  lines: list[dict] | None = None) -> dict[str, dict]:
+    """commit_stops of a pass, each stop with the 10 ms sampler's view of
+    the node's class thread and the host watch's ticks on its CPUs."""
+    lines = fine_lines(lab_dir) if lines is None else lines
+    layout = {}
+    state = lab_dir / "lab-state" / "cpus.json"
+    if state.is_file():
+        layout = json.loads(state.read_text())
+    out = commit_stops(bench, stream)
+    for node, item in out.items():
+        for stop in item["stops"]:
+            stop["fine"] = fine_view(lines, node, stop["from_us"], stop["to_us"])
+            stop["watch"] = watch_ticks(lab_dir, layout.get(node) or [], stop["from_us"],
+                                        stop["to_us"])
+    return out
+
+
 def class_stops(directory: pathlib.Path, since_us: int | None,
                 until_us: int | None) -> dict[str, list[dict]]:
     """Per node, the class thread's stops of SAMPLER_STOP_MS or more that
@@ -363,8 +607,11 @@ def analyse(directory, with_null: bool = True) -> dict:
         record = json.loads((lab_dir / "lab.json").read_text()) if (lab_dir / "lab.json").is_file() \
             else {"lab": int(lab_dir.name[3:]), "sessions": {}}
         entry = {"lab": record["lab"], "sessions": {}}
+        lines = fine_lines(lab_dir)
+        stream = PAYLOAD_STREAM.get(record.get("payload") or "opus", 3001)
         for session in SESSIONS:
-            bench = BENCH_OUT / ((record["sessions"].get(session) or {}).get("bench") or "")
+            name = (record["sessions"].get(session) or {}).get("bench")
+            bench = bench_dir(name) if name else BENCH_OUT / "-"
             hops_path = bench / "hops.json"
             hops = json.loads(hops_path.read_text()) if hops_path.is_file() else {}
             window = record["sessions"].get(session) or {}
@@ -374,7 +621,9 @@ def analyse(directory, with_null: bool = True) -> dict:
                     lab_dir / "samplers",
                     int(window["from_unix"] * 1e6) if window.get("from_unix") else None,
                     int(window["to_unix"] * 1e6) if window.get("to_unix") else None),
-                "null": nulls(bench) if with_null and bench.is_dir() else []}
+                "null": nulls(bench) if with_null and bench.is_dir() else [],
+                "commit_stops": session_stops(lab_dir, bench, stream, lines)
+                if bench.is_dir() else {}}
         first, warm = (entry["sessions"][session]["udp"] for session in SESSIONS)
         entry["gate"] = gate(first, warm)
         labs.append(entry)
@@ -404,6 +653,19 @@ def format_report(result: dict) -> str:
                     lines.append(f"  {session:<5} {node:<14} class thread stopped {stop['ms']:.0f} "
                                  f"ms: {stop['class']}" + (f", {detail}" if detail else "")
                                  + f" [{stop['why']}]")
+            for node, found in sorted(item.get("commit_stops", {}).items()):
+                for stop in found["stops"]:
+                    fine = stop.get("fine") or {}
+                    lines.append(
+                        f"  {session:<5} {node:<14} commit stop {stop['ms']:.0f} ms at "
+                        f"{(stop['from_us'] - (found['first_us'] or stop['from_us'])) / 1e6:.2f} s "
+                        f"after its first commit: kernel stamps gap "
+                        f"{stop['relay_first_gap_ms']} ms, wakes gap {stop['relay_woken_gap_ms']} "
+                        f"ms; class thread {fine.get('states')} {fine.get('waits')} run "
+                        f"{fine.get('run_ms')} ms, run delay {fine.get('run_delay_ms')} ms, "
+                        f"switches {fine.get('voluntary')}/{fine.get('involuntary')}; watch "
+                        f"{stop['watch']}" + (f"; stacks {fine['stacks']}" if fine.get('stacks')
+                                              else ""))
             for probe in item["null"]:
                 eight = probe.get("lengths", {}).get("8") or {}
                 lines.append(f"  {session:<5} null {pathlib.Path(probe['frames']).name}: steady "
@@ -435,6 +697,15 @@ def main() -> None:
     run.add_argument("--payload", choices=("opus", "pcm"), default="opus")
     run.add_argument("--name", default=time.strftime("first-%m%d%H%M", time.gmtime()))
     run.add_argument("--dry", action="store_true", help="print every command and run none")
+    run.add_argument("--up-args", default="", help="more settings of edge_lab.py up (rt=1 ...)")
+    run.add_argument("--bench-args", default="", help="more arguments of every latency-bench pass")
+    run.add_argument("--load-sites", default="", help="latency-bench --load-sites (london)")
+    run.add_argument("--fine-ms", type=float, default=10.0,
+                     help="period of class-thread-sampler.py (0: not run)")
+    run.add_argument("--no-warm", action="store_true",
+                     help="the first session only (no warm pass after it)")
+    run.add_argument("--stack", action="store_true",
+                     help="the 10 ms sampler under sudo -n, with kernel stacks")
     run.set_defaults(handler=command_run)
     report = sub.add_parser("report", help="first against warm, journals and nulls")
     report.add_argument("dir")
