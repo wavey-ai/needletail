@@ -605,6 +605,35 @@ class Kill(Base):
                          ["kill.lon-dist-a", "kill.lon-dist-a", "return.lon-dist-a",
                           "return.lon-dist-a"])
 
+    def test_an_ingress_kill_runs_beside_ordinary_lane_skips(self):
+        # Local proof 2, scenario e: every child's row for lon-dist-b skipped
+        # 1 to 4 objects in 10 s (lane loss its copies repaired) and the
+        # gate refused; lon-dist-b's own lanes skipped too (LG4).
+        skips = {"lon-edge-1": 4, "lon-edge-2": 4, "lon-edge-3": 3, "new-dist-a": 3,
+                 "new-dist-b": 2}
+        for child, count in skips.items():
+            self.sim.row[(child, "lon-dist-b")] = {"skipped_10s": count}
+            self.sim.row[(child, "lon-dist-a")] = {"skipped_10s": 1}
+        self.sim.row[("lon-dist-b", "contrib-lon")] = {"skipped_10s": 2}
+        code = self.change("kill", "--node", "lon-dist-a")
+        self.assertEqual(code, 0, self.err.getvalue())
+        self.assertFalse(self.sim.nodes_["lon-dist-a"]["running"])
+        # The gate says what it could not prove and how it judged.
+        self.assertIn("gate note: LG2 lon-edge-1 <- lon-dist-b: P2 (c) not proved",
+                      self.err.getvalue())
+        self.assertIn("gate note: CG2 new-dist-a <- lon-dist-b: P2 (c) not proved",
+                      self.err.getvalue())
+        record = json.loads(sorted(self.sim.evidence_dir.glob("kill-*.json"))[-1].read_text())
+        self.assertTrue(record["gate"]["notes"])
+
+    def test_an_ingress_kill_is_refused_when_a_child_missed_a_part(self):
+        self.sim.row[("lon-edge-2", "lon-dist-b")] = {"skipped_10s": 2}
+        self.sim.gaps["lon-edge-2"] = 1
+        self.assertEqual(self.change("kill", "--node", "lon-dist-a", "--gate-timeout-s", "2"),
+                         mesh_ops.EXIT_REFUSED)
+        self.assertIn("the child misses 1 of the last 12000 parts", self.err.getvalue())
+        self.assertEqual(self.touched(), [])
+
     def test_an_ingress_whose_sibling_misses_a_contributor_is_not_killed(self):
         self.sim.row[("lon-dist-b", "contrib-lon-b")] = {"source_age_ms": 900}
         self.assertEqual(self.change("kill", "--node", "lon-dist-a", "--gate-timeout-s", "2"),

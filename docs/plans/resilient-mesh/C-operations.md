@@ -891,7 +891,7 @@ a stream S that X feeds C (X's row at C has `objects_1s > 0`) and another parent
 | | Check, on C's rows for P and X | Shows |
 | --- | --- | --- |
 | P1 live | P: `source_age_ms <= 100` | P's sources of S arrive now |
-| P2 complete | P: `window_s >= 10`, `skipped_10s == 0`, `resets_10s == 0`, and `objects_10s(P) >= objects_10s(X) - objects_1s(X) / 10` | In the last 10 s P delivered every object of S, and keeps X's pace to within 100 ms |
+| P2 complete | P: `window_s >= 10`, `resets_10s == 0`, `objects_10s(P) >= objects_10s(X) - objects_1s(X) / 10`; and (a) `skipped_10s(P) <= max(2, 0.1% of the objects)`, (b) the child itself missed nothing of S (its retained window has no gap: `head_part - first_part + 1 == window_parts`), (c) no object skipped by both P and X (proved when either skipped none; otherwise noted, judged on (a) and (b)) | Stopping X leaves C nothing short of what it gets today, and P keeps X's pace to within 100 ms. Amended 24 Nov (local proof 2, F4): a skip is an advance of one lane's head over a number, so a lane's ordinary loss that its burst copy, the other parent or the cache mesh repaired counts; healthy lab lanes skip 0 to 4 of 10,000 objects in 10 s, and `skipped_10s == 0` refused every ingress kill and forwarder roll. The exact figures (b) and (c) want are not served yet: `streams[].missed_10s` and `streams[].skipped_by_every_parent_10s` |
 | P3 on time | `slack_mean_us_10s(P) >= slack_mean_us_10s(X) - parity` and `slack_min_us_10s(P) >= slack_min_us_10s(X) - parity`, parity = `--parity-ms` (1.0) | With X gone, C's arrivals are at most 1 ms later on average (the rule's p99 margin) and its worst object of the last 10 s is at most 1 ms later (the rule's silence margin is one unit). Only differences of slack on one node are used: with workstream A the deadline is a point on the stream's own timeline, so a slack by itself says nothing; "past its deadline" is LG4's and CG4's counter |
 | P4 whole objects | When P feeds C on a repair lane (a compiled child's secondary): `multi_symbol_10s == 0` on X's row | A repair lane carries the source of one-symbol audio objects only (RL:728-746); an audio stream with larger objects is not covered by P, and the gate says so |
 
@@ -903,7 +903,7 @@ VLAN address:
 | LG1 | C's `/api/node` answers and C is not `stopping` | The child is there |
 | LG2 | Some parent P of C other than X passes P1 to P3 for S | The child's own record, end to end |
 | LG3 | P's `/api/node`: `ready`, not `hello_draining`, `children.lease.pairs_list` holds `(C, S)`, `children.lease.streams[S].fed_age_ms <= 100` | The other parent holds the lease and its class thread feeds it |
-| LG4 | P's own `parents[]`: a row for S with `source_age_ms <= 100` and `skipped_10s == 0`; and P's `ingest.audio_deadline_drops` is the same on the gate's first and last poll | The other parent is itself fed, complete and not late |
+| LG4 | P's own `parents[]`: a row for S with `source_age_ms <= 100` and `skipped_10s` within P2 (a)'s allowance; and P's `ingest.audio_deadline_drops` is the same on the gate's first and last poll | The other parent is itself fed, complete and not late |
 
 Compiled long-haul children. For every level-2 forwarder D that names X as primary or secondary in the relay
 tree (only a first forwarder has any), with Y the other first forwarder:

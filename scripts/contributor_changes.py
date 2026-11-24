@@ -623,6 +623,7 @@ def ingress_gate(ops, node: str, *, timeout_s: float = 30.0, poll_s: float = mes
     gate = mesh_ops.forwarder_gate(ops, node, lab=lab, timeout_s=max(0.0, deadline - clock()),
                                    parity_ms=parity_ms, poll_s=poll_s, clock=clock, sleep=sleep)
     evidence["forwarder_gate"] = gate.evidence
+    evidence["notes"] = gate.notes
     return gate.ok, "; ".join(gate.problems), evidence, gate.pairs
 
 
@@ -739,6 +740,8 @@ class Change:
                                                 poll_s=self.poll_s, clock=self.clock,
                                                 sleep=self.sleep)
         self.evidence.update(kind=kind, gate=gate)
+        for note in gate.get("notes") or []:
+            self.say(f"kill --node {node}: gate note: {note}")
         if not ok:
             self.keep("kill")
             raise mesh_ops.Refused(f"kill --node {node}: the {kind} gate refuses: {why}")

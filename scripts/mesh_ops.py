@@ -291,7 +291,8 @@ NODE_READS = (
     "parents[]/streams[]/skipped_10s", "parents[]/streams[]/resets_10s",
     "parents[]/streams[]/multi_symbol_10s", "parents[]/streams[]/slack_mean_us_10s",
     "parents[]/streams[]/slack_min_us_10s",
-    "streams[]/stream_id", "streams[]/class",
+    "streams[]/stream_id", "streams[]/class", "streams[]/head_part", "streams[]/first_part",
+    "streams[]/window_parts",
     "children/compiled[]/target",
     "children/lease/children", "children/lease/pairs",
     "children/lease/pairs_list[]/child", "children/lease/pairs_list[]/stream_id",
@@ -949,16 +950,68 @@ def contributor_rules():
 
 PARENT_FIELDS = ("source_age_ms", "window_s", "skipped_10s", "resets_10s", "objects_10s",
                  "slack_mean_us_10s", "slack_min_us_10s")
-LEAVING_FIELDS = ("objects_1s", "objects_10s", "slack_mean_us_10s", "slack_min_us_10s")
+LEAVING_FIELDS = ("objects_1s", "objects_10s", "skipped_10s", "slack_mean_us_10s",
+                  "slack_min_us_10s")
+# P2 (a): the skips of the other parent's lane that are ordinary, repaired
+# loss. A skip (av-mesh ParentFeeds) is an advance of that lane's head by
+# more than one object: every object whose first datagram on the lane came
+# after a later object's, whether it was lost there and its 20 ms burst
+# copy, the other parent or the cache mesh delivered it, or it was only
+# reordered. A healthy lab lane shows 0 to 4 in 10 s of 10,000 objects
+# (local proof 2, skips.ndjson). At most max(2, 0.1 % of the objects).
+SKIP_FLOOR = 2
+SKIP_FRACTION = 0.001
+# P2 (b): what av-mesh would have to serve for the rule to be read exactly,
+# not through a proxy (named in the gate's notes).
+WANTED_MISSED = ("streams[].missed_10s: parts of the stream that this node did not commit "
+                 "(released past as a gap, or still missing at the hole distance's second "
+                 "look), counted over the last 10 s")
+WANTED_BOTH = ("streams[].skipped_by_every_parent_10s: objects of the stream in the last 10 s "
+               "that every parent delivering it skipped (no parent's lane carried a datagram "
+               "of the object before moving past it)")
+
+
+def skip_allowance(objects: int | float) -> int:
+    """P2 (a): the skips allowed on a lane of `objects` objects in 10 s."""
+    return max(SKIP_FLOOR, int(SKIP_FRACTION * max(0, objects)))
+
+
+def window_gaps(status: Status | None, stream_id: int) -> tuple[int | None, int | None]:
+    """P2 (b) as av-mesh serves it today: the parts of `stream_id` missing
+    from the node's retained window (`streams[]`: head_part - first_part + 1
+    - window_parts; the window is the stream's, about 12 s of 1 ms parts),
+    and the parts it spans. (None, None) when a figure is missing. A part
+    that arrives late or is being repaired counts while it is missing, so a
+    gate reads it on two polls."""
+    row = ((status.streams if status else None) or {}).get(stream_id)
+    if row is None:
+        return None, None
+    head, first, held = (_num(row, "head_part"), _num(row, "first_part"),
+                         _num(row, "window_parts"))
+    if head is None or first is None or held is None:
+        return None, None
+    span = int(head) - int(first) + 1
+    return max(0, span - int(held)), span
 
 
 def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_ms: float = 1.0,
-                repair_lane: bool = False) -> list[str]:
+                repair_lane: bool = False, notes: list | None = None) -> list[str]:
     """P1 to P4 of 3.3 on the child's own record: may the parent at
     `leaving` (addresses) go, with the parent at `staying` left to feed
     `stream_id` to this child? [] passes; every problem is named, a missing
     figure as "parity unknown". `repair_lane`: the staying parent feeds the
-    child on a repair lane (a compiled child's secondary)."""
+    child on a repair lane (a compiled child's secondary).
+
+    P2 refuses when stopping the leaving parent would leave the child
+    without something it gets today, not for a lane's ordinary repaired
+    loss (lead's decision of 24 Nov): it passes when, over the last 10 s,
+    (a) the other parent skipped at most `skip_allowance` objects, (b) the
+    child itself missed nothing of the stream (its own retained window,
+    `window_gaps`), and (c) no object was skipped by both parents. av-mesh
+    does not say which objects were skipped, so (c) is proved only when
+    one of the two skipped none; otherwise it is noted in `notes` (with
+    the field av-mesh would need, WANTED_BOTH) and the rule refuses on (a)
+    and (b) alone. A missing figure still fails."""
     if child is None:
         return ["parity unknown: the child does not answer"]
     x = parent_row(child, set(leaving), stream_id)
@@ -971,6 +1024,9 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
     missing += [f"leaving.{name}" for name in LEAVING_FIELDS if _num(x, name) is None]
     if repair_lane and _num(x, "multi_symbol_10s") is None:
         missing.append("leaving.multi_symbol_10s")
+    gaps, span = window_gaps(child, stream_id)
+    if gaps is None:
+        missing.append("the child's streams[].head_part, first_part, window_parts")
     if missing:
         return [f"parity unknown: {', '.join(missing)} (stream {stream_id})"]
     problems = []
@@ -978,8 +1034,23 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
         problems.append(f"P1 live: the other parent's last source is {p['source_age_ms']} ms old")
     if p["window_s"] < WINDOW_S:
         problems.append(f"P2 complete: {p['window_s']} s of record, {WINDOW_S} wanted")
-    if p["skipped_10s"] != 0:
-        problems.append(f"P2 complete: the other parent skipped {p['skipped_10s']} objects in 10 s")
+    objects = max(p["objects_10s"] + p["skipped_10s"], x["objects_10s"])
+    allowed = skip_allowance(objects)
+    if p["skipped_10s"] > allowed:
+        problems.append(f"P2 complete: the other parent skipped {p['skipped_10s']} objects in "
+                        f"10 s, more than the {allowed} of ordinary loss (max({SKIP_FLOOR}, "
+                        f"{SKIP_FRACTION:.1%} of {objects}))")
+    if gaps:
+        problems.append(f"P2 complete: the child misses {gaps} of the last {span} parts of "
+                        f"stream {stream_id}")
+    if p["skipped_10s"] and x["skipped_10s"] and notes is not None:
+        notes.append(f"P2 (c) not proved for stream {stream_id}: the other parent skipped "
+                     f"{p['skipped_10s']} and the leaving one {x['skipped_10s']} objects in 10 s, "
+                     "and av-mesh does not say whether one was skipped by both; refused on (a) "
+                     f"and (b) only (av-mesh would need {WANTED_BOTH})")
+    if p["skipped_10s"] and notes is not None:
+        notes.append(f"P2 (b) for stream {stream_id} read from the child's retained window "
+                     f"({span} parts), not a 10 s figure (av-mesh would need {WANTED_MISSED})")
     if p["resets_10s"] != 0:
         problems.append(f"P2 complete: the other parent's feed reset {p['resets_10s']} times")
     behind = x["objects_10s"] - x["objects_1s"] / 10
@@ -1041,7 +1112,8 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
     the evidence as not fed. A row for X without objects_1s is "parity
     unknown"."""
     problems: list[str] = []
-    evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": []}
+    notes: list[str] = []
+    evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": [], "notes": notes}
     pairs: list = []
     sx = statuses.get(x)
     if sx is None:
@@ -1112,8 +1184,11 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
             sp = statuses.get(other)
             failed = []
             if not light:
+                said: list = []
                 failed += [f"LG2 {child} <- {other} {stream_id}: {item}" for item in
-                           feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms)]
+                           feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms,
+                                       notes=said)]
+                notes += [f"LG2 {child} <- {other}: {item}" for item in said]
             if sp is None:
                 failed.append(f"LG3: {other} does not answer /api/node")
             elif sp.ready is not True:
@@ -1129,9 +1204,15 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                     failed.append(f"LG3: {other} fed {stream_id} {fed} ms ago")
                 fed_rows = [parent.rows.get((stream_id, "audio")) for parent in sp.parents or []]
                 fed_rows = [row for row in fed_rows if row is not None]
+                # Complete as P2 (a) reads it: ordinary repaired loss of
+                # the other parent's own lanes is no refusal.
                 if not any(_num(row, "source_age_ms") is not None
                            and row["source_age_ms"] <= LIVE_MS
-                           and _num(row, "skipped_10s") == 0 for row in fed_rows):
+                           and _num(row, "skipped_10s") is not None
+                           and _num(row, "objects_10s") is not None
+                           and row["skipped_10s"] <= skip_allowance(
+                               row["objects_10s"] + row["skipped_10s"])
+                           for row in fed_rows):
                     failed.append(f"LG4: {other} is not itself fed {stream_id} live and complete")
                 if sp.audio_deadline_drops is None:
                     failed.append(f"LG4: parity unknown: {other}'s audio_deadline_drops")
@@ -1177,8 +1258,10 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                     continue
                 repair = lab.records[child].get("secondary") == other
                 staying = lab.addresses(other) if other else set()
+                said = []
                 failed = feed_parity(sd, stream_id, x_addresses, staying, parity_ms,
-                                     repair_lane=repair)
+                                     repair_lane=repair, notes=said)
+                notes += [f"CG2 {child} <- {other}: {item}" for item in said]
                 entry["streams"].append({"stream_id": stream_id, "problems": failed})
                 problems += [f"CG2 {child} <- {other} {stream_id}: {item}" for item in failed]
         sy = statuses.get(other) if other else None
@@ -1226,6 +1309,9 @@ class Gate:
     pairs: list
     last_poll: float
     polls: int
+    #: What the gate could not read exactly and how it judged instead
+    #: (P2's notes), once each, from its last poll.
+    notes: list = dataclasses.field(default_factory=list)
 
 
 def _poll_statuses(ops: Ops, names) -> dict:
@@ -1250,13 +1336,14 @@ def forwarder_gate(ops: Ops, x: str, *, lab: Lab | None = None, timeout_s: float
         polls += 1
         problems, evidence, pairs = forwarder_check(lab, x, statuses, previous, assignments,
                                                     parity_ms)
+        notes = list(dict.fromkeys(evidence.get("notes") or []))
         now = clock()
         if not problems and previous_ok:
-            return Gate(True, [], evidence, pairs, now, polls)
+            return Gate(True, [], evidence, pairs, now, polls, notes)
         previous_ok, previous = not problems, statuses
         if now >= deadline:
             return Gate(False, problems or ["the gate did not pass twice in a row"], evidence,
-                        pairs, now, polls)
+                        pairs, now, polls, notes)
         sleep(max(0.0, poll_s - (now - began)))
 
 
@@ -1977,6 +2064,8 @@ class Engine:
                               parity_ms=self.options.parity_ms, poll_s=self.options.poll_s,
                               clock=self.clock, sleep=self.sleep)
         self.record(name)["gate"] = gate.evidence
+        for note in gate.notes:
+            self.say(f"{name}: gate note: {note}")
         return gate
 
     def gate_edge(self, name: str) -> Gate:

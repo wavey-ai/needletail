@@ -77,6 +77,8 @@ class Sim(mesh_ops.Ops):
         self.activation_error: dict[str, str] = {}
         self.fail: dict[tuple[str, str], Exception] = {}
         self.drops_rise: set[str] = set()
+        # Parts missing from a node's retained window (P2 (b)).
+        self.gaps: dict[str, int] = {}
         started = clock() - 3600
 
         def add(name, role, site, number, **extra):
@@ -240,7 +242,9 @@ class Sim(mesh_ops.Ops):
                 "ingest": {"audio_deadline_drops": node["drops"], "video_deadline_drops": 0},
                 "parents": self.parent_rows(name),
                 "streams": [{"stream_id": 3001, "class": "audio", "seen_age_ms": 0,
-                             "decoded": True}],
+                             "decoded": True, "head_part": 5_123_456,
+                             "first_part": 5_123_456 - 11_999,
+                             "window_parts": 12_000 - self.gaps.get(name, 0)}],
                 "children": {"compiled": [], "lease": {"children": 0, "pairs": 0,
                                                        "pairs_list": [], "streams": []}},
                 "cache_mesh": {"parent_heard_age_ms": 0, "parents_live": 1, "pending_release": 0,
@@ -505,16 +509,18 @@ class Parity(unittest.TestCase):
     LEAVING = {"10.77.1.11"}
     STAYING = {"10.77.1.12"}
 
-    def child(self, leaving=None, staying=None):
+    def child(self, leaving=None, staying=None, held=12_000):
         document = {"role": "edge", "parents": [
             {"address": "10.77.1.11", "id": "lon-dist-a", "path": "primary",
              "streams": [good_row(**(leaving or {}))]},
             {"address": "10.77.1.12", "id": "lon-dist-b", "path": "primary",
-             "streams": [good_row(**(staying or {}))]}]}
+             "streams": [good_row(**(staying or {}))]}],
+            "streams": [{"stream_id": 3001, "class": "audio", "head_part": 412_000,
+                         "first_part": 400_001, "window_parts": held}]}
         return mesh_ops.status_of(document)
 
-    def parity(self, leaving=None, staying=None, **kwargs):
-        return mesh_ops.feed_parity(self.child(leaving, staying), 3001, self.LEAVING,
+    def parity(self, leaving=None, staying=None, held=12_000, **kwargs):
+        return mesh_ops.feed_parity(self.child(leaving, staying, held), 3001, self.LEAVING,
                                     self.STAYING, **kwargs)
 
     def test_two_equal_parents_pass(self):
@@ -535,10 +541,71 @@ class Parity(unittest.TestCase):
         self.assertEqual(self.parity(staying={"slack_mean_us_10s": 989_000,
                                               "slack_min_us_10s": 986_800}, parity_ms=4.5), [])
 
-    def test_a_parent_that_skipped_an_object_is_refused(self):
-        problems = self.parity(staying={"skipped_10s": 1})
+    def test_p2a_ordinary_repaired_skips_pass_and_more_are_refused(self):
+        # 10,000 objects in 10 s: 0.1 % is 10. Local proof 2's lanes skipped
+        # 0 to 4 in steady state.
+        for skipped in (1, 2, 4, 10):
+            self.assertEqual(self.parity(staying={"skipped_10s": skipped}), [], skipped)
+        problems = self.parity(staying={"skipped_10s": 11})
         self.assertEqual(len(problems), 1)
-        self.assertTrue(problems[0].startswith("P2 complete"))
+        self.assertTrue(problems[0].startswith("P2 complete: the other parent skipped 11"))
+        self.assertIn("more than the 10", problems[0])
+        # The floor: at 1,000 objects in 10 s, 2 skips pass and 3 do not.
+        light = {"objects_10s": 998, "objects_1s": 100}
+        self.assertEqual(self.parity(leaving={"objects_10s": 1000, "objects_1s": 100},
+                                     staying={**light, "skipped_10s": 2}), [])
+        self.assertEqual(len(self.parity(leaving={"objects_10s": 1000, "objects_1s": 100},
+                                         staying={**light, "skipped_10s": 3})), 1)
+        self.assertEqual(mesh_ops.skip_allowance(0), 2)
+        self.assertEqual(mesh_ops.skip_allowance(10_000), 10)
+        self.assertEqual(mesh_ops.skip_allowance(25_000), 25)
+
+    def test_p2b_a_child_that_missed_a_part_is_refused(self):
+        # Its retained window lacks one part: refused whatever the parents
+        # skipped, and named with the window it was read over.
+        for staying in ({}, {"skipped_10s": 2}):
+            problems = self.parity(staying=staying, held=11_999)
+            self.assertEqual(len(problems), 1, staying)
+            self.assertIn("the child misses 1 of the last 12000 parts of stream 3001",
+                          problems[0])
+        # The figures of (b) missing: parity unknown, never a pass.
+        document = {"role": "edge", "parents": [
+            {"address": "10.77.1.11", "streams": [good_row()]},
+            {"address": "10.77.1.12", "streams": [good_row()]}],
+            "streams": [{"stream_id": 3001, "class": "audio", "head_part": 5}]}
+        problems = mesh_ops.feed_parity(mesh_ops.status_of(document), 3001, self.LEAVING,
+                                        self.STAYING)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("parity unknown", problems[0])
+        self.assertIn("first_part", problems[0])
+        self.assertEqual(mesh_ops.window_gaps(mesh_ops.status_of({"streams": []}), 3001),
+                         (None, None))
+
+    def test_p2c_skips_of_both_parents_are_noted_and_judged_on_a_and_b(self):
+        # Only the other parent skipped: no object can have been skipped by
+        # both, (c) holds; the note says (b) was read from the window.
+        notes: list = []
+        self.assertEqual(self.parity(staying={"skipped_10s": 2}, notes=notes), [])
+        self.assertFalse(any("(c)" in note for note in notes), notes)
+        self.assertTrue(any("P2 (b)" in note and "missed_10s" in note for note in notes), notes)
+        # Both skipped: av-mesh cannot say whether one object was skipped by
+        # both. Not refused for that, noted with the field it needs.
+        notes = []
+        self.assertEqual(self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 3},
+                                     notes=notes), [])
+        both = [note for note in notes if "P2 (c) not proved" in note]
+        self.assertEqual(len(both), 1, notes)
+        self.assertIn("skipped_by_every_parent_10s", both[0])
+        self.assertIn("refused on (a) and (b) only", both[0])
+        # ... but (a) and (b) still refuse.
+        self.assertEqual(len(self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 11})),
+                         1)
+        self.assertEqual(len(self.parity(leaving={"skipped_10s": 1}, staying={"skipped_10s": 3},
+                                         held=11_000)), 1)
+        # Nothing skipped: nothing to note.
+        notes = []
+        self.assertEqual(self.parity(notes=notes), [])
+        self.assertEqual(notes, [])
 
     def test_a_parent_that_reset_or_has_less_than_ten_seconds_is_refused(self):
         self.assertTrue(self.parity(staying={"resets_10s": 1})[0].startswith("P2"))
@@ -691,8 +758,19 @@ class ForwarderGate(Base):
         gate = self.assert_refused("new-dist-b", "LG2 new-edge-2 <- new-dist-a 3001: P3 on time",
                                    timeout_s=2)
         self.assertEqual(len(gate.problems), 1)
+        # Ordinary repaired loss of the other parent's lane passes, with a
+        # note; more is refused; a child that missed a part is refused.
         self.sim.row[("new-edge-2", "new-dist-a")] = {"skipped_10s": 2}
+        gate = self.gate("new-dist-b")
+        self.assertTrue(gate.ok, gate.problems)
+        self.assertTrue(any(note.startswith("LG2 new-edge-2 <- new-dist-a: P2 (b)")
+                            for note in gate.notes), gate.notes)
+        self.sim.row[("new-edge-2", "new-dist-a")] = {"skipped_10s": 11}
         self.assert_refused("new-dist-b", "P2 complete", timeout_s=2)
+        self.sim.row.clear()
+        self.sim.gaps["new-edge-2"] = 3
+        self.assert_refused("new-dist-b", "LG2 new-edge-2 <- new-dist-a 3001: P2 complete: the "
+                            "child misses 3", timeout_s=2)
 
     def test_lg1_a_child_that_is_stopping_or_silent(self):
         self.sim.patch["new-edge-1"] = lambda doc: {**doc, "state": "stopping"}
@@ -723,6 +801,8 @@ class ForwarderGate(Base):
     def test_lg4_the_other_parent_is_itself_fed_and_not_late(self):
         self.sim.row[("new-dist-a", "lon-dist-a")] = {"source_age_ms": 500}
         self.sim.row[("new-dist-a", "lon-dist-b")] = {"skipped_10s": 1}
+        self.assertTrue(self.gate("new-dist-b").ok, "ordinary loss of its own lane")
+        self.sim.row[("new-dist-a", "lon-dist-b")] = {"skipped_10s": 11}
         self.assert_refused("new-dist-b", "LG4: new-dist-a is not itself fed", timeout_s=2)
         self.sim.row.clear()
         self.sim.drops_rise.add("new-dist-a")
@@ -1038,7 +1118,7 @@ class Roll(Base):
     def test_a_rollback_the_gate_refuses_is_not_made(self):
         self.sim.broken[("new-dist-b", NEW[0])] = "threads"
         self.sim.hooks[("activate", "new-dist-b")] = lambda: self.sim.row.update(
-            {("new-edge-1", "new-dist-a"): {"skipped_10s": 4}})
+            {("new-edge-1", "new-dist-a"): {"skipped_10s": 40}})
         code = self.roll("forwarders", options=self.options(ready_timeout_s=5, gate_timeout_s=3))
         self.assertEqual(code, 3)
         self.assertEqual(self.sim.activations(), [("new-dist-b", False)])
