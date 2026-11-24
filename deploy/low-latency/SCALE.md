@@ -161,18 +161,18 @@ Without Sydney (it is optional): 69 nodes, $7.884 an hour. **This run
 leaves Sydney out** (`up --without-sites sydney`): the table less its
 Sydney rows, 40 g6-dedicated-2, 5 g6-dedicated-4 and 24 g6-dedicated-8.
 
-**Autoscale slots, not created by `up`:** `lon-edge-11` and `lon-edge-12`
-(London's edges past ten) and a third forwarder in London and New York
-(`lon-dist-c`, `new-dist-c`), each a g6-dedicated-2 at $0.054 an hour, on
+**Autoscale slots, not created by `up`:** in every region an edge past its
+ten (`<s>-edge-11`; London also `lon-edge-12`) and a third forwarder
+(`<s>-dist-c`), nine in all, each a g6-dedicated-2 at $0.054 an hour, on
 its region's VLAN (.32, .33, .13). Only `lab add <slot>` creates one (the
 autoscaler calls it), under every check of `up` plus an armed watchdog and
-a budget; `lab remove` deletes one by its recorded id. With all four the
-lab would cost $10.638 an hour, so the ceilings are
-`NEEDLETAIL_LINODE_MAX_NODES=103` and `NEEDLETAIL_LINODE_MAX_HOURLY_USD=10.7`.
+a budget; `lab remove` deletes one by its recorded id. With all nine the
+lab would cost $10.908 an hour, so the ceilings are
+`NEEDLETAIL_LINODE_MAX_NODES=108` and `NEEDLETAIL_LINODE_MAX_HOURLY_USD=11.0`.
 `up` holds only what it creates (99 nodes, $10.422) to them. Without Sydney
-(this run; no slot is in Sydney): 69 nodes and four slots, $7.884 + $0.216
-= $8.100 an hour, so `NEEDLETAIL_LINODE_MAX_NODES=73` and
-`NEEDLETAIL_LINODE_MAX_HOURLY_USD=8.2` (`up --without-sites` leaves Sydney
+(this run; Sydney's two slots go with it): 69 nodes and seven slots, $7.884 +
+$0.378 = $8.262 an hour, so `NEEDLETAIL_LINODE_MAX_NODES=76` and
+`NEEDLETAIL_LINODE_MAX_HOURLY_USD=8.3` (`up --without-sites` leaves Sydney
 out before it checks them).
 
 ## Joining without a restart
@@ -478,13 +478,13 @@ the schedule: no step, ramp or scenario that is not in it.
 **Slots.** An autoscale slot created during the run bills its own whole
 hours, from its creation to its deletion or `down`: at most 2 hours each
 (the phases run from about 3.4 h to 4.6 h of the lab's life), $0.108; all
-four, $0.43. A1 and A2 take the standby edges first and London's slots
+seven, $0.76. A1 and A2 take the standby edges first and London's slots
 only past ten London edges, so the plan expects no create; R4 (when it
 runs) creates lon-dist-c ($0.11). Deleting the standby edges after A2
 would save nothing: they are billed to the hour that has started, and the
 run ends inside its last hour anyway.
 
-**Cost.** $47.30 at the watchdog + at most $0.43 of slots + $3.77 of the
+**Cost.** $47.30 at the watchdog + at most $0.76 of slots + $3.77 of the
 LiveKit crowd's public transfer were none of it in the pool (0.75 TB,
 `plan`'s `schedule.livekit_public_gb`; the referee's bound is $9.86) +
 about $0.30 for the windows' public traffic and under $1 of other public
@@ -621,13 +621,13 @@ cargo build --release --bin needletail-compile
 
 The lab, without Sydney, under a six-hour watchdog. The tool's default
 ceilings are 40 nodes and $1/h, so this topology needs them raised on the
-command line (69 nodes and the four autoscale slots, $8.100 an hour):
+command line (69 nodes and the seven autoscale slots, $8.262 an hour):
 
 ```sh
 T=deploy/low-latency/topology-scale.json
 scripts/compare/scale-run.py plan --topology-only --json | jq .schedule.total_min   # 341.1 (limit 345)
 scripts/linode-small-mesh-lab.py check --topology $T --without-sites sydney   # prices, capacity; no token
-export NEEDLETAIL_LINODE_MAX_NODES=73 NEEDLETAIL_LINODE_MAX_HOURLY_USD=8.2
+export NEEDLETAIL_LINODE_MAX_NODES=76 NEEDLETAIL_LINODE_MAX_HOURLY_USD=8.3
 # NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS stays at its default, 6.0.
 scripts/linode-small-mesh-lab.py up --topology $T --without-sites sydney --watchdog-hours 6 \
     --budget-usd B
