@@ -210,6 +210,26 @@ class Verdict(unittest.TestCase):
         run[1]["audio"][1]["p50_ms"] = 9.0
         self.assertEqual(gate.verdict(run, THRESHOLDS, BASELINE, host="box")["verdict"], "PASS")
 
+    def test_a_site_whose_every_client_had_a_leg_on_a_4k_edge_is_not_judged_and_fails(self):
+        # Local proof 3: every London client had a leg on the viewer's warm
+        # spare edge, which carried the whole stream; no client was on edges
+        # without 4K, so the check could not be made. That is no pass.
+        run = self.good_run()
+        run[1]["audio"][0]["edge_has_4k"] = True
+        judged = gate.verdict(run, THRESHOLDS, BASELINE, host="box")
+        self.assertEqual(judged["verdict"], "FAIL")
+        failed = [c for c in judged["failed"] if "beside 4K" in c["check"]]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["value"], "not judged")
+        self.assertIn("'p50_ms': 0.25", failed[0]["note"])
+
+    def test_an_edge_that_received_video_carried_4k_whoever_watched_it(self):
+        counters = {"lon-edge-1": {"video_received": 0, "tee_dropped": 0},
+                    "lon-edge-4": {"video_received": 1209782},
+                    "lon-dist-a": {"video_received": 4008262}}
+        roles = {"lon-edge-1": "edge", "lon-edge-4": "edge", "lon-dist-a": "distributor"}
+        self.assertEqual(gate.edges_that_carried_video(counters, roles), {"lon-edge-4"})
+
     def test_no_checks_is_not_a_pass(self):
         judged = gate.verdict([], THRESHOLDS, BASELINE, host="box")
         self.assertEqual(judged["verdict"], gate.COULD_NOT_RUN)

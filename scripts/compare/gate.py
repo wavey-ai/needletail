@@ -326,6 +326,15 @@ def refused_figures(text: str) -> dict:
     return out
 
 
+def edges_that_carried_video(counters: dict, roles: dict) -> set[str]:
+    """Edges whose fast plane received video datagrams in the pass: the 4K
+    viewers' edges, and any other edge the stream was sent to (local proof
+    3: the viewer's warm spare edge carried all of it, 54% of a CPU, and was
+    judged an edge without 4K)."""
+    return {name for name, item in (counters or {}).items()
+            if roles.get(name) == "edge" and (item.get("video_received") or 0) > 0}
+
+
 def audio_figures(hops: dict, video_edges: set[str]) -> list[dict]:
     """Every audio UDP client: its site, edge, whether that edge carried 4K
     (a 4K viewer on it), missing parts and its unit latency (source -> client)."""
@@ -394,6 +403,9 @@ def analyze(directory: pathlib.Path) -> dict:
             snapshot = None
     refused = refused_figures((directory / "refused.txt").read_text()) \
         if (directory / "refused.txt").is_file() else {}
+    counters = counter_figures(snapshot)
+    if video:
+        video_edges |= edges_that_carried_video(counters, roles)
     bench = hops.get("bench") or {}
     return {"name": bench.get("name") or directory.name, "dir": str(directory),
             "window_s": round((until_us - since_us) / 1e6, 1) if until_us else None,
@@ -402,7 +414,7 @@ def analyze(directory: pathlib.Path) -> dict:
                                              "fps": fps, "viewers": viewers,
                                              "edges": sorted(video_edges)},
             "audio": audio_figures(hops, video_edges), "nodes": nodes,
-            "counters": counter_figures(snapshot), "refused": refused}
+            "counters": counters, "refused": refused}
 
 
 # --------------------------------------------------------------- the verdict
@@ -534,7 +546,20 @@ def verdict(results: list[dict], thresholds: dict, baseline: dict, host: str | N
             for site in sorted({c["site"] for c in item["audio"]}):
                 beside = [c for c in item["audio"] if c["site"] == site and not c["edge_has_4k"]]
                 ref = [c for c in alone["audio"] if c["site"] == site]
-                if not beside or not ref:
+                if not ref:
+                    continue
+                if not beside:
+                    # Every client of the site had a leg on an edge that
+                    # carried 4K: the check was not made, which is no pass.
+                    during = [c for c in item["audio"] if c["site"] == site]
+                    deltas = {field: round(statistics.median(c[field] for c in during)
+                                           - statistics.median(c[field] for c in ref), 3)
+                              for field in ("p50_ms", "p99_ms")} if during else None
+                    check(f"{key}: {site} audio beside 4K (edge without 4K) - alone", False,
+                          "not judged", None,
+                          "no audio client of the site was on edges without 4K (the edges that "
+                          f"carried it: {', '.join(sorted(item['video'].get('edges') or []))}); every "
+                          f"client during 4K - alone: {deltas}")
                     continue
                 for field, limit_key in (("p50_ms", "beside_4k_p50_ms"), ("p99_ms", "beside_4k_p99_ms")):
                     a = statistics.median(c[field] for c in beside)
