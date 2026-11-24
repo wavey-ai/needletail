@@ -545,7 +545,7 @@ remembered and is tested against a fake.
   render (today `relay_tree` exits on two contributors, DEP:1215-1217), so this commit lands after A's.
 - New keyword arguments and flags: `--variant NAME`, `--standby SITE=N`, `--slots SITE=edges:N,forwarders:N`,
   `--load SITE=COUNT:TYPE`, `--view SITE=TYPE`, `--contributors 1|2`, `--no-livekit`.
-- `VARIANTS` (TOP:266) gains `topology-proving.json` and `topology-proving-syd2.json`.
+- `VARIANTS` (TOP:266) gains `topology-proving.json` (CT5 dropped the `-syd2` variant: see below).
 
 `deploy/low-latency/topology-proving.json`, generated:
 
@@ -1443,7 +1443,7 @@ Risks:
 - A Linode rebuild's effect on the config, the `root_pass` requirement and the events API are from the API as
   remembered, not checked: the tool is written for either outcome of the first, RP1 is the check, and the
   tests use fakes.
-- Sydney may again have no capacity: `--optional-sites sydney` or the `-syd2` file.
+- Sydney may again have no capacity: `--optional-sites sydney` (or `--without-sites sydney`: 31 nodes, $2.484).
 - Two labs on 14 CPUs each may not hold p99 to 0.15 ms, and other agents can still use the host; 6.1 has the
   test, 2.12 the measurement, and the fallback is one lab at a time for gated proofs.
 - SCHED_FIFO and `mlockall` cannot be exercised locally; readiness is the same code either way.
