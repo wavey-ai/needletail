@@ -60,8 +60,11 @@ WHAT = [
     (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors | socket drops | vm (guest /proc/vmstat, MemFree) | /api/stats", None),
     (r"samplers/[^/]+\.meshlocal\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/mesh/local JSON (fast_plane faults, loop lag)", None),
     (r"samplers/[^/]+\.stalls\.\d+\.json$", "node-logs", "the node's stop journal (/api/stalls)", None),
+    (r"samplers/[^/]+\.sys\.\d+\.log$", "samples", "1 s raw, 'unix_s S kind ...': per-CPU /proc/stat, /proc/interrupts, /proc/softirqs, /proc/net/softnet_stat, each service thread's /proc/<pid>/task/<tid>/stat (utime, stime, last CPU)", None),
+    (r"samplers/[^/]+\.heartbeat\.\d+\.log$", "samples", "SCHED_FIFO-99 heartbeat pinned to each vCPU: 'HB cpu monotonic_ns realtime_ns boottime_ns late_ns policy', a line on each wake over 5 ms late and one a second", None),
+    (r"samplers/[^/]+\.nic\.\d+\.txt$", "node-logs", "uname -a and ethtool -i/-k/-l/-S of eth0 and eth1 at sampler start", None),
     (r"samplers/hosts\.\d+\.txt$", "lab", "physical Linode host of every node", None),
-    (r"samplers/[^/]+\.\d+\.log$", "samples", "5 s raw: /proc/stat ticks, /proc/net/dev bytes, service ticks, RSS", None),
+    (r"samplers/[^/]+\.\d+\.log$", "samples", "1 s raw (5 s before 24 Nov): /proc/stat ticks, /proc/net/dev bytes, service ticks, RSS", None),
     (r"samplers-csv/.*\.cpu-net\.csv$", "samples", "5 s samples as CSV (ticks at 100/s, bytes cumulative)",
      {"unix_s": "s", "*_ticks": "1/100 s", "*_bytes": "bytes", "*_rss_kb": "kB"}),
     (r"samplers-csv/.*\.ndjson$", "samples", "1 s samples as NDJSON", {"unix_s": "s"}),
@@ -116,6 +119,8 @@ def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
                 lines.append(json.dumps(rec))
             (out / (name[:-4] + ".ndjson")).write_text("\n".join(lines) + "\n")
             continue
+        if ".sys." in name or ".heartbeat." in name:
+            continue        # kept raw only (see WHAT)
         if ".stats." in name:
             lines = []
             for line in path.read_text(errors="replace").splitlines():

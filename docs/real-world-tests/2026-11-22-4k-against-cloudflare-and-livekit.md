@@ -9,8 +9,8 @@ from the same host in London to the same viewers in London, New York, Tokyo
 and Sydney, on a lab of dedicated-CPU instances only. The same lab measured
 the mesh itself hop by hop and the three tiers of Needletail's design.
 
-Needletail was measured on seven builds of `low-latency`; the latest three,
-waves 7, 6 and 5, are first below. The earlier four: wave 1 (21 November,
+Needletail was measured on eight builds of `low-latency`; the latest four,
+waves 9, 7, 6 and 5, are first below (wave 8 had no 4K run). The earlier four: wave 1 (21 November,
 evening), wave 2 (night, the smallest-frame defaults), wave 3 (a new relay
 receive loop and class-isolated lanes, measured on 22 November at 02:38) and
 wave 4 (edge and forwarder changes and UDP GSO for 4K, measured at 03:18, with
@@ -20,7 +20,94 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Latest: wave 7 (22 November, evening)
+## Latest: wave 9 (24 November, morning)
+
+**Wave 9 carried 25 Mbit/s whole to Sydney only and 40 Mbit/s to Tokyo and
+Sydney; no region was whole at 80 or 120 Mbit/s, and the sweep ended there.**
+Wave 5 carried 247 Mbit/s to every region on the same plans. Every frame
+arrived at 25 and 40 Mbit/s. The regions failed the tail rule: a stall of
+0.8 to 2.4 s within the step, where the rule allows 0.5 s over the median.
+
+What changed since wave 7:
+- **The processor regression is gone.** At 25 Mbit/s the contributor used 13%
+  of one vCPU and the London forwarders 14% each (wave 6: 72% and 108%; wave 5:
+  12% and 14%).
+- **The socket drops are gone at 25 Mbit/s.** There were none except 24 on one
+  New York forwarder; wave 7 already dropped about 900 a step there. At 40
+  Mbit/s the New York edge dropped 4,859 datagrams. At 80 every edge dropped
+  (6,100 to 46,000 in the step), and at 120 the London and New York edges did
+  (34,000 and 71,000). The New York forwarders dropped 7,900 to 20,000 a step
+  at 80 and 120.
+- **The stalls come from stops of whole guests.** The 1 s samplers of a node
+  stopped together for 2 to 8 s at a time. On the two New York forwarders that
+  happened 32 and 30 times in the 5-minute sweep, about 114 s and 94 s in all.
+  Tokyo's and Sydney's forwarders carried the same stream and had none.
+  - The New York forwarders were on different physical hosts.
+  - One stop, timed by the node's own hop journal: new-dist-a logged no event
+    for 2,680 ms and never committed 41 parts (1.8 s of video). Its twin
+    committed every one 35 ms after the contributor packaged it.
+  - The New York edge's relay lane hangs off new-dist-a alone. It received
+    those parts from the twin's mesh feed 2.2 to 2.65 s late, which is the
+    viewers' stall.
+- **The stops are below the process's packet handling.** During a stop no
+  userspace ran on the guest, including a loop that runs only `date` and a
+  0.5 s curl. Guest memory showed no compaction, reclaim or major faults, and
+  1.6 GB was free. Steal grew by 0 to 2 ticks. The service was charged 4 to 6
+  times its normal processor time inside the stops while the guest's tick
+  counts did not grow. Two explanations fit, and this run cannot separate
+  them:
+  - the host did not run the guest and did not report steal;
+  - a thread of the service spent seconds in the kernel with interrupts off.
+
+  The stops did not start after large frames any more often than chance (12
+  of 19 and 12 of 17, against 12.7 and 11.1 expected).
+- **One measurement host stopped too.** Tokyo failed 25 Mbit/s only on
+  tok-nano, whose own samplers stopped for 2.4 s. tok-view, beside it, was
+  whole at 25.
+
+Two extra steps at 25 Mbit/s, asked for by the lead, used the minutes already
+billed. Both ran with the FLAC audio source off and with the hop journal of
+every mesh node.
+- GSO on, 120 s: whole in London, Tokyo and Sydney. New York failed on the
+  2,680 ms stop above.
+- GSO off (`relay_video_gso=false`, UDP GRO still on), 60 s: whole in all four
+  regions, with no sampler gap on any node.
+
+This is one short pair, not a controlled comparison.
+
+CPU of one vCPU over each whole step (1 s sampler), the service's:
+
+| Node | 25 Mbit/s | 40 | 80 | 120 |
+| --- | ---: | ---: | ---: | ---: |
+| Contributor | 13% | 22% | 41% | 60% |
+| London forwarders | 14%, 14% | 30%, 22% | 60%, 49% | 79%, 75% |
+| London edge | 26% | 30% | 51% | 60% |
+| New York forwarders | 20%, 9% | 25%, 23% | 94%, 91% | 130%, 102% |
+| New York edge | 23% | 30% | 23% | 30% |
+| Tokyo forwarders | 11%, 9% | 23%, 17% | 43%, 39% | 62%, 57% |
+| Tokyo edge | 23% | 29% | 63% | 65% |
+| Sydney forwarders | 9%, 9% | 16%, 20% | 34%, 37% | 52%, 60% |
+| Sydney edge | 17% | 21% | 35% | 49% |
+
+The New York forwarders' figures include the time charged to them inside
+their stops.
+
+Build, lab and cost:
+- Build: the wave 9 binaries, byte for byte those of the audio run (`av-mesh`
+  `cdfeb5c`, `playlists` `c01662d`, `av-contrib` `219c6b5`, `needletail`
+  `e641b51`), with the deploy defaults (merged topology, GSO on, GRO on).
+- Lab `cmpd6`, 24 November 06:39 to 07:12 UTC: 22 dedicated instances in
+  London, New York, Tokyo and Sydney. It had one edge and two forwarders a
+  region, no LiveKit and no backbone relays
+  (`deploy/compare-cloudflare/topology-4k-small.json`).
+- Sweep `video-w9` at 07:00, 40 s a rung, Needletail alone, the 4K method
+  unchanged. Extra steps `video-w9-hops25` and `video-w9-hops25-nogso`.
+- Cost: $1.46 (one billed hour each).
+- Evidence: `evidence/20261124-4k-wave9-analysis.json` and
+  `evidence/20261124-4k-wave9-holds.txt`. All raw data is in the archive,
+  run `cmpd6`.
+
+## Wave 7 (22 November, evening)
 
 **Wave 7 recovered part of wave 6's 4K regression, but stays far below wave
 5.**

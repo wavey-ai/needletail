@@ -714,6 +714,10 @@ def create_staged(args: argparse.Namespace, api: "Api", state: dict, state_path:
     for site in first:
         if site in state.get("sites_left_out", []):
             continue
+        # Only a site that was to have listener hosts can be left without them
+        # (wave 9: a topology without any deleted Sydney's whole core).
+        if not any(node["site"] == site and is_listener_host(node) for node in nodes):
+            continue
         if not any(node["site"] == site and is_listener_host(node)
                    for node in state["nodes"].values()):
             drop_site(api, state, state_path, site, "none of its listener hosts was created")

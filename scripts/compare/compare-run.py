@@ -86,7 +86,7 @@ SAMPLER = (
     "  for name in av-mesh av-contrib livekit-server; do for pid in $(pgrep -x $name); do\n"
     "    line=\"$line | $name $pid $(awk '{print $14+$15}' /proc/$pid/stat) $(awk '/VmRSS/{print $2}' /proc/$pid/status)\"\n"
     "  done; done\n"
-    "  echo \"$line\"; sleep 5\n"
+    "  echo \"$line\"; sleep 1\n"
     "done\n"
     "EOS\n"
     "(setsid nohup sh /var/tmp/compare-sampler.sh >/var/tmp/compare-sampler.log 2>&1 </dev/null &)")
@@ -121,6 +121,75 @@ STATS_SAMPLER = (
     "EOS\n"
     "(setsid nohup sh /var/tmp/compare-stats.sh >/var/tmp/compare-stats.log 2>&1 </dev/null &)")
 
+# Once a second on every sampled node: what the kernel did on each vCPU (cmpd6, 24 Nov:
+# the New York distributors' 2-8 s stops, below the process's packet handling; lead's list).
+# Every line is "unix_s S kind ..." so that no reader of the CPU sampler mistakes it:
+#   stat      a per-CPU line of /proc/stat (user nice system idle iowait irq softirq steal ...)
+#   irq       a line of /proc/interrupts, raw (the first, the header, too)
+#   softirq   a line of /proc/softirqs, raw
+#   softnet   CPU index, then that CPU's /proc/net/softnet_stat line (hex: processed,
+#             dropped, time_squeeze, ...)
+#   task      the service's pid, then a thread's /proc/<pid>/task/<tid>/stat, raw
+#             (fields 14 and 15 after the comm: utime, stime; 39: the CPU it last ran on)
+SYS_SAMPLER = (
+    "[ -f /var/tmp/compare-sys.pid ] && kill $(cat /var/tmp/compare-sys.pid) 2>/dev/null; "
+    "[ -f /var/tmp/compare-sys.log ] && cat /var/tmp/compare-sys.log >>/var/tmp/compare-sys.carry; "
+    "cat >/var/tmp/compare-sys.sh <<'EOS'\n"
+    "echo $$ >/var/tmp/compare-sys.pid\n"
+    "while true; do\n"
+    "  t=$(date +%s.%N)\n"
+    "  awk -v t=$t '/^cpu[0-9]/{print t \" S stat \" $0}' /proc/stat\n"
+    "  awk -v t=$t '{print t \" S irq \" $0}' /proc/interrupts\n"
+    "  awk -v t=$t '{print t \" S softirq \" $0}' /proc/softirqs\n"
+    "  awk -v t=$t '{print t \" S softnet \" NR-1 \" \" $0}' /proc/net/softnet_stat\n"
+    "  for p in $(pgrep -x av-mesh) $(pgrep -x av-contrib); do for d in /proc/$p/task/*; do\n"
+    "    s=$(cat $d/stat 2>/dev/null) && echo \"$t S task $p $s\"\n"
+    "  done; done\n"
+    "  sleep 1\n"
+    "done\n"
+    "EOS\n"
+    "(setsid nohup sh /var/tmp/compare-sys.sh >/var/tmp/compare-sys.log 2>&1 </dev/null &)")
+
+# A heartbeat on each vCPU at SCHED_FIFO 99, pinned: it sleeps 10 ms and writes a line
+# when it wakes more than 5 ms late, and one line a second. A vCPU the host does not run
+# (or one in the kernel with interrupts off) shows as a late wake on that CPU; a stop of
+# the whole guest as one on every CPU at once. Its cost: about 100 wakes a second a vCPU.
+# Lines: HB cpu monotonic_ns realtime_ns boottime_ns late_ns policy
+HEARTBEAT_PY = r'''
+import os, sys, time
+cpu = int(sys.argv[1])
+os.sched_setaffinity(0, {cpu})
+policy = "fifo99"
+try:
+    os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(99))
+except OSError as error:
+    policy = "other:" + str(error.errno)
+out = open(f"/var/tmp/compare-heartbeat.{cpu}.log", "a", buffering=1)
+prev = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+last = 0
+while True:
+    time.sleep(0.01)
+    m = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    late = m - prev - 10_000_000
+    if late > 5_000_000 or m - last >= 1_000_000_000:
+        out.write(f"HB {cpu} {m} {time.clock_gettime_ns(time.CLOCK_REALTIME)} "
+                  f"{time.clock_gettime_ns(time.CLOCK_BOOTTIME)} {late} {policy}\n")
+        last = m
+    prev = m
+'''
+HEARTBEAT = (
+    "for f in /var/tmp/compare-heartbeat.*.pid; do [ -f $f ] && kill $(cat $f) 2>/dev/null; rm -f $f; done; "
+    "cat >/var/tmp/compare-heartbeat.py <<'EOS'\n" + HEARTBEAT_PY + "EOS\n"
+    "for c in $(seq 0 $(( $(nproc) - 1 ))); do "
+    "(setsid nohup python3 /var/tmp/compare-heartbeat.py $c >/dev/null 2>&1 </dev/null & "
+    "echo $! >/var/tmp/compare-heartbeat.$c.pid); done")
+
+# Once per node at sampler start: the virtio NIC's offloads and counters as the guest
+# sees them (lead, 24 Nov: do New York's hosts differ from Tokyo's and Sydney's?).
+NIC_INFO = ("uname -a; for i in eth0 eth1; do [ -e /sys/class/net/$i ] || continue; "
+            "echo \"== $i driver\"; ethtool -i $i 2>&1; echo \"== $i offloads\"; ethtool -k $i 2>&1; "
+            "echo \"== $i channels\"; ethtool -l $i 2>&1; echo \"== $i statistics\"; ethtool -S $i 2>&1; done")
+
 
 def stats_url(item: dict) -> str:
     port = 19443 if item["role"] == "contributor" else 19444
@@ -129,7 +198,7 @@ def stats_url(item: dict) -> str:
 
 def start_samplers(session: "Session") -> list[dict]:
     """Record the processor time of the services on every Needletail and
-    LiveKit node, every five seconds, for the length of a session."""
+    LiveKit node, every second (five before 24 Nov), for the length of a session."""
     sampled = [item for item in session.nodes.values()
                if item["role"] in ("contributor", "backbone", "distributor", "edge", "livekit", "load")]
     common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
@@ -137,6 +206,14 @@ def start_samplers(session: "Session") -> list[dict]:
                     lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item),
                                                                     "mesh": stats_url(item).replace("/api/stats", "/api/mesh/local")},
                                            check=False))
+    common.parallel(sampled, lambda item: common.ssh(item, SYS_SAMPLER + "\n" + HEARTBEAT, check=False))
+    (session.dir / "samplers").mkdir(parents=True, exist_ok=True)
+
+    def nic(item: dict) -> None:
+        text = common.ssh_text(item, NIC_INFO, check=False, timeout=60)
+        (session.dir / "samplers" / f"{item['name']}.nic.{int(time.time())}.txt").write_text(text + "\n")
+
+    common.parallel(sampled, nic)
     return sampled
 
 
@@ -149,6 +226,15 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                      "rm -f /var/tmp/compare-sampler.carry /var/tmp/compare-sampler.log", check=False)
         # One file for each invocation: a session can be run in several parts.
         (session.dir / "samplers" / f"{item['name']}.{int(time.time())}.log").write_text(text + "\n")
+        system = common.ssh_text(item, "kill $(cat /var/tmp/compare-sys.pid) 2>/dev/null; "
+                                       "cat /var/tmp/compare-sys.carry /var/tmp/compare-sys.log 2>/dev/null; "
+                                       "rm -f /var/tmp/compare-sys.carry /var/tmp/compare-sys.log",
+                                 check=False, timeout=300)
+        (session.dir / "samplers" / f"{item['name']}.sys.{int(time.time())}.log").write_text(system + "\n")
+        beats = common.ssh_text(item, "for f in /var/tmp/compare-heartbeat.*.pid; do [ -f $f ] && kill $(cat $f) "
+                                      "2>/dev/null; rm -f $f; done; cat /var/tmp/compare-heartbeat.*.log 2>/dev/null; "
+                                      "rm -f /var/tmp/compare-heartbeat.*.log", check=False, timeout=120)
+        (session.dir / "samplers" / f"{item['name']}.heartbeat.{int(time.time())}.log").write_text(beats + "\n")
         if item["role"] in ("contributor", "distributor", "edge"):
             stats = common.ssh_text(item, "kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
                                           "cat /var/tmp/compare-stats.carry /var/tmp/compare-stats.log 2>/dev/null; "
