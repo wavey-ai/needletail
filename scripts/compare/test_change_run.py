@@ -211,6 +211,10 @@ class FakeLab:
             mock.patch.object(lab, "set_wan", lambda *a: fake.ran.append(("wan", *a))),
             mock.patch.object(lab, "set_tcp_per_packet",
                               lambda on, site=None: fake.ran.append(("per_packet", on))),
+            # Each run goes into a temporary archive, never ~/needletail-data.
+            mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(directory / "data")}),
+            mock.patch.object(cr.archived_run, "code_paths", lambda *_: []),
+            mock.patch.object(lab, "WORK", directory / "work"),
         ]
         for patcher in patches:
             patcher.start()
@@ -804,6 +808,90 @@ class Runs(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.fake.started[before:], [])
         self.assertEqual(json.loads(path.read_text())["status"], "interrupted")
+
+
+class Archive(unittest.TestCase):
+    """Each invocation is one run in the run archive, written as it goes."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.fake = FakeLab(self, self.dir)
+        self.data = self.dir / "data"
+        (self.dir / "work" / "logs").mkdir(parents=True)
+        self.log = self.dir / "work" / "logs" / "lon-edge-1.log"
+        self.log.write_text("before the invocation\n")
+        original = self.fake.change
+
+        def change(stdout, marks):
+            with open(self.log, "a") as handle:
+                handle.write("during the change\n")
+            with open(self.dir / "out" / "roll-edges" / "sender-opus-1.log", "a") as handle:
+                handle.write("sent\n")
+            return original(stdout, marks)
+
+        self.fake.change = change
+
+    def manifest(self, run_id: str) -> dict:
+        return json.loads((self.data / run_id / "manifest.json").read_text())
+
+    def test_every_run_s_files_the_scorer_s_json_and_the_logs_go_into_one_run(self):
+        self.fake.outcomes = [True, True]
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--repeat", "2",
+                                    "--run-id", "cr1", "--", "engine", "roll", "edges")
+        self.assertEqual(code, 0)
+        manifest = self.manifest("cr1")
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["tool"], "change-run")
+        self.assertEqual(manifest["deploy_settings"]["plan"]["name"], "roll-edges")
+        self.assertEqual(manifest["deploy_settings"]["arguments"]["repeat"], 2)
+        paths = {entry["path"] for entry in manifest["files"]}
+        for run in ("change-01", "change-02"):
+            for name in ("run.json", "marks.txt", "command.out", "verdict.json", "cw.log",
+                         "nodes-before.json", "nodes-after.json", "node-logs/lon-edge-1.log"):
+                self.assertIn(f"roll-edges/{run}/{name}", paths)
+            self.assertTrue(any(path.startswith(f"roll-edges/{run}/") and path.endswith(".csv")
+                                for path in paths), "the probes' CSV")
+        self.assertIn("roll-edges/summary.json", paths)
+        self.assertIn("roll-edges/senders/sender-opus-1.log", paths)
+        archived = json.loads((self.data / "cr1" / "roll-edges" / "change-02" / "run.json").read_text())
+        self.assertEqual(archived["status"], "pass", "the run as scored")
+        self.assertEqual((self.data / "cr1" / "roll-edges" / "change-01" / "node-logs" /
+                          "lon-edge-1.log").read_text(), "during the change\n")
+        self.assertEqual([step["step"] for step in manifest["listener_steps"]],
+                         ["roll-edges/change-01", "roll-edges/change-02"])
+        self.assertEqual(manifest["listener_steps"][0]["listeners_total"], 4)
+
+    def test_the_null_is_its_own_run_of_the_scenario(self):
+        code, _out = self.fake.main("run", "--name", "roll-edges", "--run-id", "cr2", "--dry",
+                                    "--", "engine", "roll", "edges")
+        self.assertEqual(code, 0)
+        paths = {entry["path"] for entry in self.manifest("cr2")["files"]}
+        self.assertIn("roll-edges/null-01/verdict.json", paths)
+
+    def test_a_run_cut_off_is_kept_and_its_archive_run_failed(self):
+        self.fake.command["behaviour"] = "sigterm"
+
+        def up(overrides):
+            with open(self.log, "a") as handle:
+                handle.write("the lab came up\n")
+
+        with mock.patch.object(lab, "up", up):
+            code, _out = self.fake.main("run", "--name", "roll-edges", "--run-id", "cr3",
+                                        "--", "engine", "roll", "edges")
+        self.assertEqual(code, 128 + signal.SIGTERM)
+        manifest = self.manifest("cr3")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("Stopped", manifest["status_reason"])
+        paths = {entry["path"] for entry in manifest["files"]}
+        self.assertIn("roll-edges/change-01/marks.txt", paths)
+        self.assertIn("roll-edges/change-01/run.json", paths)
+        self.assertIn("roll-edges/change-01/node-logs/lon-edge-1.log", paths)
+
+    def test_a_run_id_is_made_when_none_is_given(self):
+        self.fake.main("run", "--name", "roll-edges", "--", "engine", "roll", "edges")
+        runs = [path.name for path in self.data.iterdir()]
+        self.assertEqual(len(runs), 1)
+        self.assertRegex(runs[0], r"^change-run-\d{8}T\d{6}Z$")
 
 
 class Sampler(unittest.TestCase):

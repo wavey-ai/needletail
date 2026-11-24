@@ -70,6 +70,16 @@ Results: target/change-run/[ID/]NAME/change-NN or null-NN: run.json (the
 plan and the result), marks.txt, command.out, command.err, verdict.json,
 the probes' files, nodes-before.json, nodes-after.json; NAME/summary.json.
 Exit 0 when every run passed.
+
+Every invocation of `run` is also one run in the run archive
+(~/needletail-data/<run id>/, NEEDLETAIL_DATA_ROOT overrides; --run-id,
+else change-run-<UTC time>), written as it goes and whatever ends it:
+NAME/<change-NN|null-NN>/ each run's directory as it ends (probe CSV and
+JSON, launch times, marks, the command's output, the scorer's JSON and log,
+the crowd's and readers' output, the nodes before and after) with
+node-logs/, what each node's log gained in it; NAME/senders/ what the
+senders' logs gained; NAME/node-logs-end/ the logs up to the lab's down;
+NAME/summary.json. A run cut off ends its archive run failed.
 """
 
 from __future__ import annotations
@@ -94,6 +104,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import lab_guard as guard  # noqa: E402
 
@@ -228,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="the scenario's null: COMMAND with --dry-marks")
     run.add_argument("--no-up", action="store_true", help="use the lab that is running")
     run.add_argument("--keep-up", action="store_true", help="leave the lab running afterwards")
+    run.add_argument("--run-id", default=None,
+                     help="the run in the archive (default change-run-<UTC time>)")
     run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                      help="a lab setting for `up`; repeat")
     run.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND...")
@@ -1122,7 +1135,55 @@ def run(args) -> int:
     with guard.hold(f"change-run.py run --name {args.name}"):
         if args.no_up:
             guard.require_frozen({}, running=guard.running_binaries())
-        return run_held(args, plan, lanes, kind, scenario)
+        with ChangeRecord(args, plan, scenario) as record:
+            return run_held(args, plan, lanes, kind, scenario, record)
+
+
+class ChangeRecord(archived_run.Run):
+    """An invocation of `run` in the run archive (see the module's text)."""
+
+    def __init__(self, args, plan: dict, scenario: pathlib.Path):
+        topology, regions = archived_run.local_topology(lab.NODES)
+        super().__init__(args.run_id or archived_run.default_run_id("change-run"), "local-lab",
+                         "change-run",
+                         code=archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT),
+                         settings={"plan": plan, "arguments": {key: value for key, value in
+                                                              vars(args).items()
+                                                              if key != "run_id"}},
+                         topology=topology, regions=regions)
+        self.name = args.name
+        self.scenario = scenario
+        self.began_s = time.time()
+        self.logs = archived_run.LogSlices(lab.WORK / "logs")
+        self.logs.mark()
+        self.senders = archived_run.LogSlices(scenario, "sender-*.log")
+        self.senders.mark()
+        self.listeners = {"probes": len(hosts_of(args)) * len(lanes_of(args.lanes)) * args.clients,
+                          "crowd": args.load_listeners, "readers": args.readers}
+        self.at_close(self.close_copies)
+
+    def run_directory(self, directory: pathlib.Path) -> None:
+        """One run's directory as it ends, with what the nodes' logs
+        gained in it, and its probes as a listener step."""
+        self.logs.take(self, f"{self.name}/{directory.name}/node-logs")
+        self.add_tree(directory, f"{self.name}/{directory.name}", "raw",
+                      f"change-run {self.name} {directory.name}: run.json, the probes' CSV and "
+                      "JSON, launch times, marks.txt, command.out/err, verdict.json (the "
+                      "referee's change-window.py), cw.log, the crowd and readers, the nodes "
+                      "before and after", {"latency_us": "us", "complete_unix_us": "us"})
+        self.record_step(f"{self.name}/{directory.name}", "probes",
+                         self.listeners["probes"], {}, None, crowd_per_edge=self.listeners["crowd"],
+                         readers=self.listeners["readers"])
+
+    def node_logs_end(self) -> None:
+        self.logs.take(self, f"{self.name}/node-logs-end")
+
+    def close_copies(self) -> None:
+        self.senders.take(self, f"{self.name}/senders")
+        summary_file = self.scenario / "summary.json"
+        if summary_file.is_file() and summary_file.stat().st_mtime >= self.began_s:
+            self.add_file(summary_file, f"{self.name}/summary.json", "result",
+                          "each change beside its null in each layout: passes of the scored runs")
 
 
 def run_binaries(args) -> dict:
@@ -1135,7 +1196,8 @@ def run_binaries(args) -> dict:
     return out
 
 
-def run_held(args, plan: dict, lanes: list[str], kind: str, scenario: pathlib.Path) -> int:
+def run_held(args, plan: dict, lanes: list[str], kind: str, scenario: pathlib.Path,
+             record: ChangeRecord) -> int:
     results, senders, shaped, per_packet = [], [], [], False
     failures: list[str] = []
     previous = install_stops()
@@ -1163,7 +1225,11 @@ def run_held(args, plan: dict, lanes: list[str], kind: str, scenario: pathlib.Pa
                 shaped.append(("wan", site))
                 lab.set_wan(site, "both", spec)
             for _ in range(args.repeat):
-                result = run_once(args, plan, next_directory(scenario, kind))
+                directory = next_directory(scenario, kind)
+                try:
+                    result = run_once(args, plan, directory)
+                finally:
+                    record.run_directory(directory)
                 results.append(result)
                 for line in run_lines(result):
                     print(line, flush=True)
@@ -1178,6 +1244,7 @@ def run_held(args, plan: dict, lanes: list[str], kind: str, scenario: pathlib.Pa
             if per_packet:
                 attempt(failures, "TCP per packet off", lab.set_tcp_per_packet, False)
             attempt(failures, "stop the senders", stop_senders, lanes, senders)
+            record.node_logs_end()
             if not args.keep_up and not args.no_up:
                 attempt(failures, "take the lab down", lambda: lab.down(quiet=True))
     finally:

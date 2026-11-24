@@ -44,6 +44,10 @@ class Base(unittest.TestCase):
         patcher = mock.patch.object(lab, "WORK", self.work)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # A campaign's run goes into a temporary archive, never ~/needletail-data.
+        patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(self.work / "data")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def merged(self) -> list[str]:
         names = [name for name in lab.names() if name not in BACKBONES]

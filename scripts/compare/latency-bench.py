@@ -25,6 +25,13 @@ NEEDLETAIL_ALLOW_LIVE=1.
   hops.json      hops.py's report, with the run's settings under "bench"
   summary.txt    the hop table of each region, and each reader's latency
   hops.raw.ndjson, HOST.LANE.probe*.csv|json, sender.log, plan.json
+Each pass also keeps all of it in the run archive as it ends, whatever ends
+it (~/needletail-data/<run id>/<NAME>/, NEEDLETAIL_DATA_ROOT overrides; run
+id --run-id, else latency-bench-<UTC time>; a run id that exists is appended
+to): every file the pass wrote in its results directory (arrivals,
+hops.raw.ndjson, summaries, the per-socket drops in nodes.ndjson and
+hops.json, the load tool's output) and NAME/node-logs/, what each node's
+log gained in the pass, taken before the lab goes down.
 
 Flags reach the services through the lab's settings:
   --mesh-args "..."          every av-mesh node (backbone, distributor, edge)
@@ -100,6 +107,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import lab_guard as guard  # noqa: E402
 
@@ -269,6 +277,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pcm", default=str(lab.AUDIO_PCM),
                         help="stereo s24le PCM; its first 64 s are the loop")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; run nothing")
+    parser.add_argument("--run-id", default=None,
+                        help="the run in the archive (default latency-bench-<UTC time>; one that "
+                             "exists is appended to, under NAME/)")
     video = parser.add_argument_group("4K at a chosen rate (implies --video)")
     source = video.add_mutually_exclusive_group()
     source.add_argument("--video-clip", metavar="NAME|PATH",
@@ -1692,7 +1703,7 @@ def journal_full(events: list[dict], capacity: int | None) -> list[str]:
     return sorted(node for node, count in counts.items() if count >= capacity)
 
 
-def run(args, steps: dict) -> int:
+def run(args, steps: dict, record: "PassRecord") -> int:
     out = pathlib.Path(steps["out"])
     out.mkdir(parents=True, exist_ok=True)
     for old in [*out.glob("*.probe*"), *out.glob("*.4k.*"), *out.glob("*.uc*"),
@@ -1719,6 +1730,7 @@ def run(args, steps: dict) -> int:
             lab.up(steps["lab_up"])
         nodes, events, since_us, ended_us, measured = measure(args, steps, out)
     finally:
+        record.node_logs()
         if not args.keep_up and steps["lab_up"] is not None:
             lab.down(quiet=True)
     # The epoch of the run: what the sender reports it sent, else the plan's.
@@ -2100,12 +2112,65 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(steps, indent=1))
         return 0
     guard.require_frozen(run_binaries(args, steps))
-    with guard.hold(f"latency-bench.py --name {args.name}"):
+    # SIGTERM or SIGHUP (first-session's timeout, kill) unwinds the pass as
+    # Ctrl-C does: its files and node logs still go into the archive.
+    with archived_run.stopped_by_signals(), guard.hold(f"latency-bench.py --name {args.name}"):
         if steps["lab_up"] is None:
             # The lab runs already: what it runs is what its `up` took,
             # checked once this pass holds it.
             guard.require_frozen({}, running=guard.running_binaries())
-        return run(args, steps)
+        with PassRecord(args, steps) as record:
+            return run(args, steps, record)
+
+
+class PassRecord(archived_run.Run):
+    """A pass in the run archive: NAME/ holds every file the pass wrote in
+    its results directory and NAME/node-logs/ what each node's log gained,
+    copied however the pass ends; its readers, UDP clients and load
+    listeners are the run's listener steps."""
+
+    def __init__(self, args, steps: dict):
+        topology, regions = archived_run.local_topology(lab.NODES)
+        super().__init__(args.run_id or archived_run.default_run_id("latency-bench"), "local-lab",
+                         "latency-bench",
+                         code=archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT),
+                         settings={key: value for key, value in vars(args).items()
+                                   if key != "run_id"},
+                         topology=topology, regions=regions)
+        self.name = args.name
+        self.steps = steps
+        self.began_s = time.time()
+        self.slices = archived_run.LogSlices(lab.WORK / "logs")
+        self.slices.mark()
+        self.logs_taken = False
+        self.at_close(self.copy)
+
+    def node_logs(self) -> None:
+        """The nodes' logs of the pass, before the lab goes down."""
+        self.slices.take(self, f"{self.name}/node-logs")
+        self.logs_taken = True
+
+    def copy(self) -> None:
+        if not self.logs_taken:
+            self.node_logs()
+        self.add_tree(self.steps["out"], self.name, "raw",
+                      f"latency-bench pass {self.name}: arrivals, probes, hops.raw.ndjson, "
+                      "hops.json, summary.txt, nodes.ndjson (per-socket drops), load output, "
+                      "sender.log, plan.json", {"t_us": "us", "latency_us": "us"},
+                      since_s=self.began_s)
+        lanes: dict[str, dict[str, int]] = {}
+        for item in self.steps.get("readers") or []:
+            by_site = lanes.setdefault(f"hls-{item['lane']}", {})
+            by_site[item["site"]] = by_site.get(item["site"], 0) + self.steps["readers_per_kind"]
+        for item in self.steps.get("udp_clients") or []:
+            by_site = lanes.setdefault("udp", {})
+            by_site[item["site"]] = by_site.get(item["site"], 0) + 1
+        for item in self.steps.get("load") or []:
+            by_site = lanes.setdefault("load", {})
+            by_site[item["site"]] = by_site.get(item["site"], 0) \
+                + item["per_edge"] * len(item["edges"])
+        for lane, by_site in sorted(lanes.items()):
+            self.record_step(self.name, lane, sum(by_site.values()), by_site)
 
 
 def run_binaries(args, steps: dict) -> dict:

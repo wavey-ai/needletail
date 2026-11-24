@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import importlib.util
 import json
 import os
 import pathlib
@@ -19,6 +20,7 @@ import threading
 import time
 import traceback
 
+import archived_run
 import edge_lab as lab
 import lab_guard as guard
 
@@ -288,6 +290,8 @@ def ensure_lab(overrides: list[str], fresh: bool = False, audio: str = "daw") ->
     if (fresh or _current["dirty"] or _current["overrides"] != overrides
             or not lab.load("namespaces.json")):
         print(f"  (starting the lab: {overrides or 'default settings'})", flush=True)
+        if _archive is not None:
+            _archive.before_up()
         lab.up(overrides)
         lab.start_sources(6 * 3600, audio=audio)
         _current["overrides"] = list(overrides)
@@ -396,8 +400,16 @@ def counter_delta(before: dict, after: dict) -> dict:
 
 
 def run_scenario(item: Scenario, directory: pathlib.Path, sample: bool = True) -> dict:
+    """One scenario; inside a campaign's archived run (archived), its
+    records go into the run as it ends, whatever ends it."""
     with (guard.players_lock() if item.group in PLAYER_GROUPS else contextlib.nullcontext()):
-        return scenario_evidence(item, directory, sample)
+        if _archive is None:
+            return scenario_evidence(item, directory, sample)
+        since_us = time.time_ns() // 1000
+        try:
+            return scenario_evidence(item, directory, sample)
+        finally:
+            _archive.scenario(item, directory / item.name, since_us)
 
 
 def scenario_evidence(item: Scenario, directory: pathlib.Path, sample: bool) -> dict:
@@ -458,6 +470,128 @@ def scenario_evidence(item: Scenario, directory: pathlib.Path, sample: bool) -> 
     print(f"    => {result}" + (f" ({context.gap})" if context.gap and failed else ""),
           flush=True)
     return evidence
+
+
+# ------------------------------------------------------------------ the run archive
+
+# The campaign's run in the archive while `archived` holds one.
+_archive: "CampaignRecord | None" = None
+MESH_ROLES = ("contributor", "backbone", "distributor", "edge")
+
+
+def hops_module():
+    """scripts/compare/hops.py: its collect_edge_lab and save_raw."""
+    spec = importlib.util.spec_from_file_location(
+        "hops", pathlib.Path(__file__).resolve().parent / "compare" / "hops.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CampaignRecord:
+    """What a campaign keeps in its run: each scenario's directory (its
+    evidence, readers' reports and logs, node samples, the controller's
+    events), the slice of every node's log the scenario wrote, every
+    node's hop journal and stop journal since the scenario began, and its
+    readers as listener steps; the node logs written between scenarios,
+    each time before the lab's `up` deletes them; the summary."""
+
+    def __init__(self, run: archived_run.Run):
+        self.run = run
+        self.logs = archived_run.LogSlices(lab.WORK / "logs")
+        self.logs.mark()
+        self.ups = 0
+        self.directory: pathlib.Path | None = None
+
+    def before_up(self) -> None:
+        self.ups += 1
+        self.logs.take(self.run, f"node-logs/before-up-{self.ups:02d}")
+
+    def journals(self, directory: pathlib.Path, since_us: int) -> None:
+        """Every node's hop journal (hops.raw.ndjson, hops.py's format) and
+        stop journal (stalls/<node>.ndjson) since since_us, into the
+        scenario's directory."""
+        hops = hops_module()
+        nodes, events = hops.collect_edge_lab(since_us, None)
+        hops.save_raw(directory / "hops.raw.ndjson", nodes, events)
+        statuses = {}
+        (directory / "stalls").mkdir(exist_ok=True)
+        for name in lab.service_names():
+            if lab.node(name)["role"] not in MESH_ROLES:
+                continue
+            status, _head, body = lab.curl(name, f"/api/stalls?since_us={since_us}", timeout=30)
+            statuses[name] = status
+            if status == 200:
+                (directory / "stalls" / f"{name}.ndjson").write_text(body)
+        (directory / "stalls" / "http-status.json").write_text(json.dumps(statuses, indent=1) + "\n")
+
+    def scenario(self, item: Scenario, directory: pathlib.Path, since_us: int) -> None:
+        """The scenario's records into the run. Never raises: it runs in
+        run_scenario's `finally`, where an error would replace the
+        scenario's own result and end the campaign; a failure is kept and
+        fails the run."""
+        self.run.guarded(f"keep scenario {item.name}", self.keep, item, directory, since_us)
+
+    def keep(self, item: Scenario, directory: pathlib.Path, since_us: int) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self.journals(directory, since_us)
+        except Exception as error:  # noqa: BLE001 - the rest is kept; the run fails
+            self.run.problems.append(f"{item.name}: hop and stop journals: "
+                                     f"{type(error).__name__}: {error}")
+        self.logs.take(self.run, f"scenarios/{item.name}/node-logs")
+        self.run.add_tree(directory, f"scenarios/{item.name}", "raw",
+                          f"scenario {item.name}: evidence.json, the readers' reports and logs, "
+                          "nodes.ndjson (each node every second), hops.raw.ndjson, stalls/",
+                          {"at_s": "s", "t_us": "us", "unix_us": "us"})
+        evidence = read_json(directory / "evidence.json")
+        for key, job in ((evidence or {}).get("readers") or {}).items():
+            site = lab.node(job["host"])["site"] if job.get("host") else None
+            self.run.record_step(f"{item.name}/{key}", f"stream-{job.get('stream')}",
+                                 job.get("sessions") or 0, {site: job.get("sessions") or 0}
+                                 if site else {}, None, seconds=job.get("seconds"))
+
+    def close(self) -> None:
+        self.logs.take(self.run, "node-logs/after-scenarios")
+        if self.directory is not None and self.directory.is_dir():
+            self.run.write_json("summary.json", summary_rows(self.directory), "result",
+                                "each scenario's result and failed checks")
+
+
+def read_json(path: pathlib.Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def archive_run_id() -> str | None:
+    """The id of the campaign's run in the archive, while one runs: a tool
+    that a scenario starts (the autoscaler) appends to it."""
+    return _archive.run.run_id if _archive is not None else None
+
+
+@contextlib.contextmanager
+def archived(run_id: str, names: list[str]):
+    """A campaign's run in the archive (one per invocation): scenarios run
+    inside it keep their records there as each ends (run_scenario), and the
+    run ends failed when the campaign is cut off."""
+    global _archive
+    topology, regions = archived_run.local_topology(lab.NODES)
+    with archived_run.Run(
+            run_id, "local-lab", "edge-campaign",
+            code=archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT),
+            settings={"scenarios": names, "lab_id": lab.LAB_ID, "lab_work": str(lab.WORK),
+                      "limits_per_service": lab.NANODE,
+                      "limits_of_contributor": lab.CONTRIBUTOR_LIMITS},
+            topology=topology, regions=regions) as run:
+        record = CampaignRecord(run)
+        run.at_close(record.close)
+        _archive = record
+        try:
+            yield record
+        finally:
+            _archive = None
 
 
 _digests: dict = {}

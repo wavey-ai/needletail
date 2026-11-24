@@ -27,7 +27,11 @@ the contributor restarted, the first stream):
  8. `edge_lab.py down`; the lab's files into the run archive.
 Every command goes through the lab's own command line; `--dry` prints them
 all and runs none. Output in target/first-session/<name>/lab<i>/ (the
-passes themselves in target/latency-bench/<name>-lab<i>-first|warm/).
+passes themselves in target/latency-bench/<name>-lab<i>-first|warm/). The
+run archive's run <name> gets each lab's files as the lab ends (lab<i>/),
+each latency-bench pass as it ends (the pass's own run id is <name>, so its
+files go to <name>-lab<i>-first|warm/), the record, and its end: failed
+when a step failed or the run was cut off, a cut-off lab's files kept.
 
 `report` reads such a directory: per lab and session, each UDP host's unit
 latency p99 and max and missing (latency-bench's hops.json), first against
@@ -52,6 +56,7 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import archived_run  # noqa: E402
 import edge_lab as lab  # noqa: E402
 import stall_records as sr  # noqa: E402
 
@@ -60,6 +65,8 @@ BENCH = HERE / "latency-bench.py"
 BENCH_OUT = ROOT / "target" / "latency-bench"
 ARCHIVE_TOOL = ROOT / "scripts" / "run_archive.py"
 OUT = ROOT / "target" / "first-session"
+# A step past its timeout gets SIGTERM, then SIGKILL this much later.
+STOP_GRACE_S = 120.0
 CONTRIBUTOR = "contrib-lon"
 MESH_ROLES = ("contributor", "distributor", "edge")
 # What workstream C's CL1 gives the lab (C-operations.md 2.12) and this
@@ -83,11 +90,11 @@ def stalls_url(name: str, since_us: int) -> str:
     return f"https://{lab.node(name)['public_ipv4']}:{port}/api/stalls?since_us={since_us}"
 
 
-def bench_command(name: str, payload: str, seconds: int) -> list[str]:
+def bench_command(name: str, payload: str, seconds: int, run_id: str) -> list[str]:
     return [sys.executable, str(BENCH), "--name", name, "--no-up", "--keep-up",
             "--payload", payload, "--seconds", str(seconds), "--skip-seconds", "0",
             "--udp-clients", "2", "--load-listeners", "40", "--load-assign",
-            "--load-args=--sample 8"]
+            "--load-args=--sample 8", "--run-id", run_id]
 
 
 class Steps:
@@ -105,8 +112,19 @@ class Steps:
         if self.dry:
             return 0
         with open(stdout, "wb") if stdout else open(os.devnull, "wb") as handle:
-            status = subprocess.run(command, stdout=handle if stdout else None,
-                                    timeout=timeout).returncode
+            process = subprocess.Popen(command, stdout=handle if stdout else None)
+            try:
+                status = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # SIGTERM first: a latency-bench pass then keeps its files
+                # in the run archive before it ends; SIGKILL after a grace.
+                process.terminate()
+                try:
+                    process.wait(timeout=STOP_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise
         if status != 0:
             self.failed.append(f"{line}: exit {status}")
         return status
@@ -172,7 +190,7 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
         # burn and the restart included), the warm one's from its own.
         since = int((started if session == "first" else began) * 1e6)
         bench = f"{args.name}-lab{index}-{session}"
-        steps.run(bench_command(bench, args.payload, args.seconds),
+        steps.run(bench_command(bench, args.payload, args.seconds, args.name),
                   timeout=args.seconds + 600)
         directory = out / session
         if not steps.dry:
@@ -197,28 +215,35 @@ def command_run(args: argparse.Namespace) -> int:
         print(f"# a real run would refuse: {problem}")
     steps = Steps(args.dry)
     archive = [sys.executable, str(ARCHIVE_TOOL), "--tool", "first-session"]
-    steps.run(archive + ["create", args.name, "--kind", "local-lab", "--code", str(ROOT),
-                         "--code", str(lab.MESH_ROOT), "--code", str(lab.CONTRIB_ROOT)])
+    steps.run(archive + ["create", args.name, "--kind", "local-lab",
+                         *[item for path in archived_run.code_paths(lab.MESH_ROOT, lab.CONTRIB_ROOT)
+                           for item in ("--code", str(path))]])
+
+    def keep(index: int) -> None:
+        if steps.dry or (OUT / args.name / f"lab{index}").is_dir():
+            steps.run(archive + ["add-tree", args.name, str(OUT / args.name / f"lab{index}"),
+                                 "--as", f"lab{index}", "--kind", "raw", "--description",
+                                 "a fresh lab's stall journals and host watch"])
+
     labs = []
-    for index in range(1, args.labs + 1):
-        labs.append(one_lab(steps, args, index))
-        steps.run(archive + ["add-tree", args.name, str(OUT / args.name / f"lab{index}"),
-                             "--as", f"lab{index}", "--kind", "raw", "--description",
-                             "a fresh lab's stall journals and host watch"])
-        for session in SESSIONS:
-            steps.run(archive + ["add-tree", args.name,
-                                 str(BENCH_OUT / f"{args.name}-lab{index}-{session}"),
-                                 "--as", f"lab{index}/{session}/bench", "--kind", "raw",
-                                 "--description", f"latency-bench's {session} session"])
-    if not args.dry:
-        record = {"schema": "needletail.first-session.v1", "name": args.name,
-                  "payload": args.payload, "seconds": args.seconds, "idle_s": args.idle_s,
-                  "burn_s": args.burn_s, "labs": labs}
-        (OUT / args.name / "first-session.json").write_text(json.dumps(record, indent=1) + "\n")
-        steps.run(archive + ["add", args.name, str(OUT / args.name / "first-session.json"),
-                             "--kind", "result"])
-    steps.run(archive + ["finish", args.name, "--status",
-                         "failed" if steps.failed else "complete"])
+    try:
+        for index in range(1, args.labs + 1):
+            labs.append(one_lab(steps, args, index))
+            keep(index)
+        if not args.dry:
+            record = {"schema": "needletail.first-session.v1", "name": args.name,
+                      "payload": args.payload, "seconds": args.seconds, "idle_s": args.idle_s,
+                      "burn_s": args.burn_s, "labs": labs}
+            (OUT / args.name / "first-session.json").write_text(json.dumps(record, indent=1) + "\n")
+            steps.run(archive + ["add", args.name, str(OUT / args.name / "first-session.json"),
+                                 "--kind", "result"])
+    finally:
+        cut = len(labs) < args.labs
+        if cut:
+            keep(len(labs) + 1)
+        steps.run(archive + ["finish", args.name, "--status",
+                             "failed" if steps.failed or cut else "complete",
+                             *(["--reason", "the run was cut off"] if cut else [])])
     if not args.dry:
         print(format_report(analyse(OUT / args.name)))
     for failure in steps.failed:

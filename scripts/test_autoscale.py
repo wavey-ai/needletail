@@ -28,8 +28,10 @@ import argparse
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import shutil
+import signal
 import sys
 import tempfile
 import threading
@@ -1944,7 +1946,12 @@ class Main(Base):
         for sig in (signal.SIGINT, signal.SIGTERM):  # main() installs its own
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         out, err = io.StringIO(), io.StringIO()
+        # The run goes into a temporary archive, never ~/needletail-data.
+        record = lambda args, backend, config, sites: auto.archived_run.Run(  # noqa: E731
+            "as-main", "local-lab", "linode-autoscale", argv=["linode-autoscale.py"],
+            prefix="autoscale/", root=self.tmp / "data")
         with mock.patch.object(auto, "make_backend", lambda args, config, sites: self.sim), \
+                mock.patch.object(auto, "archive_record", record), \
                 mock.patch.object(auto, "REBALANCE_STILL_S", 0.2), \
                 redirect_stdout(out), redirect_stderr(err):
             with self.assertRaises(SystemExit) as exit_:
@@ -2514,6 +2521,8 @@ class StopSignalTests(unittest.TestCase):
             import json, pathlib
             HERE = pathlib.Path(__file__).parent
             WORK = HERE / "work"
+            MESH_ROOT = HERE / "av-mesh"
+            CONTRIB_ROOT = HERE / "av-contrib"
             NODES = [("lon-dist-a", "distributor", "london", "gb-lon", "10.90.0.11", "10.77.1.11"),
                      ("lon-dist-b", "distributor", "london", "gb-lon", "10.90.0.12", "10.77.1.12"),
                      ("lon-edge-1", "edge", "london", "gb-lon", "10.90.0.21", "10.77.1.21"),
@@ -2554,7 +2563,8 @@ class StopSignalTests(unittest.TestCase):
             auto.main()
         """)]
         process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
+                                   preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
+                                   env={**os.environ, "NEEDLETAIL_DATA_ROOT": str(work / "data")})
         events = work / "events.jsonl"
         deadline = time.time() + 20
         while time.time() < deadline and not (events.is_file()
@@ -2710,6 +2720,176 @@ class EdgeLabBackendTests(unittest.TestCase):
             auto.EdgeLabBackend(2001, lab=failing).drain("lon-edge-4")
         self.assertTrue(auto.control_accepted(200))
         self.assertFalse(auto.control_accepted(None))
+
+
+class Archive(Base):
+    """The controller's events and state transitions in the run archive."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / "data"
+        patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(self.root)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(auto.archived_run, "code_paths", lambda *_: [])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def lines(self, run_id: str, name: str) -> list[dict]:
+        path = self.root / run_id / "autoscale" / name
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_events_and_each_change_of_state_go_into_the_run(self):
+        record = auto.archived_run.Run("as1", "local-lab", "linode-autoscale", argv=["a"],
+                                       prefix="autoscale/")
+        backend = auto.Guarded(self.sim, self.config, False)
+        events = auto.Events(str(self.events_path), echo=False, clock=self.clock, record=record)
+        controller = auto.Controller(backend, self.config, self.state_path, events,
+                                     clock=self.clock)
+        controller.stop_wait_s = 0.2
+        self.sim.set_load(760)
+        self.ticks(controller, 6)
+        controller.close()
+        record.close()
+        archived = self.lines("as1", "events.ndjson")
+        written = [json.loads(line) for line in self.events_path.read_text().splitlines()]
+        self.assertEqual(archived, written)
+        self.assertTrue(all(isinstance(item["unix_us"], int) for item in archived))
+        self.assertIn("join", [item["kind"] for item in archived])
+        states = self.lines("as1", "state.ndjson")
+        self.assertGreater(len(states), 1)
+        self.assertEqual(len({json.dumps(item["state"], sort_keys=True) for item in states}),
+                         len(states), "a state is kept only when it changed")
+        self.assertEqual(states[-1]["state"], json.loads(self.state_path.read_text()))
+        manifest = json.loads((self.root / "as1" / "manifest.json").read_text())
+        self.assertEqual(manifest["status"], "complete")
+        units = {entry["path"]: entry["units"] for entry in manifest["files"]}
+        self.assertEqual(units["autoscale/events.ndjson"]["unix_us"], "us")
+
+    def test_a_dry_run_writes_nothing_to_the_archive(self):
+        events = auto.Events(None, echo=False, clock=self.clock)
+        backend = auto.Guarded(self.sim, self.config, True)
+        controller = auto.Controller(backend, self.config, self.state_path, events,
+                                     clock=self.clock)
+        controller.stop_wait_s = 0.2
+        self.ticks(controller, 2)
+        controller.close()
+        self.assertFalse(self.root.exists())
+
+    def test_the_linode_backend_appends_to_the_lab_s_run_and_never_ends_it(self):
+        backend = auto.LinodeBackend(str(self.tmp / "lab.json"), STREAM, self.config)
+        state = {"run_id": "lab7", "tag": "needletail-small-mesh-lab7",
+                 "nodes": {"lon-edge-1": {"region": "gb-lon"}, "tok-edge-1": {"region": "ap-northeast"}}}
+        args = argparse.Namespace(command="run", backend="linode", stream=STREAM, run_id=None)
+        with mock.patch.object(backend, "state", lambda: state):
+            record = auto.archive_record(args, backend, self.config, ["london"])
+        record.close()
+        manifest = json.loads((self.root / "lab7" / "manifest.json").read_text())
+        self.assertEqual((manifest["kind"], manifest["status"]), ("linode-lab", "running"))
+        self.assertEqual(manifest["regions"], ["ap-northeast", "gb-lon"])
+        self.assertEqual(manifest["deploy_settings"]["backend"], "linode")
+        outcome = self.lines("lab7", "outcomes.ndjson")
+        self.assertEqual(outcome[0]["status"], "complete")
+
+    def test_the_edge_lab_backend_has_a_run_of_its_own_unless_one_is_named(self):
+        fake = types.SimpleNamespace(NODES=[("lon-edge-1", "edge", "london", "gb-lon", "a", "b")],
+                                     MESH_ROOT=self.tmp / "av-mesh", CONTRIB_ROOT=self.tmp / "c")
+        backend = auto.EdgeLabBackend(STREAM, ["london"], lab=fake)
+        args = argparse.Namespace(command="scale", backend="edge_lab", stream=STREAM, run_id=None,
+                                  direction="up", site="london", tier="edges")
+        record = auto.archive_record(args, backend, self.config, ["london"])
+        record.close()
+        self.assertRegex(record.run_id, r"^linode-autoscale-\d{8}T\d{6}Z$")
+        manifest = json.loads((record.path / "manifest.json").read_text())
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["deploy_settings"]["direction"], "up")
+        named = auto.archive_record(argparse.Namespace(**{**vars(args), "run_id": record.run_id}),
+                                    backend, self.config, ["london"])
+        self.assertFalse(named.made)
+
+    def test_the_archive_is_written_off_the_decision_loop(self):
+        record = auto.archived_run.Run("as2", "local-lab", "linode-autoscale", argv=["a"],
+                                       prefix="autoscale/")
+        appended = []
+        real = record.append_ndjson
+        loop = threading.current_thread()
+
+        def slow(name, records, *args, **kwargs):
+            appended.append((threading.current_thread() is loop, name, len(records)))
+            time.sleep(0.3)
+            return real(name, records, *args, **kwargs)
+
+        record.append_ndjson = slow
+        events = auto.Events(None, echo=False, clock=self.clock, record=record)
+        began = time.monotonic()
+        for index in range(20):
+            events("decision", index=index)
+        events.state({"phase": "steady"})
+        self.assertLess(time.monotonic() - began, 0.25, "an event never waits on the archive")
+        record.close()
+        self.assertFalse(any(on_loop for on_loop, _name, _count in appended))
+        self.assertLess(len(appended), 21, "queued lines go in batches")
+        self.assertEqual([item["index"] for item in self.lines("as2", "events.ndjson")],
+                         list(range(20)))
+        self.assertEqual(self.lines("as2", "state.ndjson")[0]["state"], {"phase": "steady"})
+        self.assertEqual(json.loads((self.root / "as2" / "manifest.json").read_text())["status"],
+                         "complete")
+
+    def test_a_state_is_kept_as_it_was_when_saved(self):
+        record = auto.archived_run.Run("as3", "local-lab", "linode-autoscale", argv=["a"],
+                                       prefix="autoscale/")
+        events = auto.Events(None, echo=False, clock=self.clock, record=record)
+        state = {"phase": "joining"}
+        events.state(state)
+        state["phase"] = "steady"
+        events.state(state)
+        record.close()
+        self.assertEqual([item["state"]["phase"] for item in self.lines("as3", "state.ndjson")],
+                         ["joining", "steady"])
+
+    def test_main_runs_the_controller_when_the_archive_refuses(self):
+        for sig in (signal.SIGINT, signal.SIGTERM):  # main() installs its own
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+
+        def refused(args, backend, config, sites):
+            raise auto.archived_run.ra.ArchiveError("run 'x' refused: disk full")
+
+        ran = []
+        with mock.patch.object(auto, "make_backend", lambda args, config, sites: self.sim), \
+                mock.patch.object(auto, "archive_record", refused), \
+                mock.patch.object(auto, "command_scale",
+                                  lambda *args, **kwargs: ran.append(args) or auto.EXIT_DONE), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit) as exit_:
+            auto.main(["scale", "up", "--site", "london", "--backend", "edge_lab",
+                       "--controller-state", str(self.state_path)])
+        self.assertEqual(exit_.exception.code, auto.EXIT_DONE)
+        self.assertEqual(len(ran), 1)
+        self.assertIn("run archive: not written (ArchiveError", err.getvalue())
+
+    def test_main_ends_the_run_failed_when_the_controller_fails(self):
+        for sig in (signal.SIGINT, signal.SIGTERM):  # main() installs its own
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        made = {}
+
+        def record(args, backend, config, sites):
+            made["run"] = auto.archived_run.Run("as9", "local-lab", "linode-autoscale",
+                                                argv=["a"], prefix="autoscale/")
+            return made["run"]
+
+        def failing(*_args, **_kwargs):
+            raise RuntimeError("observation failed")
+
+        with mock.patch.object(auto, "make_backend", lambda args, config, sites: self.sim), \
+                mock.patch.object(auto, "archive_record", record), \
+                mock.patch.object(auto, "command_scale", failing), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as exit_:
+            auto.main(["scale", "up", "--site", "london", "--backend", "edge_lab",
+                       "--controller-state", str(self.state_path)])
+        self.assertEqual(exit_.exception.code, auto.EXIT_FAILED)
+        manifest = json.loads((self.root / "as9" / "manifest.json").read_text())
+        self.assertEqual((manifest["status"], manifest["status_reason"]), ("failed", "failed"))
 
 
 if __name__ == "__main__":

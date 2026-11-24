@@ -41,6 +41,10 @@ Subcommands:
   change    KIND ...: workstream A's contributor and ingress changes
   hunt      ECMP source ports of the long-haul links (a bring-up step)
   status    service state, build, readiness and the deployed record per node
+  collect   --run-id ID [--nodes a,b] [--timeout-s N]: every node's journal
+            since boot, its API at the end, its samplers' files, and the
+            deployed record, settings, topology and lab state, into the run
+            archive (~/needletail-data/<run id>/), marked collected or not
 
 What is deployed is recorded in the lab state (`deployed`): the settings,
 the routes and hunted ports, and each node's build and arguments (with the
@@ -73,9 +77,12 @@ Tuning knobs live in the settings file and can be changed with
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
+import fcntl
 import filecmp
 import functools
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -87,11 +94,17 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
+import threading
 import time
+import traceback
+import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import archived_run  # noqa: E402
 import mesh_ops  # noqa: E402
+import run_archive  # noqa: E402
 import small_mesh_common as common  # noqa: E402
 
 SETTINGS_FILE = common.ARTIFACT_DIR / "settings.json"
@@ -5667,6 +5680,570 @@ def deployed_summary(state: dict) -> list[str]:
     return lines
 
 
+# ------------------------------------------------------------ collect (the run archive)
+
+COLLECT_TOOL = "deploy-collect"
+COLLECT_TIMEOUT_S = 300.0
+COLLECT_WORKERS = 32
+# collect's own failure (not a node's): the run is marked not collected.
+EXIT_COLLECT_FAILED = 70
+# A file the pull ended in, kept under its name with this suffix.
+COLLECT_PARTIAL = ".partial"
+# Beside the archive root: what collects pull, until each file is moved in.
+COLLECT_STAGING = ".needletail-collect"
+# What collect asks of a node's own HTTP service, once, at the end: (file
+# stem, path, extension). /api/hops with no stream is the hop journal of
+# every stream the node holds. api-stats and api-stalls are the names of the
+# referee's collect-nodes (needletail-compare scripts/compare/archive-run.py).
+MESH_APIS = (("api-node", "/api/node", "json"), ("api-mesh-local", "/api/mesh/local", "json"),
+             ("api-stats", "/api/stats", "json"), ("api-stalls", "/api/stalls", "json"),
+             ("api-hops", "/api/hops", "ndjson"))
+CONTRIBUTOR_APIS = (("api-node", "/api/node", "json"), ("api-stalls", "/api/stalls", "json"),
+                    ("api-hops", "/api/hops", "ndjson"))
+# The samplers' files of a node, read where they are and left there: the
+# lead's tools' run directories (their samplers, listener and probe
+# outputs) and the referee's sampler files.
+NODE_RUNS = "/var/lib/needletail-runs"
+REFEREE_SAMPLERS = ("/var/tmp/compare-*.log", "/var/tmp/compare-*.carry")
+COLLECT_FILES = (
+    (r"^journal\.", "node-logs", "the node's journal since boot (journalctl -b -o "
+                                 "short-iso-precise), gzipped", None),
+    (r"^api-node\.", "node-api", "the node's /api/node at collection: build, state, readiness",
+     None),
+    (r"^api-mesh-local\.", "node-api", "the node's /api/mesh/local at collection", None),
+    (r"^api-stats\.", "node-api", "the node's /api/stats at collection", None),
+    (r"^api-stalls\.", "node-api", "the node's stop journal (/api/stalls) at collection", None),
+    (r"^api-hops\.", "node-api", "the node's hop journal (/api/hops, every stream) at collection",
+     {"t_us": "us"}),
+    (r"^http-status\.", "node-api", "the HTTP status of each API answer of this collect", None),
+)
+
+
+def collect_apis(node: dict) -> tuple:
+    if node["role"] == "contributor":
+        return CONTRIBUTOR_APIS
+    return MESH_APIS if node["role"] in mesh_ops.ROLE_TIER else ()
+
+
+def collect_script(node: dict, stamp: str) -> str:
+    """What one ssh runs on a node: a gzipped tar on its stdout of the
+    journal since boot (gzipped), each API's body with its HTTP status and
+    curl's exit status, and the samplers' files. Nothing on the node is
+    changed or removed but its own temporary directory."""
+    port = CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT
+    lines = ["set -u", f"T={stamp}",
+             "D=$(mktemp -d /tmp/needletail-collect.XXXXXX) || exit 70",
+             "trap 'rm -rf \"$D\"' EXIT",
+             "journalctl -b --no-pager -o short-iso-precise 2>/dev/null "
+             "| gzip -c >\"$D/journal.$T.txt.gz\""]
+    for stem, path, extension in collect_apis(node):
+        url = shlex.quote(f"https://{node['public_ipv4']}:{port}{path}")
+        lines += [f"code=$(curl -sk --max-time 30 -o \"$D/{stem}.$T.{extension}\" "
+                  f"-w '%{{http_code}}' {url} 2>/dev/null); rc=$?",
+                  f"echo \"{stem} ${{code:-000}} $rc\" >>\"$D/http-status.$T.txt\""]
+    parent, name = NODE_RUNS.rsplit("/", 1)
+    lines += ["set -- -C \"$D\" .",
+              f"[ -d {NODE_RUNS} ] && set -- \"$@\" -C {parent} {name}",
+              f"for f in {' '.join(REFEREE_SAMPLERS)}; do "
+              "[ -f \"$f\" ] && set -- \"$@\" -C /var/tmp \"${f#/var/tmp/}\"; done",
+              "tar -cf - \"$@\" 2>/dev/null | gzip -1", "exit 0"]
+    return "\n".join(lines) + "\n"
+
+
+def collect_member_path(name: str) -> str | None:
+    """Where a member of a node's tar goes under nodes/<node>/: the node's
+    own files (`./...`) at the top, its run directories under
+    samplers/needletail-runs/, the referee's sampler files under
+    samplers/var-tmp/. None for a name that would leave the directory, or
+    one that ends as a cut member's does."""
+    parts = pathlib.PurePosixPath(name).parts
+    if name.startswith("/") or ".." in parts or name.endswith(COLLECT_PARTIAL):
+        return None
+    if name.startswith("./"):
+        return pathlib.PurePosixPath(*parts).as_posix() if parts else None
+    if parts and parts[0] == NODE_RUNS.rsplit("/", 1)[1]:
+        return "samplers/" + pathlib.PurePosixPath(*parts).as_posix()
+    return f"samplers/var-tmp/{pathlib.PurePosixPath(*parts).as_posix()}" if parts else None
+
+
+def unpack_stream(stream, directory: pathlib.Path) -> tuple[list[str], str | None, str | None]:
+    """The regular files of a node's tar, read as it streams in, into its
+    staging directory: (the files whole, the one cut part-way, why the tar
+    ended early or None). Each member is written as <name>.partial and
+    renamed when whole, so one the tar ended in stays marked as cut."""
+    files: list[str] = []
+    current: tuple[str, pathlib.Path] | None = None
+    try:
+        with tarfile.open(fileobj=stream, mode="r|gz") as tar:
+            for member in tar:
+                rel = collect_member_path(member.name)
+                if not member.isfile() or rel is None:
+                    continue
+                target = directory / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                current = (rel, target.with_name(target.name + COLLECT_PARTIAL))
+                with tar.extractfile(member) as source, open(current[1], "wb") as out:
+                    shutil.copyfileobj(source, out)
+                current[1].rename(target)
+                current = None
+                files.append(rel)
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as error:
+        cut = current[0] + COLLECT_PARTIAL if current and current[1].is_file() else None
+        return files, cut, f"its tar ended early: {error}"
+    return files, None, None
+
+
+def pull_node(node: dict, stamp: str, directory: pathlib.Path, deadline: float) -> dict:
+    """One node's files into its staging directory as they stream in, by
+    one ssh killed at `deadline` (time.monotonic). Whatever arrived is kept,
+    also from a node that ran out of time."""
+    record = {"node": node["name"], "role": node["role"], "error": None, "files": [],
+              "partial": None, "http": {}, "curl_exit": {}}
+    began = time.monotonic()
+    left = deadline - began
+    if left < 1:
+        record.update(error="no time left within the collect's --timeout-s", seconds=0.0)
+        return record
+    command = ["ssh", *common.ssh_base(), f"root@{node['public_ipv4']}",
+               "bash -c " + shlex.quote(collect_script(node, stamp))]
+    killed = threading.Event()
+    with tempfile.TemporaryFile() as errors:
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=errors)
+        except OSError as error:
+            record.update(error=f"ssh: {error}", seconds=round(time.monotonic() - began, 3))
+            return record
+
+        def stop() -> None:
+            if process.poll() is None:
+                killed.set()
+                process.kill()
+
+        timer = threading.Timer(left, stop)
+        timer.daemon = True
+        timer.start()
+        try:
+            record["files"], record["partial"], ended = unpack_stream(process.stdout, directory)
+            # A tar that ended wrong: ssh is given a moment to end by
+            # itself (its own error says more), else stopped.
+            stopped = False
+            if ended:
+                try:
+                    process.wait(timeout=min(5.0, max(0.0, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    stopped = True
+                    process.kill()
+            returncode = process.wait()
+        finally:
+            timer.cancel()
+            process.stdout.close()
+        errors.seek(0)
+        said = errors.read().decode(errors="replace").strip()[-300:]
+    if killed.is_set():
+        record["error"] = f"timed out after {left:.0f} s"
+    elif returncode != 0 and not stopped:
+        record["error"] = f"ssh exited {returncode}: {said}" + (f" ({ended})" if ended else "")
+    elif ended:
+        record["error"] = ended
+    for status in directory.glob("http-status.*.txt"):
+        for line in status.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            stem, code, curl_exit = (line.split() + ["", ""])[:3]
+            record["http"][stem] = code
+            record["curl_exit"][stem] = curl_exit
+    record["seconds"] = round(time.monotonic() - began, 3)
+    return record
+
+
+def node_missing(node: dict, record: dict, directory: pathlib.Path) -> list[str]:
+    """What of a node this collect could not have: the node (its ssh failed
+    or ran out of time, or its tar was cut), else each file: the journal
+    when empty, an API that did not answer 200 whole (curl exited 0)."""
+    if record["error"]:
+        return [node["name"]]
+    out = []
+    journals = sorted(directory.glob("journal.*.txt.gz"))
+    try:
+        with gzip.open(journals[0], "rb") as handle:
+            empty = not handle.read(1)
+    except (IndexError, OSError, EOFError):
+        empty = True
+    if empty:
+        out.append(f"{node['name']}/journal")
+    out += [f"{node['name']}/{stem}" for stem, _path, _extension in collect_apis(node)
+            if record["http"].get(stem) != "200" or record["curl_exit"].get(stem) != "0"]
+    return out
+
+
+def collect_describe(rel: str) -> tuple[str, str, dict | None]:
+    whole = rel[:-len(COLLECT_PARTIAL)] if rel.endswith(COLLECT_PARTIAL) else rel
+    for pattern, kind, text, units in COLLECT_FILES:
+        if re.search(pattern, whole):
+            return kind, (f"CUT PART-WAY (the pull ended in it): {text}" if whole != rel
+                          else text), units
+    return "raw", "", None
+
+
+def remove_empty(directory: pathlib.Path) -> None:
+    """The empty directories under `directory`, and it when empty; a
+    directory that still holds a file is left (never a file removed)."""
+    for path in sorted(directory.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink():
+            with contextlib.suppress(OSError):
+                path.rmdir()
+    with contextlib.suppress(OSError):
+        directory.rmdir()
+
+
+def archive_node(run: archived_run.Run, name: str, directory: pathlib.Path) -> list[str]:
+    """Every file of a node's staging directory moved into nodes/<node>/:
+    its own files at the top (a cut one as <name>.partial), its samplers'
+    files under samplers/. A file the archive refuses as a credential is
+    deleted, never kept; any other that could not be moved stays in
+    staging for the next collect. Returns what could not be moved."""
+    failed = []
+    for path in sorted(item for item in directory.iterdir() if item.is_file()):
+        kind, text, units = collect_describe(path.name)
+        if run.add_file(path, f"nodes/{name}/{path.name}", kind, text, units, move=True) is None:
+            failed.append(f"{name}/{path.name}")
+    samplers = directory / "samplers"
+    if samplers.is_dir():
+        result = run.add_tree(
+            samplers, f"nodes/{name}/samplers", "samples",
+            f"the node's run directories ({NODE_RUNS}: samplers, listener and probe outputs) "
+            "and the referee's sampler files (/var/tmp/compare-*), as they were at collection "
+            f"(a name ending {COLLECT_PARTIAL}: cut part-way)", move=True)
+        if result is None:
+            failed.append(f"{name}/samplers")
+        else:
+            for rel in result["refused"]:
+                (samplers / rel).unlink(missing_ok=True)
+                failed.append(f"{name}/samplers/{rel} (refused: a credential)")
+    remove_empty(directory)
+    return failed
+
+
+def scrubbed_record(deployed: dict) -> dict:
+    """The deployed record with its settings scrubbed of secrets; the
+    nodes' build keys and digests kept as they are."""
+    if not isinstance(deployed.get("settings"), dict):
+        return dict(deployed)
+    return {**deployed, "settings": archived_run.scrub_settings(deployed["settings"])}
+
+
+def mesh_worktree() -> pathlib.Path:
+    """The av-mesh worktree the deploy takes its binaries from (binaries_for)."""
+    return pathlib.Path(os.environ.get("NEEDLETAIL_AV_MESH_ROOT", str(common.WORKSPACE / "av-mesh")))
+
+
+def collect_code_paths() -> list[pathlib.Path]:
+    """The worktrees whose builds the deploy installs (binaries_for)."""
+    return archived_run.code_paths(
+        mesh_worktree(),
+        os.environ.get("NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib")))
+
+
+def deployed_builds(state: dict) -> dict:
+    """What the lab ran, from the deployed record rather than from the
+    worktrees collect happens to see: each repository's build keys (av-mesh
+    on the mesh tiers, av-contrib on the contributor) with the nodes that
+    run each, and the playlists sources that av-mesh's Cargo.lock pins at
+    each av-mesh build's commit (read from the av-mesh object store, which
+    its worktrees share; a dirty build's own lock may differ)."""
+    nodes = (state.get("deployed") or {}).get("nodes") or {}
+    out: dict = {"av-mesh": {}, "av-contrib": {}, "playlists": {}}
+    for name, entry in sorted(nodes.items()):
+        role = (state["nodes"].get(name) or {}).get("role")
+        repo = "av-contrib" if role == "contributor" else \
+            "av-mesh" if role in mesh_ops.ROLE_TIER else None
+        if repo and entry.get("build"):
+            out[repo].setdefault(entry["build"], []).append(name)
+    for key in sorted(out["av-mesh"]):
+        commit = key_build(key)["git"].removesuffix("-dirty")
+        try:
+            lock = subprocess.run(["git", "-C", str(mesh_worktree()), "show", f"{commit}:Cargo.lock"],
+                                  capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            out["playlists"][key] = {"error": f"git: {error}"}
+            continue
+        if lock.returncode != 0:
+            out["playlists"][key] = {"error": f"git show {commit}:Cargo.lock: "
+                                              f"{lock.stderr.strip()[-200:]}"}
+            continue
+        out["playlists"][key] = re.findall(
+            r'name = "playlists"\nversion = "[^"]*"\nsource = "([^"]+)"', lock.stdout)
+    return out
+
+
+def topology_path(state: dict) -> pathlib.Path | None:
+    raw = state.get("topology_file")
+    if not raw:
+        return None
+    path = pathlib.Path(raw)
+    return path if path.is_absolute() else common.ROOT / path
+
+
+def collect_run(state: dict) -> archived_run.Run:
+    """The lab's run in the archive (the lab's run id), made with the lab's
+    facts when it is not there yet, else opened to append to; either way
+    the deployed settings (scrubbed) go into its manifest's deploy_settings.
+    Collect never ends the run: the run's own tool and the lab's down do."""
+    topology = topology_path(state)
+    run = archived_run.Run(
+        state["run_id"], "linode-lab", COLLECT_TOOL, code=collect_code_paths(),
+        topology=topology if topology and topology.is_file() else None,
+        regions=sorted({node["region"] for node in state["nodes"].values() if node.get("region")}),
+        finish=False)
+    settings = (state.get("deployed") or {}).get("settings")
+    if settings:
+        run.guarded("record the deploy settings", run.archive.set_deploy_settings,
+                    archived_run.scrub_settings(settings))
+    return run
+
+
+def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
+    """The lab's own files: its state (with every node's physical host),
+    the hosts map, the deployed record and the builds it names, the
+    settings, the routes and hunted ports, the topology; the lab's
+    instances in the manifest. Returns what could not be had."""
+    missing = []
+    deployed = state.get("deployed") or {}
+    run.write_json(f"lab/state.{stamp}.json", {**state, "deployed": scrubbed_record(deployed)},
+                   "lab", "the lab state at collection: nodes, addresses, plans, watchdog, "
+                          "budget and the deployed record")
+    run.write_json(f"lab/hosts.{stamp}.json",
+                   {name: {key: node.get(key) for key in
+                           ("id", "label", "region", "site", "role", "type", "host_uuid")}
+                    for name, node in sorted(state["nodes"].items(), key=lambda item:
+                                             mesh_ops.natural(item[0]))},
+                   "lab", "the physical Linode host of every node (host_uuid as the lab tool's "
+                          "`hosts` recorded it in the lab state; null: never recorded)")
+    if deployed:
+        run.write_json(f"lab/deployed.{stamp}.json", scrubbed_record(deployed), "lab",
+                       "the deployed record: settings in force, routes and ports digests, each "
+                       "node's build and argument digests")
+        run.write_json(f"lab/builds.{stamp}.json", deployed_builds(state), "lab",
+                       "the builds the lab ran, from the deployed record: av-mesh and av-contrib "
+                       "build keys (<git>-<unix>) with their nodes, and the playlists sources "
+                       "av-mesh's Cargo.lock pins at each av-mesh build's commit")
+    else:
+        missing.append("lab/deployed")
+    own = {}
+    for label, path, read in (
+            ("settings", SETTINGS_FILE, lambda text: json.loads(text)),
+            ("routes", common.ARTIFACT_DIR / "routes.json", lambda text: json.loads(text)),
+            ("ecmp-ports", HUNT_FILE, lambda text: json.loads(text))):
+        try:
+            document = read(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict) and document.get("lab_run_id") == state["run_id"]:
+            own[label] = document
+    if "settings" in own:
+        run.write_json(f"lab/settings.{stamp}.json", archived_run.scrub_settings(own.pop("settings")),
+                       "settings", "this checkout's settings.json for the lab (scrubbed)")
+    elif not deployed.get("settings"):
+        missing.append("lab/settings")
+    for label, document in own.items():
+        run.write_json(f"lab/{label}.{stamp}.json", document, "lab",
+                       f"this checkout's {label} file for the lab")
+    topology = topology_path(state)
+    if topology is None or run.add_file(topology, f"topology/{topology.name}", "topology",
+                                        "the lab's topology") is None:
+        missing.append("topology")
+    created = state.get("created_unix")
+    run.guarded("record the lab", run.archive.set_lab,
+                run_tag=state.get("tag") or f"needletail-small-mesh-{state['run_id']}",
+                instances=[{"label": node.get("label"), "id": node.get("id"),
+                            "plan": node.get("type"), "region": node.get("region"),
+                            "role": node.get("role"), "hourly_usd": node.get("hourly_usd")}
+                           for _name, node in sorted(state["nodes"].items())],
+                created_at_utc=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(created))
+                if created else None)
+    return missing
+
+
+def collect_staging(run: archived_run.Run) -> pathlib.Path:
+    """Where collects of this run stage what they pull:
+    <archive root's parent>/.needletail-collect/<run id>/, on the archive's
+    filesystem so that a move is a hard link, and outside the root, which
+    refuses to move its own files. One directory per collect, held under
+    its .lock while that collect lives."""
+    return run.root.parent / COLLECT_STAGING / run.run_id
+
+
+def adopt_staged(run: archived_run.Run, staging: pathlib.Path,
+                 own: pathlib.Path) -> dict[str, list[str]]:
+    """What earlier collects of this run pulled and never moved (one that
+    was killed, or a move that failed) into nodes/<node>/ now: each staged
+    collect but this one (`own`) whose .lock no live collect holds.
+    Returns, per staged collect, what still could not be moved (left in
+    place for the next)."""
+    left: dict[str, list[str]] = {}
+    for earlier in sorted(path for path in staging.iterdir() if path.is_dir() and path != own):
+        lock = earlier / ".lock"
+        try:
+            fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue
+            failed = []
+            for node in sorted(path for path in earlier.iterdir() if path.is_dir()):
+                failed += archive_node(run, node.name, node)
+            lock.unlink(missing_ok=True)
+            remove_empty(earlier)
+            if failed:
+                left[earlier.name] = failed
+        finally:
+            os.close(fd)
+    return left
+
+
+def collect_nodes(run: archived_run.Run, state: dict, names: list[str], deadline: float,
+                  stamp: str, mine: pathlib.Path) -> tuple[dict, list[str]]:
+    """Every named node at once, each by one ssh killed at `deadline`, and
+    each node moved into nodes/<node>/ as soon as its pull ends (a line in
+    collect/progress.<t>.ndjson says so, which a collect killed later still
+    shows). Returns each node's record and what could not be had. One node
+    never stops the others."""
+    records: dict[str, dict] = {}
+    missing: list[str] = []
+    began = time.monotonic()
+
+    def one(node: dict) -> dict:
+        directory = mine / node["name"]
+        directory.mkdir()
+        try:
+            record = pull_node(node, stamp, directory, deadline)
+            record["missing"] = node_missing(node, record, directory)
+        except Exception as error:  # noqa: BLE001 - what arrived is still moved in
+            record = {"node": node["name"], "role": node["role"], "seconds": None,
+                      "error": f"{type(error).__name__}: {error}", "partial": None,
+                      "missing": [node["name"]]}
+        record["unmoved"] = archive_node(run, node["name"], directory)
+        record["moved_at_s"] = round(time.monotonic() - began, 3)
+        run.append_ndjson(f"collect/progress.{stamp}.ndjson",
+                          {key: record[key] for key in ("node", "error", "partial", "missing",
+                                                        "unmoved", "seconds", "moved_at_s")},
+                          "lab", "each node as this collect moved it into the archive, in the order "
+                                 "they ended", {"seconds": "s", "moved_at_s": "s"})
+        return record
+
+    nodes = [state["nodes"][name] for name in names]
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, min(COLLECT_WORKERS, len(nodes)))) as pool:
+        futures = {pool.submit(one, node): node for node in nodes}
+        for future in concurrent.futures.as_completed(futures):
+            node = futures[future]
+            try:
+                records[node["name"]] = future.result()
+            except Exception as error:  # noqa: BLE001 - one node never stops the collect
+                records[node["name"]] = {"node": node["name"], "role": node["role"],
+                                         "error": f"{type(error).__name__}: {error}",
+                                         "missing": [node["name"]], "unmoved": []}
+    for name in names:
+        missing += records[name]["missing"] + records[name]["unmoved"]
+    return records, missing
+
+
+def earlier_collects(run: archived_run.Run) -> list[dict]:
+    """The records (collect/collect.<t>.json) of this run's earlier
+    collects, oldest first."""
+    out = []
+    for entry in run.archive.manifest["files"]:
+        if re.fullmatch(r"collect/collect\.[^/]+\.json", entry["path"]):
+            try:
+                out.append(json.loads((run.path / entry["path"]).read_text()))
+            except (OSError, ValueError):
+                continue
+    return out
+
+
+def carried_missing(earlier: list[dict], name: str) -> list[str]:
+    """What of a node outside --nodes is still missing: what the latest
+    earlier collect that pulled it could not have of it, or the node when
+    none pulled it."""
+    for record in reversed(earlier):
+        if name in (record.get("nodes") or {}):
+            return [item for item in record.get("missing") or []
+                    if item == name or item.startswith(f"{name}/")]
+    return [name]
+
+
+def command_collect(args: argparse.Namespace) -> None:
+    """`collect --run-id ID`: every node of the lab (or --nodes), in
+    parallel and within --timeout-s of the start, into the run archive's
+    nodes/<node>/ (each node as its pull ends), and the lab's files into
+    lab/ and topology/; then the run is marked collected, complete or with
+    every node and file that could not be had (a node not in --nodes keeps
+    what the latest earlier collect that pulled it could not have). Exit 0
+    when complete, 1 when not, 2 when refused, 70 when collect itself
+    failed (the run is then marked not collected, with why). No Linode API
+    call: the hosts map is the one the lab tool's `hosts` recorded."""
+    deadline = time.monotonic() + args.timeout_s
+    try:
+        state = common.load_state()
+        names = named_nodes(state, args.nodes) or sorted(state["nodes"], key=mesh_ops.natural)
+    except SystemExit as refusal:
+        print(f"collect: {refusal.code}", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    if state.get("run_id") != args.run_id:
+        print(f"collect --run-id {args.run_id}: the lab of {common.state_path()} is "
+              f"{state.get('run_id')!r}; a lab's data goes into its own run", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    try:
+        run = collect_run(state)
+    except run_archive.ArchiveError as error:
+        print(f"collect: the run archive refused: {error}", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    try:
+        collect_staging(run).mkdir(parents=True, exist_ok=True)
+        mine = pathlib.Path(tempfile.mkdtemp(prefix=f"{stamp}-", dir=collect_staging(run)))
+        lock = os.open(mine / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            earlier = earlier_collects(run)
+            missing = collect_lab(run, state, stamp)
+            records, pulled = collect_nodes(run, state, names, deadline, stamp, mine)
+            missing += pulled
+            missing += [item for name in sorted(set(state["nodes"]) - set(names),
+                                                key=mesh_ops.natural)
+                        for item in carried_missing(earlier, name)]
+            (mine / ".lock").unlink(missing_ok=True)
+        finally:
+            os.close(lock)
+        remove_empty(mine)
+        left_over = adopt_staged(run, collect_staging(run), mine)
+        missing += [f"staged {name}: {item}" for name, items in sorted(left_over.items())
+                    for item in items]
+        missing += [f"archive: {problem}" for problem in run.problems]
+        written = len(run.problems)
+        run.write_json(f"collect/collect.{stamp}.json",
+                       {"run_id": args.run_id, "stamp_utc": stamp, "timeout_s": args.timeout_s,
+                        "nodes": records, "missing": missing}, "lab",
+                       "what each node gave this collect: its files, a file cut part-way, its "
+                       "API answers' HTTP status and curl's exit status, its error, its "
+                       "seconds, when it was moved into the archive", {"seconds": "s",
+                                                                      "moved_at_s": "s"})
+        missing += [f"archive: {problem}" for problem in run.problems[written:]]
+    except Exception as error:  # noqa: BLE001 - said, and the run marked not collected
+        traceback.print_exc()
+        run.guarded("mark the run not collected", run.archive.mark_collected, False,
+                    [f"deploy collect failed: {type(error).__name__}: {error}"])
+        sys.exit(EXIT_COLLECT_FAILED)
+    run.guarded("mark the run collected", run.archive.mark_collected, not missing, missing)
+    print(f"collect {args.run_id}: {len(names)} node(s) into {run.path}; missing: "
+          + (", ".join(missing) or "none"))
+    sys.exit(0 if not missing else 1)
+
+
 def change_options(parser: argparse.ArgumentParser) -> None:
     """The options of the engine's commands (C 2.6; mesh_ops.Options)."""
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
@@ -5771,6 +6348,14 @@ def main() -> None:
                       help="hunt while edges serve: every remote region goes silent")
     hunt.set_defaults(handler=command_hunt)
     sub.add_parser("status").set_defaults(handler=command_status)
+    collect = sub.add_parser("collect", help="every node's journal, API and samplers, and the "
+                                             "lab's files, into the run archive")
+    collect.add_argument("--run-id", required=True, help="the lab's run id (its archive run)")
+    collect.add_argument("--nodes", default=None, help="comma-separated: only these nodes")
+    collect.add_argument("--timeout-s", type=float, default=COLLECT_TIMEOUT_S,
+                         help="the bound of the nodes' pulls, together, from collect's start "
+                              "(each node is moved into the archive as its pull ends)")
+    collect.set_defaults(handler=command_collect)
     args = parser.parse_args()
     args.handler(args)
 

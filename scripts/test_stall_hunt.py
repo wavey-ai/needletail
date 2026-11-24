@@ -230,10 +230,71 @@ class DryRun(unittest.TestCase):
         for word in ("LINODE_TOKEN", "LINODE_PAT", "api.linode.com", "linode-cli"):
             self.assertNotIn(word, self.printed)
 
+    def test_the_run_archive_gets_the_five_heads_and_the_deploy_tool_s_collect(self):
+        create = self.commands("run_archive.py --tool stall-hunt create hunttest")[0]
+        self.assertEqual(create.count("--code "), 5)
+        for repo in ("av-mesh", "av-contrib", "playlists", "daw-nexus"):
+            self.assertIn(f"/{repo}", create)
+        collect = self.commands("linode-small-mesh-deploy.py collect --run-id hunttest")
+        self.assertEqual(len(collect), 1)
+        order = [index for index, line in enumerate(self.lines)
+                 if "deploy.py collect --run-id" in line or "stall-hunt collected" in line
+                 or "linode-small-mesh-lab.py down" in line]
+        self.assertEqual(len(order), 3)
+        self.assertIn("collect --run-id", self.lines[order[0]])
+        self.assertIn("collected hunttest", self.lines[order[1]])
+        self.assertIn("lab.py down", self.lines[order[2]])
+
     def test_collect_and_down_come_last(self):
         marks = [line for line in self.lines if line.startswith("# minute")]
         self.assertTrue(marks[-2].endswith("collect"))
         self.assertTrue(marks[-1].endswith("down"))
+
+
+class Collected(unittest.TestCase):
+    """The run is collected when the deploy tool's collect and the hunt's
+    own records both are: what the deploy's collect recorded missing is
+    kept in the hunt's mark."""
+
+    def setUp(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, True))
+        patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(directory / "data")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.hunt = hunt_tool.Hunt(hunt_tool.Runner(False, directory / "run"),
+                                   hunt_tool.load_topology(), TOPOLOGY, "hunt1")
+
+    def test_the_deploy_collect_s_missing_is_read_from_the_run(self):
+        run = hunt_tool.run_archive.RunArchive.create("hunt1", "linode-lab", tool="stall-hunt",
+                                                      argv=["hunt"])
+        began = hunt_tool.run_archive.utc_now()
+        run.mark_collected(False, ["tok-edge-2", "lon-dist-a/api-stalls"])
+        self.assertEqual(self.hunt.deploy_missing(1, began),
+                         ["tok-edge-2", "lon-dist-a/api-stalls"])
+        run.mark_collected(True, [])
+        self.assertEqual(self.hunt.deploy_missing(0, began), [])
+
+    def test_a_refused_deploy_collect_is_itself_missing(self):
+        began = hunt_tool.run_archive.utc_now()
+        self.assertEqual(self.hunt.deploy_missing(2, began), ["deploy collect (exit 2)"])
+        self.assertEqual(self.hunt.deploy_missing(70, began), ["deploy collect (exit 70)"])
+        self.assertTrue(self.hunt.deploy_missing(0, began)[0].startswith("deploy collect ("),
+                        "no run in the archive")
+
+    def test_a_collect_that_crashed_before_marking_the_run_is_missing(self):
+        # A Python crash, or a sys.exit with a message, exits 1 like an
+        # incomplete collect, but leaves the run as it was: never marked,
+        # or marked by an earlier collect.
+        run = hunt_tool.run_archive.RunArchive.create("hunt1", "linode-lab", tool="stall-hunt",
+                                                      argv=["hunt"])
+        began = hunt_tool.run_archive.utc_now()
+        self.assertEqual(self.hunt.deploy_missing(1, began),
+                         ["deploy collect (exit 1, the run not marked by it)"])
+        run.mark_collected(True, [])
+        later = "9999-01-01T00:00:00.000Z"
+        self.assertEqual(self.hunt.deploy_missing(1, later),
+                         ["deploy collect (exit 1, the run not marked by it)"])
 
 
 class Preflight(unittest.TestCase):

@@ -123,3 +123,93 @@ difference. It names the files the manifest does not list, but those do not fail
 it. `list` prints each run's id, status, kind, total size and lab cost.
 `require_collected(run_id)` returns `None` when the run is collected. Otherwise it
 returns the message for a lab tool's `down` to print as it refuses.
+
+## Collecting a Linode lab (`linode-small-mesh-deploy.py collect`)
+
+```sh
+scripts/linode-small-mesh-deploy.py collect --run-id RUN [--nodes a,b] [--timeout-s 300]
+```
+
+`collect` writes into the lab's own run (`RUN` must be the lab's run id). It makes
+the run (kind `linode-lab`, tool `deploy-collect`) when the archive has none, and
+otherwise appends to it. It never ends the run. It pulls every node at once, one
+ssh each, and all of them share the `--timeout-s` bound. A node that fails or runs
+out of time never stops the others, and whatever arrived from it is kept. Nothing
+on a node is changed or removed. It makes no Linode API call: the hosts map is the
+one that the lab tool's `hosts` recorded in the lab state.
+
+| Path | What it holds |
+| --- | --- |
+| `nodes/<node>/journal.<t>.txt.gz` | the node's whole journal since boot (`journalctl -b -o short-iso-precise`), gzipped |
+| `nodes/<node>/api-node.<t>.json`, `api-mesh-local.<t>.json`, `api-stats.<t>.json`, `api-stalls.<t>.json`, `api-hops.<t>.ndjson` | the node's API, read once at the end. Mesh nodes answer all five, the contributor (port 19443) `node`, `stalls` and `hops`, and other hosts none. `/api/hops` is asked with no stream, so it returns every stream the node holds. |
+| `nodes/<node>/http-status.<t>.txt` | each answer's stem, HTTP status and curl's exit status (an answer counts only at 200 with curl exit 0: a body cut by `--max-time` still has a 200 status) |
+| `nodes/<node>/<file>.partial` | the file a pull ended in (cut part-way), kept under its own name with `.partial` |
+| `nodes/<node>/samplers/needletail-runs/...` | the node's `/var/lib/needletail-runs` (the lead's tools' samplers, listener and probe outputs) |
+| `nodes/<node>/samplers/var-tmp/compare-*` | the referee's sampler files, read in place and left there |
+| `lab/state.<t>.json`, `lab/hosts.<t>.json` | the lab state, and each node's id, label, region, site, role, plan and `host_uuid` |
+| `lab/deployed.<t>.json`, `lab/settings.<t>.json`, `lab/routes.<t>.json`, `lab/ecmp-ports.<t>.json` | the deployed record and this checkout's files for the lab. Settings are scrubbed; build keys and digests are kept. |
+| `lab/builds.<t>.json` | what the lab ran, from the deployed record: the av-mesh and av-contrib build keys (`<git>-<unix>`) with their nodes, and the playlists sources that av-mesh's `Cargo.lock` pins at each av-mesh build's commit. The manifest's `code_heads` are the worktrees that collect's environment names, which need not be the ones the lab was deployed from. |
+| `topology/<file>` | the lab's topology |
+| `collect/progress.<t>.ndjson` | one line per node as it is moved into the archive, in the order the pulls end: a collect killed part-way still shows which nodes it moved |
+| `collect/collect.<t>.json` | each node's files, the file cut part-way, HTTP statuses and curl exits, error, seconds and when it was moved, and what was missing |
+
+`<t>` is the collect's UTC time (`yyyymmddThhmmssZ`). The lab's files go in first.
+Each node's tar is unpacked as it streams in and the node is moved into the archive
+as soon as its pull ends, so the pulled data is not held back until the last node.
+The `--timeout-s` bound starts when `collect` starts, and every ssh still running
+at it is killed. Collects stage what they pull in
+`<archive root's parent>/.needletail-collect/<run id>/` (on the archive's
+filesystem, so that a move is a hard link), one directory per collect under a lock.
+Nothing pulled is ever deleted there: what a killed or interrupted collect left is
+moved in by the next collect of the run.
+
+Then the run is marked collected: complete, or not, with a list of what is
+missing. A node whose ssh failed, ran out of time or whose tar was cut is listed by
+name, and a single file as `node/journal` or `node/api-stalls`. The list also names
+`lab/deployed`, `lab/settings`, `topology`, and every write the archive refused. A
+node left out of `--nodes` keeps what the latest earlier collect that pulled it
+could not have (`collect/collect.*.json`); a node no collect pulled is missing.
+The deployed settings (scrubbed) go into the manifest's `deploy_settings` also
+when the run was made by another tool. Exit 0 means complete, 1 means incomplete,
+2 means refused (no lab state, a node not in the lab, another lab's run id, or the
+archive refused the run), and 70 means collect itself failed: the run is then
+marked not collected with the reason. A tool that reads `collected` after a collect
+trusts it only when its `at_utc` is later than the collect's start.
+
+The referee's `archive-run.py collect-nodes` uses the same `nodes/<node>/` names
+for the journal, `api-stats` and `api-stalls`. Its other files differ:
+
+- It writes the lab's files to `lab/state.<t>.json` and `lab/hosts.<t>.txt` (the
+  output of `lab hosts`, which calls the Linode API). `collect` writes
+  `lab/hosts.<t>.json` from the lab state instead.
+- It writes each session's samplers under `sessions/<session>/samplers/`.
+  `collect` takes the sampler files from each node as they are, under
+  `nodes/<node>/samplers/`.
+
+## The run tools (`scripts/archived_run.py`)
+
+Every local and Linode run tool writes its raw data into the archive as it runs,
+through `archived_run.Run`. Copies under `target/` stay as working copies. The
+tool takes its run id from `--run-id`, or else uses `<tool>-<UTC time>`. A run id
+that already exists is opened to append to (another tool's run, under a prefix).
+The manifest records the heads of the five worktrees in use
+(`archived_run.code_paths`), the settings, the topology, the regions and the
+listener steps that apply. A run ends failed when an exception ends it or when a
+write into the archive failed. SIGTERM and SIGHUP (`kill`, `timeout`, a closed tmux
+pane) unwind `edge-campaign.py run` and `latency-bench.py` as Ctrl-C does
+(`archived_run.stopped_by_signals`; change-run has its own): the copies are made, the
+run ends failed, and the tool exits 128 + the signal. `first-session.py` gives a
+step past its time SIGTERM, and SIGKILL only 120 s later. Settings are scrubbed as
+the archive scrubs deploy settings, and a list of strings (a command a tool runs) as
+a command line. A run that the tool did not make is not ended by
+it: the tool's outcome goes to `outcomes.ndjson` under its prefix.
+
+| Tool | Run id | What it keeps |
+| --- | --- | --- |
+| `edge-campaign.py run [--run-id ID]` | `edge-campaign-<t>` | `scenarios/<name>/`: the scenario's directory (evidence, the readers' reports and logs, `nodes.ndjson` with each node every second, the controller's events), `node-logs/` (what each node's log gained in the scenario), `hops.raw.ndjson` (every node's hop journal since the scenario began), `stalls/<node>.ndjson`. Also `node-logs/before-up-NN/` (the logs written between scenarios, before the lab's `up` deletes them), `node-logs/after-scenarios/`, and `summary.json`. Each reader job is a listener step. |
+| `compare/latency-bench.py --name NAME [--run-id ID]` | `latency-bench-<t>` (a run that exists is appended to) | `NAME/`: every file the pass wrote in its results directory (UDP clients' arrivals and reports, probes, `hops.raw.ndjson`, `hops.json`, `summary.txt`, `nodes.ndjson` with per-socket drops, the load tool's output, `sender.log`, `plan.json`), and `NAME/node-logs/` (what each node's log gained in the pass, taken before the lab goes down). Readers, UDP clients and load listeners are listener steps. |
+| `compare/change-run.py run --name NAME [--run-id ID]` | `change-run-<t>` | `NAME/<change-NN\|null-NN>/`: each run's directory as it ends (the probes' CSV and JSON, launch times, `marks.txt`, `command.out` and `.err`, `verdict.json` and `cw.log` from the referee's scorer, the crowd and readers, the nodes before and after) with `node-logs/`. Also `NAME/senders/`, `NAME/node-logs-end/` (up to the lab's down), and `NAME/summary.json`. Each run's probes are a listener step. A null run is one of these directories too. |
+| `linode-autoscale.py run\|scale [--run-id ID]` (not `--dry-run`) | the lab's own run on the linode backend (never ended by the controller), else `linode-autoscale-<t>`. The campaign's autoscale scenario passes the campaign's run. | `autoscale/events.ndjson` (every decision and action, `unix_us`; time fields carry their unit, such as `until_unix_s`), `autoscale/state.ndjson` (the controller's state each time it changed, `unix_us`), `autoscale/outcomes.ndjson` in a run the controller did not make. The appends are made by a writer thread, off the decision loop, and flushed when the run closes; when the archive refuses the run, the controller runs without it and says so on stderr. |
+| `linode-stall-hunt.py run` | `hunt<mmddHHMM>` or `--run-id` | Before the lab is billed, the run is created with the five code heads and the topology. At collect, the deploy tool's `collect --run-id` brings in every node's journal, API, samplers and the lab's files, then the hunt's own records go in. The hunt marks the run collected with the union of what both found missing. |
+| `compare/first-session.py run --name N` | `N` | `lab<i>/` as each lab ends (a lab that was cut off is kept too), each latency-bench pass (`--run-id N`) under `N-lab<i>-first\|warm/`, and `first-session.json`. The run ends failed when it is cut off. |
+| `compare/source-check.py run --name N` | `N` | The check's directory, kept in a `finally` even when the check is cut off, with the five code heads. |

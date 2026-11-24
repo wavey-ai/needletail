@@ -15,6 +15,8 @@ import importlib.util
 import io
 import json
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -76,6 +78,30 @@ class SourceCheckRun(unittest.TestCase):
         self.assertIn("add-tree sc-test", commands[7])
         self.assertIn("finish sc-test --status complete", commands[8])
         self.assertFalse((source_check.OUT / "sc-test").exists())
+
+    def test_a_check_cut_off_keeps_what_it_got_and_ends_failed(self):
+        ran = []
+
+        def run(self, command, stdout=None, timeout=None):
+            ran.append(command)
+            if "send" in command:
+                raise KeyboardInterrupt
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(source_check, "OUT", pathlib.Path(directory)), \
+                mock.patch.object(source_check, "preflight", lambda: []), \
+                mock.patch.object(source_check.Steps, "run", run), \
+                mock.patch.object(source_check.Steps, "background", lambda self, command: None), \
+                self.assertRaises(KeyboardInterrupt):
+            source_check.command_run(argparse.Namespace(
+                dry=False, seconds=600, payload="opus", epoch_samples=48, name="sc-cut",
+                no_up=True))
+        archive = [command[4:] for command in ran if "--tool" in command]
+        self.assertEqual([item[0] for item in archive], ["create", "add-tree", "finish"])
+        self.assertEqual(archive[2][2:], ["--status", "failed", "--reason",
+                                          "the check was cut off"])
+        self.assertEqual(archive[0].count("--code"), 5)
 
     def test_the_loop_start(self):
         self.assertEqual(source_check.loop_start(START - 30), START)
@@ -171,6 +197,62 @@ class FirstSession(unittest.TestCase):
             self.assertIn(flag, first)
         self.assertIn("# idle, as the referee's lab before its first session: 990 s", lines)
         self.assertFalse((first_session.OUT / "fs-test").exists())
+
+    def test_each_pass_writes_into_the_first_session_run(self):
+        lines = dry(first_session, labs=1, idle_s=1.0, burn_s=1, seconds=70, payload="opus",
+                    name="fs-test")
+        passes = [line for line in lines if "latency-bench.py --name fs-test-lab1-" in line]
+        self.assertEqual(len(passes), 2)
+        self.assertTrue(all(line.endswith("--run-id fs-test") for line in passes))
+        create = next(line for line in lines if "first-session create fs-test" in line)
+        self.assertEqual(create.count("--code "), 5)
+        self.assertFalse(any("add-tree fs-test" in line and "latency-bench" in line
+                             for line in lines), "the passes are not copied a second time")
+
+    def test_a_run_cut_off_keeps_the_lab_s_files_and_ends_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ran = []
+
+            def one_lab(steps, args, index):
+                (pathlib.Path(directory) / "fs-cut" / f"lab{index}").mkdir(parents=True)
+                if index == 2:
+                    raise KeyboardInterrupt
+                return {"lab": index}
+
+            def run(self, command, stdout=None, timeout=None):
+                ran.append(command)
+                return 0
+
+            with mock.patch.object(first_session, "OUT", pathlib.Path(directory)), \
+                    mock.patch.object(first_session, "one_lab", one_lab), \
+                    mock.patch.object(first_session, "preflight", lambda: []), \
+                    mock.patch.object(first_session.Steps, "run", run), \
+                    self.assertRaises(KeyboardInterrupt):
+                first_session.command_run(argparse.Namespace(
+                    dry=False, labs=3, idle_s=1.0, burn_s=1, seconds=70, payload="opus",
+                    name="fs-cut"))
+        archive = [command[4:] for command in ran if "--tool" in command]
+        self.assertEqual([item[:2] for item in archive],
+                         [["create", "fs-cut"], ["add-tree", "fs-cut"], ["add-tree", "fs-cut"],
+                          ["finish", "fs-cut"]])
+        self.assertTrue(archive[2][2].endswith("lab2"))
+        self.assertEqual(archive[3][2:], ["--status", "failed", "--reason",
+                                          "the run was cut off"])
+
+    def test_a_step_past_its_timeout_gets_sigterm_before_sigkill(self):
+        # A latency-bench pass then keeps its files in the run archive.
+        with tempfile.TemporaryDirectory() as directory:
+            said = pathlib.Path(directory) / "said"
+            program = ("import pathlib, signal, sys, time\n"
+                       f"def term(*_):\n    pathlib.Path({str(said)!r}).write_text('term')\n"
+                       "    sys.exit(3)\n"
+                       "signal.signal(signal.SIGTERM, term)\n"
+                       "time.sleep(30)\n")
+            steps = first_session.Steps(False)
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaises(subprocess.TimeoutExpired):
+                steps.run([sys.executable, "-c", program], timeout=1.0)
+            self.assertEqual(said.read_text(), "term")
 
     def test_the_preflight_reads_the_lab_s_dispatch_not_its_usage(self):
         with tempfile.TemporaryDirectory() as directory:
