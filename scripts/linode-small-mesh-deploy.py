@@ -738,12 +738,22 @@ DEFAULT_SETTINGS = {
     # node; the lab of 24 Nov evening took 83 to 95 s there, and more than
     # 240 s on one Tokyo edge); the unit's TimeoutStartSec, push's wait for
     # an activation and every readiness wait after a boot have more than
-    # that on top. A pass longer than node_warm_slow_seconds_per_4gb for
-    # every 4 GB, or one page write of a second or more, says slow_host
-    # (--slow-seconds-per-4gb, --slow-write-ms). false turns it all off.
+    # that on top. false turns it all off.
+    # The slow-host rule (lead, 24 Nov, after the hunt: its three warmed
+    # edges had single page writes of up to 1.93 s during the pass and then
+    # ran clean for an hour, so one write of a second marks nothing): the
+    # deploy judges each warm record itself (judge_warm) and a host is slow
+    # when the pass took more than node_warm_slow_seconds_per_4gb for every
+    # 4 GB of its memory, or one page write stalled
+    # node_warm_slow_write_ms or more, or more than
+    # node_warm_slow_stall_share_permille of the pass's thread time went in
+    # writes of 100 ms or more. An edge (standby and slot edges included)
+    # that is slow is replaced once; any other host is reported.
     "node_warm": True,
     "node_warm_max_seconds_per_4gb": 300,
     "node_warm_slow_seconds_per_4gb": 180,
+    "node_warm_slow_write_ms": 5000,
+    "node_warm_slow_stall_share_permille": 250,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
@@ -841,7 +851,8 @@ ROLLABLE_SETTINGS = (
 NODE_SETTINGS = ROLLABLE_SETTINGS + (
     "stall_tick_us", "stall_journal_capacity", "node_warm", "node_check_seconds",
     "node_check_max_stop_ms", "node_check_max_steal_permille", "node_warm_max_seconds_per_4gb",
-    "node_warm_slow_seconds_per_4gb", "transparent_hugepage",
+    "node_warm_slow_seconds_per_4gb", "node_warm_slow_write_ms",
+    "node_warm_slow_stall_share_permille", "transparent_hugepage",
 )
 MLOCK_MODES = ("off", "rings")
 # LimitMEMLOCK of every service unit (D 2.3): the rings that --mlock rings
@@ -865,10 +876,12 @@ NODE_CHECK_MAX_SECONDS = 50
 NODE_CHECK_MARGIN_S = mesh_ops.WARM_MARGIN_S
 # The warm pass's flags, rendered explicitly (av-mesh needletail-nodecheck
 # boot): memory left untouched (the referee's warm-guest.py leaves 300 MB
-# too), and slow_host's page write of a second or more (its other bound is
-# node_warm_slow_seconds_per_4gb).
+# too); --slow-write-ms is node_warm_slow_write_ms, so that nodecheck's own
+# slow_host agrees with the deploy's on the write (judge_warm decides).
 NODE_WARM_LEAVE_MB = 300
-NODE_WARM_SLOW_WRITE_MS = 1000
+# The writes that count as stalls in the stall-share rule: nodecheck lists
+# every write of its --stall-ms (100 by default) or more.
+NODE_WARM_STALL_MS = 100
 # transparent_hugepage: what may be written at boot; "unchanged" writes
 # nothing.
 THP_MODES = ("unchanged", "madvise", "never")
@@ -1030,10 +1043,15 @@ def check_stall_settings(settings: dict) -> None:
                          "every boot")
     for key in ("node_check_max_stop_ms", "node_check_max_steal_permille"):
         whole_or_zero(settings.get(key, DEFAULT_SETTINGS[key]), key)
-    for key in ("node_warm_max_seconds_per_4gb", "node_warm_slow_seconds_per_4gb"):
+    for key in ("node_warm_max_seconds_per_4gb", "node_warm_slow_seconds_per_4gb",
+                "node_warm_slow_write_ms", "node_warm_slow_stall_share_permille"):
         value = settings.get(key)
         if value is not None and (isinstance(value, bool) or whole_or_zero(value, key) < 1):
             raise ValueError(f"{key} {value!r} is not a whole number of 1 or more")
+    share = settings.get("node_warm_slow_stall_share_permille")
+    if share is not None and whole(share, "node_warm_slow_stall_share_permille") > 1000:
+        raise ValueError(f"node_warm_slow_stall_share_permille {share!r} is over 1000 (all of "
+                         "the pass)")
     thp = settings.get("transparent_hugepage")
     if thp is not None and thp not in THP_MODES:
         raise ValueError(f"transparent_hugepage {thp!r} is not one of {', '.join(THP_MODES)}")
@@ -1048,6 +1066,74 @@ def warm_max_seconds(settings: dict, node: dict | None) -> int:
                   or DEFAULT_SETTINGS["node_warm_max_seconds_per_4gb"])
     seconds = mesh_ops.warm_seconds((node or {}).get("type"), per_4gb)
     return per_4gb if seconds is None else seconds
+
+
+def plan_vcpus(kind) -> int | None:
+    """vCPUs of a dedicated plan (g6-dedicated-N: N), None when unknown:
+    the threads of a warm pass (one pinned to each CPU)."""
+    match = re.fullmatch(r"g6-dedicated-([0-9]+)", str(kind or ""))
+    return int(match.group(1)) if match else None
+
+
+def slow_write_ms(settings: dict) -> int:
+    """--slow-write-ms of the warm pass: node_warm_slow_write_ms."""
+    return int(settings.get("node_warm_slow_write_ms")
+               or DEFAULT_SETTINGS["node_warm_slow_write_ms"])
+
+
+def judge_warm(record: dict | None, settings: dict, node: dict | None) -> dict | None:
+    """The deploy's slow-host judgement of a warm record (the rule of
+    DEFAULT_SETTINGS' node_warm_*), written over the record's slow_host and
+    slow_reasons; nodecheck's own are kept as nodecheck_slow_host and
+    nodecheck_slow_reasons. A host is slow when
+      slow-pass     the pass took more than node_warm_slow_seconds_per_4gb
+                    for every 4 GB of its memory (MemTotal as the record
+                    gives it, else its plan's);
+      page-stall    one page write took node_warm_slow_write_ms or more;
+      stall-share   more than node_warm_slow_stall_share_permille of the
+                    pass's thread time (seconds x threads) went in writes of
+                    100 ms or more: the record's stalled_us when nodecheck
+                    gives it, else its listed stalls plus every dropped one
+                    at 100 ms (a lower bound); threads from the record, else
+                    the plan's vCPUs;
+      warm-timeout  the pass did not finish within its limit.
+    A record without a warm pass is returned as it is; None stays None."""
+    if not record or not isinstance(record.get("warm"), dict) or not record["warm"].get("ran", True):
+        return record
+    warm = record["warm"]
+    out = dict(record)
+    out.setdefault("nodecheck_slow_host", record.get("slow_host"))
+    out.setdefault("nodecheck_slow_reasons", record.get("slow_reasons") or [])
+    reasons = []
+    seconds = float(warm.get("seconds") or 0.0)
+    per_4gb = int(settings.get("node_warm_slow_seconds_per_4gb")
+                  or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
+    total_mb = warm.get("mem_total_mb")
+    if total_mb:
+        bound = per_4gb * max(1.0, float(total_mb) / 4096.0)
+    else:
+        bound = mesh_ops.warm_seconds((node or {}).get("type"), per_4gb) or per_4gb
+    if seconds > bound:
+        reasons.append("slow-pass")
+    if int(warm.get("worst_page_us") or 0) >= slow_write_ms(settings) * 1000:
+        reasons.append("page-stall")
+    threads = int(warm.get("threads") or plan_vcpus((node or {}).get("type")) or 1)
+    stalled_us = warm.get("stalled_us")
+    if stalled_us is None:
+        stall_ms = float(warm.get("stall_ms") or NODE_WARM_STALL_MS)
+        stalled_us = (sum(float(item.get("ms") or 0.0) for item in warm.get("stalls") or [])
+                      + int(warm.get("stalls_dropped") or 0) * stall_ms) * 1000.0
+    share = int(settings.get("node_warm_slow_stall_share_permille")
+                or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
+    if seconds > 0 and float(stalled_us) > share / 1000.0 * seconds * 1e6 * threads:
+        reasons.append("stall-share")
+    if warm.get("finished") is False:
+        reasons.append("warm-timeout")
+    out["slow_host"] = bool(reasons)
+    out["slow_reasons"] = reasons
+    out["stall_share_permille"] = (round(float(stalled_us) / (seconds * 1e6 * threads) * 1000)
+                                   if seconds > 0 else None)
+    return out
 
 
 def check_timeout_s(settings: dict, node: dict | None) -> int:
@@ -3632,7 +3718,7 @@ def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
         slow = int(settings.get("node_warm_slow_seconds_per_4gb")
                    or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
         warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
-                f"{warm_max_seconds(settings, node)} --slow-write-ms {NODE_WARM_SLOW_WRITE_MS} "
+                f"{warm_max_seconds(settings, node)} --slow-write-ms {slow_write_ms(settings)} "
                 f"--slow-seconds-per-4gb {slow}")
     thp = thp_mode(settings)
     pre = thp_exec_line(thp, "-") if thp else ""
@@ -5259,7 +5345,7 @@ class LinodeOps(mesh_ops.Ops):
                     elif own.get("node_warm") and binaries:
                         install_nodecheck(node)
                     if role == "load" or own.get("node_warm"):
-                        self.warm_records[name] = warm_host(node, own)
+                        self.warm_records[name] = judge_warm(warm_host(node, own), own, node)
                         what.append(warm_word(self.warm_records[name], own))
                     return ", ".join(what) or "untouched"
                 if plans[name] is None:
@@ -5269,8 +5355,8 @@ class LinodeOps(mesh_ops.Ops):
                 if name in standby:
                     stop_service(node)
                     if check_unit_wanted(own):
-                        self.warm_records[name] = warm_staged(node, plans[name][0],
-                                                              check_timeout_s(own, node))
+                        self.warm_records[name] = judge_warm(warm_staged(
+                            node, plans[name][0], check_timeout_s(own, node)), own, node)
                         return f"staged, held out, {warm_word(self.warm_records[name], own)}"
                     return "staged, held out"
                 result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000),
@@ -5282,7 +5368,7 @@ class LinodeOps(mesh_ops.Ops):
                     raise RuntimeError(f"activation: {result['why']}")
                 qdisc_checked(name, result.get("qdisc"), self.settings)
                 if check_unit_wanted(own):
-                    self.warm_records[name] = read_warm_record(node)
+                    self.warm_records[name] = judge_warm(read_warm_record(node), own, node)
                     return f"activated, {warm_word(self.warm_records[name], own)}"
                 return "activated"
 
@@ -6107,8 +6193,11 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
 
     results = common.parallel(list(state["nodes"].values()), probe)
     warm_lines = {}
+    deployed_settings = {**DEFAULT_SETTINGS,
+                         **((state.get("deployed") or {}).get("settings") or {})}
     for name, text in list(results.items()):
-        results[name], warm_lines[name] = split_status_probe(text)
+        results[name], warm_lines[name] = split_status_probe(
+            text, node_own_settings(deployed_settings, name), state["nodes"][name])
     targets = {name: (node["public_ipv4"],
                       CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT, "/api/node")
                for name, node in state["nodes"].items()
@@ -6139,14 +6228,18 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
         print(line)
 
 
-def split_status_probe(text: str) -> tuple[str, tuple[str, dict | None]]:
+def split_status_probe(text: str, settings: dict | None = None,
+                       node: dict | None = None) -> tuple[str, tuple[str, dict | None]]:
     """A node's status probe output: its service line, and ("warm=... thp=...",
-    its warm record) from the probe's THP and WARM lines."""
+    its warm record) from the probe's THP and WARM lines, the record judged
+    by the deploy's slow-host rule (judge_warm) with `settings`."""
     lines = (text or "").splitlines()
     main = [line for line in lines if not line.startswith(("THP ", "WARM "))]
     thp = next((line[4:].strip() for line in lines if line.startswith("THP ")), "") or "-"
     record = next((parse_warm_record(line[5:]) for line in lines if line.startswith("WARM ")),
                   None)
+    if settings is not None:
+        record = judge_warm(record, settings, node)
     active = re.search(r"\[([a-z]+)\]", thp)
     return " ".join(main), (f"[{warm_word(record)}] thp={active.group(1) if active else thp}",
                             record)

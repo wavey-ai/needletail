@@ -43,7 +43,7 @@ def record(slow: bool = False, verdict: str = "ok", reasons=("page-stall",),
             "unix_us": unix_us if unix_us is not None else int((time.time() + 3600) * 1e6),
             "slow_host": slow, "slow_reasons": list(reasons) if slow else [],
             "warm": {"ran": True, "finished": True, "gib": 3.1, "seconds": 71.4,
-                     "worst_page_us": 1_930_000 if slow else 9_000, "touched_mb": 3200},
+                     "worst_page_us": 6_100_000 if slow else 9_000, "touched_mb": 3200},
             "check": {}}
 
 
@@ -262,6 +262,24 @@ class Push(scale.FakeLab):
         self.assertEqual(replaced, [])
         self.assertIn("replaced once for slow_host already: report only", self.stderr)
 
+    def test_a_touched_edge_of_the_hunt_is_not_a_slow_host(self):
+        """The hunt's three warmed edges (hunt11241537): single page writes
+        of up to 1.93 s in a pass of 43 to 79 s, then an hour clean. Their
+        nodecheck (the 1 s rule) said slow_host; the deploy's rule does
+        not, and nothing is replaced."""
+        hunt = record(slow=True)
+        hunt["warm"].update({"worst_page_us": 1_930_000, "seconds": 79.0, "stall_ms": 100,
+                             "stalls": [{"at_unix": 1.0, "ms": 1930.0, "after_mb": 10},
+                                        {"at_unix": 2.0, "ms": 640.0, "after_mb": 900}],
+                             "stalls_dropped": 0, "mem_total_mb": 3910})
+        self.seed({"lon-edge-1": hunt})
+        replaced = self.slow_push()
+        self.assertEqual(replaced, [])
+        self.assertNotIn("slow host: lon-edge-1", self.stderr)
+        warm = self.state()["deployed"]["warm"]["lon-edge-1"]
+        self.assertIs(warm["slow_host"], False)
+        self.assertEqual(warm["slow_reasons"], [])
+
     def test_the_autoscaler_s_push_only_reports(self):
         self.seed({"lon-edge-1": record(slow=True)})
         replaced = self.slow_push(("slow_host", "report"))
@@ -286,7 +304,7 @@ class Push(scale.FakeLab):
         self.slow_push()
         warm = self.state()["deployed"]["warm"]
         self.assertEqual(warm["lon-edge-1"]["seconds"], 71.4)
-        self.assertEqual(warm["lon-edge-1"]["worst_page_us"], 1_930_000)
+        self.assertEqual(warm["lon-edge-1"]["worst_page_us"], 6_100_000)
         self.assertIs(warm["lon-edge-1"]["slow_host"], True)
         self.assertEqual(warm["lon-edge-1"]["slow_reasons"], ["page-stall"])
         self.assertEqual(warm["lon-load-1"]["verdict"], "ok")
@@ -314,6 +332,98 @@ class Push(scale.FakeLab):
             self.assertEqual(decide({"role": role}, False)[0], "report", role)
 
 
+class SlowHostRule(unittest.TestCase):
+    """The deploy's slow-host rule (lead, 24 Nov): a pass over 180 s for
+    every 4 GB, one write of 5 s or more, or over a quarter of the pass's
+    thread time in writes of 100 ms or more; nodecheck's own judgement kept
+    beside it."""
+
+    SETTINGS = deploy.DEFAULT_SETTINGS
+    EDGE = {"name": "lon-edge-1", "role": "edge", "type": "g6-dedicated-2"}
+
+    def judged(self, settings=None, node=None, **warm):
+        base = {"ran": True, "finished": True, "seconds": 70.0, "worst_page_us": 9_000,
+                "stall_ms": 100, "stalls": [], "stalls_dropped": 0, "mem_total_mb": 3910}
+        item = record(slow=True, reasons=("page-stall",))
+        item["warm"] = {**base, **warm}
+        return deploy.judge_warm(item, settings or self.SETTINGS, node or self.EDGE)
+
+    def test_the_defaults(self):
+        self.assertEqual(self.SETTINGS["node_warm_slow_write_ms"], 5000)
+        self.assertEqual(self.SETTINGS["node_warm_slow_stall_share_permille"], 250)
+        self.assertEqual(self.SETTINGS["node_warm_slow_seconds_per_4gb"], 180)
+
+    def test_the_hunt_s_touched_edge_is_not_slow(self):
+        out = self.judged(seconds=79.0, worst_page_us=1_930_000,
+                          stalls=[{"ms": 1930.0}, {"ms": 640.0}, {"ms": 120.0}])
+        self.assertIs(out["slow_host"], False)
+        self.assertEqual(out["slow_reasons"], [])
+        self.assertIs(out["nodecheck_slow_host"], True)
+        self.assertEqual(out["nodecheck_slow_reasons"], ["page-stall"])
+        self.assertEqual(out["stall_share_permille"], 17)    # 2.69 s of 158 thread-s
+
+    def test_one_write_of_five_seconds(self):
+        self.assertEqual(self.judged(worst_page_us=4_999_000)["slow_reasons"], [])
+        self.assertEqual(self.judged(worst_page_us=5_000_000)["slow_reasons"], ["page-stall"])
+
+    def test_a_pass_over_180_s_for_every_4_gb(self):
+        self.assertEqual(self.judged(seconds=180.0)["slow_reasons"], [])
+        self.assertEqual(self.judged(seconds=180.5)["slow_reasons"], ["slow-pass"])
+        # 16 GB (g6-dedicated-8 by MemTotal): 720 s.
+        self.assertEqual(self.judged(seconds=700.0, mem_total_mb=16_000)["slow_reasons"], [])
+        self.assertEqual(self.judged(seconds=730.0, mem_total_mb=16_384)["slow_reasons"],
+                         ["slow-pass"])
+        # No MemTotal in the record: the plan's memory.
+        node = {"name": "lon-load-1", "role": "load", "type": "g6-dedicated-8"}
+        self.assertEqual(self.judged(node=node, seconds=700.0, mem_total_mb=None)["slow_reasons"],
+                         [])
+
+    def test_a_quarter_of_the_pass_in_stalls(self):
+        # 70 s on two threads: 140 thread-s; a quarter is 35 s.
+        many = [{"ms": 300.0}] * 110                       # 33 s
+        self.assertEqual(self.judged(stalls=many)["slow_reasons"], [])
+        self.assertEqual(self.judged(stalls=many + [{"ms": 3000.0}])["slow_reasons"],
+                         ["stall-share"])
+        # Dropped stalls count at 100 ms each (a lower bound).
+        self.assertEqual(self.judged(stalls=many, stalls_dropped=21)["slow_reasons"],
+                         ["stall-share"])
+        # nodecheck's own total and thread count win when it gives them.
+        self.assertEqual(self.judged(stalled_us=34_000_000, threads=1)["slow_reasons"],
+                         ["stall-share"])
+        self.assertEqual(self.judged(stalls=many, stalled_us=1_000_000)["slow_reasons"], [])
+
+    def test_a_timeout_and_the_settings(self):
+        self.assertIn("warm-timeout", self.judged(finished=False, seconds=300.0)["slow_reasons"])
+        strict = {**self.SETTINGS, "node_warm_slow_write_ms": 1000,
+                  "node_warm_slow_stall_share_permille": 10}
+        self.assertEqual(self.judged(strict, worst_page_us=1_930_000,
+                                     stalls=[{"ms": 1930.0}])["slow_reasons"],
+                         ["page-stall", "stall-share"])
+        self.assertIsNone(deploy.judge_warm(None, self.SETTINGS, self.EDGE))
+        bare = {"verdict": "ok", "slow_host": False}
+        self.assertEqual(deploy.judge_warm(bare, self.SETTINGS, self.EDGE), bare)
+
+    def test_the_settings_are_checked_and_rendered(self):
+        for bad in ({"node_warm_slow_write_ms": 0}, {"node_warm_slow_stall_share_permille": 1001},
+                    {"node_warm_slow_stall_share_permille": True}):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                deploy.check_stall_settings({**self.SETTINGS, **bad})
+        text = deploy.check_unit_text({**self.SETTINGS, "node_warm_slow_write_ms": 2500},
+                                      self.EDGE)
+        self.assertIn("--slow-write-ms 2500 ", text)
+        self.assertIn("node_warm_slow_write_ms", deploy.NODE_SETTINGS)
+        self.assertIn("node_warm_slow_stall_share_permille", deploy.NODE_SETTINGS)
+
+    def test_status_judges_by_the_deployed_settings(self):
+        line = "needletail-mesh active restarts=0\nWARM " + json.dumps(
+            {**record(slow=True), "warm": {"ran": True, "finished": True, "seconds": 60.0,
+                                           "worst_page_us": 1_500_000, "stalls": []}})
+        _main, (_word, judged) = deploy.split_status_probe(line, self.SETTINGS, self.EDGE)
+        self.assertIs(judged["slow_host"], False)
+        _main, (_word, raw) = deploy.split_status_probe(line)
+        self.assertIs(raw["slow_host"], True)
+
+
 class Status(unittest.TestCase):
     def test_the_probe_line_and_the_summary(self):
         text = ("needletail-mesh active restarts=0 mem_mb=40\n"
@@ -322,7 +432,7 @@ class Status(unittest.TestCase):
         line, (word, found) = deploy.split_status_probe(text)
         self.assertEqual(line, "needletail-mesh active restarts=0 mem_mb=40")
         self.assertIn("thp=madvise", word)
-        self.assertIn("warm ok 71.4s worst 1930ms SLOW HOST page-stall", word)
+        self.assertIn("warm ok 71.4s worst 6100ms SLOW HOST page-stall", word)
         self.assertTrue(found["slow_host"])
         _line, (word, found) = deploy.split_status_probe("x\nTHP \nWARM \n")
         self.assertIsNone(found)

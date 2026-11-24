@@ -188,7 +188,7 @@ class Units(Base):
             with self.subTest(kind):
                 self.assertIn(
                     "needletail-nodecheck boot --out /run/needletail/node-warm.json --warm \\\n"
-                    f"  --warm-leave-mb 300 --warm-max-seconds {warm} --slow-write-ms 1000 "
+                    f"  --warm-leave-mb 300 --warm-max-seconds {warm} --slow-write-ms 5000 "
                     "--slow-seconds-per-4gb 180 \\\n"
                     "  --check-seconds 0 --max-stop-ms 20 --max-steal-permille 10\n", check)
                 self.assertIn(f"\nTimeoutStartSec={timeout}\n", check)
