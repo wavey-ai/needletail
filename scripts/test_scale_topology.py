@@ -455,7 +455,7 @@ class Party(unittest.TestCase):
         self.assertEqual(plan["billed_hours"], 4)
         self.assertAlmostEqual(plan["run_usd"], 4 * 19.062, places=3)
         self.assertAlmostEqual(plan["proving_usd"], 10 * (3.186 + 0.432), places=3)
-        self.assertAlmostEqual(plan["left_usd"], 300 - 41 - 45.40 - 10 * 3.618, places=3)
+        self.assertAlmostEqual(plan["left_usd"], 300 - 41 - 46.26 - 10 * 3.618, places=3)
         self.assertTrue(plan["fits_budget"])
         self.assertEqual(plan["max_edges_per_forwarder"], 40)
         self.assertEqual(plan["max_nodes"], 226 + 12)
@@ -472,7 +472,7 @@ class Party(unittest.TestCase):
         text = scale_topology.plan_text(base)
         for figure in ("400,000", "0.70", "1.031", "1.2 Mbit/s", "0.0055", "271 legs",
                        "g6-dedicated-8", "$7.182 an hour", "266 vCPUs", "Gbit/s",
-                       "GB an hour", "$177.42 left", "NEEDLETAIL_LINODE_MAX_NODES=95"):
+                       "GB an hour", "$176.56 left", "NEEDLETAIL_LINODE_MAX_NODES=95"):
             self.assertIn(figure, text)
         for key, value, moved in (("edge_datagrams_per_s", 200_000, "serving_edges"),
                                   ("edge_fill", 0.35, "serving_edges"),

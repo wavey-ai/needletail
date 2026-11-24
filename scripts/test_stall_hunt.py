@@ -44,6 +44,9 @@ hunt_tool = load("stall_hunt", "linode-stall-hunt.py")
 lab_tool = load("stall_hunt_lab", "linode-small-mesh-lab.py")
 
 TOPOLOGY = hunt_tool.TOPOLOGY
+# The local lab's sampler (compare/first-session.py); the paid hunt samples
+# with the referee's samplers.
+SAMPLER = HERE / "hunt-sampler.sh"
 TYPES = {plan: {"id": plan, "class": "dedicated", "price": {"hourly": price},
                 "region_prices": []}
          for plan, price in (("g6-dedicated-2", 0.054), ("g6-dedicated-4", 0.108))}
@@ -80,13 +83,16 @@ class Cost(unittest.TestCase):
     def test_cost_under_the_ceiling(self):
         topology = hunt_tool.load_topology()
         figures = hunt_tool.cost(topology)
-        self.assertEqual(figures["instances"], 20)
-        self.assertAlmostEqual(figures["hourly_usd"], 1.296)
+        self.assertEqual(figures["instances"], 24)
+        self.assertAlmostEqual(figures["hourly_usd"], 1.512)
         self.assertLessEqual(figures["hourly_usd"], hunt_tool.MAX_HOURLY_USD)
         self.assertLessEqual(figures["instances"], hunt_tool.MAX_NODES)
-        self.assertAlmostEqual(figures["planned_usd"], 2.592)
-        self.assertAlmostEqual(figures["run_usd"], 2.70)
-        self.assertAlmostEqual(figures["with_one_repeat_usd"], 5.40)
+        # Near $3 to $4 and two billed hours (the lead, after the 4K run).
+        self.assertEqual(figures["billed_hours"], 2)
+        self.assertAlmostEqual(figures["planned_usd"], 3.024)
+        self.assertAlmostEqual(figures["run_usd"], 3.132)
+        self.assertTrue(3.0 <= figures["run_usd"] <= 4.0)
+        self.assertAlmostEqual(figures["with_one_repeat_usd"], 6.264)
         # The lab tool prices it the same from the API's plans and finds
         # nothing against it: every plan dedicated, every VLAN address once.
         priced = json.loads(json.dumps(topology))
@@ -106,8 +112,8 @@ class Cost(unittest.TestCase):
 
     def test_every_tool_gets_the_hunt_s_own_state_and_ceilings_and_no_token(self):
         environment = hunt_tool.tool_environment()
-        self.assertEqual(environment["NEEDLETAIL_LINODE_MAX_HOURLY_USD"], "1.50")
-        self.assertEqual(environment["NEEDLETAIL_LINODE_MAX_NODES"], "24")
+        self.assertEqual(environment["NEEDLETAIL_LINODE_MAX_HOURLY_USD"], "1.60")
+        self.assertEqual(environment["NEEDLETAIL_LINODE_MAX_NODES"], "26")
         self.assertTrue(environment["NEEDLETAIL_LINODE_LAB_STATE"].endswith("hunt-lab.json"))
         self.assertFalse(any("TOKEN" in key or "PAT" in key for key in environment))
 
@@ -119,44 +125,60 @@ class Timeline(unittest.TestCase):
                               topology, TOPOLOGY, "hunttest")
         steps = hunt_tool.timeline(hunt)
         names = [step["name"] for step in steps]
+        matrix = [hunt_tool.describe(combination) for combination in hunt_tool.MATRIX]
         self.assertEqual(names, [
-            "hosts", "watch", "push", "sampler", "survey", "media", "touch the touched edges",
-            "burn", "give the touched memory back", "S1", "S2", "S3",
-            "replace the edge not run most", "restart every forwarder and edge",
-            "S4", "S5", "S6", "S7", "S8", "collect", "down"])
+            "hosts", "watch", "push", "the referee's samplers", "survey", "media",
+            "touch the touched edges", "burn", "give the touched memory back", "S1", "S2", "S3",
+            "replace the edge not run most", *matrix, "collect", "down"])
         minutes = [step["minute"] for step in steps]
         self.assertEqual(minutes, sorted(minutes))
         at = dict(zip(names, minutes))
-        self.assertEqual([at[f"S{index}"] for index in range(1, 9)],
-                         [20, 24, 28, 46, 50, 54, 63, 72])
+        self.assertEqual([at[f"S{index}"] for index in range(1, 4)], [20, 24, 28])
+        self.assertEqual([at[name] for name in matrix], [44, 57, 70, 83])
         self.assertEqual((at["touch the touched edges"], at["burn"],
                           at["give the touched memory back"]), (15, 18, 19.5))
-        self.assertEqual((at["collect"], at["down"]), (82, 88))
+        self.assertEqual((at["collect"], at["down"]), (96, 101))
         roles = {session["name"]: (session["config"], session["role"], session["seconds"])
                  for session in hunt_tool.SESSIONS}
         self.assertEqual(roles["S1"], ("opus-1", "first", 70))
         self.assertEqual(roles["S3"], ("opus-1", "churn", 50))
-        # The repeat after the restart: PCM first, then Opus.
-        self.assertEqual(roles["S4"][:2], ("pcm-1", "repeat-first"))
-        self.assertEqual(roles["S5"][:2], ("opus-1", "repeat-second"))
-        self.assertTrue(all(roles[name][2] >= 300 for name in ("S6", "S7", "S8")))
-        self.assertTrue(all(roles[name][2] >= 360 for name in ("S6", "S7")))
         self.assertEqual(hunt_tool.listening_seconds(hunt_tool.SESSIONS[2]), 3 * 50 + 2 * 12)
-        # At worst the sessions end before collect, and down comes well
-        # inside the second billed hour and before the watchdog.
-        self.assertLess(hunt_tool.sessions_end_minute(), at["collect"])
-        self.assertLess(at["down"], 120)
+        # The matrix: the defaults first, then each of the two off, then
+        # both; each 120 s of the first audio session and of 4K at 25 and
+        # 80 Mbit/s.
+        self.assertEqual([(item["gso"], item["gro"]) for item in hunt_tool.MATRIX],
+                         [(True, True), (False, True), (True, False), (False, False)])
+        self.assertEqual(hunt_tool.VIDEO_RUNGS, ("2160p25", "2160p80"))
+        self.assertEqual(hunt_tool.MATRIX_SECONDS, 120)
+        self.assertEqual(hunt_tool.matrix_audio(hunt_tool.MATRIX[2])["gro"], False)
+        self.assertEqual(hunt_tool.combination_settings(hunt_tool.MATRIX[3]),
+                         ["relay_video_gso=false", "client_udp_gso=false",
+                          "relay_video_gro=false"])
+        # At worst the sessions end before the matrix, the matrix before
+        # collect, and down comes inside the second billed hour and before
+        # the watchdog's deadline less the latest start.
+        self.assertLess(hunt_tool.sessions_end_minute(), at[matrix[0]])
+        self.assertLess(hunt_tool.matrix_end_minute(), at["collect"])
+        self.assertLess(at["down"], 120 - 10)
         self.assertLess(at["down"] * 60, hunt_tool.WATCHDOG_HOURS * 3600
                         - hunt_tool.LATEST_START_BEFORE_DEADLINE_S)
+        self.assertLessEqual(hunt_tool.WATCHDOG_HOURS, 2.0)
 
     def test_the_arms_and_the_per_node_settings(self):
         topology = hunt_tool.load_topology()
         hunt = topology["hunt"]
         edges = sorted(node["name"] for node in topology["nodes"] if node["role"] == "edge")
         self.assertEqual(edges, ["lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4",
-                                 "tok-edge-1", "tok-edge-2"])
-        # Half the edges touched, one of each pair of twins.
-        self.assertEqual(len(hunt["touched"]), len(edges) // 2)
+                                 "new-edge-1", "tok-edge-1", "tok-edge-2"])
+        # New York's forwarders and edge (the 4K run's stops), and a view
+        # host there.
+        sites = {node["name"]: node["site"] for node in topology["nodes"]}
+        self.assertEqual(sorted(name for name, site in sites.items() if site == "newyork"),
+                         ["new-bare-1", "new-dist-a", "new-dist-b", "new-edge-1", "new-view"])
+        self.assertIn("new-view", hunt["listeners"])
+        # Half the twins touched, one of each pair (New York's one edge
+        # is no pair).
+        self.assertEqual(len(hunt["touched"]), (len(edges) - 1) // 2)
         for pair in (("lon-edge-1", "lon-edge-2"), ("lon-edge-3", "lon-edge-4"),
                      ("tok-edge-1", "tok-edge-2")):
             self.assertEqual(len(set(pair) & set(hunt["touched"])), 1, pair)
@@ -189,10 +211,10 @@ class DryRun(unittest.TestCase):
     def test_a_dry_run_prints_every_command(self):
         up = self.commands("linode-small-mesh-lab.py up ")
         self.assertEqual(len(up), 1)
-        for flag in ("--watchdog-hours 1.9", "--collect-timeout-s 240",
+        for flag in ("--watchdog-hours 1.95", "--collect-timeout-s 240",
                      "--optional-sites sydney", "--budget-usd 300",
-                     "--run-id hunttest", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50",
-                     "NEEDLETAIL_LINODE_MAX_NODES=24"):
+                     "--run-id hunttest", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.60",
+                     "NEEDLETAIL_LINODE_MAX_NODES=26"):
             self.assertIn(flag, up[0])
         # The lab is created, changed and deleted by the lab tool alone:
         # hosts first, after the replacement, last.
@@ -212,17 +234,30 @@ class DryRun(unittest.TestCase):
         self.assertIn("node_overrides=", push[0])
         self.assertIn(hunt_tool.ARENA_FLAG, push[0])
         self.assertEqual(len(self.commands("linode-small-mesh-deploy.py push --nodes")), 1)
-        self.assertEqual(len(self.commands("linode-small-mesh-deploy.py restart --roles "
-                                           "distributor,edge")), 1)
-        # The sampler on every mesh node, and on the replaced edge.
-        started = self.commands("sampler.sh /var/lib/needletail-runs/hunt ")
-        self.assertEqual(len(started), len(mesh) + 1)
-        for name in mesh:
-            self.assertTrue(any(line.startswith(f"ssh {name} ") for line in started), name)
-        self.assertTrue(any("av-contrib audio-hot-0" in line and "/api/pacing" in line
-                            for line in started))
-        self.assertTrue(any("av-mesh needletail-fast https://<public:lon-edge-1>:19444" in line
-                            for line in started))
+        # Each combination of the matrix: a push of its settings (every
+        # mesh node activated: new processes).
+        applied = self.commands("linode-small-mesh-deploy.py push --skip-bootstrap "
+                                "--skip-binaries")
+        self.assertEqual(len(applied), 4)
+        for line, combination in zip(applied, hunt_tool.MATRIX):
+            for setting in hunt_tool.combination_settings(combination):
+                self.assertIn(f"--set {setting}", line)
+        self.assertFalse(self.commands("restart --roles"))
+        # The referee's samplers on every node they take (the mesh, the
+        # source and view hosts; no bare node), and on the replaced edge;
+        # collected from the replaced edge and from all at collect. No
+        # sampler of the hunt's own.
+        started = self.commands("start_samplers on ")
+        self.assertEqual(len(started), 2)
+        sampled = [node["name"] for node in topology["nodes"]
+                   if node["role"] in hunt_tool.REFEREE_SAMPLED_ROLES]
+        self.assertEqual(started[0].split("start_samplers on ")[1].split(" (")[0].split(", "),
+                         sorted(sampled))
+        self.assertTrue(set(mesh) <= set(sampled))
+        self.assertFalse(any(name.endswith("-bare-1") for name in sampled))
+        self.assertIn("compare-run.py", started[0])
+        self.assertEqual(len(self.commands("collect_samplers on ")), 2)
+        self.assertFalse(self.commands("sampler.sh"))
         self.assertEqual(len(self.commands("linode-route-survey.py start")), 1)
         touched = topology["hunt"]["touched"]
         touch = self.commands("needletail-nodecheck touch --mb $MB")
@@ -230,12 +265,27 @@ class DryRun(unittest.TestCase):
         self.assertTrue(all("--hold" in line for line in touch))
         release = self.commands('echo "released')
         self.assertEqual(sorted(line.split()[1] for line in release), sorted(touched))
-        self.assertEqual(len(self.commands("systemctl restart needletail-contrib")), 8)
+        # S1 to S3, each combination's audio session and its two rungs.
+        self.assertEqual(len(self.commands("systemctl restart needletail-contrib")), 3 + 4 * 3)
         senders = self.commands("aep1-48k-probe send")
-        self.assertEqual(len(senders), 8)
+        self.assertEqual(len(senders), 3 + 4)
         self.assertTrue(all("--lateness-journal" in line for line in senders))
-        self.assertEqual(len([line for line in senders if "--epoch-samples 120" in line]), 1)
-        self.assertEqual(len(self.commands("cat >run.sh")), 8 * 2)
+        views = len(topology["hunt"]["listeners"])
+        self.assertEqual(len(self.commands("cat >run.sh")), (3 + 4 + 4 * 2) * views)
+        # 4K: the referee's clip over RTMP into the contributor, a probe a
+        # view host through its site's entry, at each rung of each
+        # combination.
+        feeds = self.commands("ntcmp flv --clip")
+        self.assertEqual(len(feeds), 4 * 2)
+        self.assertTrue(all("rtmp://10.78.1.5:19350/live/needletail-lab" in line
+                            for line in feeds))
+        self.assertTrue(all("pkill -f" not in line for line in feeds))
+        self.assertEqual(sum("2160p80" in line for line in feeds), 4)
+        probes = self.commands("/live/1/master.m3u8")
+        self.assertEqual(len(probes), 4 * 2 * views)
+        self.assertTrue(any("<public:new-dist-a>" in line for line in probes))
+        # Receiver GRO off: the UDP probes of M3 and M4 without it.
+        self.assertEqual(len(self.commands("--gro false")), 2 * 8)
         # Once, after the first session: London's four large rings.
         hops = self.commands("/api/hops")
         self.assertEqual(sorted(line.split("https://<public:")[1].split(">")[0] for line in hops),
@@ -251,9 +301,9 @@ class DryRun(unittest.TestCase):
         # The first command on the new instances waits for their ssh: at
         # minute 0 and after the replacement.
         self.assertEqual(len(self.commands("# until ssh answers on")), 2)
-        # The samplers and watches stop before their files are fetched:
-        # the replaced edge's, then every node's at collect.
-        self.assertEqual(len(self.commands("'stop the sampler and the watch'")), 1 + len(names))
+        # The watches stop before their files are fetched: the replaced
+        # edge's, then every node's at collect.
+        self.assertEqual(len(self.commands("'stop the watch'")), 1 + len(names))
         # Nothing is polled from here: the nodes sample themselves.
         self.assertFalse(self.commands("GET /api/stalls"))
         self.assertFalse(self.commands("echo-send"))
@@ -270,13 +320,13 @@ class DryRun(unittest.TestCase):
         self.assertIn("--listeners 40", text)
         self.assertIn("--listeners 20", text)
         first = text[text.index("# minute 20: S1"):text.index("# minute 24: S2")]
-        for edge in ("lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4", "tok-edge-1",
-                     "tok-edge-2"):
+        for edge in ("lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4", "new-edge-1",
+                     "tok-edge-1", "tok-edge-2"):
             # An LL-HLS probe at the edge itself, and the crowd over it.
             self.assertIn(f"https://<public:{edge}>:19444/live/3001/stream.m3u8", first)
             self.assertIn(f"<public:{edge}>:19446", first)
         crowds = [line for line in first.splitlines() if "needletail-load --edges" in line]
-        self.assertEqual(len(crowds), 2)
+        self.assertEqual(len(crowds), 3)
         self.assertIn("<public:lon-edge-1>:19446,<public:lon-edge-2>:19446,"
                       "<public:lon-edge-3>:19446,<public:lon-edge-4>:19446", crowds[0])
         # No entry point for the crowd: listener i starts at edge i mod n,
@@ -289,7 +339,8 @@ class DryRun(unittest.TestCase):
             self.assertIn(f"r{index}-uc-1", churn)
             self.assertIn(f"r{index}-hls-lon-edge-1-1", churn)
             self.assertIn(f'echo "{index} $(date +%s.%N)" >>rounds.txt', churn)
-        self.assertEqual(churn.count(f"sleep {hunt_tool.CHURN_GAP_S}"), 2 * 2)
+        self.assertEqual(churn.count(f"sleep {hunt_tool.CHURN_GAP_S}"),
+                         2 * len(hunt_tool.load_topology()["hunt"]["listeners"]))
 
     def test_nothing_is_written_and_no_token_is_named(self):
         self.assertFalse(self.out.exists())
@@ -437,13 +488,16 @@ class Preflight(unittest.TestCase):
         self.assertIn("nothing was created", str(stopped.exception))
 
 
-def sampler_rows(delays_ms: list[float]) -> str:
-    """jq's cut of a sampler file: [t_us, pid, tid, run delay ns] a second."""
-    total, rows = 0.0, []
-    for index, delay in enumerate(delays_ms):
-        total += delay
-        rows.append(json.dumps([1_000_000 * (index + 1), 7, 9, int(total * 1e6)]))
-    return "\n".join(rows)
+def heartbeat_text(lates_ms: list[float], at_s: float = 1.0) -> str:
+    """The referee's heartbeat logs of a 2-vCPU node (cat of both CPUs'):
+    a line a second on each vCPU, CPU 0's wakes from `at_s` on late by
+    `lates_ms` (a wake of 5 ms late or less is no line but the second's)."""
+    lines = []
+    for index, late in enumerate(lates_ms):
+        realtime = int((at_s + index) * 1e9)
+        lines.append(f"HB 0 {realtime} {realtime} {realtime} {int(late * 1e6)} fifo99")
+        lines.append(f"HB 1 {realtime} {realtime} {realtime} 0 fifo99")
+    return "\n".join(lines)
 
 
 def watch_text(stops_ms: list[float], at_us: int = 2_000_000) -> str:
@@ -472,11 +526,12 @@ class Replacement(unittest.TestCase):
         hunt = self.hunt()
         watch = watch_text
 
-        records = {name: (watch([]), sampler_rows([1.0] * 5)) for name in hunt.nodes}
-        records["lon-edge-1"] = (watch([60.0]), sampler_rows([1.0] * 5))
-        # Waited runnable 300 ms in one second (30 ms seconds do not count).
-        records["tok-edge-2"] = (watch([]), sampler_rows([1.0, 300.0, 30.0, 30.0]))
-        records["lon-dist-a"] = (watch([900.0]), sampler_rows([1.0]))  # not an edge
+        records = {name: (watch([]), heartbeat_text([1.0] * 5)) for name in hunt.nodes}
+        records["lon-edge-1"] = (watch([60.0]), heartbeat_text([1.0] * 5))
+        # Its vCPU's heartbeat woke 300 ms late once (30 ms wakes do not
+        # count).
+        records["tok-edge-2"] = (watch([]), heartbeat_text([1.0, 300.0, 30.0, 30.0]))
+        records["lon-dist-a"] = (watch([900.0]), heartbeat_text([1.0]))  # not an edge
 
         def ssh(name, command, **_kwargs):
             return records[name][0] if "watch.ndjson" in command else records[name][1]
@@ -487,7 +542,7 @@ class Replacement(unittest.TestCase):
         self.assertAlmostEqual(figures["tok-edge-2"], 300.0)
         self.assertAlmostEqual(figures["lon-edge-1"], 30.0)
         self.assertNotIn("lon-dist-a", figures)
-        quiet = {name: (watch([]), sampler_rows([1.0] * 3)) for name in hunt.nodes}
+        quiet = {name: (watch([]), heartbeat_text([1.0] * 3)) for name in hunt.nodes}
         with mock.patch.object(hunt.runner, "ssh",
                                lambda name, command, **_k: quiet[name][0]
                                if "watch.ndjson" in command else quiet[name][1]):
@@ -496,12 +551,12 @@ class Replacement(unittest.TestCase):
     def test_a_stop_outside_the_sessions_does_not_choose_the_edge(self):
         """A touched edge stopped 400 ms during its touch (minutes before
         the first session) and not in the sessions is not chosen over an
-        edge that waited runnable 250 ms in a session."""
+        edge whose vCPU was not run 250 ms in a session (its heartbeat)."""
         hunt = self.hunt()
-        records = {name: (watch_text([]), sampler_rows([1.0] * 5)) for name in hunt.nodes}
+        records = {name: (watch_text([]), heartbeat_text([1.0] * 5)) for name in hunt.nodes}
         records["lon-edge-3"] = (watch_text([400.0, 400.0], at_us=-95_000_000),
-                                 sampler_rows([1.0] * 5))
-        records["lon-edge-2"] = (watch_text([]), sampler_rows([1.0, 250.0, 1.0]))
+                                 heartbeat_text([400.0, 400.0], at_s=-95.0))
+        records["lon-edge-2"] = (watch_text([]), heartbeat_text([1.0, 250.0, 1.0]))
 
         def ssh(name, command, **_kwargs):
             return records[name][0] if "watch.ndjson" in command else records[name][1]
@@ -633,13 +688,81 @@ class FakeService(http.server.BaseHTTPRequestHandler):
         pass
 
 
+FAKE_REFEREE = """
+calls = []
+def start_samplers(session):
+    calls.append(("start", sorted(session.nodes), str(session.dir)))
+    return list(session.nodes.values())
+def collect_samplers(session, sampled):
+    calls.append(("collect", sorted(session.nodes), [item["name"] for item in sampled]))
+"""
+
+
+class RefereeSamplers(unittest.TestCase):
+    """The hunt samples with the referee's start_samplers and
+    collect_samplers, its compare-run.py loaded by path."""
+
+    def test_the_hunt_calls_the_referee_s_functions(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, True))
+        (root / "scripts" / "compare").mkdir(parents=True)
+        (root / "scripts" / "compare" / "compare-run.py").write_text(FAKE_REFEREE)
+        out = root / "run"
+        hunt = hunt_tool.Hunt(hunt_tool.Runner(False, out), hunt_tool.load_topology(), TOPOLOGY,
+                              "hunttest")
+        path = list(sys.path)
+        loaded = []
+        real = hunt_tool.referee_samplers
+
+        def load(root_=None):
+            loaded.append(real(root_))
+            return loaded[-1]
+
+        with mock.patch.dict(os.environ, {"NEEDLETAIL_COMPARE_ROOT": str(root)}), \
+                mock.patch.object(hunt_tool, "referee_samplers", load):
+            hunt.sample()
+            hunt.collect_samplers(["lon-edge-1", "lon-bare-3"])
+        self.assertEqual(sys.path, path)
+        calls = [call for module in loaded for call in module.calls]
+        sampled = sorted(node["name"] for node in hunt_tool.load_topology()["nodes"]
+                         if node["role"] not in ("bare",))
+        self.assertEqual(calls[0], ("start", sampled, str(out)))
+        self.assertEqual(calls[1], ("collect", ["lon-edge-1"], ["lon-edge-1"]))
+        journal = [json.loads(line) for line in (out / "journal.ndjson").read_text().splitlines()]
+        self.assertEqual([item["action"] for item in journal], ["start", "collect"])
+
+    def test_a_referee_without_the_functions_is_refused(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, True))
+        with self.assertRaises(RuntimeError):
+            hunt_tool.referee_samplers(root)
+        (root / "scripts" / "compare").mkdir(parents=True)
+        (root / "scripts" / "compare" / "compare-run.py").write_text("def start_samplers(s): pass\n")
+        with self.assertRaises(RuntimeError):
+            hunt_tool.referee_samplers(root)
+
+    def test_the_referee_s_own_file_loads(self):
+        root = os.environ.get("NEEDLETAIL_COMPARE_ROOT")
+        if not root or not (pathlib.Path(root) / hunt_tool.REFEREE_RUN).is_file():
+            self.skipTest("NEEDLETAIL_COMPARE_ROOT does not name the referee's checkout")
+        path = list(sys.path)
+        module = hunt_tool.referee_samplers(pathlib.Path(root))
+        self.assertEqual(sys.path, path)
+        self.assertTrue(callable(module.start_samplers) and callable(module.collect_samplers))
+        # Its common is this checkout's (the one already loaded).
+        self.assertIs(module.common, hunt_tool.common)
+        for text in ("compare-heartbeat", "SCHED_FIFO", "softnet_stat"):
+            self.assertIn(text, module.SYS_SAMPLER + module.HEARTBEAT + module.HEARTBEAT_PY)
+        self.assertIn("ethtool -k", module.NIC_INFO)
+
+
 class MeshContract(unittest.TestCase):
     """The counters the hunt reads from /api/mesh/local: one list in the
     sampler and in stall_records, each path served by av-mesh, and those
     its tooling contract test names among them."""
 
     def test_the_sampler_and_the_reader_name_the_same_paths(self):
-        text = hunt_tool.SAMPLER.read_text()
+        text = SAMPLER.read_text()
         listed = json.loads(text.split("MESH_PATHS='", 1)[1].split("'", 1)[0])
         self.assertEqual(listed, list(hunt_tool.stall_records.MESH_PATHS.values()))
         self.assertEqual([path for path in listed if "edge_clients" in path], [])
@@ -671,7 +794,7 @@ class Sampler(unittest.TestCase):
         FakeService.asked = []
         try:
             with tempfile.TemporaryDirectory() as directory:
-                subprocess.run(["nice", "-n", "19", "sh", str(hunt_tool.SAMPLER), directory,
+                subprocess.run(["nice", "-n", "19", "sh", str(SAMPLER), directory,
                                 str(sleeper.pid), "sleep",
                                 f"http://127.0.0.1:{server.server_address[1]}", "/api/pacing",
                                 "11"], check=True, timeout=60)
@@ -745,7 +868,7 @@ class Sampler(unittest.TestCase):
             first, second = (int(tid) for tid in named.stdout.readline().split())
             with tempfile.TemporaryDirectory() as directory:
                 sampler = subprocess.Popen(
-                    ["nice", "-n", "19", "sh", str(hunt_tool.SAMPLER), directory, str(named.pid),
+                    ["nice", "-n", "19", "sh", str(SAMPLER), directory, str(named.pid),
                      "needletail-fast", f"http://127.0.0.1:{server.server_address[1]}"])
                 folder = pathlib.Path(directory)
                 for _ in range(100):

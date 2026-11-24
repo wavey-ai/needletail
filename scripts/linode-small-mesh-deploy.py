@@ -431,6 +431,14 @@ DEFAULT_SETTINGS = {
     # binary's default, true): their video sockets take UDP GRO, so a
     # parent's GSO burst is one receive message, not one per symbol.
     "relay_video_gro": None,
+    # The audio fan-out's GSO (the stall hunt's GSO/GRO matrix): av-mesh
+    # --client-udp-gso on the nodes that serve UDP clients (None: the
+    # binary's default, true): with batch send, a client's datagrams of a
+    # part leave the edge as one UDP GSO message. The fast lane's own audio
+    # sends are sendmmsg without GSO (its video sends follow
+    # relay_video_gso); the receiving side's GRO is needletail-udp-client
+    # --gro.
+    "client_udp_gso": None,
     # cache_mesh_video_warm_parts, av-mesh --cache-mesh-video-warm-parts on
     # every mesh node (None: the binary's default, 0): the warm-up window a
     # distributor sends a new copy of a video playlist, in parts, or
@@ -2403,6 +2411,8 @@ def two_path_args(node_args: list[str], settings: dict) -> list[str]:
         if given("client_udp_rebalance_to_mean"):
             pairs += ["--client-udp-rebalance-to-mean",
                       flag(bool(settings["client_udp_rebalance_to_mean"]))]
+        if given("client_udp_gso"):
+            pairs += ["--client-udp-gso", flag(bool(settings["client_udp_gso"]))]
     return binary_takes("av-mesh", pairs)
 
 

@@ -653,6 +653,31 @@ class Render(Base):
         finally:
             deploy.RENDER_BINARIES.clear()
 
+    def test_the_audio_fan_out_s_gso_is_a_setting(self):
+        """The stall hunt's GSO/GRO matrix: client_udp_gso renders av-mesh
+        --client-udp-gso on the nodes that serve UDP clients, only when it
+        is given (null: the binary's default) and the binary has the flag."""
+        self.assertIsNone(deploy.DEFAULT_SETTINGS["client_udp_gso"])
+        new_mesh = fake_binary(self.dir, "gso-mesh", ["--client-udp-bind", "--mesh-bind",
+                                                      "--client-udp-gso"])
+        old_mesh = fake_binary(self.dir, "nogso-mesh", ["--client-udp-bind", "--mesh-bind"])
+        try:
+            deploy.RENDER_BINARIES.update({"av-mesh": new_mesh})
+            args = self.render()[2]
+            self.assertFalse(any("--client-udp-gso" in items for items in args.values()))
+            for value in ("false", "true"):
+                args = self.render([f"client_udp_gso={value}"])[2]
+                for name, items in args.items():
+                    if "--client-udp-bind" in items:
+                        self.assertEqual(value_of(items, "--client-udp-gso"), value, name)
+                    else:
+                        self.assertNotIn("--client-udp-gso", items, name)
+            deploy.RENDER_BINARIES.update({"av-mesh": old_mesh})
+            args = self.render(["client_udp_gso=false"])[2]
+            self.assertFalse(any("--client-udp-gso" in items for items in args.values()))
+        finally:
+            deploy.RENDER_BINARIES.clear()
+
     def test_a_setting_the_binary_cannot_take_is_named_on_stderr(self):
         """Review of B W1: a setting not at its default whose flag the
         av-mesh of the render lacks is named once on stderr with why, and the

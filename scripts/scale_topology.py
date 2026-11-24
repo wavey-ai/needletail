@@ -452,14 +452,14 @@ PARTY_DEFAULTS = {
     "hours": 4.0,
     # The budget of the whole work (owner, 23 November), what is spent
     # (.resilient/ledger.md: $40.65), what is held for others (the cloud
-    # session's $40 and the stall hunt with one repeat, $5.40: D-hunt 7.1),
+    # session's $40 and the stall hunt with one repeat, $6.26: D-hunt 7.1),
     # and the proving run before the party (its file, every node and slot
     # for its billed hours: phases-proving.json is 483.6 minutes, with 20
     # minutes of bring-up two labs of 5 hours each under the lab tool's
     # 6-hour watchdog limit, SCALE.md "The proving run").
     "budget_usd": 300.0,
     "spent_usd": 41.0,
-    "reserved_usd": 45.40,
+    "reserved_usd": 46.26,
     "proving_hours": 10.0,
 }
 PARTY_PLANS = [(listeners, lane, paths) for listeners in (5000, 10000, 20000)
@@ -839,7 +839,7 @@ def party_markdown() -> str:
         f"About ${d['budget_usd']:.0f} for the whole work (owner, 23 November), "
         f"${d['spent_usd']:.2f} spent (`.resilient/ledger.md`: $40.65), "
         f"${d['reserved_usd']:.2f} held for others (the cloud session's $40 and the stall hunt "
-        f"with one repeat, $5.40), and the proving run before the party: every node and slot "
+        f"with one repeat, $6.26), and the proving run before the party: every node and slot "
         f"of `topology-proving.json` for {d['proving_hours']:g} billed hours (two labs of 5 "
         "hours: `deploy/low-latency/SCALE.md`, \"The proving run\"), "
         f"${first['proving_usd']:.2f}. **${first['left_usd']:.2f} is left for the party** "

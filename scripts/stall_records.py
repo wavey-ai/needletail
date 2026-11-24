@@ -699,3 +699,303 @@ def sampler_stops(lines: list[dict], min_ms: float) -> list[tuple[int, int]]:
             end = int(after["t_us"])
             out.append((end - int(length * 1000), end))
     return out
+
+
+# --------------------------------------------- the referee's samplers' files
+#
+# The paid hunt samples with the referee's own samplers (needletail-compare
+# scripts/compare/compare-run.py start_samplers, collect_samplers), which
+# write per node, in the run's samplers/ directory, one file a kind and
+# call (T: the Unix second of the call):
+#   NODE.heartbeat.T.log  "HB cpu monotonic_ns realtime_ns boottime_ns
+#                         late_ns policy": a SCHED_FIFO 99 thread pinned to
+#                         each vCPU sleeps 10 ms; a line when it woke more
+#                         than 5 ms late, and one a second
+#   NODE.sys.T.log        "unix_s S kind ...": per-CPU /proc/stat (stat),
+#                         /proc/interrupts (irq), /proc/softirqs (softirq),
+#                         softnet_stat (softnet), and each av-mesh and
+#                         av-contrib thread's raw /proc/PID/task/TID/stat
+#                         (task PID <stat>: utime 14, stime 15, CPU 39,
+#                         policy 41, in clock ticks of 10 ms)
+#   NODE.meshlocal.T.log  "unix_s <the node's /api/mesh/local JSON>"
+#   NODE.nic.T.txt        uname and ethtool -i/-k/-l/-S of eth0 and eth1
+
+HEARTBEAT_SLEEP_US = 10_000
+# A heartbeat that woke late by half a stop or more over the stop is late
+# "by about the stop's length".
+HEARTBEAT_SHARE = 0.5
+# The thread's system time that rose by half the stop or more over it.
+STIME_SHARE = 0.5
+CLOCK_TICK_MS = 10.0
+# Heartbeat lines this close before and after a stop say the vCPU's
+# heartbeat ran (one line a second at least).
+HEARTBEAT_COVER_US = 3_000_000
+CLASS_THREAD = "needletail-fast"
+REFEREE_CLASSES = ("not run", "kernel, interrupts off", "blocked in our code",
+                   "waited for input", "no sampler")
+
+
+def parse_heartbeat(text: str) -> list[dict]:
+    """The heartbeat's lines: {"cpu", "t_us" (CLOCK_REALTIME of the wake),
+    "late_us", "policy"}, oldest first, each once."""
+    out = {}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 6 or parts[0] != "HB":
+            continue
+        try:
+            cpu, realtime, late = int(parts[1]), int(parts[3]), int(parts[5])
+        except ValueError:
+            continue
+        out[(cpu, realtime)] = {"cpu": cpu, "t_us": realtime // 1000,
+                                "late_us": max(0, late) // 1000,
+                                "policy": parts[6] if len(parts) > 6 else None}
+    return sorted(out.values(), key=lambda item: (item["t_us"], item["cpu"]))
+
+
+def parse_task_stat(stat: str) -> dict | None:
+    """One /proc/PID/task/TID/stat line: tid, comm, utime and stime (ticks),
+    the CPU it last ran on, its policy (0 other, 1 FIFO, 2 RR)."""
+    head, _, rest = stat.rpartition(")")
+    if not head or "(" not in head:
+        return None
+    tid, _, comm = head.partition(" (")
+    fields = rest.split()
+    try:
+        return {"tid": int(tid), "comm": comm, "utime": int(fields[11]),
+                "stime": int(fields[12]), "cpu": int(fields[36]),
+                "policy": int(fields[38]) if len(fields) > 38 else None}
+    except (ValueError, IndexError):
+        return None
+
+
+def parse_sys_tasks(text: str) -> list[dict]:
+    """The `task` lines of the referee's sys sampler: {"t_us", "pid",
+    **parse_task_stat}, oldest first."""
+    out = []
+    for line in (text or "").splitlines():
+        parts = line.split(" ", 4)
+        if len(parts) < 5 or parts[1] != "S" or parts[2] != "task":
+            continue
+        try:
+            t_us, pid = int(float(parts[0]) * 1e6), int(parts[3])
+        except ValueError:
+            continue
+        task = parse_task_stat(parts[4])
+        if task:
+            out.append({"t_us": t_us, "pid": pid, **task})
+    return sorted(out, key=lambda item: (item["t_us"], item["tid"]))
+
+
+def sys_times(text: str) -> list[int]:
+    """The times (us) of the sys sampler's seconds, one each."""
+    out = set()
+    for line in (text or "").splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) >= 2 and parts[1] == "S":
+            try:
+                out.add(int(float(parts[0]) * 1e6))
+            except ValueError:
+                continue
+    return sorted(out)
+
+
+def parse_meshlocal(text: str) -> list[dict]:
+    """The meshlocal sampler's seconds as sampler lines ({"t_us", "mesh"}:
+    the counters of MESH_PATHS at their paths), oldest first."""
+    out = []
+    for line in (text or "").splitlines():
+        stamp, _, body = line.partition(" ")
+        try:
+            t_us, document = int(float(stamp) * 1e6), json.loads(body)
+        except ValueError:
+            continue
+        mesh = {}
+        for path in MESH_PATHS.values():
+            value = document
+            for part in path.split("."):
+                value = value.get(part) if isinstance(value, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                mesh[path] = value
+        out.append({"t_us": t_us, "mesh": mesh})
+    return sorted(out, key=lambda item: item["t_us"])
+
+
+def class_thread(tasks: list[dict], at_us: int, comm: str = CLASS_THREAD) -> dict | None:
+    """The audio class thread's task line at or before `at_us` (else the
+    first after): of the threads named `comm` (/proc cuts the audio and
+    video class threads' names alike), the real-time one, else the lowest
+    tid (av-mesh starts the audio one first), of the latest process."""
+    named = [task for task in tasks if task["comm"] == comm]
+    if not named:
+        return None
+    before = [task for task in named if task["t_us"] <= at_us]
+    pool = before or named
+    pid = (before[-1] if before else named[0])["pid"]
+    mine = [task for task in pool if task["pid"] == pid]
+    fifo = sorted({task["tid"] for task in mine if task.get("policy") in (1, 2)})
+    tid = fifo[0] if fifo else min(task["tid"] for task in mine)
+    lines = [task for task in mine if task["tid"] == tid]
+    return lines[-1] if before else lines[0]
+
+
+def heartbeat_gap(beat: dict) -> tuple[int, int]:
+    """The time a late wake was not run: its lateness, up to the wake."""
+    return beat["t_us"] - beat["late_us"], beat["t_us"]
+
+
+def heartbeat_late_ms(beats: list[dict], min_ms: float,
+                      spans: list[tuple[int, int]] | None = None) -> float:
+    """A node's "not run" milliseconds from its heartbeats: the late wakes
+    of `min_ms` or more (those that ended inside `spans` when given),
+    summed per vCPU, the most of any vCPU."""
+    per_cpu: dict[int, float] = {}
+    for beat in beats:
+        if beat["late_us"] < min_ms * 1000:
+            continue
+        if spans is not None and not any(start <= beat["t_us"] <= end for start, end in spans):
+            continue
+        per_cpu[beat["cpu"]] = per_cpu.get(beat["cpu"], 0.0) + beat["late_us"] / 1000
+    return round(max(per_cpu.values(), default=0.0), 3)
+
+
+def heartbeat_stops(beats: list[dict], min_ms: float) -> list[dict]:
+    """Every late wake of `min_ms` or more as a stop of its vCPU, and those
+    of several vCPUs that overlap joined: {"from_us", "to_us", "ms",
+    "cpus"}. A stop on every vCPU at once is the whole guest's."""
+    late = sorted((heartbeat_gap(beat) + (beat["cpu"],) for beat in beats
+                   if beat["late_us"] >= min_ms * 1000), key=lambda item: item[0])
+    out: list[dict] = []
+    for start, end, cpu in late:
+        if out and start <= out[-1]["to_us"]:
+            out[-1]["to_us"] = max(out[-1]["to_us"], end)
+            out[-1]["cpus"] = sorted(set(out[-1]["cpus"]) | {cpu})
+        else:
+            out.append({"from_us": start, "to_us": end, "cpus": [cpu]})
+    for item in out:
+        item["ms"] = round((item["to_us"] - item["from_us"]) / 1000, 3)
+    return out
+
+
+def stime_rose_ms(tasks: list[dict], tid: int, start_us: int, end_us: int) -> float | None:
+    """How much a thread's system time rose from its last line at or
+    before `start_us` to its first at or after `end_us` (ms); None
+    without both."""
+    mine = [task for task in tasks if task["tid"] == tid]
+    before = [task for task in mine if task["t_us"] <= start_us]
+    after = [task for task in mine if task["t_us"] >= end_us]
+    if not before or not after:
+        return None
+    return (after[0]["stime"] - before[-1]["stime"]) * CLOCK_TICK_MS
+
+
+def kernel_threads(tasks: list[dict], cpu: int | None, start_us: int, end_us: int,
+                   at_least_ms: float) -> list[dict]:
+    """The service threads (on `cpu` when known) whose system time rose by
+    `at_least_ms` or more over [start_us, end_us]."""
+    out = []
+    seen = set()
+    for task in tasks:
+        if task["tid"] in seen or (cpu is not None and task["cpu"] != cpu):
+            continue
+        seen.add(task["tid"])
+        rose = stime_rose_ms(tasks, task["tid"], start_us, end_us)
+        if rose is not None and rose >= at_least_ms:
+            out.append({"tid": task["tid"], "comm": task["comm"], "stime_ms": rose})
+    return out
+
+
+def classify_heartbeat(start_us: int, end_us: int, beats: list[dict], tasks: list[dict],
+                       mesh_lines: list[dict] = (), journal: list[dict] = ()) -> dict:
+    """One stop of a node, [start_us, end_us], from the referee's samplers
+    (D-hunt.md 7.5 as revised after the 4K run): the audio class thread's
+    vCPU (its last CPU in the sys sampler; every vCPU when not known):
+    - "not run": its heartbeat woke late by about the stop's length (half
+      of it or more, over the stop), and no service thread's system time
+      rose: the hypervisor did not run the vCPU (on every vCPU at once:
+      the whole guest);
+    - "kernel, interrupts off": its heartbeat was late and a service
+      thread's system time rose by half the stop or more: that thread was
+      in the kernel with interrupts off (a FIFO 99 thread is not run only
+      then, or when the vCPU is not);
+    - "blocked in our code": the heartbeat was on time (the vCPU ran and
+      could have run the class thread); the wait is named from the
+      node's /api/mesh/local counters (NAMED_WAITS) and the journal's
+      class passes when they show a long pass; with counters that show
+      none it "waited for input";
+    - "no sampler": no heartbeat of that vCPU around the stop."""
+    length_ms = (end_us - start_us) / 1000
+    thread = class_thread(list(tasks), start_us)
+    cpu = thread["cpu"] if thread else None
+    figures: dict = {"cpu": cpu, "thread": None if thread is None else
+                     f"{thread['comm']} ({thread['tid']})"}
+    cpus = sorted({beat["cpu"] for beat in beats})
+    mine = [beat for beat in beats if cpu is None or beat["cpu"] == cpu]
+    covered = (any(start_us - HEARTBEAT_COVER_US <= beat["t_us"] <= start_us for beat in mine)
+               and any(end_us <= beat["t_us"] <= end_us + HEARTBEAT_COVER_US for beat in mine))
+    if not covered:
+        return {"class": "no sampler", "figures": figures,
+                "why": "no heartbeat line of the class thread's vCPU before and after the stop"}
+    half_us = HEARTBEAT_SHARE * (end_us - start_us)
+    late = [beat for beat in mine if overlap(heartbeat_gap(beat), (start_us, end_us)) >= half_us]
+    every = sorted({beat["cpu"] for beat in beats
+                    if overlap(heartbeat_gap(beat), (start_us, end_us)) >= half_us})
+    figures["heartbeat_late_ms"] = round(max((beat["late_us"] for beat in late), default=0)
+                                         / 1000, 3)
+    figures["late_cpus"] = every
+    if late:
+        hot = kernel_threads(list(tasks), cpu, start_us, end_us, STIME_SHARE * length_ms)
+        figures["kernel_threads"] = hot
+        if hot:
+            named = ", ".join(f"{item['comm']} ({item['tid']}) stime +{item['stime_ms']:.0f} ms"
+                              for item in hot)
+            return {"class": "kernel, interrupts off", "figures": figures,
+                    "where": f"in the kernel with interrupts off: {named}",
+                    "why": f"the heartbeat of CPU {late[0]['cpu']} woke "
+                           f"{figures['heartbeat_late_ms']:.0f} ms late over a "
+                           f"{length_ms:.0f} ms stop and {named}"}
+        whole = len(cpus) > 1 and every == cpus
+        return {"class": "not run", "figures": figures,
+                "where": "the hypervisor: " + ("every vCPU at once, the whole guest" if whole
+                                               else f"vCPU {late[0]['cpu']} was not run"),
+                "why": f"the heartbeat of CPU {late[0]['cpu']} woke "
+                       f"{figures['heartbeat_late_ms']:.0f} ms late over a {length_ms:.0f} ms "
+                       "stop, no service thread's system time rose"}
+    pair = around(list(mesh_lines), start_us, end_us) if mesh_lines else None
+    passes = [event for event in journal if event.get("kind") == "class_pass"
+              and event.get("cause") == "own" and event.get("thread", "audio") == "audio"
+              and overlap(interval(event), (start_us, end_us)) >= half_us]
+    waits = {}
+    long_pass = bool(passes)
+    if pair:
+        before, after = pair
+        busy_before = mesh_value(before, "audio_loop_busy_max_us")
+        busy_after = mesh_value(after, "audio_loop_busy_max_us")
+        over = grew(before, after, "audio_loop_busy_over_50ms")
+        long_pass = long_pass or (length_ms <= 2 * OVER_50MS_US / 1000 and (over or 0) > 0) or (
+            busy_after is not None and busy_after >= BUSY_SHARE * length_ms * 1000
+            and busy_after > (busy_before or 0))
+        waits = {key: mesh_value(after, key) for key, _name in NAMED_WAITS
+                 if (grew(before, after, key) or 0) > 0}
+    figures["waits"] = waits
+    named = [name for key, name in NAMED_WAITS
+             if (waits.get(key) or 0) >= BUSY_SHARE * length_ms * 1000]
+    if pair and not long_pass and not named:
+        return {"class": "waited for input", "figures": figures,
+                "why": "the heartbeat was on time and the class loop had no long pass: the "
+                       "thread slept and nothing came (upstream, or the kernel did not "
+                       "deliver)"}
+    if named:
+        wait, kind = "; ".join(named), "counter"
+    elif passes:
+        minor = sum(int(event.get("minflt") or 0) for event in passes)
+        major = sum(int(event.get("majflt") or 0) for event in passes)
+        wait, kind = ((f"page faults on the class thread in the pass ({minor} minor, "
+                       f"{major} major)"), "faults") if minor or major else \
+            ("a lock or wait that no counter names (fanout-stall.md items 1 to 6)", "unnamed")
+    else:
+        wait, kind = ("a lock or wait that no counter names" if pair else
+                      "not named: no /api/mesh/local counters around the stop"), "unnamed"
+    return {"class": "blocked in our code", "figures": figures, "wait": wait, "wait_kind": kind,
+            "why": f"the heartbeat of CPU {cpu if cpu is not None else 'any'} was on time over "
+                   f"the {length_ms:.0f} ms stop: the vCPU ran"}

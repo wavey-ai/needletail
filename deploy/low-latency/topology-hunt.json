@@ -1,5 +1,5 @@
 {
-  "description": "The stall hunt's lab after the wave 9 run (docs/plans/resilient-mesh/D-hunt.md, section 7): 20 dedicated-CPU instances, $1.296 an hour, two billed hours. A mesh in London (the contributor, the source host and a view host on g6-dedicated-4; two forwarders and four edges, two pairs of twins, on g6-dedicated-2) and in Tokyo (two forwarders and two edges on g6-dedicated-2, a view host on g6-dedicated-4), deployed fresh with the fan-out fix; and six bare g6-dedicated-2 instances that run only needletail-nodecheck watch and the route survey's probes (role `bare`: the lab tool creates, tags and firewalls them like any node, the deploy tool installs nothing on them). The `hunt` block is the experiment's design, read by scripts/linode-stall-hunt.py and scripts/linode-route-survey.py: `touched` (the edges whose whole free memory is touched and held, then given back just before the first session: half the edges, one of each pair of twins), `no_arena_warm` (Tokyo's edges run without the audio class thread's arena warm-up: the fix measured against its absence in the same hour), `hop_journal_large` (rings of 2,097,152 events on both London forwarders and the first pair of London twins, pulled once after the first session), the listeners of each view host (UDP probes through the site's entry, one LL-HLS probe on every edge of the site, a needletail-load crowd over every edge of the site, with no entry point, so that its listener i starts at edge i mod n and UDP clients arrive at each) and the survey's ends. The churn session's rounds are the driver's (CHURN_ROUNDS, CHURN_GAP_S). Sydney is created first and left out if it has no capacity (up --optional-sites sydney).",
+  "description": "The stall hunt's lab after the wave 9 run (docs/plans/resilient-mesh/D-hunt.md, section 7): 24 dedicated-CPU instances, $1.512 an hour, two billed hours. A mesh in London (the contributor, the source host and a view host on g6-dedicated-4; two forwarders and four edges, two pairs of twins, on g6-dedicated-2) in Tokyo (two forwarders and two edges on g6-dedicated-2, a view host on g6-dedicated-4) and in New York (two forwarders, one edge and a view host, all g6-dedicated-2: the wave 9 4K run's whole-node stops were on both New York forwarders), deployed fresh with the fan-out fix; and six bare g6-dedicated-2 instances that run only needletail-nodecheck watch and the route survey's probes (role `bare`: the lab tool creates, tags and firewalls them like any node, the deploy tool installs nothing on them). The `hunt` block is the experiment's design, read by scripts/linode-stall-hunt.py and scripts/linode-route-survey.py: `touched` (the edges whose whole free memory is touched and held, then given back just before the first session: half the edges, one of each pair of twins), `no_arena_warm` (Tokyo's edges run without the audio class thread's arena warm-up: the fix measured against its absence in the same hour), `hop_journal_large` (rings of 2,097,152 events on both London forwarders and the first pair of London twins, pulled once after the first session), the listeners of each view host (UDP probes through the site's entry, one LL-HLS probe on every edge of the site, a needletail-load crowd over every edge of the site, with no entry point, so that its listener i starts at edge i mod n and UDP clients arrive at each) and the survey's ends. The churn session's rounds are the driver's (CHURN_ROUNDS, CHURN_GAP_S). Sydney is created first and left out if it has no capacity (up --optional-sites sydney). The GSO/GRO matrix (the senders' relay_video_gso and client_udp_gso, the receivers' relay_video_gro and needletail-udp-client --gro, four combinations, the defaults first; 4K at 25 and 80 Mbit/s and the first audio session of each) is the driver's (MATRIX).",
   "image": "linode/debian13",
   "hunt": {
     "touched": [
@@ -29,6 +29,12 @@
         "hls_each_edge": 1,
         "load": 20,
         "sample": 4
+      },
+      "new-view": {
+        "udp": 2,
+        "hls_each_edge": 1,
+        "load": 10,
+        "sample": 2
       }
     },
     "survey": {
@@ -157,6 +163,38 @@
       "site": "tokyo",
       "region": "ap-northeast",
       "type": "g6-dedicated-4",
+      "purpose": "view"
+    },
+    {
+      "name": "new-dist-a",
+      "role": "distributor",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.2.11/24"
+    },
+    {
+      "name": "new-dist-b",
+      "role": "distributor",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.2.12/24"
+    },
+    {
+      "name": "new-edge-1",
+      "role": "edge",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.2.21/24"
+    },
+    {
+      "name": "new-view",
+      "role": "load",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-dedicated-2",
       "purpose": "view"
     },
     {
