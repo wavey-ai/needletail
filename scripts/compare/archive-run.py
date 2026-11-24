@@ -57,7 +57,7 @@ WHAT = [
     (r"\.arrivals\.csv$", "samples", "UDP client: every datagram's arrival", "us"),
     (r"\.(uc|udp)\.json$", "summary", "UDP client report: fast lane, FEC, repair counters", None),
     (r"analysis\.json$", "analysis", "cached analysis of the step (analysis_version inside)", "ms"),
-    (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors | socket drops | vm (guest /proc/vmstat, MemFree) | /api/stats", None),
+    (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors (with UdpMemErrors) | socket drops | vm (guest /proc/vmstat, MemFree) | cg (the service cgroup: memory.current, memory.events) | sockstat (UDP inuse, mem pages) | qdisc (root dropped:overlimits:requeues per device) | /api/stats", None),
     (r"samplers/[^/]+\.apinode\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/node JSON (relay_counters, fast lane and tee counters, missed_10s, warm)", None),
     (r"samplers/[^/]+\.meshlocal\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/mesh/local JSON (fast_plane faults, loop lag)", None),
     (r"samplers/[^/]+\.stalls\.\d+\.json$", "node-logs", "the node's stop journal (/api/stalls)", None),
@@ -138,6 +138,16 @@ def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
                     if part.startswith("vm "):
                         rec["guest_vm"] = {k: int(v) for k, v in
                                            (x.split("=", 1) for x in part.split()[1:] if "=" in x and v_ok(x))}
+                    elif part.startswith("cg "):
+                        fields = dict(x.split("=", 1) for x in part.split()[1:] if "=" in x)
+                        rec["service_cgroup"] = {k: (int(v) if v.isdigit() else v) for k, v in fields.items()}
+                    elif part.startswith("sockstat"):
+                        rec["udp_sockstat"] = {k: int(v) for k, v in
+                                               (x.split("=", 1) for x in part.split()[1:] if "=" in x and v_ok(x))}
+                    elif part.startswith("qdisc"):
+                        rec["qdisc_root"] = {dev: dict(zip(("dropped", "overlimits", "requeues"),
+                                                           map(int, value.split(":"))))
+                                             for dev, value in (x.split("=", 1) for x in part.split()[1:] if "=" in x)}
                     elif part.startswith("sockdrops"):
                         rec["socket_drops_total"] = {k: int(v) for k, v in
                                                      (x.rsplit("=", 1) for x in part.split()[1:] if "=" in x)}

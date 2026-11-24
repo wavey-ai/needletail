@@ -170,6 +170,160 @@ def node_report_by_step(session: str, stream_id: int = 1) -> dict:
     return out
 
 
+def windows(session: str) -> dict:
+    out = {}
+    for meta_path in sorted((run.RUNS / session).glob("*/meta.json")):
+        meta = json.loads(meta_path.read_text())
+        if meta.get("started_unix") is not None:
+            out[meta_path.parent.name] = (meta["started_unix"], meta["started_unix"] + float(meta.get("seconds") or 0))
+    return out
+
+
+def counters(report: dict, prefix: str = "") -> dict:
+    """The node's own counters of tee, shed and drop (any numeric leaf whose
+    path names one), flattened."""
+    out = {}
+    if isinstance(report, dict):
+        for key, value in report.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                out.update(counters(value, path))
+            elif isinstance(value, (int, float)) and not isinstance(value, bool) and any(
+                    word in key.lower() for word in ("tee", "shed", "drop")):
+                out[path] = value
+    return out
+
+
+def edge_figures(session: str) -> dict:
+    """{step: {node: {...}}} for every mesh node: busiest core % (per-CPU
+    /proc/stat), socket drops in the step (all, and the cache-mesh video
+    socket's, port 30101), root qdisc drops, and the deltas of the node's own
+    tee/shed/drop counters (/api/node) (lead, 24 Nov: the edge gives way
+    before the UDP viewer does)."""
+    import re
+    base = run.RUNS / session
+    wins = windows(session)
+    stat, drops, qdisc, node_counters = {}, {}, {}, {}
+    for path in sorted((base / "samplers").glob("*.sys.*.log")):
+        node = path.name.split(".")[0]
+        for line in path.read_text(errors="replace").splitlines():
+            parts = line.split()
+            if len(parts) > 12 and parts[1] == "S" and parts[2] == "stat" and parts[3].startswith("cpu"):
+                values = [int(v) for v in parts[4:12]]
+                stat.setdefault(node, {}).setdefault(parts[3], []).append(
+                    (float(parts[0]), sum(values), values[3] + values[4]))
+    for path in sorted((base / "samplers").glob("*.stats.*.log")):
+        node = path.name.split(".")[0]
+        for line in path.read_text(errors="replace").splitlines():
+            fields = line.split("|")
+            try:
+                at = float(fields[0])
+            except ValueError:
+                continue
+            for part in fields[1:]:
+                part = part.strip()
+                if part.startswith("sockdrops"):
+                    total = mesh = 0
+                    for item in part.split()[1:]:
+                        address, _, value = item.rpartition("=")
+                        if value.isdigit():
+                            total += int(value)
+                            if address.endswith(":30101"):
+                                mesh += int(value)
+                    drops.setdefault(node, []).append((at, total, mesh))
+                elif part.startswith("qdisc"):
+                    dropped = 0
+                    for item in part.split()[1:]:
+                        value = item.partition("=")[2].split(":")[0]
+                        dropped += int(value) if value.isdigit() else 0
+                    qdisc.setdefault(node, []).append((at, dropped))
+    for path in sorted((base / "samplers").glob("*.apinode.*.log")):
+        node = path.name.split(".")[0]
+        for line in path.read_text(errors="replace").splitlines():
+            head, _, body = line.partition(" ")
+            try:
+                node_counters.setdefault(node, []).append((float(head), counters(json.loads(body))))
+            except ValueError:
+                continue
+
+    def delta(rows, a, b, index=1):
+        before = [r[index] for r in rows if r[0] <= a]
+        upto = [r[index] for r in rows if r[0] <= b]
+        if not upto:
+            return None
+        return upto[-1] - (before[-1] if before else upto[0])
+
+    out = {}
+    for step, (a, b) in wins.items():
+        nodes = {}
+        for node in sorted(set(stat) | set(drops) | set(node_counters)):
+            entry = {}
+            cores = []
+            for cpu, rows in (stat.get(node) or {}).items():
+                inside = [r for r in rows if a <= r[0] <= b]
+                if len(inside) >= 2:
+                    total = inside[-1][1] - inside[0][1]
+                    idle = inside[-1][2] - inside[0][2]
+                    if total > 0:
+                        cores.append(round(100.0 * (total - idle) / total, 1))
+            entry["busiest_core_percent"] = max(cores) if cores else None
+            if node in drops:
+                entry["socket_drops"] = delta(drops[node], a, b, 1)
+                entry["cache_mesh_socket_drops"] = delta(drops[node], a, b, 2)
+            if node in qdisc:
+                entry["qdisc_drops"] = delta(qdisc[node], a, b, 1)
+            if node in node_counters:
+                rows = node_counters[node]
+                first = next((c for t, c in rows if t >= a), None)
+                last = next((c for t, c in reversed(rows) if t <= b), None)
+                if first is not None and last is not None:
+                    entry["counters"] = {k: v - first.get(k, 0) for k, v in last.items() if v - first.get(k, 0)}
+            nodes[node] = entry
+        out[step] = nodes
+    return out
+
+
+def listener_edges(session: str, steps: dict) -> dict:
+    """{step: {site: {host: {"udp": [edges], "llhls": [edges], "shared": bool}}}}:
+    which edges served each viewer host's 4K UDP viewer (its report's caches)
+    and its LL-HLS viewers (playlist_url_host, named by the session's
+    lab-nodes.json); "shared" when one edge served the host both."""
+    base = run.RUNS / session
+    names = {}
+    nodes_file = base / "lab-nodes.json"
+    if nodes_file.is_file():
+        for name, node in json.loads(nodes_file.read_text()).items():
+            for key in ("public_ipv4", "vlan_ipv4"):
+                if node.get(key):
+                    names[node[key].split("/")[0]] = name
+    out = {}
+    for step in sorted((s for s in steps if s.startswith("nt.throughput.")), key=lambda s: rung_mbit(s.split(".")[-1])):
+        sites = {}
+        for site in run.SITES:
+            hosts = {}
+            for host in (f"{site}-view", f"{site}-nano"):
+                udp, hls = set(), set()
+                directory = base / step / host
+                for label in ("probe.uc",):
+                    try:
+                        udp.update(json.loads((directory / f"{label}.uc.json").read_text()).get("caches") or [])
+                    except (OSError, ValueError):
+                        pass
+                for label in ("probe", "probe.h3"):
+                    try:
+                        where = (json.loads((directory / f"{label}.json").read_text()).get("detail") or {}).get(
+                            "playlist_url_host") or ""
+                    except (OSError, ValueError):
+                        continue
+                    if where:
+                        hls.add(names.get(where.rsplit(":", 1)[0], where))
+                if udp or hls:
+                    hosts[host] = {"udp": sorted(udp), "llhls": sorted(hls), "shared": bool(udp & hls)}
+            sites[site] = hosts
+        out[step] = sites
+    return out
+
+
 def board(analysis: dict, session: str, host_stops: dict | None) -> dict:
     steps = analysis["sessions"][session]["steps"]
     rungs = sorted({s["rung"] for s in steps.values() if s.get("phase") == "throughput"}, key=rung_mbit)
@@ -219,7 +373,8 @@ def board(analysis: dict, session: str, host_stops: dict | None) -> dict:
                              "result": verdict(None if a is None else round(a, 1),
                                                None if b is None else round(b, 1), higher)})
     return {"session": session, "rungs": rungs, "ceilings": ceilings, "rows": rows,
-            "rss_mb": rss_by_step(session), "node_report": node_report_by_step(session)}
+            "rss_mb": rss_by_step(session), "node_report": node_report_by_step(session),
+            "edges": edge_figures(session), "listener_edges": listener_edges(session, steps)}
 
 
 def markdown(b: dict) -> str:
@@ -266,12 +421,15 @@ def markdown(b: dict) -> str:
                    f"{row['result']} |")
     rss = b.get("rss_mb") or {}
     steps = [f"nt.throughput.{r}" for r in b["rungs"] if rss.get(f"nt.throughput.{r}")]
+    if rss.get("nt.idle.after"):
+        steps.append("nt.idle.after")
     if steps:
         nodes = sorted({n for st in steps for n in rss[st]})
         out.append("")
         out.append("**Needletail's memory in each step** (av-mesh resident MB at the step's start → its peak, "
                    "1 s sampler):\n")
-        out.append("| Node | " + " | ".join(st.split(".")[-1][5:] + " Mbit/s" for st in steps) + " |")
+        out.append("| Node | " + " | ".join(("idle after" if st == "nt.idle.after" else st.split(".")[-1][5:] + " Mbit/s")
+                                           for st in steps) + " |")
         out.append("| --- |" + " ---: |" * len(steps))
         for node in nodes:
             cells = [f"{rss[st][node][0]} → {rss[st][node][1]}" if node in rss[st] else "–" for st in steps]
@@ -297,6 +455,45 @@ def markdown(b: dict) -> str:
                     text += f" ({r['video_cache_mb']} MB" + (f", shed {r['shed_mb']}" if r["shed_mb"] else "") + ")"
                 cells.append(text)
             out.append(f"| {node} | " + " | ".join(cells) + " |")
+    edges = b.get("edges") or {}
+    steps = [f"nt.throughput.{r}" for r in b["rungs"] if edges.get(f"nt.throughput.{r}")]
+    if steps:
+        nodes = sorted({n for st in steps for n in edges[st] if "-edge-" in n or "-dist-" in n})
+        out.append("")
+        out.append("**Forwarders and edges in each step**: busiest core % / socket drops (of them the cache-mesh "
+                   "video socket's) / qdisc drops; then the node's own tee, shed and drop counters that moved:\n")
+        out.append("| Node | " + " | ".join(st.split(".")[-1][5:] + " Mbit/s" for st in steps) + " |")
+        out.append("| --- |" + " --- |" * len(steps))
+        for node in nodes:
+            cells = []
+            for st in steps:
+                e = edges[st].get(node) or {}
+                core = "–" if e.get("busiest_core_percent") is None else f"{e['busiest_core_percent']:.0f}%"
+                text = f"{core} / {e.get('socket_drops', '–')} ({e.get('cache_mesh_socket_drops', '–')}) / {e.get('qdisc_drops', '–')}"
+                moved = e.get("counters") or {}
+                if moved:
+                    text += "; " + ", ".join(f"{k.split('.')[-1]} {v:g}" for k, v in sorted(moved.items()))
+                cells.append(text)
+            out.append(f"| {node} | " + " | ".join(cells) + " |")
+    where = b.get("listener_edges") or {}
+    if where:
+        out.append("")
+        out.append("**Which edges served the 4K viewers** (UDP: the clients' own reports; LL-HLS: the playlist's "
+                   "host): an LL-HLS figure from an edge that also served UDP 4K is from an edge sending 4K twice:\n")
+        out.append("| Rung | " + " | ".join(site for site in run.SITES) + " |")
+        out.append("| --- |" + " --- |" * len(run.SITES))
+        for st, sites in where.items():
+            cells = []
+            for site in run.SITES:
+                parts = []
+                for host, v in sorted((sites.get(site) or {}).items()):
+                    def short(edge: str) -> str:
+                        return edge[len(site) + 1:] if edge.startswith(site + "-") else edge
+                    parts.append(f"{host.split('-')[-1]}: UDP {'+'.join(short(e) for e in v['udp']) or '–'}, "
+                                 f"LL-HLS {'+'.join(short(e) for e in v['llhls']) or '–'}"
+                                 + (" (shared)" if v["shared"] else ""))
+                cells.append("; ".join(parts) or "–")
+            out.append(f"| {st.split('.')[-1][5:]} | " + " | ".join(cells) + " |")
     return "\n".join(out) + "\n"
 
 

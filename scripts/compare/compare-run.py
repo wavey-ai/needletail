@@ -106,7 +106,7 @@ STATS_SAMPLER = (
     "cat >/var/tmp/compare-stats.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-stats.pid\n"
     "while true; do\n"
-    "  udp=\"$(nstat -az UdpRcvbufErrors UdpSndbufErrors UdpInErrors 2>/dev/null | awk 'NR>1{printf \"%%s=%%s \", $1, $2}')\"\n"
+    "  udp=\"$(nstat -az UdpRcvbufErrors UdpSndbufErrors UdpInErrors UdpMemErrors 2>/dev/null | awk 'NR>1{printf \"%%s=%%s \", $1, $2}')\"\n"
     "  stats=\"$(curl -sk --max-time 0.8 '%(url)s' | tr -d '\\n')\"\n"
     # Each UDP socket's own drop counter (skmem d), cumulative: address=drops.
     "  drops=\"$(ss -uamn 2>/dev/null | awk 'NR>1{a=$4; getline; if (match($0,/,d[0-9]+\\)/)) "
@@ -115,7 +115,19 @@ STATS_SAMPLER = (
     # (lead, 24 Nov).
     "  vm=\"$(awk '/^(pgfault|pgmajfault|pgalloc_normal|thp_fault_alloc|compact_stall|allocstall_normal|allocstall_movable) /"
     "{printf \"%%s=%%s \", $1, $2}' /proc/vmstat)MemFree_kB=$(awk '/^MemFree:/{print $2}' /proc/meminfo)\"\n"
-    "  echo \"$(date +%%s.%%N) | $udp| sockdrops $drops| vm $vm| $stats\"\n"
+    # The service's cgroup memory (memory.current; memory.events: low, high, max, oom,
+    # oom_kill), the kernel's UDP memory (sockstat: pages) and each device's qdisc
+    # drops, from the root qdisc's line, which sums its children (lead, 24 Nov: the memory
+    # bound and the edge's send path).
+    "  cg=\"$(for d in /sys/fs/cgroup/system.slice/needletail-*.service; do [ -d $d ] || continue; "
+    "printf 'unit=%%s current=%%s ' \"${d##*/}\" \"$(cat $d/memory.current 2>/dev/null)\"; "
+    "awk '{printf \"%%s=%%s \", $1, $2}' $d/memory.events 2>/dev/null; done)\"\n"
+    "  sock=\"$(awk '/^UDP:/{printf \"inuse=%%s mem_pages=%%s\", $3, $5}' /proc/net/sockstat)\"\n"
+    "  qd=\"$(for i in eth0 eth1; do [ -e /sys/class/net/$i ] && tc -s qdisc show dev $i 2>/dev/null | "
+    "awk -v i=$i '/dropped/ && !seen{seen=1; gsub(\",\",\"\"); for (k=1;k<=NF;k++) {if ($k==\"dropped\") d+=$(k+1); "
+    "if ($k==\"overlimits\") o+=$(k+1); if ($k==\"requeues\") r+=$(k+1)}} "
+    "END{printf \"%%s=%%d:%%d:%%d \", i, d, o, r}'; done)\"\n"
+    "  echo \"$(date +%%s.%%N) | $udp| sockdrops $drops| vm $vm| cg $cg| sockstat $sock| qdisc $qd| $stats\"\n"
     # The node's own mesh view (relay_session.fast_plane: faults and loop lag per class
     # thread), in a file of its own: unix_s, a space, the JSON.
     "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(mesh)s' | tr -d '\\n')\" >>/var/tmp/compare-meshlocal.log\n"
@@ -864,6 +876,21 @@ def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> No
                 fanout(session, lane, BASE_RUNG, 40)
         if "throughput" in phases:
             throughput(session, lane, 30 if name == "lkcloud" else 40, session.rungs)
+            idle = getattr(session, "idle_after_seconds", 0) or 0
+            if idle and name == "nt":
+                # The sources stopped and the samplers running: the release of the
+                # nodes' memory back to its baseline (lead, 24 Nov).
+                stop_sources(session)
+                step_dir = session.dir / "nt.idle.after"
+                step_dir.mkdir(exist_ok=True)
+                started = time.time()
+                log(f"nt.idle.after: {idle} s with no source, samplers running")
+                time.sleep(idle)
+                (step_dir / "meta.json").write_text(json.dumps(
+                    {"step": "nt.idle.after", "lane": "nt", "phase": "idle", "detail": "after",
+                     "rung": None, "session": session.name, "started_unix": started,
+                     "seconds": round(time.time() - started, 1)}, indent=1) + "\n")
+                session.steps.append({"step": "nt.idle.after", "seconds": idle, "host_errors": 0})
         if "ramp" in phases:
             rungs = RAMP if name != "cfhls" else ["1080p6", "2160p16"]
             for rung in rungs:
@@ -895,6 +922,9 @@ def main() -> None:
                         help="throughput steps of this many seconds from --long-from-mbit up (0: all at the "
                              "base length, 40 s)")
     parser.add_argument("--long-from-mbit", type=int, default=160)
+    parser.add_argument("--idle-after-seconds", type=int, default=0,
+                        help="after Needletail's last throughput rung, stop the sources and record an idle "
+                             "step of this many seconds (nt.idle.after) with the samplers running")
     parser.add_argument("--audio", choices=("pcm", "flac", "off"), default="pcm",
                         help="the Needletail lane's 1 ms audio source, on before the probes start: "
                              "pcm (the audio headline's lane, stream 4001, with an LL-HLS and a UDP "
@@ -907,6 +937,13 @@ def main() -> None:
     session = Session(args.session)
     session.rungs = args.rungs.split(",") if args.rungs else None
     session.long_seconds, session.long_from_mbit = args.long_seconds, args.long_from_mbit
+    session.idle_after_seconds = args.idle_after_seconds
+    # Name and addresses of every node, so that a listener's edge (the LL-HLS
+    # probe's playlist_url_host) can be named afterwards.
+    (session.dir / "lab-nodes.json").write_text(json.dumps(
+        {name: {"public_ipv4": node.get("public_ipv4"), "vlan_ipv4": node.get("vlan_ipv4"),
+                "role": node.get("role"), "host_uuid": node.get("host_uuid")}
+         for name, node in session.nodes.items()}, indent=1) + "\n")
     session.pace = args.pace
     session.audio = args.audio
     started = time.time()

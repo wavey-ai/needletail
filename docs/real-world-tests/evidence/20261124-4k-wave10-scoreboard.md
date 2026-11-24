@@ -141,3 +141,36 @@ Needletail against self-hosted LiveKit (an SFU in each region), 4K, session vide
 | tok-edge-1 | 1037 | 1117 | 1117 | 1117 | 1117 | 480 | 1117 |
 | tok-edge-2 | 1034 | 1117 | 1117 | 1117 | 1117 | 604 | 874 |
 
+**Forwarders and edges in each step**: busiest core % / socket drops (of them the cache-mesh video socket's) / qdisc drops; then the node's own tee, shed and drop counters that moved:
+
+| Node | 25 Mbit/s | 40 Mbit/s | 80 Mbit/s | 120 Mbit/s | 160 Mbit/s | 240 Mbit/s | 320 Mbit/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| lon-dist-a | 26% / 0 (0) / – | 29% / 0 (0) / – | 35% / 0 (0) / – | 43% / 0 (0) / – | 53% / 0 (0) / – | 73% / 0 (0) / – | 78% / 0 (0) / – |
+| lon-dist-b | 59% / 0 (0) / – | 61% / 0 (0) / – | 61% / 0 (0) / – | 66% / 0 (0) / – | 67% / 0 (0) / – | 77% / 0 (0) / – | 79% / 0 (0) / – |
+| lon-edge-1 | 45% / 0 (0) / – | 51% / 0 (0) / – | 57% / 0 (0) / – | 64% / 0 (0) / – | 74% / 0 (0) / – | 70% / 0 (0) / – | 84% / 0 (0) / – |
+| lon-edge-2 | 43% / 0 (0) / – | 43% / 0 (0) / – | 44% / 0 (0) / – | 49% / 0 (0) / – | 52% / 0 (0) / – | 61% / 0 (0) / – | 74% / 0 (0) / – |
+| new-dist-a | 32% / 0 (0) / – | 32% / 0 (0) / – | 39% / 0 (0) / – | 47% / 0 (0) / – | 54% / 0 (0) / – | 76% / 0 (0) / – | 97% / 0 (0) / –; tee_dropped 210677 |
+| new-dist-b | 27% / 0 (0) / – | 34% / 0 (0) / – | 37% / 0 (0) / – | 44% / 0 (0) / – | 47% / 0 (0) / – | 69% / 0 (0) / – | 82% / 0 (0) / – |
+| new-edge-1 | 34% / 0 (0) / – | 37% / 0 (0) / – | 44% / 0 (0) / – | 56% / 0 (0) / – | 65% / 0 (0) / – | 63% / 0 (0) / – | 98% / 0 (0) / –; tee_dropped 763376 |
+| new-edge-2 | 49% / 0 (0) / – | 47% / 0 (0) / – | 55% / 0 (0) / – | 60% / 0 (0) / – | 77% / 0 (0) / – | 75% / 0 (0) / – | 93% / 0 (0) / –; tee_dropped 567499 |
+| syd-dist-a | 18% / 0 (0) / – | 21% / 0 (0) / – | 29% / 0 (0) / – | 39% / 0 (0) / – | 48% / 0 (0) / – | 79% / 0 (0) / – | 79% / 0 (0) / – |
+| syd-dist-b | 41% / 0 (0) / – | 40% / 0 (0) / – | 42% / 0 (0) / – | 42% / 0 (0) / – | 46% / 0 (0) / – | 77% / 0 (0) / – | 69% / 0 (0) / – |
+| syd-edge-1 | 23% / 0 (0) / – | 25% / 0 (0) / – | 30% / 0 (0) / – | 36% / 0 (0) / – | 43% / 0 (0) / – | 51% / 0 (0) / – | 66% / 0 (0) / – |
+| syd-edge-2 | 34% / 0 (0) / – | 30% / 0 (0) / – | 41% / 0 (0) / – | 51% / 0 (0) / – | 68% / 0 (0) / – | 64% / 106775 (106775) / –; tee_dropped 59744 | 81% / 0 (0) / – |
+| tok-dist-a | 30% / 0 (0) / – | 31% / 0 (0) / – | 37% / 0 (0) / – | 44% / 0 (0) / – | 52% / 0 (0) / – | 84% / 0 (0) / – | 96% / 0 (0) / –; tee_dropped 121904 |
+| tok-dist-b | 20% / 0 (0) / – | 22% / 0 (0) / – | 30% / 0 (0) / – | 40% / 0 (0) / – | 47% / 0 (0) / – | 79% / 0 (0) / – | 90% / 0 (0) / – |
+| tok-edge-1 | 47% / 0 (0) / – | 45% / 0 (0) / – | 47% / 0 (0) / – | 49% / 0 (0) / – | 67% / 0 (0) / – | 64% / 0 (0) / – | 81% / 0 (0) / – |
+| tok-edge-2 | 42% / 0 (0) / – | 46% / 0 (0) / – | 54% / 0 (0) / – | 65% / 0 (0) / – | 83% / 0 (0) / – | 69% / 0 (0) / – | 99% / 418549 (418549) / –; tee_dropped 906593 |
+
+**Which edges served the 4K viewers** (UDP: the clients' own reports; LL-HLS: the playlist's host): an LL-HLS figure from an edge that also served UDP 4K is from an edge sending 4K twice:
+
+| Rung | lon | new | tok | syd |
+| --- | --- | --- | --- | --- |
+| 25 | nano: UDP edge-1, LL-HLS edge-1 (shared); view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-2 (shared); view: UDP edge-2, LL-HLS edge-1 | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-1, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) |
+| 40 | nano: UDP edge-1, LL-HLS edge-1 (shared); view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-2 (shared); view: UDP edge-2, LL-HLS edge-1 | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-1, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) |
+| 80 | nano: UDP edge-1, LL-HLS edge-1 (shared); view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-2 (shared); view: UDP edge-2, LL-HLS edge-1 | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-1, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) |
+| 120 | nano: UDP edge-1, LL-HLS edge-1 (shared); view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-2 (shared); view: UDP edge-2, LL-HLS edge-1 | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-1, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) |
+| 160 | nano: UDP edge-1, LL-HLS edge-1 (shared); view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-2 (shared); view: UDP edge-2, LL-HLS edge-1 | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-1, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) |
+| 240 | nano: UDP edge-1+edge-2, LL-HLS edge-1 (shared); view: UDP edge-1+edge-2+syd-edge-2+tok-edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-1+edge-2, LL-HLS edge-2 (shared); view: UDP edge-1+edge-2, LL-HLS edge-1 (shared) | nano: UDP syd-edge-2+edge-1+edge-2, LL-HLS edge-1 (shared); view: UDP syd-edge-2+edge-1+edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-1+edge-2+tok-edge-1+tok-edge-2, LL-HLS edge-1 (shared); view: UDP edge-1+edge-2+tok-edge-1+tok-edge-2, LL-HLS edge-1+edge-2 (shared) |
+| 320 | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-1, LL-HLS edge-2 | nano: UDP edge-2, LL-HLS edge-2 (shared); view: UDP edge-1+edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-1+edge-2 (shared) | nano: UDP edge-2, LL-HLS edge-1; view: UDP edge-2, LL-HLS edge-2 (shared) |
+
