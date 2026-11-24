@@ -75,7 +75,8 @@ Safety, before anything else:
   it and the slot is not ready before it is complete, so a create's and a
   recovery boot's or rebuild's deadlines have the plan's allowance on top
   (longer than the pass's bound: 300 s for every 4 GB, and 70 s). A new slot edge whose pass says slow_host
-  (/api/node node_warm) and that holds nobody is deleted (proof
+  (/api/node node_warm) is reported (`slow_host` events); with
+  --slow-host-replace one that holds nobody is deleted (proof
   "slow-host") and created again, once a slot (`slow_replaced`); a
   forwarder slot, a standby edge or a slot replaced before is only
   reported (`slow_host` events). The deploy's push is told `--slow-host
@@ -245,6 +246,12 @@ class Config:
     # victim's age). The test runs 0: each instance bills an hour anyway.
     min_age_s: float = 0.0
     warm_pool: bool = True
+    # A new slot edge whose warm pass says slow_host: reported by default
+    # (lead, 24 Nov: the referee's lab flagged 16 of 31 hosts under the old
+    # 1 s rule, and a replacement warmed in 0.4 s; until Linode data shows a
+    # rule that picks out hosts that misbehave after warming).
+    # --slow-host-replace: deleted and created again, once.
+    slow_host_replace: bool = False
     warm_release_s: float = 300.0
     forwarders: bool = False
     lease_k: int = 12
@@ -2064,7 +2071,10 @@ class Controller:
         the replace began."""
         role = node.get("role") or "edge"
         why = None
-        if role != "edge":
+        if not self.config.slow_host_replace:
+            why = ("slow_host is reported only by default (--slow-host-replace replaces a new "
+                   "slot edge once)")
+        elif role != "edge":
             why = "a forwarder is never replaced for slow_host: report only"
         elif not node.get("slot"):
             why = "a standby edge: the deploy's push replaces it once; report only"

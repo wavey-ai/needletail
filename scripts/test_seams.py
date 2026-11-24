@@ -544,11 +544,12 @@ class LocalLabCpus(unittest.TestCase):
 
 class Ledger(unittest.TestCase):
     """(g) The proving lab's numbers, priced by the lab tool's own cost
-    function, are the ones its topology, SCALE.md, PARTY.md,
-    phases-proving.json and C-operations state: 40 nodes at $3.186 an hour,
-    48 at $3.618 with every slot, ceilings 48 and 3.65; the run's two labs
-    of 5 billed hours each hold its groups; the party plan reserves that
-    and prices its own lab with the same function."""
+    function, are the ones its topology, SCALE.md, phases-proving.json and
+    C-operations state: 45 nodes at $3.510 an hour, 53 at $3.942 with every
+    slot, ceilings 53 and 3.95; one lab of 5 billed hours ($17.55, at most
+    $19.71) holds the schedule with the collect and the watchdog's lead; the
+    party plan reserves that and prices its own lab with the same
+    function."""
 
     TYPES = tls.TYPES
     REGIONS = tls.REGIONS
@@ -560,13 +561,16 @@ class Ledger(unittest.TestCase):
         hourly, problems = lab_tool.topology_cost(created, self.TYPES, self.REGIONS)
         every, _ = lab_tool.topology_cost(topology, self.TYPES, self.REGIONS)
         self.assertEqual(problems, [])
-        self.assertEqual((len(created["nodes"]), round(hourly, 3)), (40, 3.186))
-        self.assertEqual((len(topology["nodes"]), round(every, 3)), (48, 3.618))
-        self.assertEqual(scale_topology.ceiling_usd(every), 3.65)
-        two_labs = 2 * lab_tool.billed_hours(0, 5 * 3600)
-        cost, worst = round(two_labs * hourly, 2), round(two_labs * every, 2)
-        self.assertEqual((cost, worst), (31.86, 36.18))
-        ceilings = ("NEEDLETAIL_LINODE_MAX_NODES=48", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65")
+        self.assertEqual((len(created["nodes"]), round(hourly, 3)), (45, 3.51))
+        self.assertEqual((len(topology["nodes"]), round(every, 3)), (53, 3.942))
+        self.assertEqual(scale_topology.ceiling_usd(every), 3.95)
+        one_lab = lab_tool.billed_hours(0, 5 * 3600)
+        cost, worst = round(one_lab * hourly, 2), round(one_lab * every, 2)
+        self.assertEqual((cost, worst), (17.55, 19.71))
+        three = lab_tool.created_part(lab_tool.without_sites(topology, ["sydney"]))
+        hourly3, _ = lab_tool.topology_cost(three, self.TYPES, self.REGIONS)
+        self.assertEqual(round(one_lab * hourly3, 2), 14.04)
+        ceilings = ("NEEDLETAIL_LINODE_MAX_NODES=53", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95")
         scale_md = (LOW_LATENCY / "SCALE.md").read_text()
         proving_md = scale_md[scale_md.index("## The proving run"):]
         proving_md = proving_md[:proving_md.index("\n## ", 5)] if "\n## " in proving_md[5:] \
@@ -580,31 +584,32 @@ class Ledger(unittest.TestCase):
             for figure in ceilings:
                 self.assertIn(figure, text, name)
         for name, text in (("topology", topology["description"]), ("SCALE.md", proving_md),
-                           ("phases-proving.json", phases)):
-            self.assertIn("$3.186", text, name)
-            self.assertIn("$3.618", text, name)
+                           ("phases-proving.json", phases), ("C-operations 7", section7)):
+            self.assertIn("$3.510", text, name)
+            self.assertIn("$3.942", text, name)
         for name, text in (("SCALE.md", proving_md), ("phases-proving.json", phases)):
-            for figure in ("$31.86", "$36.18", "--budget-usd 90"):
+            for figure in ("$17.55", "$14.04", "--budget-usd 100"):
                 self.assertIn(figure, text, name)
-        self.assertNotIn("--budget-usd 60", proving_md)
-        self.assertIn("--budget-usd 90", section7)
+        self.assertIn("$19.71", proving_md)
+        self.assertIn("--budget-usd 100", section7)
         # The party reserves the proving run's worst, priced the same way.
         plan = scale_topology.party_plan()
-        self.assertEqual(plan["proving_usd"], worst)
-        self.assertEqual(scale_topology.PARTY_DEFAULTS["proving_hours"], two_labs)
+        self.assertEqual(round(plan["proving_usd"], 2), worst)
+        self.assertEqual(scale_topology.PARTY_DEFAULTS["proving_hours"], one_lab)
         self.assertIn(f"${worst:.2f} for the proving run",
                       (LOW_LATENCY / "PARTY.md").read_text())
-        # Each lab's groups fit its 5-hour watchdog with 20 minutes of
-        # bring-up, the collect bound and the watchdog's lead before it.
-        minutes = {"N": 59.0, "U": 173.3, "F": 14.9, "R": 99.2, "A": 137.2,
-                   "U3,C1,C2": 25.1}
-        for groups in (("N", "U", "U3,C1,C2"), ("F", "R", "A")):
-            needed_s = (sum(minutes[group] for group in groups) + 20) * 60
-            self.assertLess(needed_s + lab_tool.COLLECT_TIMEOUT_S + lab_tool.WATCHDOG_LEAD_S,
-                            5 * 3600, groups)
+        # The schedule's end (SCALE.md: up to down) and the watchdog: down
+        # done before the watchdog's lead and its collect bound, in 5 h.
+        self.assertIn("| 233-245 | collect", proving_md)
+        end_s = 245 * 60
+        self.assertLess(end_s + lab_tool.COLLECT_TIMEOUT_S + lab_tool.WATCHDOG_LEAD_S, 5 * 3600)
         self.assertLessEqual(5, lab_tool.MAX_LIFE_HOURS)
-        for group, value in minutes.items():
-            self.assertIn(f"{value:.1f}", proving_md, group)
+        # The change groups' minutes as scale-run plans them.
+        for group in ("C1", "C2"):
+            self.assertIn(f"--group {group}", proving_md)
+        for name, value in {"F1": 37.8, "R1": 25.8, "F2": 24.8, "R2": 25.8}.items():
+            self.assertIn(f"| {name} |", proving_md)
+            self.assertIn(f"{value:.1f}", proving_md, name)
 
     def test_the_party_plan_s_cost_lines_are_the_lab_tool_s(self):
         """Every committed party plan: its $/h is the lab tool's

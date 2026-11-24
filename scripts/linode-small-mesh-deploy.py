@@ -717,6 +717,21 @@ DEFAULT_SETTINGS = {
     "mlock": None,
     "stall_tick_us": None,
     "stall_journal_capacity": None,
+    # The memory round (av-mesh rm/mem, .resilient/reports/mem.md; the 4K
+    # sweep of 24 Nov had every mesh node killed by the kernel at 240
+    # Mbit/s). mesh_memory_high and mesh_memory_max: the mesh unit's
+    # MemoryHigh= and MemoryMax= (systemd's share of the host's memory, with
+    # MemoryAccounting=yes and MemorySwapMax=0); None renders no memory line.
+    # mesh_memory_budgets: av-mesh's --video-cache-mb, --memory-soft-mb and
+    # --memory-hard-mb rendered at its own auto shares (10%, 50%, 65%) of
+    # the plan's MemTotal (MESH_MEM_TOTAL_MB). Without them av-mesh takes
+    # its shares of the smaller of MemTotal and the cgroup's memory.high,
+    # which the unit sets to 75%: every budget a quarter smaller (video
+    # cache 294 MB on a g6-dedicated-2, not 392), and at 320 Mbit/s the
+    # playlist window below three target durations. false renders none.
+    "mesh_memory_high": "75%",
+    "mesh_memory_max": "85%",
+    "mesh_memory_budgets": True,
     # The check at boot (D 2.4): with node_warm, or node_check_seconds above
     # 0, every mesh node and the contributor get the oneshot unit
     # needletail-node-check.service (`needletail-nodecheck boot`: a warm
@@ -738,12 +753,22 @@ DEFAULT_SETTINGS = {
     # node; the lab of 24 Nov evening took 83 to 95 s there, and more than
     # 240 s on one Tokyo edge); the unit's TimeoutStartSec, push's wait for
     # an activation and every readiness wait after a boot have more than
-    # that on top. A pass longer than node_warm_slow_seconds_per_4gb for
-    # every 4 GB, or one page write of a second or more, says slow_host
-    # (--slow-seconds-per-4gb, --slow-write-ms). false turns it all off.
+    # that on top. false turns it all off.
+    # The slow-host rule (lead, 24 Nov, after the hunt: its three warmed
+    # edges had single page writes of up to 1.93 s during the pass and then
+    # ran clean for an hour, so one write of a second marks nothing): the
+    # deploy judges each warm record itself (judge_warm) and a host is slow
+    # when the pass took more than node_warm_slow_seconds_per_4gb for every
+    # 4 GB of its memory, or one page write stalled
+    # node_warm_slow_write_ms or more, or more than
+    # node_warm_slow_stall_share_permille of the pass's thread time went in
+    # writes of 100 ms or more. An edge (standby and slot edges included)
+    # that is slow is replaced once; any other host is reported.
     "node_warm": True,
     "node_warm_max_seconds_per_4gb": 300,
     "node_warm_slow_seconds_per_4gb": 180,
+    "node_warm_slow_write_ms": 5000,
+    "node_warm_slow_stall_share_permille": 500,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
@@ -841,7 +866,8 @@ ROLLABLE_SETTINGS = (
 NODE_SETTINGS = ROLLABLE_SETTINGS + (
     "stall_tick_us", "stall_journal_capacity", "node_warm", "node_check_seconds",
     "node_check_max_stop_ms", "node_check_max_steal_permille", "node_warm_max_seconds_per_4gb",
-    "node_warm_slow_seconds_per_4gb", "transparent_hugepage",
+    "node_warm_slow_seconds_per_4gb", "node_warm_slow_write_ms",
+    "node_warm_slow_stall_share_permille", "transparent_hugepage",
 )
 MLOCK_MODES = ("off", "rings")
 # LimitMEMLOCK of every service unit (D 2.3): the rings that --mlock rings
@@ -865,10 +891,12 @@ NODE_CHECK_MAX_SECONDS = 50
 NODE_CHECK_MARGIN_S = mesh_ops.WARM_MARGIN_S
 # The warm pass's flags, rendered explicitly (av-mesh needletail-nodecheck
 # boot): memory left untouched (the referee's warm-guest.py leaves 300 MB
-# too), and slow_host's page write of a second or more (its other bound is
-# node_warm_slow_seconds_per_4gb).
+# too); --slow-write-ms is node_warm_slow_write_ms, so that nodecheck's own
+# slow_host agrees with the deploy's on the write (judge_warm decides).
 NODE_WARM_LEAVE_MB = 300
-NODE_WARM_SLOW_WRITE_MS = 1000
+# The writes that count as stalls in the stall-share rule: nodecheck lists
+# every write of its --stall-ms (100 by default) or more.
+NODE_WARM_STALL_MS = 100
 # transparent_hugepage: what may be written at boot; "unchanged" writes
 # nothing.
 THP_MODES = ("unchanged", "madvise", "never")
@@ -1030,13 +1058,34 @@ def check_stall_settings(settings: dict) -> None:
                          "every boot")
     for key in ("node_check_max_stop_ms", "node_check_max_steal_permille"):
         whole_or_zero(settings.get(key, DEFAULT_SETTINGS[key]), key)
-    for key in ("node_warm_max_seconds_per_4gb", "node_warm_slow_seconds_per_4gb"):
+    for key in ("node_warm_max_seconds_per_4gb", "node_warm_slow_seconds_per_4gb",
+                "node_warm_slow_write_ms", "node_warm_slow_stall_share_permille"):
         value = settings.get(key)
         if value is not None and (isinstance(value, bool) or whole_or_zero(value, key) < 1):
             raise ValueError(f"{key} {value!r} is not a whole number of 1 or more")
+    share = settings.get("node_warm_slow_stall_share_permille")
+    if share is not None and whole(share, "node_warm_slow_stall_share_permille") > 1000:
+        raise ValueError(f"node_warm_slow_stall_share_permille {share!r} is over 1000 (all of "
+                         "the pass)")
     thp = settings.get("transparent_hugepage")
     if thp is not None and thp not in THP_MODES:
         raise ValueError(f"transparent_hugepage {thp!r} is not one of {', '.join(THP_MODES)}")
+    shares = {}
+    for key in ("mesh_memory_high", "mesh_memory_max"):
+        value = settings.get(key)
+        if value is None:
+            continue
+        match = re.fullmatch(r"([1-9][0-9]?)%", str(value))
+        if not match:
+            raise ValueError(f"{key} {value!r} is not a share of the host's memory "
+                             "between 1% and 99% (such as 75%) or null")
+        shares[key] = int(match.group(1))
+    if len(shares) == 2 and shares["mesh_memory_high"] >= shares["mesh_memory_max"]:
+        raise ValueError(f"mesh_memory_high {settings['mesh_memory_high']} is not below "
+                         f"mesh_memory_max {settings['mesh_memory_max']}")
+    if not isinstance(settings.get("mesh_memory_budgets", True), bool):
+        raise ValueError(f"mesh_memory_budgets {settings['mesh_memory_budgets']!r} is not "
+                         "true or false")
 
 
 def warm_max_seconds(settings: dict, node: dict | None) -> int:
@@ -1048,6 +1097,74 @@ def warm_max_seconds(settings: dict, node: dict | None) -> int:
                   or DEFAULT_SETTINGS["node_warm_max_seconds_per_4gb"])
     seconds = mesh_ops.warm_seconds((node or {}).get("type"), per_4gb)
     return per_4gb if seconds is None else seconds
+
+
+def plan_vcpus(kind) -> int | None:
+    """vCPUs of a dedicated plan (g6-dedicated-N: N), None when unknown:
+    the threads of a warm pass (one pinned to each CPU)."""
+    match = re.fullmatch(r"g6-dedicated-([0-9]+)", str(kind or ""))
+    return int(match.group(1)) if match else None
+
+
+def slow_write_ms(settings: dict) -> int:
+    """--slow-write-ms of the warm pass: node_warm_slow_write_ms."""
+    return int(settings.get("node_warm_slow_write_ms")
+               or DEFAULT_SETTINGS["node_warm_slow_write_ms"])
+
+
+def judge_warm(record: dict | None, settings: dict, node: dict | None) -> dict | None:
+    """The deploy's slow-host judgement of a warm record (the rule of
+    DEFAULT_SETTINGS' node_warm_*), written over the record's slow_host and
+    slow_reasons; nodecheck's own are kept as nodecheck_slow_host and
+    nodecheck_slow_reasons. A host is slow when
+      slow-pass     the pass took more than node_warm_slow_seconds_per_4gb
+                    for every 4 GB of its memory (MemTotal as the record
+                    gives it, else its plan's);
+      page-stall    one page write took node_warm_slow_write_ms or more;
+      stall-share   more than node_warm_slow_stall_share_permille of the
+                    pass's thread time (seconds x threads) went in writes of
+                    100 ms or more: the record's stalled_us when nodecheck
+                    gives it, else its listed stalls plus every dropped one
+                    at 100 ms (a lower bound); threads from the record, else
+                    the plan's vCPUs;
+      warm-timeout  the pass did not finish within its limit.
+    A record without a warm pass is returned as it is; None stays None."""
+    if not record or not isinstance(record.get("warm"), dict) or not record["warm"].get("ran", True):
+        return record
+    warm = record["warm"]
+    out = dict(record)
+    out.setdefault("nodecheck_slow_host", record.get("slow_host"))
+    out.setdefault("nodecheck_slow_reasons", record.get("slow_reasons") or [])
+    reasons = []
+    seconds = float(warm.get("seconds") or 0.0)
+    per_4gb = int(settings.get("node_warm_slow_seconds_per_4gb")
+                  or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
+    total_mb = warm.get("mem_total_mb")
+    if total_mb:
+        bound = per_4gb * max(1.0, float(total_mb) / 4096.0)
+    else:
+        bound = mesh_ops.warm_seconds((node or {}).get("type"), per_4gb) or per_4gb
+    if seconds > bound:
+        reasons.append("slow-pass")
+    if int(warm.get("worst_page_us") or 0) >= slow_write_ms(settings) * 1000:
+        reasons.append("page-stall")
+    threads = int(warm.get("threads") or plan_vcpus((node or {}).get("type")) or 1)
+    stalled_us = warm.get("stalled_us")
+    if stalled_us is None:
+        stall_ms = float(warm.get("stall_ms") or NODE_WARM_STALL_MS)
+        stalled_us = (sum(float(item.get("ms") or 0.0) for item in warm.get("stalls") or [])
+                      + int(warm.get("stalls_dropped") or 0) * stall_ms) * 1000.0
+    share = int(settings.get("node_warm_slow_stall_share_permille")
+                or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
+    if seconds > 0 and float(stalled_us) > share / 1000.0 * seconds * 1e6 * threads:
+        reasons.append("stall-share")
+    if warm.get("finished") is False:
+        reasons.append("warm-timeout")
+    out["slow_host"] = bool(reasons)
+    out["slow_reasons"] = reasons
+    out["stall_share_permille"] = (round(float(stalled_us) / (seconds * 1e6 * threads) * 1000)
+                                   if seconds > 0 else None)
+    return out
 
 
 def check_timeout_s(settings: dict, node: dict | None) -> int:
@@ -1440,6 +1557,16 @@ def part_plan(settings: dict) -> dict:
         window_parts = window_parts_for(window_ms, part_us, smallest_us)
         mesh += (["--window-ms", str(window_ms)] if window_parts is None
                  else ["--window-parts", str(window_parts)])
+    # The cache ring of each playlist slot is sized for parts no shorter
+    # than the shortest this deploy publishes (av-mesh's default is 250 µs,
+    # 12 PCM samples): at 1 ms it is 48,000 slots, not 132,000, and its
+    # index on a node of 16 playlists ~100 MB, not ~260 (mem.md 3). A stream
+    # of 1 ms parts with stamps keeps the same window (30 s at
+    # --window-parts 12000 of 2.5 ms); one without stamps keeps 12 s (four
+    # windows in the ring), still more than three target durations; a
+    # shorter part than this (not published by the deploy) keeps a shorter
+    # window, never less than three target durations.
+    mesh += ["--min-part-us", str(int(smallest_us))]
     return {"part_us": part_us, "mesh_args": mesh + hold_back, "audio_part": audio,
             "video_part": video, "pcm_epoch_samples": pcm, "opus_epoch_samples": opus,
             "opus_bitrate": opus_bitrate,
@@ -3442,6 +3569,7 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
         args += yield_to(extra, mesh_class_args(node, args, classes))
         args += yield_to(extra, two_path_args(args, settings))
         args += yield_to(extra, wave7_args(args, settings))
+        args += yield_to(extra, mesh_memory_args(node, settings))
         args += yield_to(extra, stall_args("av-mesh", node, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
@@ -3568,6 +3696,8 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
     thp = thp_mode(settings)
     if thp:
         thread_line += thp_exec_line(thp, "-+")
+    if service == "needletail-mesh":
+        thread_line += mesh_memory_lines(settings)
     # C 2.5: no start limit (with RestartSec=1, five crashes in ten seconds
     # would leave a media node failed for good); a stop is bounded by B's
     # edge drain (--stop-drain-ms 14000) plus the shutdown and a spare
@@ -3597,6 +3727,62 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def mesh_memory_lines(settings: dict) -> str:
+    """The mesh unit's memory lines (mem.md 4): MemoryAccounting=yes,
+    MemoryHigh= and MemoryMax= from mesh_memory_high and mesh_memory_max,
+    and MemorySwapMax=0; none when both are None. On a g6-dedicated-2
+    (MemTotal 3,921 MB) 75% and 85% are 2.9 and 3.3 GB, above av-mesh's
+    guard (soft 1,960 MB, hard 2,548 MB of RSS, mesh_memory_args) with room
+    for the socket and page-cache charges of the cgroup."""
+    high, most = settings.get("mesh_memory_high"), settings.get("mesh_memory_max")
+    if high is None and most is None:
+        return ""
+    lines = "MemoryAccounting=yes\n"
+    if high is not None:
+        lines += f"MemoryHigh={high}\n"
+    if most is not None:
+        lines += f"MemoryMax={most}\n"
+    return lines + "MemorySwapMax=0\n"
+
+
+# MemTotal of a Linode plan as the guest reports it, in MB (nodecheck's
+# mem_total_mb on the labs of 24 Nov); a plan not listed is taken as
+# MESH_MEM_TOTAL_SHARE of its memory (the smallest share measured).
+MESH_MEM_TOTAL_MB = {"g6-dedicated-2": 3921, "g6-dedicated-4": 7947}
+MESH_MEM_TOTAL_SHARE = 3921 / 4096
+# av-mesh's auto shares of the node's memory (mem_guard::share), permille.
+MESH_MEMORY_SHARES = (("--video-cache-mb", 100), ("--memory-soft-mb", 500),
+                      ("--memory-hard-mb", 650))
+
+
+def mesh_mem_total_mb(node: dict) -> int | None:
+    """The MemTotal of a node's plan in MB, None without a known plan (the
+    namespace lab, a test)."""
+    kind = (node or {}).get("type")
+    if kind in MESH_MEM_TOTAL_MB:
+        return MESH_MEM_TOTAL_MB[kind]
+    memory = mesh_ops.plan_memory_gb(kind)
+    return None if memory is None else int(memory * 1024 * MESH_MEM_TOTAL_SHARE)
+
+
+def mesh_memory_args(node: dict, settings: dict) -> list[str]:
+    """av-mesh's memory budgets at its auto shares of the plan's MemTotal
+    (mesh_memory_budgets): on a g6-dedicated-2 --video-cache-mb 392
+    --memory-soft-mb 1960 --memory-hard-mb 2548. Rendered because the
+    unit's MemoryHigh would make auto take its shares of 75% of that. The
+    per-playlist cache and the sockets' budget stay auto (the node's cache;
+    a quarter of the host's UDP pressure threshold). None without a known
+    plan or with mesh_memory_budgets false; each flag only to a binary that
+    has it (binary_takes)."""
+    total = mesh_mem_total_mb(node)
+    if not settings.get("mesh_memory_budgets", True) or total is None:
+        return []
+    pairs = []
+    for name, permille in MESH_MEMORY_SHARES:
+        pairs += [name, str(total * permille // 1000)]
+    return binary_takes("av-mesh", pairs)
 
 
 def thp_exec_line(mode: str, prefix: str = "") -> str:
@@ -3631,9 +3817,11 @@ def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
     if settings.get("node_warm"):
         slow = int(settings.get("node_warm_slow_seconds_per_4gb")
                    or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
+        share = int(settings.get("node_warm_slow_stall_share_permille")
+                    or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
         warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
-                f"{warm_max_seconds(settings, node)} --slow-write-ms {NODE_WARM_SLOW_WRITE_MS} "
-                f"--slow-seconds-per-4gb {slow}")
+                f"{warm_max_seconds(settings, node)} --slow-write-ms {slow_write_ms(settings)} "
+                f"--slow-seconds-per-4gb {slow} --slow-stall-share-permille {share}")
     thp = thp_mode(settings)
     pre = thp_exec_line(thp, "-") if thp else ""
     return f"""[Unit]
@@ -3923,6 +4111,18 @@ for file in "$(dirname "$to")"/*; do
   name=$(basename "$file")
   ln -sfn "$file" "$BIN/.$name.new" && mv -Tf "$BIN/.$name.new" "$BIN/$name"
 done
+# A node taken into service (start, the autoscaler's standby, a roll's
+# surge edge: its service not running) whose boot check left no complete
+# warm record runs it again now, with this build's nodecheck in place
+# (rm/iso: a held-out edge's check ran at push before nodecheck was
+# installed, exited 203, stayed "active" and never ran again, so the node
+# never became ready). Blocks until the pass is done or its unit's
+# TimeoutStartSec; the activation's wait has that on top.
+if [ -f "$UNITS/needletail-node-check.service" ] \
+    && ! grep -qs '"complete": *true' "$RUN/node-warm.json" \
+    && ! systemctl is-active --quiet "$service.service"; then
+  systemctl restart needletail-node-check.service || true
+fi
 systemctl enable --quiet "$service.service" 2>/dev/null
 systemctl restart "$service.service" || finish false "systemctl restart failed"
 finish true ""
@@ -4327,6 +4527,35 @@ def read_warm_record(node: dict) -> dict | None:
         return None
 
 
+# A pass's touch is proved when it wrote nearly all it meant to (what
+# MemAvailable less the reserve allowed) and the process's peak resident
+# set held it (lead, 24 Nov: seven hosts of the referee's lab passed in 0.4 s
+# over 3.3 GB, about 6 GB/s, memory the host had backed already; such a pass
+# must be told from one that touched nothing).
+TOUCH_PROOF_SHARE = 0.9
+
+
+def touch_proof(record: dict | None) -> str | None:
+    """"proved", "NOT PROVED (why)", or None when the record carries no
+    proof (a nodecheck before the touch-proof fields: mapped_mb,
+    pages_written, vm_hwm_mb)."""
+    warm = (record or {}).get("warm") or {}
+    if not warm.get("ran", True) or warm.get("vm_hwm_mb") is None \
+            or warm.get("pages_written") is None:
+        return None
+    written_mb = int(warm["pages_written"]) * 4096 / (1 << 20)
+    meant_mb = max(0, int(warm.get("mem_available_before_mb") or 0)
+                   - int(warm.get("leave_mb") or NODE_WARM_LEAVE_MB))
+    why = []
+    if meant_mb and written_mb < TOUCH_PROOF_SHARE * meant_mb:
+        why.append(f"wrote {written_mb:.0f} of {meant_mb} MB")
+    if int(warm.get("mapped_mb") or 0) < TOUCH_PROOF_SHARE * written_mb:
+        why.append(f"mapped {warm.get('mapped_mb')} MB")
+    if int(warm["vm_hwm_mb"]) < TOUCH_PROOF_SHARE * written_mb:
+        why.append(f"peak RSS {warm['vm_hwm_mb']} MB")
+    return "proved" if not why else "NOT PROVED (" + ", ".join(why) + ")"
+
+
 def warm_word(record: dict | None, settings: dict | None = None) -> str:
     """One word or so for a node's warm record in push's and status's
     lines: "warm ok 64.2s", "warm-timeout", "SLOW HOST page-stall", "warm
@@ -4339,6 +4568,13 @@ def warm_word(record: dict | None, settings: dict | None = None) -> str:
     text = f"warm {record.get('verdict')}" + (f" {seconds}s" if seconds is not None else "")
     if warm.get("worst_page_us") is not None:
         text += f" worst {warm['worst_page_us'] / 1000:.0f}ms"
+    proof = touch_proof(record)
+    if proof is not None:
+        text += (f" wrote {int(warm['pages_written']) * 4096 >> 20}MB of "
+                 f"{warm.get('mem_available_before_mb')}MB available, mapped "
+                 f"{warm.get('mapped_mb')}MB, peak RSS {warm.get('vm_hwm_mb')}MB")
+        if proof != "proved":
+            text += f" TOUCH {proof}"
     if record.get("slow_host"):
         text += f" SLOW HOST {','.join(record.get('slow_reasons') or [])}".rstrip()
     return text
@@ -4347,7 +4583,7 @@ def warm_word(record: dict | None, settings: dict | None = None) -> str:
 # The flags of `needletail-nodecheck boot` that a check unit with the warm
 # pass renders (check_unit_text).
 NODECHECK_WARM_FLAGS = ("--warm-leave-mb", "--warm-max-seconds", "--slow-write-ms",
-                        "--slow-seconds-per-4gb")
+                        "--slow-seconds-per-4gb", "--slow-stall-share-permille")
 
 
 def nodecheck_problem(path: pathlib.Path | None = None) -> str | None:
@@ -4386,10 +4622,23 @@ def warm_entry(record: dict | None) -> dict:
     out = {"verdict": record.get("verdict"), "complete": record.get("complete") is True,
            "slow_host": record.get("slow_host") is True,
            "slow_reasons": record.get("slow_reasons") or [], "unix_us": record.get("unix_us")}
+    # Every figure the slow-host rule is made of, for every host whether or
+    # not it is called slow, so that the rule can be tuned from the data.
     for key in ("seconds", "worst_page_us", "touched_mb", "mem_total_mb",
-                "slow_bound_seconds", "max_seconds", "pages_over_100ms"):
+                "slow_bound_seconds", "max_seconds", "pages_over_1ms", "pages_over_100ms",
+                "stalls_dropped", "stalled_us", "threads", "finished", "thp",
+                "mem_available_before_mb", "leave_mb", "mapped_mb", "pages_written",
+                "vm_hwm_mb"):
         if warm.get(key) is not None:
             out[key] = warm[key]
+    stalls = warm.get("stalls")
+    if isinstance(stalls, list):
+        out["stalls"] = len(stalls)
+        out["stalls_ms"] = round(sum(float(item.get("ms") or 0) for item in stalls), 1)
+    for key in ("nodecheck_slow_host", "nodecheck_slow_reasons", "stall_share_permille"):
+        if key in record:
+            out[key] = record[key]
+    out["touch"] = touch_proof(record)
     return out
 
 
@@ -4439,16 +4688,33 @@ def warm_host(node: dict, settings: dict) -> dict | None:
     return read_warm_record(node)
 
 
-def warm_staged(node: dict, service: str, check_s: float) -> dict | None:
-    """A standby edge's warm pass, held out: its staged check unit put in
-    place (as its activation will) and started now, so that taking it in
-    later (start, the autoscaler) waits for no warm pass; its record."""
+def warm_staged_script(service: str, key: str) -> str:
+    """What warm_staged runs on a held-out node: the staged build's
+    needletail-nodecheck linked into /usr/local/bin first (the activation
+    links every binary of the build, but a held-out node is not activated:
+    rm/iso's standby edge ran its check before nodecheck was there, exit
+    203), the staged check unit put in place, and the check started; run
+    again (restart) when this boot's record is missing or not complete."""
     staged = f"{NODE_ETC}/{service}.check.next"
     unit = f"/etc/systemd/system/{NODE_CHECK_UNIT}"
-    script = (f"set -u\nif [ -f {staged} ] && ! cmp -s {staged} {unit}; then\n"
-              f"  cp {staged} {unit}.tmp && mv -f {unit}.tmp {unit} && systemctl daemon-reload\n"
-              f"fi\nsystemctl start {NODE_CHECK_UNIT} || true\n")
-    common.ssh_text(node, script, check=False, timeout=int(check_s) + 60)
+    nodecheck = f"{NODE_BUILDS}/{key}/needletail-nodecheck"
+    return (f"set -u\nif [ -x {nodecheck} ]; then\n"
+            f"  ln -sfn {nodecheck} /usr/local/bin/.needletail-nodecheck.new "
+            f"&& mv -Tf /usr/local/bin/.needletail-nodecheck.new /usr/local/bin/needletail-nodecheck\n"
+            f"fi\nif [ -f {staged} ] && ! cmp -s {staged} {unit}; then\n"
+            f"  cp {staged} {unit}.tmp && mv -f {unit}.tmp {unit} && systemctl daemon-reload\n"
+            f"fi\nif grep -qs '\"complete\": *true' {NODE_WARM_FILE}; then\n"
+            f"  systemctl start {NODE_CHECK_UNIT} || true\n"
+            f"else\n  systemctl restart {NODE_CHECK_UNIT} || true\nfi\n")
+
+
+def warm_staged(node: dict, service: str, check_s: float, key: str) -> dict | None:
+    """A standby edge's warm pass, held out: its staged build's nodecheck in
+    place, its staged check unit put in place (as its activation will) and
+    run now (warm_staged_script), so that taking it in later (start, the
+    autoscaler) waits for no warm pass; its record."""
+    common.ssh_text(node, warm_staged_script(service, key), check=False,
+                    timeout=int(check_s) + 60)
     return read_warm_record(node)
 
 
@@ -4606,6 +4872,17 @@ def record_deployed(full: dict, entries: dict, settings: dict | None = None,
             deployed["warm"] = {name: item for name, item in
                                 {**(deployed.get("warm") or {}), **(warm or {})}.items()
                                 if name in created}
+            # Every pass of every instance, kept (a replaced instance's
+            # too, with the host it ran on): the rule is tuned from these.
+            history = deployed.setdefault("warm_history", [])
+            seen = {(item.get("node"), item.get("unix_us")) for item in history}
+            for name, item in sorted((warm or {}).items()):
+                if item.get("unix_us") is None or (name, item.get("unix_us")) in seen:
+                    continue
+                node = created.get(name) or {}
+                history.append({"node": name, "role": node.get("role"), "type": node.get("type"),
+                                "host_uuid": node.get("host_uuid"),
+                                "public_ipv4": node.get("public_ipv4"), **item})
 
     lab_tool().change_state(common.state_path(), full, change)
 
@@ -5259,7 +5536,7 @@ class LinodeOps(mesh_ops.Ops):
                     elif own.get("node_warm") and binaries:
                         install_nodecheck(node)
                     if role == "load" or own.get("node_warm"):
-                        self.warm_records[name] = warm_host(node, own)
+                        self.warm_records[name] = judge_warm(warm_host(node, own), own, node)
                         what.append(warm_word(self.warm_records[name], own))
                     return ", ".join(what) or "untouched"
                 if plans[name] is None:
@@ -5269,8 +5546,9 @@ class LinodeOps(mesh_ops.Ops):
                 if name in standby:
                     stop_service(node)
                     if check_unit_wanted(own):
-                        self.warm_records[name] = warm_staged(node, plans[name][0],
-                                                              check_timeout_s(own, node))
+                        self.warm_records[name] = judge_warm(warm_staged(
+                            node, plans[name][0], check_timeout_s(own, node), plans[name][1]),
+                            own, node)
                         return f"staged, held out, {warm_word(self.warm_records[name], own)}"
                     return "staged, held out"
                 result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000),
@@ -5282,7 +5560,7 @@ class LinodeOps(mesh_ops.Ops):
                     raise RuntimeError(f"activation: {result['why']}")
                 qdisc_checked(name, result.get("qdisc"), self.settings)
                 if check_unit_wanted(own):
-                    self.warm_records[name] = read_warm_record(node)
+                    self.warm_records[name] = judge_warm(read_warm_record(node), own, node)
                     return f"activated, {warm_word(self.warm_records[name], own)}"
                 return "activated"
 
@@ -5563,6 +5841,16 @@ class LinodeOps(mesh_ops.Ops):
                 "rebuild --resume`")
         if result.returncode != 0:
             raise RuntimeError(f"the lab tool's replace of {node} failed")
+        self.wait_booted(node)
+
+    def wait_booted(self, node: str) -> None:
+        """A new or rebuilt instance is `running` to the API before its
+        sshd answers: wait for it (common.wait_ssh, bounded), or fail for
+        this node alone, named."""
+        if not common.wait_ssh([self.full["nodes"][node]]):
+            raise RuntimeError(f"{node}: the new instance's ssh did not answer within "
+                               f"{common.SSH_WAIT_S:g} s; it is not pushed (push --nodes "
+                               f"{node} once it answers)")
 
     def address_dependents(self, node: str) -> list[str]:
         """The running nodes (recorded, not held out) whose arguments name
@@ -5616,6 +5904,7 @@ class LinodeOps(mesh_ops.Ops):
                                f"`linode-small-mesh-lab.py grow`, then `push --nodes {node}`")
         if result.returncode != 0:
             raise RuntimeError(f"the lab tool's replace of {node} failed")
+        self.wait_booted(node)
         bootstrap([self.full["nodes"][node]])
         self.install([node], None)
 
@@ -5807,7 +6096,7 @@ def save_slow_hosts(ledger: dict) -> None:
     path.with_suffix(".next").replace(path)
 
 
-def slow_host_decision(node: dict, replaced_before: bool, mode: str = "replace") -> tuple[str, str]:
+def slow_host_decision(node: dict, replaced_before: bool, mode: str = "report") -> tuple[str, str]:
     """What push does with a node whose warm pass says slow_host: ("replace",
     why) for an edge (a standby edge or an autoscale slot edge included)
     not replaced for it before; ("report", why) for everything else: a
@@ -5822,7 +6111,8 @@ def slow_host_decision(node: dict, replaced_before: bool, mode: str = "replace")
     if replaced_before:
         return "report", "replaced once for slow_host already: report only"
     if mode != "replace":
-        return "report", f"--slow-host {mode}"
+        return "report", ("reported only (the default; push --slow-host replace replaces an "
+                          "edge once)")
     return "replace", "an edge on a slow host: replaced once (lab replace --mode new, then push)"
 
 
@@ -5932,7 +6222,7 @@ def command_push(args: argparse.Namespace) -> None:
         except mesh_ops.Refused as refused:
             print(refused, file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
-        problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "replace"))
+        problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "report"))
         if ops.warm_records:
             print(warm_summary(ops.warm_records), file=sys.stderr)
         if problems:
@@ -6107,8 +6397,11 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
 
     results = common.parallel(list(state["nodes"].values()), probe)
     warm_lines = {}
+    deployed_settings = {**DEFAULT_SETTINGS,
+                         **((state.get("deployed") or {}).get("settings") or {})}
     for name, text in list(results.items()):
-        results[name], warm_lines[name] = split_status_probe(text)
+        results[name], warm_lines[name] = split_status_probe(
+            text, node_own_settings(deployed_settings, name), state["nodes"][name])
     targets = {name: (node["public_ipv4"],
                       CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT, "/api/node")
                for name, node in state["nodes"].items()
@@ -6139,14 +6432,18 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
         print(line)
 
 
-def split_status_probe(text: str) -> tuple[str, tuple[str, dict | None]]:
+def split_status_probe(text: str, settings: dict | None = None,
+                       node: dict | None = None) -> tuple[str, tuple[str, dict | None]]:
     """A node's status probe output: its service line, and ("warm=... thp=...",
-    its warm record) from the probe's THP and WARM lines."""
+    its warm record) from the probe's THP and WARM lines, the record judged
+    by the deploy's slow-host rule (judge_warm) with `settings`."""
     lines = (text or "").splitlines()
     main = [line for line in lines if not line.startswith(("THP ", "WARM "))]
     thp = next((line[4:].strip() for line in lines if line.startswith("THP ")), "") or "-"
     record = next((parse_warm_record(line[5:]) for line in lines if line.startswith("WARM ")),
                   None)
+    if settings is not None:
+        record = judge_warm(record, settings, node)
     active = re.search(r"\[([a-z]+)\]", thp)
     return " ".join(main), (f"[{warm_word(record)}] thp={active.group(1) if active else thp}",
                             record)
@@ -6163,6 +6460,17 @@ def warm_status(state: dict, records: dict) -> list[str]:
                       if not (record or {}).get("complete")), key=mesh_ops.natural)
     lines.append("warm pass: " + (f"not complete on {', '.join(missing)}" if missing
                                   else f"complete on all {len(records)} host(s)"))
+    proofs = {name: touch_proof(record) for name, record in records.items()}
+    unproved = sorted((name for name, proof in proofs.items() if proof and proof != "proved"),
+                      key=mesh_ops.natural)
+    unknown = sorted((name for name, proof in proofs.items() if proof is None
+                      and (records[name] or {}).get("warm")), key=mesh_ops.natural)
+    if unproved:
+        lines.append("warm touch NOT proved on " + ", ".join(
+            f"{name} {proofs[name][len('NOT PROVED '):]}" for name in unproved))
+    if unknown:
+        lines.append("warm touch unknown (a nodecheck without mapped_mb, pages_written, "
+                     "vm_hwm_mb) on " + ", ".join(unknown))
     for name in sorted(records, key=mesh_ops.natural):
         record = records[name]
         if not (record or {}).get("slow_host"):
@@ -6204,7 +6512,30 @@ def node_summary(document, entry: dict | None) -> str:
         served = (f" node_warm={warm.get('verdict')}"
                   + (" slow_host" if warm.get("slow_host") else ""))
     return (f" build={status.build_git}-{status.build_unix} state={status.state} "
-            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}{served}")
+            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}{served}"
+            f"{memory_summary(document)}")
+
+
+def memory_summary(document) -> str:
+    """A mesh node's memory from its /api/node `memory` (av-mesh rm/mem):
+    the guard's state, RSS and its peak, the video caches against their
+    budget, and the guard's sheds and refusals; "" when it serves none (a
+    contributor, an older build)."""
+    memory = document.get("memory") if isinstance(document, dict) else None
+    if not isinstance(memory, dict):
+        return ""
+
+    def mb(key):
+        value = memory.get(key)
+        return "-" if value is None else f"{round(float(value) / 1048576)}MB"
+
+    text = (f" memory={memory.get('state', '-')} rss={mb('rss_bytes')} "
+            f"peak={mb('rss_peak_bytes')} cache={mb('video_cache_bytes')}"
+            f"/{mb('video_cache_budget_bytes')}")
+    counts = [f"{key}={memory[key]}" for key in ("soft_entries", "hard_entries",
+                                                  "refused_large_playlists", "socket_clamped")
+              if memory.get(key)]
+    return text + (" " + " ".join(counts) if counts else "")
 
 
 def deployed_summary(state: dict) -> list[str]:
@@ -6228,6 +6559,145 @@ def deployed_summary(state: dict) -> list[str]:
         lines.append(f"unfinished: {journal.data.get('label') or journal.data.get('command')} "
                      f"({journal.path.name}): " + (", ".join(left) or "no node in hand"))
     return lines
+
+
+# ------------------------------------------------------------ memory sampler
+
+# The memory round's sampler (mem.md 5): on every mesh node and contributor,
+# once a second, the service's RSS and peak, /api/node's `memory` and each
+# stream's window_parts and head_part, the service cgroup's memory.current,
+# memory.stat (anon, sock, file) and memory.events (high, max, oom,
+# oom_kill), the host's UDP memory (/proc/net/sockstat) and UDP receive
+# buffer and memory errors (/proc/net/snmp, cumulative). One JSON line a
+# second in NODE_RUNS/memory/, which `collect` brings home under the node's
+# samplers/.
+MEMORY_SAMPLER_DIR = "/var/lib/needletail-runs/memory"  # under NODE_RUNS
+MEMORY_SAMPLER_PID = "/run/needletail-memory-sampler.pid"
+MEMORY_SAMPLER = r"""
+import json, os, ssl, subprocess, sys, time, urllib.request
+port, out, interval = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+context = ssl.create_default_context()
+context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+
+
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def pairs(text, keys, separator=" "):
+    found = {}
+    for line in (text or "").splitlines():
+        key, _, value = line.partition(separator)
+        if key.strip() in keys:
+            try:
+                found[key.strip()] = int(value.split()[0])
+            except (IndexError, ValueError):
+                pass
+    return found
+
+
+def snmp_udp():
+    lines = [line.split() for line in (read("/proc/net/snmp") or "").splitlines()
+             if line.startswith("Udp:")]
+    if len(lines) < 2:
+        return {}
+    row = dict(zip(lines[0][1:], lines[1][1:]))
+    return {key: int(row[key]) for key in ("RcvbufErrors", "MemErrors", "InErrors") if key in row}
+
+
+def sockstat_udp():
+    for line in (read("/proc/net/sockstat") or "").splitlines():
+        if line.startswith("UDP:"):
+            fields = line.split()[1:]
+            return {fields[i]: int(fields[i + 1]) for i in range(0, len(fields) - 1, 2)}
+    return {}
+
+
+next_at = time.time()
+with open(out, "a", buffering=1) as sink:
+    while True:
+        row = {"unix": round(time.time(), 3)}
+        procs, cgroup = {}, None
+        for name in ("av-mesh", "av-contrib"):
+            found = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True).stdout
+            for pid in found.split():
+                status = pairs(read(f"/proc/{pid}/status"), ("VmRSS", "VmHWM"), ":")
+                procs[f"{name}:{pid}"] = {"rss_kb": status.get("VmRSS"),
+                                          "hwm_kb": status.get("VmHWM")}
+                for line in (read(f"/proc/{pid}/cgroup") or "").splitlines():
+                    if line.startswith("0::"):
+                        cgroup = "/sys/fs/cgroup" + line[3:].strip()
+        row["procs"] = procs
+        if cgroup:
+            current = read(f"{cgroup}/memory.current")
+            row["cgroup"] = {
+                "path": cgroup,
+                "current": int(current) if current and current.strip().isdigit() else None,
+                "stat": pairs(read(f"{cgroup}/memory.stat"), ("anon", "sock", "file")),
+                "events": pairs(read(f"{cgroup}/memory.events"),
+                                ("high", "max", "oom", "oom_kill")),
+            }
+        try:
+            with urllib.request.urlopen(f"https://127.0.0.1:{port}/api/node",
+                                        timeout=max(0.5, interval * 0.8),
+                                        context=context) as answer:
+                document = json.load(answer)
+            row["memory"] = document.get("memory")
+            row["streams"] = [{key: item.get(key) for key in
+                               ("stream_id", "window_parts", "head_part")}
+                              for item in document.get("streams") or []]
+        except Exception as error:
+            row["api_error"] = str(error)[:160]
+        row["udp_sockstat"] = sockstat_udp()
+        row["udp_snmp"] = snmp_udp()
+        sink.write(json.dumps(row, separators=(",", ":")) + "\n")
+        next_at += interval
+        time.sleep(max(0.0, next_at - time.time()))
+"""
+
+
+def memory_sampler_start_script(node: dict, stamp: str, interval_s: float) -> str:
+    """What one ssh runs to start a node's memory sampler (one at a time: an
+    earlier one is stopped first)."""
+    port = CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT
+    out = f"{MEMORY_SAMPLER_DIR}/memory-{stamp}.ndjson"
+    return (f"{memory_sampler_stop_script()}; mkdir -p {MEMORY_SAMPLER_DIR} && "
+            f"cat >{MEMORY_SAMPLER_DIR}/sampler.py <<'EOS'\n{MEMORY_SAMPLER}EOS\n"
+            f"(setsid nohup python3 {MEMORY_SAMPLER_DIR}/sampler.py {port} {out} {interval_s} "
+            f">{MEMORY_SAMPLER_DIR}/sampler.log 2>&1 </dev/null & echo $! >{MEMORY_SAMPLER_PID}); "
+            f"echo {out}")
+
+
+def memory_sampler_stop_script() -> str:
+    return (f"[ -f {MEMORY_SAMPLER_PID} ] && kill $(cat {MEMORY_SAMPLER_PID}) 2>/dev/null; "
+            f"rm -f {MEMORY_SAMPLER_PID}; true")
+
+
+def memory_sampler_nodes(state: dict) -> list[dict]:
+    return [node for node in state["nodes"].values()
+            if node["role"] in mesh_ops.ROLE_TIER and node.get("public_ipv4")]
+
+
+def command_memory_sample(args: argparse.Namespace) -> None:
+    """Start (or stop) the memory sampler on every mesh node and the
+    contributor. Its files stay on the nodes until `collect`."""
+    state = common.load_state()
+    nodes = memory_sampler_nodes(state)
+    if args.action == "start":
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        script = lambda node: memory_sampler_start_script(node, stamp, args.interval_s)
+    else:
+        script = lambda node: memory_sampler_stop_script()
+    results = common.parallel(nodes, lambda node: common.ssh(node, script(node), check=False,
+                                                             timeout=60).returncode)
+    for name in sorted(results):
+        print(f"{name}: memory sampler {args.action} "
+              + ("ok" if results[name] == 0 else f"FAILED ({results[name]})"))
 
 
 # ------------------------------------------------------------ collect (the run archive)
@@ -6575,6 +7045,14 @@ def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
                                              mesh_ops.natural(item[0]))},
                    "lab", "the physical Linode host of every node (host_uuid as the lab tool's "
                           "`hosts` recorded it in the lab state; null: never recorded)")
+    if deployed.get("warm") or deployed.get("warm_history"):
+        run.write_json(f"lab/warm.{stamp}.json",
+                       {"current": deployed.get("warm") or {},
+                        "history": deployed.get("warm_history") or []},
+                       "lab", "every host's boot warm pass: seconds, worst write (us), stalls, "
+                              "the stall share (per mille), nodecheck's and the deploy's "
+                              "slow-host reasons; `history` every pass of every instance, "
+                              "replaced ones with their host, whether or not called slow")
     if deployed:
         run.write_json(f"lab/deployed.{stamp}.json", scrubbed_record(deployed), "lab",
                        "the deployed record: settings in force, routes and ports digests, each "
@@ -6841,10 +7319,12 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--remeasure", action="store_true")
     push.add_argument("--skip-bootstrap", action="store_true")
     push.add_argument("--skip-binaries", action="store_true")
-    push.add_argument("--slow-host", choices=("replace", "report"), default="replace",
-                      help="an edge whose warm pass at this push says slow_host: replaced "
-                           "once (lab replace --mode new, then pushed), or only reported; "
-                           "any other role is only reported")
+    push.add_argument("--slow-host", choices=("replace", "report"), default="report",
+                      help="an edge whose warm pass at this push says slow_host: only "
+                           "reported (the default, lead 24 Nov: until Linode data shows a rule "
+                           "that picks out hosts that misbehave after warming), or replaced "
+                           "once (lab replace --mode new, then pushed); any other role is "
+                           "only reported")
     push.add_argument("--nodes", default=None,
                       help="comma-separated: bootstrap, install and start only these (taken "
                            "into service) on their tier's recorded build; every other node is "
@@ -6915,6 +7395,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="hunt while edges serve: every remote region goes silent")
     hunt.set_defaults(handler=command_hunt)
     sub.add_parser("status").set_defaults(handler=command_status)
+    memory = sub.add_parser("memory-sample", help="the memory sampler on every mesh node and the "
+                                                  "contributor: RSS, /api/node memory, cgroup and "
+                                                  "UDP memory once a second, until stopped "
+                                                  "(collect brings its files home)")
+    memory.add_argument("action", choices=("start", "stop"))
+    memory.add_argument("--interval-s", type=float, default=1.0)
+    memory.set_defaults(handler=command_memory_sample)
     collect = sub.add_parser("collect", help="every node's journal, API and samplers, and the "
                                              "lab's files, into the run archive")
     collect.add_argument("--run-id", required=True, help="the lab's run id (its archive run)")

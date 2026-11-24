@@ -12,6 +12,7 @@ python3 -m unittest scripts/test_edge_lab_limits.py"""
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -891,6 +893,61 @@ class RealTime(Isolated):
         # node_cpus: own CPUs anyway, two each.
         first = lab.node_cpu_sets(STANDING, first=0, per_node=lab.RT_CPUS)
         self.assertEqual(first[CONTRIBUTOR], [0, 1])
+
+    def test_a_service_between_execs_is_running_and_a_zombie_is_not(self):
+        live = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(live.kill)
+        zombie = subprocess.Popen(["true"])
+        deadline = time.time() + 5
+        while time.time() < deadline and \
+                pathlib.Path(f"/proc/{zombie.pid}/stat").read_text().rpartition(")")[2].split()[0] != "Z":
+            time.sleep(0.01)
+        self.addCleanup(zombie.wait)
+        lab.save("services.json", {"live": {"pid": live.pid}, "zombie": {"pid": zombie.pid},
+                                   "gone": {"pid": dead_pid()}})
+        self.assertEqual(lab.service_pid("live"), live.pid)
+        self.assertIsNone(lab.service_pid("zombie"))
+        self.assertIsNone(lab.service_pid("gone"))
+        # In the middle of an exec /proc/<pid>/cmdline reads empty: still running.
+        real = pathlib.Path.read_bytes
+        with mock.patch.object(pathlib.Path, "read_bytes", lambda path: b"" if
+                               path.name == "cmdline" else real(path)):
+            self.assertEqual(lab.service_pid("live"), live.pid)
+            self.assertIsNone(lab.service_pid("zombie"))
+
+    def test_a_video_feed_never_takes_the_senders_own_cpu(self):
+        # Local proof 3: in the own-CPU layout the 4K feed ran on the
+        # sender's CPU 31 and the AEP1 sender's lateness went to 3.6 ms.
+        sets = lab.own_cpu_sets([name for name, role, *_ in lab.NODES if role != "backbone"])
+        self.a_lab_that_is_up(sets, [lab.SOURCE_HOST])
+        self.assertEqual(lab.source_prefix()[-3:], ["taskset", "-c", "31"])
+        tools = lab.cpu_list(lab.rest_split(sets)["tools"])
+        self.assertEqual(lab.source_prefix(video=True)[-3:], ["taskset", "-c", tools])
+        self.assertNotIn("31", tools.split(","))
+        # Without a CPU of the sender's own, a feed goes where the sender does.
+        plain = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31))
+        self.a_lab_that_is_up(plain, [lab.SOURCE_HOST])
+        self.assertEqual(lab.source_prefix(video=True), lab.source_prefix())
+
+    def test_a_node_setting_that_does_not_take_is_named(self):
+        lab.save("sysctls.json", {"net.core.rmem_max": "134217728",
+                                  "net.ipv4.udp_mem": "1 2 3"})
+        read = {"net.core.rmem_max": "4194304", "net.ipv4.udp_mem": "1\t2\t3"}
+        with mock.patch.object(lab, "sh_in", lambda name, script, check=True, timeout=60:
+                               read[script.split()[-1].strip("'")]):
+            seen = lab.sysctl_values("lon-edge-1", ["net.core.rmem_max", "net.ipv4.udp_mem"])
+        self.assertEqual(seen, {"net.core.rmem_max": "4194304", "net.ipv4.udp_mem": "1 2 3"})
+        self.assertEqual(lab.sysctls_not_applied(lab.load("sysctls.json"), seen),
+                         {"net.core.rmem_max": {"wanted": "134217728", "node_has": "4194304"}})
+        # As up calls it: the rendered nodes are a dict of name -> render.
+        with mock.patch.object(lab, "sh_in", lambda name, script, check=True, timeout=60:
+                               read[script.split()[-1].strip("'")]), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            short = lab.report_sysctls({"lon-edge-1": {}, "lon-edge-2": {}},
+                                       lab.load("sysctls.json"))
+        self.assertEqual(list(short), ["net.core.rmem_max"])
+        self.assertEqual(lab.load("sysctls-not-applied.json"), short)
+        self.assertIn("sudo sysctl -w net.core.rmem_max=134217728", err.getvalue())
 
     def test_the_node_raises_its_own_limits_and_runs_as_the_user(self):
         sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)

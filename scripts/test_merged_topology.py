@@ -1690,6 +1690,79 @@ class Activation(unittest.TestCase):
         self.assertTrue(self.activate()[1]["ok"])
         self.assertNotIn("daemon-reload", self.calls())
 
+    def test_a_held_out_node_taken_in_without_a_complete_warm_record_runs_its_check(self):
+        """rm/iso: a held-out edge's boot check ran at push before
+        needletail-nodecheck was installed (exit 203) and, a oneshot that
+        stays active, never ran again: the node never became ready when it
+        was started. Its activation (start, the autoscaler's standby, a
+        roll's surge edge: the service not running) reruns the check after
+        the build's binaries are linked and before the service starts, when
+        this boot's record is missing or not complete; never on a node whose
+        service runs, nor with a complete record."""
+        check = self.units / "needletail-node-check.service"
+        check.write_text("check\n")
+        inactive = self.root / "inactive"
+        (self.root / "stubs" / "systemctl").write_text(
+            f"#!/bin/sh\necho \"systemctl $*\" >>{self.log}\n"
+            f"if [ \"$1 $2\" = \"is-active --quiet\" ] && [ -f {inactive} ]; then exit 3; fi\n")
+        (self.root / "builds" / "b" / "needletail-nodecheck").write_text("#!/bin/sh\n")
+        (self.root / "builds" / "b" / "needletail-nodecheck").chmod(0o755)
+        rerun = "systemctl restart needletail-node-check.service"
+        for record, held_out, wanted in ((None, True, True),
+                                         ('{"complete":false,"verdict":"stops"}', True, True),
+                                         ('{"complete":true,"verdict":"ok"}', True, False),
+                                         (None, False, False)):
+            with self.subTest(record=record, held_out=held_out):
+                warm = self.run_dir / "node-warm.json"
+                warm.unlink(missing_ok=True)
+                if record is not None:
+                    self.run_dir.mkdir(exist_ok=True)
+                    warm.write_text(record + "\n")
+                inactive.unlink(missing_ok=True)
+                if held_out:
+                    inactive.write_text("")
+                self.log.unlink(missing_ok=True)
+                self.stage("b")
+                self.assertTrue(self.activate()[1]["ok"])
+                calls = self.calls().splitlines()
+                self.assertEqual(rerun in calls, wanted, calls)
+                if wanted:
+                    # After the binaries are linked, before the service.
+                    self.assertEqual(os.readlink(self.bin / "needletail-nodecheck"),
+                                     f"{self.root}/builds/b/needletail-nodecheck")
+                    self.assertLess(calls.index(rerun),
+                                    calls.index(f"systemctl restart {self.SERVICE}.service"))
+
+    def test_a_held_out_node_s_warm_pass_has_its_build_s_nodecheck(self):
+        """push's warm pass of a standby edge (warm_staged): the staged
+        build's nodecheck linked before the check unit is started, and the
+        check run again when this boot's record is missing or not complete."""
+        script = deploy.warm_staged_script("needletail-mesh", "abc-1")
+        link = script.index("ln -sfn /opt/needletail/builds/abc-1/needletail-nodecheck")
+        self.assertLess(link, script.index("systemctl start needletail-node-check.service"))
+        self.assertLess(link, script.index("systemctl restart needletail-node-check.service"))
+        self.assertIn("/usr/local/bin/needletail-nodecheck", script)
+        root = self.root / "staged"
+        (root / "builds" / "abc-1").mkdir(parents=True)
+        nodecheck = root / "builds" / "abc-1" / "needletail-nodecheck"
+        nodecheck.write_text("#!/bin/sh\n")
+        nodecheck.chmod(0o755)
+        (root / "bin").mkdir()
+        (root / "run").mkdir()
+        local = (script.replace("/opt/needletail/builds", str(root / "builds"))
+                 .replace("/usr/local/bin", str(root / "bin"))
+                 .replace("/run/needletail", str(root / "run"))
+                 .replace("/etc/needletail", str(root / "etc"))
+                 .replace("/etc/systemd/system", str(root / "units")))
+        for record, verb in ((None, "restart"), ('{"complete":true}', "start")):
+            if record:
+                (root / "run" / "node-warm.json").write_text(record)
+            self.log.unlink(missing_ok=True)
+            subprocess.run(["bash", "-c", local], env=self.env, check=True, timeout=30)
+            self.assertEqual(os.readlink(root / "bin" / "needletail-nodecheck"), str(nodecheck))
+            self.assertEqual(self.calls().splitlines(),
+                             [f"systemctl {verb} needletail-node-check.service"])
+
     def test_the_staged_host_qdisc_checks_every_nic(self):
         """The qdisc the deploy stages (node_files) fails when a NIC does
         not show it, so the activation refuses before it puts anything in

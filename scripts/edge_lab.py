@@ -1585,6 +1585,43 @@ def sh_in(name: str | None, script: str, check: bool = True, timeout: float = 60
     return run_in(name, ["bash", "-c", script], check=check, timeout=timeout)
 
 
+def sysctls_not_applied(wanted: dict, seen: dict) -> dict:
+    """{key: {"wanted", "node_has"}} of the settings a node does not have
+    as wanted (whitespace aside)."""
+    return {key: {"wanted": value, "node_has": seen.get(key)}
+            for key, value in wanted.items() if seen.get(key) != " ".join(str(value).split())}
+
+
+def report_sysctls(rendered, sysctls: dict) -> dict:
+    """Read the node settings back from the first of the `rendered` nodes
+    (a dict or list of names), record those that did not take in
+    sysctls-not-applied.json and name each on stderr with the host command
+    that sets it. The record."""
+    names = list(rendered)
+    if not names or not sysctls:
+        return {}
+    short = sysctls_not_applied(sysctls, sysctl_values(names[0], list(sysctls)))
+    save("sysctls-not-applied.json", short)
+    for key, item in short.items():
+        print(f"edge_lab: node sysctl {key}={item['wanted']} did not take in the lab's "
+              f"namespaces (they have {item['node_has']}); a host setting: "
+              f"`sudo sysctl -w {key}={item['wanted']}` on the host", file=sys.stderr)
+    return short
+
+
+def sysctl_values(name: str, keys: list[str]) -> dict[str, str | None]:
+    """{key: value} of kernel settings as node `name` reads them (None when
+    it cannot read one)."""
+    out: dict[str, str | None] = {}
+    for key in keys:
+        try:
+            text = sh_in(name, f"sysctl -n {shlex.quote(key)}", check=False).strip()
+        except Exception:  # noqa: BLE001 - a setting the node cannot read is reported as None
+            text = ""
+        out[key] = " ".join(text.split()) or None
+    return out
+
+
 # ------------------------------------------------------------------ networks
 
 def link_names(name: str) -> dict:
@@ -2216,7 +2253,18 @@ def service_pid(name: str) -> int | None:
         command = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return None
-    return pid if command else None
+    if command:
+        return pid
+    # An empty command line is a zombie, or a live process in the middle of
+    # an exec (a start is systemd-run, nsenter, taskset, then the service):
+    # local proof 3's crash of new-dist-a read it 76 ms after the start and
+    # called the node stopped again. Only a zombie or a gone one is gone.
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    state = stat.rpartition(")")[2].split()[:1]
+    return None if state in (["Z"], ["X"]) else pid
 
 
 def cgroup_dir(name: str) -> pathlib.Path | None:
@@ -2520,6 +2568,12 @@ def up(overrides: list[str], start: bool = True) -> dict:
         script = "; ".join(f"sysctl -qw {key}={value}" for key, value in sysctls.items())
         for name in rendered:
             sh_in(name, script, check=False)
+        # A setting that is not the namespace's own (net.core.rmem_max is
+        # the host's) cannot be written from inside the lab and failed
+        # silently: local proof 3's nodes kept the host's 4 MiB, so no
+        # socket buffer grew past 8 MiB and the 4K edges dropped on the
+        # cache mesh. Say which did not take, and what the nodes have.
+        report_sysctls(rendered, sysctls)
     # The host qdisc of this run's settings (the links were built before
     # they were rendered).
     save("qdisc.json", {})
@@ -2606,13 +2660,20 @@ def contributor_targets() -> list[str]:
     return small_mesh_common.contributor_targets(lab_state())
 
 
-def source_prefix() -> list[str]:
+def source_prefix(video: bool = False) -> list[str]:
     """Command prefix of a source: in lon-src's namespace and the lab's tools
     scope, on lon-src's own CPUs (a starved sender looks like a mesh stall),
-    or on the readers' CPUs in a lab without them."""
+    or on the readers' CPUs in a lab without them. `video`: a video feed. In
+    a layout that gives the audio sender a CPU of its own ("_source": own_cpus,
+    rt), a feed of hundreds of Mbit/s there starves the sender (local proof 3:
+    the AEP1 sender's lateness p99 0.35 -> 3.6 ms beside 4K at 247), so it
+    runs on the tools' CPUs of the rest (rest_split) instead."""
     prefix = nsenter(SOURCE_HOST)
     join_tools()
-    cpus = node_cpus(SOURCE_HOST) or load("cpus.json").get("_rest")
+    sets = load("cpus.json")
+    cpus = node_cpus(SOURCE_HOST) or sets.get("_rest")
+    if video and sets.get("_source"):
+        cpus = rest_split(sets).get("tools") or sets.get("_rest") or cpus
     if cpus:
         prefix += ["taskset", "-c", cpu_list(cpus)]
     return prefix
@@ -2641,7 +2702,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         for index, (stream, *_rest) in enumerate(LADDER):
             command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
                         "-f", "flv", f"rtmp://{{host}}:{RTMP_PORT}/live/{stream}"]
-        process = subprocess.Popen(source_prefix() + feed + command, stdout=log, stderr=log,
+        process = subprocess.Popen(source_prefix(video=True) + feed + command, stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()
@@ -2656,14 +2717,14 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                    + shlex.join(feed + ["-hide_banner", "-loglevel", "error", "-f", "flv",
                                         "-i", "pipe:0", "-c", "copy", "-f", "flv",
                                         f"rtmp://{{host}}:{RTMP_PORT}/live/needletail-lab"]))
-        process = subprocess.Popen(source_prefix() + ["sh", "-c", command], stdout=log, stderr=log,
+        process = subprocess.Popen(source_prefix(video=True) + ["sh", "-c", command], stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()
     if video and "video" not in sources:
         log = open(WORK / "logs" / "source-video.log", "ab")
         process = subprocess.Popen(
-            source_prefix() + feed + [
+            source_prefix(video=True) + feed + [
                 "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
                 # A 4K clip of 120 Mbit/s or more holds its first audio
                 # packet past the default 5 MB probe: without a longer one

@@ -731,8 +731,33 @@ CLOCK_TICK_MS = 10.0
 # heartbeat ran (one line a second at least).
 HEARTBEAT_COVER_US = 3_000_000
 CLASS_THREAD = "needletail-fast"
-REFEREE_CLASSES = ("not run", "kernel, interrupts off", "blocked in our code",
-                   "waited for input", "no sampler")
+# "kernel, interrupts off" (a service thread's system time rose over the
+# stop) is gone (hunt11241537): a vCPU that is not run charges the time to
+# the thread that was current on it, so the system time rises just the same
+# (lon-edge-4: +1.41 s over 1.25 s of missing ticks). The kernel is named
+# only by its own soft-lockup reports, which carry where it was.
+REFEREE_CLASSES = ("not run", "kernel", "blocked in our code", "waited for input",
+                   "no sampler")
+# A stack dump of a thread taken this soon after a stop tells where it was.
+STACKS_AFTER_US = 3_000_000
+# Where a service thread waits when nothing is wrong (wchan of a stack line).
+NORMAL_WAITS = ("do_epoll_wait", "ep_poll", "futex_wait_queue", "futex_wait",
+                "futex_wait_queue_me", "do_sys_poll", "do_select", "core_sys_select",
+                "hrtimer_nanosleep", "do_nanosleep", "unix_stream_read_generic",
+                "inet_csk_accept", "sk_wait_data", "pipe_read", "wait_woken", "do_wait",
+                "__skb_wait_for_more_packets", "-", "0")
+# What a soft lockup's RIP and call trace say the kernel was doing.
+LOCKUP_WORK = (("collapse_huge_page", "khugepaged zeroing a huge page to collapse into"),
+               ("do_huge_pmd_anonymous_page", "zeroing a fresh huge page on first touch"),
+               ("do_anonymous_page", "zeroing a fresh page on first touch"),
+               ("do_wp_page", "zeroing a fresh page on first write (copy on write)"),
+               ("clear_page", "zeroing fresh pages"),
+               ("compact_zone", "memory compaction"),
+               ("shrink_", "memory reclaim"))
+# The functions of a lockup's trace that say what it was, quoted with it.
+LOCKUP_FUNCTIONS = ("clear_page_rep", "clear_page_erms", "clear_page_orig", "prep_new_page",
+                    "do_huge_pmd_anonymous_page", "do_anonymous_page", "do_wp_page",
+                    "collapse_huge_page")
 
 
 def parse_heartbeat(text: str) -> list[dict]:
@@ -905,62 +930,167 @@ def kernel_threads(tasks: list[dict], cpu: int | None, start_us: int, end_us: in
     return out
 
 
+def parse_kernel_log(text: str) -> list[dict]:
+    """The soft lockups of a node's kernel log (journalctl -k -o short-iso-
+    precise, or dmesg with ISO stamps): {"t_us" (the report), "from_us"
+    (t_us less the time stuck), "cpu", "stuck_s", "comm", "rip", "trace"
+    (the kernel functions of its call trace, innermost first), "work" (what
+    LOCKUP_WORK says that was)}."""
+    import datetime
+    import re
+    head = re.compile(r"soft lockup - CPU#(\d+) stuck for (\d+)s! \[(.*?):(\d+)\]")
+    func = re.compile(r"kernel:\s+(?:\? )?([A-Za-z_][\w.]*)\+0x")
+    out: list[dict] = []
+    current = None
+    for line in (text or "").splitlines():
+        found = head.search(line)
+        if found:
+            try:
+                stamp = datetime.datetime.fromisoformat(line.split(" ", 1)[0])
+            except ValueError:
+                current = None
+                continue
+            t_us = int(stamp.timestamp() * 1_000_000)
+            current = {"t_us": t_us, "from_us": t_us - int(found.group(2)) * 1_000_000,
+                       "cpu": int(found.group(1)), "stuck_s": int(found.group(2)),
+                       "comm": found.group(3), "rip": None, "trace": []}
+            out.append(current)
+            continue
+        if current is None:
+            continue
+        if "RIP: 0010:" in line and current["rip"] is None:
+            current["rip"] = line.split("RIP: 0010:", 1)[1].split("+", 1)[0].strip()
+        elif "RIP: 0033:" in line or "</TASK>" in line:
+            current = None
+        elif "? " not in line.split("kernel:", 1)[-1][:4]:
+            name = func.search(line)
+            if name and "RIP" not in line:
+                current["trace"].append(name.group(1))
+    for item in out:
+        chain = " ".join([item["rip"] or ""] + item["trace"] + [item["comm"]])
+        item["work"] = next((what for key, what in LOCKUP_WORK if key in chain),
+                            "in the kernel")
+    return sorted(out, key=lambda item: item["t_us"])
+
+
+def lockup_text(item: dict) -> str:
+    """One soft lockup, said: what, where, the chain that shows it."""
+    chain = [name for name in [item.get("rip")] + list(item.get("trace") or [])
+             if name and name not in ("srso_alias_return_thunk",)]
+    keep = [name for name in chain if name in LOCKUP_FUNCTIONS]
+    return (f"{item['work']} ({' <- '.join(keep or chain[:3])}), CPU {item['cpu']} stuck "
+            f"{item['stuck_s']} s in {item['comm']}")
+
+
+def parse_stacks(text: str) -> list[dict]:
+    """The stack dumps of a node's extra sampler (lines "T X stack
+    hb<cpu>:<late>ms PID TID COMM STATE WCHAN STACK"): {"t_us", "pid",
+    "tid", "comm", "state", "wchan", "stack"}, oldest first."""
+    out = []
+    for line in (text or "").splitlines():
+        if " X stack " not in line:
+            continue
+        parts = line.split(" ", 9)
+        if len(parts) < 9 or parts[2] != "stack":
+            continue
+        try:
+            out.append({"t_us": int(float(parts[0]) * 1e6), "pid": int(parts[4]),
+                        "tid": int(parts[5]), "comm": parts[6], "state": parts[7],
+                        "wchan": parts[8], "stack": parts[9] if len(parts) > 9 else ""})
+        except ValueError:
+            continue
+    return out
+
+
+def stacks_after(stacks: list[dict], end_us: int,
+                 within_us: int = STACKS_AFTER_US) -> list[dict]:
+    """The dumps of the first stack sampling within `within_us` after a stop."""
+    import bisect
+    times = [item["t_us"] for item in stacks]
+    first = bisect.bisect_left(times, end_us)
+    if first >= len(stacks) or stacks[first]["t_us"] > end_us + within_us:
+        return []
+    t0 = stacks[first]["t_us"]
+    return [item for item in stacks[first:] if item["t_us"] - t0 <= 100_000]
+
+
+def abnormal_waits(dumps: list[dict]) -> list[dict]:
+    """Threads not in a normal wait: uninterruptible (D), or waiting in the
+    kernel somewhere NORMAL_WAITS does not name; a thread running (R) is
+    not a wait."""
+    return [item for item in dumps if item["state"] == "D"
+            or (item["state"] not in ("R",) and item["wchan"] not in NORMAL_WAITS)]
+
+
 def classify_heartbeat(start_us: int, end_us: int, beats: list[dict], tasks: list[dict],
-                       mesh_lines: list[dict] = (), journal: list[dict] = ()) -> dict:
+                       mesh_lines: list[dict] = (), journal: list[dict] = (),
+                       lockups: list[dict] = (), stacks: list[dict] = ()) -> dict:
     """One stop of a node, [start_us, end_us], from the referee's samplers
-    (D-hunt.md 7.5 as revised after the 4K run): the audio class thread's
-    vCPU (its last CPU in the sys sampler; every vCPU when not known):
-    - "not run": its heartbeat woke late by about the stop's length (half
-      of it or more, over the stop), and no service thread's system time
-      rose: the hypervisor did not run the vCPU (on every vCPU at once:
-      the whole guest);
-    - "kernel, interrupts off": its heartbeat was late and a service
-      thread's system time rose by half the stop or more: that thread was
-      in the kernel with interrupts off (a FIFO 99 thread is not run only
-      then, or when the vCPU is not);
-    - "blocked in our code": the heartbeat was on time (the vCPU ran and
-      could have run the class thread); the wait is named from the
-      node's /api/mesh/local counters (NAMED_WAITS) and the journal's
-      class passes when they show a long pass; with counters that show
-      none it "waited for input";
-    - "no sampler": no heartbeat of that vCPU around the stop."""
+    and the node's kernel log (D-hunt.md 7.5 as revised after hunt11241537):
+    - "kernel": a soft lockup the kernel reported overlaps the stop (its
+      CPU was stuck in the kernel; the report names where: e.g. zeroing a
+      fresh huge page on first touch, clear_page_rep <- prep_new_page <-
+      do_huge_pmd_anonymous_page);
+    - "not run": a vCPU's heartbeat (the class thread's, else any) woke
+      late by about the stop's length (half of it or more, over the stop)
+      and no soft lockup covers it: the hypervisor did not run that vCPU
+      (every vCPU at once: the whole guest). A thread's system time is not
+      read: a vCPU not run charges its pause to the thread current on it;
+    - "blocked in our code": the heartbeats were on time (the vCPUs ran);
+      the wait is named from the node's /api/mesh/local counters
+      (NAMED_WAITS), the journal's class passes, or a stack dumped just
+      after that is not a normal wait; with counters that show nothing and
+      normal stacks it "waited for input";
+    - "no sampler": no heartbeat around the stop."""
     length_ms = (end_us - start_us) / 1000
     thread = class_thread(list(tasks), start_us)
     cpu = thread["cpu"] if thread else None
     figures: dict = {"cpu": cpu, "thread": None if thread is None else
                      f"{thread['comm']} ({thread['tid']})"}
+    import bisect
+    times = [beat["t_us"] for beat in beats]
+    lo = bisect.bisect_left(times, start_us - HEARTBEAT_COVER_US)
+    hi = bisect.bisect_right(times, end_us + HEARTBEAT_COVER_US + 60_000_000)
+    near = beats[lo:hi]
     cpus = sorted({beat["cpu"] for beat in beats})
-    mine = [beat for beat in beats if cpu is None or beat["cpu"] == cpu]
-    covered = (any(start_us - HEARTBEAT_COVER_US <= beat["t_us"] <= start_us for beat in mine)
-               and any(end_us <= beat["t_us"] <= end_us + HEARTBEAT_COVER_US for beat in mine))
+    covered = (any(start_us - HEARTBEAT_COVER_US <= beat["t_us"] <= start_us for beat in near)
+               and any(end_us <= beat["t_us"] <= end_us + HEARTBEAT_COVER_US for beat in near))
     if not covered:
         return {"class": "no sampler", "figures": figures,
-                "why": "no heartbeat line of the class thread's vCPU before and after the stop"}
+                "why": "no heartbeat line before and after the stop"}
     half_us = HEARTBEAT_SHARE * (end_us - start_us)
-    late = [beat for beat in mine if overlap(heartbeat_gap(beat), (start_us, end_us)) >= half_us]
-    every = sorted({beat["cpu"] for beat in beats
-                    if overlap(heartbeat_gap(beat), (start_us, end_us)) >= half_us})
+    late_all = [beat for beat in near
+                if overlap(heartbeat_gap(beat), (start_us, end_us)) >= half_us]
+    every = sorted({beat["cpu"] for beat in late_all})
+    mine = [beat for beat in late_all if cpu is None or beat["cpu"] == cpu]
+    late = mine or late_all
     figures["heartbeat_late_ms"] = round(max((beat["late_us"] for beat in late), default=0)
                                          / 1000, 3)
     figures["late_cpus"] = every
+    hit = [item for item in lockups
+           if overlap((item["from_us"], item["t_us"]), (start_us, end_us)) > 0]
+    if hit:
+        figures["soft_lockups"] = [lockup_text(item) for item in hit]
+        return {"class": "kernel", "figures": figures,
+                "where": "the kernel: " + "; ".join(figures["soft_lockups"]),
+                "why": f"{len(hit)} soft lockup report(s) of the kernel overlap the "
+                       f"{length_ms:.0f} ms stop"}
     if late:
-        hot = kernel_threads(list(tasks), cpu, start_us, end_us, STIME_SHARE * length_ms)
-        figures["kernel_threads"] = hot
-        if hot:
-            named = ", ".join(f"{item['comm']} ({item['tid']}) stime +{item['stime_ms']:.0f} ms"
-                              for item in hot)
-            return {"class": "kernel, interrupts off", "figures": figures,
-                    "where": f"in the kernel with interrupts off: {named}",
-                    "why": f"the heartbeat of CPU {late[0]['cpu']} woke "
-                           f"{figures['heartbeat_late_ms']:.0f} ms late over a "
-                           f"{length_ms:.0f} ms stop and {named}"}
         whole = len(cpus) > 1 and every == cpus
+        which = (f"vCPU {late[0]['cpu']} was not run" if mine or cpu is None else
+                 f"vCPU {late[0]['cpu']} was not run (not the class thread's, CPU {cpu})")
         return {"class": "not run", "figures": figures,
                 "where": "the hypervisor: " + ("every vCPU at once, the whole guest" if whole
-                                               else f"vCPU {late[0]['cpu']} was not run"),
+                                               else which),
                 "why": f"the heartbeat of CPU {late[0]['cpu']} woke "
                        f"{figures['heartbeat_late_ms']:.0f} ms late over a {length_ms:.0f} ms "
-                       "stop, no service thread's system time rose"}
+                       "stop and no soft lockup covers it"}
+    dumps = stacks_after(list(stacks), end_us) if stacks else []
+    odd = abnormal_waits(dumps)
+    if dumps:
+        figures["stacks_after"] = len(dumps)
+        figures["abnormal_waits"] = [f"{item['comm']} ({item['tid']}) {item['state']} in "
+                                     f"{item['wchan']}" for item in odd]
     pair = around(list(mesh_lines), start_us, end_us) if mesh_lines else None
     passes = [event for event in journal if event.get("kind") == "class_pass"
               and event.get("cause") == "own" and event.get("thread", "audio") == "audio"
@@ -980,13 +1110,16 @@ def classify_heartbeat(start_us: int, end_us: int, beats: list[dict], tasks: lis
     figures["waits"] = waits
     named = [name for key, name in NAMED_WAITS
              if (waits.get(key) or 0) >= BUSY_SHARE * length_ms * 1000]
-    if pair and not long_pass and not named:
+    if pair and not long_pass and not named and not odd:
         return {"class": "waited for input", "figures": figures,
                 "why": "the heartbeat was on time and the class loop had no long pass: the "
                        "thread slept and nothing came (upstream, or the kernel did not "
                        "deliver)"}
     if named:
         wait, kind = "; ".join(named), "counter"
+    elif odd:
+        wait, kind = ("the stacks just after: " + "; ".join(figures["abnormal_waits"]),
+                      "stack")
     elif passes:
         minor = sum(int(event.get("minflt") or 0) for event in passes)
         major = sum(int(event.get("majflt") or 0) for event in passes)

@@ -2062,9 +2062,9 @@
       "long_haul_copies": 4,
       "hours": 4.0,
       "budget_usd": 300.0,
-      "spent_usd": 41.0,
-      "reserved_usd": 46.26,
-      "proving_hours": 10.0
+      "spent_usd": 63.48,
+      "reserved_usd": 38.5,
+      "proving_hours": 5.0
     },
     "legs_per_edge": 271,
     "regions": {

@@ -611,6 +611,30 @@ def sys_log(start_s: float = -5.0, end_s: float = 10.0, stime_at: dict | None = 
     return "\n".join(lines) + "\n"
 
 
+def lockup_log(at_s: float, stuck_s: int, comm: str, cpu: int = 1,
+               rip: str = "clear_page_rep") -> str:
+    """A kernel log (journalctl -k -o short-iso-precise) with one soft
+    lockup reported at `at_s` (Unix seconds), as the old tok-edge-2's."""
+    import datetime
+    stamp = datetime.datetime.fromtimestamp(at_s, datetime.timezone.utc).isoformat()
+    head = f"{stamp} localhost kernel:"
+    return "\n".join([
+        f"{head} watchdog: BUG: soft lockup - CPU#{cpu} stuck for {stuck_s}s! [{comm}:3329]",
+        f"{head} Modules linked in: sch_fq tcp_bbr",
+        f"{head} CPU: {cpu} UID: 999 PID: 3329 Comm: {comm} Not tainted 6.12.118+deb13-amd64",
+        f"{head} RIP: 0010:{rip}+0xb/0x20",
+        f"{head} Code: 00 66 2e 0f 1f 84 00",
+        f"{head} RSP: 0000:ffffcdfbc0cabb28 EFLAGS: 00000246",
+        f"{head} Call Trace:", f"{head}  <TASK>",
+        f"{head}  prep_new_page+0xc7/0x1b0",
+        f"{head}  get_page_from_freelist+0x376/0x15f0",
+        f"{head}  ? srso_alias_return_thunk+0x5/0xfbef5",
+        f"{head}  do_huge_pmd_anonymous_page+0xc5/0x780",
+        f"{head}  handle_mm_fault+0xe2/0x2c0",
+        f"{head} RIP: 0033:0x55c216a0ce61", f"{head}  </TASK>",
+        f"{head} some later line"]) + "\n"
+
+
 def write_referee(built, name: str, heartbeat: str, system: str, meshlocal: str = "",
                   nic: str = "") -> None:
     folder = built.dir / "samplers"
@@ -642,11 +666,26 @@ class RefereeSamplers(unittest.TestCase):
         # Every vCPU at once: the whole guest.
         found = self.classify(beats(late={(0, 2.6): 600, (1, 2.65): 650}), sys_log())
         self.assertIn("the whole guest", found["where"])
-        # Late, and the audio class thread's stime rose 60 ticks: in the
-        # kernel with interrupts off.
+        # Late, and the audio class thread's stime rose 60 ticks over the
+        # stop: still not run (hunt11241537: a paused vCPU charges its
+        # pause to the thread current on it; lon-edge-4 +1.41 s of stime
+        # over 1.25 s of missing ticks). System time is not read.
         found = self.classify(late, sys_log(stime_at={3.0: 60}))
-        self.assertEqual(found["class"], "kernel, interrupts off")
-        self.assertIn("needletail-fast (9) stime +600 ms", found["where"])
+        self.assertEqual(found["class"], "not run")
+        self.assertNotIn("kernel_threads", found["figures"])
+        # A soft lockup the kernel reported over the stop: the kernel, and
+        # what it was doing.
+        lockups = sr.parse_kernel_log(lockup_log(S + 3.2, 1, "av-mesh"))
+        found = sr.classify_heartbeat(T + 2_000_000, T + 2_600_000, sr.parse_heartbeat(late),
+                                      sr.parse_sys_tasks(sys_log()), [], [], lockups)
+        self.assertEqual(found["class"], "kernel")
+        self.assertIn("zeroing a fresh huge page on first touch (clear_page_rep <- "
+                      "prep_new_page <- do_huge_pmd_anonymous_page)", found["where"])
+        # Only the other vCPU late (not the class thread's, CPU 0): that
+        # vCPU was not run.
+        found = self.classify(beats(late={(1, 2.6): 600}), sys_log())
+        self.assertEqual(found["class"], "not run")
+        self.assertIn("vCPU 1 was not run (not the class thread's, CPU 0)", found["where"])
         # The heartbeat on time: the vCPU ran; blocked in our code, the
         # wait unnamed without the node's counters.
         found = self.classify(beats(), sys_log())
@@ -993,6 +1032,212 @@ class WholeReport(unittest.TestCase):
         self.assertIn("BLOCKED IN OUR CODE", text)
         self.assertIn("first session, lon-edge-2: no stop of 100 ms or more", text)
         self.assertIn("UDP clients lon-edge-1 20, lon-edge-2 20", text)
+
+
+class SharedStops(unittest.TestCase):
+    """hunt11241537: the source host's 2,251 ms stop was waited out by every
+    edge and was counted as every edge's own (H4 read "no effect"). A stop
+    that every other edge measured had at the same time is shared (upstream)
+    and never an edge's stop; one edge's own lateness is."""
+
+    def run_of(self, own_at: dict[str, tuple[float, int]], touched=("lon-edge-1",)):
+        """Three London edges in S1 (0 to 120 s); every part 1 ms apart;
+        the source stops 2,251 ms at 30 s (every edge commits late with
+        publish on time, as the hunt's probes show); `own_at` {edge: (s,
+        ms)} an edge's own stop."""
+        nodes = {f"lon-edge-{n}": {"role": "edge", "public_ipv4": f"192.0.2.{n}",
+                                   "host_uuid": f"host{n}"} for n in (1, 2, 3)}
+        built = Builder(nodes, [period("S1", "session", 0, 120)],
+                        sessions=[{"name": "S1", "role": "first", "config": "opus-1"}],
+                        arms={"touched": list(touched)})
+        self.addCleanup(built.close)
+        published = {part: T + 1_000_000 + part * 1000 for part in range(110_000)}
+        source = (T + 30_000_000, T + 32_251_000)
+        for n in (1, 2, 3):
+            edge = f"lon-edge-{n}"
+            commits = {}
+            for part, at in published.items():
+                commit = at + 800
+                if source[0] <= at < source[1]:
+                    commit = source[1] + 800
+                if edge in own_at:
+                    start, ms = T + int(own_at[edge][0] * 1e6), own_at[edge][1]
+                    if start <= at < start + ms * 1000:
+                        commit = start + ms * 1000 + 800
+                commits[part] = commit
+            write_hls_probe(built.dir / "sessions" / "S1" / "lon-view", f"hls-{edge}-1",
+                            f"192.0.2.{n}", published, commits)
+        write_ndjson(built.dir / "sessions" / "S1" / "lon-view" / "load" / "intervals.jsonl",
+                     [{"t": 1.0, "edges": {f"192.0.2.{n}:19446": {"up": 5, "parts": 900}
+                                           for n in (1, 2, 3)}}])
+        return built.run()
+
+    def test_the_source_stop_is_shared_and_an_own_stop_is_the_edge_s(self):
+        run = self.run_of({"lon-edge-2": (60.0, 1184)})
+        table = report.edges_table(run)["S1"]
+        self.assertEqual([(stop["edge"], round(stop["ms"])) for stop in table["stops"]],
+                         [("lon-edge-2", 1184)])
+        self.assertEqual(len(table["shared"]), 1)
+        self.assertEqual(round(table["shared"][0]["ms"]), 2251)
+        self.assertEqual(table["shared"][0]["edges"], ["lon-edge-1", "lon-edge-2", "lon-edge-3"])
+        self.assertEqual(table["stops"][0]["host"], "host2")
+        rules = {"H1": report.rule_fix({"S1": table}, run.edges()),
+                 "H4": report.rule_touch({"S1": table}, run.arms(), run.edges()),
+                 "H5": report.rule_twins({"S1": table})}
+        self.assertEqual(rules["H1"]["stopped"], ["lon-edge-2"])
+        # The untouched edges average 592 ms of their own, the touched 0.
+        self.assertEqual(rules["H4"]["without"], 592.0)
+        self.assertEqual(rules["H4"]["with"], 0.0)
+        # No twins: the shared stop is nobody's.
+        self.assertFalse(rules["H5"]["fires"])
+        # Nothing late on both of a pair inside the shared stop.
+        self.assertEqual(table["first_of_two"]["lon"]["lon-edge-1+lon-edge-3"]["late_on_both"], 0)
+
+    def test_an_edge_s_own_stop_inside_the_shared_one_is_shared(self):
+        """An edge late a little longer than the others at the source's
+        stop (tok-edge-2's 2,337 against 2,251) waited for the same input."""
+        run = self.run_of({"lon-edge-3": (30.0, 2337)})
+        table = report.edges_table(run)["S1"]
+        self.assertEqual(table["stops"], [])
+        self.assertEqual(round(table["shared"][0]["ms"]), 2337)
+
+    def test_one_edge_measured_has_nothing_to_share_with(self):
+        published = {part: T + part * 1000 for part in range(5000)}
+        commits = {part: at + 500 + (300_000 if 2000 <= part < 2300 else 0)
+                   for part, at in published.items()}
+        episodes = {"e1": report.own_episodes(commits, published, report.SHORT_STOP_MS)}
+        own, shared = report.split_shared(episodes, episodes, {"e1": commits}, published)
+        self.assertEqual(shared, [])
+        self.assertEqual([round(item["ms"]) for item in own["e1"]], [300])
+
+
+class HostOfEachStop(unittest.TestCase):
+    """hunt11241537: H2 gave the old tok-edge-2's stops the replacement's
+    host (06b7abc1, not b28cb764)."""
+
+    def test_a_replaced_instance_keeps_its_old_host_for_its_old_stops(self):
+        built = Builder({"tok-edge-2": {"role": "edge", "host_uuid": "06b7abc1ae05e6f0"}},
+                        [period("S1", "session", 0, 100)],
+                        replaced=[{"name": "tok-edge-2", "unix": S + 1000,
+                                   "host_uuid_before": "b28cb764515525ef",
+                                   "host_uuid_after": "06b7abc1ae05e6f0"}])
+        self.addCleanup(built.close)
+        run = built.run()
+        self.assertEqual(run.host_at("tok-edge-2", T + 20_000_000), "b28cb764515525ef")
+        self.assertEqual(run.host_at("tok-edge-2", T + 1_200_000_000), "06b7abc1ae05e6f0")
+        early = {**stop("tok-edge-2", 20.0, 2654), "host": "b28cb764515525ef",
+                 "where": "the hypervisor: every vCPU at once, the whole guest"}
+        late = {**stop("tok-edge-2", 1100.0, 452, session="M1-A"), "host": "06b7abc1ae05e6f0",
+                "where": "the hypervisor: vCPU 0 was not run"}
+        tables = {"S1": {"role": "first", "seen": ["tok-edge-2"], "stops": [early]},
+                  "M1-A": {"role": "matrix-first", "seen": ["tok-edge-2"], "stops": [late]}}
+        line = report.rule_classes(tables, {"tok-edge-2": run.host_uuid("tok-edge-2")},
+                                   built.record["replaced"])["line"]
+        self.assertIn("tok-edge-2 1 (2654 ms, host b28cb764)", line)
+        self.assertIn("tok-edge-2 1 (452 ms, host 06b7abc1)", line)
+        self.assertIn("tok-edge-2 b28cb764 -> 06b7abc1 (1 stops before, 1 after)", line)
+
+
+class KernelAndStacks(unittest.TestCase):
+    def test_soft_lockups_are_parsed_with_what_the_kernel_did(self):
+        text = (lockup_log(S + 10, 3, "av-mesh") + lockup_log(S + 50, 4, "khugepaged", 0,
+                                                              rip="memset_orig"))
+        found = sr.parse_kernel_log(text)
+        self.assertEqual([(item["cpu"], item["stuck_s"], item["comm"]) for item in found],
+                         [(1, 3, "av-mesh"), (0, 4, "khugepaged")])
+        self.assertEqual(found[0]["from_us"], T + 7_000_000)
+        self.assertEqual(found[0]["rip"], "clear_page_rep")
+        self.assertEqual(found[0]["trace"][:2], ["prep_new_page", "get_page_from_freelist"])
+        self.assertNotIn("srso_alias_return_thunk", found[0]["trace"])
+        self.assertEqual(found[0]["work"], "zeroing a fresh huge page on first touch")
+
+    def test_a_node_stop_under_a_soft_lockup_is_the_kernel_s(self):
+        built = Builder({"tok-edge-2": {"role": "edge"}}, [period("S1", "session", 0, 10)])
+        self.addCleanup(built.close)
+        write_referee(built, "tok-edge-2", beats(late={(1, 3.0): 3000, (0, 8.5): 400}),
+                      sys_log())
+        folder = built.dir / "nodes" / "tok-edge-2" / "before-replace"
+        folder.mkdir(parents=True)
+        (folder / "kernel.log").write_text(lockup_log(S + 3.0, 3, "av-mesh"))
+        run = built.run()
+        stops = report.node_stops(run, "tok-edge-2", T - 5_000_000, T + 10_000_000)
+        self.assertEqual([(stop["class"], round(stop["ms"])) for stop in stops],
+                         [("kernel", 3000), ("not run", 400)])
+        self.assertIn("zeroing a fresh huge page", stops[0]["soft_lockups"][0])
+
+    def test_stacks_just_after_a_stop_name_an_odd_wait(self):
+        dumps = sr.parse_stacks(
+            f"{S + 2.7:.6f} X stack hb0:0ms 7 9 needletail-fast D folio_wait_bit "
+            "folio_wait_bit+0x1/0x2;filemap_fault+0x3/0x4\n"
+            f"{S + 2.7:.6f} X stack hb0:0ms 7 11 tokio-rt-worker S do_epoll_wait "
+            "do_epoll_wait+0x694/0x830\n"
+            f"{S + 2.7:.6f} X snmp Udp: 1 2 3\n")
+        self.assertEqual([(item["tid"], item["state"], item["wchan"]) for item in dumps],
+                         [(9, "D", "folio_wait_bit"), (11, "S", "do_epoll_wait")])
+        found = sr.classify_heartbeat(T + 2_000_000, T + 2_600_000, sr.parse_heartbeat(beats()),
+                                      sr.parse_sys_tasks(sys_log()), [], [], [], dumps)
+        self.assertEqual((found["class"], found["wait_kind"]), ("blocked in our code", "stack"))
+        self.assertIn("needletail-fast (9) D in folio_wait_bit", found["wait"])
+        normal = [item for item in dumps if item["tid"] == 11]
+        flat = [{"t_us": T + 1_000_000, "mesh": {
+                    "relay_session.fast_plane.audio_loop_busy_max_us": 500}},
+                {"t_us": T + 3_000_000, "mesh": {
+                    "relay_session.fast_plane.audio_loop_busy_max_us": 500}}]
+        found = sr.classify_heartbeat(T + 2_000_000, T + 2_600_000, sr.parse_heartbeat(beats()),
+                                      sr.parse_sys_tasks(sys_log()), flat, [], [], normal)
+        self.assertEqual(found["class"], "waited for input")
+
+
+class Streaming(unittest.TestCase):
+    """The large files are read streamed and indexed: the same lines as the
+    whole-text parsers give."""
+
+    def test_meshlocal_and_sys_read_as_the_whole_text_parsers_read_them(self):
+        built = Builder({"lon-edge-1": {"role": "edge"}}, [period("S1", "session", 0, 100)])
+        self.addCleanup(built.close)
+        lines = []
+        for second in range(0, 100):
+            lines.append(f"{S + second:.3f} " + json.dumps({
+                "stall": {"tick_threads": 2, "tick_pinned": 2 if second < 70 else 1},
+                "relay_session": {"fast_plane": {"audio_loop_busy_max_us": second * 10}},
+                "relay_nodes": [{"stall": {"tick_pinned": 0}}]}))
+        meshlocal = "\n".join(lines) + "\n"
+        system = sys_log(0, 99) + f"{S + 5:.6f} S task 7 12 (tokio-rt-worker) " + \
+            " ".join(["S"] + ["0"] * 38) + "\n"
+        write_referee(built, "lon-edge-1", beats(), system, meshlocal)
+        run = built.run()
+        whole = sr.parse_meshlocal(meshlocal)
+        self.assertEqual(run.meshlocal("lon-edge-1"), whole)
+        pair = run.meshlocal_around(T + 20_500_000, T + 21_200_000, "lon-edge-1")
+        self.assertEqual(pair, [whole[20], whole[22]])
+        self.assertEqual(sr.around(whole, T + 20_500_000, T + 21_200_000), tuple(pair))
+        # Sampled every 60 s and the last line: the unpinned process is seen.
+        self.assertEqual(len(run.meshlocal_sample("lon-edge-1")), 3)
+        self.assertEqual(run.unpinned(), {"lon-edge-1": "1 of 2"})
+        tasks = [task for task in sr.parse_sys_tasks(system) if task["comm"] == sr.CLASS_THREAD]
+        self.assertEqual(run.tasks("lon-edge-1"), tasks)
+        self.assertEqual(run.sys_seconds("lon-edge-1"), sr.sys_times(system))
+
+    def test_a_session_s_probes_are_read_once(self):
+        built = Builder({"lon-edge-1": {"role": "edge"}}, [period("S1", "session", 0, 10),
+                                                           period("S2", "session", 20, 30)])
+        self.addCleanup(built.close)
+        for name in ("S1", "S2"):
+            write_hls_probe(built.dir / "sessions" / name / "lon-view", "hls-lon-edge-1-1",
+                            "192.0.2.1", {1: T, 2: T + 1000}, {1: T + 500, 2: T + 1500})
+        run = built.run()
+        calls = []
+        original = report.read_frames
+        report.read_frames = lambda path: calls.append(path) or original(path)
+        try:
+            first = built.dir / "sessions" / "S1" / "lon-view" / "hls-lon-edge-1-1.probe.csv"
+            self.assertIs(run.frames(first), run.frames(first))
+            run.frames(built.dir / "sessions" / "S2" / "lon-view" / "hls-lon-edge-1-1.probe.csv")
+            run.frames(first)
+        finally:
+            report.read_frames = original
+        # S1, S2, then S1 again once S2's were kept instead.
+        self.assertEqual(len(calls), 3)
 
 
 @unittest.skipUnless((WAVE7 / "lon-view" / "nt-popus.probe.json").is_file(),
