@@ -176,6 +176,25 @@ class Push(scale.FakeLab):
         self.addCleanup(patcher.stop)
         return seen
 
+    def test_push_waits_for_every_node_s_ssh_and_pushes_nothing_without_it(self):
+        # cmpd8: the first push after `up` was refused by a host a minute old.
+        state = self.state()
+        late = sorted(state["nodes"])[0]
+        asked = []
+
+        def wait_ssh(nodes, **_kwargs):
+            asked.append(sorted(node["name"] for node in nodes))
+            return [node["name"] for node in nodes if node["name"] != late]
+
+        before = {name: self.scripts_of(name) for name in state["nodes"]}
+        with mock.patch.object(deploy.common, "wait_ssh", wait_ssh):
+            with self.assertRaises(SystemExit) as refused:
+                self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+        self.assertIn(late, str(refused.exception))
+        self.assertIn("nothing was pushed", str(refused.exception))
+        self.assertEqual(asked, [sorted(state["nodes"])])
+        self.assertEqual({name: self.scripts_of(name) for name in state["nodes"]}, before)
+
     def test_every_host_push_manages_is_warmed(self):
         seen = self.timeouts()
         self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
@@ -218,7 +237,8 @@ class Push(scale.FakeLab):
         for name, node in state["nodes"].items():
             text = self.scripts_of(name)
             if node["role"] == "livekit":
-                self.assertEqual(text, "", name)   # never touched
+                # Never changed: push only asks whether its sshd answers.
+                self.assertEqual(text, "true", name)
             elif node["role"] == "load":
                 self.assertNotIn(f"systemctl start {CHECK}", text, name)
                 self.assertIn(f"systemctl disable --quiet {CHECK}", text, name)
@@ -664,6 +684,18 @@ class SlowHostRule(unittest.TestCase):
 
 
 class Status(unittest.TestCase):
+    def test_a_bare_warm_word_is_not_part_of_the_service_line(self):
+        # cmpd8: a host with no warm record ended its probe with "WARM " and the
+        # output came back stripped, so the line read "... cpu_mb_s=1474 WARM"
+        # and status died parsing the speed.
+        line, (word, found) = deploy.split_status_probe(
+            "svc active restarts=0 cpu_mb_s=1474\nTHP always [madvise] never\nWARM")
+        self.assertEqual(line, "svc active restarts=0 cpu_mb_s=1474")
+        self.assertIsNone(found)
+        self.assertIn("thp=madvise", word)
+        line, _ = deploy.split_status_probe("svc cpu_mb_s=1474\nTHP\nWARM")
+        self.assertEqual(line, "svc cpu_mb_s=1474")
+
     def test_the_probe_line_and_the_summary(self):
         text = ("needletail-mesh active restarts=0 mem_mb=40\n"
                 "THP always [madvise] never\n"

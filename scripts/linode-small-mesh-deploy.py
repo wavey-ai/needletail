@@ -6179,6 +6179,14 @@ def warm_summary(records: dict) -> str:
             + (f"; slow_host: {', '.join(slow)}" if slow else ""))
 
 
+def ssh_silent(nodes: list[dict]) -> list[str]:
+    """The names of `nodes` whose sshd does not answer within the bound
+    (common.wait_ssh), in the tools' usual order."""
+    answering = set(common.wait_ssh(nodes))
+    return sorted((node["name"] for node in nodes if node["name"] not in answering),
+                  key=mesh_ops.natural)
+
+
 def command_push(args: argparse.Namespace) -> None:
     """Bootstrap, then stage and activate every node, role by role, parents
     first, on the roots' builds; the deployed record follows each role. Only
@@ -6201,7 +6209,18 @@ def command_push(args: argparse.Namespace) -> None:
     lab_tool_checked()
     with ops_locked():
         ensure_tls()
+        # A lab that has just come up: Linode says `running` before the guest
+        # has booted, and a push that starts at once is refused by a host a
+        # minute old (cmpd8, tok-dist-a). Every node's sshd answers first.
+        # It is asked just before push's first remote step, so a push that is
+        # refused for its settings still touches no host.
+        def every_sshd_answers() -> None:
+            silent = ssh_silent(nodes)
+            if silent:
+                sys.exit(f"push: no ssh on {', '.join(silent)} within "
+                         f"{common.SSH_WAIT_S:.0f} s; nothing was pushed")
         if not args.skip_bootstrap:
+            every_sshd_answers()
             bootstrap(nodes)
         args.remeasure = args.remeasure or not (common.ARTIFACT_DIR / "routes.json").is_file()
         full, settings, _rendered = command_plan(args)
@@ -6211,6 +6230,8 @@ def command_push(args: argparse.Namespace) -> None:
         if problem:
             print(f"push refused: {problem}", file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
+        if args.skip_bootstrap:
+            every_sshd_answers()
         ops = LinodeOps(full, settings)
         tiers = sorted({mesh_ops.ROLE_TIER[node["role"]] for node in nodes
                         if node["role"] in mesh_ops.ROLE_TIER})
@@ -6410,8 +6431,9 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
     recorded = (state.get("deployed") or {}).get("nodes") or {}
     speeds = {}
     for name, line in results.items():
-        if "cpu_mb_s=" in line:
-            speeds[name] = float(line.rsplit("cpu_mb_s=", 1)[1] or 0)
+        found = re.search(r"cpu_mb_s=(\d+(?:\.\d+)?)", line)
+        if found:
+            speeds[name] = float(found.group(1))
     median = sorted(speeds.values())[len(speeds) // 2] if speeds else 0
     slow = sorted(name for name, speed in speeds.items() if speed < 0.75 * median)
     for name in sorted(results):
@@ -6438,9 +6460,14 @@ def split_status_probe(text: str, settings: dict | None = None,
     its warm record) from the probe's THP and WARM lines, the record judged
     by the deploy's slow-host rule (judge_warm) with `settings`."""
     lines = (text or "").splitlines()
-    main = [line for line in lines if not line.startswith(("THP ", "WARM "))]
-    thp = next((line[4:].strip() for line in lines if line.startswith("THP ")), "") or "-"
-    record = next((parse_warm_record(line[5:]) for line in lines if line.startswith("WARM ")),
+    # A host with no warm record prints a bare "WARM " as its last line, and the
+    # probe's output arrives with its trailing space stripped: the word alone is
+    # still the probe's line, never part of the service line.
+    def tagged(line: str, tag: str) -> bool:
+        return line == tag or line.startswith(tag + " ")
+    main = [line for line in lines if not (tagged(line, "THP") or tagged(line, "WARM"))]
+    thp = next((line[4:].strip() for line in lines if tagged(line, "THP")), "") or "-"
+    record = next((parse_warm_record(line[5:]) for line in lines if tagged(line, "WARM")),
                   None)
     if settings is not None:
         record = judge_warm(record, settings, node)
