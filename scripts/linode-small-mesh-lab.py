@@ -68,7 +68,12 @@ Cost controls are part of the tool, not an operator convention:
   when a run of the lab's id is in the archive, the operator's `down`
   refuses until that run is marked collected; `down --uncollected` deletes
   all the same and records the run as failed. The watchdog's own delete is
-  never refused for data: it records such a run as failed and deletes.
+  never refused for data: at its deadline it first runs the collect
+  command that `up` recorded in the state (the deploy tool's `collect
+  --run-id <id>`) under a hard time bound (`--collect-timeout-s`, 4 min by
+  default, ending when `down` starts), then deletes whatever happened; a
+  collect that failed, timed out or left the run incomplete records the run
+  as failed. `up` refuses a watchdog too short to hold that bound.
 
 The Linode token is read from LINODE_TOKEN, LINODE_PAT, or the token file. It
 is never written to state, logs, or generated output. The watchdog unit
@@ -93,6 +98,7 @@ import os
 import pathlib
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -138,6 +144,13 @@ ALLOWED_CLASSES = {"dedicated"}
 # this long before it (deleting in parallel), polling this often.
 WATCHDOG_LEAD_S = 300
 WATCHDOG_POLL_S = 5
+# Before that `down`, the watchdog runs the lab's collect command (recorded
+# in the state by `up`: the deploy tool's `collect --run-id <id>`) for at
+# most this long (`up --collect-timeout-s`), started this long before
+# `down` starts: it is killed when its time is up, and never delays the
+# delete.
+COLLECT_TIMEOUT_S = 240
+DEPLOY_TOOL = ROOT / "scripts" / "linode-small-mesh-deploy.py"
 # A watchdog whose lab state is gone asks the account for the run's
 # instances this often until its deadline nears (watch_until_down).
 WATCHDOG_ORPHAN_POLL_S = 60
@@ -989,6 +1002,14 @@ def create_lab(args: argparse.Namespace) -> None:
     if not 0 < hours <= MAX_LIFE_HOURS:
         sys.exit(f"up refused: --watchdog-hours {hours:g} must be above 0 and at most "
                  f"{MAX_LIFE_HOURS:g} (NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS)")
+    collect_s = getattr(args, "collect_timeout_s", COLLECT_TIMEOUT_S)
+    if not collect_s > 0:
+        sys.exit(f"up refused: --collect-timeout-s {collect_s:g} must be above 0")
+    if hours * 3600 <= WATCHDOG_LEAD_S + collect_s:
+        sys.exit(f"up refused: --watchdog-hours {hours:g} cannot hold the collect: the watchdog "
+                 f"collects for up to {collect_s:g} s (--collect-timeout-s) before it starts "
+                 f"deleting {WATCHDOG_LEAD_S} s before the deadline, so the lab must live more "
+                 f"than {(WATCHDOG_LEAD_S + collect_s) / 3600:.3f} h")
     run_id = args.run_id or dt.datetime.now(dt.timezone.utc).strftime("%m%d%H%M")
     if not RUN_ID.fullmatch(run_id):
         sys.exit(f"up refused: run id {run_id!r}: 1 to 24 of a-z and 0-9 (it names the "
@@ -1048,6 +1069,8 @@ def create_lab(args: argparse.Namespace) -> None:
         # Instances deleted before `down` (remove, replace): billing keeps
         # them, each a whole hour at least.
         "removed": [],
+        # What the watchdog runs before it deletes the lab (watchdog_collect).
+        "collect": {"command": collect_command(run_id), "timeout_s": collect_s},
     }
     with state_lock(state_path):
         if state_path.exists():
@@ -1988,8 +2011,10 @@ def watchdog_unit(run_id: str) -> str:
 def watchdog_unit_text(state_path: pathlib.Path, run_id: str, deadline: int) -> str:
     """The watchdog's user unit: this tool's `watchdog --foreground` for the
     lab's state file, started again whenever it ends (Restart=always) and
-    at boot (enabled; the user lingers). It names the token file and the
-    ledger that the arming shell used, never the token."""
+    at boot (enabled; the user lingers). It names the token file, the
+    ledger and the run archive's root that the arming shell used, never the
+    token, and passes on the shell's ssh agent and lab key (the collect
+    reaches the nodes by ssh)."""
     def word(text) -> str:
         # One quoted word of a unit file, with systemd's specifier
         # character doubled.
@@ -2008,6 +2033,9 @@ def watchdog_unit_text(state_path: pathlib.Path, run_id: str, deadline: int) -> 
         "ExecStart=" + " ".join(word(item).replace("$", "$$") for item in command),
         "Environment=" + word(f"NEEDLETAIL_LINODE_TOKEN_FILE={TOKEN_FILE.resolve()}"),
         "Environment=" + word(f"NEEDLETAIL_LINODE_LEDGER={LEDGER.resolve()}"),
+        "Environment=" + word(f"NEEDLETAIL_DATA_ROOT={run_archive.data_root()}"),
+        *("Environment=" + word(f"{name}={os.environ[name]}")
+          for name in ("SSH_AUTH_SOCK", "NEEDLETAIL_LINODE_SSH_KEY") if os.environ.get(name)),
         "Restart=always",
         "RestartSec=5",
         "",
@@ -2422,6 +2450,8 @@ def command_status(args: argparse.Namespace) -> None:
         print(f"watchdog: the lab is gone in {(deadline - time.time()) / 60:.0f} min "
               f"(down starts {WATCHDOG_LEAD_S // 60} min before); "
               f"{watchdog_unit(state['run_id'])} is active")
+        command, bound = lab_collect(state)
+        print(f"watchdog: collects for at most {bound:.0f} s before down: {' '.join(command)}")
     for problem in unarmed:
         print(f"NO WATCHDOG: {problem}")
     if state.get("budget_usd") is not None and deadline:
@@ -2522,13 +2552,18 @@ def archived_run(run_id: str):
         return None
 
 
-def record_uncollected(run_id: str, why: str) -> None:
+def record_uncollected(run_id: str, why: str, create: bool = False) -> None:
     """Record the archive's run of this id as failed (its lab is deleted
     with its data not collected: notes-stage2, "keep all the data"). Nothing
-    when the archive has no such run, or it is collected, or failed already.
-    Never raises: no delete waits on the archive."""
+    when it is collected or failed already, nor when the archive has no
+    such run, unless `create` (the watchdog's collect failed): then the run
+    is made, a linode-lab run of this tool, to say so. Never raises: no
+    delete waits on the archive."""
     try:
         archive = archived_run(run_id)
+        if archive is None and create:
+            archive = run_archive.RunArchive.create(run_id, "linode-lab", tool=ARCHIVE_TOOL,
+                                                    argv=[ARCHIVE_TOOL, "watchdog"])
         if archive is None:
             return
         manifest = archive.manifest
@@ -2570,6 +2605,100 @@ def watchdog_down(args: argparse.Namespace) -> None:
         record_uncollected(state["run_id"], "the watchdog deleted the lab at its deadline "
                                             "before its data was collected")
     command_down(args)
+
+
+def collect_command(run_id: str) -> list[str]:
+    """The collect that `up` records for the watchdog: the deploy tool's
+    `collect --run-id <id>` of this checkout."""
+    return [sys.executable, str(DEPLOY_TOOL), "collect", "--run-id", run_id]
+
+
+def lab_collect(state: dict) -> tuple[list[str], float]:
+    """The lab's collect command and its time bound, as `up` recorded them
+    (a state without them, or with a malformed one: the defaults). Never
+    raises: the watchdog's loop reads it at every poll."""
+    collect = state.get("collect") if isinstance(state.get("collect"), dict) else {}
+    command = collect.get("command")
+    if not (isinstance(command, list) and command
+            and all(isinstance(item, str) for item in command)):
+        command = collect_command(str(state.get("run_id")))
+    try:
+        bound = float(collect.get("timeout_s", COLLECT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        bound = COLLECT_TIMEOUT_S
+    return list(command), (bound if bound > 0 else float(COLLECT_TIMEOUT_S))
+
+
+def run_collect(command: list[str], state_path: pathlib.Path, timeout_s: float) -> str | None:
+    """Run the lab's collect command, the one call of the collector, by its
+    command line: in a session of its own, for the lab state `state_path`
+    (NEEDLETAIL_LINODE_LAB_STATE), without the Linode token in its
+    environment, its output to the watchdog's. Killed, with every process it
+    started, after `timeout_s`. None when it exited 0; else what went wrong
+    (a collector that is missing, or a deploy tool without `collect`, is a
+    failed collect, never an error of the watchdog)."""
+    env = {name: value for name, value in os.environ.items()
+           if name not in ("LINODE_TOKEN", "LINODE_PAT")}
+    env["NEEDLETAIL_LINODE_LAB_STATE"] = str(state_path.resolve())
+    try:
+        process = subprocess.Popen(command, env=env, cwd=ROOT, stdin=subprocess.DEVNULL,
+                                   start_new_session=True)
+    except OSError as error:
+        return f"it could not be started ({error})"
+    try:
+        code = process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        return f"it did not end within {timeout_s:.0f} s and was killed"
+    if code:
+        return f"it exited with status {code}"
+    return None
+
+
+def watchdog_collect(state_path: pathlib.Path, state: dict, until: float, clock=None) -> None:
+    """The watchdog's collect before its `down`: the lab's collect command
+    (lab_collect), given what is left of its bound before `until` (when
+    `down` starts) and killed then. A run that the archive holds collected
+    already is not collected again. A collect that could not run in time,
+    failed, or ended without the archive's run marked complete records the
+    run as failed (made if the archive has none). Never raises and never
+    runs past `until`: the delete goes ahead whatever happens here."""
+    clock = clock or time.time
+    run_id = state["run_id"]
+    try:
+        command, bound = lab_collect(state)
+        archive = archived_run(run_id)
+        if archive is not None and (archive.manifest.get("collected") or {}).get("complete"):
+            print(f"watchdog: run {run_id} is collected already", flush=True)
+            return
+        left = min(bound, until - clock())
+        if left <= 0:
+            why = "no time was left for it before the delete"
+        else:
+            print(f"watchdog: collecting run {run_id} for at most {left:.0f} s before the "
+                  f"delete: {' '.join(command)}", flush=True)
+            why = run_collect(command, state_path, left)
+        if why is None:
+            archive = archived_run(run_id)
+            collected = (archive.manifest.get("collected") or {}) if archive else {}
+            if not collected.get("complete"):
+                missing = collected.get("missing") or []
+                why = ("it ended without marking the run collected"
+                       + (f" (missing: {', '.join(map(str, missing))})" if missing else ""))
+        if why is None:
+            print(f"watchdog: run {run_id} is collected", flush=True)
+            return
+        print(f"watchdog: the collect of run {run_id} failed: {why}; deleting all the same",
+              file=sys.stderr, flush=True)
+        record_uncollected(run_id, f"the watchdog's collect before its delete failed: {why}",
+                           create=True)
+    except Exception as error:  # noqa: BLE001 - the delete goes on whatever happens here
+        print(f"watchdog: the collect of run {run_id} failed ({error!r}); deleting all the same",
+              file=sys.stderr, flush=True)
+        record_uncollected(run_id, f"the watchdog's collect before its delete failed: {error!r}",
+                           create=True)
 
 
 def delete_instances(api: "Api", instance_ids, workers: int = DELETE_WORKERS) -> None:
@@ -2694,15 +2823,18 @@ def command_watchdog(args: argparse.Namespace) -> None:
 
 
 def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id: str,
-                     deadline: int, clock=None, sleep=None, down=None) -> None:
+                     deadline: int, clock=None, sleep=None, down=None, collect=None) -> None:
     """The watchdog unit's loop. Returns once no instance carries the run's
     tag; it never returns while one does.
 
     While the state file is the run's: every WATCHDOG_POLL_S, read the
-    deadline from it (a later `watchdog --hours` moves it), and from
-    WATCHDOG_LEAD_S before it run `down`; a `down` that fails is run again
-    at the next poll. It writes nothing to the state, so a unit started
-    again after a reboot keeps a moved deadline.
+    deadline from it (a later `watchdog --hours` moves it); from the lab's
+    collect bound before `down` is due, run the collect once for that
+    deadline (watchdog_collect, which ends by the time `down` is due, or at
+    once with the run recorded failed when no time is left); from
+    WATCHDOG_LEAD_S before the deadline run `down`; a `down` that fails is
+    run again at the next poll. It writes nothing to the state, so a unit
+    started again after a reboot keeps a moved deadline.
 
     When the state file is gone, unreadable or another run's (`cargo
     clean`, `rm -rf target`, a worktree removed, or `down` finished), that
@@ -2715,8 +2847,10 @@ def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id:
     clock = clock or time.time
     sleep = sleep or time.sleep
     down = down or watchdog_down
+    collect = collect or watchdog_collect
     tag = f"needletail-small-mesh-{run_id}"
     last: dict | None = None
+    collected_for: float | None = None
     api = None
     said = False
     while True:
@@ -2730,6 +2864,9 @@ def watch_until_down(args: argparse.Namespace, state_path: pathlib.Path, run_id:
         if isinstance(current, dict) and current.get("run_id") == run_id:
             last = current
             due = current.get("watchdog_deadline_unix", deadline) - WATCHDOG_LEAD_S
+            if collected_for != due and clock() >= due - lab_collect(current)[1]:
+                collected_for = due
+                collect(state_path, current, due, clock)
             if clock() >= due:
                 try:
                     down(args)
@@ -2830,6 +2967,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="refuse when every node and slot of the topology for the watchdog's "
                          "whole hours, --spent-before-usd and the other live labs to their "
                          "deadlines pass it; recorded for grow, add, replace and watchdog")
+    up.add_argument("--collect-timeout-s", type=float, default=COLLECT_TIMEOUT_S,
+                    help="at its deadline the watchdog runs the deploy tool's collect for at "
+                         "most this long, ending when it starts deleting (5 min before the "
+                         f"deadline); recorded in the state (default {COLLECT_TIMEOUT_S})")
     up.add_argument("--spent-before-usd", type=float, default=None,
                     help="what the work cost before this lab (default: the sum of the ledger, "
                          "NEEDLETAIL_LINODE_LEDGER, reconciled with the account's events); "

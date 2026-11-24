@@ -7,7 +7,9 @@ token is read, nothing is created, no unit is started).
 node and slot of the topology for the watchdog's whole hours, what the
 ledger says was spent and the other live labs to their deadline tags; the
 ceilings that `up` recorded hold from another shell. The watchdog is a user
-unit that every command checks and arms again. The ledger is reconciled
+unit that every command checks and arms again; at its deadline it runs the
+lab's collect under a hard bound and deletes whatever happened, recording a
+failed collect as a failed run. The ledger is reconciled
 from the account's events. `replace` rebuilds in place (the id and both
 addresses kept, the interfaces put in place before one boot) or makes a
 node anew. `add` creates only a slot of this lab, refuses a shared plan, a
@@ -40,6 +42,9 @@ _spec = importlib.util.spec_from_file_location("lab_slots", HERE / "linode-small
 lab_tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lab_tool)
 run_archive = lab_tool.run_archive
+# The real collector call and sleep, for the tests that run a process.
+RUN_COLLECT = lab_tool.run_collect
+REAL_SLEEP = time.sleep
 
 SCALE = HERE.parent / "deploy" / "low-latency" / "topology-scale.json"
 TYPES = {"g6-dedicated-2": {"id": "g6-dedicated-2", "class": "dedicated",
@@ -270,6 +275,17 @@ class Base(unittest.TestCase):
         self.addCleanup(patcher.stop)
         # The run archive of these tests: never ~/needletail-data.
         patcher = mock.patch.dict(os.environ, {"NEEDLETAIL_DATA_ROOT": str(self.tmp / "data")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The watchdog's collect never starts a process here unless a test
+        # says so: the collector is "absent".
+        self.collects: list[tuple] = []
+
+        def no_collector(command, state_path, timeout_s):
+            self.collects.append((command, state_path, timeout_s))
+            return "it could not be started (no collector in this test)"
+
+        patcher = mock.patch.object(lab_tool, "run_collect", no_collector)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -757,7 +773,7 @@ class Watchdog(Base):
         # Once `down` has removed the state, the account lists nothing with
         # the run's tag: the loop returns.
         with mock.patch.object(lab_tool, "Api", lambda public=False: FakeApi()), \
-                redirect_stderr(io.StringIO()):
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1",
                                       deadline, clock=lambda: now[0], sleep=sleep, down=down)
         self.assertEqual(len(downs), 2)
@@ -1024,7 +1040,10 @@ class Archive(Base):
         self.assertEqual(self.lab_instances(api), [])
         self.assertFalse(path.exists())
         self.assertEqual(archive.manifest["status"], "failed")
-        self.assertIn("the watchdog deleted the lab", archive.manifest["status_reason"])
+        # Started a second after `down` was due: no time was left to collect.
+        self.assertEqual(self.collects, [])
+        self.assertIn("the watchdog's collect before its delete failed: no time was left",
+                      archive.manifest["status_reason"])
 
     def test_the_watchdog_by_the_tag_records_the_run_failed_and_deletes(self):
         api = FakeApi()
@@ -1054,6 +1073,245 @@ class Archive(Base):
             lab_tool.watchdog_down(argparse.Namespace(state=self.args.state))
         self.assertEqual(self.lab_instances(api), [])
         self.assertIn("could not be recorded as failed", err.getvalue())
+
+
+class WatchdogCollect(Base):
+    """At its deadline the watchdog runs the lab's collect command (the
+    deploy tool's `collect --run-id <id>`, recorded by `up`) under a hard
+    time bound that ends when `down` is due, then deletes whatever
+    happened: a collect that failed, hung, could not run or left the run
+    incomplete records the run as failed in the archive (made if absent).
+    `up` refuses a watchdog too short to hold the bound."""
+
+    def lab_instances(self, api) -> list:
+        return [ident for ident, item in api.instances.items() if api.tag in item.get("tags", [])]
+
+    def manifest(self, run_id: str = "t1") -> dict:
+        return run_archive.RunArchive.open(run_id, record=False).manifest
+
+    def test_up_refuses_a_watchdog_too_short_for_the_collect_and_records_it(self):
+        api = FakeApi()
+        self.systemd.active.clear()
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api):
+            # 6 min of life: 4 min of collect and 5 min of delete do not fit.
+            self.assertIn("cannot hold the collect",
+                          self.refused(lab_tool.command_up, self.up_args(watchdog_hours=0.1)))
+            self.assertIn("cannot hold the collect", self.refused(
+                lab_tool.command_up, self.up_args(watchdog_hours=0.5, collect_timeout_s=1500)))
+            self.assertIn("must be above 0", self.refused(
+                lab_tool.command_up, self.up_args(collect_timeout_s=0)))
+        self.assertEqual(api.calls, [])
+        self.assertFalse(pathlib.Path(self.args.state).exists())
+        self.assertFalse(self.systemd.active)
+        parsed = lab_tool.build_parser().parse_args(
+            ["up", "--watchdog-hours", "2", "--budget-usd", "50"])
+        self.assertEqual(parsed.collect_timeout_s, 240)
+
+        def create(api_, run_id, tag, image, key, node):
+            ident = 100 + len(api.instances)
+            api.instances[ident] = {"id": ident, "status": "running", "tags": [tag]}
+            return {"id": ident, "name": node["name"], "label": node["name"],
+                    "role": node["role"], "site": node["site"], "region": node["region"],
+                    "type": node["type"], "hourly_usd": node["_hourly"],
+                    "public_ipv4": "192.0.2.1", "vlan_ipv4": None, "created": "x"}
+
+        with mock.patch.object(lab_tool, "create_node", create), \
+                mock.patch.object(lab_tool, "command_status", lambda args: None):
+            state = self.up(api, spent_before_usd=0.0, collect_timeout_s=120.0)
+        self.assertEqual(state["collect"], {
+            "command": [sys.executable, str(HERE / "linode-small-mesh-deploy.py"), "collect",
+                        "--run-id", "t1"],
+            "timeout_s": 120.0})
+        # The unit carries the archive's root (the collect and the failed
+        # record land where the arming shell's archive is), never the token.
+        unit = (lab_tool.WATCHDOG_UNIT_DIR / UNIT).read_text()
+        self.assertIn(f"NEEDLETAIL_DATA_ROOT={(self.tmp / 'data').resolve()}", unit)
+        self.assertNotIn(TOKEN, unit)
+
+    def test_the_collect_runs_once_per_deadline_and_ends_before_down(self):
+        path = self.tmp / "state.json"
+        deadline = 1_000_000 + 3 * 3600
+        bound = 240
+        path.write_text(json.dumps({"run_id": "t1", "watchdog_deadline_unix": deadline,
+                                    "collect": {"command": ["c"], "timeout_s": bound}}))
+        now = [deadline - lab_tool.WATCHDOG_LEAD_S - bound - 30.0]
+        events = []
+        moved = []
+
+        def collect(state_path, state, until, clock):
+            events.append(("collect", clock(), until))
+            now[0] += 100  # the collect takes its time, within its bound
+
+        def down(args):
+            events.append(("down", now[0], None))
+            path.unlink()
+
+        def sleep(seconds):
+            self.assertLessEqual(seconds, 5)
+            now[0] += seconds
+            # Once collected, `watchdog --hours` moves the deadline an hour
+            # later: a collect for the new deadline, then down.
+            if len(events) == 1 and not moved:
+                moved.append(deadline + 3600)
+                path.write_text(json.dumps({**json.loads(path.read_text()),
+                                            "watchdog_deadline_unix": moved[0]}))
+
+        with mock.patch.object(lab_tool, "Api", lambda public=False: FakeApi()), \
+                redirect_stderr(io.StringIO()):
+            lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1",
+                                      deadline, clock=lambda: now[0], sleep=sleep, down=down,
+                                      collect=collect)
+        self.assertEqual([kind for kind, _at, _until in events], ["collect", "collect", "down"])
+        for (_kind, at, until), last in zip(events[:2], (deadline, moved[0])):
+            self.assertEqual(until, last - lab_tool.WATCHDOG_LEAD_S)
+            self.assertGreaterEqual(at, until - bound)
+            self.assertLess(at, until - bound + 5)
+        self.assertGreaterEqual(events[2][1], moved[0] - lab_tool.WATCHDOG_LEAD_S)
+        self.assertLess(events[2][1], moved[0] - lab_tool.WATCHDOG_LEAD_S + 5)
+
+    def test_a_hung_collect_is_killed_at_its_bound_and_the_lab_deleted_as_failed(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        pids = self.tmp / "pids"
+        # The collector starts a child (as ssh would) and both hang.
+        hang = ("import subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                f"open({str(pids)!r}, 'w').write(f'{{child.pid}}')\n"
+                "time.sleep(60)\n")
+        state["collect"] = {"command": [sys.executable, "-c", hang], "timeout_s": 1.0}
+        path.write_text(json.dumps(state))
+        deadline = state["watchdog_deadline_unix"]
+        now = [deadline - lab_tool.WATCHDOG_LEAD_S - 1.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        started = time.monotonic()
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "run_collect", RUN_COLLECT), \
+                mock.patch.object(lab_tool.time, "sleep", REAL_SLEEP), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                mock.patch.object(lab_tool, "watchdog_disarm", lambda run_id: None), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watch_until_down(argparse.Namespace(state=str(path)), path, "t1", deadline,
+                                      clock=lambda: now[0], sleep=sleep)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertFalse(path.exists())
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("did not end within 1 s and was killed", manifest["status_reason"])
+        self.assertEqual(manifest["tool"], "linode-small-mesh-lab.py")
+        # The collector's child went with it.
+        child = pathlib.Path(f"/proc/{pids.read_text()}/status")
+        for _ in range(100):
+            if not child.exists() or "\nState:\tZ" in child.read_text():
+                break
+            REAL_SLEEP(0.02)
+        self.assertTrue(not child.exists() or "\nState:\tZ" in child.read_text())
+
+    def test_a_collect_that_completes_leaves_the_run_to_its_tool(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+        path = pathlib.Path(self.args.state)
+        until = time.time() + 100
+
+        def collector(complete, missing=()):
+            def run(command, state_path, timeout_s):
+                self.collects.append((command, state_path, timeout_s))
+                archive = run_archive.RunArchive.create(
+                    "t1", "linode-lab", tool="linode-small-mesh-deploy.py", argv=command)
+                archive.mark_collected(complete, missing)
+            return run
+
+        with mock.patch.object(lab_tool, "run_collect", collector(True)), \
+                redirect_stdout(io.StringIO()) as out:
+            lab_tool.watchdog_collect(path, state, until)
+        self.assertIn("run t1 is collected", out.getvalue())
+        command, state_path, timeout_s = self.collects[-1]
+        self.assertEqual(command, lab_tool.collect_command("t1"))
+        self.assertEqual(state_path, path)
+        self.assertAlmostEqual(timeout_s, 100, delta=2)
+        with mock.patch.object(lab_tool, "Api", lambda public=False: api), \
+                mock.patch.object(lab_tool, "delete_vlans", lambda api_, run_id: []), \
+                mock.patch.object(lab_tool, "watchdog_disarm", lambda run_id: None), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_down(argparse.Namespace(state=self.args.state))
+        self.assertEqual(self.lab_instances(api), [])
+        self.assertEqual(self.manifest()["status"], "running")
+        # Collected already: not collected again.
+        calls = len(self.collects)
+        with redirect_stdout(io.StringIO()):
+            lab_tool.watchdog_collect(path, state, until)
+        self.assertEqual(len(self.collects), calls)
+
+    def test_a_collect_that_exits_0_with_nodes_missing_is_a_failed_run(self):
+        api = FakeApi()
+        state = lab_state(self.tmp, api)
+
+        def run(command, state_path, timeout_s):
+            run_archive.RunArchive.create("t1", "linode-lab", tool="linode-small-mesh-deploy.py",
+                                          argv=command).mark_collected(False, ["tok-edge-2"])
+
+        with mock.patch.object(lab_tool, "run_collect", run), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_collect(pathlib.Path(self.args.state), state, time.time() + 240)
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("without marking the run collected (missing: tok-edge-2)",
+                      manifest["status_reason"])
+
+    def test_a_missing_collector_or_one_without_collect_is_a_failed_collect(self):
+        path = pathlib.Path(self.args.state)
+        path.write_text("{}")
+        self.assertIn("could not be started",
+                      RUN_COLLECT([str(self.tmp / "no-such-tool")], path, 5))
+        # A deploy tool from before `collect` (argparse: invalid choice).
+        older = self.tmp / "deploy.py"
+        older.write_text("import argparse\n"
+                         "parser = argparse.ArgumentParser()\n"
+                         "parser.add_subparsers(dest='command', required=True).add_parser('push')\n"
+                         "parser.parse_args()\n")
+        with redirect_stderr(io.StringIO()):
+            why = RUN_COLLECT([sys.executable, str(older), "collect", "--run-id", "t1"], path, 30)
+        self.assertEqual(why, "it exited with status 2")
+        # Through the watchdog: no run in the archive yet, so one is made to
+        # say the run failed; the delete is not held.
+        state = {"run_id": "t1", "collect": {"command": [sys.executable, str(older), "collect"],
+                                             "timeout_s": 30}}
+        with mock.patch.object(lab_tool, "run_collect", RUN_COLLECT), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            lab_tool.watchdog_collect(path, state, time.time() + 60)
+        self.assertIn("deleting all the same", err.getvalue())
+        manifest = self.manifest()
+        self.assertEqual((manifest["kind"], manifest["status"]), ("linode-lab", "failed"))
+        self.assertIn("exited with status 2", manifest["status_reason"])
+        # No time left before the delete: nothing is started.
+        shutil.rmtree(self.tmp / "data" / "t1")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lab_tool.watchdog_collect(path, {"run_id": "t1"}, time.time() - 1)
+        self.assertEqual(self.collects, [])
+        self.assertIn("no time was left", self.manifest()["status_reason"])
+
+    def test_the_collector_gets_the_lab_state_and_never_the_token(self):
+        path = pathlib.Path(self.args.state)
+        path.write_text("{}")
+        seen = self.tmp / "env.json"
+        command = [sys.executable, "-c",
+                   f"import json, os; open({str(seen)!r}, 'w').write(json.dumps(dict(os.environ)))"]
+        with mock.patch.dict(os.environ, {"LINODE_TOKEN": TOKEN, "LINODE_PAT": TOKEN}):
+            self.assertIsNone(RUN_COLLECT(command, path, 30))
+        env = json.loads(seen.read_text())
+        self.assertEqual(env["NEEDLETAIL_LINODE_LAB_STATE"], str(path.resolve()))
+        self.assertNotIn(TOKEN, json.dumps(env))
+        self.assertEqual(env["NEEDLETAIL_DATA_ROOT"], str(self.tmp / "data"))
+
+    def test_a_malformed_collect_in_the_state_falls_back_to_the_defaults(self):
+        for collect in (None, "x", {"command": "c", "timeout_s": "soon"},
+                        {"command": [1], "timeout_s": -4}):
+            self.assertEqual(lab_tool.lab_collect({"run_id": "t1", "collect": collect}),
+                             (lab_tool.collect_command("t1"), 240.0))
 
 
 class Ledger(Base):
