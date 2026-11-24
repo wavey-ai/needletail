@@ -268,15 +268,33 @@ class Collected(unittest.TestCase):
     def test_the_deploy_collect_s_missing_is_read_from_the_run(self):
         run = hunt_tool.run_archive.RunArchive.create("hunt1", "linode-lab", tool="stall-hunt",
                                                       argv=["hunt"])
+        began = hunt_tool.run_archive.utc_now()
         run.mark_collected(False, ["tok-edge-2", "lon-dist-a/api-stalls"])
-        self.assertEqual(self.hunt.deploy_missing(1), ["tok-edge-2", "lon-dist-a/api-stalls"])
+        self.assertEqual(self.hunt.deploy_missing(1, began),
+                         ["tok-edge-2", "lon-dist-a/api-stalls"])
         run.mark_collected(True, [])
-        self.assertEqual(self.hunt.deploy_missing(0), [])
+        self.assertEqual(self.hunt.deploy_missing(0, began), [])
 
     def test_a_refused_deploy_collect_is_itself_missing(self):
-        self.assertEqual(self.hunt.deploy_missing(2), ["deploy collect (exit 2)"])
-        self.assertTrue(self.hunt.deploy_missing(0)[0].startswith("deploy collect ("),
+        began = hunt_tool.run_archive.utc_now()
+        self.assertEqual(self.hunt.deploy_missing(2, began), ["deploy collect (exit 2)"])
+        self.assertEqual(self.hunt.deploy_missing(70, began), ["deploy collect (exit 70)"])
+        self.assertTrue(self.hunt.deploy_missing(0, began)[0].startswith("deploy collect ("),
                         "no run in the archive")
+
+    def test_a_collect_that_crashed_before_marking_the_run_is_missing(self):
+        # A Python crash, or a sys.exit with a message, exits 1 like an
+        # incomplete collect, but leaves the run as it was: never marked,
+        # or marked by an earlier collect.
+        run = hunt_tool.run_archive.RunArchive.create("hunt1", "linode-lab", tool="stall-hunt",
+                                                      argv=["hunt"])
+        began = hunt_tool.run_archive.utc_now()
+        self.assertEqual(self.hunt.deploy_missing(1, began),
+                         ["deploy collect (exit 1, the run not marked by it)"])
+        run.mark_collected(True, [])
+        later = "9999-01-01T00:00:00.000Z"
+        self.assertEqual(self.hunt.deploy_missing(1, later),
+                         ["deploy collect (exit 1, the run not marked by it)"])
 
 
 class Preflight(unittest.TestCase):

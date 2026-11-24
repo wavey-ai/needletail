@@ -1225,20 +1225,24 @@ class Hunt:
         # its API at the end and its samplers' files, and the lab's files,
         # by the deploy tool's collect; then this hunt's own records. The
         # run is collected when both are.
+        began_utc = run_archive.utc_now()
         collected = self.deploy("collect", "--run-id", self.run_id)
         missing = {line.split(":", 1)[0] for line in failures}
         if self.archive("add-tree", self.run_id, relative(self.out()), "--kind", "raw",
                         "--description", "the stall hunt: hunt.json, every node's stall and "
                         "watch records, the sessions' probes, the route survey") != 0:
             missing.add(f"{relative(self.out())} (add-tree)")
-        missing = sorted(missing | set(self.deploy_missing(collected)))
+        missing = sorted(missing | set(self.deploy_missing(collected, began_utc)))
         self.archive("collected", self.run_id,
                      *(["--complete"] if not missing else
                        ["--incomplete", *[item for name in missing for item in ("--missing", name)]]))
 
-    def deploy_missing(self, status: int) -> list[str]:
+    def deploy_missing(self, status: int, began_utc: str) -> list[str]:
         """What the deploy tool's collect could not have, as it recorded it
-        in the run (exit 0 or 1), or the collect itself when it was refused."""
+        in the run (exit 0 or 1) after it began (`began_utc`), or the
+        collect itself: refused, failed, or ended without marking the run
+        (a Python crash and a refusal by message also exit 1, so the exit
+        alone is not trusted)."""
         if self.runner.dry:
             return []
         if status not in (0, 1):
@@ -1247,7 +1251,10 @@ class Hunt:
             manifest = run_archive.RunArchive.open(self.run_id, record=False).manifest
         except run_archive.ArchiveError as error:
             return [f"deploy collect ({error})"]
-        return list((manifest.get("collected") or {}).get("missing") or [])
+        collected = manifest.get("collected") or {}
+        if not collected.get("at_utc") or collected["at_utc"] < began_utc:
+            return [f"deploy collect (exit {status}, the run not marked by it)"]
+        return list(collected.get("missing") or [])
 
     def down(self) -> None:
         """The lab tool's `down`, then this checkout's deploy settings of
