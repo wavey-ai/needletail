@@ -130,8 +130,9 @@ def video(carried=True, share=1.0):
                                                     "longest_stall_ms": 0.0}}]}
 
 
-def node(share, drops=0):
-    return {"cpu_share": share, "socket_drops_total": drops}
+def node(share, drops=0, port="23001"):
+    return {"cpu_share": share, "socket_drops_total": drops,
+            "socket_drops": {port: drops} if drops else {}}
 
 
 class Verdict(unittest.TestCase):
@@ -189,6 +190,11 @@ class Verdict(unittest.TestCase):
             change(run)
             judged = gate.verdict(run, THRESHOLDS, BASELINE, host="box")
             self.assertEqual([c["check"] for c in judged["failed"]], [f"4k-247: {name}"])
+
+    def test_the_standby_contributors_lane_ports_are_not_the_4ks_drops(self):
+        run = self.good_run()
+        run[1]["nodes"]["contrib-lon-b"] = node(0.02, drops=160, port="22301")
+        self.assertEqual(gate.verdict(run, THRESHOLDS, BASELINE, host="box")["verdict"], "PASS")
 
     def test_audio_beside_4k_on_an_edge_without_it_is_held_to_the_alone_figures(self):
         run = self.good_run()

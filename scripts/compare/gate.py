@@ -470,8 +470,13 @@ def verdict(results: list[dict], thresholds: dict, baseline: dict, host: str | N
                                        f"{'yes' if referee.get('carried') else 'no'})"})
         if not must:
             continue
-        drops = {name: node["socket_drops_total"] for name, node in item["nodes"].items()
-                 if node.get("socket_drops_total")}
+        ignored = set(video_t.get("socket_drops_ignore") or [])
+        drops = {}
+        for name, node in item["nodes"].items():
+            count = sum(n for port, n in (node.get("socket_drops") or {}).items()
+                        if f"{name}:{port}" not in ignored)
+            if count:
+                drops[name] = count
         check(f"{key}: socket drops", sum(drops.values()) <= video_t["socket_drops_max"],
               drops or 0, video_t["socket_drops_max"])
         tee = {name: c.get("tee_dropped") for name, c in (item.get("counters") or {}).items()

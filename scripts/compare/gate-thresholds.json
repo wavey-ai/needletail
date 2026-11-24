@@ -1,18 +1,28 @@
 {
- "_doc": "Thresholds of scripts/compare/gate.py. audio.p99_margin_ms: how far a pass's median-client p99 may sit above this host's recorded baseline (gate-baseline.json) for that pass; the local lab's p99 moves by about 1 ms with host load (handover 24 Nov), so the margins are the noise of repeated passes, not targets. beside_4k_*: audio on an edge that carries no 4K, with the 4K rung running, minus the same run's audio alone (opus1-clean). video.must_carry: the rungs every 4K viewer must carry by the referee's rule (on_time_min of frames on time, no stall over stall_ms); other rungs are reported. cpu_share_max: a node's mean CPU over the window as a share of its own CPUs (2 for a forwarder or edge, 4 for the contributor) at a must-carry rung.",
+ "_doc": "Thresholds of scripts/compare/gate.py. audio.p99_margin_ms: how far a pass's median-client p99 may sit above this host's recorded baseline (gate-baseline.json) for that pass; the local lab's p99 moves by about 1 ms with host load (handover 24 Nov), so the margins are the noise of repeated passes, not targets. beside_4k_*: audio on an edge that carries no 4K, with the 4K rung running, minus the same run's audio alone (opus1-clean). video.must_carry: the rungs every 4K viewer must carry by the referee's rule (on_time_min of frames on time, no stall over stall_ms); other rungs are reported. cpu_share_max: a node's mean CPU over the window as a share of its own CPUs (2 for a forwarder or edge, 4 for the contributor) at a must-carry rung. socket_drops_ignore: node:port pairs whose drops are not the 4K's: the standby contributor's lane ports, which the distributors' reports reach and nobody reads (about 160 in every 40 s pass, audio alone included; smoke 1 saw them too).",
  "audio": {
   "missing_max": 0,
-  "p99_margin_ms": {"clean": 1.0, "loss5": 1.0, "burst": 2.0},
+  "p99_margin_ms": {
+   "clean": 1.0,
+   "loss5": 1.0,
+   "burst": 2.0
+  },
   "beside_4k_p50_ms": 0.2,
   "beside_4k_p99_ms": 1.0
  },
  "video": {
-  "must_carry": ["247"],
+  "must_carry": [
+   "247"
+  ],
   "on_time_min": 0.995,
   "stall_ms": 500,
   "socket_drops_max": 0,
   "tee_drops_max": 0,
   "refused_max": 0,
-  "cpu_share_max": 0.70
+  "cpu_share_max": 0.7,
+  "socket_drops_ignore": [
+   "contrib-lon-b:22301",
+   "contrib-lon-b:22302"
+  ]
  }
 }
