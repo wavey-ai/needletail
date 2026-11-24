@@ -645,8 +645,8 @@ DEFAULT_SETTINGS = {
     # 0, every mesh node and the contributor get the oneshot unit
     # needletail-node-check.service (`needletail-nodecheck boot`: a warm
     # pass, then that many seconds of watching for stops and steal against
-    # the two limits), their service Requires= it, and av-mesh reads its
-    # verdict (--node-warm-file) into its readiness. It runs once a boot, not
+    # the two limits), their service Wants= it and starts After= it, and
+    # av-mesh reads its verdict (--node-warm-file) into its readiness. It runs once a boot, not
     # on a restart or a roll. Off until the stall lab decides (no placebo).
     "node_warm": False,
     "node_check_seconds": 0,
@@ -3109,7 +3109,10 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
     # its rings under it, and nothing can lock the whole process.
     thread_line += f"LimitMEMLOCK={MEMLOCK_LIMIT}\n"
     # D 2.4: the check at boot runs, once a boot, before the service starts.
-    check = (f"Requires={NODE_CHECK_UNIT}\nAfter={NODE_CHECK_UNIT}\n"
+    # Wants=, not Requires=: a check that fails, times out or is missing
+    # still lets the service start (D 2.2: the service starts, and its
+    # readiness keeps a node without a complete record out).
+    check = (f"Wants={NODE_CHECK_UNIT}\nAfter={NODE_CHECK_UNIT}\n"
              if check_unit_wanted(settings) else "")
     # C 2.5: no start limit (with RestartSec=1, five crashes in ten seconds
     # would leave a media node failed for good); a stop is bounded by B's
@@ -3145,10 +3148,13 @@ WantedBy=multi-user.target
 def check_unit_text(settings: dict) -> str | None:
     """needletail-node-check.service of a node with these settings (D 2.4),
     or None when it has no check at boot. A oneshot that stays active, so
-    it runs once a boot (the services Requires= it): an optional warm pass,
-    then N seconds of watching for stops and steal; its record is
-    NODE_WARM_FILE. needletail-nodecheck exits 0 whatever its verdict: the
-    service starts, and its readiness keeps a node with another verdict out."""
+    it runs once a boot (the services Want it and start after it): an
+    optional warm pass, then N seconds of watching for stops and steal; its
+    record is NODE_WARM_FILE. needletail-nodecheck exits 0 whatever its
+    verdict, and the `-` on ExecStart makes any other exit (an old build
+    that refuses a flag, a crash, a missing binary) a success too: the
+    service starts, and its readiness keeps a node with another verdict or
+    no record out."""
     if not check_unit_wanted(settings):
         return None
     seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
@@ -3167,7 +3173,7 @@ RemainAfterExit=yes
 RuntimeDirectory=needletail
 RuntimeDirectoryPreserve=yes
 TimeoutStartSec={70 + seconds}
-ExecStart=/usr/local/bin/needletail-nodecheck boot --out {NODE_WARM_FILE}{warm} \\
+ExecStart=-/usr/local/bin/needletail-nodecheck boot --out {NODE_WARM_FILE}{warm} \\
   --check-seconds {seconds} --max-stop-ms {stop_ms} --max-steal-permille {steal}
 """
 
@@ -3410,7 +3416,7 @@ else
     cp "$ETC/$service.qdisc.next" "$RUN/$service.qdisc"
     qdisc=true
   fi
-  # D 2.4: the check at boot's unit, before the unit that Requires= it.
+  # D 2.4: the check at boot's unit, before the unit that Wants= it.
   if [ -f "$ETC/$service.check.next" ] && ! cmp -s "$ETC/$service.check.next" "$UNITS/needletail-node-check.service"; then
     { cp "$ETC/$service.check.next" "$UNITS/needletail-node-check.service.tmp" \
       && mv -f "$UNITS/needletail-node-check.service.tmp" "$UNITS/needletail-node-check.service" \

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests of the deploy settings for the stall instruments (D 2.9, D4): a
 finite LimitMEMLOCK on both services; --mlock in place of --mlock-all; the
-check at boot (its unit, the services' Requires=, --node-warm-file) only
+check at boot (its unit, the services' Wants=, --node-warm-file) only
 when set; per-node overrides that reach their node only; --host-tag from
 the lab state's host_uuid, only to a binary that has it; needletail-nodecheck
 on every role; and the lab tool's `hosts`, which flags contributors on one
@@ -99,9 +99,11 @@ class Units(Base):
             self.settings(["mlock=all"])
 
     def test_check_unit_only_when_set(self):
-        """D 2.4: no check unit, no Requires= and no --node-warm-file by
+        """D 2.4: no check unit, no Wants= and no --node-warm-file by
         default (no placebo); node_check_seconds or node_warm render all
-        three; a watch longer than push waits for is refused."""
+        three; a watch longer than push waits for is refused. A check that
+        fails never keeps the service down: the service Wants= it (not
+        Requires=), and any exit of its ExecStart (`-`) counts as done."""
         settings = self.settings()
         self.assertIsNone(deploy.check_unit_text(settings))
         self.assertNotIn(CHECK, deploy.unit_text("needletail-mesh", "info", settings))
@@ -113,11 +115,13 @@ class Units(Base):
         settings = self.settings(["node_check_seconds=30"])
         for service in ("needletail-mesh", "needletail-contrib"):
             unit = deploy.unit_text(service, "info", settings)
-            self.assertIn(f"\nRequires={CHECK}\nAfter={CHECK}\n", unit, service)
+            self.assertIn(f"\nWants={CHECK}\nAfter={CHECK}\n", unit, service)
+            self.assertNotIn("Requires=", unit, service)
         check = deploy.check_unit_text(settings)
         self.assertIn("Type=oneshot\nRemainAfterExit=yes\n", check)
         self.assertIn("RuntimeDirectory=needletail\nRuntimeDirectoryPreserve=yes\n", check)
         self.assertIn("TimeoutStartSec=100\n", check)
+        self.assertIn("\nExecStart=-/usr/local/bin/needletail-nodecheck boot ", check)
         self.assertIn("needletail-nodecheck boot --out /run/needletail/node-warm.json \\\n"
                       "  --check-seconds 30 --max-stop-ms 20 --max-steal-permille 10\n", check)
         self.assertNotIn("--warm", check)
@@ -201,7 +205,7 @@ class Render(Base):
                 self.assertEqual(args[name], base[name], name)
         settings = self.settings([f"node_overrides={json.dumps(overrides)}"])
         own = deploy.node_own_settings(settings, "lon-edge-1")
-        self.assertIn(f"Requires={CHECK}", deploy.unit_text("needletail-mesh", "info", own))
+        self.assertIn(f"Wants={CHECK}", deploy.unit_text("needletail-mesh", "info", own))
         self.assertIn("check", deploy.node_files(["x"], "unit", own))
         other = deploy.node_own_settings(settings, "lon-edge-2")
         self.assertNotIn(CHECK, deploy.unit_text("needletail-mesh", "info", other))

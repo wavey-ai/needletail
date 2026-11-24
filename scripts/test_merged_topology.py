@@ -1016,18 +1016,18 @@ class Activation(unittest.TestCase):
         self.assertEqual(applied.read_text(), "echo applied\n")
         self.assertNotIn("systemctl", self.calls())
 
-    def test_a_staged_check_unit_is_installed_before_the_unit_that_requires_it(self):
+    def test_a_staged_check_unit_is_installed_before_the_unit_that_wants_it(self):
         """D 2.4: the check at boot's unit goes in with the service's unit,
         once; staged again as it is, nothing is reloaded for it."""
         check = self.units / "needletail-node-check.service"
         (self.etc / f"{self.SERVICE}.check.next").write_text("check 30\n")
-        self.stage("b", unit="unit b\nRequires=needletail-node-check.service\n")
+        self.stage("b", unit="unit b\nWants=needletail-node-check.service\n")
         self.assertTrue(self.activate()[1]["ok"])
         self.assertEqual(check.read_text(), "check 30\n")
-        self.assertIn("Requires=needletail-node-check.service",
+        self.assertIn("Wants=needletail-node-check.service",
                       (self.units / f"{self.SERVICE}.service").read_text())
         self.log.unlink()
-        self.stage("a", unit="unit b\nRequires=needletail-node-check.service\n")
+        self.stage("a", unit="unit b\nWants=needletail-node-check.service\n")
         self.assertTrue(self.activate()[1]["ok"])
         self.assertNotIn("daemon-reload", self.calls())
 
