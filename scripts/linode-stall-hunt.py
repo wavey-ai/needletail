@@ -1239,7 +1239,10 @@ class Hunt:
             return
         if status != 0 or STATE.exists():
             raise RuntimeError("lab down failed: run `linode-stall-hunt.py down` again (the "
-                               "watchdog deletes the lab at its deadline)")
+                               "watchdog deletes the lab at its deadline). The lab tool "
+                               "refuses while this run is not marked collected in the "
+                               "archive: collect again, or `linode-small-mesh-lab.py down "
+                               "--uncollected`, which records the run as failed")
         artifacts = self.out() / "deploy"
         artifacts.mkdir(parents=True, exist_ok=True)
         for file in ("settings.json", "routes.json"):
