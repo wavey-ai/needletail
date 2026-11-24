@@ -197,7 +197,8 @@ class FakeLab:
             mock.patch.object(lab, "join_tools", lambda: fake.ran.append(("join_tools",))),
             mock.patch.object(lab, "wait_live",
                               lambda stream, site, timeout=40: fake.ran.append(("live", stream, site))),
-            mock.patch.object(lab, "enter", lambda name: [] if name is None else [f"@{name}"]),
+            mock.patch.object(lab, "enter",
+                              lambda name, source=False: [] if name is None else [f"@{name}"]),
             mock.patch.object(lab, "load", lambda name, default=None:
                               json.loads(json.dumps(fake.store.get(name, {} if default is None
                                                                    else default)))),
@@ -345,6 +346,16 @@ class Commands(unittest.TestCase):
         self.assertEqual(crowds[0]["command"][crowds[0]["command"].index("--listeners") + 1],
                          str(40 * len(lab.edges("london"))))
         self.assertEqual(crowds[0]["command"][crowds[0]["command"].index("--stream") + 1], "3001")
+        # The crowd asks the site's entry points (legs and a spare), as a
+        # listener does; --crowd-edges answers it from the edges' list.
+        command = crowds[0]["command"]
+        self.assertNotIn("--edges", command)
+        self.assertEqual(command[command.index("--entry") + 1].split(",")[:2],
+                         ["https://10.90.0.11:19444", "https://10.90.0.12:19444"])
+        edges = cr.crowd_items(parse("--lanes", "opus-2.5", "--hosts", "lon-readers",
+                                     "--crowd-edges", "--", "engine"), "x", self.dir)
+        self.assertIn("--edges", edges[0]["command"])
+        self.assertNotIn("--entry", edges[0]["command"])
 
     def test_losses_keep_the_links_delay(self):
         self.assertEqual(cr.wan_losses(["newyork=loss 1%"]),
@@ -725,6 +736,25 @@ class Runs(unittest.TestCase):
         self.assertEqual(len(senders), 2)
         self.assertEqual(self.fake.store["sources.json"], {})
         self.assertEqual(len([item for item in self.fake.ran if item[0] == "stop_sender"]), 2)
+
+    def test_with_the_standby_the_source_host_sends_to_both_contributors(self):
+        self.fake.store["services.json"] = {"contrib-lon": {"pid": 1}, "contrib-lon-b": {"pid": 2}}
+        targets = ["10.77.1.5:27100", "10.77.1.7:27100"]
+        with mock.patch.object(lab, "service_names",
+                               lambda role=None, site=None: ["contrib-lon", "contrib-lon-b"]
+                               if role == "contributor" else ["lon-edge-1"]), \
+                mock.patch.object(lab, "contributor_targets", lambda: targets), \
+                mock.patch.object(lab, "enter", lambda name, source=False:
+                                  [] if name is None else [f"@{name}" + ("+src" if source else "")]):
+            self.fake.main("run", "--name", "roll-edges", "--", "engine")
+            self.assertEqual(cr.sender_place("contrib-lon"), ("contrib-lon", ["127.0.0.1:27100"]))
+        senders = [command for command in self.fake.started if command[:1] == ["@lon-src+src"]]
+        self.assertEqual(len(senders), 2)
+        for command in senders:
+            self.assertEqual([command[i + 1] for i, item in enumerate(command)
+                              if item == "--target"], targets)
+        self.assertFalse([command for command in self.fake.started
+                          if command[:1] == ["@contrib-lon"]])
 
     def test_sigterm_during_the_change_cleans_up(self):
         self.fake.command["behaviour"] = "sigterm"

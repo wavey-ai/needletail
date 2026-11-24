@@ -243,6 +243,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="the run in the archive (default change-run-<UTC time>)")
     run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                      help="a lab setting for `up`; repeat")
+    run.add_argument("--sender-host", choices=("auto", "contrib-lon", lab.SOURCE_HOST),
+                     default="auto",
+                     help="where the senders run: auto = the source host, sending every epoch "
+                          "to each contributor, when the lab runs more than one (A 6); else "
+                          "the contributor's own host, to itself")
+    run.add_argument("--crowd-edges", action="store_true",
+                     help="the crowd is answered from the edges' list (no entry, no spare) "
+                          "instead of asking the site's entry points as a listener does")
     run.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND...")
     score = verbs.add_parser("score", help="ingest and score again")
     score.add_argument("directory", help="a run's directory, or a scenario's")
@@ -385,17 +393,33 @@ def sender_seconds(args, sites: int, start: int) -> int:
     return math.ceil(max(0.0, start - now()) + live + args.repeat * per_run)
 
 
-def sender_commands(lanes: list[str], start: int, seconds: int) -> list[list[str]]:
+def sender_place(choice: str = "auto") -> tuple[str, list[str]]:
+    """The host the senders run on and their targets. With more than one
+    contributor in service (the standby, A 2.7) a run's source is the
+    source host, sending every epoch to each contributor as lon-src does on
+    Linode (A 6): a contributor change then has a source beside it.
+    Otherwise the contributor's own host sends to itself, as before."""
+    contributors = [name for name in lab.service_names("contributor")
+                    if lab.load("services.json").get(name)]
+    if choice == lab.SOURCE_HOST or (choice == "auto" and len(contributors) > 1):
+        return lab.SOURCE_HOST, lab.contributor_targets()
+    return "contrib-lon", ["127.0.0.1:27100"]
+
+
+def sender_commands(lanes: list[str], start: int, seconds: int,
+                    targets: list[str] | None = None) -> list[list[str]]:
     """One AEP1 sender per lane, as the referee's (compare-audio.py
     aep1_command): it sends epoch k when its last sample has been spoken, so
     the session id is START plus one epoch; a second lane's id is one ns more
-    (two sessions of one source; PCM is read by fingerprint)."""
+    (two sessions of one source; PCM is read by fingerprint). Each datagram
+    goes to every one of `targets` (default the contributor's own port)."""
     loop = str(audio_media() / "audio.s24le")
+    to = [item for target in (targets or ["127.0.0.1:27100"]) for item in ("--target", target)]
     out = []
     for offset, lane in enumerate(lanes):
         item = LANES[lane]
         session = start * 1_000_000_000 + bench.epoch_ns(item["epoch_samples"]) + offset
-        out.append([lab.binary("aep1-48k-probe"), "send", "--target", "127.0.0.1:27100",
+        out.append([lab.binary("aep1-48k-probe"), "send", *to,
                     "--session-id", str(session), "--group-id", "0",
                     # Stopped at the end of the run (and by the lab's `down`).
                     "--duration-seconds", str(seconds),
@@ -462,7 +486,10 @@ def reader_items(args, name: str, directory: pathlib.Path) -> list[dict]:
 
 def crowd_items(args, name: str, directory: pathlib.Path) -> list[dict]:
     """--load-listeners an edge of each probed site, latency-bench's crowd on
-    the first lane's stream."""
+    the first lane's stream. The listeners ask the site's entry points for
+    their legs and spare, as a real listener does (latency-bench
+    --load-assign), unless --crowd-edges: from the edges' list there is no
+    spare, and an edge that is drained or dead is still on the list."""
     if not args.load_listeners:
         return []
     sites = sorted({lab.node(host)["site"] for host in hosts_of(args)})
@@ -470,7 +497,7 @@ def crowd_items(args, name: str, directory: pathlib.Path) -> list[dict]:
                             load_sites=",".join(sites),
                             payload=LANES[lanes_of(args.lanes)[0]]["payload"],
                             seconds=args.seconds, name=f"change-{name}", load_args="",
-                            load_assign=False)
+                            load_assign=not getattr(args, "crowd_edges", False))
     return bench.load_commands(crowd, directory)
 
 
@@ -973,8 +1000,10 @@ def attempt(failures: list[str], what: str, action, *args) -> object:
 
 # ------------------------------------------------------------------ a run
 
-def popen(host: str | None, command: list[str], stdout, stderr) -> subprocess.Popen:
-    return subprocess.Popen(lab.enter(host) + command, stdout=stdout, stderr=stderr,
+def popen(host: str | None, command: list[str], stdout, stderr,
+          source: bool = False) -> subprocess.Popen:
+    prefix = lab.enter(host, source=True) if source else lab.enter(host)
+    return subprocess.Popen(prefix + command, stdout=stdout, stderr=stderr,
                             stdin=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -1108,10 +1137,15 @@ def start_senders(args, lanes: list[str], directory: pathlib.Path) -> tuple[list
     sites = {lab.node(host)["site"] for host in hosts_of(args)}
     senders = []
     sources = lab.load("sources.json")
+    host, targets = sender_place(getattr(args, "sender_host", "auto"))
+    log(f"senders on {host} to {', '.join(targets)}")
     for lane, command in zip(lanes, sender_commands(lanes, start,
-                                                    sender_seconds(args, len(sites), start))):
+                                                    sender_seconds(args, len(sites), start),
+                                                    targets)):
         handle = open(directory / f"sender-{lane}.log", "ab")
-        process = popen("contrib-lon", command, handle, handle)
+        handle.write((shlex.join([f"# on {host}:", *command]) + "\n").encode())
+        handle.flush()
+        process = popen(host, command, handle, handle, source=True)
         handle.close()
         senders.append(process)
         sources[f"change-run-{lane}"] = process.pid
