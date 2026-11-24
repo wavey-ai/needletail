@@ -12,8 +12,9 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 
 use crate::relay_topology::{
-    FailureDiversityRequirement, NodeRole, ParentRole, PolicyViolation, RelayTopology,
-    TopologyPolicy, DEFAULT_MAX_EDGES_PER_FORWARDER,
+    FailureDiversityRequirement, FailureDomain, NodeRole, OriginReplica, ParentRole,
+    PolicyViolation, RelayTopology, TopologyPolicy, DEFAULT_MAX_EDGES_PER_FORWARDER,
+    MAX_ORIGINS_PER_STREAM,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +154,31 @@ impl CarrierLink {
     }
 }
 
+/// One lane of the standby contributor: its own sender socket and the socket
+/// on which an origin child takes it, the child's free secondary lane. The
+/// fields mean what `CarrierLink`'s do; the parent is the standby and there
+/// is no parent role, because the standby is not a topology parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandbyCarrierLink {
+    pub child_node_id: String,
+    pub lane: RelaySymbolLane,
+    pub sender_bind: SocketAddr,
+    pub sender_peer: SocketAddr,
+    pub receiver_bind: SocketAddr,
+    pub receiver_target: SocketAddr,
+}
+
+/// The standby contributor: a replica of the origin that always publishes
+/// the same parts as the origin, on lanes of its own to the origin's two
+/// children. Each child merges the two by first arrival; nothing elects,
+/// promotes or demotes a contributor. It is not a node of the topology.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OriginStandby {
+    pub node_id: String,
+    pub failure_domain: FailureDomain,
+    pub carrier_links: Vec<StandbyCarrierLink>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProgram {
     pub purpose: DeploymentPurpose,
@@ -187,6 +213,12 @@ pub struct RelayProgram {
     /// Playback edges per forwarder of a merged topology (default 16).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_edges_per_forwarder: Option<usize>,
+    /// The standby contributor (resilient mesh): a second `av-contrib` with
+    /// the origin's generation, subscription, deadline and path
+    /// observations, one lane to each origin child. The first hop is then
+    /// two contributors by two ingresses and nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_standby: Option<OriginStandby>,
     pub topology: RelayTopology,
     pub carrier_links: Vec<CarrierLink>,
 }
@@ -210,6 +242,13 @@ impl ForwardingShape {
 /// failure domain by declaration.
 fn shared_domain_parent_gap(node_id: &str) -> String {
     format!("shared_parent_failure_domain:{node_id}")
+}
+
+/// The production-readiness gap of a standby contributor that is not
+/// independent of the origin by the stage's own diversity rule: one failure
+/// takes both contributors.
+fn origin_standby_domain_gap(node_id: &str) -> String {
+    format!("origin_standby_shares_failure_domain:{node_id}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +302,11 @@ pub struct MeshRelayService {
     pub node_id: String,
     pub primary_parent: CompiledParent,
     pub secondary_parent: Option<CompiledParent>,
+    /// The standby contributor on an origin child's secondary lane: a
+    /// second, always admitted source of the origin's symbols, never with a
+    /// secondary parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standby_origin_parent: Option<CompiledParent>,
     pub forwards: Vec<CompiledForward>,
     pub failover_listeners: Vec<CompiledFailoverListener>,
     pub failover_controller: Option<CompiledFailoverController>,
@@ -396,6 +440,19 @@ impl MeshRelayService {
                 args.push("--relay-secondary-promoted".to_owned());
             }
         }
+        if let Some(standby) = &self.standby_origin_parent {
+            // Promoted: it sends everything the origin sends, from the
+            // first datagram. No failover controller runs for it.
+            args.extend([
+                "--relay-secondary-bind".to_owned(),
+                standby.bind.to_string(),
+                "--relay-secondary-peer".to_owned(),
+                standby.peer.to_string(),
+                "--relay-secondary-id".to_owned(),
+                standby.parent_node_id.clone(),
+                "--relay-secondary-promoted".to_owned(),
+            ]);
+        }
         args.extend([
             "--relay-topology-generation".to_owned(),
             self.topology_generation.to_string(),
@@ -490,6 +547,16 @@ impl fmt::Display for ServicePlanError {
 impl std::error::Error for ServicePlanError {}
 
 impl RelayProgram {
+    /// Every lane of the standby contributor, with the standby.
+    fn standby_links(&self) -> impl Iterator<Item = (&OriginStandby, &StandbyCarrierLink)> {
+        self.origin_standby.iter().flat_map(|standby| {
+            standby
+                .carrier_links
+                .iter()
+                .map(move |link| (standby, link))
+        })
+    }
+
     pub fn compile(&self) -> Result<CompiledServicePlan, ServicePlanError> {
         let policy = TopologyPolicy {
             diversity: self.purpose.diversity(),
@@ -502,6 +569,19 @@ impl RelayProgram {
         self.topology
             .validate_with_policy(&policy)
             .map_err(ServicePlanError::Topology)?;
+        if let Some(standby) = &self.origin_standby {
+            self.topology
+                .validate_origin_replicas(&[OriginReplica {
+                    node_id: &standby.node_id,
+                    failure_domain: &standby.failure_domain,
+                    child_node_ids: standby
+                        .carrier_links
+                        .iter()
+                        .map(|link| link.child_node_id.as_str())
+                        .collect(),
+                }])
+                .map_err(ServicePlanError::Topology)?;
+        }
 
         let mut violations = Vec::new();
         if self.purpose == DeploymentPurpose::Production && !self.shared_domain_parents.is_empty() {
@@ -671,6 +751,56 @@ impl RelayProgram {
                 ));
             }
         }
+        // The standby's sockets, after every topology carrier's, so that a
+        // child's receiver bind already in use is the standby's violation.
+        // The sender peer is each contributor's identity at the ingress, so
+        // the standby never sends from an address of the origin.
+        let origin_sender_peers = self
+            .carrier_links
+            .iter()
+            .filter(|link| {
+                nodes
+                    .get(link.parent_node_id.as_str())
+                    .is_some_and(|node| node.role == NodeRole::Origin)
+            })
+            .map(|link| link.sender_peer)
+            .collect::<HashSet<_>>();
+        for (standby, link) in self.standby_links() {
+            if link.sender_bind.port() == 0
+                || link.sender_peer.port() == 0
+                || link.receiver_bind.port() == 0
+                || link.receiver_target.port() == 0
+            {
+                violations.push(format!(
+                    "origin standby link {} -> {} requires non-zero ports",
+                    standby.node_id, link.child_node_id
+                ));
+            }
+            if link.sender_bind.ip().is_unspecified() || link.sender_peer.ip().is_unspecified() {
+                violations.push(format!(
+                    "origin standby link {} -> {} requires an explicit sender IP",
+                    standby.node_id, link.child_node_id
+                ));
+            }
+            if origin_sender_peers.contains(&link.sender_peer) {
+                violations.push(format!(
+                    "origin standby link {} -> {} sends from {}, an address of the origin",
+                    standby.node_id, link.child_node_id, link.sender_peer
+                ));
+            }
+            if !sender_binds.insert((standby.node_id.as_str(), link.sender_bind)) {
+                violations.push(format!(
+                    "node {} reuses RelaySession sender bind {}",
+                    standby.node_id, link.sender_bind
+                ));
+            }
+            if !receiver_binds.insert((link.child_node_id.as_str(), link.receiver_bind)) {
+                violations.push(format!(
+                    "node {} reuses RelaySession receiver bind {} for origin standby {}",
+                    link.child_node_id, link.receiver_bind, standby.node_id
+                ));
+            }
+        }
 
         let secondary_carriers = self
             .carrier_links
@@ -800,6 +930,38 @@ impl RelayProgram {
                 origin.node_id
             ));
         }
+        // A standby that one failure takes together with the origin is a
+        // gap of the plan, by the same diversity rule as a node's parents.
+        let standby_domain_gap = self.origin_standby.as_ref().and_then(|standby| {
+            (!standby
+                .failure_domain
+                .is_independent_from(&origin.failure_domain, self.purpose.diversity()))
+            .then(|| origin_standby_domain_gap(&standby.node_id))
+        });
+        if self.purpose == DeploymentPurpose::Production && standby_domain_gap.is_some() {
+            violations.push(
+                "production refuses an origin standby that shares the origin's failure domain"
+                    .to_owned(),
+            );
+        }
+        for (standby, link) in self.standby_links() {
+            // Each contributor keeps the origin's shape: sources to one
+            // child, sources and repair to the other.
+            let origin_lane = origin_links
+                .iter()
+                .find(|origin_link| origin_link.child_node_id == link.child_node_id)
+                .map(|origin_link| origin_link.lane);
+            if origin_lane.is_some_and(|lane| lane != link.lane) {
+                violations.push(format!(
+                    "origin standby link {} -> {} assigns {:?} lane; origin {} sends it {:?}",
+                    standby.node_id,
+                    link.child_node_id,
+                    link.lane,
+                    origin.node_id,
+                    origin_lane.expect("origin lane")
+                ));
+            }
+        }
 
         for node in self
             .topology
@@ -849,6 +1011,40 @@ impl RelayProgram {
         });
 
         let mut services = vec![contrib];
+        let mut standby_parents = HashMap::new();
+        if let Some(standby) = &self.origin_standby {
+            let lane = |lane: RelaySymbolLane| {
+                standby
+                    .carrier_links
+                    .iter()
+                    .find(|link| link.lane == lane)
+                    .expect("validated standby lanes")
+            };
+            let primary_standby = lane(RelaySymbolLane::Source);
+            let warm_standby = lane(RelaySymbolLane::SourceAndRepair);
+            services.push(CompiledService::AvContrib(ContribRelayService {
+                node_id: standby.node_id.clone(),
+                audio_epoch_ingress_target: primary_standby.receiver_target,
+                audio_epoch_redundant_ingress_target: self
+                    .audio_epoch_redundant_ingress
+                    .then_some(warm_standby.receiver_target),
+                primary: primary_standby.compiled_forward(),
+                warm_secondary: warm_standby.compiled_forward(),
+                topology_generation: self.topology.generation,
+                subscription_id: self.subscription_id,
+                media_deadline_ms: self.media_deadline_ms,
+                source_path_observation: self.source_path_observation.clone(),
+                secondary_path_observation: self.secondary_path_observation.clone(),
+            }));
+            for link in &standby.carrier_links {
+                standby_parents.insert(
+                    link.child_node_id.as_str(),
+                    link.compiled_parent(&standby.node_id),
+                );
+            }
+        }
+        let contributors = services.len();
+        debug_assert!(contributors <= MAX_ORIGINS_PER_STREAM);
         for node in self
             .topology
             .nodes
@@ -913,6 +1109,7 @@ impl RelayProgram {
                 node_id: node.node_id.clone(),
                 primary_parent: compiled_parent(primary),
                 secondary_parent: secondary.map(compiled_parent),
+                standby_origin_parent: standby_parents.remove(node.node_id.as_str()),
                 forwards,
                 failover_listeners,
                 failover_controller,
@@ -925,8 +1122,10 @@ impl RelayProgram {
         services.sort_by(|left, right| left.node_id().cmp(right.node_id()));
 
         // The validated topology catalog is authoritative. This assertion also
-        // prevents future compilation paths from silently omitting a node.
-        debug_assert_eq!(services.len(), nodes.len());
+        // prevents future compilation paths from silently omitting a node. The
+        // standby contributor is the one service that is not a topology node.
+        debug_assert_eq!(services.len(), nodes.len() + contributors - 1);
+        debug_assert!(standby_parents.is_empty());
         let mut production_readiness_gaps = self.purpose.readiness_gaps();
         let mut shared = self
             .shared_domain_parents
@@ -936,6 +1135,7 @@ impl RelayProgram {
         shared.sort();
         shared.dedup();
         production_readiness_gaps.extend(shared);
+        production_readiness_gaps.extend(standby_domain_gap);
         Ok(CompiledServicePlan {
             purpose: self.purpose,
             carrier: self.carrier,
@@ -993,10 +1193,30 @@ fn compiled_forward(link: &CarrierLink) -> CompiledForward {
     }
 }
 
+impl StandbyCarrierLink {
+    fn compiled_parent(&self, standby_node_id: &str) -> CompiledParent {
+        CompiledParent {
+            parent_node_id: standby_node_id.to_owned(),
+            bind: self.receiver_bind,
+            peer: self.sender_peer,
+            lane: self.lane,
+        }
+    }
+
+    fn compiled_forward(&self) -> CompiledForward {
+        CompiledForward {
+            child_node_id: self.child_node_id.clone(),
+            bind: self.sender_bind,
+            target: self.receiver_target,
+            lane: self.lane,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay_topology::{FailureDomain, ParentLink, RelayNode, TopologyLimits};
+    use crate::relay_topology::{ParentLink, RelayNode, TopologyLimits};
 
     fn address(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
@@ -1101,6 +1321,7 @@ mod tests {
             forwarding: ForwardingShape::Legacy,
             shared_domain_parents: Vec::new(),
             max_edges_per_forwarder: None,
+            origin_standby: None,
             topology: RelayTopology {
                 generation: 7,
                 nodes: vec![
@@ -1747,12 +1968,540 @@ mod tests {
             "forwarding",
             "shared_domain_parents",
             "max_edges_per_forwarder",
+            "origin_standby",
         ] {
             assert!(json.get(field).is_none(), "{field}");
         }
         let merged = serde_json::to_value(merged_program()).unwrap();
         assert_eq!(merged["forwarding"], "merged");
+        assert!(merged.get("origin_standby").is_none());
         let back: RelayProgram = serde_json::from_value(merged).unwrap();
         assert_eq!(back, merged_program());
+    }
+
+    fn standby_address(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 2], port))
+    }
+
+    fn standby_link(
+        child: &str,
+        lane: RelaySymbolLane,
+        sender_port: u16,
+        receiver_port: u16,
+    ) -> StandbyCarrierLink {
+        StandbyCarrierLink {
+            child_node_id: child.to_owned(),
+            lane,
+            sender_bind: standby_address(sender_port),
+            sender_peer: standby_address(sender_port),
+            receiver_bind: address(receiver_port),
+            receiver_target: address(receiver_port),
+        }
+    }
+
+    /// The merged program with the standby contributor as the deploy
+    /// compiles it (resilient mesh, workstream A 2.7): `contrib-b` on each
+    /// first forwarder's free secondary lane, so f1 takes the origin on
+    /// 22001 and the standby on 22002, and f2 the reverse. Each contributor
+    /// sends sources to f1 and sources and repair to f2.
+    fn two_contributor_program() -> RelayProgram {
+        let mut program = merged_program();
+        program.origin_standby = Some(OriginStandby {
+            node_id: "contrib-b".to_owned(),
+            failure_domain: node("contrib-b", 0, NodeRole::Origin, "gb-lon", "gb-lon")
+                .failure_domain,
+            carrier_links: vec![
+                standby_link("f1", RelaySymbolLane::Source, 22_301, 22_002),
+                standby_link("f2", RelaySymbolLane::SourceAndRepair, 22_302, 22_001),
+            ],
+        });
+        program
+    }
+
+    fn standby_of(program: &mut RelayProgram) -> &mut OriginStandby {
+        program.origin_standby.as_mut().expect("standby")
+    }
+
+    fn topology_codes(program: &RelayProgram) -> Vec<String> {
+        let Err(ServicePlanError::Topology(violations)) = program.compile() else {
+            panic!("expected topology violations");
+        };
+        violations
+            .into_iter()
+            .map(|violation| violation.code)
+            .collect()
+    }
+
+    fn program_violations(program: &RelayProgram) -> Vec<String> {
+        let Err(ServicePlanError::InvalidProgram(violations)) = program.compile() else {
+            panic!("expected service program violations");
+        };
+        violations
+    }
+
+    fn pair(args: &[String], flag: &str, value: &str) -> bool {
+        args.windows(2)
+            .any(|pair| pair[0] == flag && pair[1] == value)
+    }
+
+    #[test]
+    fn compiles_two_contributors_by_two_ingresses() {
+        let single = merged_program().compile().expect("one contributor");
+        // In a debug build this also proves the service count assertion
+        // with a standby: one service more than the topology has nodes.
+        let plan = two_contributor_program()
+            .compile()
+            .expect("two contributors");
+        assert_eq!(plan.services.len(), 6);
+        let contributors = plan
+            .services
+            .iter()
+            .filter_map(|service| match service {
+                CompiledService::AvContrib(contrib) => Some(contrib),
+                CompiledService::AvMesh(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(contributors.len(), 2);
+        let (origin, standby) = (contributors[0], contributors[1]);
+        assert_eq!(origin.node_id, "contrib");
+        assert_eq!(standby.node_id, "contrib-b");
+
+        // The standby keeps the origin's shape on sockets of its own: its
+        // source lane to f1, its source-and-repair lane to f2.
+        assert_eq!(standby.primary.child_node_id, "f1");
+        assert_eq!(standby.primary.lane, RelaySymbolLane::Source);
+        assert_eq!(standby.primary.bind, standby_address(22_301));
+        assert_eq!(standby.primary.target, address(22_002));
+        assert_eq!(standby.warm_secondary.child_node_id, "f2");
+        assert_eq!(
+            standby.warm_secondary.lane,
+            RelaySymbolLane::SourceAndRepair
+        );
+        assert_eq!(standby.warm_secondary.bind, standby_address(22_302));
+        assert_eq!(standby.warm_secondary.target, address(22_001));
+        // One session identity and one deadline: what makes the two
+        // contributors' datagrams equal.
+        assert_eq!(standby.topology_generation, origin.topology_generation);
+        assert_eq!(standby.subscription_id, origin.subscription_id);
+        assert_eq!(standby.media_deadline_ms, origin.media_deadline_ms);
+        assert_eq!(
+            standby.source_path_observation,
+            origin.source_path_observation
+        );
+        assert_eq!(
+            standby.secondary_path_observation,
+            origin.secondary_path_observation
+        );
+        let standby_args = standby.relay_arguments();
+        assert!(pair(&standby_args, "--relay-local-id", "contrib-b"));
+        assert!(pair(&standby_args, "--relay-primary-id", "f1"));
+        assert!(pair(&standby_args, "--relay-secondary-id", "f2"));
+
+        // Each first forwarder takes the standby on its secondary lane,
+        // admitted in full, with no failover controller for it.
+        for (forwarder, bind, peer, lane) in [
+            ("f1", 22_002, 22_301, RelaySymbolLane::Source),
+            ("f2", 22_001, 22_302, RelaySymbolLane::SourceAndRepair),
+        ] {
+            let service = mesh_service(&plan, forwarder);
+            assert_eq!(service.primary_parent.parent_node_id, "contrib");
+            assert!(service.secondary_parent.is_none());
+            assert!(service.failover_controller.is_none());
+            assert_eq!(
+                service.standby_origin_parent,
+                Some(CompiledParent {
+                    parent_node_id: "contrib-b".to_owned(),
+                    bind: address(bind),
+                    peer: standby_address(peer),
+                    lane,
+                })
+            );
+            let args = service.relay_arguments();
+            assert!(pair(&args, "--relay-primary-id", "contrib"));
+            assert!(pair(
+                &args,
+                "--relay-secondary-bind",
+                &address(bind).to_string()
+            ));
+            assert!(pair(
+                &args,
+                "--relay-secondary-peer",
+                &standby_address(peer).to_string()
+            ));
+            assert!(pair(&args, "--relay-secondary-id", "contrib-b"));
+            // The four arguments of the secondary lane, once each (the
+            // warm window is the failover policy of its children).
+            assert_eq!(
+                args.iter()
+                    .filter(|argument| {
+                        argument.starts_with("--relay-secondary-")
+                            && *argument != "--relay-secondary-warm-ms"
+                    })
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [
+                    "--relay-secondary-bind",
+                    "--relay-secondary-peer",
+                    "--relay-secondary-id",
+                    "--relay-secondary-promoted"
+                ]
+            );
+            assert!(!args.contains(&"--relay-failover-controller".to_owned()));
+            // Nothing else of the forwarder moves.
+            let mut without = service.clone();
+            without.standby_origin_parent = None;
+            assert_eq!(&without, mesh_service(&single, forwarder));
+        }
+
+        // The origin and every node below the first forwarders compile
+        // exactly as with one contributor.
+        for unchanged in ["contrib", "f3", "f4"] {
+            let find = |plan: &CompiledServicePlan| {
+                plan.services
+                    .iter()
+                    .find(|service| service.node_id() == unchanged)
+                    .cloned()
+                    .expect("service")
+            };
+            assert_eq!(find(&plan), find(&single), "{unchanged}");
+        }
+
+        // Both contributors are in London: declared, never silent.
+        let mut gaps = single.production_readiness_gaps.clone();
+        gaps.push("origin_standby_shares_failure_domain:contrib-b".to_owned());
+        assert_eq!(plan.production_readiness_gaps, gaps);
+    }
+
+    #[test]
+    fn a_plan_with_one_contributor_serialises_as_before() {
+        let plan = serde_json::to_string(&merged_program().compile().unwrap()).unwrap();
+        assert!(!plan.contains("standby"), "{plan}");
+        let plan = serde_json::to_value(two_contributor_program().compile().unwrap()).unwrap();
+        let f1 = plan["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|service| service["node_id"] == "f1")
+            .unwrap();
+        assert_eq!(f1["service"], "av_mesh");
+        assert_eq!(f1["standby_origin_parent"]["parent_node_id"], "contrib-b");
+        assert_eq!(f1["standby_origin_parent"]["bind"], "127.0.0.1:22002");
+        assert_eq!(f1["standby_origin_parent"]["peer"], "127.0.0.2:22301");
+        assert_eq!(f1["standby_origin_parent"]["lane"], "source");
+        assert!(f1["secondary_parent"].is_null());
+        let contributors = plan["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|service| service["service"] == "av_contrib")
+            .map(|service| service["node_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(contributors, ["contrib", "contrib-b"]);
+    }
+
+    #[test]
+    fn the_standby_reads_as_the_deploy_writes_it() {
+        let standby: OriginStandby = serde_json::from_str(
+            r#"{"node_id": "contrib-b",
+                "failure_domain": {"provider": "linode", "region": "gb-lon", "asn": 63949, "zone": "gb-lon"},
+                "carrier_links": [
+                 {"child_node_id": "lon-dist-a", "lane": "source",
+                  "sender_bind": "10.77.1.7:22301", "sender_peer": "10.77.1.7:22301",
+                  "receiver_bind": "0.0.0.0:22002", "receiver_target": "10.77.1.11:22002"},
+                 {"child_node_id": "lon-dist-b", "lane": "source_and_repair",
+                  "sender_bind": "10.77.1.7:22302", "sender_peer": "10.77.1.7:22302",
+                  "receiver_bind": "0.0.0.0:22001", "receiver_target": "10.77.1.12:22001"}]}"#,
+        )
+        .expect("the standby of workstream A 2.9");
+        assert_eq!(standby.node_id, "contrib-b");
+        assert_eq!(standby.failure_domain.asn, 63_949);
+        assert_eq!(standby.carrier_links.len(), 2);
+        assert_eq!(standby.carrier_links[0].child_node_id, "lon-dist-a");
+        assert_eq!(standby.carrier_links[0].lane, RelaySymbolLane::Source);
+        assert_eq!(
+            standby.carrier_links[1].lane,
+            RelaySymbolLane::SourceAndRepair
+        );
+        assert_eq!(
+            standby.carrier_links[1].receiver_target,
+            "10.77.1.12:22001".parse::<SocketAddr>().unwrap()
+        );
+        let program = two_contributor_program();
+        let json = serde_json::to_value(&program).unwrap();
+        assert_eq!(json["origin_standby"]["node_id"], "contrib-b");
+        let back: RelayProgram = serde_json::from_value(json).unwrap();
+        assert_eq!(back, program);
+    }
+
+    #[test]
+    fn a_standby_outside_the_origins_failure_domain_adds_no_gap() {
+        let single = merged_program().compile().unwrap();
+        let mut program = two_contributor_program();
+        standby_of(&mut program).failure_domain =
+            node("contrib-b", 0, NodeRole::Origin, "nl-ams", "nl-ams").failure_domain;
+        // Another region and zone are independent for a single-provider
+        // qualification.
+        let plan = program.compile().expect("standby in another region");
+        assert_eq!(
+            plan.production_readiness_gaps,
+            single.production_readiness_gaps
+        );
+        // Provider and ASN are still shared: a gap where those count.
+        program.purpose = DeploymentPurpose::MultiProviderQualification;
+        program.carrier = CarrierProfile::ControlledPublicUdp;
+        let plan = program
+            .compile()
+            .expect("standby under multi-provider rules");
+        assert!(plan
+            .production_readiness_gaps
+            .contains(&"origin_standby_shares_failure_domain:contrib-b".to_owned()));
+        // Production never carries the gap: it refuses the program.
+        program.purpose = DeploymentPurpose::Production;
+        assert!(program_violations(&program)
+            .iter()
+            .any(|violation| violation.contains("origin standby that shares")));
+    }
+
+    #[test]
+    fn the_standby_is_never_a_topology_node() {
+        for node_id in ["contrib", "f1", "f3", ""] {
+            let mut program = two_contributor_program();
+            standby_of(&mut program).node_id = node_id.to_owned();
+            assert_eq!(
+                topology_codes(&program),
+                ["origin_replica_node_id"],
+                "{node_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_standby_has_one_link_to_each_origin_child_and_to_nothing_else() {
+        // No link to f2.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links.pop();
+        assert_eq!(topology_codes(&program), ["origin_replica_children"]);
+
+        // Both links to f1.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[1].child_node_id = "f1".to_owned();
+        assert_eq!(
+            topology_codes(&program),
+            ["origin_replica_children", "origin_replica_children"]
+        );
+
+        // A lane straight to a remote forwarder, beside the two: the
+        // standby's fan-out would follow the regions.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links.push(standby_link(
+            "f3",
+            RelaySymbolLane::Source,
+            22_303,
+            22_003,
+        ));
+        assert_eq!(topology_codes(&program), ["origin_replica_children"]);
+
+        // And instead of one of the two.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[1].child_node_id = "f4".to_owned();
+        assert_eq!(
+            topology_codes(&program),
+            ["origin_replica_children", "origin_replica_children"]
+        );
+    }
+
+    #[test]
+    fn a_third_ingress_is_refused_with_a_standby() {
+        // A third first forwarder under both contributors: 2 x 3.
+        let mut program = two_contributor_program();
+        program.topology.limits.max_origin_children = 3;
+        program
+            .topology
+            .nodes
+            .push(node("f5", 1, NodeRole::Backbone, "gb-lon", "gb-lon"));
+        program.topology.parent_links.push(ParentLink {
+            parent_node_id: "contrib".to_owned(),
+            child_node_id: "f5".to_owned(),
+            role: ParentRole::Primary,
+        });
+        program.carrier_links.push(link(
+            "contrib",
+            "f5",
+            ParentRole::Primary,
+            RelaySymbolLane::Source,
+            22_303,
+            22_003,
+        ));
+        standby_of(&mut program).carrier_links.push(standby_link(
+            "f5",
+            RelaySymbolLane::Source,
+            22_303,
+            22_004,
+        ));
+        assert_eq!(topology_codes(&program), ["origin_replica_fanout"]);
+    }
+
+    #[test]
+    fn an_origin_child_with_a_secondary_parent_takes_no_standby() {
+        // The legacy program with relay-b one level down and relay-a as
+        // its secondary parent: it compiles, and relay-b's secondary lane
+        // is then not free for a standby.
+        let mut program = qualification_program();
+        for node in &mut program.topology.nodes {
+            match node.node_id.as_str() {
+                "relay-b" => node.level = 2,
+                "edge" => node.level = 3,
+                _ => {}
+            }
+        }
+        program.topology.parent_links.push(ParentLink {
+            parent_node_id: "relay-a".to_owned(),
+            child_node_id: "relay-b".to_owned(),
+            role: ParentRole::Secondary,
+        });
+        program.carrier_links.push(link(
+            "relay-a",
+            "relay-b",
+            ParentRole::Secondary,
+            RelaySymbolLane::Repair,
+            22_305,
+            22_005,
+        ));
+        program.failover_control_links.push(FailoverControlLink {
+            forwarder_node_id: "relay-a".to_owned(),
+            controller_node_id: "relay-b".to_owned(),
+            controller_bind: address(22_503),
+            controller_peer: address(22_503),
+            listener_bind: address(22_504),
+            listener_target: address(22_504),
+        });
+        program.compile().expect("the program without a standby");
+        program.origin_standby = Some(OriginStandby {
+            node_id: "contrib-b".to_owned(),
+            failure_domain: node("contrib-b", 0, NodeRole::Origin, "europe-west3", "z")
+                .failure_domain,
+            carrier_links: vec![
+                standby_link("relay-a", RelaySymbolLane::Source, 22_301, 22_012),
+                standby_link("relay-b", RelaySymbolLane::SourceAndRepair, 22_302, 22_011),
+            ],
+        });
+        assert_eq!(
+            topology_codes(&program),
+            ["origin_replica_child_has_secondary_parent"]
+        );
+    }
+
+    #[test]
+    fn the_standby_keeps_the_lane_of_the_origins_link_to_each_child() {
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[1].lane = RelaySymbolLane::Source;
+        let violations = program_violations(&program);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(
+            violations[0].contains("origin standby link contrib-b -> f2 assigns Source lane"),
+            "{violations:?}"
+        );
+        // Swapped lanes are two contributors of two shapes.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[0].lane = RelaySymbolLane::SourceAndRepair;
+        standby_of(&mut program).carrier_links[1].lane = RelaySymbolLane::Source;
+        assert_eq!(program_violations(&program).len(), 2);
+        // A repair-only lane is no contributor lane at all.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[0].lane = RelaySymbolLane::Repair;
+        assert!(program_violations(&program)[0].contains("assigns Repair lane"));
+    }
+
+    #[test]
+    fn the_standby_needs_explicit_sender_addresses_and_ports() {
+        let unspecified: SocketAddr = "0.0.0.0:22301".parse().unwrap();
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[0].sender_bind = unspecified;
+        let violations = program_violations(&program);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0]
+            .contains("origin standby link contrib-b -> f1 requires an explicit sender IP"));
+        // The peer is the standby's identity at the ingress.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[0].sender_peer = unspecified;
+        assert!(program_violations(&program)[0].contains("requires an explicit sender IP"));
+
+        for field in 0..4 {
+            let mut program = two_contributor_program();
+            let link = &mut standby_of(&mut program).carrier_links[1];
+            let address = match field {
+                0 => &mut link.sender_bind,
+                1 => &mut link.sender_peer,
+                2 => &mut link.receiver_bind,
+                _ => &mut link.receiver_target,
+            };
+            address.set_port(0);
+            let violations = program_violations(&program);
+            assert!(
+                violations.iter().any(|violation| violation
+                    .contains("origin standby link contrib-b -> f2 requires non-zero ports")),
+                "{field}: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_standby_takes_only_free_sockets() {
+        // f1's primary lane already binds 22001 for the origin.
+        let mut program = two_contributor_program();
+        let link = &mut standby_of(&mut program).carrier_links[0];
+        link.receiver_bind = address(22_001);
+        link.receiver_target = address(22_001);
+        let violations = program_violations(&program);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains(
+            "node f1 reuses RelaySession receiver bind 127.0.0.1:22001 for origin standby contrib-b"
+        ));
+
+        // f1's failover listener for f4 binds 22512.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[0].receiver_bind = address(22_512);
+        let violations = program_violations(&program);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("node f1 reuses failover control bind 127.0.0.1:22512"));
+
+        // One sender socket for both of the standby's lanes.
+        let mut program = two_contributor_program();
+        standby_of(&mut program).carrier_links[1].sender_bind = standby_address(22_301);
+        let violations = program_violations(&program);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("node contrib-b reuses RelaySession sender bind"));
+    }
+
+    #[test]
+    fn the_standby_never_sends_from_an_address_of_the_origin() {
+        // The origin sends to f1 from 22301 and to f2 from 22302.
+        let origin_peers = merged_program()
+            .carrier_links
+            .iter()
+            .filter(|link| link.parent_node_id == "contrib")
+            .map(|link| (link.child_node_id.clone(), link.sender_peer))
+            .collect::<Vec<_>>();
+        assert_eq!(origin_peers.len(), 2, "{origin_peers:?}");
+        for (child, origin_peer) in origin_peers {
+            let mut program = two_contributor_program();
+            let link = standby_of(&mut program)
+                .carrier_links
+                .iter_mut()
+                .find(|link| link.child_node_id == child)
+                .expect("standby link to the child");
+            link.sender_bind = origin_peer;
+            link.sender_peer = origin_peer;
+            let violations = program_violations(&program);
+            assert_eq!(violations.len(), 1, "{child}: {violations:?}");
+            assert!(
+                violations[0].contains(&format!(
+                    "origin standby link contrib-b -> {child} sends from {origin_peer}, an address of the origin"
+                )),
+                "{violations:?}"
+            );
+        }
+        // The same port on an address of its own is the standby's.
+        assert!(two_contributor_program().compile().is_ok());
     }
 }

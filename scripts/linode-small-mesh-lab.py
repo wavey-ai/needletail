@@ -758,6 +758,7 @@ def create_node(api: Api, run_id: str, tag: str, image: str, key: str,
         # `created` and falls back to this.
         "created_unix": int(time.time()),
         **({"slot": True} if node.get("slot") else {}),
+        **({"standby": True} if node.get("standby") else {}),
     }
 
 
