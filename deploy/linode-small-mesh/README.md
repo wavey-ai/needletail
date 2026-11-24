@@ -137,8 +137,10 @@ All tools read the Linode token from `LINODE_TOKEN`, `LINODE_PAT`, or the file
 
 ```sh
 # Create, grow, inspect, and delete the lab.
-scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-core.json
-scripts/linode-small-mesh-lab.py watchdog --hours 4
+# up arms the watchdog before the first instance and holds every create to the
+# budget (B: the work's budget in USD; earlier labs come from the ledger).
+scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-core.json \
+    --watchdog-hours 4 --budget-usd B
 scripts/linode-small-mesh-lab.py grow --topology deploy/linode-small-mesh/topology-global.json
 scripts/linode-small-mesh-lab.py replace new-dist-a
 scripts/linode-small-mesh-lab.py status
@@ -414,8 +416,8 @@ delay and loss on the cache network and the relay lanes instead. It needs the
 target=x86_64-unknown-linux-gnu.2.36
 (cd ../av-mesh && cargo zigbuild --release --target $target --bin av-mesh --bin needletail-reader)
 
-scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json
-scripts/linode-small-mesh-lab.py watchdog --hours 2.5
+scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json \
+    --watchdog-hours 2.5 --budget-usd B
 scripts/linode-small-mesh-lab.py hosts
 scripts/linode-small-mesh-deploy.py push $(scripts/linode-regional-cache.py settings)
 scripts/linode-regional-cache.py prepare

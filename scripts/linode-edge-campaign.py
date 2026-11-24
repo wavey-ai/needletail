@@ -20,8 +20,8 @@ has no SRT listener, because libsrt does not cross-compile with zig.
 
 Create the lab and install the services first:
 
-  scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json
-  scripts/linode-small-mesh-lab.py watchdog --hours 4
+  scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json \
+      --watchdog-hours 4 --budget-usd B
   scripts/linode-small-mesh-deploy.py push $(scripts/linode-edge-campaign.py settings)
 
 Evidence is written under target/linode-qualification/small-mesh-runs/<run>/.

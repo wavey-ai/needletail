@@ -14,8 +14,8 @@ injected.
 
 Create the lab and install the services first:
 
-  scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json
-  scripts/linode-small-mesh-lab.py watchdog --hours 3
+  scripts/linode-small-mesh-lab.py up --topology deploy/linode-small-mesh/topology-regional-cache.json \
+      --watchdog-hours 3 --budget-usd B
   NEEDLETAIL_AV_MESH_ROOT=../av-mesh scripts/linode-small-mesh-deploy.py push $(scripts/linode-regional-cache.py settings)
 
 The readers run on the load host of each region and reach the caches over the

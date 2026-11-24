@@ -629,7 +629,8 @@ scripts/compare/scale-run.py plan --topology-only --json | jq .schedule.total_mi
 scripts/linode-small-mesh-lab.py check --topology $T --without-sites sydney   # prices, capacity; no token
 export NEEDLETAIL_LINODE_MAX_NODES=73 NEEDLETAIL_LINODE_MAX_HOURLY_USD=8.2
 # NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS stays at its default, 6.0.
-scripts/linode-small-mesh-lab.py up --topology $T --without-sites sydney --watchdog-hours 6
+scripts/linode-small-mesh-lab.py up --topology $T --without-sites sydney --watchdog-hours 6 \
+    --budget-usd B
 #   (staged: the core, then the listener hosts in two batches; a refused core
 #   deletes the lab and the run stops there, refused listener hosts are listed by
 #   status and the steps are fitted to the hosts that exist)
