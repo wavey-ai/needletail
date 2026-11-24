@@ -384,16 +384,12 @@ DEFAULT_SETTINGS = {
     # being sent to the failover region (av-mesh default true; false: before).
     "assignment_udp_in_region": None,
     # Wave 9 (cold start), each the av-mesh flag of the same name (None: the
-    # binary's default): mlock_all (every mesh node; av-mesh default false
-    # since the wave 9 review, its memory cost on a g6-dedicated-2 being
-    # unmeasured; only mlock_all=true gives the unit LimitMEMLOCK=infinity,
-    # since av-mesh locks only without a limit), malloc_tune and prefault
-    # (every mesh node, default true), and
+    # binary's default): malloc_tune and prefault (every mesh node, default
+    # true), and
     # client_udp_prompt_sender (nodes that serve UDP clients: the stream's
     # sender does not wait for a playable copy), relay_lease_descriptors
     # (forwarders with --relay-lease-bind: a new lease child gets the
     # stream's descriptor before its first compact part).
-    "mlock_all": None,
     "malloc_tune": None,
     "prefault": None,
     "client_udp_prompt_sender": None,
@@ -637,6 +633,31 @@ DEFAULT_SETTINGS = {
     },
     "rust_log_mesh": "av_mesh=info,av_web_service=warn",
     "rust_log_contrib": "av_contrib=info,av_web_service=warn",
+    # The stall instruments (D 2.9). None renders nothing (the binaries'
+    # defaults). Each flag is rendered only to a binary that has it; a value
+    # given to a binary without its flag is refused.
+    # - mlock: --mlock off|rings on every mesh node and the contributor:
+    #   with rings each prefaulted ring is mlock()ed (D 2.3; av-mesh's
+    #   default). Every unit has LimitMEMLOCK=MEMLOCK_LIMIT, whatever this is.
+    # - stall_tick_us, stall_journal_capacity: av-mesh's --stall-tick-us and
+    #   --stall-journal-capacity on every mesh node (D 2.1; 0 turns each off).
+    "mlock": None,
+    "stall_tick_us": None,
+    "stall_journal_capacity": None,
+    # The check at boot (D 2.4): with node_warm, or node_check_seconds above
+    # 0, every mesh node and the contributor get the oneshot unit
+    # needletail-node-check.service (`needletail-nodecheck boot`: a warm
+    # pass, then that many seconds of watching for stops and steal against
+    # the two limits), their service Wants= it and starts After= it, and
+    # av-mesh reads its verdict (--node-warm-file) into its readiness. It runs once a boot, not
+    # on a restart or a roll. Off until the stall lab decides (no placebo).
+    "node_warm": False,
+    "node_check_seconds": 0,
+    "node_check_max_stop_ms": 20,
+    "node_check_max_steal_permille": 10,
+    # {node: {setting: value}}: settings of one node's render and units only
+    # (D 2.9), for the node-local settings of NODE_SETTINGS.
+    "node_overrides": {},
 }
 
 SITES = {
@@ -709,10 +730,32 @@ LISTENER_SYSCTLS = {
 ROLLABLE_SETTINGS = (
     "rust_log_mesh", "rust_log_contrib", "node_env", "tokio_worker_threads",
     "extra_edge_args", "extra_distributor_args", "extra_contributor_args",
-    "mlock_all", "malloc_tune", "prefault", "relay_class_cpus", "relay_class_realtime",
+    "mlock", "malloc_tune", "prefault", "relay_class_cpus", "relay_class_realtime",
     "audio_hot_cpu", "cpu_load", "cpu_load_full_percent", "client_udp_datagram_capacity",
     "egress_capacity_bps", "client_udp_drain_spread_ms", "rebalance_target_permille",
 )
+
+# The settings that `node_overrides` may give one node (D 2.9): those local
+# to the node they render on (ROLLABLE_SETTINGS), the stall journal's and
+# the check at boot's.
+NODE_SETTINGS = ROLLABLE_SETTINGS + (
+    "stall_tick_us", "stall_journal_capacity", "node_warm", "node_check_seconds",
+    "node_check_max_stop_ms", "node_check_max_steal_permille",
+)
+MLOCK_MODES = ("off", "rings")
+# LimitMEMLOCK of every service unit (D 2.3): the rings that --mlock rings
+# locks are about 30 MB at their defaults and 190 MB with the hunt's hop
+# journal; a finite limit, so mlockall of the whole process can never pass.
+MEMLOCK_LIMIT = "512M"
+# The check at boot (D 2.4): its unit, its record, and the bound of its
+# watch. The first restart after the unit is new waits for the old
+# service's stop (up to TimeoutStopSec=20) and then for the check (up to
+# its TimeoutStartSec, 70 s plus the watch); push waits 150 s for an
+# activation (activate_node: the 120 s deadline, the stop's 20 s and 10 s).
+# A 50 s watch keeps the worst case, 20 + 120 = 140 s, 10 s inside it.
+NODE_CHECK_UNIT = "needletail-node-check.service"
+NODE_WARM_FILE = "/run/needletail/node-warm.json"
+NODE_CHECK_MAX_SECONDS = 50
 
 
 TOPOLOGIES = ("legacy", "merged")
@@ -829,6 +872,60 @@ def check_settings(settings: dict) -> None:
                          "--relay-direct-id, which av-mesh does not have yet; a distributor "
                          "would not start. Leave it false")
     class_plan(settings)
+    check_stall_settings(settings)
+    overrides = settings.get("node_overrides") or {}
+    if not isinstance(overrides, dict) or not all(
+            isinstance(given, dict) for given in overrides.values()):
+        raise ValueError("node_overrides is not {node: {setting: value}}")
+    for name, given in sorted(overrides.items()):
+        other = sorted(set(given) - set(NODE_SETTINGS))
+        if other:
+            raise ValueError(f"node_overrides {name}: {', '.join(other)} is not a setting of "
+                             "one node (NODE_SETTINGS)")
+        try:
+            class_plan({**settings, **given})
+            check_stall_settings({**settings, **given})
+        except ValueError as error:
+            raise ValueError(f"node_overrides {name}: {error}") from None
+
+
+def check_stall_settings(settings: dict) -> None:
+    """Raise ValueError for a stall instrument or boot check setting (D 2.9)
+    that cannot be rendered."""
+    if settings.get("mlock") is not None and settings["mlock"] not in MLOCK_MODES:
+        raise ValueError(f"mlock {settings['mlock']!r} is not one of {', '.join(MLOCK_MODES)}")
+    if not isinstance(settings.get("node_warm"), (bool, type(None))):
+        raise ValueError(f"node_warm {settings['node_warm']!r} is not true or false")
+    for key in ("stall_tick_us", "stall_journal_capacity", "node_check_seconds",
+                "node_check_max_stop_ms", "node_check_max_steal_permille"):
+        if isinstance(settings.get(key), bool):
+            raise ValueError(f"{key} {settings[key]!r} is not a whole number")
+    for key in ("stall_tick_us", "stall_journal_capacity"):
+        if settings.get(key) is not None:
+            whole_or_zero(settings[key], key)
+    seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
+    if seconds > NODE_CHECK_MAX_SECONDS:
+        raise ValueError(f"node_check_seconds {seconds} is over {NODE_CHECK_MAX_SECONDS}: the "
+                         "first start after the check unit is installed waits for it (up to "
+                         "70 s more), and push waits 150 s for an activation")
+    for key in ("node_check_max_stop_ms", "node_check_max_steal_permille"):
+        whole_or_zero(settings.get(key, DEFAULT_SETTINGS[key]), key)
+
+
+def whole_or_zero(value, name: str) -> int:
+    """A whole number of 0 or more (0 is a value: off, or none allowed)."""
+    return 0 if str(value).strip() in ("0", "0.0") else whole(value, name)
+
+
+def node_own_settings(settings: dict, name: str) -> dict:
+    """The settings that node `name` is rendered and its units written with:
+    the lab's, with its `node_overrides` on top."""
+    return {**settings, **((settings.get("node_overrides") or {}).get(name) or {})}
+
+
+def check_unit_wanted(settings: dict) -> bool:
+    """Whether a node with these settings has the check at boot (D 2.4)."""
+    return bool(settings.get("node_warm")) or int(settings.get("node_check_seconds") or 0) > 0
 
 
 # SO_PRIORITY of the audio sockets: band 0 of the prio qdisc's default
@@ -2209,7 +2306,7 @@ REVIEW_CLIENT_UDP_COUNT = ("client_udp_keepalive_ms", "client_udp_datagram_capac
 PROOF_MESH_BOOL = ("assignment_udp_in_region",)
 # Wave 9 (cold start): on every mesh node, and on the nodes that serve UDP
 # clients, the av-mesh flag of the same name.
-COLD_MESH_BOOL = ("mlock_all", "malloc_tune", "prefault")
+COLD_MESH_BOOL = ("malloc_tune", "prefault")
 COLD_CLIENT_UDP_BOOL = ("client_udp_prompt_sender", "client_udp_assign")
 # Wave 9 C (autoscaling and redistribution): on every mesh node, and on the
 # nodes that serve UDP clients, the av-mesh flag of the same name.
@@ -2357,6 +2454,7 @@ def check_class_agreement(rendered: dict[str, dict]) -> None:
 REMOVED_MESH_FLAGS = {
     "--mesh-sync-on-publish": "the cache mesh always sends on publish",
     "--mesh-liveness-on-receipt": "a peer is always heard on the receipt of any datagram",
+    "--mlock-all": "--mlock rings locks each prefaulted ring (the mlock setting)",
 }
 
 
@@ -2779,22 +2877,66 @@ def check_fast_plane(state: dict, rendered: dict[str, dict]) -> None:
                          + "; ".join(problems))
 
 
-def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
-    """Return {node name: {service, args, env}} for every service node."""
+def host_tag(node: dict) -> str | None:
+    """The first 12 hex digits of the node's physical host (`host_uuid`,
+    which the lab tool's `hosts` records), or None when it is not known."""
+    digits = re.sub(r"[^0-9a-f]", "", str(node.get("host_uuid") or "").lower())
+    return digits[:12] or None
+
+
+def stall_args(kind: str, node: dict, settings: dict) -> list[str]:
+    """The stall instruments' flags of the `kind` service ("av-mesh",
+    "av-contrib") on `node` (D 2.9): the given settings, refused for a
+    binary without their flag; the check's record (--node-warm-file) when
+    the node has the check at boot, and its host (--host-tag) when the state
+    knows it, each only to a binary that has the flag."""
+    given = [("--mlock", "mlock", settings.get("mlock"))]
+    if kind == "av-mesh":
+        given += [(f"--{key.replace('_', '-')}", key, settings.get(key))
+                  for key in ("stall_tick_us", "stall_journal_capacity")]
+    out = []
+    for name, key, value in given:
+        if value is None:
+            continue
+        if binary_has(kind, name) is False:
+            raise ValueError(f"{node['name']}: setting {key} needs {kind} {name}, which the "
+                             f"{kind} deployed does not have")
+        out += [name, str(value if key == "mlock" else whole_or_zero(value, key))]
+    if kind != "av-mesh":
+        return out
+    if check_unit_wanted(settings) and binary_has(kind, "--node-warm-file") is not False:
+        out += ["--node-warm-file", NODE_WARM_FILE]
+    tag = host_tag(node)
+    if tag and binary_has(kind, "--host-tag") is not False:
+        out += ["--host-tag", tag]
+    return out
+
+
+def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
+    """Return {node name: {service, args, rust_log}} for every service node,
+    each rendered with its own settings (node_own_settings: its
+    node_overrides on top of the lab's)."""
     services = {
         (item["service"], item["node_id"]): item for item in plan["services"]
     }
-    check_settings(settings)
-    classes = class_plan(settings)
+    check_settings(lab_settings)
+    classes = class_plan(lab_settings)
     feed = fast_plane_feed(state, classes)
     direct_contrib, direct_mesh = (direct_region_args(state, services)
-                                   if settings.get("contributor_direct_region") else ([], {}))
+                                   if lab_settings.get("contributor_direct_region") else ([], {}))
+    unknown = sorted(set(lab_settings.get("node_overrides") or {}) - set(roster(state)))
+    if unknown:
+        raise ValueError(f"node_overrides: {', '.join(unknown)} is no node of the lab")
     rendered: dict[str, dict] = {}
     for node in state["nodes"].values():
+        settings = node_own_settings(lab_settings, node["name"])
+        classes = class_plan(settings)
         role = node["role"]
         if role == "contributor":
             args = contributor_args(services[("av_contrib", "contrib")], settings, node)
             args += direct_contrib
+            args += yield_to(list(settings["extra_contributor_args"]),
+                             stall_args("av-contrib", node, settings))
             rendered[node["name"]] = {
                 "service": "needletail-contrib", "args": args,
                 "rust_log": settings["rust_log_contrib"]}
@@ -2867,15 +3009,16 @@ def render(state: dict, settings: dict, plan: dict) -> dict[str, dict]:
             args += yield_to(extra, ["--client-udp-fast-lane",
                                      flag(classes["client_udp_fast_lane"])])
         args += yield_to(extra, mesh_class_args(node, args, classes))
-        args += yield_to(extra, wave7_args(args, settings)) + extra
+        args += yield_to(extra, wave7_args(args, settings))
+        args += yield_to(extra, stall_args("av-mesh", node, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     check_class_agreement(rendered)
-    check_cache_mesh_peers(state, rendered, settings)
-    check_class_ports(rendered, classes)
+    check_cache_mesh_peers(state, rendered, lab_settings)
+    check_class_ports(rendered, class_plan(lab_settings))
     check_fast_plane(state, rendered)
-    if topology_mode(settings) == "merged":
+    if topology_mode(lab_settings) == "merged":
         check_merged(state, rendered)
     out = common.ARTIFACT_DIR / "nodes"
     out.mkdir(parents=True, exist_ok=True)
@@ -2974,11 +3117,15 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
         # threads; socket buffers beyond rmem_max (SO_RCVBUFFORCE). The
         # service is still the needletail user, and NoNewPrivileges holds.
         thread_line += "AmbientCapabilities=CAP_SYS_NICE CAP_NET_ADMIN\n"
-    if service != "needletail-contrib" and settings.get("mlock_all") is True:
-        # Wave 9 (cold start): av-mesh locks its memory (mlockall) only
-        # where it may without a limit; the default 8 MB would refuse it.
-        # Only when asked (wave 9 review: off until measured on a deploy).
-        thread_line += "LimitMEMLOCK=infinity\n"
+    # D 2.3: a finite limit on both services, always: --mlock rings locks
+    # its rings under it, and nothing can lock the whole process.
+    thread_line += f"LimitMEMLOCK={MEMLOCK_LIMIT}\n"
+    # D 2.4: the check at boot runs, once a boot, before the service starts.
+    # Wants=, not Requires=: a check that fails, times out or is missing
+    # still lets the service start (D 2.2: the service starts, and its
+    # readiness keeps a node without a complete record out).
+    check = (f"Wants={NODE_CHECK_UNIT}\nAfter={NODE_CHECK_UNIT}\n"
+             if check_unit_wanted(settings) else "")
     # C 2.5: no start limit (with RestartSec=1, five crashes in ten seconds
     # would leave a media node failed for good); a stop is bounded by B's
     # edge drain (--stop-drain-ms 14000) plus the shutdown and a spare
@@ -2988,7 +3135,7 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
 Description={description} (small-mesh lab)
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=0
+{check}StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -3007,6 +3154,39 @@ LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+
+def check_unit_text(settings: dict) -> str | None:
+    """needletail-node-check.service of a node with these settings (D 2.4),
+    or None when it has no check at boot. A oneshot that stays active, so
+    it runs once a boot (the services Want it and start after it): an
+    optional warm pass, then N seconds of watching for stops and steal; its
+    record is NODE_WARM_FILE. needletail-nodecheck exits 0 whatever its
+    verdict, and the `-` on ExecStart makes any other exit (an old build
+    that refuses a flag, a crash, a missing binary) a success too: the
+    service starts, and its readiness keeps a node with another verdict or
+    no record out."""
+    if not check_unit_wanted(settings):
+        return None
+    seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
+    stop_ms = whole_or_zero(settings["node_check_max_stop_ms"], "node_check_max_stop_ms")
+    steal = whole_or_zero(settings["node_check_max_steal_permille"],
+                          "node_check_max_steal_permille")
+    warm = " --warm" if settings.get("node_warm") else ""
+    return f"""[Unit]
+Description=Needletail node check at boot (small-mesh lab)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=needletail
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec={70 + seconds}
+ExecStart=-/usr/local/bin/needletail-nodecheck boot --out {NODE_WARM_FILE}{warm} \\
+  --check-seconds {seconds} --max-stop-ms {stop_ms} --max-steal-permille {steal}
 """
 
 
@@ -3029,11 +3209,13 @@ def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
         "NEEDLETAIL_H3_CAPACITY_BIN",
         str(common.WORKSPACE / "av-mesh" / target / "h3-static-capacity")))
     probe = contrib / "aep1-48k-probe"
+    # D 2.2: the check at boot and the stall hunt's tools, on every role.
+    nodecheck = mesh / "needletail-nodecheck"
     if role == "contributor":
-        return [contrib / "av-contrib", probe, daw / "daw-test-source"]
+        return [contrib / "av-contrib", probe, nodecheck, daw / "daw-test-source"]
     if role == "load":
         tools = [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
-                 daw / "daw-test-source", h3_capacity,
+                 daw / "daw-test-source", h3_capacity, nodecheck,
                  common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                  / target / "soundkit-part-check"]
         if node is not None and common.load_purpose(node) == "listeners":
@@ -3043,7 +3225,7 @@ def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
         return tools
     checker = (common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                / target / "soundkit-part-check")
-    return [mesh / "av-mesh", probe, checker]
+    return [mesh / "av-mesh", probe, checker, nodecheck]
 
 
 def node_sysctls(settings: dict) -> dict:
@@ -3245,6 +3427,12 @@ else
       || finish false "the host qdisc failed: $(tail -n 1 "$RUN/qdisc-$service.txt" | tr -d '"\\\000-\037')"
     cp "$ETC/$service.qdisc.next" "$RUN/$service.qdisc"
     qdisc=true
+  fi
+  # D 2.4: the check at boot's unit, before the unit that Wants= it.
+  if [ -f "$ETC/$service.check.next" ] && ! cmp -s "$ETC/$service.check.next" "$UNITS/needletail-node-check.service"; then
+    { cp "$ETC/$service.check.next" "$UNITS/needletail-node-check.service.tmp" \
+      && mv -f "$UNITS/needletail-node-check.service.tmp" "$UNITS/needletail-node-check.service" \
+      && systemctl daemon-reload; } || finish false "the node check unit could not be installed"
   fi
   if [ -f "$ETC/$service.unit.next" ]; then
     if [ -f "$unit" ]; then cp -p "$unit" "$ETC/$service.unit.prev"; fi
@@ -3471,10 +3659,14 @@ def node_files(args: list[str], unit: str, settings: dict) -> dict[str, str]:
     NIC (HOST_QDISC_VERIFY)."""
     sysctls = node_sysctls(settings)
     qdisc = class_plan(settings)["host_qdisc"]
-    return {"args": args_text(args), "unit": unit,
-            "sysctl": "".join(f"{key} = {value}\n" for key, value in sysctls.items()),
-            "qdisc": "set -e\n" + HOST_QDISC_SCRIPT[qdisc]
-            + HOST_QDISC_VERIFY.replace("CHECK", HOST_QDISC_CHECK[qdisc])}
+    files = {"args": args_text(args), "unit": unit,
+             "sysctl": "".join(f"{key} = {value}\n" for key, value in sysctls.items()),
+             "qdisc": "set -e\n" + HOST_QDISC_SCRIPT[qdisc]
+             + HOST_QDISC_VERIFY.replace("CHECK", HOST_QDISC_CHECK[qdisc])}
+    check = check_unit_text(settings)
+    if check is not None:
+        files["check"] = check
+    return files
 
 
 def stage_node(node: dict, service: str, key: str, files: dict[str, str]) -> None:
@@ -4071,7 +4263,8 @@ class LinodeOps(mesh_ops.Ops):
         if item is None:
             raise mesh_ops.Refused(f"{name}: no service is rendered for it")
         args = installed_args(item, role, key)
-        return args, unit_text(item["service"], item["rust_log"], settings), item["service"]
+        unit = unit_text(item["service"], item["rust_log"], node_own_settings(settings, name))
+        return args, unit, item["service"]
 
     # ---------------------------------------------------------- checks (C 2.6)
     def check(self, command: str, nodes: list[str]) -> None:
@@ -4234,7 +4427,7 @@ class LinodeOps(mesh_ops.Ops):
             settings = self.node_settings(name, self.given)
             args, unit, service = self.node_args(name, settings, key)
             args = self.kept_stamp(name, key, args, unit)
-            plans[name] = (service, key, node_files(args, unit, settings))
+            plans[name] = (service, key, node_files(args, unit, node_own_settings(settings, name)))
             self.staged[name] = self.intended(key, args, unit, settings)
         common.parallel([self.full["nodes"][name] for name in nodes],
                         lambda node: stage_node(node, *plans[node["name"]]))
@@ -4378,7 +4571,8 @@ class LinodeOps(mesh_ops.Ops):
                         raise
                     plans[name] = None
                     continue
-                plans[name] = (service, key, node_files(args, unit, self.settings))
+                plans[name] = (service, key, node_files(
+                    args, unit, node_own_settings(self.settings, name)))
                 self.staged[name] = self.intended(key, args, unit, self.settings)
             olds = {name: self.entry(name) for name in plans}
             intended = {name: self.activation_of(name, olds[name], False) for name in plans
