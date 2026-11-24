@@ -1,0 +1,80 @@
+{
+  "schema": "needletail.scale.party.v1",
+  "description": "The global listening party (owner, 23 Nov 2026): one stream, listeners spread over London, New York, Tokyo and Sydney like a global audience (shares, or --shares), stepped 1,000, 5,000, 10,000, 20,000 and on (--steps adds 30,000, 40,000... while the load hosts drive them: scale-run.py party-plan says). At every step the listeners join in waves and a share of them leaves and rejoins; the referee's joins phase times new listeners' first audio; the autoscaler runs through the whole party and adds edges as it grows (no listener interrupted: the crowd's criteria); the self-hosted LiveKit control runs at the count its SFUs carry (LiveKit Cloud is the referee's: a hook). At the fault step an edge and a forwarder are killed mid-party, each a scenario with probes of its own scored by the referee's change-window.py. Every step's raw data goes to the run archive. scale-run.py party [--shares ...] [--steps ...] [--config opus-2.5] --budget-usd B on deploy/low-latency/topology-party.json (C CT5; its PARTY.md has the sizing and the cost); deploy/low-latency/SCALE.md, section 'The listening party', has the arithmetic.",
+  "config": "opus-1",
+  "probe_configs": "opus-1",
+  "paths": 2,
+  "hls_share": 0.0,
+  "shares": {
+    "london": 0.25,
+    "newyork": 0.25,
+    "tokyo": 0.25,
+    "sydney": 0.25
+  },
+  "steps": [
+    1000,
+    5000,
+    10000,
+    20000
+  ],
+  "waves": {
+    "count": 5,
+    "every_s": 20
+  },
+  "churn": {
+    "share": 0.1,
+    "leave_after_s": 60,
+    "rejoin_after_s": 30
+  },
+  "joins": 20,
+  "autoscale": {
+    "controller_args": []
+  },
+  "livekit": {
+    "self_hosted_per_sfu": 450,
+    "cloud": {
+      "listeners": 1000,
+      "note": "LiveKit Cloud's crowd is run by the referee's tools at a count it carries; the party records each step where it would run (livekit_cloud in the events and the archive's listener steps)"
+    }
+  },
+  "fault_defaults": {
+    "baseline_s": 60,
+    "observe_s": 90,
+    "settle_s": 30
+  },
+  "faults": {
+    "at_step": 10000,
+    "scenarios": [
+      {
+        "name": "P1",
+        "group": "P",
+        "title": "an edge killed mid-party (lon-edge-2), back after the observation",
+        "actions": [
+          {
+            "kind": "kill",
+            "targets": [
+              "lon-edge-2"
+            ]
+          }
+        ],
+        "expect": {}
+      },
+      {
+        "name": "P2",
+        "group": "P",
+        "title": "a forwarder killed mid-party (new-dist-b), back after the observation",
+        "actions": [
+          {
+            "kind": "kill",
+            "targets": [
+              "new-dist-b"
+            ]
+          }
+        ],
+        "expect": {
+          "moves": 0
+        }
+      }
+    ]
+  }
+}

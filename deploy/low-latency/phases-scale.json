@@ -1,6 +1,6 @@
 {
   "schema": "needletail.scale.phases.v1",
-  "description": "Failover (F), redistribution (R) and autoscale (A) phases of the large audio mesh, each group one held step of listeners on curve 1 (five edges a region). Every scenario: a baseline, the fault at baseline_s, an observation, the restore, a settle. A kill is SIGKILL and then the unit stopped (Restart=always would bring it back in 2 s; low-latency ops D4); a crash is the SIGKILL alone, the 2 s restart (F2r). Fault sizes against five serving edges a region: at most 2 of 5 at once (D5). LL-HLS readers are needletail-reader crowds that follow steering and move; their entry points and the liveness check are nodes that no phase faults. scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A. needs_am names what a scenario still waits for before it can pass (Phase AM items 8-11 are in the low-latency binaries since wave 8 stage 4: UDP egress in the load, live gauges, paced drain, needletail-load through /api/assignment with per-move accounting, UDP region failover); until then it runs and measures what the binaries do. deploy/low-latency/SCALE.md has the cost, the shedding order and the local proofs.",
+  "description": "Failover (F), redistribution (R) and autoscale (A) phases of the large audio mesh, each group one held step of listeners on curve 1 (five edges a region). Every scenario: a baseline, the fault at baseline_s, an observation, the restore, a settle. A kill is SIGKILL and then the unit stopped (Restart=always would bring it back in 2 s; low-latency ops D4); a crash is the SIGKILL alone, the 2 s restart (F2r). Fault sizes against five serving edges a region: at most 2 of 5 at once (D5). LL-HLS readers are needletail-reader crowds that follow steering and move; their entry points and the liveness check are nodes that no phase faults. scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A. needs_am names what a scenario still waits for before it can pass (only F9 now: C CL7 cleared it where the resilient-mesh builds judge it). Every scenario has probes of its own on the view hosts and is scored alone by the referee's change-window.py on its own marks (C CL7); the controller runs `--until join` or `--until stopped`. deploy/low-latency/SCALE.md has the cost, the shedding order and the local proofs.",
   "defaults": {
     "config": "pcm-1",
     "listeners": 6000,
@@ -150,9 +150,7 @@
       "expect": {
         "missing": 0
       },
-      "needs_am": [
-        "F5/F6 premise: audio in full on both compiled ingress lanes (critique 21)"
-      ],
+      "needs_am": [],
       "shed": 7
     },
     {
@@ -170,9 +168,7 @@
       "expect": {
         "missing": 0
       },
-      "needs_am": [
-        "F5/F6 premise: audio in full on both compiled ingress lanes (critique 21)"
-      ],
+      "needs_am": [],
       "shed": 10
     },
     {
@@ -218,9 +214,7 @@
         "time_to_move_p99_ms": 1500,
         "time_to_move_max_ms": 3000
       },
-      "needs_am": [
-        "F5/F6 premise (lon-dist-b is the second ingress)"
-      ],
+      "needs_am": [],
       "shed": 1
     },
     {
@@ -268,13 +262,7 @@
         "first_part_s": 20,
         "warm_parts_pending_zero_s": 10
       },
-      "needs_am": [
-        "13"
-      ],
-      "needs_for": {
-        "warm_parts_pending_zero_s": "a warm-up backlog gauge on /api/mesh/local (AM item 13; f592da0 has backfill_parts_pending only)",
-        "first_part_s": "the join's first_serving event against its start: logged, not judged by scale-run yet"
-      },
+      "needs_am": [],
       "shed": 13
     },
     {
@@ -300,9 +288,7 @@
       "expect": {
         "missing": 0
       },
-      "needs_am": [
-        "13"
-      ],
+      "needs_am": [],
       "shed": 12
     },
     {
@@ -318,9 +304,7 @@
         }
       ],
       "expect": {},
-      "needs_am": [
-        "13"
-      ],
+      "needs_am": [],
       "shed": 9
     },
     {
@@ -352,17 +336,13 @@
       ],
       "after_last_s": 90,
       "expect": {
-        "parent_change_share": "1/N +- 0.1, or the count of (edge, playlist) pairs that moved"
+        "parent_change_share_max": 0.77
       },
       "needs_am": [
         "12"
       ],
-      "needs_for": {
-        "parent_change_share": "dist-c fed as a fast-plane lease child (AM item 12); with one stream report the count of (edge, playlist) pairs that moved, not a share (critique 23)"
-      },
       "shed": 5,
-      "enabled": false,
-      "note": "Runs only when named (--scenarios R4) once AM item 12 lands: lon-dist-c is created and pushed before the step (lab add lon-dist-c --budget-usd ...; deploy push --nodes lon-dist-c; deploy stop --nodes lon-dist-c), about $0.11 for its two billed hours."
+      "note": "lon-dist-c is created and pushed before the step (lab add lon-dist-c --budget-usd ...; deploy push --nodes lon-dist-c; deploy stop --nodes lon-dist-c), about $0.11 for its two billed hours. Expect about 2/3 of the (edge, stream) pairs to change one parent when a third forwarder joins two (C 2.11)."
     },
     {
       "name": "R5",
@@ -378,17 +358,12 @@
         }
       ],
       "expect": {
-        "largest_burst_per_tick": "the distributor's total warm-up cap",
+        "largest_burst_per_tick": 100000,
         "watermark_stall_ms": 250
       },
-      "needs_am": [
-        "13"
-      ],
-      "needs_for": {
-        "largest_burst_per_tick": "the largest warm-up burst per tick against the distributor's total cap (AM item 13)",
-        "watermark_stall_ms": "a watermark-stall gauge (AM item 13)"
-      },
-      "shed": 2
+      "needs_am": [],
+      "shed": 2,
+      "note": "largest_burst_per_tick: the distributor's total warm-up cap (cache_mesh_warm_total_kbps, the binaries' 40,000 kbit/s) over one 20 ms sync tick of the cache mesh, in bytes"
     },
     {
       "name": "A1",
@@ -397,6 +372,7 @@
       "actions": [
         {
           "kind": "autoscale",
+          "until": "join",
           "controller_args": []
         }
       ],
@@ -430,11 +406,12 @@
       "actions": [
         {
           "kind": "autoscale",
+          "until": "stopped",
           "controller_args": []
         }
       ],
       "restore": [],
-      "baseline_s": 0,
+      "baseline_s": 60,
       "profile": [
         [
           0,
@@ -458,16 +435,29 @@
     {
       "name": "A3",
       "group": "A",
-      "enabled": false,
       "title": "forwarder tier: K lowered to 6, the edges added in A1 make the controller add dist-c, and A2 drains it",
       "actions": [
         {
           "kind": "autoscale",
+          "until": "join",
           "controller_args": [
             "--forwarders",
             "--lease-k",
             "6"
           ]
+        },
+        {
+          "kind": "autoscale",
+          "until": "stopped",
+          "controller_args": [
+            "--forwarders",
+            "--lease-k",
+            "6"
+          ],
+          "after": {
+            "event": "controller_exit",
+            "timeout_s": 900
+          }
         }
       ],
       "restore": [],
@@ -495,7 +485,7 @@
       "needs_am": [
         "12"
       ],
-      "note": "Run in place of A1 and A2 (--scenarios A3) once AM item 12 lands. Until then the fallback of the design: edges only, and dist-c's join and leave as the cache-mesh redistribution of R4.",
+      "note": "After A1 and A2: K lowered to 6, the controller adds dist-c as the listeners rise (until its join) and drains it as they fall (until its stop).",
       "shed": 0,
       "needs_settings": {
         "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
@@ -549,15 +539,11 @@
       },
       {
         "name": "c1-pcm-udp",
-        "run": "--config pcm-1 --name c1-pcm-udp --hls-share 0 --steps 100,1000,5000,10000,13000,16000 --joins-at 100,10000"
+        "run": "--config pcm-1 --name c1-pcm-udp --hls-share 0 --steps 100,1000,5000,10000,13000,16000 --joins 0"
       },
       {
         "name": "c1-pcm-mixed",
         "run": "--config pcm-1 --name c1-pcm-mixed --force --joins 0"
-      },
-      {
-        "name": "c1-opus1-mixed",
-        "run": "--config opus-1 --name c1-opus1-mixed --force --joins 0"
       },
       {
         "name": "c1-opus25-mixed",
@@ -565,19 +551,19 @@
       },
       {
         "name": "c1-opus25-udp",
-        "run": "--config opus-2.5 --name c1-opus25-udp --hls-share 0 --steps 100,1000,10000,20000,30000,40000 --joins-at 40000"
+        "run": "--config opus-2.5 --name c1-opus25-udp --hls-share 0 --steps 100,1000,10000,20000,30000,40000 --joins 0"
       },
       {
         "name": "ph-f",
-        "run": "--phase-plan deploy/low-latency/phases-scale.json --group F --name ph-f --steps 6000"
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group F --scenarios F1,F2,F3,F4,F6 --name ph-f --steps 6000"
       },
       {
         "name": "ph-r",
-        "run": "--phase-plan deploy/low-latency/phases-scale.json --group R --name ph-r --steps 6000"
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group R --scenarios R1,R2,R3 --name ph-r --steps 6000"
       },
       {
         "name": "ph-a",
-        "run": "--phase-plan deploy/low-latency/phases-scale.json --group A --name ph-a --steps 6000"
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group A --scenarios A1,A2 --name ph-a --steps 6000"
       },
       {
         "name": "start-standby",
@@ -587,22 +573,17 @@
       {
         "name": "c2-pcm-udp",
         "second_curve": true,
-        "run": "--config pcm-1 --name c2-pcm-udp --hls-share 0 --steps 100,1000,10000,20000,24000,28000,32000 --force --joins 0"
+        "run": "--config pcm-1 --name c2-pcm-udp --hls-share 0 --steps 100,10000,20000,24000 --force --joins 0"
       },
       {
         "name": "c2-opus25-udp",
         "second_curve": true,
-        "run": "--config opus-2.5 --name c2-opus25-udp --hls-share 0 --steps 100,1000,10000,20000,40000,60000,80000 --force --joins 0"
+        "run": "--config opus-2.5 --name c2-opus25-udp --hls-share 0 --steps 100,10000,40000,80000 --force --joins 0"
       },
       {
         "name": "c2-opus25-mixed",
         "second_curve": true,
-        "run": "--config opus-2.5 --name c2-opus25-mixed --force --joins 0"
-      },
-      {
-        "name": "reruns",
-        "minutes": 10,
-        "what": "reruns of steps or scenarios that failed for reasons other than load (was 10 of phases and 30 of steps)"
+        "run": "--config opus-2.5 --name c2-opus25-mixed --steps 100,5000,20000 --force --joins 0"
       },
       {
         "name": "down",
@@ -613,7 +594,8 @@
     "cuts": [
       "1. joins only at representative steps: c1-pcm-udp's first step (100) and 10,000 (where five edges a region reach about 93% of their outbound cap at 1 ms PCM without Sydney), and the top of curve 1 (c1-opus25-udp's 40,000), plus all of (A): 3 ramp steps instead of 53, 66.6 min saved (437.7 min before any cut, 371.1 after this one)",
       "2. reruns: 40 min (10 of phases, 30 of steps) cut to 10, 30 min saved (341.1 min)",
-      "not cut: c1-opus1-mixed, curve 2's steps, F, R, A and the LiveKit control"
+      "3. C CL7 (24 Nov): every scenario has probes of its own, held long enough after its change for the referee's no-change windows (360 s at least), and R4 and A3 are enabled: the schedule grew to 421.6 min with R4 and A3 named out of it. Shed in the agreed order until it fitted: the joins of the representative steps (417.6), the 10 min of reruns (407.6), c1-opus1-mixed (395.5), half of curve 2's steps (375.8), then the scenarios F8, R5, F2r, F7 and F5 (341.3).",
+      "not cut: phases F (F1, F2, F3, F4, F6), R (R1, R2, R3), A (A1, A2), the rest of curve 1 and curve 2, and the LiveKit control"
     ]
   }
 }
