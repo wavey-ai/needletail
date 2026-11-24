@@ -43,6 +43,24 @@ the cgroups are scopes of the user's systemd manager.
                                         after the unit's RestartSec, and return
                                         when it is back (ready, or /up answers)
   edge_lab.py burn <node> <seconds>     busy loops in the node's own cgroup, on its CPUs
+  edge_lab.py roll <edges|forwarders|contributors|all> [--build a|b] [--nodes a,b]
+              [--sites s,..] [--force] [--dry-marks] [--resume] [engine options]
+                                        a roll through the change engine (mesh_ops):
+                                        one node at a time, gated, made ready, rolled
+                                        back on the build's failure; stdout is its two
+                                        marks. Without --build: a rolling restart of
+                                        each node on its own build set
+  edge_lab.py restart <node> [--hold-s 0] [--rollback] [--dry-marks] [--resume]
+                                        one node restarted through the engine's gates
+  edge_lab.py replace <node> [--gap-s 30] [--no-slot] [--resume]
+                                        the engine's replace: an edge drained, stopped,
+                                        "rebuilt" (--gap-s down, its drain file gone),
+                                        started and resumed; a forwarder through its
+                                        site's dist-c slot
+  Engine options: --marks FILE --node-marks FILE --gate-timeout-s 30
+  --drain-timeout-s 30 --ready-timeout-s 60 --on-failure stop|rollback-all
+  --surge auto|never --parity-ms 1.0. Exit status is the engine's (0 done, 2
+  refused, 3 stopped, 4 rolled back, 5 no answer, 130 interrupted).
 
 Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
 peer list naming them, but does not start, as the large mesh's autoscale
@@ -95,6 +113,7 @@ NEEDLETAIL_AV_MESH_ROOT, NEEDLETAIL_AV_CONTRIB_ROOT and NEEDLETAIL_PROBE_BIN.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import fcntl
 import hashlib
@@ -108,6 +127,10 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import mesh_ops  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKSPACE = ROOT.parent
@@ -1559,7 +1582,8 @@ def start_service(name: str, limits: dict | None = None, env: dict | None = None
     services = load("services.json")
     # What it was started with, so that a crash brings it back the same.
     services[name] = {"pid": process.pid, "started_unix": time.time(), "build": build,
-                      "starts": services.get(name, {}).get("starts", 0) + 1, **given}
+                      "starts": services.get(name, {}).get("starts", 0) + 1,
+                      "crashes": services.get(name, {}).get("crashes", 0), **given}
     save("services.json", services)
     return process.pid
 
@@ -1663,6 +1687,10 @@ def crash_service(name: str, restart_s: float = 1.0, ready_timeout_s: float = 60
     time.sleep(restart_s)
     pid = start_service(name, limits=given.get("limits"), env=given.get("env"),
                         extra_args=given.get("extra_args"))
+    # What systemd counts as NRestarts: a start after a crash (EdgeLabOps).
+    services = load("services.json")
+    services[name]["crashes"] = services[name].get("crashes", 0) + 1
+    save("services.json", services)
     wait_back(name, ready_timeout_s)
     return pid
 
@@ -2397,6 +2425,414 @@ def node_status(name: str) -> dict:
     return body if code == 200 and isinstance(body, dict) else {}
 
 
+# ------------------------------------------------------------------ the engine's backend
+#
+# C 2.12 and 2.13 (Unit L-E, CL1): the verbs roll, restart and replace run
+# through the change engine (scripts/mesh_ops.py), as the deploy tool's do on
+# Linode, with this lab as the backend: EdgeLabOps.
+
+# Edges held out of service by a command (the autoscaler's edge_lab backend,
+# linode-autoscale.py EdgeLabBackend.HELD, and EdgeLabOps): standby edges.
+HELD_EDGES = "autoscale-held.json"
+# {node: build set} that each node ran before its last activation: what a
+# rollback puts back (the activation script's .args.prev).
+PREV_BUILDS = "node-build-prev.json"
+VERSION_BUILD = re.compile(r"\(([0-9a-f]{7,40}(?:-dirty)?) ([0-9]+)\)")
+_BUILD_IDS: dict[tuple, dict | None] = {}
+
+
+def build_id(label: str, build: str = "a") -> dict | None:
+    """{"git", "unix", "dirty"} of a build set's binary, from its --version
+    (C 2.2: `av-mesh 0.1.0 (3f2a9c1d77e0 1763900000)`); None for a binary
+    that prints no build id (one from before the build id)."""
+    path = binary(label, build)
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _BUILD_IDS:
+        try:
+            text = subprocess.run([path, "--version"], capture_output=True, text=True,
+                                  timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            text = ""
+        match = VERSION_BUILD.search(text)
+        _BUILD_IDS[key] = None if match is None else {
+            "git": match.group(1), "unix": int(match.group(2)),
+            "dirty": match.group(1).endswith("-dirty")}
+    return _BUILD_IDS[key]
+
+
+def relay_parents() -> dict[str, tuple[str | None, str | None]]:
+    """{level-2 forwarder: (primary, secondary)}: its compiled parents in
+    the relay DAG this lab was rendered with (the deploy tool's
+    relay_tree)."""
+    deploy = deploy_module()
+    tree = deploy.relay_tree(lab_state(), load("settings.json"))
+    return {child["node"]["name"]: (child["primary"]["name"], child["secondary"]["name"])
+            for child in tree["children"]}
+
+
+class EdgeLabOps(mesh_ops.Ops):
+    """This lab as the change engine's backend (mesh_ops.Ops). A node is
+    its service in its namespace; "staging" chooses the build set a node
+    starts on (`build`: the set a roll installs, None: each node's own),
+    the activation stops the service as the unit does (SIGTERM, 15 s), puts
+    the set in force and starts it with what it was started with, and keeps
+    the set it ran for a rollback (PREV_BUILDS, the script's .args.prev). A
+    standby edge is a slot edge out of service or an edge held out
+    (HELD_EDGES); a dist-c out of service is a slot not created: add_slot
+    takes it in and starts it. `rebuild` is the instance's absence: the node
+    stays down `gap_s` and loses its drain file (a new disk). The
+    namespaces share this host's clock. The lock is the autoscaler's
+    (WORK/ops.lock), so a roll and a controller of one lab exclude each
+    other. `lab` is this module (a fake in the tests); `clock` and `sleep`
+    the engine's."""
+
+    def __init__(self, build: str | None = None, gap_s: float = 30.0, lab=None,
+                 clock=time.time, sleep=time.sleep):
+        self.lab = lab if lab is not None else sys.modules[__name__]
+        self.build = build
+        self.gap_s = gap_s
+        self.clock = clock
+        self.sleep = sleep
+        self.lock_path = pathlib.Path(self.lab.WORK) / "ops.lock"
+        self.evidence_dir = pathlib.Path(self.lab.WORK) / "rolls"
+        self.staged: dict[str, str] = {}
+        self._parents: dict | None = None
+
+    # ---------------------------------------------------------- the lab
+    def role(self, name: str) -> str:
+        for item, role, *_ in self.lab.NODES:
+            if item == name:
+                return role
+        raise mesh_ops.Refused(f"{name} is not a node of the lab")
+
+    def label(self, name: str) -> str:
+        return "av-contrib" if self.role(name) == "contributor" else "av-mesh"
+
+    def held(self) -> set[str]:
+        return set(self.lab.load(HELD_EDGES, []) or [])
+
+    def set_held(self, name: str, held: bool) -> None:
+        names = self.held()
+        names = names | {name} if held else names - {name}
+        self.lab.save(HELD_EDGES, sorted(names))
+
+    def rendered(self, name: str, build: str | None = None) -> bool:
+        try:
+            self.lab.rendered_service(name, build or self.lab.node_build(name))
+            return True
+        except self.lab.LabError:
+            return False
+
+    def in_service(self, name: str) -> bool:
+        slots = set(self.lab.slot_nodes())
+        return (name not in slots or name in self.lab.slots_in_service()) \
+            and name not in self.held()
+
+    def services(self) -> dict:
+        return self.lab.load("services.json")
+
+    def prev_builds(self) -> dict:
+        return dict(self.lab.load(PREV_BUILDS))
+
+    def nodes(self) -> list[dict]:
+        if self._parents is None:
+            self._parents = self.lab.relay_parents()
+        slots = set(self.lab.slot_nodes())
+        made = self.lab.slots_in_service()
+        out = []
+        for name, role, site, _region, public, vlan in self.lab.NODES:
+            if role not in mesh_ops.ROLE_TIER or not self.rendered(name):
+                continue  # a backbone the topology does not use
+            slot = name in slots
+            taken = self.in_service(name)
+            primary, secondary = self._parents.get(name, (None, None))
+            out.append({"name": name, "role": role, "site": site, "vlan": vlan,
+                        "public": public, "serving": taken, "slot": slot,
+                        "standby": role == "edge" and not taken,
+                        "created": role == "edge" or not slot or name in made,
+                        "primary": primary, "secondary": secondary})
+        return out
+
+    # ---------------------------------------------------------- HTTP
+    def status(self, node: str):
+        code, body = self.lab.http_json(node, "/api/node", timeout=2.0)
+        return body if code == 200 and isinstance(body, dict) else None
+
+    def statuses(self, nodes) -> dict:
+        nodes = list(nodes)
+        if not nodes:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(16, len(nodes))) as pool:
+            return dict(zip(nodes, pool.map(self.status, nodes)))
+
+    def get(self, node: str, path: str) -> tuple:
+        code, body = self.lab.http_json(node, path, timeout=2.0)
+        return (code or None), body
+
+    def post(self, node: str, path: str, body: dict) -> int | None:
+        code, _answer = self.lab.http_json(node, path, "POST", body)
+        return code or None
+
+    # ---------------------------------------------------------- builds
+    def build_of(self, name: str, build: str) -> dict:
+        found = self.lab.build_id(self.label(name), build)
+        if found is None:
+            raise mesh_ops.Refused(f"the {self.label(name)} of build set {build} prints no build id "
+                                   "(--version): the engine needs a build with one (C 2.2)")
+        return found
+
+    def check(self, command: str, nodes: list[str]) -> None:
+        if not (self.lab.load("namespaces.json") or {}).get("lab"):
+            raise mesh_ops.Refused("the lab is not up")
+        sets = self.lab.build_sets()
+        if self.build is not None and self.build not in sets:
+            raise mesh_ops.Refused(f"this lab has no build set {self.build} (it has "
+                                   f"{', '.join(sets)}): up it with NEEDLETAIL_AV_MESH_BIN_NEXT")
+        for name in nodes:
+            build = self.build or self.lab.node_build(name)
+            if not self.rendered(name, build):
+                raise mesh_ops.Refused(f"{name} has no service in build set {build}")
+            self.build_of(name, build)
+
+    def target(self, tier: str) -> dict | None:
+        """The build a roll installs: build set `build`'s; None without one,
+        a rolling restart of each node on its own set (stage(None))."""
+        if self.build is None:
+            return None
+        found = self.lab.build_id("av-contrib" if tier == "contributors" else "av-mesh",
+                                  self.build)
+        if found is None:
+            raise mesh_ops.Refused(f"build set {self.build} prints no build id (--version)")
+        return dict(found)
+
+    def set_for(self, name: str, build: dict) -> str:
+        """The build set whose binary for `name` is `build`."""
+        for candidate in self.lab.build_sets():
+            found = self.lab.build_id(self.label(name), candidate)
+            if found and (found["git"], found["unix"]) == (build.get("git"), build.get("unix")):
+                return candidate
+        raise mesh_ops.Refused(f"no build set of this lab has {self.label(name)} "
+                               f"{build.get('git')} {build.get('unix')}")
+
+    def args_of(self, name: str, build: str) -> list[str]:
+        """The argv the node's process gets on build set `build`: its
+        render's, then the extra arguments it was started with."""
+        extra = (self.services().get(name) or {}).get("extra_args") or []
+        return list(self.lab.service_args(name, build)) + [str(arg) for arg in extra]
+
+    def expected(self, node: str, rollback: bool = False) -> dict:
+        if rollback:
+            build = self.prev_builds().get(node)
+            if build is None:
+                raise mesh_ops.Refused(f"{node} has no previous build set to roll back to")
+        else:
+            build = self.staged.get(node) or self.lab.node_build(node)
+        found = self.build_of(node, build)
+        args = self.args_of(node, build)
+        return {"git": found["git"], "unix": found["unix"],
+                "args_sha256": hashlib.sha256("\n".join(args).encode()).hexdigest()}
+
+    def stage(self, nodes: list[str], build: dict | None) -> None:
+        for name in nodes:
+            target = self.set_for(name, build) if build else self.lab.node_build(name)
+            if not self.rendered(name, target):
+                raise mesh_ops.Refused(f"{name} has no service in build set {target}")
+            self.staged[name] = target
+
+    # ---------------------------------------------------------- the service
+    def restart(self, name: str, build: str) -> None:
+        """Stop as the unit does, put `build` in force, start with what the
+        node was started with (limits, environment, extra arguments)."""
+        given = self.services().get(name) or {}
+        self.lab.terminate_service(name)
+        self.lab.set_node_build(name, build)
+        self.lab.start_service(name, limits=given.get("limits"), env=given.get("env"),
+                               extra_args=given.get("extra_args"))
+
+    def activate(self, node: str, not_after_ms: int, rollback: bool = False) -> dict:
+        if self.clock() * 1000 > not_after_ms:
+            return {"ok": False, "why": "late"}
+        current = self.lab.node_build(node)
+        prev = self.prev_builds()
+        if rollback:
+            target = prev.get(node)
+            if target is None:
+                return {"ok": False, "why": "no previous build set to put back"}
+        else:
+            target = self.staged.get(node, current)
+            prev[node] = current
+            self.lab.save(PREV_BUILDS, prev)
+        try:
+            self.restart(node, target)
+        except self.lab.LabError as error:
+            return {"ok": False, "why": str(error)}
+        return {"ok": True, "why": ""}
+
+    def boot_changed(self, node: str, since_ms: int) -> bool | None:
+        started = (self.services().get(node) or {}).get("started_unix")
+        return None if started is None else started * 1000 > since_ms
+
+    def unit_restarts(self, node: str) -> int | None:
+        """The lab's own count: starts after a crash (`crash`), as systemd's
+        NRestarts counts the unit's restarts after a failure."""
+        return int((self.services().get(node) or {}).get("crashes", 0))
+
+    def clock_offset(self, node: str) -> float | None:
+        return 0.0
+
+    def surge_candidates(self, site: str) -> list[str]:
+        slots = set(self.lab.slot_nodes())
+        return sorted((name for name, role, where, *_ in self.lab.NODES
+                       if role == "edge" and where == site and not self.in_service(name)
+                       and self.rendered(name)),
+                      key=lambda name: (name in slots, mesh_ops.natural(name)))
+
+    def start_node(self, node: str) -> None:
+        if not self.rendered(node):
+            raise mesh_ops.Refused(f"{node} has no service in this lab")
+        slot = node in self.lab.slot_nodes()
+        target = self.staged.get(node)
+        try:
+            if slot:
+                self.lab.set_slot_in_service(node, True)
+            current = self.lab.node_build(node)
+            if target is not None and target != current:
+                prev = self.prev_builds()
+                prev[node] = current
+                self.lab.save(PREV_BUILDS, prev)
+            if self.lab.service_pid(node) is not None:
+                if target is not None and target != current:
+                    self.restart(node, target)
+            else:
+                given = self.services().get(node) or {}
+                if target is not None:
+                    self.lab.set_node_build(node, target)
+                self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                       extra_args=given.get("extra_args"))
+        except self.lab.LabError as error:
+            if slot and self.lab.service_pid(node) is None:
+                self.lab.set_slot_in_service(node, False)
+            raise mesh_ops.Refused(f"{node}: {error}") from None
+        self.set_held(node, False)
+
+    def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
+        if not_after_ms is not None:
+            if self.clock() * 1000 > not_after_ms:
+                raise mesh_ops.Refused(f"{node}: the stop came after its deadline")
+            self.lab.terminate_service(node)
+            return
+        self.lab.terminate_service(node)
+        if node in self.lab.slot_nodes():
+            self.lab.set_slot_in_service(node, False)
+        elif self.role(node) == "edge":
+            self.set_held(node, True)
+
+    # ---------------------------------------------------------- replace
+    def rebuild(self, node: str, mode: str) -> None:
+        if mode != "rebuild":
+            raise mesh_ops.Refused("the local lab has no instance to make anew; replace "
+                                   "rebuilds in place")
+        self.sleep(self.gap_s)
+        (pathlib.Path(self.lab.WORK) / "state" / f"{node}.drained").unlink(missing_ok=True)
+
+    def push(self, node: str) -> None:
+        if self.lab.service_pid(node) is None:
+            given = self.services().get(node) or {}
+            self.lab.start_service(node, limits=given.get("limits"), env=given.get("env"),
+                                   extra_args=given.get("extra_args"))
+        if node in self.lab.slot_nodes():
+            self.lab.set_slot_in_service(node, True)
+        self.set_held(node, False)
+        self.staged.pop(node, None)
+
+    def add_slot(self, node: str) -> None:
+        if node not in self.lab.slot_nodes():
+            raise mesh_ops.Refused(f"{node} is not a slot of this lab")
+        self.lab.set_slot_in_service(node, True)
+        try:
+            self.lab.start_service(node)
+        except self.lab.LabError as error:
+            if self.lab.service_pid(node) is None:
+                self.lab.set_slot_in_service(node, False)
+                raise mesh_ops.Refused(f"{node}: {error}") from None
+            raise
+
+    def remove_slot(self, node: str) -> None:
+        self.lab.terminate_service(node)
+        if node in self.lab.SLOT_CANDIDATES:
+            self.lab.set_slot_in_service(node, False)
+
+
+ENGINE_VERBS = ("roll", "restart", "replace")
+
+
+def engine_parser(command: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"edge_lab.py {command}")
+    if command == "roll":
+        parser.add_argument("tier", choices=("edges", "forwarders", "contributors", "all"))
+        parser.add_argument("--build", default=None,
+                            help="the build set to install; without it, every node in scope "
+                                 "is restarted on its own set (a rolling restart)")
+        parser.add_argument("--nodes", default=None)
+        parser.add_argument("--sites", default=None)
+        parser.add_argument("--force", action="store_true")
+    else:
+        parser.add_argument("node")
+    if command == "restart":
+        parser.add_argument("--hold-s", type=float, default=0.0)
+        parser.add_argument("--rollback", action="store_true")
+    if command == "replace":
+        parser.add_argument("--gap-s", type=float, default=30.0)
+        parser.add_argument("--no-slot", action="store_true")
+    else:
+        parser.add_argument("--dry-marks", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--marks", default=None)
+    parser.add_argument("--node-marks", default=None)
+    parser.add_argument("--gate-timeout-s", type=float, default=30.0)
+    parser.add_argument("--drain-timeout-s", type=float, default=30.0)
+    parser.add_argument("--ready-timeout-s", type=float, default=60.0)
+    parser.add_argument("--on-failure", choices=("stop", "rollback-all"), default="stop")
+    parser.add_argument("--surge", choices=("auto", "never"), default="auto")
+    parser.add_argument("--parity-ms", type=float, default=1.0)
+    return parser
+
+
+def names_of(text: str | None) -> list[str] | None:
+    return [item for item in (text or "").split(",") if item] or None
+
+
+def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = None,
+                **engine) -> int:
+    """`roll`, `restart` and `replace` through the change engine on this
+    lab (C 2.12). stdout carries the change's two marks only. Returns the
+    engine's exit status."""
+    args = engine_parser(command).parse_args(arguments)
+    options = mesh_ops.Options(
+        # Without --build a roll restarts every node in scope on its own
+        # set: each is on its target already, so it is forced.
+        force=getattr(args, "force", False) or (command == "roll" and args.build is None),
+        dry=getattr(args, "dry_marks", False), gate_timeout_s=args.gate_timeout_s,
+        drain_timeout_s=args.drain_timeout_s, ready_timeout_s=args.ready_timeout_s,
+        on_failure=args.on_failure, surge=args.surge, parity_ms=args.parity_ms,
+        hold_s=getattr(args, "hold_s", 0.0), rollback=getattr(args, "rollback", False),
+        marks_file=args.marks, node_marks_file=args.node_marks)
+    if ops is None:
+        ops = EdgeLabOps(build=getattr(args, "build", None), gap_s=getattr(args, "gap_s", 30.0))
+    if command == "roll":
+        return mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes),
+                             sites=names_of(args.sites), options=options, resume=args.resume,
+                             **engine)
+    if command == "restart":
+        return mesh_ops.restart_nodes(ops, [args.node], options=options, resume=args.resume,
+                                      **engine)
+    return mesh_ops.replace(ops, args.node, mode="rebuild", no_slot=args.no_slot,
+                            resume=args.resume, options=options, **engine)
+
+
 def status() -> None:
     work = str(WORK.resolve())
     for entry in registered_labs():
@@ -2489,6 +2925,8 @@ def main() -> None:
                 restart_s = float(arguments[2])
             pid = crash_service(name, restart_s)
             print(f"{name} was killed and is back (pid {pid})")
+        elif command in ENGINE_VERBS:
+            sys.exit(engine_verb(command, arguments))
         elif command == "burn":
             if len(arguments) != 2:
                 sys.exit("usage: edge_lab.py burn <node> <seconds>")
