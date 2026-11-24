@@ -268,6 +268,50 @@ class Http:
 
 # --------------------------------------------------------------- node status
 
+#: Every field of an av-mesh node's `GET /api/node` that this engine
+#: (`status_of`, the gates) and the autoscaler (`node_view`) read, as paths
+#: ("[]" for each element of a list; `legs_by_other` is an object of counts).
+#: test_mesh_ops.ToolContract checks each against av-mesh's node_status.rs
+#: and against its contract test (`fast_lane::the_fields_needletail_s_tools_
+#: read_are_served`); NODE_READS_NOT_IN_CONTRACT are the ones that test does
+#: not name yet (av-mesh serves them all). The contributor's `build.id` and
+#: `build.unix` are av-contrib's.
+NODE_READS = (
+    "node_id", "role", "state", "ready", "warm", "ready_forced", "not_ready",
+    "drain_reasons", "hello_draining",
+    "build/git", "build/built_unix", "build/dirty",
+    "process/boot_id", "process/args_sha256", "process/cpu_permille",
+    "fast_plane/threads", "fast_plane/threads_expected", "fast_plane/received_1s",
+    "fast_plane/admitted_1s",
+    "ingest/audio_deadline_drops",
+    "parents[]/address", "parents[]/id", "parents[]/path",
+    "parents[]/streams[]/stream_id", "parents[]/streams[]/track", "parents[]/streams[]/class",
+    "parents[]/streams[]/source_age_ms", "parents[]/streams[]/window_s",
+    "parents[]/streams[]/objects_1s", "parents[]/streams[]/objects_10s",
+    "parents[]/streams[]/skipped_10s", "parents[]/streams[]/resets_10s",
+    "parents[]/streams[]/multi_symbol_10s", "parents[]/streams[]/slack_mean_us_10s",
+    "parents[]/streams[]/slack_min_us_10s",
+    "streams[]/stream_id", "streams[]/class",
+    "children/compiled[]/target",
+    "children/lease/children", "children/lease/pairs",
+    "children/lease/pairs_list[]/child", "children/lease/pairs_list[]/stream_id",
+    "children/lease/streams[]/stream_id", "children/lease/streams[]/fed_age_ms",
+    "cache_mesh/children", "cache_mesh/warm_parts_pending",
+    "cache_mesh/peers[]/peer", "cache_mesh/peers[]/heard_age_ms",
+    "client_udp/subscribers", "client_udp/single_legs", "client_udp/legs_by_other",
+    "client_udp/hls_sessions", "client_udp/hls_moved_active",
+    "client_udp/hls_requests_in_flight", "client_udp/refusals", "client_udp/rebalance_moves",
+    "client_udp/load_permille",
+    "entry/caches_fresh",
+)
+
+#: NODE_READS that av-mesh's contract test does not name (b446cb5).
+NODE_READS_NOT_IN_CONTRACT = tuple(path for path in NODE_READS if path not in (
+    "state", "not_ready", "drain_reasons", "build/git", "build/built_unix", "process/boot_id",
+    "process/args_sha256", "fast_plane/threads", "fast_plane/threads_expected",
+    "ingest/audio_deadline_drops", "client_udp/subscribers", "client_udp/single_legs",
+    "client_udp/legs_by_other", "client_udp/rebalance_moves", "client_udp/load_permille"))
+
 def _num(item, path: str):
     value = item
     for part in path.split("."):
@@ -1237,8 +1281,11 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
     for every other edge E, the edges other than X and E have room for the
     legs of X whose listener's other leg is on E (X's `legs_by_other[E]`:
     those legs can go to neither). `one_path` (`--surge never`): a leg whose
-    listener has its other leg elsewhere is left to that one path, and only
-    X's single legs (`legs_by_other[""]`) need room. (problems, evidence)."""
+    listener has its other leg on an advertised edge is left to that one
+    path, and only X's single legs (`client_udp.single_legs`: no other leg)
+    and its legs whose other leg is on a node the region does not advertise
+    (av-mesh's `legs_by_other[""]`: draining, gone, or unknown; that leg is
+    no path to count on) need room. (problems, evidence)."""
     site = lab.site(x)
     others = [name for name in lab.edges(site) if name != x]
     problems = []
@@ -1275,9 +1322,18 @@ def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
     evidence = {"legs": legs, "legs_by_other": by_other, "cost": cost, "room": room,
                 "single_legs": single if single_known else None}
     if one_path:
-        legs = by_other.get("", 0) if isinstance(by_other.get("", 0), int) else None
-        if legs is None:
+        own_single = sx.udp("single_legs")
+        unadvertised = by_other.get("", 0)
+        if own_single is None:
+            problems.append(f"capacity unknown: {x}'s client_udp.single_legs")
+            legs = None
+        elif not isinstance(unadvertised, int):
             problems.append(f"capacity unknown: {x}'s legs_by_other[\"\"]")
+            legs = None
+        else:
+            legs = int(own_single) + unadvertised
+        evidence["one_path"] = {"single_legs": own_single, "unadvertised_legs": unadvertised,
+                                "legs": legs}
         by_other = {}
     if problems or not legs:
         return problems, evidence

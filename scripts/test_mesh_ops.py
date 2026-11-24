@@ -25,6 +25,7 @@ from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import av_mesh_contract  # noqa: E402
 import mesh_ops  # noqa: E402
 
 OLD = ("aaaaaaaaaaaa", 1_000)
@@ -173,13 +174,20 @@ class Sim(mesh_ops.Ops):
 
     def edge_udp(self, name: str) -> dict:
         node = self.nodes_[name]
+        """`client_udp` as av-mesh's ClientUdpStatus serves it (node_status.rs):
+        `legs_by_other` counts the legs that name another leg (`o=`) by the
+        node it is on, so a single leg is in `single_legs` only; `""` would
+        be a node the region does not advertise (a test patches it in)."""
         legs = 0 if node["drained"] else node["legs"]
+        single = min(node["single"], legs) if legs else node["single"]
+        paired = max(0, legs - single)
         others = [other for other in self.edges(node["site"]) if other != name]
-        by_other = {other: legs // len(others) for other in others} if others and legs else {}
+        by_other = {other: paired // len(others) for other in others} if others and paired else {}
         return {"subscribers": legs, "hls_sessions": 0, "hls_moved_active": 0,
                 "hls_requests_in_flight": 0, "refusals": 0, "load_permille": legs * 5,
-                "rebalance_moves": 0, "parents_lost": False, "single_legs": node["single"],
-                "legs_by_other": by_other}
+                "rebalance_moves": 0, "parents_lost": False, "leaving": 0,
+                "single_legs": single, "legs_by_other": by_other, "moves_completed": 0,
+                "moves_expired": 0, "moves_taken_back": 0, "redundant_refusals": 0}
 
     def move_legs(self, name: str) -> None:
         """A drained edge's legs move to the other serving edges of its
@@ -220,7 +228,9 @@ class Sim(mesh_ops.Ops):
                 "role": node["role"],
                 "build": {"git": git, "git_full": git + "0" * 28, "dirty": False,
                           "built_unix": unix, "version": "0.1.0"},
-                "process": {"pid": 1, "boot_id": node["boot"], "args_sha256": f"args-{git}"},
+                "process": {"pid": 1, "boot_id": node["boot"],
+                            "started_unix_ms": node["boot"] // 1000, "uptime_ms": 1000,
+                            "args_sha256": f"args-{git}", "cpus": 2, "cpu_permille": 120},
                 "state": state, "ready": state == "ready", "warm": self.warm(name),
                 "ready_forced": False, "not_ready": reasons,
                 "drain_reasons": ["operator"] if node["drained"] else [],
@@ -233,7 +243,18 @@ class Sim(mesh_ops.Ops):
                              "decoded": True}],
                 "children": {"compiled": [], "lease": {"children": 0, "pairs": 0,
                                                        "pairs_list": [], "streams": []}},
-                "cache_mesh": {"warm_parts_pending": 0},
+                "cache_mesh": {"parent_heard_age_ms": 0, "parents_live": 1, "pending_release": 0,
+                               "peers": [{"peer": f"{self.nodes_[other]['vlan']}:19447",
+                                          "role": self.nodes_[other]["role"],
+                                          "boot_id": self.nodes_[other]["boot"],
+                                          "build": self.nodes_[other]["build"][0],
+                                          "state": "ready", "heard_age_ms": 40}
+                                         for other in sorted(self.nodes_)
+                                         if other != name and self.up(other)
+                                         and self.nodes_[other]["site"] == node["site"]
+                                         and self.nodes_[other]["role"] != "contributor"],
+                               "children": 0, "pairs": 0, "subscribed_playlists": [3001],
+                               "warm_parts_pending": 0},
                 "client_udp": self.edge_udp(name) if node["role"] == "edge" else None,
                 "entry": {"caches_fresh": sum(1 for edge in self.edges(node["site"])
                                               if not self.nodes_[edge]["drained"]),
@@ -851,6 +872,39 @@ class Capacity(Base):
         self.sim.patch.pop("lon-edge-1")
         problems, _ = self.check()
         self.assertIn("capacity unknown: client_udp.single_legs in london", problems)
+
+    def test_one_path_counts_x_s_single_legs_and_those_on_unadvertised_nodes(self):
+        # --surge never: X's legs whose other leg is on an advertised edge
+        # stay on that one path; its single legs (client_udp.single_legs)
+        # and those whose other leg is on a node the region does not
+        # advertise (av-mesh's legs_by_other[""]) need room.
+        self.sim.nodes_["lon-edge-1"]["legs"] = 120
+        self.sim.nodes_["lon-edge-1"]["single"] = 30
+        self.sim.nodes_["lon-edge-2"]["legs"] = 150
+        self.sim.nodes_["lon-edge-3"]["legs"] = 130
+        self.sim.patch["lon-edge-1"] = lambda doc: {**doc, "client_udp": {
+            **doc["client_udp"], "legs_by_other": {"lon-edge-2": 60, "": 25, "lon-edge-3": 5}}}
+        lab = self.lab()
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+        problems, evidence = mesh_ops.capacity_check(lab, "lon-edge-1", statuses, 5.0,
+                                                     one_path=True)
+        self.assertEqual(evidence["one_path"],
+                         {"single_legs": 30, "unadvertised_legs": 25, "legs": 55})
+        # Room 10 + 30: the 55 do not fit; the 60 on lon-edge-2 are not counted.
+        self.assertEqual(problems, ["capacity: the other edges have room for 40 legs, "
+                                    "lon-edge-1 holds 55"])
+        self.sim.nodes_["lon-edge-2"]["legs"] = 100
+        problems, _ = mesh_ops.capacity_check(
+            lab, "lon-edge-1", {name: self.status(name) for name in lab.edges("london")}, 5.0,
+            one_path=True)
+        self.assertEqual(problems, [])
+        # Without single_legs the gate does not guess.
+        self.sim.patch["lon-edge-1"] = lambda doc: {**doc, "client_udp": {
+            key: value for key, value in doc["client_udp"].items() if key != "single_legs"}}
+        problems, _ = mesh_ops.capacity_check(
+            lab, "lon-edge-1", {name: self.status(name) for name in lab.edges("london")}, 5.0,
+            one_path=True)
+        self.assertIn("capacity unknown: lon-edge-1's client_udp.single_legs", problems)
 
     def test_a_light_region_passes_without_a_cost(self):
         for index in (1, 2, 3):
@@ -1686,6 +1740,45 @@ class Replace(Base):
 
 
 # ---------------------------------------------------------------- plumbing
+
+def document_has(document, path: str) -> bool:
+    """`path` (av_mesh_contract's form) is in `document`, in some element
+    of each list on the way."""
+    head, _, rest = path.partition("/")
+    listed = head.endswith("[]")
+    key = head[:-2] if listed else head
+    if not isinstance(document, dict) or key not in document:
+        return False
+    value = document[key]
+    if not rest:
+        return True
+    items = value if isinstance(value, list) else [value]
+    return any(document_has(item, rest) for item in items)
+
+
+class ToolContract(Base):
+    """mesh_ops.NODE_READS (the engine's and the autoscaler's reads of
+    /api/node) against the fake here and against av-mesh's source."""
+
+    def test_the_fake_serves_every_field_the_tools_read(self):
+        documents = [self.sim.doc(name) for name in ("lon-edge-1", "lon-dist-a", "new-dist-a")]
+        self.sim.nodes_["lon-edge-1"]["legs"] = 40
+        documents.append(self.sim.doc("lon-edge-1"))
+        missing = [path for path in mesh_ops.NODE_READS
+                   if not any(document_has(document, path) for document in documents)]
+        self.assertEqual(missing, [])
+
+    def test_av_mesh_serves_every_field_and_its_contract_test_names_the_rest(self):
+        root = av_mesh_contract.root()
+        if root is None:
+            self.skipTest("NEEDLETAIL_AV_MESH_ROOT is not set")
+        served = av_mesh_contract.node_paths(root)
+        named = av_mesh_contract.contract(root)["node"]
+        self.assertEqual([path for path in mesh_ops.NODE_READS if path not in served], [])
+        self.assertEqual(sorted(named - served), [])
+        self.assertEqual(sorted(set(mesh_ops.NODE_READS) - named),
+                         sorted(mesh_ops.NODE_READS_NOT_IN_CONTRACT))
+
 
 class Plumbing(unittest.TestCase):
     def test_marks_are_unix_seconds_with_nine_decimals(self):
