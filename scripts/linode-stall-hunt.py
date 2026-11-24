@@ -1925,7 +1925,11 @@ def preflight(topology: dict) -> list[str]:
     files = [mesh_binary("needletail-nodecheck"), mesh_binary("needletail-load"),
              mesh_binary("av-mesh"), contrib_binary("aep1-48k-probe"),
              compare_root() / "target" / "ntcmp",
-             compare_root() / "target" / "compare-media" / "audio" / "audio.s24le"]
+             compare_root() / "target" / "compare-media" / "audio" / "audio.s24le",
+             # The deploy's push installs it on every node and refuses without it
+             # (hunt11241537: the fresh deploy failed on it, after the lab was billed).
+             ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check" / "target"
+             / "x86_64-unknown-linux-gnu" / "release" / "soundkit-part-check"]
     files += [compare_root() / "target" / "compare-media" / "audio" / f"{cfg['index']}.index.json"
               for cfg in CONFIGS.values()]
     files += [clips_root() / f"{rung}.index.json" for rung in VIDEO_RUNGS]
