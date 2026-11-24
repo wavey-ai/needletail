@@ -33,12 +33,20 @@ each latency-bench pass as it ends (the pass's own run id is <name>, so its
 files go to <name>-lab<i>-first|warm/), the record, and its end: failed
 when a step failed or the run was cut off, a cut-off lab's files kept.
 
+From the contributor's restart to the end of the warm session every mesh
+node runs the hunt's 1 s sampler (scripts/hunt-sampler.sh, as on the
+Linode lab: the audio class thread's schedstat and switches, every
+thread's policy and CPU, vmstat, the fast plane's counters), into
+lab<i>/samplers/<node>/.
+
 `report` reads such a directory: per lab and session, each UDP host's unit
 latency p99 and max and missing (latency-bench's hops.json), first against
 warm (wave 9's gate: p99 within 0.3 ms, 0 missing); per node and session
-the stall journal's stops by cause and stopped ms; the null of every
-reader probe (null-window.py, the referee's arithmetic). Exit 0; `run`
-exits 1 when a step failed.
+the stall journal's stops by cause and stopped ms, and the class thread's
+stops of 100 ms or more that its sampler shows, each classified as on the
+Linode lab (not run, blocked in our code, ...: stall_records.classify); the
+null of every reader probe (null-window.py, the referee's arithmetic).
+Exit 0; `run` exits 1 when a step failed.
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ import json
 import os
 import pathlib
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -74,6 +83,9 @@ MESH_ROLES = ("contributor", "distributor", "edge")
 LAB_VERBS = ("burn",)
 GATE_P99_MS = 0.3
 SESSIONS = ("first", "warm")
+SAMPLER = ROOT / "scripts" / "hunt-sampler.sh"
+# A class thread's stop that its sampler shows, from this length.
+SAMPLER_STOP_MS = 100.0
 NODECHECK = pathlib.Path(os.environ.get(
     "NEEDLETAIL_NODECHECK_BIN", str(lab.MESH_ROOT / "target" / "release" / "needletail-nodecheck")))
 
@@ -88,6 +100,19 @@ def mesh_nodes() -> list[str]:
 def stalls_url(name: str, since_us: int) -> str:
     port = lab.CONTRIB_HTTP_PORT if lab.node(name)["role"] == "contributor" else lab.HTTP_PORT
     return f"https://{lab.node(name)['public_ipv4']}:{port}/api/stalls?since_us={since_us}"
+
+
+def sampler_command(name: str, out: pathlib.Path) -> list[str]:
+    """The hunt's sampler of a node, run inside it (`edge_lab.py sh`), on
+    the pid its service has now."""
+    contributor = lab.node(name)["role"] == "contributor"
+    port = lab.CONTRIB_HTTP_PORT if contributor else lab.HTTP_PORT
+    pid = lab.service_pid(name)
+    return [sys.executable, str(EDGE_LAB), "sh", name, "sh", str(SAMPLER), str(out / name),
+            str(pid) if pid else f"<pid of {name}>",
+            "audio-hot-0" if contributor else "needletail-fast",
+            f"https://{lab.node(name)['public_ipv4']}:{port}",
+            "/api/pacing" if contributor else ""]
 
 
 def bench_command(name: str, payload: str, seconds: int, run_id: str) -> list[str]:
@@ -140,10 +165,23 @@ class Steps:
                 self.failed.append(f"{' '.join(command)}: exit {process.returncode}")
 
     def background(self, command: list[str]) -> subprocess.Popen | None:
+        """A command left running, in a process group of its own (what it
+        starts inside a node is stopped with it)."""
         print("$ " + " ".join(shlex.quote(item) for item in command) + " &", flush=True)
         if self.dry:
             return None
-        return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+
+    def stop(self, process: subprocess.Popen | None) -> None:
+        """A background command and its group, ended (SIGTERM)."""
+        if process is None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=30)
 
     def wait(self, seconds: float, why: str) -> None:
         print(f"# {why}: {seconds:g} s", flush=True)
@@ -184,6 +222,8 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
                     for name in mesh_nodes()], timeout=args.burn_s + 120)
     steps.run([sys.executable, str(EDGE_LAB), "stop", CONTRIBUTOR])
     steps.run([sys.executable, str(EDGE_LAB), "start", CONTRIBUTOR])
+    samplers = [steps.background(sampler_command(name, out / "samplers"))
+                for name in mesh_nodes()]
     for session in SESSIONS:
         began = time.time()
         # The first session's journals from the lab's start (its idle, the
@@ -198,9 +238,8 @@ def one_lab(steps: Steps, args: argparse.Namespace, index: int) -> dict:
         pull_stalls(steps, directory, since)
         entry["sessions"][session] = {"bench": bench, "from_unix": round(began, 3),
                                       "to_unix": round(time.time(), 3), "stalls_since_us": since}
-    if watch is not None:
-        watch.terminate()
-        watch.wait(timeout=30)
+    for process in samplers + [watch]:
+        steps.stop(process)
     steps.run([sys.executable, str(EDGE_LAB), "down"])
     if not steps.dry:
         (out / "lab.json").write_text(json.dumps(entry, indent=1) + "\n")
@@ -288,6 +327,25 @@ def journals(directory: pathlib.Path) -> dict[str, dict]:
     return out
 
 
+def class_stops(directory: pathlib.Path, since_us: int | None,
+                until_us: int | None) -> dict[str, list[dict]]:
+    """Per node, the class thread's stops of SAMPLER_STOP_MS or more that
+    its sampler shows in [since_us, until_us], each classified."""
+    out = {}
+    for path in sorted(directory.glob("*/sampler.ndjson")):
+        name = path.parent.name
+        lines = sr.sampler_lines(sr.read_ndjson(path))
+        journal = sr.read_stalls(path.parent / "stalls.ndjson")
+        found = []
+        for start, end in sr.sampler_stops(lines, SAMPLER_STOP_MS):
+            if (since_us is not None and end < since_us) or (until_us is not None and end > until_us):
+                continue
+            found.append({"from_us": start, "to_us": end, "ms": (end - start) / 1000,
+                          **sr.classify(start, end, lines, journal)})
+        out[name] = found
+    return out
+
+
 def nulls(bench: pathlib.Path) -> list[dict]:
     spec = importlib.util.spec_from_file_location("null_window", HERE / "null-window.py")
     null_window = importlib.util.module_from_spec(spec)
@@ -309,8 +367,13 @@ def analyse(directory, with_null: bool = True) -> dict:
             bench = BENCH_OUT / ((record["sessions"].get(session) or {}).get("bench") or "")
             hops_path = bench / "hops.json"
             hops = json.loads(hops_path.read_text()) if hops_path.is_file() else {}
+            window = record["sessions"].get(session) or {}
             entry["sessions"][session] = {
                 "udp": udp_hosts(hops), "journals": journals(lab_dir / session),
+                "class_stops": class_stops(
+                    lab_dir / "samplers",
+                    int(window["from_unix"] * 1e6) if window.get("from_unix") else None,
+                    int(window["to_unix"] * 1e6) if window.get("to_unix") else None),
                 "null": nulls(bench) if with_null and bench.is_dir() else []}
         first, warm = (entry["sessions"][session]["udp"] for session in SESSIONS)
         entry["gate"] = gate(first, warm)
@@ -335,6 +398,12 @@ def format_report(result: dict) -> str:
                                  f"{stops['over_20ms']['one']}), starved "
                                  f"{journal['stops']['starved']['over_20ms']}, own class passes "
                                  f"{journal['own_class_passes']}")
+            for node, found in sorted(item["class_stops"].items()):
+                for stop in found:
+                    detail = stop.get("where") or stop.get("wait") or ""
+                    lines.append(f"  {session:<5} {node:<14} class thread stopped {stop['ms']:.0f} "
+                                 f"ms: {stop['class']}" + (f", {detail}" if detail else "")
+                                 + f" [{stop['why']}]")
             for probe in item["null"]:
                 eight = probe.get("lengths", {}).get("8") or {}
                 lines.append(f"  {session:<5} null {pathlib.Path(probe['frames']).name}: steady "

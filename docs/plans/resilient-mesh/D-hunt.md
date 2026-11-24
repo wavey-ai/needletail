@@ -78,7 +78,8 @@ B's are named by their drafts' commit ids (AC8, AC9, AM3) and by function.
    contributor stamps AEP1 arrivals in the kernel and reports source gaps on one clock. Acceptance: no episode
    before publish more than 1 ms over the median, each over 0.5 ms attributed to a side.
 6. **Steady state.** A null (no-change) score is part of every proof and of the lab; acceptance in 3.1.
-7. **The paid lab.** 21 instances, two billed hours, $2.81 with its two replacements; one repeat at most ($5.62).
+7. **The paid lab.** 20 instances, two billed hours, $2.70 with its two replacements; one repeat at most ($5.40)
+   (section 7 as revised after the wave 9 run).
 8. **2.5 ms Opus.** The rows are lost to the referee's four-point mouth-to-ear estimate alone; nothing is built
    for them; three requests to the referee (7.7).
 9. **Burst loss.** Nothing is known to be lost upstream of an edge; the design adds the join that says which side
@@ -617,9 +618,279 @@ rootless lab, so the sender's scheduling remedy and the locks are proven on Lino
   points of one CPU for a 1 ms stream to six far children); tick threads under 1 % of a CPU each.
 - **First session**: `first-session.py --labs 5`: first session against a warm one, per node stall journal, null.
 
-## 7. Deploy, tooling and the paid lab
+## 7. Deploy, tooling and the paid lab (revised after the wave 9 run, 24 Nov 2026)
 
-### 7.1 The lab (`NT/deploy/low-latency/topology-hunt.json`, `NT/scripts/linode-stall-hunt.py`)
+The wave 9 run (`.resilient/reports/w9-stall-analysis.md`) showed stops of 0.3 to 2 s at the edges around a UDP
+client's arrival, on the audio class thread, sometimes on that thread alone, and both London edges stopped
+together for 446 ms. The fan-out fix (av-mesh `rm/fanout`, `.resilient/reports/fanout-stall.md`) moves every
+first-use start and allocation off the class thread but could not show what makes the stops. The lab below asks,
+in this order: does any edge still stop for 100 ms or more in the referee's first session on a fresh deploy of the
+fixed build, with UDP clients arriving at every edge; for each stop that remains, was the class thread runnable and
+not run, or blocked in our code, and on which wait; do the arena warm-up, first touch of the guest's memory, the
+codec of the first session and listener churn change it. The text this replaces is kept under "Before the wave 9
+run" at the end of this section.
+
+### 7.0 The commands, in order (the lead runs them; dry run first)
+
+**The lab cannot start yet.** A real run refuses (step 2 names each) until all of these exist; none is in this
+unit, and the lead decides whether to wait for them:
+- av-mesh `--relay-class-arena-warm-mb N` (the no_arena_warm arm; 7.8): `ClientSender::new` in
+  `fast_plane/edge_clients.rs`, the fan-out fix's code (rm/fanout's follow-up). Not on any av-mesh branch on 24 Nov.
+- `needletail-nodecheck touch --hold` (the touched arm; 7.8): av-mesh `bin/needletail-nodecheck.rs`, D2 (unit I).
+  Not in av-mesh `resilient-mesh` eb1f5c4 nor rm/av-mesh-di 7876bd7.
+- The watchdog's bounded collect: needletail rm/lab2 (the lab tool's `up --collect-timeout-s`) and rm/arch2 (the
+  deploy tool's `collect --run-id`, which that collect runs), merged into `resilient-mesh`.
+
+From the integration worktree (`/home/jamieb/wavey.ai/needletail-resilient`, branch `resilient-mesh` with this
+work merged), in tmux:
+
+```
+export NEEDLETAIL_AV_MESH_ROOT=<av-mesh checkout of the integration build: rm/fanout, D1 to D3, the arena switch>
+export NEEDLETAIL_AV_CONTRIB_ROOT=<av-contrib checkout with S1 and S2>
+export NEEDLETAIL_COMPARE_ROOT=/home/jamieb/wavey.ai/needletail-compare
+# the zigbuild release set: $NEEDLETAIL_AV_MESH_ROOT/target/x86_64-unknown-linux-gnu/release/{av-mesh,
+#   needletail-nodecheck,needletail-load,needletail-udp-client}, $NEEDLETAIL_AV_CONTRIB_ROOT/.../{av-contrib,
+#   aep1-48k-probe}; target/release/needletail-compile of this checkout
+```
+
+1. `scripts/linode-stall-hunt.py plan`. No lab, no token, no request. It prints first:
+   ```
+   20 instances (16 g6-dedicated-2, 4 g6-dedicated-4): $1.296 an hour; ceilings $1.50 an hour and 24 nodes; watchdog 1.9 h
+   2 billed hours $2.59; with 2 replacement instances $2.70; one repeat at most: $5.40
+   the sessions end by minute 80.2 at worst; collect at 82, down at 88, the watchdog at minute 114
+   ```
+   then every command of the run under `# minute N: <step>` headers, from `run_archive.py ... create` and the lab
+   tool's `up` to `down` and `run_archive.py ... finish <run> --status complete`. It must print no line ending in
+   `failed: ...`.
+2. `scripts/linode-stall-hunt.py run --dry --budget-usd 300`. The same, through the code of a real run, with one line
+   `# a real run would refuse: <why>` for each thing a real run would refuse (a missing binary, an av-mesh without
+   `--stall-journal-capacity`, `--hop-journal-capacity` or `--relay-class-arena-warm-mb`, a `needletail-nodecheck
+   touch` without `--hold`, an `aep1-48k-probe send` without `--lateness-journal`, a lab tool without
+   `--watchdog-hours`, `--collect-timeout-s` or `--budget-usd` on `up`, a deploy tool without `collect --run-id`,
+   another lab's state or settings in this checkout). Go on only when it prints none.
+3. `scripts/linode-stall-hunt.py run --budget-usd 300 [--spent-before-usd S]` (S: what the ledger says was spent;
+   default the lab tool's ledger). It prints `run hunt<MMDDHHMM>: records in target/stall-hunt/hunt<MMDDHHMM>`, the
+   lab tool's `up` (each instance created, tagged and firewalled, the watchdog armed with its collect of at most
+   240 s), then each step's commands
+   as it runs them; a failed step prints `<step> failed: <why>` and the run goes on; `collect` and `down` always run
+   (also on Ctrl-C, SIGTERM or a hangup). Exit 0 when every step passed. About 90 minutes.
+4. `scripts/compare/hunt-report.py target/stall-hunt/<run> --json target/stall-hunt/<run>/report.json`. Prints the
+   sections of 7.4; section 7 ends with the rules H1 to H7, one line each, then `first session, <edge>: ...` for
+   every edge. It exits 1 with `no report of ...: the /api/hops pull after S1 ... is inside ...` for a record whose
+   pull fell inside a session (the pull's first touch would be inside a measured window); the driver pulls once,
+   between S1's end and S2's start, so its own runs never are.
+5. Only if the run was cut off before its own end: `scripts/linode-stall-hunt.py collect`, then
+   `scripts/linode-stall-hunt.py down`. If `down` is refused because the run is not marked collected, collect again;
+   `linode-small-mesh-lab.py down --uncollected` records the run as failed. The watchdog deletes the lab at 1.9 h
+   whatever happens.
+6. The cost: `linode-small-mesh-lab.py` writes the lab to the ledger at `down`; add it to
+   `.resilient/ledger.md`. Expected $2.59 to $2.70.
+
+### 7.1 The lab (`deploy/low-latency/topology-hunt.json`, `scripts/linode-stall-hunt.py`)
+
+| group | nodes | plan | $/h |
+| --- | --- | --- | --- |
+| mesh, London | contrib-lon, lon-src, lon-view | g6-dedicated-4 | 0.324 |
+| | lon-dist-a, lon-dist-b; lon-edge-1 and -2, lon-edge-3 and -4 (two pairs of twins) | g6-dedicated-2 | 0.324 |
+| mesh, Tokyo | tok-dist-a, tok-dist-b, tok-edge-1, tok-edge-2 (one pair) | g6-dedicated-2 | 0.216 |
+| | tok-view | g6-dedicated-4 | 0.108 |
+| bare (route survey, 7.6 below) | lon-bare-3, lon-bare-4, tok-bare-1, new-bare-1, syd-bare-1, ams-bare-1 | g6-dedicated-2 | 0.324 |
+| | 20 instances | | **1.296** |
+
+Dedicated plans only. Two billed hours: $2.59; with two replacement instances of an hour ($0.054 each): **$2.70**.
+One repeat at most (H2, "no stop in the run"): $5.40 in all. Every instance is created and deleted by the lab
+tool (`up --run-id hunt<MMDDHHMM> --optional-sites sydney --watchdog-hours 1.9 --collect-timeout-s 240 --budget-usd
+B`, `remove`, `grow`, `down`) with its own state file (`target/linode-qualification/hunt-lab.json`) and ceilings
+(`NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50`, `NEEDLETAIL_LINODE_MAX_NODES=24`); at its deadline the watchdog runs the
+deploy tool's `collect --run-id` for at most 240 s, then deletes (rm/lab2 and rm/arch2; the preflight refuses a lab
+tool or deploy tool without them). The driver never reads the token. Everything it collects is copied into the run archive
+(`~/needletail-data/<run>/`, `run_archive.py add-tree`, then `collected`) before `down`. Compared with the plan
+before the wave 9 run: one more instance in Tokyo (a pair of twins), no bare memory-touch nodes; no node is warmed,
+soaked or kept as the wave 7 control.
+
+### 7.2 Arms and per-node settings
+
+- **Fresh deploy of the fixed build.** `push --remeasure` of the integration build (`rm/fanout` merged), every mesh
+  node with `stall_journal_capacity=65536`. Nothing runs on the mesh before the first session except the referee's
+  idle and burn, the watch, the sampler and the touched arm.
+- **Touched** (half the edges, one of each pair of twins): lon-edge-1, lon-edge-3, tok-edge-1. At minute 15
+  `needletail-nodecheck touch --mb <MemFree - margin> --rate-mb-s 1024 --hold --out touch-guest.ndjson` writes
+  every page of the guest's free memory once and holds it; at minute 19.5 it is sent SIGTERM and the memory goes
+  back to the guest just before the first session (`touch-marks.txt`: `touch <unix> <MB> <MemFree MB> <margin
+  MB>`, `released <unix> finished|unfinished`). The margin is 384 MB, or twice the zones' `high` watermarks
+  (`/proc/zoneinfo`) when that is more, so the kernel neither reclaims nor swaps for the touch. MemFree, not
+  MemAvailable: MemAvailable counts the page cache (av-mesh's own text, libc, the journal), which the touch would
+  evict and the class thread would then fault back in, inside S1; and the instances keep Linode's 512 MB swap
+  disk, which pressure would use. The sampler records swap and refaults, `system.txt` the swap; H4 leaves out a
+  touched edge whose touch made either grow. `--hold` is what makes this the test: without it the memory is given
+  back at minute 15, and a guest whose free pages are reported to the host (virtio-balloon free page reporting,
+  feature bit 5; the bits are recorded) may have them taken back before the session.
+- **Without the arena warm-up** (one region's edges): tok-edge-1, tok-edge-2 run
+  `--relay-class-arena-warm-mb 0` (`node_overrides`, `extra_edge_args`); London's edges keep the fix's 32 MB. The
+  same hour, the same build, no extra instance. The region is the other variable (Tokyo is 106 ms from the
+  contributor), which the rule states. `--relay-class-arena-warm-mb` does not exist yet: see 7.8.
+- **Hop journals** of 2,097,152 events on both London forwarders and the first pair of London twins (lon-dist-a,
+  lon-dist-b, lon-edge-1, lon-edge-2), pulled once after S1 (`/api/hops?since_us=<S1 start>&stream=3001`), never
+  inside a session: a pull allocates 50 to 80 MB on the node.
+
+### 7.3 Timeline, minutes after `up`
+
+| minute | step |
+| --- | --- |
+| 0 | `lab hosts` (`host_uuid` into the state); on every node, first command: `needletail-nodecheck watch`; `push` (the fresh deploy); on every mesh node the sampler (7.4); the route survey; media to the hosts |
+| 15 | the touched edges touch and hold their free memory |
+| 18 | the referee's 20 s burn on every mesh node |
+| 19.5 | the touched edges give their memory back |
+| 20 | **S1, the first session**: Opus Custom 1 ms, the referee's order (contributor restarted, the sender at the next 64 s boundary with `--lateness-journal`, listeners 12 s after it), 70 s. lon-view: 4 UDP probes through lon-dist-a, an LL-HLS probe (HTTP/3, window 40) at each London edge's own media playlist, a `needletail-load` crowd of 40 (8 sampled) over the four London edges; tok-view: 2 UDP probes, a probe at each Tokyo edge, a crowd of 20 (4 sampled) over both. The crowd has no entry point, so its listener i starts at edge i mod n and UDP clients arrive at every edge (through `/api/assignment` new readers go to the edges that already hold the playlist: in wave 9 every lon-view lane sat on lon-edge-1); the report checks it per edge. Then the one `/api/hops` pull |
+| 24 | S2, PCM 1 ms, 70 s (the referee's second session) |
+| 28 | S3, listener churn on every edge: the listeners of S1 join together for 50 s, leave, and join again 12 s later, three rounds (`rounds.txt` holds each round's start; the sender runs 15 s a round longer than the rounds, as each ends only when its probes have) |
+| 35 | the edge not run most in S1 to S3 (the watch's stopped ms that ended in a session plus the sampler's seconds in a session in which the class thread waited runnable 50 ms or more; never the deploy, the burn or the touch, which would choose a touched edge for its arm) is replaced: its records fetched, `remove`, `grow`, `hosts`, watch, `push --nodes`, sampler (its VLAN address is kept, so no peer is re-rendered). None if no edge was not run |
+| 44 | every forwarder and edge restarted at once (`deploy restart --roles distributor,edge`): new processes on guests that have run a session, and on the new guest of the replaced edge |
+| 46 | S4, PCM 1 ms, 70 s (**the repeat, PCM first**) |
+| 50 | S5, Opus Custom 1 ms, 70 s |
+| 54, 63, 72 | S6 Opus Custom 1 ms 420 s, S7 PCM 1 ms 420 s, S8 Opus 2.5 ms 300 s (3.1's steady probes, the 2.5 ms lane of 7.7) |
+| 82 | collect: samplers and watches stopped, every node's records, the sessions, the survey, `lab hosts`; into the run archive |
+| 88 | `down` (the watchdog is at 1.9 h) |
+
+### 7.4 What is recorded
+
+- **The sampler** (`scripts/hunt-sampler.sh`, one process a mesh node, `nodes/<node>/sampler.ndjson`), once a second:
+  the audio class thread (`needletail-fast` with a real-time policy, else the lowest tid of that name: `/proc` cuts
+  `needletail-fast-audio` and `-video` alike, and av-mesh starts the audio one first; av-contrib's `audio-hot-0`)'s
+  `/proc/<pid>/task/<tid>/schedstat` (run time, run delay, timeslices) and `status` (voluntary and involuntary
+  context switches) and its last CPU; every thread's policy, priority and last CPU (`ps -L`); `/proc/vmstat`
+  (`pgfault`, `pgmajfault`, `thp_fault_alloc`, `thp_fault_fallback`, `thp_collapse_alloc`, `compact_stall`,
+  `compact_fail`, `allocstall_*`, `pgscan_direct`, `pgsteal_direct`, `pswpin`, `pswpout`,
+  `workingset_refault_anon`, `workingset_refault_file`); `MemFree`; and `/api/mesh/local` cut to the
+  fast plane's counters by name (`tick_threads`, `tick_pinned`, `fanout_started`, `fanout_policies`, `fanout_cpus`, `fanout_threads`,
+  `fanout_first_dispatch_faults`, `fanout_dispatch_max_us`, `fanout_shed`, `fanout_waited`, `class_plan_grows`,
+  `class_compact_max_us`, `class_send_max_us`, `class_repair_max_us`, `class_arena_warm_bytes`,
+  `audio_loop_busy_max_us`, `audio_loop_busy_over_5ms`, `audio_loop_busy_over_50ms`, `audio_loop_gap_max_us`,
+  `audio_thread_minflt`, `audio_thread_majflt`, `process_minflt`, `process_majflt`, `kernel_dropped`,
+  `tee_dropped`, `deadline_drops`, and the stall journal's `tick_late_max_us`, `stopped_ms`, `starved_ms`). Every
+  tenth second `/api/stalls?since_us=` (`stalls.ndjson`) and, on the contributor, `/api/pacing`, pulled in the
+  background one at a time so that a slow answer never widens a one-second line, and once more when the sampler
+  ends or is sent SIGTERM (collect and the replacement wait for it), so the journal's last seconds are kept.
+  Nothing is polled from the dev box.
+- `needletail-nodecheck watch` on every node from minute 0 (`watch.ndjson`); the touch files; `system.txt` (THP
+  setting, the balloon and its feature bits, clocksource, swap, `chronyc tracking`).
+- Per session and view host: the UDP probes (arrivals, frames, `uc.json` with the caches each used), the LL-HLS probe
+  of each edge (its rows carry the edge's commit stamp of every part), the crowd's output (`intervals.jsonl`: its
+  listeners subscribed and its parts per edge, each second), `rounds.txt`; the sender's lateness journal and
+  `source.start`.
+- `hunt.json` (schema `needletail.stall-hunt.v2`): periods (`session` with its `role`, `touch`, `restart`),
+  sessions (`role`, `rounds`, the edges each host's probes cover, the one `hops_pull`), `arms`, `touch`,
+  `replaced` (with `not_run_ms_before`, `host_uuid_before/after`, `public_ipv4_before`, `watched`, `pushed`,
+  `sampled`), `not_run_ms_at_replace`, `hosts`, `nodes`.
+
+`scripts/compare/hunt-report.py` prints: 1. per node and period the watch's and the journal's stops and F; 2. nodes
+sharing a physical host and their stops together against chance; 3. per session and edge every commit stop of
+100 ms or more (time order) **classified**, the UDP clients that reached each edge, the twins stopped at once, the
+first of two edges per pair; 4. listener
+silences joined to their causes; 5. the null of every probe; 6. the source side; 7. the rules.
+
+### 7.5 Decision rules, fixed before the run
+
+**Each stop of 100 ms or more** (an edge's commit gap `[a, b]`, length L) is classified from that edge's sampler
+lines just before `a` and just after `b`, its `/api/stalls` (the replaced instance's too) and its watch
+(`stall_records.classify`), in this order. "Run delay grew" is the growth between those two lines less the
+thread's own usual rate times their distance (the median rate over the ten seconds before and after): the window is
+the stop plus up to two seconds.
+1. **Not run.** A stopped tick of the class thread's CPU (or of scope `all`) covers L/2 or more: *the hypervisor
+   did not run the vCPU*. On a node whose service could not pin every tick thread (the sampler's `tick_pinned`
+   below `tick_threads`) its journal's ticks count only on the class thread's own CPU, never by `scope: all`. Or the class thread's run delay grew by L/2 or more: it was runnable and waited, and the
+   record names where: *the guest kernel* (direct reclaim or compaction grew in vmstat), *another real-time thread
+   on its CPU* (named from `ps -L`), else *the hypervisor or the guest kernel, not named*.
+2. **Blocked in our code.** Run delay grew by under L/10, and a pass of the class loop was L/2 or more
+   (`audio_loop_busy_max_us` rose to it, `audio_loop_busy_over_50ms` grew, or the journal has a `class_pass` of its
+   own over it). The wait is named by the first that applies: a counter that rose to L/2 (`fanout_dispatch_max_us`:
+   the hand-off; `class_compact_max_us`: the compact path; `class_send_max_us`: a send; `class_repair_max_us`: a
+   window repair); page faults in the long pass itself (the journal's `class_pass` over the stop carries the
+   thread's faults since its last once-a-second reading); the guest's reclaim; else "a lock or wait that no
+   counter names" (fanout-stall.md items 1 to 6). The sampler's `audio_thread_minflt`/`majflt` is that
+   once-a-second reading, up to a second stale: it is shown with the stop and never names the wait. With no
+   voluntary switch it is "a spin or a long computation".
+3. **Waited for input.** Run delay grew by under L/10 and no long pass: the thread slept in `poll()` and nothing
+   came: upstream, or the kernel did not deliver (the London hop journals say which).
+4. **Undetermined.** Run delay between L/10 and L/2, or the process changed inside the stop. **No sampler**: no
+   line on one side.
+
+**The rules** (section 7 of the report, one line each):
+- **H1, the fix.** Per edge: a stop of 100 ms or more in S1, or not. An edge is measured when its LL-HLS probe saw
+  its commits and UDP clients reached it in S1 (a UDP probe's caches, or the crowd's listeners subscribed there
+  while parts came); otherwise *not measured* (a stop on an edge without a client is still a stop, said so). No
+  edge stopping, and every edge measured: *no stop remains: the fan-out fix holds on a fresh deploy*.
+- **H2, what each stop was, and what follows.** Over the whole run:
+  - any *blocked in our code*: a fault of av-mesh, fixed at the named wait (for page faults or the allocator: the
+    pooled tee buffer and the other first-use allocations of fanout-stall.md);
+  - any *not run*: the instances and their `host_uuid` are listed, co-hosted edges marked; the replaced edge
+    against its predecessor decides: new instance clean in S4 to S8: *the instance*, so the boot check
+    (`node_check_seconds`, limits from this record) with D12's replace-once; it stops again on the same host: *a
+    platform matter for the owner*, with the host ids; it stops again on another host: *not one instance but guests
+    under first load* (H10 broadened): the record goes to the owner and two paths at every tier are the answer;
+  - any *waited for input*: upstream or the kernel's delivery, read in the London hop journals;
+  - no stop of 100 ms or more anywhere in the run: one repeat on fresh instances ($2.70), then stop; the instruments
+    stay in.
+- **H3, the arena warm-up.** In the first sessions of a process (S1, S4, S5): stop ms an edge on Tokyo's edges
+  (without it) against London's (with it). *Matters* when without is 100 ms or more, 5 times with or more, and a
+  stop without it is *blocked in our code*. Both under 100 ms: the warm-up is not what removes them.
+- **H4, first touch.** In S1: stop ms an edge on the untouched edges against the touched. *Matters* when untouched is
+  100 ms or more, 5 times touched or more, and an untouched stop is *not run* or blocked on faults in the pass or
+  on reclaim: then `node_warm` (a warm pass of the whole guest at boot) defaults true and is part of readiness. A
+  touched edge is in neither arm when its marks have no `released` line or say `unfinished`, or when `pswpin`,
+  `pswpout` or a `workingset_refault_*` grew from its touch to the end of S1 (the touch then made the faults it is
+  meant to rule out). Per touched edge the line says whether its balloon reports free pages (feature bit 5): there
+  the host may take the given-back pages again before S1, and the arm tests the guest's own first touch, not the
+  host's backing (H10).
+- **H5, twins.** Every pair of stops of two edges of one region that overlap or come within 50 ms, with the time
+  both were stopped, and the parts late on both of a pair. Any: *two paths do not hide every stop* (wave 9: London,
+  446 ms); none: they do, in this run.
+- **H6, PCM first.** After the restart: stops in S4 (PCM) against S5 (Opus). PCM stops: the first session of a
+  process stops whatever its codec (time since start). Only Opus: the Opus stream and its compact path. Neither:
+  a restarted process on a guest that has run a session is clean, so S1's stops (if any) are the guest's or the
+  instance's.
+- **H7, churn.** S3's stops that begin within 5 s after a round's start (`rounds.txt`) against the rest. At least
+  one, and at least as many as elsewhere: *joins trigger stops*.
+- Independent of all rules: 3.1's acceptance per component, from S6 to S8 (and the null of every probe).
+
+The tests hold one synthetic input for each class and each rule (`scripts/compare/test_hunt_report.py`), and the
+wave 9 first session (referee's files, read only) gives back w9-stall-analysis.md's 13 stops, 5,146 ms, with the
+London twins stopped together for 446 ms (and 31 ms just before), new-edge-1 clean, and syd-edge-2 stopped
+(168 and 152 ms) with no UDP client on it.
+
+### 7.6 and 7.7
+
+The route survey (bare nodes, unchanged) and the requests to the referee stand as written under "Before the wave
+9 run", 7.6 and 7.7.
+
+### 7.8 What the lab needs that is not built yet, and the departures
+
+- **av-mesh: `--relay-class-arena-warm-mb N`** (env `NEEDLETAIL_RELAY_CLASS_ARENA_WARM_MB`), default 32, 0 for no
+  warm-up: `ClientSender::new` passes `N << 20` to `warm_thread_arena` instead of `CLASS_ARENA_WARM_BYTES`, and
+  `class_arena_warm_bytes` reports what was warmed (0 with 0). Until av-mesh has it the preflight refuses a real
+  run (the alternative was the wave 9 binary on Tokyo's edges: it has no `/api/stalls`, no readiness for C's roll
+  engine and no wire compatibility with this build, so it was not taken).
+- **needletail-nodecheck `touch --hold`**: after the last page and the `touch_done` line, keep the mapping until
+  SIGTERM or SIGINT, then exit 0 (rm/av-mesh-di's `touch` drops it at once). The preflight refuses without it.
+  Nothing else is needed of `touch`: the hunt computes `--mb` itself (MemFree less the margin).
+- **The watchdog's bounded collect**: rm/lab2 (`up --collect-timeout-s`, the watchdog running the collect command
+  recorded by `up` before it deletes) and rm/arch2 (`linode-small-mesh-deploy.py collect --run-id`) merged into
+  `resilient-mesh`. Without them the watchdog deletes an uncollected lab; the preflight refuses.
+- **The LL-HLS probe at each edge** reads `https://<edge>:19444/live/<stream>/stream.m3u8`, the edge's media
+  playlist (the path av-mesh's reader and the referee's lossless scripts use): through `master.m3u8` the reader
+  takes the first pathway, so a probe addressed to one edge can be served by another. No dry run can show that the
+  edge serves the Opus rendition there; if S1's per-edge probes have no rows, the report says "not measured" for
+  those edges under H1.
+- The dev box no longer polls `/api/stalls` and `/api/mesh/local` every 5 s: the node's own sampler does, at 1 s and
+  10 s, and needs `curl` and `jq` there (the bootstrap installs `jq`; `curl` is installed if the image lacks it).
+- The soak rounds, the warm arm, the wave 7 control and the bare nodes' touch programme are gone, and with them R1 to
+  R6: H1 to H7 replace them. The host comparison of R1 lives in H2 (instances, `host_uuid`, the replacement).
+
+### Before the wave 9 run
+
+The plan of 23 Nov, as it stood before the wave 9 run; superseded by 7.0 to 7.5 and 7.8 above, except 7.6 and 7.7.
+
+#### 7.1 The lab (`NT/deploy/low-latency/topology-hunt.json`, `NT/scripts/linode-stall-hunt.py`)
 
 | group | nodes | plan | $/h |
 | --- | --- | --- | --- |
@@ -640,7 +911,7 @@ the lab's cost is reported at the end. Binaries are the dev box's zigbuild set (
 with S1 and S2); no build host. Bare nodes have role `load` and are never pushed to. Tokyo has the far
 distributors because the worst wave 7 instances were far -b distributors at 3 % CPU.
 
-### 7.2 Per-node settings (`node_overrides`)
+#### 7.2 Per-node settings (`node_overrides`)
 
 All mesh nodes: stall journal 65,536 events. Cold (nothing before the first session): lon-edge-1, lon-edge-4,
 tok-edge-1, lon-dist-b, tok-dist-a, contrib-lon, and the bare nodes lon-bare-1, lon-bare-3, tok-bare-1, new-bare-1,
@@ -651,7 +922,7 @@ longer behaves as 07a9aea did: both default true, AM:2317-2329). Hop journal 2,0
 lon-edge-1, lon-edge-3, lon-dist-a, tok-dist-a, tok-edge-1; default on the others. `mlock` is not an arm: it is
 judged by `locked_bytes`, `vm_lck_kb` and the class threads' fault counts, not by stops.
 
-### 7.3 Timeline, minutes after `up`
+#### 7.3 Timeline, minutes after `up`
 
 - 0 to 6: `LAB hosts` (`host_uuid` into the state). On every node, first command: `needletail-nodecheck watch` (it
   runs to the end; it allocates nothing). `warm` on the warmed arm. Push.
@@ -677,7 +948,7 @@ judged by `locked_bytes`, `vm_lck_kb` and the class threads' fault counts, not b
 - 82: collect; `LAB hosts` again. 88: `down` (inside the second billed hour; the watchdog is at 1.9 h).
 - All through: `linode-route-survey.py` (7.6).
 
-### 7.4 Collected, and the report
+#### 7.4 Collected, and the report
 
 Every 5 s from every mesh node: `/api/stalls?since_us=`, `/api/mesh/local`; from the contributor `/api/stalls` and
 its pacing record. Once after each session: `/api/hops` from the enlarged-ring nodes, the probes, the sender's
@@ -698,7 +969,7 @@ balloon's presence and feature bits (`/sys/bus/virtio/drivers/virtio_balloon`), 
 7. E3's source table per session with the side of each episode; the 2.5 ms split of 7.7;
 8. one line per rule below.
 
-### 7.5 Decision rules, fixed before the run
+#### 7.5 Decision rules, fixed before the run
 
 - **R1, the host (H13).** Half or more of all frozen time on a quarter or fewer of the instances, and the worst
   quarter by soak score are in the worst half by session F: the product measure is the boot check
@@ -723,7 +994,7 @@ balloon's presence and feature bits (`/sys/bus/virtio/drivers/virtio_balloon`), 
   decides nothing about stops (70-fold spread, E2).
 - Independent of all rules: 3.1's acceptance, per component, sent to the lead and the referee.
 
-### 7.6 The route survey and whether flows default on
+#### 7.6 The route survey and whether flows default on
 
 Senders lon-bare-3, lon-bare-4 and ams-bare-1; receivers tok-bare-1, new-bare-1, syd-bare-1, and ams-bare-1 for the
 London to Amsterdam leg (11 links). 64 source ports and the two default ports per link, 5 probe sets a second for
@@ -747,7 +1018,7 @@ time within 0.3 ms of the best port of the moment, steps (a change of 1 ms or mo
   London's best class, 3 ms behind to Sydney, 9 ms to New York (19 Nov; the survey's Amsterdam node rechecks it),
   and a third ingress is against the fixed fan-out.
 
-### 7.7 The 2.5 ms Opus lane, and requests to the referee (their files, their call)
+#### 7.7 The 2.5 ms Opus lane, and requests to the referee (their files, their call)
 
 Nothing is built for the lane. In `waudio7-std` Needletail's unit median is already ahead in all four regions
 (London 3.92 against 3.98, Tokyo 108.14 against 108.28, Sydney 130.87 against 130.92); the scoreboard rows are lost
@@ -775,8 +1046,8 @@ Opus lanes share stream 3001 and cannot run together). A contributor change is c
 - **The cause is not known.** Host, first touch and huge pages are hypotheses with rules; the lab may show stops
   that no guest measure removes. Then nothing but the instruments and the host rule ships, two paths at every tier
   are the answer, and LL-HLS players and one-path listeners keep the exposure, which the record says plainly.
-- **Two hours of 21 instances is a small sample.** Wave 7 had about 1.75 stops per edge-minute in its first
-  minute; a clean lab is itself news, and R6 allows one repeat only.
+- **Two hours of 20 instances is a small sample.** Wave 7 had about 1.75 stops per edge-minute in its first
+  minute; a clean lab is itself news, and H2 allows one repeat only.
 - **The steady state may not meet 3.1**, on Linode or in the lab. Then every change is quoted beside its null and
   the referee's rule cannot separate a failed change from noise at the measured rate; the component table says
   where the work is. The listener host's share is not ours.

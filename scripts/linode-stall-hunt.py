@@ -7,62 +7,73 @@ collect its records, take it down.
     linode-stall-hunt.py collect [--dry]
     linode-stall-hunt.py down [--dry]
 
-Design: docs/plans/resilient-mesh/D-hunt.md, section 7. The lab is
-deploy/low-latency/topology-hunt.json: 21 dedicated-CPU instances, $1.350 an
-hour, two billed hours ($2.70; $2.81 with two replacement instances; one
-repeat at most, $5.62 in all). The question it asks: which instances stop,
-whether they share a physical host, whether a check at boot finds them,
-whether a replacement is clean, and whether first touch of memory or
-transparent huge pages has a part in it. scripts/compare/hunt-report.py
-reads what `collect` leaves in target/stall-hunt/<run id>/ and applies the
-decision rules, which are fixed before the run (7.5).
+Design: docs/plans/resilient-mesh/D-hunt.md, section 7 (as revised after the
+wave 9 run). The lab is deploy/low-latency/topology-hunt.json: 20
+dedicated-CPU instances, $1.296 an hour, two billed hours ($2.59; $2.70 with
+two replacement instances). Its questions, in order: on a fresh deploy of
+the build with the fan-out fix, does any edge still stop for 100 ms or more
+in the referee's first 1 ms Opus session, with UDP clients arriving at every
+edge; for each stop that remains, was the audio class thread runnable and
+not run (the hypervisor or the guest kernel) or blocked in our code (and on
+which wait); and do the arena warm-up, first touch of the guest's memory,
+the codec of the first session and listener churn change it.
+scripts/compare/hunt-report.py reads what `collect` leaves in
+target/stall-hunt/<run id>/ and applies the decision rules, which are fixed
+before the run.
 
 This tool creates and deletes nothing by itself. Every instance is created
 and deleted by scripts/linode-small-mesh-lab.py, called by command line:
-`up` with a watchdog of WATCHDOG_HOURS and the budget given here (the lab
-tool refuses a plan that is not dedicated, tags every instance and arms the
-watchdog before the first create), `remove` and `grow` for the one
-replacement, `down` at the end, whatever happened before. The lab has its
-own state file (target/linode-qualification/hunt-lab.json) and its own
-ceilings (NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50, NEEDLETAIL_LINODE_MAX_NODES=24),
-set for every call. The Linode token is the lab tool's to read; this tool
-never reads, prints or stores it. Services are installed by
-scripts/linode-small-mesh-deploy.py `push`, the survey is
-scripts/linode-route-survey.py; both by command line too.
+`up` with a watchdog of WATCHDOG_HOURS, its bounded collect
+(COLLECT_TIMEOUT_S: the deploy tool's `collect --run-id` before the
+watchdog deletes) and the budget given here (the lab tool refuses a plan
+that is not dedicated, tags every instance and arms the watchdog before the
+first create), `remove` and `grow` for the replacement,
+`down` at the end, whatever happened before. The lab has its own state file
+(target/linode-qualification/hunt-lab.json) and its own ceilings
+(NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50, NEEDLETAIL_LINODE_MAX_NODES=24), set
+for every call. The Linode token is the lab tool's to read; this tool never
+reads, prints or stores it. Services are installed by
+scripts/linode-small-mesh-deploy.py (`push`, `restart --roles`), the survey
+is scripts/linode-route-survey.py; both by command line too.
 
 `plan` prints the cost, the timeline and every command from the topology
 alone: no lab, no token, no request. `run --dry` prints the same commands
 through the code of a real run. A real `run` first checks, without a
-request, that the lab tool has the watchdog and the budget on `up`, that
-the binaries carry the instruments (the stall journal, needletail-nodecheck,
-the sender's lateness journal) and that no other lab's deploy settings are
-in this checkout; it refuses to start otherwise, before anything is billed.
+request, that the lab tool has the watchdog, its collect bound and the
+budget on `up` and the deploy tool a `collect --run-id`, that
+the binaries carry what the hunt needs (the stall journal, the arena
+warm-up's switch, needletail-nodecheck touch --hold, the sender's lateness
+journal) and that no other lab's deploy settings are in this checkout; it
+refuses to start otherwise, before anything is billed.
 
-Timeline, minutes after `up` returns (7.3):
+Timeline, minutes after `up` returns:
    0  `lab hosts`; on every node, first command: needletail-nodecheck watch;
-      warm on the warmed arm; push; the survey starts; media to the hosts
-   7, 12, 17  soak rounds: echo pairs inside a site, 60 s at 2,000 a second
+      push (the fresh deploy); on every mesh node the 1 s sampler
+      (scripts/hunt-sampler.sh); the route survey; media to the hosts
+  15  the touched edges (half of them) touch all their free memory and hold it
   18  the referee's 20 s burn on the mesh nodes
-  20  the bare nodes touch memory (fresh, 25: without huge pages, 30: again)
-  20  S1 Opus Custom 1 ms, 70 s    23  S2 PCM 1 ms    26  S3 Opus 2.5 ms
-  33  warm on every node not yet warmed
-  35  the edge or bare node that was stopped most is replaced (remove,
-      grow, hosts, push --nodes); if the worst of all is a distributor it
-      is replaced at 76 instead and only soaked
-  40  S4 Opus Custom 1 ms, 70 s    45  S5 the same, steady, 600 s
-  57  S6 PCM 1 ms, 600 s           70  S7 Opus 2.5 ms, 300 s
-  82  collect (the deploy tool's collect too: every node's journal since
-      boot, its API and samplers into the run archive); `lab hosts` again
+  19.5 the touched edges give their memory back
+  20  S1 Opus Custom 1 ms, 70 s: the first session, UDP clients arriving at
+      every edge; then the one /api/hops pull (London's four large rings)
+  24  S2 PCM 1 ms, 70 s
+  28  S3 listener churn on every edge: 3 rounds of 50 s, 12 s apart
+  35  the edge that was not run most is replaced (remove, grow, hosts,
+      watch, push --nodes, sampler)
+  44  every forwarder and edge restarted at once (deploy restart --roles)
+  46  S4 PCM 1 ms, 70 s (the repeat, PCM first)   50  S5 Opus Custom 1 ms, 70 s
+  54  S6 Opus Custom 1 ms, 420 s   63  S7 PCM 1 ms, 420 s   72  S8 Opus 2.5 ms, 300 s
+  82  collect (samplers and watches stopped first; the deploy tool's collect
+      too: every node's journal since boot, its API and samplers into the
+      run archive); `lab hosts` again
   88  down (inside the second billed hour; the watchdog is at 1.9 h)
 A session is the referee's: the contributor restarted, the AEP1 sender at
 the next 64 s boundary (with --lateness-journal), listeners from 12 s after
-it; then one /api/hops pull (since the session's start) from the nodes with
-an enlarged ring. A step that fails is recorded and the run goes on;
-`collect` and `down` always run, also after an interrupt, SIGTERM or
-SIGHUP (after a hangup the output goes to after-hangup.log in the run's
-directory). Run it in tmux all the same: the lab tool's watchdog deletes
-the lab at its deadline whatever happens here, but an uncollected run is a
-failed run.
+it. /api/hops is never read inside a session. A step that fails is
+recorded and the run goes on; `collect` and `down` always run, also after
+an interrupt, SIGTERM or SIGHUP (after a hangup the output goes to
+after-hangup.log in the run's directory). Run it in tmux all the same: the
+lab tool's watchdog deletes the lab at its deadline whatever happens here,
+but an uncollected run is a failed run.
 """
 
 from __future__ import annotations
@@ -102,6 +113,8 @@ MAX_HOURLY_USD = 1.50
 MAX_NODES = 24
 WATCHDOG_HOURS = 1.9
 BILLED_HOURS = 2
+# Instances made anew in a run, each billed an hour: the edge replaced at
+# REPLACE_MINUTE, and one grow tried again after a refusal part-way.
 REPLACEMENTS = 2
 # Plan prices, for `plan`'s arithmetic and the offline tests only: the lab
 # tool prices and checks every plan from the API before it creates anything.
@@ -125,7 +138,6 @@ SERVER_NAME = common.TLS_SERVER_NAME
 HTTP_PORT = 19444
 CLIENT_UDP_PORT = 19446
 CONTRIB_INGEST_PORT = 27100
-ECHO_PORT = 27900
 SAMPLE_RATE = 48_000
 MESH_ROLES = ("contributor", "distributor", "edge")
 # The three lanes: the AEP1 sender's payload and epoch, the stream, and the
@@ -136,37 +148,74 @@ CONFIGS = {
     "opus-2.5": {"payload": "opus", "epoch_samples": 120, "stream": 3001,
                  "index": "nt-popus-120s-la"},
 }
+# The sessions, each the referee's (a role says what it is for): the first
+# session on the fresh deploy; the PCM session after it, as the referee
+# runs it; listener churn; the repeat after every forwarder and edge was
+# restarted, PCM first; the steady probes of 3.1 (420 s, the referee's
+# change probes are 360 s or more) and the 2.5 ms lane.
 SESSIONS = (
-    {"name": "S1", "minute": 20, "config": "opus-1", "seconds": 70},
-    {"name": "S2", "minute": 23, "config": "pcm-1", "seconds": 70},
-    {"name": "S3", "minute": 26, "config": "opus-2.5", "seconds": 70},
-    {"name": "S4", "minute": 40, "config": "opus-1", "seconds": 70},
-    {"name": "S5", "minute": 45, "config": "opus-1", "seconds": 600},
-    {"name": "S6", "minute": 57, "config": "pcm-1", "seconds": 600},
-    {"name": "S7", "minute": 70, "config": "opus-2.5", "seconds": 300},
+    {"name": "S1", "minute": 20, "config": "opus-1", "seconds": 70, "role": "first"},
+    {"name": "S2", "minute": 24, "config": "pcm-1", "seconds": 70, "role": "second"},
+    {"name": "S3", "minute": 28, "config": "opus-1", "seconds": 50, "role": "churn"},
+    {"name": "S4", "minute": 46, "config": "pcm-1", "seconds": 70, "role": "repeat-first"},
+    {"name": "S5", "minute": 50, "config": "opus-1", "seconds": 70, "role": "repeat-second"},
+    {"name": "S6", "minute": 54, "config": "opus-1", "seconds": 420, "role": "steady"},
+    {"name": "S7", "minute": 63, "config": "pcm-1", "seconds": 420, "role": "steady"},
+    {"name": "S8", "minute": 72, "config": "opus-2.5", "seconds": 300, "role": "steady"},
 )
-SOAK_MINUTES = (7, 12, 17)
+# Listener churn (the churn session): every listener of every view host
+# joins at once, for a round, then leaves; the next round 12 s later.
+CHURN_ROUNDS = 3
+CHURN_GAP_S = 12
+# A round ends when its last probe has ended: ntcmp udp-ingest after the
+# UDP client, the crowd's drain. The sender is given this much more a round.
+ROUND_OVERHEAD_S = 15
+TOUCH_MINUTE = 15
+BURN_MINUTE = 18
+RELEASE_MINUTE = 19.5
+REPLACE_MINUTE = 35
+RESTART_MINUTE = 44
 COLLECT_MINUTE = 82
 DOWN_MINUTE = 88
-SOAK_SECONDS = 60
-ECHO_PPS = 2000
 BURN_SECONDS = 20
 # Listeners start this long after the sender's START, as the referee's do.
 LISTEN_AFTER_START_S = 12
-TOUCH_MB = 400
-TOUCH_RATE_MB_S = 2
+# The touched edges touch MemFree less a margin, at this rate, and hold it.
+# The margin is this, or twice the zones' high watermarks when that is
+# more, so that the kernel neither reclaims page cache nor swaps for it.
+TOUCH_LEAVE_MB = 384
+TOUCH_RATE_MB_S = 1024
 STALL_JOURNAL_CAPACITY = 65_536
 HOP_JOURNAL_LARGE = 2_097_152
-POLL_S = 5.0
-# What is kept of /api/mesh/local at every poll.
-MESH_LOCAL_KEYS = ("stall", "memory", "node_warm", "relay_flows", "fast_plane", "build")
+# An edge's "not run" milliseconds count the sampler's seconds in which its
+# audio class thread waited runnable this long or longer.
+NOT_RUN_SECOND_MS = 50.0
+# The sampler (one a mesh node) and how it finds the service and its class
+# thread: {role: (process, class thread's name, HTTP port, slow path)}.
+SAMPLER = SCRIPTS / "hunt-sampler.sh"
+SAMPLED = {"contributor": ("av-contrib", "audio-hot-0", 19443, "/api/pacing"),
+           "distributor": ("av-mesh", "needletail-fast", HTTP_PORT, ""),
+           "edge": ("av-mesh", "needletail-fast", HTTP_PORT, "")}
+# av-mesh's switch of the audio class thread's arena warm-up (MB; 0: none):
+# the no_arena_warm arm runs without it.
+ARENA_FLAG = "--relay-class-arena-warm-mb"
+# The watchdog's bounded collect at its deadline (the lab tool's `up
+# --collect-timeout-s`, running the deploy tool's `collect --run-id`).
+COLLECT_TIMEOUT_S = 240
 # What a real run needs of the tools and binaries it calls (preflight).
-LAB_UP_FLAGS = ("--watchdog-hours", "--budget-usd", "--optional-sites", "--run-id")
+LAB_UP_FLAGS = ("--watchdog-hours", "--budget-usd", "--collect-timeout-s", "--optional-sites",
+                "--run-id")
+DEPLOY_COLLECT_FLAGS = ("--run-id",)
 DEPLOY_SETTINGS = ("node_overrides", "stall_journal_capacity", "mlock")
-MESH_FLAGS = ("--stall-journal-capacity", "--mlock")
+MESH_FLAG_NEEDS = {
+    "--stall-journal-capacity": "the build is without the stall instruments (D1)",
+    "--hop-journal-capacity": "the London rings cannot be enlarged",
+    ARENA_FLAG: "the no_arena_warm arm cannot run (av-mesh must take the audio class thread's "
+                "arena warm-up in MB, default 32, 0 for none)"}
+MESH_FLAGS = tuple(MESH_FLAG_NEEDS)
 SENDER_FLAGS = ("--lateness-journal",)
-# The memory programme holds each region until it is ended (7.3: the first
-# 400 MB is held from minute 20 to 30, so that the second is fresh memory).
+# The touched edges hold their memory until it is given back just before
+# the first session.
 TOUCH_FLAGS = ("--hold",)
 
 BURN = (
@@ -181,7 +230,9 @@ SYSTEM_FACTS = (
     "for f in /sys/bus/virtio/drivers/virtio_balloon/virtio*/features; do "
     "[ -f \"$f\" ] && echo balloon-features: $(cat \"$f\"); done; "
     "echo clocksource: $(cat /sys/devices/system/clocksource/clocksource0/current_clocksource); "
-    "echo meminfo: $(grep -E 'MemTotal|MemAvailable|AnonHugePages' /proc/meminfo | tr '\\n' ' '); "
+    "echo meminfo: $(grep -E 'MemTotal|MemAvailable|AnonHugePages|SwapTotal|SwapFree' "
+    "/proc/meminfo | tr '\\n' ' '); "
+    "echo swaps: $(tail -n +2 /proc/swaps | tr '\\n' ' '); "
     "chronyc tracking 2>/dev/null || timedatectl timesync-status 2>/dev/null; true")
 
 
@@ -219,11 +270,31 @@ def cost(topology: dict) -> dict:
             "watchdog_hours": WATCHDOG_HOURS}
 
 
+def rounds_of(session: dict) -> int:
+    return CHURN_ROUNDS if session["role"] == "churn" else 1
+
+
+def listening_seconds(session: dict) -> int:
+    """How long a session's listeners run: one round, or the churn's
+    rounds and the gaps between them."""
+    rounds = rounds_of(session)
+    return rounds * session["seconds"] + (rounds - 1) * CHURN_GAP_S
+
+
+def sender_seconds(session: dict) -> int:
+    """How long the sender runs: from its START, the 12 s before the
+    listeners, their rounds, each round's own end (its probes' processing,
+    the crowd's drain) and a margin; it is stopped when the probes are
+    done."""
+    return (LISTEN_AFTER_START_S + listening_seconds(session)
+            + rounds_of(session) * ROUND_OVERHEAD_S + 10)
+
+
 def session_seconds(session: dict) -> float:
     """The longest a session takes: the contributor's restart, the wait for
-    the 64 s boundary (8 to 72 s), the 12 s before the listeners, their
-    length, and the journal pull."""
-    return 5 + 72 + LISTEN_AFTER_START_S + session["seconds"] + 30
+    the 64 s boundary (8 to 72 s), the sender's run, and the journal
+    pull."""
+    return 5 + 72 + sender_seconds(session) + 30
 
 
 def sessions_end_minute() -> float:
@@ -237,33 +308,29 @@ def sessions_end_minute() -> float:
 
 def timeline(hunt: "Hunt") -> list[dict]:
     """The steps of a run in order: {"minute", "name", "run"}; a step never
-    starts before its minute (counted from the return of `up`)."""
+    starts before its minute (counted from the return of `up`). Nothing
+    but the deploy, the watch and the sampler comes before the first
+    session's listeners except what the referee's lab did (its idle and its
+    burn) and the touched arm's touch."""
     steps = [
         {"minute": 0, "name": "hosts", "run": lambda: hunt.hosts("first")},
         {"minute": 0, "name": "watch", "run": hunt.watch},
-        {"minute": 0, "name": "warm the warmed arm",
-         "run": lambda: hunt.warm(hunt.warmed, "boot")},
         {"minute": 0, "name": "push", "run": hunt.push},
+        {"minute": 0, "name": "sampler", "run": hunt.sample},
         {"minute": 0, "name": "survey", "run": hunt.survey_start},
         {"minute": 0, "name": "media", "run": hunt.media},
+        {"minute": TOUCH_MINUTE, "name": "touch the touched edges", "run": hunt.touch},
+        {"minute": BURN_MINUTE, "name": "burn", "run": hunt.burn},
+        {"minute": RELEASE_MINUTE, "name": "give the touched memory back", "run": hunt.release},
     ]
-    for index, minute in enumerate(SOAK_MINUTES, 1):
-        steps.append({"minute": minute, "name": f"soak-{index}",
-                      "run": lambda index=index: hunt.soak(f"soak-{index}", hunt.soak_pairs)})
-    steps.append({"minute": 18, "name": "burn", "run": hunt.burn})
-    steps.append({"minute": 20, "name": "touch", "run": hunt.touch})
-    for session in SESSIONS[:3]:
-        steps.append({"minute": session["minute"], "name": session["name"],
-                      "run": lambda session=session: hunt.session(session)})
-    steps.append({"minute": 33, "name": "warm the rest",
-                  "run": lambda: hunt.warm(hunt.not_warmed, "late")})
-    steps.append({"minute": 35, "name": "replace the worst edge or bare node",
+    sessions = [{"minute": session["minute"], "name": session["name"],
+                 "run": lambda session=session: hunt.session(session)} for session in SESSIONS]
+    steps += [step for step in sessions if step["minute"] < REPLACE_MINUTE]
+    steps.append({"minute": REPLACE_MINUTE, "name": "replace the edge not run most",
                   "run": hunt.replace_worst})
-    for session in SESSIONS[3:]:
-        steps.append({"minute": session["minute"], "name": session["name"],
-                      "run": lambda session=session: hunt.session(session)})
-    steps.append({"minute": 76, "name": "replace the worst distributor",
-                  "run": hunt.replace_distributor})
+    steps.append({"minute": RESTART_MINUTE, "name": "restart every forwarder and edge",
+                  "run": hunt.restart_mesh})
+    steps += [step for step in sessions if step["minute"] > RESTART_MINUTE]
     steps.append({"minute": COLLECT_MINUTE, "name": "collect", "run": hunt.collect})
     steps.append({"minute": DOWN_MINUTE, "name": "down", "run": hunt.down})
     return steps
@@ -295,15 +362,14 @@ def sender_command(config: str, target: str, seconds: int, directory: str) -> st
             f">{directory}/sender.json 2>{directory}/sender.log </dev/null & echo $START")
 
 
-def udp_probe_command(number: int, entry: str, config: str, seconds: int, tag: str) -> str:
+def udp_probe_command(name: str, entry: str, config: str, seconds: int, tag: str) -> str:
     """One full UDP probe, the referee's: needletail-udp-client with its
     arrivals and parts, then `ntcmp udp-ingest` for the per-unit records."""
     cfg = CONFIGS[config]
-    name = f"uc-{number}"
     return (f"( date +%s.%N >{name}.launch; /usr/local/bin/needletail-udp-client "
             f"--entry https://{entry}:{HTTP_PORT} --stream {cfg['stream']} "
             f"--tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
-            f"--session {tag}-uc-{number} --arrivals {name}.arrivals.csv "
+            f"--session {tag}-{name} --arrivals {name}.arrivals.csv "
             f"--write-parts {name}.parts.bin >{name}.uc.json 2>{name}.uc.err; "
             f"ntcmp udp-ingest --arrivals {name}.arrivals.csv --parts {name}.parts.bin "
             f"--started $(cat {name}.launch) "
@@ -313,77 +379,115 @@ def udp_probe_command(number: int, entry: str, config: str, seconds: int, tag: s
             f"rm -f {name}.parts.bin {name}.launch )")
 
 
-def hls_probe_command(number: int, entry: str, config: str, seconds: int, tag: str) -> str:
-    """One LL-HLS probe, the referee's HTTP/3 reader with 40 requests in
-    flight."""
+def hls_probe_command(name: str, edge: str, config: str, seconds: int, tag: str) -> str:
+    """One LL-HLS probe at one edge, the referee's HTTP/3 reader with 40
+    requests in flight: its rows carry that edge's commit stamp of every
+    part, which is how the report finds the edge's stops. It reads the
+    edge's media playlist itself: the master playlist would steer it to
+    the first pathway, whichever edge that is."""
     cfg = CONFIGS[config]
-    name = f"hls-{number}"
     return (f"ntcmp hls --lane nt-h3 --mode chase --window 40 --http3 "
-            f"--url 'https://{entry}:{HTTP_PORT}/live/{cfg['stream']}/master.m3u8"
-            f"?sid={tag}-hls-{number}' --ca {CA} --server-name {SERVER_NAME} "
+            f"--url 'https://{edge}:{HTTP_PORT}/live/{cfg['stream']}/stream.m3u8"
+            f"?sid={tag}-{name}' --ca {CA} --server-name {SERVER_NAME} "
             f"--audio-index {REMOTE_MEDIA}/index/{cfg['index']}.index.json "
             f"--duration {seconds} --skip-seconds 5 --report {name}.probe.json --label {tag} "
             f"--count 1 --frames {name}.probe.csv >{name}.log 2>&1")
 
 
-def load_command(listeners: int, sample: int, entries: list[str], edges: list[str],
+def load_command(name: str, listeners: int, sample: int, edges: list[str],
                  config: str, seconds: int, tag: str) -> str:
-    """The crowd: needletail-load, each listener assigned as a client is."""
+    """The crowd: needletail-load over every edge of the site with no entry
+    point, so that listener i starts at edge i mod n and UDP clients arrive
+    at every edge at once. Through an entry point each listener would go
+    where /api/assignment sends it, which puts new readers on the edges
+    that already hold the playlist (wave 9: every lon-view lane on
+    lon-edge-1). The report checks the arrival per edge (intervals.jsonl)."""
     return ("( ulimit -n 1048576; needletail-load "
             f"--edges {','.join(f'{edge}:{CLIENT_UDP_PORT}' for edge in edges)} "
-            f"--entry {','.join(f'https://{entry}:{HTTP_PORT}' for entry in entries)} "
-            f"--tls-ca {CA} --server-name {SERVER_NAME} --stream {CONFIGS[config]['stream']} "
+            f"--stream {CONFIGS[config]['stream']} "
             f"--listeners {listeners} --ramp {listeners}@0 --duration {seconds} "
-            f"--sample {min(sample, listeners)} --out load --label {tag} --quiet "
-            ">load.out 2>load.err )")
+            f"--sample {min(sample, listeners)} --out {name} --label {tag} --quiet "
+            f">{name}.out 2>{name}.err )")
 
 
-def listener_script(directory: str, commands: list[str]) -> str:
-    """A host's probes of one session: all at once, in the background; the
-    file `done` appears when the last has ended."""
-    body = " &\n".join(commands)
-    return (f"mkdir -p {directory} && cd {directory} && rm -f done && "
-            f"cat >run.sh <<'RUN'\n{body} &\nwait\ntouch done\nRUN\n"
+def listener_script(directory: str, rounds: list[list[str]], gap_s: int) -> str:
+    """A host's probes of one session, round by round: each round's all at
+    once, in the background, its start written to rounds.txt; the next
+    round `gap_s` after the last of the round before has ended; the file
+    `done` appears when the last round has ended."""
+    body = ""
+    for index, commands in enumerate(rounds, 1):
+        if index > 1:
+            body += f"sleep {gap_s}\n"
+        body += f"echo \"{index} $(date +%s.%N)\" >>rounds.txt\n"
+        body += " &\n".join(commands) + " &\nwait\n"
+    return (f"mkdir -p {directory} && cd {directory} && rm -f done rounds.txt && "
+            f"cat >run.sh <<'RUN'\n{body}touch done\nRUN\n"
             "(setsid nohup sh run.sh >run.log 2>&1 </dev/null &)")
 
 
-def touch_body() -> str:
-    """The memory programme of a bare node (7.3), minutes 20 to 33: 400 MB
-    of fresh memory touched at 2 MB a second, then held; five minutes later
-    a fresh 400 MB without huge pages (fresh because the first is still
-    held); five minutes later the first is freed (its process ends) and
-    400 MB is taken again, which the guest serves from the pages just
-    freed. `touch --hold` keeps its mapping after the last page until it
-    is sent SIGTERM. The marks give the report its periods."""
-    touch = f"{NODECHECK} touch --mb {TOUCH_MB} --rate-mb-s {TOUCH_RATE_MB_S} --hold"
-    return (
-        "mark() { echo \"$1 $(date +%s.%N)\" >>touch-marks.txt; }\n"
-        f"mark fresh; {touch} --thp always --out touch-fresh.ndjson & A=$!\n"
-        "sleep 300\n"
-        f"mark thp-never; {touch} --thp never --out touch-thp-never.ndjson & B=$!\n"
-        "sleep 300\n"
-        "kill $A 2>/dev/null; wait $A 2>/dev/null\n"
-        f"mark again; {touch} --thp always --out touch-again.ndjson & C=$!\n"
-        "sleep 180\n"
-        "mark end; kill $B $C 2>/dev/null; wait\n")
+def touch_command() -> str:
+    """The touched arm: the guest's free memory (MemFree, not MemAvailable:
+    that counts the page cache, which holds av-mesh's own text) less a
+    margin, touched page by page by needletail-nodecheck touch and held
+    (--hold) until release_command, so that it has been written once when
+    the first session begins, and is not given back early. The margin is
+    TOUCH_LEAVE_MB, or twice the zones' high watermarks when that is more:
+    the kernel then has no reason to reclaim or swap for the touch. The
+    mark (`touch <unix> <MB> <MemFree MB> <margin MB>`) and the pid are
+    kept beside it."""
+    return (f"mkdir -p {REMOTE} && cd {REMOTE} && "
+            "set -- $(awk -v least=" + str(TOUCH_LEAVE_MB) + " '"
+            "FNR == NR && /^MemFree:/ { free = int($2 / 1024) } "
+            "FNR != NR && $1 == \"high\" { high += $2 } "
+            "END { leave = int(2 * high * 4 / 1024); if (leave < least) leave = least; "
+            "print free - leave, free, leave }' /proc/meminfo /proc/zoneinfo) && MB=$1 && "
+            "echo \"touch $(date +%s.%N) $1 $2 $3\" >>touch-marks.txt && "
+            f"(setsid nohup {NODECHECK} touch --mb $MB --rate-mb-s {TOUCH_RATE_MB_S} --hold "
+            "--out touch-guest.ndjson >touch.log 2>&1 </dev/null & echo $! >touch.pid)")
 
 
-def touch_script() -> str:
-    """The memory programme, written to the node and started detached."""
-    return (f"mkdir -p {REMOTE} && cd {REMOTE} && cat >touch.sh <<'RUN'\n{touch_body()}RUN\n"
-            "(setsid nohup sh touch.sh >touch.log 2>&1 </dev/null &)")
+def release_command() -> str:
+    """The touched memory given back (SIGTERM to the holding touch, waited
+    for up to 30 s); the mark says whether the touch had finished."""
+    return (f"cd {REMOTE} && P=$(cat touch.pid) && "
+            "if grep -q touch_done touch-guest.ndjson 2>/dev/null; then F=finished; "
+            "else F=unfinished; fi && kill $P 2>/dev/null; n=0; "
+            "while kill -0 $P 2>/dev/null && [ $n -lt 300 ]; do sleep 0.1; n=$((n + 1)); done; "
+            "echo \"released $(date +%s.%N) $F\" >>touch-marks.txt")
+
+
+def sampler_command(role: str, address: str) -> str:
+    """The node's 1 s sampler (scripts/hunt-sampler.sh, sent beside it),
+    started detached; an earlier one of this node is stopped first. It
+    needs curl and jq (the deploy's bootstrap installs jq; curl is in the
+    image, else installed here)."""
+    process, comm, port, slow = SAMPLED[role]
+    return (f"mkdir -p {REMOTE} && cd {REMOTE} && "
+            "{ command -v curl >/dev/null || DEBIAN_FRONTEND=noninteractive "
+            "apt-get install -y -q curl >/dev/null; } && "
+            "{ [ -f sampler.pid ] && kill $(cat sampler.pid) 2>/dev/null; true; } && "
+            f"(setsid nohup sh {REMOTE}/sampler.sh {REMOTE} {process} {comm} "
+            f"https://{address}:{port} {slow or chr(39) * 2} >sampler.log 2>&1 </dev/null & "
+            "echo $! >sampler.pid)")
 
 
 def node_overrides(topology: dict) -> dict:
-    """The per-node deploy settings of 7.2: the wave 7 control, and the
-    enlarged hop journal on half the mesh nodes."""
+    """The per-node deploy settings: the large hop journal on both London
+    forwarders and the first pair of London twins, and the no_arena_warm
+    arm (av-mesh's audio class thread starts without its arena warm-up)."""
     hunt = topology["hunt"]
     roles = {node["name"]: node["role"] for node in topology["nodes"]}
-    overrides: dict[str, dict] = {name: dict(settings)
-                                  for name, settings in hunt.get("control", {}).items()}
-    for name in hunt.get("hop_journal_large", []):
+    overrides: dict[str, dict] = {}
+
+    def add(name: str, args: list[str]) -> None:
         key = "extra_edge_args" if roles[name] == "edge" else "extra_distributor_args"
-        overrides.setdefault(name, {})[key] = ["--hop-journal-capacity", str(HOP_JOURNAL_LARGE)]
+        overrides.setdefault(name, {}).setdefault(key, []).extend(args)
+
+    for name in hunt.get("hop_journal_large", []):
+        add(name, ["--hop-journal-capacity", str(HOP_JOURNAL_LARGE)])
+    for name in hunt.get("no_arena_warm", []):
+        add(name, [ARENA_FLAG, "0"])
     return overrides
 
 
@@ -549,22 +653,16 @@ class Hunt:
         self.spent_before_usd = spent_before_usd
         self.clock, self.sleep = clock, sleep
         self.t0: float | None = None
-        self.stop_polling = threading.Event()
-        self.poller: threading.Thread | None = None
-        # The polls' place in each node's journal, kept across restarts of
-        # the poller, and their failures per node (into hunt.json).
-        self.poll_since: dict[str, int] = {}
-        self.poll_failures: dict[str, dict] = {}
-        self.poll_lock = threading.Lock()
         self.survey_dirs: list[pathlib.Path] = []
         self.interrupted = False
+        hunt = topology["hunt"]
         self.record: dict = {
-            "schema": "needletail.stall-hunt.v1", "run_id": run_id,
+            "schema": "needletail.stall-hunt.v2", "run_id": run_id,
             "topology_file": relative(topology_path),
-            "arms": {"warmed": list(topology["hunt"]["warmed"]),
-                     "control": topology["hunt"].get("control", {}),
-                     "hop_journal_large": list(topology["hunt"].get("hop_journal_large", []))},
-            "periods": [], "sessions": [], "replaced": [], "steps": [], "warm": [], "burn": {},
+            "arms": {"touched": list(hunt.get("touched", [])),
+                     "no_arena_warm": list(hunt.get("no_arena_warm", [])),
+                     "hop_journal_large": list(hunt.get("hop_journal_large", []))},
+            "periods": [], "sessions": [], "replaced": [], "steps": [], "burn": {},
             "hosts": {}, "nodes": {}, "sites_left_out": [], "survey": [],
         }
         self.use_topology_nodes()
@@ -578,6 +676,7 @@ class Hunt:
             node["name"]: {**node, "public_ipv4": f"<public:{node['name']}>",
                            "vlan_ipv4": (node.get("vlan_ipv4") or "").split("/")[0] or None}
             for node in self.topology["nodes"]}
+
 
     def use_lab_nodes(self) -> None:
         """The lab as it is: its state file's nodes (a site left out is not
@@ -598,6 +697,7 @@ class Hunt:
     def names(self, *roles: str) -> list[str]:
         return sorted(name for name, node in self.nodes.items() if node["role"] in roles)
 
+
     def present(self, names) -> list[str]:
         return [name for name in names if name in self.nodes]
 
@@ -606,22 +706,13 @@ class Hunt:
         return self.names(*MESH_ROLES)
 
     @property
-    def warmed(self) -> list[str]:
-        return self.present(self.topology["hunt"]["warmed"])
-
-    @property
-    def not_warmed(self) -> list[str]:
-        warmed = set(self.topology["hunt"]["warmed"])
-        return sorted(name for name in self.nodes if name not in warmed)
-
-    @property
-    def soak_pairs(self) -> list[list[str]]:
-        return [pair for pair in self.topology["hunt"]["soak_pairs"]
-                if all(name in self.nodes for name in pair)]
+    def touched(self) -> list[str]:
+        return self.present(self.topology["hunt"].get("touched", []))
 
     def purpose(self, purpose: str) -> list[str]:
         return sorted(name for name, node in self.nodes.items()
                       if common.load_purpose(node) == purpose)
+
 
     def address(self, name: str, peer: str | None = None) -> str:
         """A node's address for a peer: the VLAN's when both are on the
@@ -635,15 +726,17 @@ class Hunt:
 
     # ---- the record
 
+
+    # ---- the record
+
     def out(self) -> pathlib.Path:
         return self.runner.out
+
 
     def save(self) -> None:
         if self.runner.dry:
             return
         self.out().mkdir(parents=True, exist_ok=True)
-        with self.poll_lock:
-            self.record["poll_failures"] = json.loads(json.dumps(self.poll_failures))
         path = self.out() / "hunt.json"
         temporary = path.with_suffix(".json.next")
         temporary.write_text(json.dumps(self.record, indent=1) + "\n")
@@ -654,16 +747,20 @@ class Hunt:
                                        "to_unix": round(end, 3), **more})
         self.save()
 
+
     def lab(self, *args: str, capture: bool = False) -> tuple[int, str]:
         return self.runner.tool(LAB_TOOL, *args, capture=capture)
 
+
     def deploy(self, *args: str) -> int:
         return self.runner.tool(DEPLOY_TOOL, *args)[0]
+
 
     def archive(self, *args: str) -> int:
         """The run archive (~/needletail-data/<run id>/, scripts/run_archive.py)
         by command line: the run's raw data is kept there, outside target/."""
         return self.runner.tool(ARCHIVE_TOOL, "--tool", "stall-hunt", *args)[0]
+
 
     def archive_create(self) -> None:
         """The run's entry in the archive, before anything is billed."""
@@ -676,10 +773,14 @@ class Hunt:
 
     # ---- the steps
 
+
+    # ---- the steps
+
     def up(self) -> None:
         args = ["up", "--topology", relative(self.topology_path), "--run-id", self.run_id,
                 "--optional-sites", "sydney", "--watchdog-hours", f"{WATCHDOG_HOURS:g}",
-                "--budget-usd", f"{self.budget_usd:g}" if self.budget_usd is not None
+                "--collect-timeout-s", f"{COLLECT_TIMEOUT_S:g}",
+                "--budget-usd",f"{self.budget_usd:g}" if self.budget_usd is not None
                 else "<budget>"]
         if self.spent_before_usd is not None:
             args += ["--spent-before-usd", f"{self.spent_before_usd:g}"]
@@ -692,6 +793,7 @@ class Hunt:
         self.t0 = self.clock()
         self.record["t0_unix"] = round(self.t0, 3)
         self.save()
+
 
     def hosts(self, label: str) -> None:
         """`lab hosts` writes each node's physical host into the lab state.
@@ -707,9 +809,11 @@ class Hunt:
             "host_uuid": {name: node.get("host_uuid") for name, node in self.nodes.items()}}
         self.save()
 
+
     def install_nodecheck(self, names: list[str]) -> None:
         source = mesh_binary("needletail-nodecheck")
         self.runner.each(names, lambda name: self.runner.send_file(name, source, NODECHECK))
+
 
     def wait_ssh(self, names: list[str], patience_s: float = SSH_WAIT_S) -> list[str]:
         """The nodes of `names` that take an ssh command within `patience_s`:
@@ -727,6 +831,7 @@ class Hunt:
             self.sleep(5.0)
         return [name for name in names if name not in pending]
 
+
     def watch(self, names: list[str] | None = None) -> None:
         """On every node, the first command: needletail-nodecheck watch,
         which runs to the end and allocates nothing. A node whose ssh does
@@ -738,30 +843,34 @@ class Hunt:
             self.install_nodecheck(ready)
             self.runner.each(ready, lambda name: self.runner.ssh(name, (
                 f"mkdir -p {REMOTE} && (setsid nohup {NODECHECK} watch --out "
-                f"{REMOTE}/watch.ndjson >{REMOTE}/watch.log 2>&1 </dev/null &)")))
+                f"{REMOTE}/watch.ndjson >{REMOTE}/watch.log 2>&1 </dev/null & "
+                f"echo $! >{REMOTE}/watch.pid)")))
         silent = [name for name in names if name not in ready]
         if silent:
             raise RuntimeError(f"ssh did not answer within {SSH_WAIT_S} s: no watch on "
                                + ", ".join(silent))
 
-    def warm(self, names: list[str], label: str) -> None:
-        started = self.clock()
-        self.runner.each(names, lambda name: self.runner.ssh(name, (
-            f"mkdir -p {REMOTE} && echo \"{label} $(date +%s.%N)\" >>{REMOTE}/warm-marks.txt && "
-            f"{NODECHECK} warm >{REMOTE}/warm-{label}.json 2>{REMOTE}/warm-{label}.log"),
-            timeout=180))
-        self.record["warm"].append({"label": label, "nodes": list(names),
-                                    "from_unix": round(started, 3),
-                                    "to_unix": round(self.clock(), 3)})
-        self.save()
-
     def push(self) -> None:
+        """The fresh deploy of the build under test."""
         args = ["push", "--remeasure"]
         for setting in push_settings(self.topology):
             args += ["--set", setting]
         if self.deploy(*args) != 0:
             raise RuntimeError("deploy push failed")
-        self.start_polling()
+
+    def sample(self, names: list[str] | None = None) -> None:
+        """The 1 s sampler on every mesh node (or on `names`): the class
+        thread's schedstat and switches, every thread's policy and CPU,
+        vmstat, MemFree and the fast plane's counters each second, the
+        stall journal every ten (D-hunt.md 7)."""
+        names = self.mesh if names is None else names
+
+        def start(name: str) -> None:
+            self.runner.send_file(name, SAMPLER, f"{REMOTE}/sampler.sh", mode="644")
+            self.runner.ssh(name, sampler_command(self.nodes[name]["role"],
+                                                  self.nodes[name]["public_ipv4"]))
+
+        self.runner.each(names, start)
 
     def survey_start(self) -> None:
         directory = self.out() / ("survey" if not self.survey_dirs
@@ -774,12 +883,14 @@ class Hunt:
         self.record["survey"].append(relative(directory))
         self.save()
 
+
     def survey_collect(self) -> None:
         if not self.survey_dirs:
             return
         dry = ["--dry"] if self.runner.dry else []
         self.runner.tool(SURVEY_TOOL, "stop", *dry)
         self.runner.tool(SURVEY_TOOL, "collect", "--out", relative(self.survey_dirs[-1]), *dry)
+
 
     def media(self) -> None:
         """What the sessions need on the hosts: the referee's loop on the
@@ -801,36 +912,6 @@ class Hunt:
         self.runner.each(self.purpose("source"), source)
         self.runner.each(self.purpose("view"), view)
 
-    def soak(self, name: str, pairs: list[list[str]]) -> None:
-        """One soak round: in each pair the first node sends numbered
-        datagrams to the second, which echoes them with its kernel receive
-        stamp. No memory is touched."""
-        started = self.clock()
-
-        def serve(pair: list[str]) -> None:
-            sender, server = pair
-            bind = f"{self.address(server, sender)}:{ECHO_PORT}"
-            self.runner.ssh(server, (
-                f"mkdir -p {REMOTE} && (setsid nohup timeout {SOAK_SECONDS + 15} {NODECHECK} "
-                f"echo-serve --bind {bind} >{REMOTE}/echo-serve.log 2>&1 </dev/null &)"))
-
-        def send(pair: list[str]) -> None:
-            sender, server = pair
-            target = f"{self.address(server, sender)}:{ECHO_PORT}"
-            self.runner.ssh(sender, (
-                f"mkdir -p {REMOTE} && (setsid nohup {NODECHECK} echo-send --target {target} "
-                f"--pps {ECHO_PPS} --bytes 150 --seconds {SOAK_SECONDS} "
-                f"--out {REMOTE}/echo-{name}-{server}.ndjson "
-                f">{REMOTE}/echo-{name}.log 2>&1 </dev/null &)"))
-
-        for pair in pairs:
-            serve(pair)
-        if not self.runner.dry:
-            self.sleep(1.0)
-        for pair in pairs:
-            send(pair)
-        self.period(name, "soak", started + 1, started + 1 + SOAK_SECONDS,
-                    pairs=[list(pair) for pair in pairs])
 
     def burn(self) -> None:
         """The referee's steal check: 20 s of one busy loop on every mesh
@@ -841,11 +922,24 @@ class Hunt:
         self.record["burn"] = {name: value for name, value in results.items()}
         self.period("burn", "burn", started, self.clock())
 
+
     def touch(self) -> None:
-        names = self.present(self.topology["hunt"]["touch"])
+        """The touched arm: the guest's free memory written once and held."""
+        names = self.touched
         started = self.clock()
-        self.runner.each(names, lambda name: self.runner.ssh(name, touch_script()))
-        self.period("touch", "touch", started, started + 780, nodes=names)
+        self.runner.each(names, lambda name: self.runner.ssh(name, touch_command()))
+        self.record["touch"] = {"nodes": names, "from_unix": round(started, 3)}
+        self.save()
+
+    def release(self) -> None:
+        """Just before the first session the touched memory is given back."""
+        names = self.touched
+        self.runner.each(names, lambda name: self.runner.ssh(name, release_command(),
+                                                             timeout=120))
+        touch = self.record.setdefault("touch", {"nodes": names})
+        touch["released_unix"] = round(self.clock(), 3)
+        self.period("touch", "touch", touch.get("from_unix", self.clock()),
+                    touch["released_unix"], nodes=names)
 
     def entry(self, host: str, letter: str = "a") -> str | None:
         """The public address of a view host's site forwarder (the referee's
@@ -853,60 +947,81 @@ class Hunt:
         name = f"{host.split('-')[0]}-dist-{letter}"
         return self.nodes[name]["public_ipv4"] if name in self.nodes else None
 
+
+    def site_edges(self, host: str) -> list[str]:
+        """The edges of a view host's site, by name."""
+        site = self.nodes[host]["site"]
+        return [name for name in self.names("edge") if self.nodes[name]["site"] == site]
+
+    def listeners(self, host: str, plan: dict, config: str, seconds: int, tag: str,
+                  prefix: str) -> list[str]:
+        """A view host's listeners of one round: the UDP probes through the
+        site's entry, one LL-HLS probe at every edge of the site, and the
+        crowd over every edge of the site."""
+        site_entry = self.entry(host)
+        edges = self.site_edges(host)
+        commands = [udp_probe_command(f"{prefix}uc-{number}", site_entry, config, seconds, tag)
+                    for number in range(1, plan.get("udp", 0) + 1)]
+        for edge in edges:
+            for number in range(1, plan.get("hls_each_edge", 0) + 1):
+                commands.append(hls_probe_command(f"{prefix}hls-{edge}-{number}",
+                                                  self.nodes[edge]["public_ipv4"], config,
+                                                  seconds, tag))
+        if plan.get("load"):
+            commands.append(load_command(f"{prefix}load", plan["load"], plan.get("sample", 8),
+                                         [self.nodes[edge]["public_ipv4"] for edge in edges],
+                                         config, seconds, tag))
+        return commands
+
     def session(self, session: dict) -> None:
         name, config, seconds = session["name"], session["config"], session["seconds"]
         directory = f"{REMOTE}/{name}"
         tag = f"hunt-{self.run_id}-{name}"
         contributor = self.names("contributor")[0]
         source = self.purpose("source")[0]
-        entry = {"name": name, "config": config, "stream": CONFIGS[config]["stream"],
-                 "seconds": seconds, "hosts": {}}
+        rounds = rounds_of(session)
+        entry = {"name": name, "role": session["role"], "config": config,
+                 "stream": CONFIGS[config]["stream"], "seconds": seconds, "rounds": rounds,
+                 "hosts": {}}
         # As the referee's Audio.start: the contributor restarted, then the
         # sender at the next 64 s boundary.
         self.runner.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
                                      "systemctl is-active needletail-contrib.service")
         printed = self.runner.ssh(source, sender_command(
-            config, self.nodes[contributor]["vlan_ipv4"],
-            seconds + LISTEN_AFTER_START_S + 10, directory))
+            config, self.nodes[contributor]["vlan_ipv4"], sender_seconds(session), directory))
         if not self.runner.dry:
             start = int(printed.split()[-1])
             wait = int(self.runner.ssh(source, f"echo $(( {start} - $(date +%s) ))") or 0)
             entry["start_unix"] = start
             self.sleep(max(0, wait) + LISTEN_AFTER_START_S)
-        listeners = self.topology["hunt"]["listeners"]
+        plans = self.topology["hunt"]["listeners"]
         launched = self.clock()
-        for host in self.present(sorted(listeners)):
-            plan = listeners[host]
-            site_entry = self.entry(host)
-            if site_entry is None:
+        for host in self.present(sorted(plans)):
+            if self.entry(host) is None:
                 continue
             host_tag = f"{tag}-{host}"
-            commands = [udp_probe_command(number, site_entry, config, seconds, host_tag)
-                        for number in range(1, plan.get("udp", 0) + 1)]
-            commands += [hls_probe_command(number, site_entry, config, seconds, host_tag)
-                         for number in range(1, plan.get("hls", 0) + 1)]
-            if plan.get("load"):
-                prefix = host.split("-")[0]
-                edges = [self.nodes[edge]["public_ipv4"] for edge in self.names("edge")
-                         if edge.startswith(prefix + "-")]
-                entries = [found for found in (site_entry, self.entry(host, "b")) if found]
-                commands.append(load_command(plan["load"], plan.get("sample", 8), entries,
-                                             edges, config, seconds, host_tag))
-            self.runner.ssh(host, listener_script(directory, commands))
-            entry["hosts"][host] = dict(plan)
+            script = listener_script(directory, [
+                self.listeners(host, plans[host], config, seconds, host_tag,
+                               f"r{index}-" if rounds > 1 else "")
+                for index in range(1, rounds + 1)], CHURN_GAP_S)
+            self.runner.ssh(host, script)
+            entry["hosts"][host] = {**plans[host], "edges": self.site_edges(host)}
         if not self.runner.dry:
             entry["probes_from_unix"] = round(launched, 3)
-            self.sleep(seconds + 5)
+            self.sleep(listening_seconds(session) + 5)
             self.wait_for_probes(sorted(entry["hosts"]), directory, 90)
-            entry["probes_to_unix"] = round(launched + seconds, 3)
+            entry["probes_to_unix"] = round(launched + listening_seconds(session), 3)
         self.runner.ssh(source, "pkill -x aep1-48k-probe; true", check=False)
-        # Once, after the session has ended, never during one (2.5); only
-        # the session's own events are sent.
-        entry["hops_pull"] = self.pull_hops(name, CONFIGS[config]["stream"],
-                                            entry.get("start_unix"))
+        if session["role"] == "first":
+            # Once in the run, after the first session has ended, never
+            # inside one (a pull allocates 50 to 80 MB on the node); only
+            # the session's own stream since its start.
+            entry["hops_pull"] = self.pull_hops(name, CONFIGS[config]["stream"],
+                                                entry.get("start_unix"))
         self.record["sessions"].append(entry)
         self.period(name, "session", entry.get("probes_from_unix", launched),
-                    entry.get("probes_to_unix", launched + seconds), config=config)
+                    entry.get("probes_to_unix", launched + listening_seconds(session)),
+                    config=config, role=session["role"])
 
     def wait_for_probes(self, hosts: list[str], directory: str, patience_s: float) -> None:
         deadline = self.clock() + patience_s
@@ -922,9 +1037,10 @@ class Hunt:
             self.runner.say(f"probes still running on {', '.join(sorted(pending))}: "
                             "their records are taken as they are at collect")
 
+
     def pull_hops(self, session: str, stream: int, start_unix: int | None) -> dict:
-        """/api/hops of the session's stream since its sender's START (the
-        whole enlarged ring is hundreds of MB from the far sites)."""
+        """/api/hops of the session's stream since its sender's START from
+        the nodes with the large ring (D-hunt.md 2.5: never polled)."""
         names = self.present(self.topology["hunt"].get("hop_journal_large", []))
         started = self.clock()
         since = None if start_unix is None else int(start_unix) * 1_000_000
@@ -953,92 +1069,86 @@ class Hunt:
                 "from_unix": round(started, 3), "to_unix": round(self.clock(), 3),
                 "bytes": sizes, "failed": failed}
 
-    # ---- the replacement
+    # ---- the replacement and the restart
 
-    def stopped_so_far(self) -> dict[str, float]:
-        """Each node's stopped milliseconds so far, from its watch record."""
+    def session_spans(self) -> list[tuple[int, int]]:
+        """The sessions run so far, (from_us, to_us)."""
+        return [(int(item["from_unix"] * 1e6), int(item["to_unix"] * 1e6))
+                for item in self.record["periods"] if item.get("kind") == "session"]
+
+    def not_run_so_far(self) -> dict[str, float]:
+        """Each edge's "not run" milliseconds in the sessions so far (not in
+        the deploy, the burn or the touched arm's touch, which would choose
+        a touched edge for its arm): its watch's stopped ticks that ended
+        in a session, and the sampler's seconds in a session in which the
+        audio class thread waited runnable NOT_RUN_SECOND_MS or more."""
+        spans = self.session_spans()
         out = {}
-        for name in sorted(self.nodes):
+        for name in self.names("edge"):
             try:
-                text = self.runner.ssh(name, f"cat {REMOTE}/watch.ndjson", timeout=120)
+                watch = self.runner.ssh(name, f"cat {REMOTE}/watch.ndjson", timeout=120)
+                rows = self.runner.ssh(name, (
+                    f"jq -c '[.t_us, .pid, .tid, (.schedstat // [])[1]]' {REMOTE}/sampler.ndjson"),
+                    timeout=120)
             except Exception:  # noqa: BLE001 - a node that does not answer has no figure
                 continue
-            events = stall_records.dedupe(stall_records.parse_ndjson(text))
-            out[name] = round(stall_records.stopped_ms(events), 3)
+            events = stall_records.dedupe(stall_records.parse_ndjson(watch))
+            delays = [json.loads(line) for line in rows.splitlines() if line.strip()]
+            cpus = len(stall_records.cpus_of(events)) or 1
+            out[name] = round(sum(stall_records.stopped_ms(events, start, end, cpus)
+                                  for start, end in spans)
+                              + stall_records.run_delay_ms(delays, NOT_RUN_SECOND_MS, spans), 3)
         return out
 
     def worst(self) -> tuple[str | None, dict[str, float]]:
-        """The node that was stopped most among the edges, the bare nodes
-        and the distributors; None when none was stopped at all."""
-        figures = self.stopped_so_far()
-        candidates = {name: value for name, value in figures.items()
-                      if self.nodes[name]["role"] in ("edge", "bare", "distributor")}
-        if not candidates or max(candidates.values()) <= 0:
+        """The edge that was not run most; None when none was."""
+        figures = self.not_run_so_far()
+        if not figures or max(figures.values()) <= 0:
             return None, figures
-        return max(sorted(candidates), key=candidates.get), figures
+        return max(sorted(figures), key=figures.get), figures
 
     def replace_worst(self) -> None:
+        """The "not run" rule's step: the edge not run most is replaced once
+        and is in every session after it (the repeat included)."""
         if self.runner.dry:
-            self.replace("<the edge or bare node stopped most>", push=True)
+            # Which edge it is is known only in the run: the commands are
+            # printed for a stand-in, which is no node of any session.
+            stand_in = "<the edge not run most>"
+            self.nodes[stand_in] = {"name": stand_in, "role": "edge",
+                                    "public_ipv4": f"<public:{stand_in}>"}
+            try:
+                self.replace(stand_in)
+            finally:
+                self.nodes.pop(stand_in)
             return
         name, figures = self.worst()
-        self.record["stopped_ms_at_35"] = figures
-        if name is None:
-            self.runner.say("no edge, bare node or distributor was stopped: nothing is replaced")
-        elif self.nodes[name]["role"] == "distributor":
-            self.record["distributor_to_replace"] = name
-            self.runner.say(f"the worst instance is {name}, a distributor: replaced after the "
-                            "last session, and only soaked")
-        else:
-            self.replace(name, push=True, stopped_ms=figures.get(name))
+        self.record["not_run_ms_at_replace"] = figures
         self.save()
-
-    def replace_distributor(self) -> None:
-        if self.runner.dry:
-            self.replace("<the distributor stopped most, if it is the worst of all>", push=False)
+        if name is None:
+            self.runner.say("no edge was not run: nothing is replaced")
             return
-        name = self.record.get("distributor_to_replace")
-        if not name:
-            return
-        self.replace(name, push=False, stopped_ms=self.record["stopped_ms_at_35"].get(name))
-        partner = next((other for pair in self.soak_pairs for other in pair
-                        if name in pair and other != name), None)
-        if partner:
-            for index in (1, 2):
-                self.soak(f"soak-new-{index}", [[name, partner]])
-                self.sleep(SOAK_SECONDS + 10)
+        self.replace(name, not_run_ms=figures.get(name))
 
-    def replace(self, name: str, push: bool, stopped_ms: float | None = None) -> None:
-        """A new instance in a node's place: remove, grow, hosts, the watch
-        as its first command, and for an edge or a bare node `push --nodes`
-        (an edge is named by its peers by VLAN address only, which the new
-        instance keeps). A distributor is not pushed: its public address is
-        compiled into other nodes' arguments, and nothing may depend on
-        rendering them again. The polls and, for a survey end, the route
-        survey stop for it and start again whatever happened in between."""
-        surveyed = self.runner.dry or name in self.survey_ends()
-        if surveyed:
-            # Its links end with its address: their record is closed and a
-            # new one begins with the new instance.
-            self.survey_collect()
-        self.stop_polling_now()
-        failure = None
+    def replace(self, name: str, not_run_ms: float | None = None) -> None:
+        """A new instance in an edge's place: its records fetched, remove,
+        grow, hosts, the watch as its first command, `push --nodes` (an
+        edge is named by its peers by VLAN address only, which the new
+        instance keeps), and its sampler. The lab's nodes are read again
+        whatever happened."""
         try:
-            self.replace_instance(name, push, stopped_ms)
-        except Exception as error:  # noqa: BLE001 - raised again once the polls run again
-            failure = error
-        problems = self.resume(surveyed)
-        if failure is not None:
-            raise failure
-        if problems:
-            raise RuntimeError("; ".join(problems))
+            self.replace_instance(name, not_run_ms)
+        finally:
+            if not self.runner.dry and STATE.exists():
+                self.use_lab_nodes()
 
-    def replace_instance(self, name: str, push: bool, stopped_ms: float | None) -> None:
+    def replace_instance(self, name: str, not_run_ms: float | None) -> None:
         dry = self.runner.dry
         before = None if dry else self.nodes[name].get("host_uuid")
-        # The instance's own records (its watch above all) go with it:
-        # they are fetched first, beside the new instance's.
+        address = None if dry else self.nodes[name].get("public_ipv4")
+        # The instance's own records (its watch and sampler above all) go
+        # with it: they are fetched first, beside the new instance's.
         try:
+            self.stop_recorders([name])
             self.runner.fetch_directory(name, REMOTE, self.out() / "nodes" / name / "before-replace")
         except Exception as error:  # noqa: BLE001 - a timeout too; the replace goes on
             self.runner.say(f"{name}: its records could not be fetched before the replace: {error}")
@@ -1056,133 +1166,58 @@ class Hunt:
                                "the run goes on without it")
         self.hosts(f"replaced-{name}" if not dry else "replaced")
         entry = {"name": name, "unix": round(self.clock(), 3), "pushed": False,
-                 "watched": False, "stopped_ms_before": stopped_ms,
-                 "host_uuid_before": before,
+                 "watched": False, "sampled": False, "not_run_ms_before": not_run_ms,
+                 "host_uuid_before": before, "public_ipv4_before": address,
                  "host_uuid_after": None if dry else self.nodes[name].get("host_uuid")}
         if not dry:
             self.record["replaced"].append(entry)
             self.save()
-        watch_error = None
+        failures = []
         try:
             self.watch([name])
             entry["watched"] = True
         except Exception as error:  # noqa: BLE001 - the push is tried all the same
-            watch_error = error
-        if push:
-            entry["pushed"] = self.deploy("push", "--nodes", name) == 0
-            if not dry and not entry["pushed"]:
-                self.runner.say(f"push --nodes {name} failed: the new instance runs the watch only")
+            failures.append(str(error))
+        entry["pushed"] = self.deploy("push", "--nodes", name) == 0
+        if entry["pushed"]:
+            try:
+                self.sample([name])
+                entry["sampled"] = True
+            except Exception as error:  # noqa: BLE001 - named in the step's failure
+                failures.append(f"{name}: no sampler: {error}")
+        elif not dry:
+            failures.append(f"push --nodes {name} failed: the new instance runs the watch only")
         if not dry:
             self.save()
-        if watch_error is not None:
-            raise watch_error
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
-    def resume(self, surveyed: bool) -> list[str]:
-        """After a replacement, whatever happened: the lab as it is now, the
-        polls, and the survey on the ends the lab has. Returns what did not
-        start again."""
-        problems = []
-        if not self.runner.dry and STATE.exists():
-            self.use_lab_nodes()
-        self.start_polling()
-        if surveyed:
-            try:
-                self.survey_start()
-            except Exception as error:  # noqa: BLE001 - named in the step's failure
-                problems.append(f"the route survey did not start again: {error}")
-        return problems
-
-    def survey_ends(self) -> set[str]:
-        survey = self.topology["hunt"].get("survey", {})
-        return set(survey.get("senders", [])) | set(survey.get("receivers", []))
-
-    # ---- the polls
-
-    def start_polling(self) -> None:
-        """Every POLL_S from every mesh node: /api/stalls?since_us= and
-        /api/mesh/local; from the contributor its stall journal and its
-        pacing record (7.4). Never /api/hops (2.5). One poller at a time,
-        each with its own stop event."""
-        if self.runner.dry:
-            self.runner.say(f"every {POLL_S:g} s: GET /api/stalls?since_us=T and /api/mesh/local "
-                            f"from {', '.join(self.names('distributor', 'edge'))}; /api/stalls "
-                            f"and /api/pacing from {', '.join(self.names('contributor'))}")
-            return
-        if self.poller and self.poller.is_alive():
-            return
-        stop = threading.Event()
-        self.stop_polling = stop
-        self.poller = threading.Thread(target=self.poll_loop, args=(stop,), daemon=True)
-        self.poller.start()
-
-    def stop_polling_now(self) -> None:
-        """The poller ends after the node it is polling: no second one can
-        start while it runs."""
-        self.stop_polling.set()
-        if self.poller:
-            self.poller.join()
-            self.poller = None
-
-    def poll_loop(self, stop: threading.Event) -> None:
-        while not stop.is_set():
-            started = time.time()
-            for name in self.mesh:
-                if stop.is_set():
-                    break
-                self.poll_once(name)
-            stop.wait(max(0.5, POLL_S - (time.time() - started)))
-
-    def poll_once(self, name: str) -> bool:
-        """One poll of a node; a failure is counted (hunt.json
-        `poll_failures`) and the node is polled again next time."""
-        try:
-            self.poll(name, self.poll_since)
-            return True
-        except Exception as error:  # noqa: BLE001 - a node that does not answer is polled again
-            with self.poll_lock:
-                slot = self.poll_failures.setdefault(name, {"n": 0})
-                slot["n"] += 1
-                slot["last"] = str(error)[-200:]
-                slot["last_unix"] = round(time.time(), 3)
-            return False
-
-    def last_poll(self) -> None:
-        """One more poll of every mesh node once the poller has stopped: the
-        journals' last events, which the 5 s cadence may not have reached."""
-        if self.runner.dry:
-            self.runner.say("once more: GET /api/stalls?since_us=T, /api/mesh/local and "
-                            "/api/pacing from every mesh node")
-            return
-        failed = [name for name in self.mesh if not self.poll_once(name)]
-        if failed:
-            self.runner.say(f"the last poll failed on {', '.join(failed)}")
-
-    def poll(self, name: str, since: dict[str, int]) -> None:
-        node = self.nodes[name]
-        contributor = node["role"] == "contributor"
-        port = stall_records.CONTRIB_HTTP_PORT if contributor else HTTP_PORT
-        target = self.out() / "nodes" / name
-        target.mkdir(parents=True, exist_ok=True)
-        events = stall_records.fetch_stalls(node["public_ipv4"], since.get(name, 0), port, 4.0)
-        if events:
-            with open(target / "stalls.ndjson", "a") as handle:
-                for event in events:
-                    handle.write(json.dumps(event) + "\n")
-            since[name] = max(stall_records.at_us(event) or 0 for event in events) + 1
-        path, file = ("/api/pacing", "pacing.ndjson") if contributor \
-            else ("/api/mesh/local", "mesh-local.ndjson")
-        body = json.loads(stall_records.fetch(node["public_ipv4"], port, path, 4.0))
-        if not contributor and isinstance(body, dict):
-            body = {key: body[key] for key in MESH_LOCAL_KEYS if key in body}
-        with open(target / file, "a") as handle:
-            handle.write(json.dumps({"unix": round(time.time(), 3), "body": body}) + "\n")
+    def restart_mesh(self) -> None:
+        """The repeat's start: every forwarder and edge restarted at once
+        (new processes on guests that have run a session; the replaced
+        edge on a new guest); its first session is PCM."""
+        started = self.clock()
+        status = self.deploy("restart", "--roles", "distributor,edge")
+        self.period("restart", "restart", started, self.clock(), ok=status == 0)
+        if status != 0:
+            raise RuntimeError("deploy restart --roles distributor,edge failed")
 
     # ---- the end
 
+    def stop_recorders(self, names: list[str]) -> None:
+        """The sampler and the watch of `names` stopped (SIGTERM: the watch
+        writes what it holds, the sampler pulls the stall journal a last
+        time), waited for up to 15 s, so that their files are whole when
+        fetched."""
+        self.runner.each(names, lambda name: self.runner.ssh(name, (
+            f"cd {REMOTE} 2>/dev/null && P=$(cat sampler.pid watch.pid 2>/dev/null); "
+            "kill $P 2>/dev/null; n=0; while [ $n -lt 150 ]; do a=; for p in $P; do "
+            "kill -0 $p 2>/dev/null && a=1; done; [ -z \"$a\" ] && break; sleep 0.1; "
+            "n=$((n + 1)); done; true"),
+            check=False, what="stop the sampler and the watch"))
+
     def collect(self) -> None:
         """Everything the report reads, into target/stall-hunt/<run id>/."""
-        self.stop_polling_now()
-        self.last_poll()
         self.survey_collect()
         nodes_dir = self.out() / "nodes"
 
@@ -1202,6 +1237,10 @@ class Hunt:
                     pass  # a session that did not run left no directory
 
         failures = []
+        try:
+            self.stop_recorders(sorted(self.nodes))
+        except RuntimeError as error:
+            failures += str(error).splitlines()
         for names, function in ((sorted(self.nodes), records),
                                 (self.purpose("source") + self.purpose("view"), sessions)):
             try:
@@ -1229,8 +1268,8 @@ class Hunt:
         collected = self.deploy("collect", "--run-id", self.run_id)
         missing = {line.split(":", 1)[0] for line in failures}
         if self.archive("add-tree", self.run_id, relative(self.out()), "--kind", "raw",
-                        "--description", "the stall hunt: hunt.json, every node's stall and "
-                        "watch records, the sessions' probes, the route survey") != 0:
+                        "--description", "the stall hunt: hunt.json, every node's sampler, stall "
+                        "and watch records, the sessions' probes, the route survey") != 0:
             missing.add(f"{relative(self.out())} (add-tree)")
         missing = sorted(missing | set(self.deploy_missing(collected, began_utc)))
         self.archive("collected", self.run_id,
@@ -1260,7 +1299,6 @@ class Hunt:
         """The lab tool's `down`, then this checkout's deploy settings of
         the run are moved into the run's directory (a later lab must not
         render with them)."""
-        self.stop_polling_now()
         status, output = self.lab("down", capture=True)
         if self.runner.dry:
             self.runner.say(f"mv {relative(common.ARTIFACT_DIR)}/{{settings,routes}}.json "
@@ -1416,7 +1454,12 @@ def preflight(topology: dict) -> list[str]:
     for flag in LAB_UP_FLAGS:
         if flag not in up_help:
             problems.append(f"the lab tool's `up` has no {flag}: no lab is created without a "
-                            "watchdog and a budget")
+                            "watchdog that collects before it deletes, and a budget")
+    collect_help = help_text([sys.executable, str(DEPLOY_TOOL), "collect", "--help"])
+    for flag in DEPLOY_COLLECT_FLAGS:
+        if flag not in collect_help:
+            problems.append(f"the deploy tool has no `collect {flag}`: the watchdog could not "
+                            "collect the run before it deletes the lab")
     deploy_source = DEPLOY_TOOL.read_text()
     for setting in DEPLOY_SETTINGS:
         if f'"{setting}"' not in deploy_source:
@@ -1432,12 +1475,13 @@ def preflight(topology: dict) -> list[str]:
             problems.append(f"missing: {path}")
     if mesh_binary("av-mesh").is_file():
         text = help_text([str(mesh_binary("av-mesh")), "--help"])
-        problems += [f"av-mesh has no {flag}: the build is without the stall instruments"
+        problems += [f"av-mesh has no {flag}: {MESH_FLAG_NEEDS[flag]}"
                      for flag in MESH_FLAGS if flag not in text]
     if mesh_binary("needletail-nodecheck").is_file():
         text = help_text([str(mesh_binary("needletail-nodecheck")), "touch", "--help"])
-        problems += [f"needletail-nodecheck touch has no {flag}: the first 400 MB would be "
-                     "freed before the second is taken, and that is not fresh memory (7.3)"
+        problems += [f"needletail-nodecheck touch has no {flag}: the touched edges' memory "
+                     "would be given back as soon as it is written, minutes before the first "
+                     "session, not just before it"
                      for flag in TOUCH_FLAGS if flag not in text]
     if contrib_binary("aep1-48k-probe").is_file():
         text = help_text([str(contrib_binary("aep1-48k-probe")), "send", "--help"])

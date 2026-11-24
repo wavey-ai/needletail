@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Tests of the stall hunt's lab driver (scripts/linode-stall-hunt.py,
-D-hunt.md 7.1 to 7.3), offline: no lab, no token, no request, no ssh. The
-lab's cost is under the hunt's ceilings and every plan is dedicated; the
-timeline is the one of 7.3; a dry run prints every command and runs none;
-a real run refuses before anything is billed when the lab tool has no
-watchdog and budget on `up`; the node replaced at minute 35 is the one
-stopped most; the memory programme holds the first region until it is
-taken again; a replacement that fails part-way leaves the polls and the
-route survey running; the first command on a new instance waits for its
-ssh; the polls count their failures and never run twice.
+D-hunt.md 7, as revised after the wave 9 run), offline: no lab, no token,
+no request, no ssh. The lab's cost is under the hunt's ceilings and every
+plan is dedicated; the timeline puts the first session on the fresh deploy
+first, with nothing before it but the referee's idle and burn and the
+touched arm; a dry run prints every command and runs none; a real run
+refuses before anything is billed when the lab tool has no watchdog and
+budget on `up`, or av-mesh no switch for the arena warm-up; the edge
+replaced is the one not run most; the touched memory is held until it is
+given back; the sampler writes what the report reads; a replacement that
+fails part-way still pushes and samples the new instance; the first command
+on a new instance waits for its ssh.
 python3 -m unittest scripts/test_stall_hunt.py"""
 
 from __future__ import annotations
 
 import contextlib
+import http.server
 import importlib.util
 import io
 import json
@@ -77,13 +80,13 @@ class Cost(unittest.TestCase):
     def test_cost_under_the_ceiling(self):
         topology = hunt_tool.load_topology()
         figures = hunt_tool.cost(topology)
-        self.assertEqual(figures["instances"], 21)
-        self.assertAlmostEqual(figures["hourly_usd"], 1.35)
+        self.assertEqual(figures["instances"], 20)
+        self.assertAlmostEqual(figures["hourly_usd"], 1.296)
         self.assertLessEqual(figures["hourly_usd"], hunt_tool.MAX_HOURLY_USD)
         self.assertLessEqual(figures["instances"], hunt_tool.MAX_NODES)
-        self.assertAlmostEqual(figures["planned_usd"], 2.70)
-        self.assertAlmostEqual(figures["run_usd"], 2.808)
-        self.assertAlmostEqual(figures["with_one_repeat_usd"], 5.616)
+        self.assertAlmostEqual(figures["planned_usd"], 2.592)
+        self.assertAlmostEqual(figures["run_usd"], 2.70)
+        self.assertAlmostEqual(figures["with_one_repeat_usd"], 5.40)
         # The lab tool prices it the same from the API's plans and finds
         # nothing against it: every plan dedicated, every VLAN address once.
         priced = json.loads(json.dumps(topology))
@@ -110,27 +113,35 @@ class Cost(unittest.TestCase):
 
 
 class Timeline(unittest.TestCase):
-    def test_the_timeline_s_order(self):
+    def test_the_first_session_is_the_first_act(self):
         topology = hunt_tool.load_topology()
         hunt = hunt_tool.Hunt(hunt_tool.Runner(True, pathlib.Path(tempfile.mkdtemp())),
                               topology, TOPOLOGY, "hunttest")
         steps = hunt_tool.timeline(hunt)
         names = [step["name"] for step in steps]
         self.assertEqual(names, [
-            "hosts", "watch", "warm the warmed arm", "push", "survey", "media",
-            "soak-1", "soak-2", "soak-3", "burn", "touch", "S1", "S2", "S3",
-            "warm the rest", "replace the worst edge or bare node", "S4", "S5", "S6", "S7",
-            "replace the worst distributor", "collect", "down"])
+            "hosts", "watch", "push", "sampler", "survey", "media", "touch the touched edges",
+            "burn", "give the touched memory back", "S1", "S2", "S3",
+            "replace the edge not run most", "restart every forwarder and edge",
+            "S4", "S5", "S6", "S7", "S8", "collect", "down"])
         minutes = [step["minute"] for step in steps]
         self.assertEqual(minutes, sorted(minutes))
         at = dict(zip(names, minutes))
-        self.assertEqual([at[f"S{index}"] for index in range(1, 8)], [20, 23, 26, 40, 45, 57, 70])
-        self.assertEqual((at["soak-1"], at["soak-2"], at["soak-3"], at["burn"]), (7, 12, 17, 18))
-        self.assertEqual((at["warm the rest"], at["replace the worst edge or bare node"]), (33, 35))
+        self.assertEqual([at[f"S{index}"] for index in range(1, 9)],
+                         [20, 24, 28, 46, 50, 54, 63, 72])
+        self.assertEqual((at["touch the touched edges"], at["burn"],
+                          at["give the touched memory back"]), (15, 18, 19.5))
         self.assertEqual((at["collect"], at["down"]), (82, 88))
-        seconds = {session["name"]: session["seconds"] for session in hunt_tool.SESSIONS}
-        self.assertEqual(seconds, {"S1": 70, "S2": 70, "S3": 70, "S4": 70, "S5": 600,
-                                   "S6": 600, "S7": 300})
+        roles = {session["name"]: (session["config"], session["role"], session["seconds"])
+                 for session in hunt_tool.SESSIONS}
+        self.assertEqual(roles["S1"], ("opus-1", "first", 70))
+        self.assertEqual(roles["S3"], ("opus-1", "churn", 50))
+        # The repeat after the restart: PCM first, then Opus.
+        self.assertEqual(roles["S4"][:2], ("pcm-1", "repeat-first"))
+        self.assertEqual(roles["S5"][:2], ("opus-1", "repeat-second"))
+        self.assertTrue(all(roles[name][2] >= 300 for name in ("S6", "S7", "S8")))
+        self.assertTrue(all(roles[name][2] >= 360 for name in ("S6", "S7")))
+        self.assertEqual(hunt_tool.listening_seconds(hunt_tool.SESSIONS[2]), 3 * 50 + 2 * 12)
         # At worst the sessions end before collect, and down comes well
         # inside the second billed hour and before the watchdog.
         self.assertLess(hunt_tool.sessions_end_minute(), at["collect"])
@@ -140,16 +151,28 @@ class Timeline(unittest.TestCase):
 
     def test_the_arms_and_the_per_node_settings(self):
         topology = hunt_tool.load_topology()
+        hunt = topology["hunt"]
+        edges = sorted(node["name"] for node in topology["nodes"] if node["role"] == "edge")
+        self.assertEqual(edges, ["lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4",
+                                 "tok-edge-1", "tok-edge-2"])
+        # Half the edges touched, one of each pair of twins.
+        self.assertEqual(len(hunt["touched"]), len(edges) // 2)
+        for pair in (("lon-edge-1", "lon-edge-2"), ("lon-edge-3", "lon-edge-4"),
+                     ("tok-edge-1", "tok-edge-2")):
+            self.assertEqual(len(set(pair) & set(hunt["touched"])), 1, pair)
         overrides = hunt_tool.node_overrides(topology)
-        self.assertEqual(overrides["lon-edge-2"], {"malloc_tune": False, "prefault": False,
-                                                   "mlock": "off"})
         large = ["--hop-journal-capacity", str(hunt_tool.HOP_JOURNAL_LARGE)]
-        for name in ("lon-edge-1", "lon-edge-3", "tok-edge-1"):
+        for name in ("lon-edge-1", "lon-edge-2"):
             self.assertEqual(overrides[name]["extra_edge_args"], large)
-        for name in ("lon-dist-a", "tok-dist-a"):
+        for name in ("lon-dist-a", "lon-dist-b"):
             self.assertEqual(overrides[name]["extra_distributor_args"], large)
-        self.assertEqual(sorted(topology["hunt"]["warmed"]),
-                         ["lon-bare-2", "lon-bare-4", "lon-dist-a", "lon-edge-3", "tok-dist-b"])
+        # One region's edges without the arena warm-up, the other's with it.
+        for name in ("tok-edge-1", "tok-edge-2"):
+            self.assertEqual(overrides[name]["extra_edge_args"], [hunt_tool.ARENA_FLAG, "0"])
+        self.assertFalse(any(hunt_tool.ARENA_FLAG in json.dumps(overrides.get(name, {}))
+                             for name in edges if name.startswith("lon-")))
+        self.assertEqual(sorted(overrides), ["lon-dist-a", "lon-dist-b", "lon-edge-1",
+                                             "lon-edge-2", "tok-edge-1", "tok-edge-2"])
         settings = hunt_tool.push_settings(topology)
         self.assertIn("stall_journal_capacity=65536", settings)
 
@@ -166,41 +189,58 @@ class DryRun(unittest.TestCase):
     def test_a_dry_run_prints_every_command(self):
         up = self.commands("linode-small-mesh-lab.py up ")
         self.assertEqual(len(up), 1)
-        for flag in ("--watchdog-hours 1.9", "--optional-sites sydney", "--budget-usd 300",
+        for flag in ("--watchdog-hours 1.9", "--collect-timeout-s 240",
+                     "--optional-sites sydney", "--budget-usd 300",
                      "--run-id hunttest", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50",
                      "NEEDLETAIL_LINODE_MAX_NODES=24"):
             self.assertIn(flag, up[0])
-        # The lab is created, changed and deleted by the lab tool alone.
-        # first, after each of the two replacements, last
-        self.assertEqual(len(self.commands("linode-small-mesh-lab.py hosts")), 4)
-        self.assertEqual(len(self.commands("linode-small-mesh-lab.py remove ")), 2)
-        self.assertEqual(len(self.commands("linode-small-mesh-lab.py grow ")), 2)
+        # The lab is created, changed and deleted by the lab tool alone:
+        # hosts first, after the replacement, last.
+        self.assertEqual(len(self.commands("linode-small-mesh-lab.py hosts")), 3)
+        self.assertEqual(len(self.commands("linode-small-mesh-lab.py remove ")), 1)
+        self.assertEqual(len(self.commands("linode-small-mesh-lab.py grow ")), 1)
         self.assertEqual(len(self.commands("linode-small-mesh-lab.py down")), 1)
-        names = [node["name"] for node in hunt_tool.load_topology()["nodes"]]
+        topology = hunt_tool.load_topology()
+        names = [node["name"] for node in topology["nodes"]]
+        mesh = [node["name"] for node in topology["nodes"]
+                if node["role"] in hunt_tool.MESH_ROLES]
         watch = self.commands("needletail-nodecheck watch --out")
         for name in names:
             self.assertTrue(any(line.startswith(f"ssh {name} ") for line in watch), name)
-        warm = self.commands("needletail-nodecheck warm")
-        self.assertEqual(len(warm), len(names))
         push = self.commands("linode-small-mesh-deploy.py push --remeasure")
         self.assertEqual(len(push), 1)
         self.assertIn("node_overrides=", push[0])
+        self.assertIn(hunt_tool.ARENA_FLAG, push[0])
         self.assertEqual(len(self.commands("linode-small-mesh-deploy.py push --nodes")), 1)
-        # at minute 0, and again after each replacement (dry: both are shown
-        # as survey ends)
-        self.assertEqual(len(self.commands("linode-route-survey.py start")), 3)
-        self.assertEqual(len(self.commands("echo-send")), 3 * 6)
-        self.assertEqual(len(self.commands("touch.sh <<")), 3)
-        self.assertEqual(len(self.commands("systemctl restart needletail-contrib")), 7)
+        self.assertEqual(len(self.commands("linode-small-mesh-deploy.py restart --roles "
+                                           "distributor,edge")), 1)
+        # The sampler on every mesh node, and on the replaced edge.
+        started = self.commands("sampler.sh /var/lib/needletail-runs/hunt ")
+        self.assertEqual(len(started), len(mesh) + 1)
+        for name in mesh:
+            self.assertTrue(any(line.startswith(f"ssh {name} ") for line in started), name)
+        self.assertTrue(any("av-contrib audio-hot-0" in line and "/api/pacing" in line
+                            for line in started))
+        self.assertTrue(any("av-mesh needletail-fast https://<public:lon-edge-1>:19444" in line
+                            for line in started))
+        self.assertEqual(len(self.commands("linode-route-survey.py start")), 1)
+        touched = topology["hunt"]["touched"]
+        touch = self.commands("needletail-nodecheck touch --mb $MB")
+        self.assertEqual(sorted(line.split()[1] for line in touch), sorted(touched))
+        self.assertTrue(all("--hold" in line for line in touch))
+        release = self.commands('echo "released')
+        self.assertEqual(sorted(line.split()[1] for line in release), sorted(touched))
+        self.assertEqual(len(self.commands("systemctl restart needletail-contrib")), 8)
         senders = self.commands("aep1-48k-probe send")
-        self.assertEqual(len(senders), 7)
+        self.assertEqual(len(senders), 8)
         self.assertTrue(all("--lateness-journal" in line for line in senders))
-        self.assertEqual(len([line for line in senders if "--epoch-samples 120" in line]), 2)
-        self.assertEqual(len(self.commands("cat >run.sh")), 7 * 2)
+        self.assertEqual(len([line for line in senders if "--epoch-samples 120" in line]), 1)
+        self.assertEqual(len(self.commands("cat >run.sh")), 8 * 2)
+        # Once, after the first session: London's four large rings.
         hops = self.commands("/api/hops")
-        self.assertEqual(len(hops), 7 * 5)
-        # Only the session's own stream since its start, never the ring.
-        self.assertTrue(all("/api/hops?since_us=<session start>&stream=" in line
+        self.assertEqual(sorted(line.split("https://<public:")[1].split(">")[0] for line in hops),
+                         sorted(topology["hunt"]["hop_journal_large"]))
+        self.assertTrue(all("/api/hops?since_us=<session start>&stream=3001" in line
                             for line in hops))
         for word in ("create hunttest", "add-tree hunttest", "collected hunttest",
                      "finish hunttest"):
@@ -209,12 +249,17 @@ class DryRun(unittest.TestCase):
         self.assertTrue(any("tar -C /var/lib/needletail-runs/hunt" in line
                             for line in self.lines))
         # The first command on the new instances waits for their ssh: at
-        # minute 0 and after each replacement.
-        self.assertEqual(len(self.commands("# until ssh answers on")), 3)
-        # One last poll after the poller stops, before collect's fetches.
-        self.assertEqual(len(self.commands("once more: GET /api/stalls")), 1)
+        # minute 0 and after the replacement.
+        self.assertEqual(len(self.commands("# until ssh answers on")), 2)
+        # The samplers and watches stop before their files are fetched:
+        # the replaced edge's, then every node's at collect.
+        self.assertEqual(len(self.commands("'stop the sampler and the watch'")), 1 + len(names))
+        # Nothing is polled from here: the nodes sample themselves.
+        self.assertFalse(self.commands("GET /api/stalls"))
+        self.assertFalse(self.commands("echo-send"))
+        self.assertFalse(self.commands("needletail-nodecheck warm"))
 
-    def test_the_sessions_are_the_referee_s(self):
+    def test_the_sessions_are_the_referee_s_with_clients_at_every_edge(self):
         text = self.printed
         self.assertIn("--stream 3001", text)
         self.assertIn("--stream 4001", text)
@@ -222,8 +267,29 @@ class DryRun(unittest.TestCase):
         self.assertIn("nt-popus-48s-la.index.json", text)
         self.assertIn("nt-pcm-48s.index.json", text)
         self.assertIn("nt-popus-120s-la.index.json", text)
-        self.assertIn("needletail-load --edges", text)
         self.assertIn("--listeners 40", text)
+        self.assertIn("--listeners 20", text)
+        first = text[text.index("# minute 20: S1"):text.index("# minute 24: S2")]
+        for edge in ("lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4", "tok-edge-1",
+                     "tok-edge-2"):
+            # An LL-HLS probe at the edge itself, and the crowd over it.
+            self.assertIn(f"https://<public:{edge}>:19444/live/3001/stream.m3u8", first)
+            self.assertIn(f"<public:{edge}>:19446", first)
+        crowds = [line for line in first.splitlines() if "needletail-load --edges" in line]
+        self.assertEqual(len(crowds), 2)
+        self.assertIn("<public:lon-edge-1>:19446,<public:lon-edge-2>:19446,"
+                      "<public:lon-edge-3>:19446,<public:lon-edge-4>:19446", crowds[0])
+        # No entry point for the crowd: listener i starts at edge i mod n,
+        # so that every edge gets UDP clients (an assignment would put them
+        # on the edges that hold the playlist already).
+        for crowd in crowds:
+            self.assertNotIn("--entry", crowd)
+        churn = text[text.index("# minute 28: S3"):text.index("# minute 35")]
+        for index in (1, 2, 3):
+            self.assertIn(f"r{index}-uc-1", churn)
+            self.assertIn(f"r{index}-hls-lon-edge-1-1", churn)
+            self.assertIn(f'echo "{index} $(date +%s.%N)" >>rounds.txt', churn)
+        self.assertEqual(churn.count(f"sleep {hunt_tool.CHURN_GAP_S}"), 2 * 2)
 
     def test_nothing_is_written_and_no_token_is_named(self):
         self.assertFalse(self.out.exists())
@@ -308,18 +374,54 @@ class Preflight(unittest.TestCase):
         self.assertIn("--watchdog-hours", text)
         self.assertIn("--budget-usd", text)
 
-    def test_a_real_run_refuses_a_touch_that_does_not_hold(self):
+    def test_a_real_run_refuses_a_watchdog_that_does_not_collect(self):
+        """The lab tool's `up` must bound the watchdog's collect, and the
+        deploy tool must have the `collect --run-id` it runs."""
         topology = hunt_tool.load_topology()
+
+        def helps(up: str, collect: str):
+            def text(command):
+                return up if "up" in command else collect if "collect" in command else ""
+            return text
+
+        without = "up --watchdog-hours --budget-usd --optional-sites --run-id"
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(hunt_tool, "STATE", pathlib.Path(directory) / "hunt-lab.json"):
+            with mock.patch.object(hunt_tool, "help_text", helps(without, "usage: deploy")):
+                refused = hunt_tool.preflight(topology)
+            with mock.patch.object(hunt_tool, "help_text",
+                                   helps(without + " --collect-timeout-s", "collect --run-id")):
+                passed = hunt_tool.preflight(topology)
+        self.assertTrue(any("no --collect-timeout-s" in line for line in refused), refused)
+        self.assertTrue(any("no `collect --run-id`" in line for line in refused), refused)
+        self.assertFalse([line for line in passed if "collect" in line], passed)
+
+    def help_of(self, directory: str, text: str) -> list[str]:
+        binary = pathlib.Path(directory)
+        for name in ("needletail-nodecheck", "av-mesh"):
+            (binary / name).write_text("")
+        with mock.patch.object(hunt_tool, "STATE", binary / "hunt-lab.json"), \
+                mock.patch.object(hunt_tool, "mesh_binary", lambda name: binary / name), \
+                mock.patch.object(hunt_tool, "help_text", lambda _command: text):
+            return hunt_tool.preflight(hunt_tool.load_topology())
+
+    def test_a_real_run_refuses_a_touch_that_does_not_hold(self):
         with tempfile.TemporaryDirectory() as directory:
-            binary = pathlib.Path(directory) / "needletail-nodecheck"
-            binary.write_text("")
-            with mock.patch.object(hunt_tool, "STATE", pathlib.Path(directory) / "hunt-lab.json"), \
-                    mock.patch.object(hunt_tool, "mesh_binary",
-                                      lambda name: pathlib.Path(directory) / name), \
-                    mock.patch.object(hunt_tool, "help_text",
-                                      lambda _command: "usage: touch --mb --rate-mb-s --thp --out"):
-                problems = hunt_tool.preflight(topology)
+            problems = self.help_of(directory, "usage: touch --mb --rate-mb-s --thp --out")
         self.assertTrue(any("touch has no --hold" in line for line in problems), problems)
+
+    def test_a_real_run_refuses_an_av_mesh_without_the_arena_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            problems = self.help_of(directory, "--stall-journal-capacity --hop-journal-capacity "
+                                               "--hold")
+        named = [line for line in problems if hunt_tool.ARENA_FLAG in line]
+        self.assertEqual(len(named), 1, problems)
+        self.assertIn("no_arena_warm", named[0])
+        with tempfile.TemporaryDirectory() as directory:
+            problems = self.help_of(directory, "--stall-journal-capacity --hop-journal-capacity "
+                                               f"--hold {hunt_tool.ARENA_FLAG}")
+        self.assertFalse([line for line in problems if "av-mesh has no" in line
+                          or "touch has no" in line], problems)
 
     def test_the_default_run_id_is_new_each_run_of_a_day(self):
         self.assertRegex(hunt_tool.default_run_id(), r"^hunt\d{8}$")
@@ -335,46 +437,94 @@ class Preflight(unittest.TestCase):
         self.assertIn("nothing was created", str(stopped.exception))
 
 
+def sampler_rows(delays_ms: list[float]) -> str:
+    """jq's cut of a sampler file: [t_us, pid, tid, run delay ns] a second."""
+    total, rows = 0.0, []
+    for index, delay in enumerate(delays_ms):
+        total += delay
+        rows.append(json.dumps([1_000_000 * (index + 1), 7, 9, int(total * 1e6)]))
+    return "\n".join(rows)
+
+
+def watch_text(stops_ms: list[float], at_us: int = 2_000_000) -> str:
+    """A watch file of a 2-CPU node with stopped ticks of CPU 0 at `at_us`."""
+    lines = [{"kind": "sec", "cpu": cpu, "t_us": 1_000_000, "span_us": 1_000_000}
+             for cpu in (0, 1)]
+    lines += [{"kind": "tick", "thread": "tick-0", "cpu": 0, "t_us": at_us + i,
+               "dur_us": int(ms * 1000), "span_us": int(ms * 1000), "n": 1,
+               "run_delay_us": 10} for i, ms in enumerate(stops_ms)]
+    return "\n".join(json.dumps(line) for line in lines)
+
+
 class Replacement(unittest.TestCase):
-    def test_the_node_stopped_most_is_chosen(self):
+    def hunt(self):
         topology = hunt_tool.load_topology()
         hunt = hunt_tool.Hunt(hunt_tool.Runner(False, pathlib.Path(tempfile.mkdtemp())),
                               topology, TOPOLOGY, "hunttest")
+        # The sessions so far: the first 10 s of the test's clock; the
+        # touched arm's touch long before them.
+        hunt.record["periods"] = [
+            {"name": "touch", "kind": "touch", "from_unix": -100.0, "to_unix": -90.0},
+            {"name": "S1", "kind": "session", "from_unix": 0.0, "to_unix": 10.0}]
+        return hunt
 
-        def watch(stops_ms: list[float]) -> str:
-            lines = [{"kind": "sec", "cpu": cpu, "t_us": 1_000_000, "span_us": 1_000_000}
-                     for cpu in (0, 1)]
-            lines += [{"kind": "tick", "thread": "tick-0", "cpu": 0, "t_us": 2_000_000 + i,
-                       "dur_us": int(ms * 1000), "span_us": int(ms * 1000), "n": 1,
-                       "run_delay_us": 10} for i, ms in enumerate(stops_ms)]
-            return "\n".join(json.dumps(line) for line in lines)
+    def test_the_edge_not_run_most_is_chosen(self):
+        hunt = self.hunt()
+        watch = watch_text
 
-        records = {name: watch([]) for name in hunt.nodes}
-        records["lon-edge-1"] = watch([30.0])
-        records["lon-bare-3"] = watch([50.0, 40.0])
-        records["contrib-lon"] = watch([900.0])     # not a candidate
-        with mock.patch.object(hunt.runner, "ssh",
-                               lambda name, _command, **_kwargs: records[name]):
+        records = {name: (watch([]), sampler_rows([1.0] * 5)) for name in hunt.nodes}
+        records["lon-edge-1"] = (watch([60.0]), sampler_rows([1.0] * 5))
+        # Waited runnable 300 ms in one second (30 ms seconds do not count).
+        records["tok-edge-2"] = (watch([]), sampler_rows([1.0, 300.0, 30.0, 30.0]))
+        records["lon-dist-a"] = (watch([900.0]), sampler_rows([1.0]))  # not an edge
+
+        def ssh(name, command, **_kwargs):
+            return records[name][0] if "watch.ndjson" in command else records[name][1]
+
+        with mock.patch.object(hunt.runner, "ssh", ssh):
             worst, figures = hunt.worst()
-        self.assertEqual(worst, "lon-bare-3")
-        self.assertAlmostEqual(figures["lon-bare-3"], 45.0)
-        quiet = {name: watch([]) for name in hunt.nodes}
+        self.assertEqual(worst, "tok-edge-2")
+        self.assertAlmostEqual(figures["tok-edge-2"], 300.0)
+        self.assertAlmostEqual(figures["lon-edge-1"], 30.0)
+        self.assertNotIn("lon-dist-a", figures)
+        quiet = {name: (watch([]), sampler_rows([1.0] * 3)) for name in hunt.nodes}
         with mock.patch.object(hunt.runner, "ssh",
-                               lambda name, _command, **_kwargs: quiet[name]):
+                               lambda name, command, **_k: quiet[name][0]
+                               if "watch.ndjson" in command else quiet[name][1]):
             self.assertIsNone(hunt.worst()[0])
 
+    def test_a_stop_outside_the_sessions_does_not_choose_the_edge(self):
+        """A touched edge stopped 400 ms during its touch (minutes before
+        the first session) and not in the sessions is not chosen over an
+        edge that waited runnable 250 ms in a session."""
+        hunt = self.hunt()
+        records = {name: (watch_text([]), sampler_rows([1.0] * 5)) for name in hunt.nodes}
+        records["lon-edge-3"] = (watch_text([400.0, 400.0], at_us=-95_000_000),
+                                 sampler_rows([1.0] * 5))
+        records["lon-edge-2"] = (watch_text([]), sampler_rows([1.0, 250.0, 1.0]))
+
+        def ssh(name, command, **_kwargs):
+            return records[name][0] if "watch.ndjson" in command else records[name][1]
+
+        with mock.patch.object(hunt.runner, "ssh", ssh):
+            worst, figures = hunt.worst()
+        self.assertEqual(worst, "lon-edge-2")
+        self.assertEqual(figures["lon-edge-3"], 0.0)
 
 
-# A stand-in for needletail-nodecheck touch: it writes when it started and
-# ended to lifetimes.txt; with --hold it ends only on SIGTERM.
+# A stand-in for needletail-nodecheck touch: it writes its arguments, when
+# it started and ended to lifetimes.txt, and touch_done to its --out; with
+# --hold it ends only on SIGTERM.
 FAKE_TOUCH = """
 import signal, sys, time
 args = sys.argv[1:]
 out = args[args.index("--out") + 1]
 def line(word):
     with open("lifetimes.txt", "a") as handle:
-        handle.write(f"{word} {out} {time.time():.6f}\\n")
+        handle.write(f"{word} {time.time():.6f} {' '.join(args)}\\n")
 line("start")
+with open(out, "w") as handle:
+    handle.write('{"kind":"touch_done"}\\n')
 def ended(*_):
     line("end")
     sys.exit(0)
@@ -386,39 +536,205 @@ line("end")
 """
 
 
-class TouchProgramme(unittest.TestCase):
-    def test_the_first_region_is_held_until_it_is_taken_again(self):
-        """7.3: A is touched at 20 and held, B (25) is fresh memory because A
-        still holds its own, A is freed at 30 just before C takes it again;
-        B and C are held to the end. The script runs with its sleeps cut to
-        a fifth of a second and a fake nodecheck that records lifetimes."""
+class TouchedArm(unittest.TestCase):
+    def test_the_guest_s_free_memory_is_held_until_it_is_given_back(self):
+        """The touch takes MemFree (not MemAvailable, which counts the page
+        cache) less a margin of at least the reserve and above the zones'
+        watermarks, and holds it; the release ends it and marks that it had
+        finished. Run under sh with a fake nodecheck, in a directory of its
+        own."""
         with tempfile.TemporaryDirectory() as directory:
             folder = pathlib.Path(directory)
             fake = folder / "nodecheck"
             fake.write_text(f"#!{sys.executable}\n{FAKE_TOUCH}")
             fake.chmod(0o755)
-            body = hunt_tool.touch_body().replace(hunt_tool.NODECHECK, str(fake))
-            (folder / "touch.sh").write_text("sleep() { command sleep 0.2; }\n" + body)
-            subprocess.run(["sh", "touch.sh"], cwd=directory, check=True, timeout=60)
-            marks = {word: float(at) for word, at in
-                     (line.split() for line in (folder / "touch-marks.txt").read_text().splitlines())}
-            life: dict[str, dict[str, float]] = {}
-            for line in (folder / "lifetimes.txt").read_text().splitlines():
-                word, out, at = line.split()
-                life.setdefault(out, {})[word] = float(at)
-        self.assertEqual(list(marks), ["fresh", "thp-never", "again", "end"])
-        a, b, c = (life[f"touch-{name}.ndjson"] for name in ("fresh", "thp-never", "again"))
-        # A outlives B's start (B's region is fresh) and ends before C starts.
-        self.assertGreater(a["end"], b["start"])
-        self.assertGreater(a["end"], marks["thp-never"])
-        self.assertLessEqual(a["end"], marks["again"])
-        self.assertLessEqual(a["end"], c["start"])
-        # B and C are held to the end.
-        self.assertGreaterEqual(b["end"], marks["end"])
-        self.assertGreaterEqual(c["end"], marks["end"])
-        body = hunt_tool.touch_body()
-        self.assertEqual(body.count(f"{hunt_tool.NODECHECK} touch"), 3)
-        self.assertEqual(body.count("--hold"), 3)
+
+            def local(command: str) -> str:
+                return command.replace(hunt_tool.REMOTE, str(folder)).replace(
+                    hunt_tool.NODECHECK, str(fake))
+
+            free = int(next(line.split()[1] for line in
+                            pathlib.Path("/proc/meminfo").read_text().splitlines()
+                            if line.startswith("MemFree:"))) // 1024
+            high_pages = sum(int(line.split()[1]) for line in
+                             pathlib.Path("/proc/zoneinfo").read_text().splitlines()
+                             if line.split()[:1] == ["high"])
+            subprocess.run(["sh", "-c", local(hunt_tool.touch_command())], check=True, timeout=30)
+            for _ in range(100):
+                if (folder / "touch-guest.ndjson").is_file():
+                    break
+                time.sleep(0.05)
+            time.sleep(0.3)
+            held = (folder / "lifetimes.txt").read_text()
+            subprocess.run(["sh", "-c", local(hunt_tool.release_command())], check=True,
+                           timeout=60)
+            marks = (folder / "touch-marks.txt").read_text().split("\n")
+            lives = (folder / "lifetimes.txt").read_text().splitlines()
+        self.assertNotIn("end", held)
+        self.assertEqual(len(lives), 2)
+        args = lives[0].split()[2:]
+        megabytes = int(args[args.index("--mb") + 1])
+        _word, _unix, marked, free_then, leave = marks[0].split()
+        self.assertEqual(int(marked), megabytes)
+        self.assertEqual(megabytes, int(free_then) - int(leave))
+        self.assertEqual(int(leave), max(hunt_tool.TOUCH_LEAVE_MB, int(2 * high_pages * 4 / 1024)))
+        # MemFree as the command read it (this machine's moves while it runs).
+        self.assertLessEqual(abs(int(free_then) - free), 1024)
+        self.assertIn("--hold", args)
+        self.assertEqual(args[args.index("--rate-mb-s") + 1], str(hunt_tool.TOUCH_RATE_MB_S))
+        self.assertTrue(lives[1].startswith("end "))
+        self.assertTrue(marks[0].startswith("touch "))
+        released = marks[1].split()
+        self.assertEqual((released[0], released[2]), ("released", "finished"))
+        self.assertLessEqual(float(lives[1].split()[1]), float(released[1]))
+
+
+class FakeService(http.server.BaseHTTPRequestHandler):
+    """/api/mesh/local, /api/stalls and /api/pacing of a fake service; the
+    stall journal's since_us asked for is kept."""
+    asked: list[str] = []
+
+    def do_GET(self):  # noqa: N802 - the handler's name
+        path, _, query = self.path.partition("?")
+        if path == "/api/mesh/local":
+            body = {"relay_session": {"fast_plane": {"audio_loop_busy_max_us": 812,
+                                                     "audio_thread_minflt": 3,
+                                                     "duplicates": 5},
+                                      "edge_clients": {"fanout_started": 2,
+                                                       "fanout_policies": 1}},
+                    "stall": {"stopped_ms": 0}}
+            data = json.dumps(body).encode()
+        elif path == "/api/stalls":
+            FakeService.asked.append(query)
+            since = int(query.split("=")[1])
+            events = [{"t_us": at, "kind": "tick", "cpu": 0, "dur_us": 3000}
+                      for at in (100, 200) if at >= since]
+            data = "".join(json.dumps(event) + "\n" for event in events).encode()
+        elif path == "/api/pacing":
+            data = b'{"rx_to_publish_p50_us": 120}'
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args):
+        pass
+
+
+class Sampler(unittest.TestCase):
+    def test_the_sampler_writes_the_class_thread_s_view_each_second(self):
+        """scripts/hunt-sampler.sh for 11 s against a sleeping process of
+        this machine (its own /proc) and a fake service: a line a second
+        with the thread's schedstat, switches and CPU, vmstat, MemFree,
+        every thread, the counters cut from /api/mesh/local by name; the
+        stall journal read every tenth second from the last event + 1, and
+        once more at the end; the slow path's lines."""
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeService)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        sleeper = subprocess.Popen(["sleep", "60"])
+        FakeService.asked = []
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                subprocess.run(["nice", "-n", "19", "sh", str(hunt_tool.SAMPLER), directory,
+                                str(sleeper.pid), "sleep",
+                                f"http://127.0.0.1:{server.server_address[1]}", "/api/pacing",
+                                "11"], check=True, timeout=60)
+                folder = pathlib.Path(directory)
+                lines = [json.loads(line) for line in
+                         (folder / "sampler.ndjson").read_text().splitlines()]
+                stalls = [json.loads(line) for line in
+                          (folder / "stalls.ndjson").read_text().splitlines()]
+                pacing = [json.loads(line) for line in
+                          (folder / "pacing.ndjson").read_text().splitlines()]
+        finally:
+            sleeper.kill()
+            sleeper.wait()
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(len(lines), 11)
+        first = lines[0]
+        self.assertEqual((first["pid"], first["tid"], first["tid_by"]),
+                         (sleeper.pid, sleeper.pid, "lowest"))
+        self.assertEqual(len(first["schedstat"]), 3)
+        self.assertEqual(len(first["csw"]), 2)
+        self.assertIsInstance(first["cpu"], int)
+        self.assertIn("pgfault", first["vm"])
+        self.assertIn("thp_fault_alloc", first["vm"])
+        self.assertGreater(first["memfree_kb"], 0)
+        self.assertEqual(first["threads"][0][0], sleeper.pid)
+        self.assertEqual(first["threads"][0][4], "sleep")
+        self.assertEqual(first["mesh"], {
+            "relay_session.fast_plane.audio_loop_busy_max_us": 812,
+            "relay_session.fast_plane.audio_thread_minflt": 3,
+            "relay_session.edge_clients.fanout_started": 2,
+            "relay_session.edge_clients.fanout_policies": 1,
+            "stall.stopped_ms": 0})
+        gaps = [(b["t_us"] - a["t_us"]) / 1e6 for a, b in zip(lines, lines[1:])]
+        self.assertTrue(all(0.8 < gap < 1.6 for gap in gaps), gaps)
+        # At seconds 0 and 10: everything, then from the last event + 1;
+        # and the last pull at the end.
+        self.assertEqual(FakeService.asked, ["since_us=0", "since_us=201", "since_us=201"])
+        self.assertEqual([event["t_us"] for event in stalls], [100, 200])
+        self.assertEqual(len(pacing), 3)
+        self.assertEqual(pacing[0]["body"], {"rx_to_publish_p50_us": 120})
+
+    def test_the_sampler_follows_the_first_of_two_threads_of_one_name(self):
+        """Two threads whose names /proc cuts to the same 15 characters
+        (needletail-fast-audio and -video), neither real-time (the local
+        lab): the one started first, the lower tid, is the audio class
+        thread. A SIGTERM ends the sampler with one more pull of the stall
+        journal (the last seconds are not lost)."""
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeService)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        program = (
+            "import os, threading, time\n"
+            "tids = []\n"
+            "def run():\n"
+            "    tid = threading.get_native_id()\n"
+            "    with open(f'/proc/self/task/{tid}/comm', 'w') as handle:\n"
+            "        handle.write('needletail-fast-class')\n"
+            "    tids.append(tid)\n"
+            "    time.sleep(60)\n"
+            "for _ in range(2):\n"
+            "    threading.Thread(target=run, daemon=True).start()\n"
+            "    while len(tids) < 1 + _:\n"
+            "        time.sleep(0.01)\n"
+            "print(' '.join(map(str, tids)), flush=True)\n"
+            "time.sleep(60)\n")
+        named = subprocess.Popen([sys.executable, "-c", program], stdout=subprocess.PIPE, text=True)
+        FakeService.asked = []
+        try:
+            first, second = (int(tid) for tid in named.stdout.readline().split())
+            with tempfile.TemporaryDirectory() as directory:
+                sampler = subprocess.Popen(
+                    ["nice", "-n", "19", "sh", str(hunt_tool.SAMPLER), directory, str(named.pid),
+                     "needletail-fast", f"http://127.0.0.1:{server.server_address[1]}"])
+                folder = pathlib.Path(directory)
+                for _ in range(100):
+                    if (folder / "stalls.ndjson").is_file():
+                        break
+                    time.sleep(0.05)
+                time.sleep(1.5)
+                os.kill(sampler.pid, 15)
+                sampler.wait(timeout=30)
+                lines = [json.loads(line) for line in
+                         (folder / "sampler.ndjson").read_text().splitlines()]
+        finally:
+            named.kill()
+            named.wait()
+            named.stdout.close()
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(sampler.returncode, 0)
+        self.assertLess(first, second)
+        self.assertTrue(lines)
+        self.assertTrue(all((line["tid"], line["tid_by"]) == (first, "lowest") for line in lines))
+        self.assertEqual(sorted(line[0] for line in lines[0]["threads"]
+                                if line[4] == "needletail-fast"), [first, second])
+        self.assertEqual(FakeService.asked, ["since_us=0", "since_us=201"])
 
 
 def live_hunt(directory: str):
@@ -430,41 +746,40 @@ def live_hunt(directory: str):
 
 
 class ReplaceRecovers(unittest.TestCase):
-    def test_a_failed_watch_on_the_new_instance_leaves_the_polls_and_the_survey_running(self):
+    def test_a_failed_watch_on_the_new_instance_still_pushes_and_samples_it(self):
         with tempfile.TemporaryDirectory() as directory:
             hunt = live_hunt(directory)
             calls = []
-            hunt.survey_dirs = [pathlib.Path(directory) / "survey"]
 
             def tool(script, *args, **_kwargs):
-                calls.append((script.name, args[0]))
+                calls.append(args[0])
                 return 0, ""
 
             def watch(_names=None):
-                raise RuntimeError("lon-bare-3: ssh: connect to host: Connection refused")
+                raise RuntimeError("lon-edge-3: ssh: connect to host: Connection refused")
 
             with mock.patch.object(hunt.runner, "tool", tool), \
+                    mock.patch.object(hunt, "stop_recorders", lambda names: None), \
                     mock.patch.object(hunt.runner, "fetch_directory",
                                       side_effect=subprocess.TimeoutExpired("ssh", 900)), \
                     mock.patch.object(hunt, "hosts", lambda _label: None), \
                     mock.patch.object(hunt, "watch", watch), \
-                    mock.patch.object(hunt, "start_polling",
-                                      lambda: calls.append(("poll", "start"))), \
+                    mock.patch.object(hunt, "sample", lambda names: calls.append("sample")), \
                     mock.patch.object(hunt, "save", lambda: None), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(RuntimeError) as failed:
-                    hunt.replace("lon-bare-3", push=True, stopped_ms=45.0)
+                    hunt.replace("lon-edge-3", not_run_ms=450.0)
         self.assertIn("Connection refused", str(failed.exception))
-        names = [call[1] if call[0] != "poll" else "poll" for call in calls]
-        # The survey is closed, the instance replaced (its records'
-        # timeout did not stop it), pushed all the same, then the polls
-        # and the survey start again.
-        self.assertEqual(names, ["stop", "collect", "remove", "grow", "push", "poll", "start"])
-        self.assertEqual(hunt.record["replaced"][0]["name"], "lon-bare-3")
-        self.assertFalse(hunt.record["replaced"][0]["watched"])
-        self.assertTrue(hunt.record["replaced"][0]["pushed"])
+        # Replaced (its records' timeout did not stop it), pushed and
+        # sampled all the same.
+        self.assertEqual(calls, ["remove", "grow", "push", "sample"])
+        entry = hunt.record["replaced"][0]
+        self.assertEqual((entry["name"], entry["not_run_ms_before"]), ("lon-edge-3", 450.0))
+        self.assertFalse(entry["watched"])
+        self.assertTrue(entry["pushed"])
+        self.assertTrue(entry["sampled"])
 
-    def test_a_grow_refused_is_tried_again_and_the_polls_come_back(self):
+    def test_a_grow_refused_is_tried_again_and_nothing_is_pushed(self):
         with tempfile.TemporaryDirectory() as directory:
             hunt = live_hunt(directory)
             statuses = iter([0, 1, 1, 1, 1])
@@ -475,14 +790,14 @@ class ReplaceRecovers(unittest.TestCase):
                 return (next(statuses) if args[0] in ("remove", "grow") else 0), ""
 
             with mock.patch.object(hunt.runner, "tool", tool), \
+                    mock.patch.object(hunt, "stop_recorders", lambda names: None), \
                     mock.patch.object(hunt.runner, "fetch_directory", lambda *_a, **_k: None), \
-                    mock.patch.object(hunt, "start_polling", lambda: calls.append("poll")), \
                     mock.patch.object(hunt, "save", lambda: None), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(RuntimeError) as failed:
-                    hunt.replace("lon-edge-1", push=True)
+                    hunt.replace("lon-edge-1")
         self.assertIn("in 4 tries", str(failed.exception))
-        self.assertEqual(calls, ["remove", "grow", "grow", "grow", "grow", "poll"])
+        self.assertEqual(calls, ["remove", "grow", "grow", "grow", "grow"])
 
 
 class Ssh(unittest.TestCase):
@@ -511,39 +826,6 @@ class Ssh(unittest.TestCase):
         self.assertEqual(started, ["lon-edge-1"])
         self.assertIn("no watch on lon-edge-2", str(failed.exception))
         self.assertGreaterEqual(now[0], hunt_tool.SSH_WAIT_S)
-
-
-class Polls(unittest.TestCase):
-    def test_a_failed_poll_is_counted_and_one_poller_runs_at_a_time(self):
-        with tempfile.TemporaryDirectory() as directory:
-            hunt = live_hunt(directory)
-            first, second = hunt.mesh[:2]
-            running = []
-            lock = threading.Lock()
-            peak = [0]
-
-            def poll(name, _since):
-                with lock:
-                    running.append(name)
-                    peak[0] = max(peak[0], len(running))
-                time.sleep(0.01)
-                with lock:
-                    running.remove(name)
-                if name == first:
-                    raise OSError("timed out")
-
-            with mock.patch.object(hunt, "poll", poll), \
-                    mock.patch.object(hunt_tool, "POLL_S", 0.05):
-                for _ in range(5):
-                    hunt.start_polling()
-                    time.sleep(0.03)
-                    hunt.stop_polling_now()
-                hunt.save()
-            saved = json.loads((pathlib.Path(directory) / "run" / "hunt.json").read_text())
-        self.assertEqual(peak[0], 1)
-        self.assertGreaterEqual(saved["poll_failures"][first]["n"], 5)
-        self.assertIn("timed out", saved["poll_failures"][first]["last"])
-        self.assertNotIn(second, saved["poll_failures"])
 
 
 class Hangup(unittest.TestCase):

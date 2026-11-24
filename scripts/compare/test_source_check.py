@@ -181,13 +181,20 @@ class FirstSession(unittest.TestCase):
                                ("# idle", "idle"), ("edge_lab.py burn", "burn"),
                                ("edge_lab.py stop contrib-lon", "stop"),
                                ("edge_lab.py start contrib-lon", "start"),
+                               ("hunt-sampler.sh", "sampler"),
                                ("-first --no-up", "first"),
                                ("-warm --no-up", "warm"), ("/api/stalls", "stalls"),
                                ("edge_lab.py down", "down")):
                 if word in line and (not kinds or kinds[-1] != kind):
                     kinds.append(kind)
-        self.assertEqual(kinds, ["up", "watch", "idle", "burn", "stop", "start", "first",
-                                 "stalls", "warm", "stalls", "down"])
+        self.assertEqual(kinds, ["up", "watch", "idle", "burn", "stop", "start", "sampler",
+                                 "first", "stalls", "warm", "stalls", "down"])
+        samplers = [line for line in lab if "hunt-sampler.sh" in line]
+        self.assertEqual(len(samplers), len(first_session.mesh_nodes()))
+        self.assertTrue(all(line.endswith(" &") for line in samplers))
+        self.assertTrue(any("'<pid of contrib-lon>' audio-hot-0" in line and "/api/pacing" in line
+                            for line in samplers))
+        self.assertTrue(any("'<pid of lon-edge-1>' needletail-fast" in line for line in samplers))
         burns = [line for line in lab if "edge_lab.py burn" in line]
         self.assertEqual(len(burns), len(first_session.mesh_nodes()))
         self.assertNotIn("lon-dist-c", " ".join(burns))
@@ -284,15 +291,35 @@ class FirstSession(unittest.TestCase):
                                     "t_us": START * 1_000_000, "dur_us": 120_000,
                                     "span_us": 120_000, "n": 1, "run_delay_us": 3,
                                     "cause": "stopped", "scope": "all"}) + "\n")
+                    sessions[session].update(
+                        {"from_unix": START + (0 if session == "first" else 100),
+                         "to_unix": START + (90 if session == "first" else 190)})
                 (run / f"lab{lab}" / "lab.json").write_text(json.dumps(
                     {"lab": lab, "sessions": sessions}))
+                # The sampler of lon-edge-1: in the first session its class
+                # thread waits runnable 300 ms within one second.
+                lines = []
+                for second in range(0, 190):
+                    delay = 300 if second >= 30 else 0
+                    lines.append({"t_us": (START + second) * 1_000_000, "pid": 7, "tid": 9,
+                                  "cpu": 0, "schedstat": [10**9, delay * 10**6 + second, 9],
+                                  "csw": [second, 0], "vm": {}, "threads": [],
+                                  "mesh": {"fast_plane.audio_loop_busy_max_us": 900}})
+                samplers = run / f"lab{lab}" / "samplers" / "lon-edge-1"
+                samplers.mkdir(parents=True)
+                (samplers / "sampler.ndjson").write_text(
+                    "".join(json.dumps(line) + "\n" for line in lines))
             with mock.patch.object(first_session, "BENCH_OUT", bench):
                 result = first_session.analyse(run, with_null=False)
         self.assertEqual([entry["gate"] for entry in result["labs"]],
                          [{"lon-readers": True}, {"lon-readers": False}])
         journal = result["labs"][0]["sessions"]["first"]["journals"]["lon-edge-1"]
         self.assertEqual(journal["stops"]["stopped"]["over_100ms"]["all"], 1)
+        stops = result["labs"][0]["sessions"]["first"]["class_stops"]["lon-edge-1"]
+        self.assertEqual([(stop["ms"], stop["class"]) for stop in stops], [(300.0, "not run")])
+        self.assertEqual(result["labs"][0]["sessions"]["warm"]["class_stops"]["lon-edge-1"], [])
         text = first_session.format_report(result)
+        self.assertIn("lon-edge-1     class thread stopped 300 ms: not run", text)
         self.assertIn("gate lon-readers: first within 0.3 ms of warm and 0 missing: NOT met", text)
 
 

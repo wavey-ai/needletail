@@ -79,5 +79,23 @@ class Records(unittest.TestCase):
         self.assertIsNone(stall_records.steal_permille([]))
 
 
+class SamplerFigures(unittest.TestCase):
+    def test_run_delay_counts_long_waits_of_one_thread_only(self):
+        rows = [[1, 7, 9, 0], [2, 7, 9, 10_000_000], [3, 7, 9, 310_000_000],
+                [4, 8, 9, 0], [5, 8, 9, 400_000_000], [6, 8, 9, None]]
+        # 300 ms in one second; 10 ms is under the threshold; the restart
+        # (pid 7 to 8) is no wait; 400 ms of the new process counts.
+        self.assertAlmostEqual(stall_records.run_delay_ms(rows, 50.0), 700.0)
+        # Only the seconds that end inside the spans given.
+        self.assertAlmostEqual(stall_records.run_delay_ms(rows, 50.0, [(5, 5)]), 400.0)
+
+    def test_a_counter_is_found_by_its_name_on_any_path(self):
+        line = {"mesh": {"relay_session.fast_plane.audio_loop_busy_max_us": 812,
+                         "other.audio_loop_busy_max_us": 900, "stall.stopped_ms": 0}}
+        self.assertEqual(stall_records.mesh_value(line, "audio_loop_busy_max_us"), 900)
+        self.assertIsNone(stall_records.mesh_value(line, "fanout_started"))
+        self.assertIsNone(stall_records.mesh_value({"mesh": None}, "stopped_ms"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,69 +1,34 @@
 {
-  "description": "The first-session stall hunt's lab (docs/plans/resilient-mesh/D-hunt.md, section 7.1): 21 dedicated-CPU instances, $1.350 an hour, two billed hours. A mesh in London (the contributor, the source host and a view host on g6-dedicated-4; two forwarders and four edges on g6-dedicated-2) and in Tokyo (two forwarders and one edge on g6-dedicated-2, a view host on g6-dedicated-4: the worst wave 7 instances were far -b distributors); and eight bare g6-dedicated-2 instances that run nothing of Needletail but needletail-nodecheck and the route survey's probes: role `bare`, which the lab tool creates, tags and puts behind the lab firewall like any node and on which the deploy tool installs nothing (its bootstrap gives them chrony). The `hunt` block is the experiment's design (7.2, 7.3, 7.6), read by scripts/linode-stall-hunt.py and scripts/linode-route-survey.py: the arms, the wave 7 control, the nodes with an enlarged hop journal, the echo pairs of the soak rounds, the bare nodes that touch memory, the listeners of each session on the view hosts (7.3: UDP probes, LL-HLS probes over HTTP/3, a needletail-load crowd) and the survey's ends. Sydney is created first and left out if it has no capacity (up --optional-sites sydney).",
+  "description": "The stall hunt's lab after the wave 9 run (docs/plans/resilient-mesh/D-hunt.md, section 7): 20 dedicated-CPU instances, $1.296 an hour, two billed hours. A mesh in London (the contributor, the source host and a view host on g6-dedicated-4; two forwarders and four edges, two pairs of twins, on g6-dedicated-2) and in Tokyo (two forwarders and two edges on g6-dedicated-2, a view host on g6-dedicated-4), deployed fresh with the fan-out fix; and six bare g6-dedicated-2 instances that run only needletail-nodecheck watch and the route survey's probes (role `bare`: the lab tool creates, tags and firewalls them like any node, the deploy tool installs nothing on them). The `hunt` block is the experiment's design, read by scripts/linode-stall-hunt.py and scripts/linode-route-survey.py: `touched` (the edges whose whole free memory is touched and held, then given back just before the first session: half the edges, one of each pair of twins), `no_arena_warm` (Tokyo's edges run without the audio class thread's arena warm-up: the fix measured against its absence in the same hour), `hop_journal_large` (rings of 2,097,152 events on both London forwarders and the first pair of London twins, pulled once after the first session), the listeners of each view host (UDP probes through the site's entry, one LL-HLS probe on every edge of the site, a needletail-load crowd over every edge of the site, with no entry point, so that its listener i starts at edge i mod n and UDP clients arrive at each) and the survey's ends. The churn session's rounds are the driver's (CHURN_ROUNDS, CHURN_GAP_S). Sydney is created first and left out if it has no capacity (up --optional-sites sydney).",
   "image": "linode/debian13",
   "hunt": {
-    "warmed": [
-      "lon-edge-3",
-      "lon-dist-a",
-      "tok-dist-b",
-      "lon-bare-2",
-      "lon-bare-4"
-    ],
-    "control": {
-      "lon-edge-2": {
-        "malloc_tune": false,
-        "prefault": false,
-        "mlock": "off"
-      }
-    },
-    "hop_journal_large": [
+    "touched": [
       "lon-edge-1",
       "lon-edge-3",
-      "lon-dist-a",
-      "tok-dist-a",
       "tok-edge-1"
     ],
-    "soak_pairs": [
-      [
-        "lon-edge-1",
-        "lon-edge-2"
-      ],
-      [
-        "lon-edge-3",
-        "lon-edge-4"
-      ],
-      [
-        "lon-dist-a",
-        "lon-dist-b"
-      ],
-      [
-        "tok-dist-a",
-        "tok-dist-b"
-      ],
-      [
-        "lon-bare-1",
-        "lon-bare-2"
-      ],
-      [
-        "tok-edge-1",
-        "tok-bare-1"
-      ]
+    "no_arena_warm": [
+      "tok-edge-1",
+      "tok-edge-2"
     ],
-    "touch": [
-      "lon-bare-1",
-      "lon-bare-2",
-      "tok-bare-1"
+    "hop_journal_large": [
+      "lon-edge-1",
+      "lon-edge-2",
+      "lon-dist-a",
+      "lon-dist-b"
     ],
     "listeners": {
       "lon-view": {
         "udp": 4,
-        "hls": 4,
+        "hls_each_edge": 1,
         "load": 40,
         "sample": 8
       },
       "tok-view": {
         "udp": 2,
-        "hls": 2
+        "hls_each_edge": 1,
+        "load": 20,
+        "sample": 4
       }
     },
     "survey": {
@@ -179,28 +144,20 @@
       "vlan_ipv4": "10.78.3.21/24"
     },
     {
+      "name": "tok-edge-2",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.3.22/24"
+    },
+    {
       "name": "tok-view",
       "role": "load",
       "site": "tokyo",
       "region": "ap-northeast",
       "type": "g6-dedicated-4",
       "purpose": "view"
-    },
-    {
-      "name": "lon-bare-1",
-      "role": "bare",
-      "site": "london",
-      "region": "gb-lon",
-      "type": "g6-dedicated-2",
-      "vlan_ipv4": "10.78.1.41/24"
-    },
-    {
-      "name": "lon-bare-2",
-      "role": "bare",
-      "site": "london",
-      "region": "gb-lon",
-      "type": "g6-dedicated-2",
-      "vlan_ipv4": "10.78.1.42/24"
     },
     {
       "name": "lon-bare-3",
@@ -221,8 +178,7 @@
       "role": "bare",
       "site": "tokyo",
       "region": "ap-northeast",
-      "type": "g6-dedicated-2",
-      "vlan_ipv4": "10.78.3.41/24"
+      "type": "g6-dedicated-2"
     },
     {
       "name": "new-bare-1",
