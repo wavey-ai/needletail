@@ -376,7 +376,7 @@ class Report(unittest.TestCase):
         paths = {}
         for part in range(100):
             hold = 300_000 if part == 50 else 0
-            times = [("published", 0), ("contrib.sent", 1_000), ("forwarder.relay_first", 2_000),
+            times = [("published", 0), ("contrib.sent_first", 1_000), ("forwarder.relay_first", 2_000),
                      ("forwarder.relay_forward", 2_100 + hold), ("edge.relay_first", 3_000 + hold),
                      ("edge.udp_sent", 3_500 + hold), ("viewer.kernel", 4_500 + hold),
                      ("viewer.arrival", 5_000 + hold)]
@@ -386,7 +386,7 @@ class Report(unittest.TestCase):
         self.assertEqual(figures["late_by_hop"],
                          {"forwarder.relay_first->forwarder.relay_forward": 1})
         self.assertEqual(figures["lateness_worst_ms"], 300.0)
-        self.assertEqual(figures["hops_ms"]["contrib.sent->forwarder.relay_first"]["p50"], 1.0)
+        self.assertEqual(figures["hops_ms"]["contrib.sent_first->forwarder.relay_first"]["p50"], 1.0)
 
     def test_whole_is_the_referee_s_rule(self):
         self.assertTrue(report.whole({"on_time_percent": 99.5, "longest_stall_ms": 500}))

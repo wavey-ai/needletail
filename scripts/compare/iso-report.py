@@ -70,7 +70,7 @@ MEMORY_MB = 3200.0
 # The path of a part, in order: (label, node key, stage). Node keys are the
 # cell's: contrib, forwarder, edge; the viewer's from its records.
 PATH = (("published", "viewer", "published"),
-        ("contrib.sent", "contrib", "sent"),
+        ("contrib.sent_first", "contrib", "sent_first"),
         ("forwarder.relay_first", "forwarder", "relay_first"),
         ("forwarder.relay_forward", "forwarder", "relay_forward"),
         ("edge.relay_first", "edge", "relay_first"),
