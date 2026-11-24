@@ -873,22 +873,27 @@ class LinodeBackend(Backend):
         deleted at once, as add_nodes does (never pushed or served with
         every port open, never left recorded without its firewall). None
         when adopted, else why not."""
-        state = self.lab.read_state(self.state_path)
-        identity = self.identity()
-        if state is None or state.get("run_id") != identity["run_id"] \
-                or state.get("down_started_unix"):
-            raise Refused(f"adopt {name}: the lab is gone or going down")
+        state = self.state()
         kind = item.get("type") or slot.get("type")
-        state["nodes"][name] = {
+        record = {
             "id": item["id"], "name": name, "label": item["label"], "role": slot["role"],
             "site": slot["site"], "region": slot.get("region") or item.get("region"),
             "type": kind, "hourly_usd": DEDICATED_PRICES.get(kind, 0.054),
             "public_ipv4": (item.get("ipv4") or [None])[0],
             "vlan_ipv4": slot.get("vlan_ipv4"), "created": item.get("created"),
             "created_unix": int(time.time()), "slot": True}
-        state["hourly_usd"] = round(sum(node.get("hourly_usd", 0.0)
-                                        for node in state["nodes"].values()), 4)
-        self.lab.write_state(self.state_path, state)
+
+        def adopt(current: dict) -> None:
+            current["nodes"][name] = record
+            current["hourly_usd"] = self.lab.lab_hourly(current)
+
+        # Under the lab tool's state lock (C CT3): what another command
+        # wrote meanwhile is kept, and a lab that is gone or going down is
+        # never written (LabGone).
+        try:
+            self.lab.change_state(self.state_path, state, adopt, creating=True)
+        except self.lab.LabGone as gone:
+            raise Refused(f"adopt {name}: {gone}") from None
         api = self.api()
         try:
             api.call("PUT", f"/networking/firewalls/{state['firewall_id']}/rules",

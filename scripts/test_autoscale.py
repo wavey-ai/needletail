@@ -2429,6 +2429,32 @@ class LinodeBackendTests(unittest.TestCase):
         # Adopted once: it is the lab's now.
         self.assertEqual([item["id"] for item in self.backend.adopt()], [78])
 
+    def test_no_slot_is_adopted_into_a_lab_going_down(self):
+        """The adoption's record goes through the lab tool's change_state
+        (creating): once `down` has begun nothing is written and nothing is
+        given the firewall; the instance is left to down's sweep by tag."""
+        instances = [{"id": 77, "label": "ntsm-t1-lon-edge-11",
+                      "tags": ["needletail-small-mesh-t1"], "ipv4": ["192.0.2.201"],
+                      "type": "g6-dedicated-2", "region": "gb-lon"}]
+        calls = []
+
+        class Api:
+            def list_all(self, path, tag=None):
+                return instances
+
+            def call(self, method, path, body=None, allow_404=False):
+                calls.append((method, path))
+                return {}
+
+        self.backend._api = Api()
+        self.state["down_started_unix"] = int(time.time())
+        self.path.write_text(json.dumps(self.state))
+        with self.assertRaises(auto.Refused) as caught:
+            self.backend.adopt()
+        self.assertIn("down has begun", str(caught.exception))
+        self.assertNotIn("lon-edge-11", json.loads(self.path.read_text())["nodes"])
+        self.assertEqual(calls, [])
+
     def test_an_adopted_slot_whose_firewall_fails_is_deleted(self):
         """As add_nodes does: a slot that cannot have the lab firewall is
         deleted at once (by its recorded id, tag and label checked), never
