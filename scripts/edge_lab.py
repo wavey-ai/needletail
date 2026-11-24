@@ -2253,7 +2253,18 @@ def service_pid(name: str) -> int | None:
         command = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return None
-    return pid if command else None
+    if command:
+        return pid
+    # An empty command line is a zombie, or a live process in the middle of
+    # an exec (a start is systemd-run, nsenter, taskset, then the service):
+    # local proof 3's crash of new-dist-a read it 76 ms after the start and
+    # called the node stopped again. Only a zombie or a gone one is gone.
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    state = stat.rpartition(")")[2].split()[:1]
+    return None if state in (["Z"], ["X"]) else pid
 
 
 def cgroup_dir(name: str) -> pathlib.Path | None:

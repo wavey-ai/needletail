@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -892,6 +893,27 @@ class RealTime(Isolated):
         # node_cpus: own CPUs anyway, two each.
         first = lab.node_cpu_sets(STANDING, first=0, per_node=lab.RT_CPUS)
         self.assertEqual(first[CONTRIBUTOR], [0, 1])
+
+    def test_a_service_between_execs_is_running_and_a_zombie_is_not(self):
+        live = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(live.kill)
+        zombie = subprocess.Popen(["true"])
+        deadline = time.time() + 5
+        while time.time() < deadline and \
+                pathlib.Path(f"/proc/{zombie.pid}/stat").read_text().rpartition(")")[2].split()[0] != "Z":
+            time.sleep(0.01)
+        self.addCleanup(zombie.wait)
+        lab.save("services.json", {"live": {"pid": live.pid}, "zombie": {"pid": zombie.pid},
+                                   "gone": {"pid": dead_pid()}})
+        self.assertEqual(lab.service_pid("live"), live.pid)
+        self.assertIsNone(lab.service_pid("zombie"))
+        self.assertIsNone(lab.service_pid("gone"))
+        # In the middle of an exec /proc/<pid>/cmdline reads empty: still running.
+        real = pathlib.Path.read_bytes
+        with mock.patch.object(pathlib.Path, "read_bytes", lambda path: b"" if
+                               path.name == "cmdline" else real(path)):
+            self.assertEqual(lab.service_pid("live"), live.pid)
+            self.assertIsNone(lab.service_pid("zombie"))
 
     def test_a_video_feed_never_takes_the_senders_own_cpu(self):
         # Local proof 3: in the own-CPU layout the 4K feed ran on the
