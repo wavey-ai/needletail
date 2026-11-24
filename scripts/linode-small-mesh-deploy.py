@@ -17,15 +17,30 @@ fed the contributor's RaptorQ symbols as they arrive.
 Subcommands:
   plan      measure routes, generate the relay program, compile it, and render
             one argument file per service under the artifact directory
-  push      bootstrap hosts, install binaries, TLS, the host qdisc and
-            services, then restart (--nodes a,b: only those nodes)
-  restart   re-render arguments and the host qdisc from current settings and
-            restart services
+  push      bootstrap hosts, stage the builds of the roots, TLS and the
+            services' files, then activate (--nodes a,b: only those nodes)
+  roll      TIER: one node at a time onto the roots' build, gated (C 3.5)
+  restart   --nodes a,b: one node at a time, gated, on its recorded build
+            (--rollback: its previous arguments); --roles: every node of a
+            role at once, re-rendered from the current settings
   start     --nodes a,b: take held-out nodes (standby edges, autoscale
             slots) into service and start them, and nothing else
   stop      --nodes a,b: hold nodes out and stop their service, and nothing
             else
-  status    show service state, clock offset, and cache-mesh role per node
+  change    KIND ...: workstream A's contributor and ingress changes
+  hunt      ECMP source ports of the long-haul links (a bring-up step)
+  status    service state, build, readiness and the deployed record per node
+
+What is deployed is recorded in the lab state (`deployed`): the settings,
+the routes and hunted ports, and each node's build and arguments (with the
+`--set` values a node runs beyond the settings until every node runs them,
+and an activation begun and not seen to end, which the next command settles
+by what the node runs). A node runs a build from
+/opt/needletail/builds/<git>-<unix>/, staged beside the one in force and
+put in force by /opt/needletail/activate with a deadline; `roll`, `restart
+--nodes` and `start --nodes` refuse settings that do not reproduce the
+record. settings.json, routes.json and ecmp-ports.json name the lab they
+belong to and are refused for another.
 
 Joining without a restart (low-latency ops, D3). Every peer list is
 rendered from the lab's roster, not from the nodes in service: every edge
@@ -47,17 +62,24 @@ Tuning knobs live in the settings file and can be changed with
 from __future__ import annotations
 
 import argparse
+import contextlib
+import filecmp
 import functools
+import hashlib
+import importlib.util
 import json
 import os
 import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import mesh_ops  # noqa: E402
 import small_mesh_common as common  # noqa: E402
 
 SETTINGS_FILE = common.ARTIFACT_DIR / "settings.json"
@@ -675,6 +697,20 @@ LISTENER_SYSCTLS = {
     "fs.nr_open": "4194304",
 }
 
+# The settings that `--set` on `roll` and `restart --nodes` may change (C
+# 2.6): each is local to the node it renders on, so a node that runs the new
+# value next to one that runs the old needs no peer to agree. Every other
+# setting is taken as one that two peers must agree on and needs `push`. A
+# key joins this list with a test that its render changes no wire parameter
+# (test_merged_topology's Rollable).
+ROLLABLE_SETTINGS = (
+    "rust_log_mesh", "rust_log_contrib", "node_env", "tokio_worker_threads",
+    "extra_edge_args", "extra_distributor_args", "extra_contributor_args",
+    "mlock_all", "malloc_tune", "prefault", "relay_class_cpus", "relay_class_realtime",
+    "audio_hot_cpu", "cpu_load", "cpu_load_full_percent", "client_udp_datagram_capacity",
+    "egress_capacity_bps", "client_udp_drain_spread_ms", "rebalance_target_permille",
+)
+
 
 TOPOLOGIES = ("legacy", "merged")
 
@@ -981,8 +1017,13 @@ def settings_off_default(settings: dict) -> dict:
             if key != "settings_version" and DEFAULT_SETTINGS.get(key, None) != value}
 
 
-def load_settings(overrides: list[str]) -> dict:
+def load_settings(overrides: list[str], lab_run_id: str | None = None) -> dict:
+    """The settings of a run, saved back. `lab_run_id` (the Linode
+    commands): the saved file must be this lab's (lab_file_refused)."""
     saved = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
+    owner = saved.pop("lab_run_id", None)
+    if lab_run_id is not None and SETTINGS_FILE.is_file():
+        lab_file_refused(SETTINGS_FILE, owner, lab_run_id)
     settings, dropped = merge_settings(saved, parse_overrides(overrides))
     if dropped:
         print("settings: dropped the saved version 1 part settings "
@@ -1003,9 +1044,28 @@ def load_settings(overrides: list[str]) -> dict:
         print("settings: not the defaults: "
               + ", ".join(f"{key}={json.dumps(value)} (default {json.dumps(DEFAULT_SETTINGS.get(key))})"
                           for key, value in changed.items()), file=sys.stderr)
-    common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+    save_settings(settings, lab_run_id or owner)
     return settings
+
+
+def save_settings(settings: dict, lab_run_id: str | None) -> None:
+    """settings.json, with the run id of the lab it belongs to."""
+    common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    document = {**settings, **({"lab_run_id": lab_run_id} if lab_run_id else {})}
+    SETTINGS_FILE.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+
+
+def lab_file_refused(path: pathlib.Path, owner, run_id: str) -> None:
+    """Exit 2 unless a file of the worktree (settings.json, routes.json,
+    ecmp-ports.json) belongs to lab `run_id` (C 2.6): the files persist per
+    worktree, and an earlier lab's routes or `--set` values were silently
+    carried into later measured runs. Nothing is merged or reused."""
+    if owner == run_id:
+        return
+    whose = f"lab {owner}'s" if owner else "of no recorded lab (written before files named their lab)"
+    print(f"{path} is {whose}, not this lab's ({run_id}); move it away (settings.json and "
+          "ecmp-ports.json) or push with --remeasure (routes.json)", file=sys.stderr)
+    sys.exit(mesh_ops.EXIT_REFUSED)
 
 
 AUDIO_PART = re.compile(r"^(epoch|[1-9][0-9]*(samples|us))$")
@@ -1494,10 +1554,48 @@ def command_hunt(args: argparse.Namespace) -> None:
     port to the receiver port plus class_port_offset, another 5-tuple: both
     receiver ports are probed and the port whose slower class is fastest is
     picked (pick_hunted_port). The distributor's mesh service is stopped
-    briefly to free its ingest ports.
+    briefly to free its ingest ports: every remote distributor, four at a
+    time, which is an outage of its region (C 2.6). So the hunt is a
+    bring-up step, between `push` and the first session and followed by
+    `restart --roles distributor`: it takes the ops lock and is refused
+    while an edge of the lab has a listener or a session, or does not say,
+    unless `--outage`.
     """
-    settings = load_settings(getattr(args, "set", None) or [])
     state = common.load_state()
+    lab_files_checked(state, hunting=True)
+    settings = load_settings(getattr(args, "set", None) or [], lab_run_id=state["run_id"])
+    with ops_locked():
+        if not args.outage:
+            busy = edges_in_use(LinodeOps(state, settings))
+            if busy:
+                print("hunt stops every remote distributor: refused while edges serve "
+                      f"({'; '.join(busy)}); --outage hunts all the same", file=sys.stderr)
+                sys.exit(mesh_ops.EXIT_REFUSED)
+        hunt_ports(state, settings)
+
+
+def edges_in_use(ops: "LinodeOps") -> list[str]:
+    """The edges in service that hold a UDP subscriber or an LL-HLS session,
+    or that do not say so (no answer, no figure), each with why."""
+    names = [record["name"] for record in ops.nodes()
+             if record["role"] == "edge" and record["serving"]]
+    busy = []
+    for name, document in ops.statuses(names).items():
+        status = mesh_ops.status_of(document)
+        counts = {gauge: status.udp(gauge) if status else None
+                  for gauge in ("subscribers", "hls_sessions")}
+        if status is None:
+            busy.append(f"{name}: no answer")
+        elif None in counts.values():
+            busy.append(f"{name}: no subscriber or session figure")
+        elif any(counts.values()):
+            busy.append(f"{name}: {counts['subscribers']} subscribers, "
+                        f"{counts['hls_sessions']} sessions")
+    return busy
+
+
+def hunt_ports(state: dict, settings: dict) -> None:
+    """The hunt itself (command_hunt), under the ops lock."""
     tree = relay_tree(state, settings)
     links = []
     for child in tree["children"]:
@@ -1560,7 +1658,8 @@ def command_hunt(args: argparse.Namespace) -> None:
 
     results = common.parallel(distributors, hunt_distributor, workers=4)
     hunted = {key: value for found in results.values() for key, value in found.items()}
-    HUNT_FILE.write_text(json.dumps(hunted, indent=2, sort_keys=True) + "\n")
+    HUNT_FILE.write_text(json.dumps({**hunted, "lab_run_id": state["run_id"]}, indent=2,
+                                    sort_keys=True) + "\n")
     for key in sorted(hunted):
         item = hunted[key]
         classes = ("" if item.get("video_one_way_ms") is None else
@@ -1568,7 +1667,8 @@ def command_hunt(args: argparse.Namespace) -> None:
         print(f"{key:<34} port {item['port']}  best {item['one_way_ms']:.2f} ms{classes}  "
               f"median {item['median_ms']:.2f}  worst {item['worst_ms']:.2f}  "
               f"({item['candidates']} ports)")
-    print("run `restart` to apply the selected source ports")
+    print("run `restart --roles distributor` to apply the selected source ports (the parent's "
+          "sender and the child's peer change together)")
 
 
 def measure_routes(state: dict, settings: dict | None = None) -> dict:
@@ -2876,10 +2976,16 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
         # where it may without a limit; the default 8 MB would refuse it.
         # Only when asked (wave 9 review: off until measured on a deploy).
         thread_line += "LimitMEMLOCK=infinity\n"
+    # C 2.5: no start limit (with RestartSec=1, five crashes in ten seconds
+    # would leave a media node failed for good); a stop is bounded by B's
+    # edge drain (--stop-drain-ms 14000) plus the shutdown and a spare
+    # (TimeoutStopSec=20, mesh_ops.UNIT_TIMEOUT_STOP_S); StateDirectory is
+    # where an operator's drain is kept across a restart.
     return f"""[Unit]
 Description={description} (small-mesh lab)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -2888,7 +2994,9 @@ Group=needletail
 Environment=RUST_LOG={rust_log}
 {thread_line}ExecStart=/usr/local/bin/needletail-run-args /etc/needletail/{service}.args
 Restart=always
-RestartSec=2
+RestartSec=1
+TimeoutStopSec={int(mesh_ops.UNIT_TIMEOUT_STOP_S)}
+StateDirectory=needletail
 NoNewPrivileges=yes
 PrivateDevices=yes
 ProtectHome=yes
@@ -2900,6 +3008,8 @@ WantedBy=multi-user.target
 
 
 def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
+    """The files that `push` installs on a node of `role`: the service's
+    binary first (av-mesh, av-contrib), then its companions."""
     target = "target/x86_64-unknown-linux-gnu/release"
     # NEEDLETAIL_AV_MESH_ROOT selects another av-mesh checkout, such as a worktree
     # that carries a candidate patch.
@@ -2908,14 +3018,19 @@ def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
     # NEEDLETAIL_AV_CONTRIB_ROOT selects another av-contrib checkout.
     contrib = pathlib.Path(os.environ.get(
         "NEEDLETAIL_AV_CONTRIB_ROOT", str(common.WORKSPACE / "av-contrib"))) / target
-    daw = common.WORKSPACE / "daw-nexus" / target
+    # NEEDLETAIL_DAW_NEXUS_ROOT selects the daw-nexus checkout of the source,
+    # NEEDLETAIL_H3_CAPACITY_BIN the h3-static-capacity binary.
+    daw = pathlib.Path(os.environ.get(
+        "NEEDLETAIL_DAW_NEXUS_ROOT", str(common.WORKSPACE / "daw-nexus"))) / target
+    h3_capacity = pathlib.Path(os.environ.get(
+        "NEEDLETAIL_H3_CAPACITY_BIN",
+        str(common.WORKSPACE / "av-mesh" / target / "h3-static-capacity")))
     probe = contrib / "aep1-48k-probe"
     if role == "contributor":
         return [contrib / "av-contrib", probe, daw / "daw-test-source"]
     if role == "load":
         tools = [probe, mesh / "needletail-reader", mesh / "needletail-udp-client",
-                 common.WORKSPACE / "daw-nexus" / target / "daw-test-source",
-                 common.WORKSPACE / "av-mesh" / target / "h3-static-capacity",
+                 daw / "daw-test-source", h3_capacity,
                  common.ROOT / "deploy" / "linode-small-mesh" / "soundkit-part-check"
                  / target / "soundkit-part-check"]
         if node is not None and common.load_purpose(node) == "listeners":
@@ -3034,7 +3149,444 @@ def apply_host_qdisc(node: dict, settings: dict, clear: tuple[str, ...] = ()) ->
     return output
 
 
-def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> str:
+# ------------------------------------------------- a node's files and its activation (C 2.5)
+
+# The binaries of one build on a node: /opt/needletail/builds/<git>-<unix>/.
+NODE_BUILDS = "/opt/needletail/builds"
+ACTIVATE_PATH = "/opt/needletail/activate"
+NODE_ETC = "/etc/needletail"
+# B 3.12: on SIGTERM an edge waits at most this long for its listeners to
+# leave (the unit's TimeoutStopSec covers it, unit_text).
+EDGE_STOP_DRAIN_MS = 14000
+# The last word of `--version`: `av-mesh 0.1.0 (3f2a9c1d77e0 1763900000)`.
+VERSION_LINE = re.compile(r"\(([0-9A-Za-z._-]+) ([0-9]+)\)\s*$")
+TIER_ROLE = {"edges": "edge", "forwarders": "distributor", "contributors": "contributor"}
+SERVICE_ROLES = ("backbone", "distributor", "edge", "contributor")
+
+# /opt/needletail/activate SERVICE --not-after UNIX_MS [--rollback], run
+# detached by systemd-run (activate_node) so that a dropped ssh cannot split
+# it. It refuses when the node's clock is past the deadline ("late") or when
+# line 1 of what it would put in force is not an executable here; otherwise
+# it installs what is staged and differs (kernel settings, the host qdisc,
+# the unit), puts the staged arguments in force with the previous ones kept
+# beside them (`.args` is never absent: a copy, then a rename), links the
+# build's binaries into /usr/local/bin and restarts the service. With
+# --rollback it puts `.args.prev` (and the unit before the last activation)
+# back instead. Line 1 must name a binary of a build directory: an `.args.prev`
+# of the layout before builds (/usr/local/bin/av-mesh) is refused, never put
+# in force. Its result is one JSON line in /run/needletail. The test of the
+# shell (test_merged_topology's Activation) replaces the six paths of its
+# head.
+ACTIVATE_SCRIPT = r"""#!/usr/bin/env bash
+set -u
+ETC=/etc/needletail
+RUN=/run/needletail
+BIN=/usr/local/bin
+UNITS=/etc/systemd/system
+SYSCTL=/etc/sysctl.d/90-needletail.conf
+BUILDS=/opt/needletail/builds
+
+service=${1:?usage: activate SERVICE --not-after UNIX_MS [--rollback]}
+shift
+not_after=""
+rollback=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --not-after) not_after=${2:-}; shift 2 ;;
+    --rollback) rollback=1; shift ;;
+    *) echo "activate: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+mkdir -p "$RUN"
+args="$ETC/$service.args"
+unit="$UNITS/$service.service"
+result="$RUN/activate-$service.json"
+from=$(head -n 1 "$args" 2>/dev/null || true)
+to=""
+qdisc=false
+finish() {
+  printf '{"ok": %s, "why": "%s", "unix_ms": %s, "from": "%s", "to": "%s", "qdisc": %s}\n' \
+    "$1" "$2" "$(date +%s%3N)" "$from" "$to" "$qdisc" >"$result.tmp"
+  mv -f "$result.tmp" "$result"
+  if [ "$1" = true ]; then exit 0; fi
+  exit 1
+}
+case "$not_after" in ''|*[!0-9]*) finish false "no deadline" ;; esac
+[ "$(date +%s%3N)" -le "$not_after" ] || finish false late
+if [ "$rollback" = 1 ]; then source="$args.prev"; else source="$args.next"; fi
+[ -f "$source" ] || finish false "nothing to put in force: no $source"
+to=$(head -n 1 "$source")
+case "$(dirname "$to")" in
+  "$BUILDS"/?*) ;;
+  *) finish false "not a binary of a build in $BUILDS: $to" ;;
+esac
+{ [ -f "$to" ] && [ -x "$to" ]; } || finish false "not an executable on this node: $to"
+if [ "$rollback" = 1 ]; then
+  if [ -f "$ETC/$service.unit.prev" ] && ! cmp -s "$ETC/$service.unit.prev" "$unit"; then
+    { cp "$ETC/$service.unit.prev" "$unit.tmp" && mv -f "$unit.tmp" "$unit" \
+      && systemctl daemon-reload; } || finish false "the previous unit could not be put back"
+  fi
+  if [ -f "$args" ]; then cp -p "$args" "$args.failed"; fi
+  { cp -p "$args.prev" "$args.tmp" && mv -f "$args.tmp" "$args"; } \
+    || finish false "the previous arguments could not be put back"
+else
+  if [ -f "$ETC/$service.sysctl.next" ] && ! cmp -s "$ETC/$service.sysctl.next" "$SYSCTL"; then
+    modprobe tcp_bbr 2>/dev/null || true
+    { cp "$ETC/$service.sysctl.next" "$SYSCTL.tmp" && mv -f "$SYSCTL.tmp" "$SYSCTL" \
+      && sysctl -q -p "$SYSCTL"; } || finish false "the kernel settings failed"
+  fi
+  # The applied qdisc is remembered in /run, so a host that rebooted gets
+  # it again at its next activation.
+  if [ -f "$ETC/$service.qdisc.next" ] && ! cmp -s "$ETC/$service.qdisc.next" "$RUN/$service.qdisc"; then
+    bash "$ETC/$service.qdisc.next" >"$RUN/qdisc-$service.txt" 2>&1 \
+      || finish false "the host qdisc failed: $(tail -n 1 "$RUN/qdisc-$service.txt" | tr -d '"\\\000-\037')"
+    cp "$ETC/$service.qdisc.next" "$RUN/$service.qdisc"
+    qdisc=true
+  fi
+  if [ -f "$ETC/$service.unit.next" ]; then
+    if [ -f "$unit" ]; then cp -p "$unit" "$ETC/$service.unit.prev"; fi
+    if ! cmp -s "$ETC/$service.unit.next" "$unit"; then
+      { cp "$ETC/$service.unit.next" "$unit.tmp" && mv -f "$unit.tmp" "$unit" \
+        && systemctl daemon-reload; } || finish false "the unit could not be installed"
+    fi
+  fi
+  if [ -f "$args" ]; then cp -p "$args" "$args.prev"; fi
+  mv -f "$args.next" "$args" || finish false "the arguments could not be put in force"
+fi
+for file in "$(dirname "$to")"/*; do
+  [ -f "$file" ] || continue
+  name=$(basename "$file")
+  ln -sfn "$file" "$BIN/.$name.new" && mv -Tf "$BIN/.$name.new" "$BIN/$name"
+done
+systemctl enable --quiet "$service.service" 2>/dev/null
+systemctl restart "$service.service" || finish false "systemctl restart failed"
+finish true ""
+"""
+
+# Builds on a node beyond the newest three are removed, never one that an
+# `.args`, `.args.prev` or `.args.next` names (C 2.5).
+PRUNE_BUILDS = r"""keep=" "
+for file in /etc/needletail/*.args /etc/needletail/*.args.prev /etc/needletail/*.args.next; do
+  if [ -f "$file" ]; then keep="$keep$(dirname "$(head -n 1 "$file")") "; fi
+done
+ls -1dt /opt/needletail/builds/*/ 2>/dev/null | tail -n +4 | while read -r dir; do
+  dir=${dir%/}
+  case "$keep" in *" $dir "*) ;; *) rm -rf "$dir" ;; esac
+done"""
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def sha256_file(path: pathlib.Path) -> str | None:
+    path = pathlib.Path(path)
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def args_text(args: list[str]) -> str:
+    """An `.args` file: one argument a line, the binary first."""
+    return "\n".join(args) + "\n"
+
+
+def args_sha256(args: list[str]) -> str:
+    """What av-mesh reports as `process.args_sha256` (C 2.3): every argument,
+    argv[0] included, joined by newlines."""
+    return sha256_text("\n".join(args))
+
+
+# The value after these flags is the time of the render (build_program's
+# path observation of the contributor): no later render can give it again.
+RENDER_TIME_FLAG = "-observed-at-unix-ms"
+# RENDER_SHA256 on a node: the same digest of a node's `.args` file.
+RENDER_SHA256 = ("awk 'mask {{ print \"*\"; mask = 0; next }} /" + RENDER_TIME_FLAG
+                 + "$/ {{ mask = 1 }} {{ print }}' {path} | head -c -1 | sha256sum | cut -d' ' -f1")
+
+
+def render_sha256(args: list[str]) -> str:
+    """args_sha256 of the arguments with the time of the render masked: what
+    a later render of the same settings and build gives again."""
+    masked, mask = [], False
+    for arg in args:
+        masked.append("*" if mask else arg)
+        mask = not mask and arg.endswith(RENDER_TIME_FLAG)
+    return sha256_text("\n".join(masked))
+
+
+def build_of(path: pathlib.Path) -> dict:
+    """The build that a binary names in `--version` (C 2.2, A 2.6):
+    {"git", "unix", "dirty", "key"}; the key `<git>-<unix>` names its
+    directory. Refused for a binary that is missing or names none."""
+    path = pathlib.Path(path)
+    if not path.is_file():
+        raise mesh_ops.Refused(f"binary is missing: {path}")
+    try:
+        result = subprocess.run([str(path), "--version"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise mesh_ops.Refused(f"{path} --version does not run: {error}") from None
+    match = VERSION_LINE.search(result.stdout.strip()) if result.returncode == 0 else None
+    if not match:
+        raise mesh_ops.Refused(f"{path} prints no build id (--version: "
+                               f"{(result.stdout or result.stderr).strip()[:120]!r})")
+    git, unix = match.group(1), int(match.group(2))
+    return {"git": git, "unix": unix, "dirty": git.endswith("-dirty"), "key": f"{git}-{unix}"}
+
+
+def key_build(key: str) -> dict:
+    """{"git", "unix", "dirty"} of a build key `<git>-<unix>`."""
+    git, _, unix = key.rpartition("-")
+    return {"git": git, "unix": int(unix), "dirty": git.endswith("-dirty")}
+
+
+def builds_dir() -> pathlib.Path:
+    """small-mesh-artifacts/builds/: the binaries of every build deployed
+    from this worktree, one directory a build key."""
+    return common.ARTIFACT_DIR / "builds"
+
+
+def cache_build(role: str) -> dict:
+    """Copy the binaries that `push` installs on a node of `role` from the
+    roots (binaries_for) into builds/<key>/, the key from the service's
+    binary as copied (a build that finishes meanwhile cannot land under
+    another's key); its build. A cached build is never written again: the
+    copy goes in whole by a rename, and a root whose service binary names a
+    cached build but differs from it is refused. Only push and roll take a
+    build from the roots."""
+    files = binaries_for(role)
+    missing = [str(path) for path in files if not path.is_file()]
+    if missing:
+        raise mesh_ops.Refused(f"binary is missing: {', '.join(missing)}")
+    builds_dir().mkdir(parents=True, exist_ok=True)
+    copy = pathlib.Path(tempfile.mkdtemp(prefix=".copy-", dir=builds_dir()))
+    try:
+        for path in files:
+            shutil.copy2(path, copy / path.name)
+        build = build_of(copy / files[0].name)
+        target = builds_dir() / build["key"]
+        if not target.is_dir():
+            try:
+                copy.rename(target)
+                return build
+            except OSError:
+                if not target.is_dir():
+                    raise
+        cached = target / files[0].name
+        if not cached.is_file() or not filecmp.cmp(cached, copy / files[0].name, shallow=False):
+            raise mesh_ops.Refused(
+                f"{files[0]} names build {build['key']}, and {target} holds another "
+                f"{files[0].name} of that build: a build id names one binary (rebuild it)")
+        return build
+    finally:
+        shutil.rmtree(copy, ignore_errors=True)
+
+
+def cached(key: str, binary: str) -> bool:
+    """Whether builds/<key>/ holds the service's binary (a build directory
+    is only ever made whole, cache_build and fetch_build)."""
+    return (builds_dir() / key / binary).is_file()
+
+
+def build_files(key: str) -> list[pathlib.Path]:
+    return sorted(path for path in (builds_dir() / key).iterdir()
+                  if path.is_file() and not path.name.startswith("."))
+
+
+def build_flags(key: str, binary: str) -> frozenset:
+    """The long flags that a cached build's binary lists in `--help`."""
+    path = builds_dir() / key / binary
+    if not path.is_file():
+        return frozenset()
+    return binary_flags(str(path), path.stat().st_mtime_ns) or frozenset()
+
+
+def fetch_build(node: dict, key: str, binary: str) -> None:
+    """A build that this worktree's cache lacks, from a node that has it:
+    fetched aside and renamed into place only with its service binary, so
+    an interrupted fetch is never taken for the build."""
+    target = builds_dir() / key
+    builds_dir().mkdir(parents=True, exist_ok=True)
+    fetched = pathlib.Path(tempfile.mkdtemp(prefix=".fetch-", dir=builds_dir()))
+    try:
+        common.rsync_from(node, f"{NODE_BUILDS}/{key}/", str(fetched) + "/")
+        if not (fetched / binary).is_file():
+            raise RuntimeError(f"{NODE_BUILDS}/{key}/ on {node['name']} has no {binary}")
+        if target.exists() and not cached(key, binary):
+            shutil.rmtree(target)
+        if not target.exists():
+            fetched.rename(target)
+    finally:
+        shutil.rmtree(fetched, ignore_errors=True)
+
+
+def installed_args(item: dict, role: str, key: str) -> list[str]:
+    """The arguments that a node runs on build `key`: the render's, with the
+    binary of that build on line 1 (C 2.5) and the node's lifecycle flags
+    (C 2.2) where the build has them: the operator's drain kept in the
+    state directory, and on an edge B's stop bound."""
+    binary = "av-contrib" if item["service"] == "needletail-contrib" else "av-mesh"
+    args = [f"{NODE_BUILDS}/{key}/{binary}", *item["args"][1:]]
+    if binary == "av-mesh":
+        flags = build_flags(key, binary)
+        given = flag_names(args)
+        if "--drain-state-file" in flags and "--drain-state-file" not in given:
+            args += ["--drain-state-file", f"/var/lib/needletail/{item['service']}.drained"]
+        if role == "edge" and "--stop-drain-ms" in flags and "--stop-drain-ms" not in given:
+            args += ["--stop-drain-ms", str(EDGE_STOP_DRAIN_MS)]
+    return args
+
+
+# The end of a staged host qdisc script: what check_host_qdisc reads, on
+# every NIC, or the script fails, and the activation refuses before it puts
+# anything in force (a roll then gates again and stops, exit 3: the host,
+# not the build).
+HOST_QDISC_VERIFY = r"""
+nics=0
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] || continue
+  dev=${path##*/}
+  nics=$((nics + 1))
+  shown=$(tc qdisc show dev "$dev")
+  root=$(printf '%s\n' "$shown" | grep '^qdisc ' | head -n 1)
+  CHECK
+done
+[ "$nics" -gt 0 ] || { echo "the host qdisc: no NIC"; exit 1; }
+"""
+HOST_QDISC_CHECK = {
+    "prio": r"""case "$root" in "qdisc prio 1: root"*) ;; *) echo "the host qdisc prio is not the root of $dev"; exit 1 ;; esac
+  printf '%s\n' "$shown" | grep -q '^qdisc pfifo 10: parent 1:1' \
+    || { echo "the host qdisc prio has no pfifo 10: on $dev"; exit 1; }
+  printf '%s\n' "$shown" | grep -q '^qdisc fq 20: parent 1:2' \
+    || { echo "the host qdisc prio has no fq 20: on $dev"; exit 1; }""",
+    "none": r"""case "$root" in "qdisc prio 1: root"*) echo "the host qdisc prio is still on $dev"; exit 1 ;; esac""",
+}
+
+
+def node_files(args: list[str], unit: str, settings: dict) -> dict[str, str]:
+    """The `.next` files of a service: its arguments, its unit, the kernel
+    settings and the host qdisc script, which checks what it put on every
+    NIC (HOST_QDISC_VERIFY)."""
+    sysctls = node_sysctls(settings)
+    qdisc = class_plan(settings)["host_qdisc"]
+    return {"args": args_text(args), "unit": unit,
+            "sysctl": "".join(f"{key} = {value}\n" for key, value in sysctls.items()),
+            "qdisc": "set -e\n" + HOST_QDISC_SCRIPT[qdisc]
+            + HOST_QDISC_VERIFY.replace("CHECK", HOST_QDISC_CHECK[qdisc])}
+
+
+def stage_node(node: dict, service: str, key: str, files: dict[str, str]) -> None:
+    """Files only (C 2.6): the build's binaries in /opt/needletail/builds/
+    <key>/, the TLS files, the service's `.next` files and the activation
+    script. Nothing is restarted, no kernel setting or qdisc is applied.
+    Every file is checked on the node by its sha256; old builds are pruned
+    (PRUNE_BUILDS)."""
+    binaries = build_files(key)
+    staging = common.ARTIFACT_DIR / "stage" / node["name"]
+    staging.mkdir(parents=True, exist_ok=True)
+    named = {}
+    for suffix, text in files.items():
+        path = staging / f"{service}.{suffix}.next"
+        path.write_text(text)
+        named[f"{NODE_ETC}/{path.name}"] = path
+    activate = staging / "activate"
+    activate.write_text(ACTIVATE_SCRIPT)
+    remote = f"{NODE_BUILDS}/{key}"
+    tls = common.ARTIFACT_DIR / "tls"
+    common.ssh_text(node, f"mkdir -p {remote} {NODE_ETC}/tls")
+    common.rsync_to(node, [str(path) for path in binaries], remote + "/")
+    common.rsync_to(node, [str(tls / "fullchain.pem"), str(tls / "privkey.pem")],
+                    f"{NODE_ETC}/tls/")
+    common.rsync_to(node, [str(tls / "ca.crt")],
+                    "/usr/local/share/ca-certificates/needletail-qualification.crt")
+    common.rsync_to(node, [str(path) for path in named.values()], f"{NODE_ETC}/")
+    common.rsync_to(node, [str(activate)], ACTIVATE_PATH)
+    expected = {f"{remote}/{path.name}": sha256_file(path) for path in binaries}
+    expected.update({remote_path: sha256_file(path) for remote_path, path in named.items()})
+    expected[ACTIVATE_PATH] = sha256_text(ACTIVATE_SCRIPT)
+    for name in ("fullchain.pem", "privkey.pem"):
+        expected[f"{NODE_ETC}/tls/{name}"] = sha256_file(tls / name)
+    output = common.ssh_text(node, "set -e\n" + "\n".join([
+        f"chown needletail:needletail {NODE_ETC}/tls/*.pem",
+        f"chmod 644 {NODE_ETC}/tls/fullchain.pem "
+        "/usr/local/share/ca-certificates/needletail-qualification.crt",
+        f"chmod 600 {NODE_ETC}/tls/privkey.pem",
+        f"chmod 644 {' '.join(sorted(named))}",
+        f"chmod 755 {ACTIVATE_PATH}",
+        f"touch {remote}",
+        PRUNE_BUILDS,
+        "sha256sum " + " ".join(sorted(expected)),
+    ]))
+    found = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            found[parts[1]] = parts[0]
+    wrong = sorted(path for path, digest in expected.items() if found.get(path) != digest)
+    if wrong:
+        raise RuntimeError(f"{node['name']}: staged files differ on the node: {', '.join(wrong)}")
+
+
+def activate_node(node: dict, service: str, not_after_ms: int, rollback: bool = False) -> dict:
+    """Run the node's activation script detached and return once its result
+    is written: {"ok", "why"} (why "late": refused at its deadline), with
+    what is then in force: "args_sha256", "render_sha256", "binary",
+    "unit_sha256", and the
+    host qdisc's output when it was applied ("qdisc", else None)."""
+    wait_s = max(0.0, not_after_ms / 1000 - time.time()) + mesh_ops.UNIT_TIMEOUT_STOP_S + 10
+    result = f"/run/needletail/activate-{service}.json"
+    command = (f"{ACTIVATE_PATH} {service} --not-after {int(not_after_ms)}"
+               + (" --rollback" if rollback else ""))
+    script = f"""rm -f {result}
+if ! systemd-run --quiet --collect --unit needletail-activate-{service} {command} >/dev/null 2>&1; then
+  echo '{{"ok": false, "why": "systemd-run refused it: an activation of {service} may be running"}}'
+else
+  i=0
+  while [ ! -f {result} ] && [ $i -lt {int(wait_s * 10)} ]; do sleep 0.1; i=$((i + 1)); done
+  if [ -f {result} ]; then head -n 1 {result}
+  else echo '{{"ok": false, "why": "no result in {wait_s:.0f} s"}}'; fi
+fi
+echo "args_sha256 $(head -c -1 {NODE_ETC}/{service}.args 2>/dev/null | sha256sum | cut -d' ' -f1)"
+echo "render_sha256 $({RENDER_SHA256.format(path=f"{NODE_ETC}/{service}.args")})"
+echo "binary $(head -n 1 {NODE_ETC}/{service}.args 2>/dev/null)"
+echo "unit_sha256 $(sha256sum /etc/systemd/system/{service}.service 2>/dev/null | cut -d' ' -f1)"
+if grep -q '"qdisc": true' {result} 2>/dev/null; then
+  echo "--- qdisc"; cat /run/needletail/qdisc-{service}.txt
+fi
+"""
+    output = common.ssh_text(node, script, timeout=int(wait_s) + 60)
+    head, _, qdisc = output.partition("--- qdisc\n")
+    lines = head.splitlines()
+    try:
+        outcome = json.loads(lines[0])
+    except (IndexError, ValueError):
+        outcome = {"ok": False, "why": f"no readable result: {output[-300:]!r}"}
+    out = {"ok": outcome.get("ok") is True, "why": str(outcome.get("why") or ""),
+           "qdisc": qdisc if qdisc else None}
+    for line in lines[1:]:
+        name, _, value = line.partition(" ")
+        if name in ("args_sha256", "render_sha256", "binary", "unit_sha256"):
+            out[name] = value.strip() or None
+    return out
+
+
+def qdisc_checked(name: str, output: str | None, settings: dict) -> None:
+    """The host qdisc that an activation applied (its output, None when it
+    applied none) is on every NIC; the output is kept in qdisc/<node>.txt."""
+    if output is None:
+        return
+    qdisc = class_plan(settings)["host_qdisc"]
+    directory = common.ARTIFACT_DIR / "qdisc"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.txt").write_text(output)
+    wrong = check_host_qdisc(output, qdisc)
+    if wrong:
+        raise RuntimeError(f"{name}: host qdisc {qdisc} is not on {', '.join(wrong)}: "
+                           f"{output[-600:]}")
+
+
+def install_tools(node: dict, settings: dict, binaries: bool) -> str:
+    """A host without a service (a load host): its tools as plain files in
+    /usr/local/bin, the TLS files, and its kernel settings at once."""
     if binaries:
         sources = [str(path) for path in binaries_for(node["role"], node)]
         for source in sources:
@@ -3043,14 +3595,14 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
         common.rsync_to(node, sources, "/usr/local/bin/")
     tls = common.ARTIFACT_DIR / "tls"
     common.rsync_to(node, [str(tls / "fullchain.pem"), str(tls / "privkey.pem")],
-                    "/etc/needletail/tls/")
+                    f"{NODE_ETC}/tls/")
     common.rsync_to(node, [str(tls / "ca.crt")],
                     "/usr/local/share/ca-certificates/needletail-qualification.crt")
     commands = [
-        "chown needletail:needletail /etc/needletail/tls/*.pem",
-        "chmod 644 /etc/needletail/tls/fullchain.pem "
+        f"chown needletail:needletail {NODE_ETC}/tls/*.pem",
+        f"chmod 644 {NODE_ETC}/tls/fullchain.pem "
         "/usr/local/share/ca-certificates/needletail-qualification.crt",
-        "chmod 600 /etc/needletail/tls/privkey.pem",
+        f"chmod 600 {NODE_ETC}/tls/privkey.pem",
     ]
     sysctls = node_sysctls(settings)
     if sysctls:
@@ -3066,28 +3618,906 @@ def install_node(node: dict, rendered: dict, settings: dict, binaries: bool) -> 
             f"cat >/etc/sysctl.d/91-needletail-listeners.conf <<'SYSCTL'\n{lines}\nSYSCTL",
             "sysctl -q -p /etc/sysctl.d/91-needletail-listeners.conf",
         ]
-    item = rendered.get(node["name"])
-    if not item and node["role"] in ("backbone", "edge"):
-        # The merged topology uses no backbone relay: one left running from
-        # a legacy deploy would still send to the distributors. A standby
-        # edge (standby_edges) is out of the mesh until it is restarted in.
-        commands.append("systemctl disable --now needletail-mesh.service >/dev/null 2>&1 || true")
-    if item:
-        apply_host_qdisc(node, settings)
-        service = item["service"]
-        args_file = common.ARTIFACT_DIR / "nodes" / f"{node['name']}.args"
-        common.rsync_to(node, [str(args_file)], f"/etc/needletail/{service}.args")
-        unit = unit_text(service, item["rust_log"], settings)
-        commands += [
-            f"chmod 644 /etc/needletail/{service}.args",
-            f"cat >/etc/systemd/system/{service}.service <<'UNIT'\n{unit}UNIT",
-            "systemctl daemon-reload",
-            f"systemctl enable {service}.service >/dev/null 2>&1",
-            f"systemctl restart {service}.service",
-            "sleep 2",
-            f"systemctl is-active {service}.service",
-        ]
     return common.ssh_text(node, "set -e\n" + "\n".join(commands))
+
+
+def stop_service(node: dict, service: str = "needletail-mesh") -> str:
+    """Stop a service that must not run and keep it from starting: a
+    backbone relay the merged topology does not use (one left from a legacy
+    deploy would still send to the distributors), a standby edge."""
+    return common.ssh_text(node, f"systemctl disable --now {service}.service >/dev/null 2>&1 "
+                                 "|| true")
+
+
+# ------------------------------------------------------------ what is deployed (C 2.6)
+
+@functools.lru_cache(maxsize=None)
+def lab_tool():
+    """The lab tool as a module: its watchdog check and its state lock
+    (C 2.8), which the deploy's record and checks go through."""
+    spec = importlib.util.spec_from_file_location(
+        "small_mesh_lab", common.ROOT / "scripts" / "linode-small-mesh-lab.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# What the deploy calls of the lab tool in-process (C CT3).
+LAB_TOOL_CALLS = ("change_state", "watchdog_ensure")
+
+
+def lab_tool_checked() -> None:
+    """Exit 2, before anything is touched, when the lab tool lacks the
+    state lock or the watchdog check that every change command and its
+    record go through (C CT3)."""
+    missing = [name for name in LAB_TOOL_CALLS if not hasattr(lab_tool(), name)]
+    if missing:
+        print(f"scripts/linode-small-mesh-lab.py has no {', '.join(missing)}: the deployed "
+              "record and the watchdog check need the lab tool of C CT3", file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+
+
+def run_lab(*arguments: str) -> subprocess.CompletedProcess:
+    """The lab tool's command line, for what bills (replace, add, remove):
+    its own watchdog and budget checks apply. Its output goes to stderr
+    (a change command's stdout is its marks)."""
+    result = subprocess.run([sys.executable, str(common.ROOT / "scripts" /
+                                                 "linode-small-mesh-lab.py"), *arguments],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            check=False)
+    sys.stderr.write(result.stdout)
+    return result
+
+
+def tier_builds(nodes: dict, roles: dict) -> dict:
+    """The build of each tier: the one most of its nodes run by the record
+    (a tie goes to the newer). A roll stopped part-way leaves the tier on
+    the build most of it runs; a node that joins later gets that one."""
+    counts: dict[str, dict[str, int]] = {}
+    for name, entry in nodes.items():
+        tier = mesh_ops.ROLE_TIER.get(roles.get(name))
+        if tier and entry.get("build"):
+            builds = counts.setdefault(tier, {})
+            builds[entry["build"]] = builds.get(entry["build"], 0) + 1
+    return {tier: max(builds, key=lambda key: (builds[key], key_build(key)["unix"]))
+            for tier, builds in sorted(counts.items())}
+
+
+# What the record keeps of a node besides its build, as the node reported
+# it after its activation.
+RECORD_FIELDS = ("args_sha256", "render_sha256", "unit_sha256")
+
+
+def record_deployed(full: dict, entries: dict, settings: dict | None = None,
+                    standby: list[str] | None = None, files: bool = False) -> None:
+    """state["deployed"] (C 2.6), under the lab state's lock. `entries`:
+    per node `{"build", "args_sha256", "render_sha256", "unit_sha256"}` as
+    the node reported them after its activation, with "set" (the `--set`
+    values it runs beyond the deployed settings), "prev" (what its
+    `.args.prev` holds) and "activating" (an activation begun and not yet
+    seen to end) where they apply; None drops a node (held out). `settings`:
+    the settings in force (a push, a fold, an adoption), `standby` the edges
+    held out, `files`: the routes and hunted ports rendered with. Only nodes
+    of the lab are kept, and the tiers' builds follow what they run
+    (tier_builds)."""
+    routes = sha256_file(common.ARTIFACT_DIR / "routes.json")
+    ecmp = sha256_file(HUNT_FILE)
+
+    def change(current: dict) -> None:
+        deployed = current.setdefault("deployed", {})
+        if settings is not None:
+            deployed["settings"] = dict(settings)
+        if standby is not None:
+            deployed.setdefault("settings", {})["standby_edges"] = list(standby)
+        if files:
+            deployed.update(routes_sha256=routes, ecmp_sha256=ecmp)
+        created = current.get("nodes") or {}
+        nodes = {**(deployed.get("nodes") or {}), **entries}
+        deployed["nodes"] = {name: entry for name, entry in nodes.items()
+                             if entry is not None and name in created}
+        deployed["tiers"] = tier_builds(deployed["nodes"],
+                                        {name: created[name]["role"] for name in deployed["nodes"]})
+
+    lab_tool().change_state(common.state_path(), full, change)
+
+
+def setting(settings: dict, key: str):
+    """A setting's value, a key that `settings` lacks taken at its default."""
+    return settings.get(key, DEFAULT_SETTINGS.get(key))
+
+
+def bare(entry: dict) -> dict:
+    """A record entry without what it keeps beside the node's own state."""
+    return {key: value for key, value in entry.items() if key not in ("prev", "activating")}
+
+
+def rebased(entry: dict, old: dict, new: dict) -> dict:
+    """A record entry whose "set" is against the deployed settings `old`,
+    against `new`: every value the node runs stays as it is (its "prev" and
+    "activating" too)."""
+    own = entry.get("set") or {}
+    effective = {**old, **own}
+    keys = set(own) | {key for key in set(old) | set(new)
+                       if key not in ("standby_edges", "settings_version")
+                       and setting(old, key) != setting(new, key)}
+    delta = {key: setting(effective, key) for key in sorted(keys)
+             if setting(effective, key) != setting(new, key)}
+    out = {key: value for key, value in entry.items() if key != "set"}
+    if delta:
+        out["set"] = delta
+    for inner in ("prev", "activating"):
+        if isinstance(entry.get(inner), dict):
+            out[inner] = rebased(entry[inner], old, new)
+    return out
+
+
+def binary_build(binary: str | None) -> str | None:
+    """The build key that line 1 of an `.args` names
+    (/opt/needletail/builds/<key>/<binary>); None for any other path (the
+    layout before builds: /usr/local/bin/av-mesh)."""
+    match = re.fullmatch(re.escape(NODE_BUILDS) + r"/([0-9A-Za-z._-]+-[0-9]+)/[^/]+", binary or "")
+    return match.group(1) if match else None
+
+
+def settings_differ(recorded: dict, current: dict) -> dict:
+    """{key: (deployed, here)} for every setting that differs, a key one of
+    them lacks taken at its default. `standby_edges` is which edges serve,
+    not how they run, and is left out."""
+    keys = (set(recorded) | set(current)) - {"standby_edges", "settings_version"}
+    out = {}
+    for key in sorted(keys):
+        old = recorded.get(key, DEFAULT_SETTINGS.get(key))
+        new = current.get(key, DEFAULT_SETTINGS.get(key))
+        if old != new:
+            out[key] = (old, new)
+    return out
+
+
+def lab_files_checked(full: dict, remeasure: bool = False, hunting: bool = False) -> None:
+    """routes.json and ecmp-ports.json must be this lab's (lab_file_refused),
+    unless the command writes them again (`--remeasure`, `hunt`)."""
+    routes = common.ARTIFACT_DIR / "routes.json"
+    if routes.is_file() and not remeasure:
+        lab_file_refused(routes, json.loads(routes.read_text()).get("lab_run_id"), full["run_id"])
+    if HUNT_FILE.is_file() and not hunting:
+        lab_file_refused(HUNT_FILE, load_hunted_ports().get("lab_run_id"), full["run_id"])
+
+
+@contextlib.contextmanager
+def ops_locked():
+    """The ops lock (C 2.6: `<lab state>.ops.lock`) for a command that does
+    not run through the engine (push, restart --roles, hunt, change); a
+    command started by the holder proceeds with its token
+    (NEEDLETAIL_OPS_LOCK_TOKEN). Refused: exit 2."""
+    path = common.state_path()
+    lock = mesh_ops.OpsLock(path.with_name(path.name + ".ops.lock"))
+    try:
+        lock.acquire()
+    except mesh_ops.Refused as refused:
+        print(refused, file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    previous = os.environ.get(lock.ENV)
+    os.environ[lock.ENV] = lock.token
+    try:
+        yield lock
+    finally:
+        if previous is None:
+            os.environ.pop(lock.ENV, None)
+        else:
+            os.environ[lock.ENV] = previous
+        lock.release()
+
+
+class LinodeOps(mesh_ops.Ops):
+    """The change engine's backend on a Linode lab (mesh_ops.Ops; C 2.13).
+    `roll`, `restart --nodes` and `replace` run through mesh_ops on it;
+    `push`, `restart --roles` and `start --nodes` use its staging,
+    activation and record directly, so every install goes one way.
+
+    `settings` are the worktree's (this lab's settings.json), `given` this
+    command's `--set`; every node is rendered with all created nodes in
+    service (a standby edge or a slot gets the arguments it runs once taken
+    in; no other node's change, D3), on a build of its own: its binary
+    from the build cache, line 1 of its arguments that build's path on the
+    node (installed_args), and with settings of its own: the worktree's,
+    its record's "set" and this command's `--set` (node_settings). A `--set`
+    goes into the deployed settings and settings.json only once every
+    running node runs it (fold); until then each node's record says what
+    it runs, so a command stopped part-way can be run again or resumed."""
+
+    # C 3.5: the ssh control connection lapses after 900 s idle
+    # (ControlPersist); a node in hand gets a fresh one before its gate.
+    SSH_REFRESH_S = 600.0
+
+    def __init__(self, full: dict, settings: dict, given: dict | None = None,
+                 adopt: bool = False, http: mesh_ops.Http | None = None):
+        self.full = full
+        self.base = dict(settings)
+        self.given = dict(given or {})
+        self.settings = {**self.base, **self.given}
+        self.adopt = adopt
+        self.adopting = False
+        self.http = http or mesh_ops.Http()
+        path = common.state_path()
+        self.lock_path = path.with_name(path.name + ".ops.lock")
+        self.evidence_dir = common.ARTIFACT_DIR / "rolls"
+        self.staged: dict[str, dict] = {}
+        self._plans: dict[str, dict] = {}
+        self._renders: dict[tuple, dict] = {}
+        self._ssh_at: dict[str, float] = {}
+
+    # ---------------------------------------------------------- the lab
+    def deployed(self) -> dict:
+        return self.full.get("deployed") or {}
+
+    def entry(self, name: str) -> dict:
+        """Node `name`'s entry of the deployed record (record_deployed)."""
+        return dict((self.deployed().get("nodes") or {}).get(name) or {})
+
+    def held_out(self, name: str) -> bool:
+        return name in standby_edges(self.settings)
+
+    def node_settings(self, name: str, given: dict | None = None) -> dict:
+        """The settings node `name` runs by the record (the worktree's with
+        its own "set"; a node held out takes the worktree's when started),
+        with `given` on top."""
+        own = {} if self.held_out(name) else (self.entry(name).get("set") or {})
+        return {**self.base, **own, **(given or {})}
+
+    def set_of(self, settings: dict) -> dict:
+        """The values of a node's settings that are not the worktree's."""
+        return {key: value for key, value in sorted(settings.items())
+                if value != setting(self.base, key)}
+
+    def role(self, name: str) -> str | None:
+        node = self.full["nodes"].get(name) or lab_slots(self.full).get(name)
+        return node["role"] if node else None
+
+    def service(self, name: str) -> str:
+        return "needletail-contrib" if self.role(name) == "contributor" else "needletail-mesh"
+
+    def address(self, name: str) -> tuple[str, int] | None:
+        node = self.full["nodes"].get(name)
+        if not node or not node.get("public_ipv4"):
+            return None
+        return node["public_ipv4"], CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT
+
+    def reload(self) -> None:
+        """The lab state again from disk (an instance replaced or added)."""
+        fresh = common.load_state()
+        self.full.clear()
+        self.full.update(fresh)
+        self._plans.clear()
+        self._renders.clear()
+
+    def nodes(self) -> list[dict]:
+        standby = set(standby_edges(self.settings))
+        slots = lab_slots(self.full)
+        created = self.full["nodes"]
+        tree = relay_tree(active_state(self.full, self.settings), self.settings)
+        parents = {child["node"]["name"]: (child["primary"]["name"], child["secondary"]["name"])
+                   for child in tree["children"]}
+        records = []
+        for name in sorted({*created, *slots}, key=mesh_ops.natural):
+            node = created.get(name) or slots[name]
+            if node["role"] not in mesh_ops.ROLE_TIER:
+                continue
+            exists = name in created
+            primary, secondary = parents.get(name, (None, None))
+            records.append({
+                "name": name, "role": node["role"], "site": node["site"],
+                "vlan": node.get("vlan_ipv4"), "public": node.get("public_ipv4") if exists else None,
+                "serving": exists and name not in standby, "slot": name in slots,
+                "standby": exists and name in standby, "created": exists,
+                "primary": primary, "secondary": secondary})
+        return records
+
+    def status(self, node: str):
+        """The engine asks this of the node in hand (its gate, drain and
+        readiness), and of no other: the ssh control connection to a node
+        that answers is opened, or refreshed, here (fresh_ssh)."""
+        target = self.address(node)
+        if target is None:
+            return None
+        code, document = self.http.get(*target, "/api/node")
+        if code != 200:
+            return None
+        self.fresh_ssh(node)
+        return document
+
+    def fresh_ssh(self, node: str) -> None:
+        """An ssh to the node unless this command reached it within
+        SSH_REFRESH_S, so that its activation, 1.5 s after a gate, runs on
+        an open control connection (C 3.5). Best effort: the activation
+        opens one itself when this fails."""
+        now = time.monotonic()
+        if now - self._ssh_at.get(node, -self.SSH_REFRESH_S) < self.SSH_REFRESH_S:
+            return
+        self._ssh_at[node] = now
+        try:
+            common.ssh_text(self.full["nodes"][node], "true", check=False, timeout=10)
+        except (KeyError, OSError, RuntimeError, subprocess.SubprocessError):
+            pass
+
+    def statuses(self, nodes) -> dict:
+        targets = {name: (*self.address(name), "/api/node") for name in nodes if self.address(name)}
+        answers = self.http.poll(targets)
+        return {name: (answers[name][1] if name in answers and answers[name][0] == 200 else None)
+                for name in nodes}
+
+    def get(self, node: str, path: str) -> tuple:
+        target = self.address(node)
+        return (None, None) if target is None else self.http.get(*target, path)
+
+    def post(self, node: str, path: str, body: dict) -> int | None:
+        target = self.address(node)
+        return None if target is None else self.http.post(*target, path, body)[0]
+
+    # ---------------------------------------------------------- builds and the render
+    def recorded(self, name: str) -> str | None:
+        """The build key node `name` runs by the record, else (a node not
+        recorded, or held out: it is started on it) its tier's."""
+        deployed = self.deployed()
+        tier = mesh_ops.ROLE_TIER.get(self.role(name))
+        own = None if self.held_out(name) else self.entry(name).get("build")
+        return own or (deployed.get("tiers") or {}).get(tier)
+
+    def ensure_cached(self, key: str | None, binary: str) -> None:
+        if key is None or cached(key, binary):
+            return
+        holders = [name for name, entry in (self.deployed().get("nodes") or {}).items()
+                   if entry.get("build") == key and name in self.full["nodes"]]
+        for name in holders:
+            try:
+                fetch_build(self.full["nodes"][name], key, binary)
+                return
+            except Exception as error:  # noqa: BLE001 - the next holder may answer
+                print(f"build {key} from {name}: {error}", file=sys.stderr)
+        raise mesh_ops.Refused(f"build {key} is neither in {builds_dir()} nor on a node that runs it")
+
+    def plan(self, settings: dict) -> dict:
+        key = json.dumps(settings, sort_keys=True, default=str)
+        if key not in self._plans:
+            path = common.ARTIFACT_DIR / "routes.json"
+            if not path.is_file():
+                raise mesh_ops.Refused("no routes.json: push the whole lab first")
+            program = build_program(self.in_service(settings), settings,
+                                    json.loads(path.read_text()))
+            self._plans[key] = compile_plan(program)
+        return self._plans[key]
+
+    def in_service(self, settings: dict) -> dict:
+        return active_state(self.full, {**settings, "standby_edges": []})
+
+    def rendered(self, settings: dict, mesh_key: str | None, contrib_key: str | None) -> dict:
+        cache = (json.dumps(settings, sort_keys=True, default=str), mesh_key, contrib_key)
+        if cache not in self._renders:
+            self.ensure_cached(mesh_key, "av-mesh")
+            self.ensure_cached(contrib_key, "av-contrib")
+            RENDER_BINARIES.clear()
+            RENDER_BINARIES.update({
+                "av-mesh": builds_dir() / mesh_key / "av-mesh" if mesh_key else None,
+                "av-contrib": builds_dir() / contrib_key / "av-contrib" if contrib_key else None})
+            self._renders[cache] = render(self.in_service(settings), settings, self.plan(settings))
+        return self._renders[cache]
+
+    def node_args(self, name: str, settings: dict, key: str) -> tuple[list[str], str, str]:
+        """(arguments, unit, service) of node `name` on build `key`. The
+        render of a service looks at the flags of the other kind's binary
+        too (wave7_args): that is the build its tier runs."""
+        deployed_tiers = self.deployed().get("tiers") or {}
+        role = self.role(name)
+        if role == "contributor":
+            mesh_key, contrib_key = deployed_tiers.get("forwarders"), key
+        else:
+            mesh_key, contrib_key = key, deployed_tiers.get("contributors")
+        self.ensure_cached(key, "av-contrib" if role == "contributor" else "av-mesh")
+        item = self.rendered(settings, mesh_key, contrib_key).get(name)
+        if item is None:
+            raise mesh_ops.Refused(f"{name}: no service is rendered for it")
+        args = installed_args(item, role, key)
+        return args, unit_text(item["service"], item["rust_log"], settings), item["service"]
+
+    # ---------------------------------------------------------- checks (C 2.6)
+    def check(self, command: str, nodes: list[str]) -> None:
+        """The watchdog; the `--set` rules; the reproduce check: the
+        worktree's settings, routes and hunted ports are the deployed ones,
+        and each node of the command that answers runs exactly what its
+        recorded build renders with them. `--adopt-settings` goes on and
+        says what it adopts."""
+        problems = lab_tool().watchdog_ensure(self.full, common.state_path())
+        if problems:
+            raise mesh_ops.Refused("the lab's watchdog: " + "; ".join(problems))
+        self.settle()
+        deployed = self.deployed()
+        if not deployed.get("nodes"):
+            raise mesh_ops.Refused("the lab state records nothing deployed: push the lab first")
+        outside = sorted(set(self.given) - set(ROLLABLE_SETTINGS))
+        if outside:
+            raise mesh_ops.Refused(
+                f"--set {', '.join(outside)}: not a setting that {command} may change "
+                "(ROLLABLE_SETTINGS); a setting that two peers must agree on needs push")
+        differ = settings_differ(deployed.get("settings") or {}, self.base)
+        files = [label for label, path, field in (
+            ("routes.json", common.ARTIFACT_DIR / "routes.json", "routes_sha256"),
+            ("ecmp-ports.json", HUNT_FILE, "ecmp_sha256")) if sha256_file(path) != deployed.get(field)]
+        statuses = self.statuses(nodes)
+        mismatched = []
+        for name in nodes:
+            status = mesh_ops.status_of(statuses.get(name))
+            if status is None:
+                continue  # not running (a node to start): nothing to compare
+            entry = (deployed["nodes"]).get(name)
+            if entry is None:
+                mismatched.append(f"{name} (not in the record)")
+                continue
+            if entry.get("activating"):
+                mismatched.append(f"{name} (an activation of it did not end, and it runs neither "
+                                  "the arguments before it nor those it put in force)")
+                continue
+            if not entry.get("build"):
+                mismatched.append(f"{name} (runs no build of {NODE_BUILDS})")
+                continue
+            args, unit, _service = self.node_args(name, self.node_settings(name), entry["build"])
+            if status.args_sha256 != entry.get("args_sha256"):
+                mismatched.append(f"{name} (runs other arguments than the record)")
+            elif (render_sha256(args), sha256_text(unit)) != \
+                    (entry.get("render_sha256"), entry.get("unit_sha256")):
+                mismatched.append(name)
+        if differ or files or mismatched:
+            text = "; ".join(
+                ([("settings differ from the deployed record: " + ", ".join(
+                    f"{key}={json.dumps(new)} (deployed {json.dumps(old)})"
+                    for key, (old, new) in differ.items()))] if differ else [])
+                + ([f"{' and '.join(files)} not the deployed one"] if files else [])
+                + ([f"running other arguments than they render: {', '.join(mismatched)}"]
+                   if mismatched else []))
+            if not self.adopt:
+                raise mesh_ops.Refused(f"these settings do not reproduce what is deployed: {text} "
+                                       "(--adopt-settings adopts them)")
+            print(f"--adopt-settings: adopting what this worktree renders: {text}", file=sys.stderr)
+            # The deployed settings become the worktree's at this command's
+            # first activation (record).
+            self.adopting = bool(differ or files)
+        if self.given:
+            beyond = [name for name in self.changed_by_set() if name not in nodes]
+            if beyond:
+                raise mesh_ops.Refused(f"--set {', '.join(sorted(self.given))} changes "
+                                       f"{', '.join(beyond)}, outside the nodes of this {command}")
+            self.fold()
+
+    def changed_by_set(self) -> list[str]:
+        """The nodes that run (recorded, not held out) whose arguments or
+        unit `--set` changes, each on its recorded build with its recorded
+        settings. A node held out takes the deployed settings when it is
+        started."""
+        out = []
+        for name in sorted(self.deployed().get("nodes") or {}, key=mesh_ops.natural):
+            key = self.recorded(name)
+            if name not in self.full["nodes"] or self.held_out(name) or key is None:
+                continue
+            try:
+                before = self.node_args(name, self.node_settings(name), key)
+            except mesh_ops.Refused:
+                continue  # no service (a backbone the topology does not use)
+            after = self.node_args(name, self.node_settings(name, self.given), key)
+            if (render_sha256(before[0]), before[1]) != (render_sha256(after[0]), after[1]):
+                out.append(name)
+        return out
+
+    def settle(self) -> None:
+        """Activations begun and not seen to end (the tool killed or its ssh
+        dropped during one, a push that failed part-way), each settled by
+        what the node runs: the arguments it was to put in force (it ran:
+        recorded as such) or those it had (it did not). A node that does
+        not answer stays as it is, and one that runs neither is named by
+        the reproduce check."""
+        nodes = self.deployed().get("nodes") or {}
+        pending = [name for name, entry in nodes.items()
+                   if entry.get("activating") and name in self.full["nodes"]]
+        if not pending:
+            return
+        statuses = self.statuses(pending)
+        settled = {}
+        for name in pending:
+            status = mesh_ops.status_of(statuses.get(name))
+            entry = nodes[name]
+            if status is None:
+                continue
+            if status.args_sha256 == entry["activating"].get("args_sha256"):
+                settled[name] = entry["activating"]
+                print(f"{name}: an activation that did not end had run; recorded",
+                      file=sys.stderr)
+            elif status.args_sha256 == entry.get("args_sha256"):
+                settled[name] = {key: value for key, value in entry.items() if key != "activating"}
+                print(f"{name}: an activation that did not end had not run", file=sys.stderr)
+        if settled:
+            record_deployed(self.full, settled)
+
+    def fold(self) -> None:
+        """Once every running node runs this command's `--set`, it becomes
+        the deployed settings, and the keys it sets are written into this
+        worktree's settings.json as that file is now (another command may
+        have changed it meanwhile): the next command reproduces the lab
+        from them. The record's entries keep what each node runs."""
+        new = {**self.base, **self.given}
+        if not settings_differ(self.base, new) or self.changed_by_set():
+            return
+        entries = {}
+        for name, entry in (self.deployed().get("nodes") or {}).items():
+            # Each node renders the same with the new value as with its own
+            # (none is changed by the --set), and one held out takes the
+            # deployed settings when it starts: its own values of these
+            # keys go. What it ran before ("prev") keeps its values.
+            own = {key: value for key, value in (entry.get("set") or {}).items()
+                   if key not in self.given and value != setting(new, key)}
+            entry = {key: value for key, value in rebased(entry, self.base, new).items()
+                     if key != "set"}
+            entries[name] = {**entry, "set": own} if own else entry
+        record_deployed(self.full, entries, settings=new)
+        document = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
+        document.update(self.given)
+        document["lab_run_id"] = self.full["run_id"]
+        SETTINGS_FILE.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+        self.base = new
+        print(f"--set {', '.join(sorted(self.given))}: every node runs it; it is now the "
+              f"deployed settings and {SETTINGS_FILE}'s", file=sys.stderr)
+
+    def target(self, tier: str) -> dict:
+        build = cache_build(TIER_ROLE[tier])
+        return {"git": build["git"], "unix": build["unix"], "dirty": build["dirty"]}
+
+    # ---------------------------------------------------------- staging and activation
+    def stage(self, nodes: list[str], build: dict | None) -> None:
+        plans = {}
+        for name in nodes:
+            key = f"{build['git']}-{build['unix']}" if build else self.recorded(name)
+            if key is None:
+                raise mesh_ops.Refused(f"{name} has no recorded build (push first)")
+            settings = self.node_settings(name, self.given)
+            args, unit, service = self.node_args(name, settings, key)
+            args = self.kept_stamp(name, key, args, unit)
+            plans[name] = (service, key, node_files(args, unit, settings))
+            self.staged[name] = self.intended(key, args, unit, settings)
+        common.parallel([self.full["nodes"][name] for name in nodes],
+                        lambda node: stage_node(node, *plans[node["name"]]))
+        now = time.monotonic()
+        self._ssh_at.update({name: now for name in nodes})
+
+    def intended(self, key: str, args: list[str], unit: str, settings: dict) -> dict:
+        """The record entry of a node once `args` (rendered with `settings`
+        on build `key`) and `unit` are in force."""
+        entry = {"build": key, "args_sha256": args_sha256(args),
+                 "render_sha256": render_sha256(args), "unit_sha256": sha256_text(unit)}
+        own = self.set_of(settings)
+        return {**entry, "set": own} if own else entry
+
+    def kept_stamp(self, name: str, key: str, args: list[str], unit: str) -> list[str]:
+        """The arguments the node runs, when they are today's render but for
+        the time of their render (a contributor's path observation,
+        RENDER_TIME_FLAG): staged again as they are, so that the node is on
+        the target and skipped, and a forced restart keeps what it ran."""
+        old = self.entry(name)
+        if old.get("args_sha256") in (None, args_sha256(args)) or \
+                (old.get("build"), old.get("render_sha256"), old.get("unit_sha256")) != \
+                (key, render_sha256(args), sha256_text(unit)):
+            return args
+        running = common.ssh_text(self.full["nodes"][name],
+                                  f"cat {NODE_ETC}/{self.service(name)}.args",
+                                  check=False).splitlines()
+        if running and args_sha256(running) == old["args_sha256"] and \
+                render_sha256(running) == render_sha256(args):
+            return running
+        return args
+
+    def expected(self, node: str, rollback: bool = False) -> dict:
+        if rollback:
+            text = common.ssh_text(self.full["nodes"][node],
+                                   f"cat {NODE_ETC}/{self.service(node)}.args.prev", check=False)
+            args = text.splitlines()
+            if not args:
+                raise mesh_ops.Refused(f"{node} has no previous arguments to roll back to")
+            key = binary_build(args[0])
+            if key is None:
+                raise mesh_ops.Refused(f"{node}: its previous arguments run {args[0]}, not a "
+                                       f"build of {NODE_BUILDS}; they cannot be put back")
+            build = key_build(key)
+            return {"git": build["git"], "unix": build["unix"], "args_sha256": args_sha256(args)}
+        staged = self.staged.get(node)
+        if staged is None:
+            raise mesh_ops.Refused(f"{node}: nothing is staged")
+        build = key_build(staged["build"])
+        return {"git": build["git"], "unix": build["unix"], "args_sha256": staged["args_sha256"]}
+
+    def activation_of(self, node: str, old: dict, rollback: bool) -> dict | None:
+        """The entry node `node` has once its activation has run: what is
+        staged, or with `rollback` what its `.args.prev` holds by the record
+        (None when the record does not know). Either keeps what it replaces
+        as its "prev"."""
+        if rollback:
+            prev = old.get("prev")
+            return {**prev, "prev": prev} if prev else None
+        staged = self.staged.get(node)
+        if staged is None:
+            return None
+        return {**staged, "prev": bare(old)} if old.get("build") else dict(staged)
+
+    @staticmethod
+    def settled(old: dict, intended: dict | None, result: dict) -> dict | None:
+        """The record entry after an activation, by what the node then has
+        in force (`result`, read on the node after its script): what was
+        intended, what was there before (nothing was put in force), or,
+        when it is neither, what the node reports. None: nothing to
+        record."""
+        read = {field: result.get(field) for field in RECORD_FIELDS}
+        if read["args_sha256"] is None:
+            return None
+        if intended is not None and read["args_sha256"] == intended["args_sha256"]:
+            return {**intended, **read}
+        if read["args_sha256"] == old.get("args_sha256"):
+            return {key: value for key, value in old.items() if key != "activating"}
+        return {"build": binary_build(result.get("binary")), **read}
+
+    def activate(self, node: str, not_after_ms: int, rollback: bool = False) -> dict:
+        """The activation, recorded as begun ("activating") before it runs:
+        if this command dies or its ssh drops during it, the next command
+        settles the record by what the node runs (settle)."""
+        old = self.entry(node)
+        intended = self.activation_of(node, old, rollback)
+        if intended is not None:
+            record_deployed(self.full, {node: {**old, "activating": intended}})
+        result = activate_node(self.full["nodes"][node], self.service(node), not_after_ms, rollback)
+        self._ssh_at[node] = time.monotonic()
+        entry = self.settled(old, intended, result)
+        if entry is not None:
+            self.record({node: entry})
+        qdisc_checked(node, result.get("qdisc"), self.node_settings(node))
+        return {"ok": result["ok"], "why": result["why"]}
+
+    def record(self, entries: dict) -> None:
+        """The record of nodes this command activated; with
+        `--adopt-settings`, the worktree's settings as the deployed ones;
+        then the fold of this command's `--set`."""
+        if self.adopting:
+            record_deployed(self.full, entries, settings=self.base, files=True)
+            self.adopting = False
+        else:
+            record_deployed(self.full, entries)
+        if self.given:
+            self.fold()
+
+    def install(self, names: list[str] | None, builds: dict | None, binaries: bool = True) -> None:
+        """push and restart --roles (C 2.6): by role, parents first, every
+        node of a role in parallel: a node in service staged on its tier's
+        build (`builds`, else the recorded one) and activated, a standby
+        edge staged and left stopped, a load host's tools and kernel
+        settings; a backbone the topology does not use is stopped. Every
+        node to activate is recorded as such first, and each node that
+        activated is recorded even when another of its role failed; the
+        settings, routes and hunted ports with them."""
+        standby = set(standby_edges(self.settings))
+        for role in ("backbone", "distributor", "edge", "contributor", "load"):
+            group = [node for node in common.nodes_by_role(self.full, role)
+                     if names is None or node["name"] in names]
+            if not group:
+                continue
+            # Rendered here, not in the workers: RENDER_BINARIES is one
+            # module global.
+            plans: dict[str, tuple | None] = {}
+            for node in group:
+                name = node["name"]
+                if role == "load":
+                    plans[name] = None
+                    continue
+                build = (builds or {}).get(mesh_ops.ROLE_TIER[role])
+                key = f"{build['git']}-{build['unix']}" if build else self.recorded(name)
+                if key is None:
+                    raise mesh_ops.Refused(f"{name} has no recorded build (push it with its "
+                                           "binaries)")
+                try:
+                    args, unit, service = self.node_args(name, self.settings, key)
+                except mesh_ops.Refused:
+                    if role != "backbone":
+                        raise
+                    plans[name] = None
+                    continue
+                plans[name] = (service, key, node_files(args, unit, self.settings))
+                self.staged[name] = self.intended(key, args, unit, self.settings)
+            olds = {name: self.entry(name) for name in plans}
+            intended = {name: self.activation_of(name, olds[name], False) for name in plans
+                        if plans[name] is not None and name not in standby}
+            if intended:
+                record_deployed(self.full, {name: {**olds[name], "activating": entry}
+                                            for name, entry in intended.items()})
+            entries: dict[str, dict] = {}
+
+            def one(node: dict) -> str:
+                name = node["name"]
+                if role == "load":
+                    install_tools(node, self.settings, binaries)
+                    return "tools"
+                if plans[name] is None:
+                    stop_service(node)
+                    return "stopped (not in the topology)"
+                stage_node(node, *plans[name])
+                if name in standby:
+                    stop_service(node)
+                    return "staged, held out"
+                result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000))
+                entry = self.settled(olds[name], intended[name], result)
+                if entry is not None:
+                    entries[name] = entry
+                if not result["ok"]:
+                    raise RuntimeError(f"activation: {result['why']}")
+                qdisc_checked(name, result.get("qdisc"), self.settings)
+                return "activated"
+
+            try:
+                results = common.parallel(group, one)
+            finally:
+                if intended:
+                    record_deployed(self.full, entries, settings=self.settings, files=True)
+            print(f"installed {len(group)} {role} node(s): "
+                  + ", ".join(f"{name} {what}" for name, what in sorted(results.items())),
+                  file=sys.stderr)
+
+    # ---------------------------------------------------------- the node's service manager
+    def boot_changed(self, node: str, since_ms: int) -> bool | None:
+        """The service's start time to the microsecond (systemd 248 and
+        later; whole seconds would read a restart in the activation's own
+        second as none) against `since_ms`."""
+        service = self.service(node)
+        try:
+            text = common.ssh_text(self.full["nodes"][node],
+                                   f"t=$(systemctl show {service}.service -p ExecMainStartTimestamp "
+                                   f'--timestamp=us+utc --value); [ -n "$t" ] && date -d "$t" +%s%6N',
+                                   check=False, timeout=30)
+            return int(text.strip()) > since_ms * 1000
+        except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError):
+            return None
+
+    def unit_restarts(self, node: str) -> int | None:
+        try:
+            text = common.ssh_text(self.full["nodes"][node],
+                                   f"systemctl show {self.service(node)}.service -p NRestarts "
+                                   "--value", timeout=30)
+            return int(text.strip())
+        except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError):
+            return None
+
+    def clock_offset(self, node: str) -> float | None:
+        """The node's clock minus this host's, from the quickest of three
+        reads over the kept ssh connection (the midpoint of each)."""
+        best = None
+        for _ in range(3):
+            began = time.time()
+            try:
+                text = common.ssh_text(self.full["nodes"][node], "date +%s.%N", timeout=30)
+                remote = float(text.strip())
+            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError):
+                continue
+            ended = time.time()
+            if best is None or ended - began < best[0]:
+                best = (ended - began, remote - (began + ended) / 2)
+        return None if best is None else best[1]
+
+    def surge_candidates(self, site: str) -> list[str]:
+        standby = set(standby_edges(self.settings))
+        slots = lab_slots(self.full)
+        return sorted((name for name, node in self.full["nodes"].items()
+                       if node["site"] == site and node["role"] == "edge" and name in standby),
+                      key=lambda name: (name in slots, mesh_ops.natural(name)))
+
+    def hold(self, name: str, out: bool) -> None:
+        """Hold a node out of service, or take it in (standby_edges): this
+        worktree's settings.json, this command's settings and the record (a
+        node held out is no longer recorded: it runs nothing)."""
+        standby = held_out_after(self.settings, stop=[name]) if out else \
+            held_out_after(self.settings, start=[name])
+        for settings in (self.base, self.settings):
+            settings["standby_edges"] = standby
+        document = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.is_file() else {}
+        document.update(standby_edges=standby, lab_run_id=self.full["run_id"])
+        SETTINGS_FILE.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+        record_deployed(self.full, {name: None} if out else {}, standby=standby)
+
+    def start_node(self, node: str) -> None:
+        record = self.full["nodes"].get(node)
+        if record is None:
+            raise mesh_ops.Refused(f"{node} is not created")
+        if node in self.staged:
+            result = self.activate(node, int((time.time() + 60) * 1000))
+            if not result["ok"]:
+                if result["why"] == "systemctl restart failed" or result["why"].startswith("no "):
+                    raise RuntimeError(f"{node}: {result['why']}")
+                raise mesh_ops.Refused(f"{node}: {result['why']}")
+        else:
+            common.ssh_text(record, f"systemctl enable --now {self.service(node)}.service")
+        self.hold(node, out=False)
+
+    def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
+        record = self.full["nodes"][node]
+        service = self.service(node)
+        if not_after_ms is not None:
+            text = common.ssh_text(record, f'if [ "$(date +%s%3N)" -gt {int(not_after_ms)} ]; then '
+                                           f"echo late; else systemctl stop {service}.service "
+                                           "&& echo stopped; fi")
+            if text.strip() != "stopped":
+                raise mesh_ops.Refused(f"{node}: the stop came after its deadline ({text.strip()})")
+            return
+        if record["role"] == "edge" or node in lab_slots(self.full):
+            stop_service(record, service)
+            self.hold(node, out=True)
+        else:
+            common.ssh_text(record, f"systemctl stop {service}.service")
+
+    # ---------------------------------------------------------- instances (replace)
+    def rebuild(self, node: str, mode: str) -> None:
+        if run_lab("replace", node, "--mode", mode).returncode != 0:
+            raise RuntimeError(f"the lab tool's replace of {node} failed")
+        self.reload()
+
+    def push(self, node: str) -> None:
+        """Bootstrap, the node's tier's recorded build, its arguments, start;
+        the node taken into service."""
+        bootstrap([self.full["nodes"][node]])
+        if node in standby_edges(self.settings):
+            self.hold(node, out=False)
+        self.install([node], None)
+
+    def add_slot(self, node: str) -> None:
+        failed = run_lab("add", node).returncode != 0
+        self.reload()
+        if node not in self.full["nodes"]:
+            raise mesh_ops.Refused(f"the lab tool did not create {node}")
+        if failed:
+            raise RuntimeError(f"the lab tool's add of {node} failed part-way")
+        self.push(node)
+
+    def remove_slot(self, node: str) -> None:
+        if node in self.full["nodes"] and run_lab("remove", node).returncode != 0:
+            raise RuntimeError(f"the lab tool's remove of {node} failed")
+        self.reload()
+
+
+def linode_ops(args: argparse.Namespace) -> LinodeOps:
+    """The backend of a change command: this lab's state, the worktree's
+    settings (which must be this lab's, as its routes and hunted ports),
+    this command's `--set` and `--adopt-settings`."""
+    lab_tool_checked()
+    full = common.load_state()
+    lab_files_checked(full)
+    settings = load_settings([], lab_run_id=full["run_id"])
+    return LinodeOps(full, settings, parse_overrides(getattr(args, "set", None) or []),
+                     adopt=getattr(args, "adopt_settings", False))
+
+
+def engine_options(args: argparse.Namespace) -> mesh_ops.Options:
+    return mesh_ops.Options(
+        force=getattr(args, "force", False), dry=getattr(args, "dry_marks", False),
+        allow_dirty=getattr(args, "allow_dirty", False), gate_timeout_s=args.gate_timeout_s,
+        drain_timeout_s=args.drain_timeout_s, ready_timeout_s=args.ready_timeout_s,
+        on_failure=args.on_failure, surge=args.surge, parity_ms=args.parity_ms,
+        video_gap=args.video_gap, hold_s=getattr(args, "hold_s", 0.0),
+        rollback=getattr(args, "rollback", False), marks_file=args.marks,
+        node_marks_file=args.node_marks)
+
+
+def names_of(text: str | None) -> list[str] | None:
+    return [name for name in text.split(",") if name] if text else None
+
+
+def bootstrap(nodes: list[dict]) -> None:
+    """BOOTSTRAP on every node at once; each VLAN address must be there."""
+    interfaces = common.parallel(
+        nodes, lambda node: common.ssh_text(node, BOOTSTRAP, timeout=900))
+    for node in nodes:
+        expected = node.get("vlan_ipv4")
+        if expected and f"={expected}/" not in interfaces[node["name"]]:
+            raise RuntimeError(
+                f"{node['name']}: VLAN address {expected} is not configured: "
+                f"{interfaces[node['name']]}")
+    print(f"bootstrapped {len(nodes)} hosts; every VLAN address is present", file=sys.stderr)
 
 
 def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
@@ -3095,7 +4525,8 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     returns the whole lab state (push installs the tools on every node and
     stops the service of a standby edge), the settings and the render."""
     full = common.load_state()
-    settings = load_settings(args.set)
+    lab_files_checked(full, remeasure=args.remeasure)
+    settings = load_settings(args.set, lab_run_id=full["run_id"])
     state = active_state(full, settings)
     routes_path = common.ARTIFACT_DIR / "routes.json"
     routes = json.loads(routes_path.read_text()) if routes_path.is_file() else None
@@ -3103,7 +4534,7 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     # with the wrong paths (a file without "topology" is legacy).
     if (args.remeasure or routes is None
             or routes.get("topology", "legacy") != topology_mode(settings)):
-        routes = measure_routes(state, settings)
+        routes = {**measure_routes(state, settings), "lab_run_id": full["run_id"]}
         routes_path.write_text(json.dumps(routes, indent=2) + "\n")
     program = build_program(state, settings, routes)
     plan = compile_plan(program)
@@ -3145,12 +4576,17 @@ def held_out_after(settings: dict, start: list[str] = (), stop: list[str] = ()) 
 
 
 def command_push(args: argparse.Namespace) -> None:
+    """Bootstrap, then stage and activate every node, role by role, parents
+    first, on the roots' builds; the deployed record follows each role. Only
+    a whole push (and roll) moves a tier's build: `--nodes` (a node taken
+    into service, an autoscaler's slot, a replaced instance) and
+    `--skip-binaries` install each tier's recorded build."""
     state = common.load_state()
     only = named_nodes(state, getattr(args, "nodes", None))
     if only is not None:
         # A node pushed by name is taken into service (it may have been
         # held out); its peers already name it, so nothing else restarts.
-        saved = load_settings(list(args.set))
+        saved = load_settings(list(args.set), lab_run_id=state["run_id"])
         args.set = list(args.set) + [
             f"standby_edges={json.dumps(held_out_after(saved, start=only))}"]
     nodes = [node for node in state["nodes"].values() if only is None or node["name"] in only]
@@ -3158,44 +4594,106 @@ def command_push(args: argparse.Namespace) -> None:
                              or not (common.ARTIFACT_DIR / "routes.json").is_file()):
         sys.exit("push --nodes keeps the routes of the last whole push (measuring them "
                  "would reach other nodes): push the whole lab first, and no --remeasure")
-    ensure_tls()
-    if not args.skip_bootstrap:
-        interfaces = common.parallel(
-            nodes, lambda node: common.ssh_text(node, BOOTSTRAP, timeout=900))
-        for node in nodes:
-            expected = node.get("vlan_ipv4")
-            if expected and f"={expected}/" not in interfaces[node["name"]]:
-                raise RuntimeError(
-                    f"{node['name']}: VLAN address {expected} is not configured: "
-                    f"{interfaces[node['name']]}")
-        print(f"bootstrapped {len(nodes)} hosts; every VLAN address is present")
-    args.remeasure = args.remeasure or not (common.ARTIFACT_DIR / "routes.json").is_file()
-    state, settings, rendered = command_plan(args)
-    # Parents first so children find a listening relay when they start.
-    order = ["backbone", "distributor", "edge", "contributor", "load"]
-    for role in order:
-        group = [node for node in common.nodes_by_role(state, role)
-                 if only is None or node["name"] in only]
-        if group:
-            common.parallel(
-                group,
-                lambda node: install_node(node, rendered, settings, not args.skip_binaries))
-            print(f"installed {len(group)} {role} node(s)")
+    lab_tool_checked()
+    with ops_locked():
+        ensure_tls()
+        if not args.skip_bootstrap:
+            bootstrap(nodes)
+        args.remeasure = args.remeasure or not (common.ARTIFACT_DIR / "routes.json").is_file()
+        full, settings, _rendered = command_plan(args)
+        ops = LinodeOps(full, settings)
+        tiers = sorted({mesh_ops.ROLE_TIER[node["role"]] for node in nodes
+                        if node["role"] in mesh_ops.ROLE_TIER})
+        try:
+            builds = None if args.skip_binaries or only is not None else {
+                tier: ops.target(tier) for tier in tiers}
+            ops.install(only, builds, binaries=not args.skip_binaries)
+        except mesh_ops.Refused as refused:
+            print(refused, file=sys.stderr)
+            sys.exit(mesh_ops.EXIT_REFUSED)
 
 
 def command_restart(args: argparse.Namespace) -> None:
-    args.remeasure = getattr(args, "remeasure", False)
-    state, settings, rendered = command_plan(args)
-    roles = args.roles.split(",") if args.roles else [
-        "backbone", "distributor", "edge", "contributor"]
-    for role in ["backbone", "distributor", "edge", "contributor"]:
-        if role not in roles:
-            continue
-        group = common.nodes_by_role(state, role)
-        if group:
-            common.parallel(
-                group, lambda node: install_node(node, rendered, settings, False))
-            print(f"restarted {len(group)} {role} node(s)")
+    """`restart --nodes a,b`: one node at a time through the engine's gates
+    and readiness, each on its recorded build (`--rollback`: `.args.prev`
+    in force; `--hold-s`: held stopped that long). A contributor goes to
+    workstream A's `change contrib-restart`. `restart --roles`: every node
+    of a role at once, on its recorded build, for a cold bring-up."""
+    if args.nodes:
+        if args.roles:
+            sys.exit("restart takes --nodes or --roles, not both")
+        names = names_of(args.nodes)
+        ops = linode_ops(args)
+        contributors = [name for name in names if ops.role(name) == "contributor"]
+        if contributors:
+            given = [flag for flag, value in (("--rollback", args.rollback),
+                                              ("--hold-s", args.hold_s), ("--set", args.set),
+                                              ("--resume", args.resume)) if value]
+            if len(names) > 1 or given:
+                print("restart --nodes: a contributor is restarted alone, on the arguments it "
+                      "runs, by workstream A's change contrib-restart"
+                      + (f", which takes no {', '.join(given)}" if given else ""),
+                      file=sys.stderr)
+                sys.exit(mesh_ops.EXIT_REFUSED)
+            sys.exit(run_change(ops, "contrib-restart", ["--node", names[0]]))
+        sys.exit(mesh_ops.restart_nodes(ops, names, options=engine_options(args),
+                                        resume=args.resume))
+    if args.rollback or args.hold_s or args.resume:
+        sys.exit("--rollback, --hold-s and --resume go with --nodes")
+    print("restart --roles restarts every node of a role at once; it is not a rolling restart "
+          "(roll, restart --nodes)", file=sys.stderr)
+    lab_tool_checked()
+    with ops_locked():
+        args.remeasure = getattr(args, "remeasure", False)
+        full, settings, _rendered = command_plan(args)
+        roles = args.roles.split(",") if args.roles else list(SERVICE_ROLES)
+        names = [node["name"] for role in SERVICE_ROLES if role in roles
+                 for node in common.nodes_by_role(full, role)]
+        try:
+            LinodeOps(full, settings).install(names, None)
+        except mesh_ops.Refused as refused:
+            print(refused, file=sys.stderr)
+            sys.exit(mesh_ops.EXIT_REFUSED)
+
+
+def command_roll(args: argparse.Namespace) -> None:
+    """`roll edges|forwarders|contributors|all` (C 3.5): one node at a time
+    onto the roots' build, through the engine (mesh_ops.roll). stdout
+    carries the change's two marks only; the exit status is the engine's."""
+    ops = linode_ops(args)
+    sys.exit(mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
+                           options=engine_options(args), resume=args.resume))
+
+
+def contributor_changes():
+    """Workstream A's scripts/contributor_changes.py, loaded when a command
+    needs it; refused while it is not in this checkout."""
+    path = common.ROOT / "scripts" / "contributor_changes.py"
+    if not path.is_file():
+        raise mesh_ops.Refused("the contributor and ingress changes are workstream A's "
+                               "scripts/contributor_changes.py, which is not in this checkout")
+    spec = importlib.util.spec_from_file_location("contributor_changes", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_change(ops: LinodeOps, kind: str, arguments: list[str]) -> int:
+    """A contributor or ingress change of workstream A (`contrib-kill`,
+    `contrib-restart`, `ingress-kill-return`, ...) under the ops lock:
+    `contributor_changes.change(ops, kind, arguments)` returns the exit
+    status and prints the change's marks."""
+    try:
+        module = contributor_changes()
+    except mesh_ops.Refused as refused:
+        print(refused, file=sys.stderr)
+        return mesh_ops.EXIT_REFUSED
+    with ops_locked():
+        return module.change(ops, kind, list(arguments))
+
+
+def command_change(args: argparse.Namespace) -> None:
+    sys.exit(run_change(linode_ops(args), args.kind, args.arguments))
 
 
 def checked_for_start_stop(state: dict, names: list[str], verb: str) -> None:
@@ -3211,25 +4709,27 @@ def checked_for_start_stop(state: dict, names: list[str], verb: str) -> None:
 
 
 def command_start(args: argparse.Namespace) -> None:
-    """Take held-out nodes into service and start them: render every node
-    (their peers name them already, so no other node's arguments change)
-    and install and start the named ones only. A node just created (lab
-    add) needs `push --nodes`, which also bootstraps it and installs the
-    binaries."""
+    """Take held-out nodes into service and start them, each on its tier's
+    recorded build from the build cache (never a root: only push and roll
+    move a tier's build), after the reproduce check (LinodeOps.check):
+    every node is rendered with the others in service, so no other node's
+    arguments change. A node just created (lab add) needs `push --nodes`,
+    which also bootstraps it."""
     full = common.load_state()
     names = named_nodes(full, args.nodes)
     checked_for_start_stop(full, names, "start")
-    saved = load_settings(list(args.set))
-    args.set = list(args.set) + [
-        f"standby_edges={json.dumps(held_out_after(saved, start=names))}"]
-    args.remeasure = False
-    state, settings, rendered = command_plan(args)
-    group = [state["nodes"][name] for name in names]
-    missing = [node["name"] for node in group if node["name"] not in rendered]
-    if missing:
-        sys.exit(f"start: no service rendered for {', '.join(missing)}")
-    common.parallel(group, lambda node: install_node(node, rendered, settings, False))
-    print(f"started {', '.join(names)}; no other node was restarted")
+    ops = linode_ops(args)
+    try:
+        ops.check("start", names)
+        ops.stage(names, None)
+        for name in names:
+            ops.start_node(name)
+    except mesh_ops.Refused as refused:
+        print(refused, file=sys.stderr)
+        sys.exit(mesh_ops.EXIT_REFUSED)
+    print(f"started {', '.join(names)} on "
+          + ", ".join(sorted({ops.staged[name]['build'] for name in names}))
+          + "; no other node was restarted")
 
 
 def command_stop(args: argparse.Namespace) -> None:
@@ -3238,9 +4738,9 @@ def command_stop(args: argparse.Namespace) -> None:
     full = common.load_state()
     names = named_nodes(full, args.nodes)
     checked_for_start_stop(full, names, "stop")
-    saved = load_settings(list(args.set))
+    saved = load_settings(list(args.set), lab_run_id=full["run_id"])
     load_settings(list(args.set) + [
-        f"standby_edges={json.dumps(held_out_after(saved, stop=names))}"])
+        f"standby_edges={json.dumps(held_out_after(saved, stop=names))}"], lab_run_id=full["run_id"])
     common.parallel([full["nodes"][name] for name in names], lambda node: common.ssh_text(
         node, "systemctl disable --now needletail-mesh.service >/dev/null 2>&1 || true; "
               "systemctl is-active needletail-mesh.service || true"))
@@ -3275,6 +4775,12 @@ echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock
 """, check=False, timeout=60)
 
     results = common.parallel(list(state["nodes"].values()), probe)
+    targets = {name: (node["public_ipv4"],
+                      CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT, "/api/node")
+               for name, node in state["nodes"].items()
+               if node["role"] in mesh_ops.ROLE_TIER and node.get("public_ipv4")}
+    answers = mesh_ops.Http().poll(targets)
+    recorded = (state.get("deployed") or {}).get("nodes") or {}
     speeds = {}
     for name, line in results.items():
         if "cpu_mb_s=" in line:
@@ -3284,10 +4790,82 @@ echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock
     for name in sorted(results):
         node = state["nodes"][name]
         flag = "  <-- SLOW shared CPU" if name in slow else ""
-        print(f"{name:<18} {node['role']:<12} {results[name]}{flag}")
+        served = ""
+        if name in targets:
+            code, document = answers.get(name, (None, None))
+            served = node_summary(document if code == 200 else None, recorded.get(name))
+        print(f"{name:<18} {node['role']:<12} {results[name]}{served}{flag}")
     # Shared-CPU hosts vary by 2x in single-thread speed without reporting steal.
     print(f"median single-thread speed {median:.0f} MB/s; slow nodes "
           f"(<75% of median): {' '.join(slow) or 'none'}")
+    for line in deployed_summary(state):
+        print(line)
+
+
+def node_summary(document, entry: dict | None) -> str:
+    """A node's build, state, drain reasons and boot time from its
+    `/api/node`, and whether it runs what the deployed record says."""
+    status = mesh_ops.status_of(document)
+    if status is None:
+        return " node=silent"
+    boot = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(status.boot_id / 1e6))
+            if status.boot_id else "-")
+    if not entry:
+        record = "record=none"
+    elif (f"{status.build_git}-{status.build_unix}", status.args_sha256) == \
+            (entry.get("build"), entry.get("args_sha256")):
+        record = "record=same"
+    else:
+        record = f"record=DIFFERS({entry.get('build')})"
+    return (f" build={status.build_git}-{status.build_unix} state={status.state} "
+            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}")
+
+
+def deployed_summary(state: dict) -> list[str]:
+    """The deployed record (tiers, settings against this worktree's) and
+    every change command that did not finish, with the nodes it left."""
+    deployed = state.get("deployed") or {}
+    lines = [f"deployed: tiers {json.dumps(deployed.get('tiers') or {}, sort_keys=True)}, "
+             f"{len(deployed.get('nodes') or {})} node(s) recorded"]
+    if SETTINGS_FILE.is_file():
+        saved = json.loads(SETTINGS_FILE.read_text())
+        if saved.pop("lab_run_id", None) != state.get("run_id"):
+            lines.append(f"deployed: {SETTINGS_FILE} is not this lab's")
+        else:
+            differ = settings_differ(deployed.get("settings") or {},
+                                     merge_settings(saved, {})[0])
+            lines.append("deployed: this worktree's settings are the deployed ones" if not differ
+                         else "deployed: this worktree's settings differ in "
+                              + ", ".join(sorted(differ)))
+    for journal in mesh_ops.Journal.unfinished(common.ARTIFACT_DIR / "rolls"):
+        left = [f"{hand['node']} ({hand.get('phase')})" for hand in mesh_ops.Journal.hands(journal.data)]
+        lines.append(f"unfinished: {journal.data.get('label') or journal.data.get('command')} "
+                     f"({journal.path.name}): " + (", ".join(left) or "no node in hand"))
+    return lines
+
+
+def change_options(parser: argparse.ArgumentParser) -> None:
+    """The options of the engine's commands (C 2.6; mesh_ops.Options)."""
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                        help="a setting of ROLLABLE_SETTINGS for the nodes of this command")
+    parser.add_argument("--force", action="store_true",
+                        help="restart nodes already on the target build too")
+    parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--marks", default=None, help="append the change's two marks here")
+    parser.add_argument("--node-marks", default=None, help="per-node marks go here")
+    parser.add_argument("--dry-marks", action="store_true",
+                        help="every check and gate for real, sleeps in place of restarts")
+    parser.add_argument("--resume", action="store_true",
+                        help="finish what the newest unfinished command left, then go on")
+    parser.add_argument("--adopt-settings", action="store_true",
+                        help="go on with settings that do not reproduce what is deployed")
+    parser.add_argument("--gate-timeout-s", type=float, default=30.0)
+    parser.add_argument("--drain-timeout-s", type=float, default=30.0)
+    parser.add_argument("--ready-timeout-s", type=float, default=60.0)
+    parser.add_argument("--on-failure", choices=("stop", "rollback-all"), default="stop")
+    parser.add_argument("--surge", choices=("auto", "never"), default="auto")
+    parser.add_argument("--parity-ms", type=float, default=1.0)
+    parser.add_argument("--video-gap", choices=("refuse", "accept"), default="refuse")
 
 
 def main() -> None:
@@ -3304,7 +4882,8 @@ def main() -> None:
     push.add_argument("--skip-binaries", action="store_true")
     push.add_argument("--nodes", default=None,
                       help="comma-separated: bootstrap, install and start only these (taken "
-                           "into service); every other node is left as it runs")
+                           "into service) on their tier's recorded build; every other node is "
+                           "left as it runs")
     push.set_defaults(handler=command_push)
     start = sub.add_parser("start", help="take held-out nodes into service, nothing else")
     start.add_argument("--nodes", required=True)
@@ -3314,14 +4893,33 @@ def main() -> None:
     stop.add_argument("--nodes", required=True)
     stop.add_argument("--set", action="append", default=[])
     stop.set_defaults(handler=command_stop)
-    restart = sub.add_parser("restart")
-    restart.add_argument("--set", action="append", default=[])
+    restart = sub.add_parser("restart", help="--nodes: one node at a time, gated, on its "
+                                             "recorded build; --roles: a cold restart")
     restart.add_argument("--roles", default="")
+    restart.add_argument("--nodes", default=None)
+    restart.add_argument("--hold-s", type=float, default=0.0,
+                         help="keep each node stopped this long before it starts again")
+    restart.add_argument("--rollback", action="store_true",
+                         help="put .args.prev in force: the rollback of a node an earlier "
+                              "command left")
+    change_options(restart)
     restart.set_defaults(handler=command_restart)
+    roll = sub.add_parser("roll", help="one node at a time onto the roots' build (C 3.5)")
+    roll.add_argument("tier", choices=("edges", "forwarders", "contributors", "all"))
+    roll.add_argument("--nodes", default=None)
+    roll.add_argument("--sites", default=None)
+    change_options(roll)
+    roll.set_defaults(handler=command_roll)
+    change = sub.add_parser("change", help="workstream A's contributor and ingress changes")
+    change.add_argument("kind")
+    change.add_argument("arguments", nargs=argparse.REMAINDER)
+    change.set_defaults(handler=command_change)
     hunt = sub.add_parser("hunt")
     hunt.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                       help="a setting of this hunt (relay_class_split, class_port_offset), "
                            "saved as plan/push/restart save theirs")
+    hunt.add_argument("--outage", action="store_true",
+                      help="hunt while edges serve: every remote region goes silent")
     hunt.set_defaults(handler=command_hunt)
     sub.add_parser("status").set_defaults(handler=command_status)
     args = parser.parse_args()

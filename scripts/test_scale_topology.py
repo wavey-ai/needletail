@@ -19,13 +19,19 @@ python3 -m unittest scripts/test_scale_topology.py"""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
+import threading
+import time
+import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -342,7 +348,7 @@ class Render(Base):
         with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
                 mock.patch.object(deploy.common, "ssh_text",
                                   lambda node, script, **k: sent.append(script) or ""):
-            deploy.install_node(state["nodes"]["lon-edge-6"], {}, self.settings(), False)
+            deploy.stop_service(state["nodes"]["lon-edge-6"])
         self.assertIn("systemctl disable --now needletail-mesh.service", sent[-1])
         with self.assertRaises(SystemExit):
             deploy.active_state(state, self.settings(['standby_edges=["lon-dist-a"]']))
@@ -463,43 +469,268 @@ class Render(Base):
         self.assertNotIn("--client-udp-max-subscribers", args["lon-edge-1"])
 
 
-class NodesByName(Base):
-    """push, start and stop --nodes act on the named nodes and on nothing
-    else: no ssh or rsync reaches another node."""
+OLD = ("aaaaaaaaaaaa", 1000)
+NEW = ("bbbbbbbbbbbb", 2000)
+CONTRIB = ("cccccccccccc", 1000)
+LIFECYCLE_FLAGS = "--drain-state-file --stop-drain-ms"
+
+
+def fake_binary(path: pathlib.Path, name: str, build: tuple, flags: str = "") -> None:
+    """An executable that answers --version as the builds do (C 2.2) and
+    lists `flags` in --help."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\ncase \"$1\" in\n  --version) echo \"{name} 0.1.0 "
+                    f"({build[0]} {build[1]})\" ;;\n  --help) echo \"{flags}\" ;;\nesac\n")
+    path.chmod(0o755)
+
+
+class FakeHosts:
+    """The lab's hosts as files and services: rsync and ssh land here. A
+    node's activation is the script's model (the script itself is proved
+    in test_merged_topology's Activation); `/api/node` answers with the
+    build and the args_sha256 of what each node runs."""
+
+    ETC = "/etc/needletail"
+
+    def __init__(self):
+        self.files: dict[str, dict[str, bytes]] = {}
+        self.running: dict[str, bool] = {}
+        self.boots: dict[str, int] = {}
+        self.scripts: dict[str, list[str]] = {}
+        self.touched: list[str] = []
+        self.udp: dict[str, dict] = {}
+        self.inflight = 0
+        self.most_inflight = 0
+        self.guard = threading.Lock()
+        self.by_address: dict[str, dict] = {}
+        self.drained: set[str] = set()
+        # The engine's clock: a node's boot id is the activation's time on it.
+        self.clock = time.time
+
+    def fs(self, name: str) -> dict[str, bytes]:
+        return self.files.setdefault(name, {})
+
+    def rsync_to(self, node, sources, destination, timeout=900):
+        self.touched.append(node["name"])
+        with self.guard:
+            self.inflight += 1
+            self.most_inflight = max(self.most_inflight, self.inflight)
+        try:
+            time.sleep(0.01)
+            for source in sources:
+                path = pathlib.Path(source)
+                target = destination + path.name if destination.endswith("/") else destination
+                self.fs(node["name"])[target] = path.read_bytes() if path.is_file() else b""
+        finally:
+            with self.guard:
+                self.inflight -= 1
+
+    def rsync_from(self, node, source, destination, timeout=900):
+        self.touched.append(node["name"])
+        target = pathlib.Path(destination)
+        target.mkdir(parents=True, exist_ok=True)
+        for path, data in self.fs(node["name"]).items():
+            if path.startswith(source):
+                (target / path[len(source):]).write_bytes(data)
+                (target / path[len(source):]).chmod(0o755)
+
+    def ssh_text(self, node, script, **kwargs):
+        name = node["name"]
+        self.touched.append(name)
+        self.scripts.setdefault(name, []).append(script)
+        files = self.fs(name)
+        if script == deploy.BOOTSTRAP:
+            return f"eth1={node.get('vlan_ipv4')}/24"
+        if "systemd-run" in script:
+            return self.activate(name, script)
+        if script.startswith("cat "):
+            return files.get(script.split()[1], b"").decode()
+        if "systemctl disable --now" in script:
+            self.running[name] = False
+            return ""
+        if "NRestarts" in script:
+            return "0"
+        if script.startswith("date +%s.%N"):
+            return f"{time.time():.9f}"
+        last = script.rstrip().splitlines()[-1] if script.strip() else ""
+        if last.startswith("sha256sum "):
+            return "\n".join(f"{hashlib.sha256(files[path]).hexdigest()}  {path}"
+                             for path in last.split()[1:] if path in files)
+        return ""
+
+    def activate(self, name: str, script: str) -> str:
+        service = re.search(r"needletail-activate-(\S+)", script).group(1)
+        not_after = int(re.search(r"--not-after ([0-9]+)", script).group(1))
+        rollback = "--rollback" in script.split("\n", 2)[1]
+        files = self.fs(name)
+        args = f"{self.ETC}/{service}.args"
+        unit = f"/etc/systemd/system/{service}.service"
+
+        def result(ok: bool, why: str = "") -> str:
+            lines = [json.dumps({"ok": ok, "why": why, "qdisc": False})]
+            if args in files:
+                text = files[args].decode()
+                lines += [f"args_sha256 {hashlib.sha256(text[:-1].encode()).hexdigest()}",
+                          f"render_sha256 {deploy.render_sha256(text.splitlines())}",
+                          f"binary {text.splitlines()[0]}"]
+            if unit in files:
+                lines.append(f"unit_sha256 {hashlib.sha256(files[unit]).hexdigest()}")
+            return "\n".join(lines)
+
+        if self.clock() * 1000 > not_after:
+            return result(False, "late")
+        source = args + (".prev" if rollback else ".next")
+        if source not in files:
+            return result(False, f"nothing to put in force: no {source}")
+        binary = files[source].decode().splitlines()[0]
+        if binary not in files:
+            return result(False, f"not an executable on this node: {binary}")
+        if rollback:
+            files[args + ".failed"] = files[args]
+            files[args] = files[source]
+        else:
+            if f"{self.ETC}/{service}.unit.next" in files:
+                if unit in files:
+                    files[f"{self.ETC}/{service}.unit.prev"] = files[unit]
+                files[unit] = files[f"{self.ETC}/{service}.unit.next"]
+            if args in files:
+                files[args + ".prev"] = files[args]
+            files[args] = files.pop(source)
+        self.running[name] = True
+        self.boots[name] = int(self.clock() * 1_000_000)
+        return result(True)
+
+    def document(self, name: str, role: str) -> dict | None:
+        service = "needletail-contrib" if role == "contributor" else "needletail-mesh"
+        text = self.fs(name).get(f"{self.ETC}/{service}.args")
+        if not self.running.get(name) or text is None:
+            return None
+        text = text.decode()
+        git, _, unix = text.splitlines()[0].split("/")[-2].rpartition("-")
+        build = ({"id": git, "unix": int(unix)} if role == "contributor"
+                 else {"git": git, "built_unix": int(unix), "dirty": False})
+        drained = name in self.drained
+        return {"schema": "needletail.node.v1", "node_id": name, "role": role, "build": build,
+                "process": {"boot_id": self.boots.get(name, 1),
+                            "args_sha256": hashlib.sha256(text[:-1].encode()).hexdigest()},
+                "state": "draining" if drained else "ready", "ready": not drained, "warm": True,
+                "ready_forced": False, "not_ready": ["draining: operator"] if drained else [],
+                "fast_plane": {"threads": 2, "threads_expected": 2},
+                "client_udp": self.udp.get(name, {
+                    "subscribers": 0, "hls_sessions": 0, "hls_moved_active": 0,
+                    "hls_requests_in_flight": 0, "single_legs": 0, "legs_by_other": {},
+                    "load_permille": 0})}
+
+
+class FakeHttp:
+    """mesh_ops.Http on FakeHosts: `/api/node` of each node by its public
+    address."""
+
+    def __init__(self, hosts: FakeHosts):
+        self.hosts = hosts
+
+    def get(self, host, port, path):
+        node = self.hosts.by_address.get(host)
+        document = self.hosts.document(node["name"], node["role"]) if node else None
+        if document is not None and path == "/api/assignment":
+            # An entry lists its region's edges that run, fresh unless drained.
+            caches = [{"node_id": name, "fresh": True, "draining": name in self.hosts.drained}
+                      for name, other in self.hosts.by_address_name.items()
+                      if other["site"] == node["site"] and other["role"] == "edge"
+                      and self.hosts.running.get(name)]
+            return 200, {"caches": caches}
+        return (200, document) if document is not None and path == "/api/node" else (None, None)
+
+    def post(self, host, port, path, body):
+        node = self.hosts.by_address.get(host)
+        if node is None or body.get("node_id") != node["name"]:
+            return 400, None
+        if path.endswith("/drain-node"):
+            self.hosts.drained.add(node["name"])
+        elif path.endswith("/resume-node"):
+            self.hosts.drained.discard(node["name"])
+        return 202, None
+
+    def poll(self, targets):
+        return {name: self.get(*target) for name, target in targets.items()}
+
+    def close(self):
+        pass
+
+
+class FakeLab(Base):
+    """A Linode lab of the scale topology on FakeHosts: its state file, this
+    worktree's settings and routes (of lab "test"), roots that hold build
+    OLD of av-mesh and CONTRIB of av-contrib, and the lab tool's watchdog
+    and state lock as fakes. No ssh, rsync or HTTP leaves the process."""
 
     def setUp(self):
         super().setUp()
         self.state_file = self.dir / "lab.json"
         full = topology_state(json.loads(SCALE.read_text()), created=("lon-edge-11",))
         self.state_file.write_text(json.dumps(full))
+        self.hosts = FakeHosts()
+        self.hosts.by_address = {node["public_ipv4"]: node for node in full["nodes"].values()}
+        self.hosts.by_address_name = dict(full["nodes"])
+        self.roots = self.dir / "roots"
+        self.set_root("av-mesh", OLD)
+        fake_binary(self.roots / "contrib" / "av-contrib", "av-contrib", CONTRIB)
+        for tool in ("aep1-48k-probe", "daw-test-source", "soundkit-part-check",
+                     "needletail-reader", "needletail-udp-client", "needletail-load",
+                     "h3-static-capacity", "ntcmp"):
+            fake_binary(self.roots / "tools" / tool, tool, CONTRIB)
+        tls = self.dir / "tls"
+        tls.mkdir()
+        for name in ("fullchain.pem", "privkey.pem", "ca.crt"):
+            (tls / name).write_text(name)
+        lab = types.SimpleNamespace(change_state=self.change_state,
+                                    watchdog_ensure=lambda state, path: [])
         patcher = mock.patch.dict("os.environ", {"NEEDLETAIL_LINODE_LAB_STATE":
                                                  str(self.state_file)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.touched: list[str] = []
-        self.scripts: dict[str, list[str]] = {}
-
-        def ssh_text(node, script, **kwargs):
-            self.touched.append(node["name"])
-            self.scripts.setdefault(node["name"], []).append(script)
-            if script == deploy.BOOTSTRAP:
-                return f"eth1={node.get('vlan_ipv4')}/24"
-            return ""
-
         for target, name, value in (
-                (deploy.common, "ssh_text", ssh_text),
-                (deploy.common, "rsync_to",
-                 lambda node, *a, **k: self.touched.append(node["name"])),
+                (deploy.common, "ssh_text", self.hosts.ssh_text),
+                (deploy.common, "rsync_to", self.hosts.rsync_to),
+                (deploy.common, "rsync_from", self.hosts.rsync_from),
+                (deploy, "binaries_for", self.binaries_for),
+                (deploy, "lab_tool", lambda: lab),
+                (deploy.mesh_ops, "Http", lambda *a, **k: FakeHttp(self.hosts)),
                 (deploy, "ensure_tls", lambda: None),
-                (deploy, "apply_host_qdisc", lambda node, settings, clear=(): ""),
                 (deploy, "measure_routes", lambda state, settings=None: dict(ROUTES)),
                 (deploy, "compile_plan", self.fake_compile)):
             patcher = mock.patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.settings(FIRST_CURVE)  # saved, as the first curve deploys
+        # The first curve deploys from this worktree, of lab "test".
+        with redirect_stderr(io.StringIO()):
+            deploy.load_settings(FIRST_CURVE, lab_run_id="test")
         # The whole lab was pushed once: its routes are measured.
-        (self.dir / "routes.json").write_text(json.dumps({**ROUTES, "topology": "merged"}))
+        (self.dir / "routes.json").write_text(json.dumps({**ROUTES, "topology": "merged",
+                                                          "lab_run_id": "test"}))
+
+    def set_root(self, binary: str, build: tuple, flags: str = LIFECYCLE_FLAGS) -> None:
+        folder = "mesh" if binary == "av-mesh" else "contrib"
+        fake_binary(self.roots / folder / binary, binary, build, flags)
+
+    def binaries_for(self, role, node=None):
+        tools = self.roots / "tools"
+        if role == "contributor":
+            return [self.roots / "contrib" / "av-contrib", tools / "aep1-48k-probe",
+                    tools / "daw-test-source"]
+        if role == "load":
+            return [tools / name for name in ("aep1-48k-probe", "needletail-reader",
+                                              "needletail-udp-client", "daw-test-source")]
+        return [self.roots / "mesh" / "av-mesh", tools / "aep1-48k-probe",
+                tools / "soundkit-part-check"]
+
+    @staticmethod
+    def change_state(path, state, change):
+        current = json.loads(pathlib.Path(path).read_text())
+        change(current)
+        pathlib.Path(path).write_text(json.dumps(current))
+        state.clear()
+        state.update(current)
 
     @staticmethod
     def fake_compile(program):
@@ -509,32 +740,78 @@ class NodesByName(Base):
 
     def namespace(self, **kwargs):
         base = {"set": [], "remeasure": False, "skip_bootstrap": False,
-                "skip_binaries": True, "nodes": None}
+                "skip_binaries": False, "nodes": None, "roles": "", "sites": None,
+                "force": False, "allow_dirty": False, "marks": None, "node_marks": None,
+                "dry_marks": False, "resume": False, "adopt_settings": False,
+                "gate_timeout_s": 30.0, "drain_timeout_s": 30.0, "ready_timeout_s": 60.0,
+                "on_failure": "stop", "surge": "auto", "parity_ms": 1.0, "video_gap": "refuse",
+                "hold_s": 0.0, "rollback": False, "outage": False}
         return argparse.Namespace(**{**base, **kwargs})
+
+    def quietly(self, function, *args):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            try:
+                return function(*args)
+            except SystemExit as caught:
+                self.stderr = err.getvalue()
+                raise
+            finally:
+                self.stderr = err.getvalue()
+
+    def push(self) -> None:
+        self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+        self.hosts.touched.clear()
+        self.hosts.scripts.clear()
+
+    def state(self) -> dict:
+        return json.loads(self.state_file.read_text())
 
     def saved_standby(self) -> list[str]:
         return json.loads((self.dir / "settings.json").read_text())["standby_edges"]
 
+    def ops(self, **kwargs) -> "deploy.LinodeOps":
+        with redirect_stderr(io.StringIO()):
+            return deploy.linode_ops(self.namespace(**kwargs))
+
+    def args_of(self, name: str, suffix: str = "") -> list[str]:
+        service = "needletail-contrib" if name.startswith("contrib") else "needletail-mesh"
+        return self.hosts.fs(name)[f"/etc/needletail/{service}.args{suffix}"].decode().splitlines()
+
+    def edges(self, site: str = "london") -> list[str]:
+        standby = set(self.saved_standby())
+        return sorted(name for name, node in self.state()["nodes"].items()
+                      if node["role"] == "edge" and node["site"] == site and name not in standby)
+
+
+def key(build: tuple) -> str:
+    return f"{build[0]}-{build[1]}"
+
+
+class NodesByName(FakeLab):
+    """push, start and stop --nodes act on the named nodes and on nothing
+    else: no ssh or rsync reaches another node."""
+
     def test_push_nodes_touches_only_the_named_node(self):
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            deploy.command_push(self.namespace(nodes="lon-edge-11"))
-        self.assertEqual(set(self.touched), {"lon-edge-11"})
-        self.assertIn("systemctl restart needletail-mesh.service",
-                      self.scripts["lon-edge-11"][-1])
+        self.push()
+        self.quietly(deploy.command_push, self.namespace(nodes="lon-edge-11"))
+        self.assertEqual(set(self.hosts.touched), {"lon-edge-11"})
+        self.assertIn("/opt/needletail/activate needletail-mesh",
+                      self.hosts.scripts["lon-edge-11"][-1])
 
     def test_start_takes_a_standby_edge_in_and_touches_nothing_else(self):
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            deploy.command_start(self.namespace(nodes="lon-edge-6"))
-        self.assertEqual(set(self.touched), {"lon-edge-6"})
-        self.assertIn("systemctl restart needletail-mesh.service", self.scripts["lon-edge-6"][-1])
+        self.push()
+        self.quietly(deploy.command_start, self.namespace(nodes="lon-edge-6"))
+        self.assertEqual(set(self.hosts.touched), {"lon-edge-6"})
+        self.assertIn("/opt/needletail/activate needletail-mesh",
+                      self.hosts.scripts["lon-edge-6"][-1])
         self.assertNotIn("lon-edge-6", self.saved_standby())
         self.assertIn("lon-edge-7", self.saved_standby())
 
     def test_stop_holds_a_node_out_and_touches_nothing_else(self):
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            deploy.command_stop(self.namespace(nodes="lon-edge-11"))
-        self.assertEqual(set(self.touched), {"lon-edge-11"})
-        self.assertIn("systemctl disable --now", self.scripts["lon-edge-11"][-1])
+        self.push()
+        self.quietly(deploy.command_stop, self.namespace(nodes="lon-edge-11"))
+        self.assertEqual(set(self.hosts.touched), {"lon-edge-11"})
+        self.assertIn("systemctl disable --now", self.hosts.scripts["lon-edge-11"][-1])
         self.assertIn("lon-edge-11", self.saved_standby())
 
     def test_start_and_stop_refuse_what_they_must_not_touch(self):
@@ -543,10 +820,698 @@ class NodesByName(Base):
                             (deploy.command_start, "lon-edge-12"),   # a slot not created
                             (deploy.command_start, "arch-us-east"),
                             (deploy.command_stop, "lon-load-1")):
-            with self.assertRaises(SystemExit, msg=nodes), redirect_stdout(io.StringIO()), \
-                    redirect_stderr(io.StringIO()):
-                verb(self.namespace(nodes=nodes))
-        self.assertEqual(self.touched, [])
+            with self.assertRaises(SystemExit, msg=nodes):
+                self.quietly(verb, self.namespace(nodes=nodes))
+        self.assertEqual(self.hosts.touched, [])
+
+
+class Deployed(FakeLab):
+    """What is deployed is recorded and later commands are held to it (C
+    2.5, 2.6): a roll stages files only, in parallel, on the nodes it rolls;
+    the previous arguments stay beside the previous binary; settings that
+    do not reproduce the record, a `--set` outside ROLLABLE_SETTINGS or one
+    that changes a node outside the command, and the files of another lab
+    are refused; start runs the deployed build, not the root's; hunt is
+    refused while edges serve."""
+
+    def test_push_records_what_each_node_runs(self):
+        self.push()
+        deployed = self.state()["deployed"]
+        self.assertEqual(deployed["tiers"], {"contributors": key(CONTRIB), "edges": key(OLD),
+                                             "forwarders": key(OLD)})
+        entry = deployed["nodes"]["lon-edge-1"]
+        self.assertEqual(entry["build"], key(OLD))
+        self.assertEqual(entry["args_sha256"],
+                         hashlib.sha256("\n".join(self.args_of("lon-edge-1")).encode()).hexdigest())
+        self.assertEqual(self.args_of("lon-edge-1")[0], f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+        self.assertEqual(self.args_of("contrib-lon")[0],
+                         f"/opt/needletail/builds/{key(CONTRIB)}/av-contrib")
+        # The lifecycle flags of a build that has them (C 2.2, B 3.12).
+        args = self.args_of("lon-edge-1")
+        self.assertEqual(deploy.flag_value(args, "--stop-drain-ms"), "14000")
+        self.assertEqual(deploy.flag_value(args, "--drain-state-file"),
+                         "/var/lib/needletail/needletail-mesh.drained")
+        self.assertIsNone(deploy.flag_value(self.args_of("lon-dist-a"), "--stop-drain-ms"))
+        # A standby edge is staged and left stopped; nothing of the record.
+        self.assertIn("/etc/needletail/needletail-mesh.args.next", self.hosts.fs("lon-edge-6"))
+        self.assertNotIn("lon-edge-6", deployed["nodes"])
+        self.assertEqual(deployed["settings"]["standby_edges"], self.saved_standby())
+        self.assertEqual(deployed["routes_sha256"],
+                         deploy.sha256_file(self.dir / "routes.json"))
+        self.assertEqual(json.loads((self.dir / "settings.json").read_text())["lab_run_id"], "test")
+
+    def test_roll_stages_files_only_and_in_parallel(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        ops = self.ops()
+        edges = self.edges("london") + self.edges("tokyo")
+        before = {name: self.args_of(name) for name in edges}
+        self.hosts.most_inflight = 0
+        ops.stage(edges, ops.target("edges"))
+        # Files only: no restart, no kernel setting, no qdisc, no activation.
+        for name in edges:
+            for script in self.hosts.scripts[name]:
+                for word in ("systemctl restart", "systemd-run", "sysctl -q -p", "tc qdisc"):
+                    self.assertNotIn(word, script.replace(deploy.PRUNE_BUILDS, ""), name)
+            self.assertEqual(self.args_of(name), before[name])
+            staged = self.args_of(name, ".next")
+            self.assertEqual(staged[0], f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+            for suffix in ("unit", "sysctl", "qdisc"):
+                self.assertIn(f"/etc/needletail/needletail-mesh.{suffix}.next",
+                              self.hosts.fs(name))
+            self.assertIn(f"/opt/needletail/builds/{key(NEW)}/av-mesh", self.hosts.fs(name))
+        # Every edge at once, not one after another.
+        self.assertGreater(self.hosts.most_inflight, 4)
+        self.assertEqual(ops.expected(edges[0])["git"], NEW[0])
+
+    def test_a_roll_of_a_region_s_edges_runs_on_the_engine(self):
+        """LinodeOps under mesh_ops.roll: the reproduce check, the staging,
+        then each London edge gated, drained, activated, ready on the new
+        build, resumed and listed again; two marks on stdout; the record
+        follows each node."""
+        self.push()
+        self.set_root("av-mesh", NEW)
+        clock = types.SimpleNamespace(now=time.time())
+        clock_now = lambda: clock.now  # noqa: E731
+
+        def sleep(seconds):
+            clock.now += max(seconds, 0.001)
+
+        self.hosts.clock = clock_now
+        out, err = io.StringIO(), io.StringIO()
+        code = deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], out=out, err=err,
+                                    clock=clock_now, sleep=sleep)
+        self.assertEqual(code, 0, err.getvalue())
+        marks = out.getvalue().splitlines()
+        self.assertEqual([line.split()[0] + " " + line.split()[2] for line in marks],
+                         ["start roll.edges", "end roll.edges"])
+        london = self.edges("london")
+        deployed = self.state()["deployed"]
+        for name in london:
+            self.assertEqual(self.args_of(name)[0], f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+            self.assertEqual(deployed["nodes"][name]["build"], key(NEW), name)
+            self.assertIn(f"/opt/needletail/builds/{key(OLD)}/av-mesh",
+                          self.args_of(name, ".prev")[0])
+        self.assertEqual(deployed["nodes"]["new-edge-1"]["build"], key(OLD))
+        self.assertEqual(self.hosts.drained, set())
+        # Every other node is only asked the time (the clock check, one node
+        # a region).
+        for name, scripts in self.hosts.scripts.items():
+            if name not in london:
+                self.assertEqual(set(scripts), {"date +%s.%N"}, name)
+        self.assertEqual(len(set(self.hosts.scripts) - set(london)), 4)
+
+    def engine(self):
+        """A fake clock shared by the engine and the hosts: (clock, sleep);
+        it goes on from where the last command's left it."""
+        clock = types.SimpleNamespace(now=max(time.time(), getattr(self, "last_now", 0.0)))
+        clock_now = lambda: clock.now  # noqa: E731
+
+        def sleep(seconds):
+            clock.now += max(seconds, 0.001)
+            self.last_now = clock.now
+
+        self.hosts.clock = clock_now
+        return {"out": io.StringIO(), "err": io.StringIO(), "clock": clock_now, "sleep": sleep}
+
+    def test_restart_nodes_keeps_the_recorded_build_and_its_rollback_puts_back_the_last(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(self.ops(), "edges", nodes=["lon-edge-1"], **run),
+                         0, run["err"].getvalue())
+        old_two = self.args_of("lon-edge-2")
+        boots = dict(self.hosts.boots)
+        run = self.engine()
+        code = deploy.mesh_ops.restart_nodes(self.ops(), ["lon-edge-1", "lon-edge-2"], **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        # Each on the build it runs, never the root's: lon-edge-1 stays on
+        # NEW, lon-edge-2 on OLD with the arguments it had.
+        self.assertEqual(self.args_of("lon-edge-1")[0],
+                         f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+        self.assertEqual(self.args_of("lon-edge-2"), old_two)
+        self.assertNotEqual(self.hosts.boots["lon-edge-2"], boots["lon-edge-2"])
+        # The operator's rollback of lon-edge-3 after its roll: the
+        # arguments before its last activation, on the build it ran then.
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(self.ops(), "edges", nodes=["lon-edge-3"], **run),
+                         0, run["err"].getvalue())
+        run = self.engine()
+        code = deploy.mesh_ops.restart_nodes(
+            self.ops(), ["lon-edge-3"], options=deploy.mesh_ops.Options(rollback=True), **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertEqual(self.args_of("lon-edge-3")[0],
+                         f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+        self.assertEqual(self.state()["deployed"]["nodes"]["lon-edge-3"]["build"], key(OLD))
+
+    def test_push_nodes_installs_the_tier_s_recorded_build(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        self.quietly(deploy.command_push, self.namespace(nodes="lon-edge-11"))
+        self.assertEqual(self.args_of("lon-edge-11")[0],
+                         f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+        # A whole push moves the tiers to the roots' builds.
+        self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+        self.assertEqual(self.state()["deployed"]["tiers"]["edges"], key(NEW))
+        self.assertEqual(self.args_of("lon-edge-11")[0],
+                         f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+
+    def test_a_contributor_change_waits_for_workstream_a(self):
+        self.push()
+        for namespace, command in ((self.namespace(kind="contrib-kill",
+                                                   arguments=["--node", "contrib-lon"]),
+                                    deploy.command_change),
+                                   (self.namespace(nodes="contrib-lon"), deploy.command_restart)):
+            with self.assertRaises(SystemExit) as code:
+                self.quietly(command, namespace)
+            self.assertEqual(code.exception.code, 2)
+            self.assertIn("workstream A's scripts/contributor_changes.py", self.stderr)
+        self.assertEqual(self.hosts.touched, [])
+        seen = []
+
+        def change(ops, kind, arguments):
+            seen.append((type(ops).__name__, kind, arguments,
+                         os.environ.get(deploy.mesh_ops.OpsLock.ENV) is not None))
+            return 0
+
+        module = types.SimpleNamespace(change=change)
+        with mock.patch.object(deploy, "contributor_changes", lambda: module):
+            with self.assertRaises(SystemExit) as code:
+                self.quietly(deploy.command_restart, self.namespace(nodes="contrib-lon"))
+            self.assertEqual(code.exception.code, 0)
+            with self.assertRaises(SystemExit):
+                self.quietly(deploy.command_restart,
+                             self.namespace(nodes="contrib-lon,lon-edge-1"))
+        self.assertEqual(seen, [("LinodeOps", "contrib-restart", ["--node", "contrib-lon"], True)])
+
+    def test_status_names_the_build_the_record_and_what_a_cut_off_command_left(self):
+        self.push()
+        state = self.state()
+        document = self.hosts.document("lon-edge-1", "edge")
+        line = deploy.node_summary(document, state["deployed"]["nodes"]["lon-edge-1"])
+        self.assertIn(f"build={key(OLD)} state=ready drain=- boot=", line)
+        self.assertTrue(line.endswith("record=same"))
+        self.assertIn("record=DIFFERS", deploy.node_summary(
+            document, {**state["deployed"]["nodes"]["lon-edge-1"], "args_sha256": "x"}))
+        self.assertEqual(deploy.node_summary(None, None), " node=silent")
+        journal = deploy.mesh_ops.Journal.create(self.dir / "rolls", "roll", 1_790_000_000,
+                                                 label="roll.edges")
+        journal.update(in_hand={"node": "lon-edge-2", "phase": "drained", "tier": "edges"})
+        lines = deploy.deployed_summary(state)
+        self.assertIn("this worktree's settings are the deployed ones", lines[1])
+        self.assertIn("unfinished: roll.edges", lines[2])
+        self.assertIn("lon-edge-2 (drained)", lines[2])
+
+    def test_roll_changes_no_other_node_s_files(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        snapshot = {name: dict(files) for name, files in self.hosts.files.items()}
+        ops = self.ops()
+        edges = self.edges("london")
+        ops.stage(edges, ops.target("edges"))
+        ops.activate(edges[0], int((time.time() + 5) * 1000))
+        self.assertEqual(set(self.hosts.touched), set(edges))
+        for name, files in self.hosts.files.items():
+            if name not in edges:
+                self.assertEqual(files, snapshot.get(name, {}), name)
+        # The record moves for the activated node only; the tier keeps the
+        # build most of its nodes run.
+        deployed = self.state()["deployed"]
+        self.assertEqual(deployed["nodes"][edges[0]]["build"], key(NEW))
+        self.assertEqual(deployed["nodes"][edges[1]]["build"], key(OLD))
+        self.assertEqual(deployed["tiers"]["edges"], key(OLD))
+
+    def test_the_previous_arguments_are_kept_with_the_previous_binary(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        ops = self.ops()
+        name = "lon-edge-1"
+        old_args = self.args_of(name)
+        ops.stage([name], ops.target("edges"))
+        self.assertTrue(ops.activate(name, int((time.time() + 5) * 1000))["ok"])
+        self.assertEqual(self.args_of(name, ".prev"), old_args)
+        self.assertEqual(self.args_of(name)[0], f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+        # The previous binary is still on the node, where .args.prev names it.
+        self.assertIn(old_args[0], self.hosts.fs(name))
+        self.assertEqual(ops.expected(name, rollback=True),
+                         {"git": OLD[0], "unix": OLD[1],
+                          "args_sha256": hashlib.sha256("\n".join(old_args).encode()).hexdigest()})
+        self.assertTrue(ops.activate(name, int((time.time() + 5) * 1000), rollback=True)["ok"])
+        self.assertEqual(self.args_of(name), old_args)
+        self.assertEqual(self.state()["deployed"]["nodes"][name]["build"], key(OLD))
+        # A late activation changes nothing.
+        ops.stage([name], ops.target("edges"))
+        self.assertEqual(ops.activate(name, int((time.time() - 5) * 1000)),
+                         {"ok": False, "why": "late"})
+        self.assertEqual(self.args_of(name), old_args)
+
+    def test_a_roll_from_stale_settings_is_refused(self):
+        self.push()
+        # Another value saved in this worktree since the push (the trap of
+        # an earlier run's --set): refused, by name, exit 2.
+        with redirect_stderr(io.StringIO()):
+            deploy.load_settings(["mesh_sync_interval_ms=40"], lab_run_id="test")
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            self.ops().check("roll", self.edges())
+        self.assertIn("mesh_sync_interval_ms=40 (deployed 20)", str(caught.exception))
+        with self.assertRaises(SystemExit) as code:
+            self.quietly(deploy.command_roll, self.namespace(tier="edges"))
+        self.assertEqual(code.exception.code, 2)
+        self.assertIn("do not reproduce what is deployed", self.stderr)
+        self.assertEqual(self.hosts.touched, [])
+        # --adopt-settings goes on, and says what it adopts.
+        with redirect_stderr(io.StringIO()) as err:
+            self.ops(adopt_settings=True).check("roll", self.edges())
+        self.assertIn("adopting", err.getvalue())
+        # A node that runs other arguments than the record renders is named
+        # even when no setting differs.
+        with redirect_stderr(io.StringIO()):
+            deploy.load_settings(["mesh_sync_interval_ms=20"], lab_run_id="test")
+        self.ops().check("roll", self.edges())
+        # The contributor's arguments carry the time of their render
+        # (--relay-path-observed-at-unix-ms): a later render reproduces
+        # them all the same.
+        self.assertIn("--relay-path-observed-at-unix-ms", self.args_of("contrib-lon"))
+        self.ops().check("roll", ["contrib-lon", "lon-dist-a"])
+        files = self.hosts.fs("lon-edge-2")
+        files["/etc/needletail/needletail-mesh.args"] += b"--extra\n"
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            self.ops().check("roll", self.edges())
+        self.assertIn("lon-edge-2", str(caught.exception))
+        self.assertNotIn("lon-edge-1,", str(caught.exception))
+
+    def test_a_setting_outside_the_allow_list_cannot_roll(self):
+        self.push()
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            self.ops(set=["mesh_sync_interval_ms=40"]).check("roll", self.edges())
+        self.assertIn("mesh_sync_interval_ms", str(caught.exception))
+        self.assertIn("needs push", str(caught.exception))
+        with self.assertRaises(SystemExit) as code:
+            self.quietly(deploy.command_roll,
+                         self.namespace(tier="edges", set=["mesh_sync_interval_ms=40"]))
+        self.assertEqual(code.exception.code, 2)
+        self.assertEqual(self.hosts.touched, [])
+        # Nothing of a refused --set stays in this worktree's settings.
+        self.assertEqual(json.loads((self.dir / "settings.json").read_text())
+                         ["mesh_sync_interval_ms"], 20)
+
+    def test_a_set_that_changes_a_node_outside_the_tier_is_refused(self):
+        self.push()
+        # mlock_all renders on every mesh node: the forwarders are outside
+        # a roll of the edges.
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            self.ops(set=["mlock_all=true"]).check("roll", self.edges())
+        self.assertIn("lon-dist-a", str(caught.exception))
+        self.assertNotIn("lon-edge-1", str(caught.exception))
+        # The edges' own extra arguments stay inside it.
+        edges = [name for site in ("sydney", "london", "newyork", "tokyo")
+                 for name in self.edges(site)]
+        ops = self.ops(set=['extra_edge_args=["--egress-request-capacity","100000000"]'])
+        ops.check("roll", edges)
+        self.assertEqual(sorted(ops.changed_by_set()), sorted(edges))
+
+    def test_start_uses_the_deployed_build_not_the_root(self):
+        self.push()
+        self.set_root("av-mesh", NEW)  # the root was rebuilt since the push
+        self.quietly(deploy.command_start, self.namespace(nodes="lon-edge-6"))
+        self.assertEqual(self.args_of("lon-edge-6")[0],
+                         f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+        self.assertNotIn(f"/opt/needletail/builds/{key(NEW)}/av-mesh",
+                         self.hosts.fs("lon-edge-6"))
+        self.assertEqual(self.state()["deployed"]["nodes"]["lon-edge-6"]["build"], key(OLD))
+        self.assertNotIn("lon-edge-6", self.state()["deployed"]["settings"]["standby_edges"])
+        # A roll takes the root's build: the tier's target.
+        self.assertEqual(self.ops().target("edges")["git"], NEW[0])
+
+    def test_settings_of_another_lab_are_refused(self):
+        settings = self.dir / "settings.json"
+        document = json.loads(settings.read_text())
+        for owner in ("other", None):
+            with self.subTest(owner=owner):
+                document.pop("lab_run_id", None)
+                if owner:
+                    document["lab_run_id"] = owner
+                settings.write_text(json.dumps(document))
+                for command, namespace in (
+                        (deploy.command_push, self.namespace(skip_bootstrap=True)),
+                        (deploy.command_roll, self.namespace(tier="edges")),
+                        (deploy.command_start, self.namespace(nodes="lon-edge-6")),
+                        (deploy.command_stop, self.namespace(nodes="lon-edge-11"))):
+                    with self.assertRaises(SystemExit) as code:
+                        self.quietly(command, namespace)
+                    self.assertEqual(code.exception.code, 2, command.__name__)
+                    self.assertIn("not this lab's (test)", self.stderr)
+                self.assertEqual(json.loads(settings.read_text()).get("lab_run_id"), owner)
+        self.assertEqual(self.hosts.touched, [])
+        # The routes of another lab: refused unless measured again.
+        document["lab_run_id"] = "test"
+        settings.write_text(json.dumps(document))
+        routes = self.dir / "routes.json"
+        routes.write_text(json.dumps({**ROUTES, "topology": "merged", "lab_run_id": "other"}))
+        with self.assertRaises(SystemExit) as code:
+            self.quietly(deploy.command_plan, self.namespace())
+        self.assertEqual(code.exception.code, 2)
+        self.quietly(deploy.command_plan, self.namespace(remeasure=True))
+        self.assertEqual(json.loads(routes.read_text())["lab_run_id"], "test")
+        (self.dir / "ecmp-ports.json").write_text(json.dumps({"lab_run_id": "other"}))
+        with self.assertRaises(SystemExit) as code:
+            self.quietly(deploy.command_plan, self.namespace())
+        self.assertEqual(code.exception.code, 2)
+
+    def test_hunt_refuses_under_listeners(self):
+        self.push()
+        hunted = []
+        with mock.patch.object(deploy, "hunt_ports", lambda state, settings: hunted.append(1)):
+            self.hosts.udp["new-edge-2"] = {"subscribers": 3, "hls_sessions": 0}
+            with self.assertRaises(SystemExit) as code:
+                self.quietly(deploy.command_hunt, self.namespace())
+            self.assertEqual(code.exception.code, 2)
+            self.assertIn("new-edge-2: 3 subscribers", self.stderr)
+            self.hosts.udp["new-edge-2"] = {"subscribers": 0, "hls_sessions": 0}
+            self.hosts.running["tok-edge-1"] = False   # does not say
+            with self.assertRaises(SystemExit):
+                self.quietly(deploy.command_hunt, self.namespace())
+            self.assertIn("tok-edge-1: no answer", self.stderr)
+            self.assertEqual(hunted, [])
+            self.quietly(deploy.command_hunt, self.namespace(outage=True))
+            self.assertEqual(hunted, [1])
+            self.hosts.running["tok-edge-1"] = True
+            self.quietly(deploy.command_hunt, self.namespace())
+            self.assertEqual(hunted, [1, 1])
+            # Under another command's ops lock: refused.
+            lock = deploy.mesh_ops.OpsLock(self.dir / "lab.json.ops.lock").acquire()
+            try:
+                with mock.patch.dict("os.environ", {}, clear=False):
+                    os.environ.pop(lock.ENV, None)
+                    with self.assertRaises(SystemExit) as code:
+                        self.quietly(deploy.command_hunt, self.namespace())
+                self.assertEqual(code.exception.code, 2)
+            finally:
+                lock.release()
+            self.assertEqual(hunted, [1, 1])
+
+
+
+class Recorded(FakeLab):
+    """The deployed record stays what the lab runs (CT2 review): an
+    activation whose ssh dropped, a command killed during one and a push
+    that failed part-way are settled by what each node runs; a `--set`
+    stopped part-way is held per node until every node runs it; a
+    contributor whose arguments carry the time of their render is on its
+    recorded build; a node that runs nothing leaves the record; the build
+    cache holds one binary a build; a change without the lab tool of CT3
+    is refused before it begins."""
+
+    engine = Deployed.engine
+    GIVEN = ['extra_edge_args=["--egress-request-capacity","100000000"]']
+
+    def setUp(self):
+        super().setUp()
+        # What LinodeOps says on stderr (a settled activation, a fold).
+        quiet = redirect_stderr(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
+    def serving_edges(self) -> list[str]:
+        return [name for site in ("sydney", "london", "newyork", "tokyo")
+                for name in self.edges(site)]
+
+    def digest(self, name: str) -> str:
+        return hashlib.sha256("\n".join(self.args_of(name)).encode()).hexdigest()
+
+    def test_an_activation_whose_ssh_dropped_is_recorded_by_what_the_node_runs(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        real = deploy.activate_node
+
+        def dropped(node, *args, **kwargs):
+            result = real(node, *args, **kwargs)
+            if node["name"] == "lon-edge-1":
+                raise RuntimeError("ssh: connection reset")
+            return result
+
+        run = self.engine()
+        with mock.patch.object(deploy, "activate_node", dropped):
+            code = deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertEqual(self.args_of("lon-edge-1")[0], f"/opt/needletail/builds/{key(NEW)}/av-mesh")
+        entry = self.state()["deployed"]["nodes"]["lon-edge-1"]
+        self.assertEqual((entry["build"], entry["activating"]["build"]), (key(OLD), key(NEW)))
+        # The next command settles it by what the node runs, and goes on.
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("roll", self.serving_edges())
+        entry = self.state()["deployed"]["nodes"]["lon-edge-1"]
+        self.assertNotIn("activating", entry)
+        self.assertEqual((entry["build"], entry["args_sha256"], entry["prev"]["build"]),
+                         (key(NEW), self.digest("lon-edge-1"), key(OLD)))
+
+    def test_a_roll_killed_during_an_activation_is_resumed(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        real = deploy.activate_node
+
+        class Killed(BaseException):
+            pass
+
+        def killed(node, *args, **kwargs):
+            real(node, *args, **kwargs)
+            raise Killed()
+
+        run = self.engine()
+        with mock.patch.object(deploy, "activate_node", killed), self.assertRaises(Killed):
+            deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], **run)
+        self.assertEqual(self.hosts.drained, {"lon-edge-1"})
+        run = self.engine()
+        code = deploy.mesh_ops.roll(self.ops(), "edges", sites=["london"], resume=True, **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        nodes = self.state()["deployed"]["nodes"]
+        for name in self.edges("london"):
+            self.assertEqual(nodes[name]["build"], key(NEW), name)
+            self.assertNotIn("activating", nodes[name])
+            self.assertEqual(nodes[name]["args_sha256"], self.digest(name), name)
+        self.assertEqual(self.hosts.drained, set())
+
+    def test_a_push_that_fails_on_one_node_records_every_node_that_activated(self):
+        self.push()
+        self.set_root("av-mesh", NEW)
+        real = deploy.activate_node
+
+        def refused(node, *args, **kwargs):
+            if node["name"] == "lon-edge-2":
+                raise RuntimeError("ssh: connection reset")
+            return real(node, *args, **kwargs)
+
+        with mock.patch.object(deploy, "activate_node", refused), \
+                self.assertRaises(RuntimeError):
+            self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+        nodes = self.state()["deployed"]["nodes"]
+        for name in ("lon-edge-1", "new-edge-1", "lon-dist-a"):
+            self.assertEqual(nodes[name]["build"], key(NEW), name)
+            self.assertEqual(nodes[name]["args_sha256"], self.digest(name), name)
+        self.assertEqual(nodes["lon-edge-2"]["build"], key(OLD))
+        self.assertEqual(nodes["lon-edge-2"]["activating"]["build"], key(NEW))
+        # It never ran: the next command drops what was begun.
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("restart", ["lon-edge-2"])
+        entry = self.state()["deployed"]["nodes"]["lon-edge-2"]
+        self.assertEqual((entry["build"], "activating" in entry), (key(OLD), False))
+
+    def test_a_roll_with_a_set_stopped_part_way_goes_on_when_run_again(self):
+        self.push()
+        edges = self.serving_edges()
+        ops = self.ops(set=self.GIVEN)
+        order = deploy.mesh_ops.plan_order(deploy.mesh_ops.Lab(ops.nodes()), "edges")
+        busy = {"subscribers": 3, "hls_sessions": 0, "hls_moved_active": 0,
+                "hls_requests_in_flight": 0, "single_legs": 0, "legs_by_other": {},
+                "load_permille": 100}
+        self.hosts.udp[order[1]] = busy
+        run = self.engine()
+        options = deploy.mesh_ops.Options(drain_timeout_s=2.0, gate_timeout_s=2.0)
+        self.assertEqual(deploy.mesh_ops.roll(ops, "edges", options=options, **run), 3,
+                         run["err"].getvalue())
+        self.assertIn("--egress-request-capacity", self.args_of(order[0]))
+        self.assertNotIn("--egress-request-capacity", self.args_of(order[1]))
+        deployed = self.state()["deployed"]
+        self.assertEqual(deployed["nodes"][order[0]]["set"],
+                         {"extra_edge_args": ["--egress-request-capacity", "100000000"]})
+        self.assertEqual(deployed["settings"]["extra_edge_args"],
+                         deploy.DEFAULT_SETTINGS["extra_edge_args"])
+        self.assertEqual(json.loads((self.dir / "settings.json").read_text())["extra_edge_args"],
+                         deploy.DEFAULT_SETTINGS["extra_edge_args"])
+        # The same command again, without --adopt-settings: it goes on from
+        # the first edge that does not run it. Meanwhile another command
+        # held an edge out in this worktree's settings.json: the fold keeps
+        # that and writes only the keys of the --set.
+        del self.hosts.udp[order[1]]
+        ops = self.ops(set=self.GIVEN)
+        document = json.loads((self.dir / "settings.json").read_text())
+        document["standby_edges"] = sorted(document["standby_edges"] + ["tok-edge-5"])
+        (self.dir / "settings.json").write_text(json.dumps(document))
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(ops, "edges", **run), 0, run["err"].getvalue())
+        self.assertIn(f"plan: {order[0]} skipped", run["err"].getvalue())
+        for name in edges:
+            self.assertIn("--egress-request-capacity", self.args_of(name), name)
+        deployed = self.state()["deployed"]
+        self.assertEqual(deployed["settings"]["extra_edge_args"],
+                         ["--egress-request-capacity", "100000000"])
+        self.assertEqual([name for name, entry in deployed["nodes"].items() if "set" in entry], [])
+        saved = json.loads((self.dir / "settings.json").read_text())
+        self.assertEqual(saved["extra_edge_args"], ["--egress-request-capacity", "100000000"])
+        self.assertIn("tok-edge-5", saved["standby_edges"])
+        # The next command reproduces the lab from the worktree, without
+        # --set; the same roll again restarts nothing.
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("roll", self.serving_edges())
+        self.hosts.scripts.clear()
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(self.ops(set=self.GIVEN), "edges", **run), 0,
+                         run["err"].getvalue())
+        self.assertFalse(any("systemd-run" in script for scripts in self.hosts.scripts.values()
+                             for script in scripts))
+
+    def test_a_rollback_after_the_fold_runs_what_the_node_ran_before(self):
+        """The last edge to take a --set folds it into the deployed
+        settings; when its rollback follows, the record still says what it
+        runs (the setting before, as its own)."""
+        self.push()
+        run = self.engine()
+        self.assertEqual(deploy.mesh_ops.roll(self.ops(set=self.GIVEN), "edges", **run), 0,
+                         run["err"].getvalue())
+        name = self.serving_edges()[0]
+        run = self.engine()
+        code = deploy.mesh_ops.restart_nodes(
+            self.ops(), [name], options=deploy.mesh_ops.Options(rollback=True), **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertNotIn("--egress-request-capacity", self.args_of(name))
+        entry = self.state()["deployed"]["nodes"][name]
+        self.assertEqual(entry["set"], {"extra_edge_args": deploy.DEFAULT_SETTINGS["extra_edge_args"]})
+        with redirect_stderr(io.StringIO()):
+            self.ops().check("restart", self.serving_edges())
+
+    def test_a_contributor_on_its_recorded_build_is_on_the_target(self):
+        self.push()
+        running = self.args_of("contrib-lon")
+        time.sleep(0.002)
+        ops = self.ops()
+        fresh, _unit, _service = ops.node_args("contrib-lon", ops.base, key(CONTRIB))
+        self.assertNotEqual(deploy.args_sha256(fresh), deploy.args_sha256(running))
+        ops.stage(["contrib-lon"], None)
+        self.assertEqual(self.args_of("contrib-lon", ".next"), running)
+        self.assertEqual(ops.expected("contrib-lon")["args_sha256"], self.digest("contrib-lon"))
+        # Through the engine: skipped, nothing activated.
+        passes = lambda ops, node, **kwargs: (True, "", {})  # noqa: E731
+        self.hosts.scripts.clear()
+        with mock.patch.object(deploy.mesh_ops, "contributor_rules", lambda: (passes, passes)):
+            run = self.engine()
+            code = deploy.mesh_ops.roll(self.ops(), "contributors", **run)
+        self.assertEqual(code, 0, run["err"].getvalue())
+        self.assertIn("plan: contrib-lon skipped", run["err"].getvalue())
+        self.assertFalse(any("systemd-run" in script
+                             for script in self.hosts.scripts.get("contrib-lon", [])))
+
+    def test_a_node_that_runs_nothing_leaves_the_record(self):
+        self.push()
+        state = self.state()
+        del state["nodes"]["lon-edge-11"]  # a slot deleted
+        self.state_file.write_text(json.dumps(state))
+        self.ops().hold("lon-edge-5", out=True)
+        nodes = self.state()["deployed"]["nodes"]
+        self.assertNotIn("lon-edge-11", nodes)
+        self.assertNotIn("lon-edge-5", nodes)
+        self.assertIn("lon-edge-5", self.state()["deployed"]["settings"]["standby_edges"])
+
+    def test_a_cached_build_is_never_written_again_and_a_cut_off_fetch_is_no_build(self):
+        self.push()
+        cached = self.dir / "builds" / key(OLD) / "av-mesh"
+        before = cached.read_bytes()
+        # Another binary that names the same build: refused, the cache as it was.
+        fake_binary(self.roots / "mesh" / "av-mesh", "av-mesh", OLD, "--other-flags")
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            deploy.cache_build("edge")
+        self.assertIn("a build id names one binary", str(caught.exception))
+        self.assertEqual(cached.read_bytes(), before)
+        self.assertEqual(sorted(path.name for path in (self.dir / "builds").iterdir()),
+                         sorted([key(OLD), key(CONTRIB)]))
+        # A fetch cut off left the directory without its binary: the build
+        # comes whole from a node that runs it.
+        shutil.rmtree(cached.parent)
+        cached.parent.mkdir()
+        (cached.parent / "aep1-48k-probe").write_text("part of a fetch")
+        self.quietly(deploy.command_start, self.namespace(nodes="lon-edge-6"))
+        self.assertEqual(cached.read_bytes(), before)
+        args = self.args_of("lon-edge-6")
+        self.assertEqual(args[0], f"/opt/needletail/builds/{key(OLD)}/av-mesh")
+        self.assertEqual(deploy.flag_value(args, "--stop-drain-ms"), "14000")
+
+    def test_without_the_lab_tool_of_ct3_a_change_is_refused_before_it_begins(self):
+        self.push()
+        lab = types.SimpleNamespace(change_state=self.change_state)
+        with mock.patch.object(deploy, "lab_tool", lambda: lab):
+            for command, namespace in (
+                    (deploy.command_roll, self.namespace(tier="edges")),
+                    (deploy.command_push, self.namespace(skip_bootstrap=True)),
+                    (deploy.command_restart, self.namespace(nodes="lon-edge-1")),
+                    (deploy.command_restart, self.namespace(roles="edge")),
+                    (deploy.command_start, self.namespace(nodes="lon-edge-6"))):
+                with self.assertRaises(SystemExit) as code:
+                    self.quietly(command, namespace)
+                self.assertEqual(code.exception.code, 2, command.__name__)
+                self.assertIn("watchdog_ensure", self.stderr)
+                self.assertIn("C CT3", self.stderr)
+        self.assertEqual(self.hosts.touched, [])
+
+    def test_the_service_s_start_is_read_to_the_microsecond(self):
+        self.push()
+        ops = self.ops()
+        sent = []
+        with mock.patch.object(deploy.common, "ssh_text",
+                               lambda node, script, **kwargs: sent.append(script)
+                               or "1795223802527845"):
+            self.assertTrue(ops.boot_changed("lon-edge-1", 1795223802527))
+            self.assertFalse(ops.boot_changed("lon-edge-1", 1795223802528))
+        self.assertIn("--timestamp=us+utc", sent[0])
+        self.assertIn("+%s%6N", sent[0])
+
+    def test_the_node_in_hand_gets_a_fresh_ssh_connection(self):
+        self.push()
+        ops = self.ops()
+        ops.status("lon-edge-1")
+        ops.status("lon-edge-1")
+        self.assertEqual(self.hosts.scripts["lon-edge-1"], ["true"])
+        ops._ssh_at["lon-edge-1"] -= ops.SSH_REFRESH_S
+        ops.status("lon-edge-1")
+        self.assertEqual(self.hosts.scripts["lon-edge-1"], ["true", "true"])
+        # Staging reached it: no refresh.
+        ops.stage(["lon-edge-2"], None)
+        count = len(self.hosts.scripts["lon-edge-2"])
+        ops.status("lon-edge-2")
+        self.assertEqual(len(self.hosts.scripts["lon-edge-2"]), count)
+        # A node that does not answer is not reached by ssh.
+        self.hosts.running["lon-edge-3"] = False
+        self.assertIsNone(ops.status("lon-edge-3"))
+        self.assertNotIn("lon-edge-3", self.hosts.scripts)
+
+    def test_arguments_of_the_layout_before_builds_are_not_rolled_back_to(self):
+        self.push()
+        files = self.hosts.fs("lon-edge-1")
+        files["/etc/needletail/needletail-mesh.args.prev"] = b"/usr/local/bin/av-mesh\n--x\n"
+        with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+            self.ops().expected("lon-edge-1", rollback=True)
+        self.assertIn("not a build of /opt/needletail/builds", str(caught.exception))
+
+    def test_a_contributor_restart_takes_none_of_the_engine_s_options(self):
+        self.push()
+        seen = []
+        module = types.SimpleNamespace(change=lambda ops, kind, arguments: seen.append(kind) or 0)
+        with mock.patch.object(deploy, "contributor_changes", lambda: module):
+            for extra in ({"rollback": True}, {"hold_s": 5.0}, {"set": ["rust_log_contrib=info"]},
+                          {"resume": True}):
+                with self.assertRaises(SystemExit) as code:
+                    self.quietly(deploy.command_restart, self.namespace(nodes="contrib-lon", **extra))
+                self.assertEqual(code.exception.code, 2, extra)
+                self.assertIn("takes no --", self.stderr)
+        self.assertEqual(seen, [])
 
 
 class Limits(Base):
@@ -586,11 +1551,23 @@ class LoadHosts(Base):
         with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
                 mock.patch.object(deploy.common, "ssh_text",
                                   lambda node, script, **k: sent.append(script) or ""):
-            deploy.install_node(listener, {}, self.settings(), False)
-            deploy.install_node(view, {}, self.settings(), False)
+            deploy.install_tools(listener, self.settings(), False)
+            deploy.install_tools(view, self.settings(), False)
         self.assertIn("net.ipv4.ip_local_port_range = 1024 65000", sent[0])
         self.assertIn("91-needletail-listeners.conf", sent[0])
         self.assertNotIn("91-needletail-listeners.conf", sent[1])
+
+    def test_the_source_and_capacity_tool_come_from_their_variables(self):
+        state = topology_state(json.loads(SCALE.read_text()))
+        with mock.patch.dict("os.environ", {"NEEDLETAIL_DAW_NEXUS_ROOT": "/w/daw-nexus-x",
+                                            "NEEDLETAIL_H3_CAPACITY_BIN": "/w/h3-cap"}):
+            listener = [str(path) for path in deploy.binaries_for("load", state["nodes"]["lon-load-1"])]
+            contributor = [str(path) for path in deploy.binaries_for("contributor")]
+        daw = "/w/daw-nexus-x/target/x86_64-unknown-linux-gnu/release/daw-test-source"
+        self.assertIn(daw, listener)
+        self.assertIn("/w/h3-cap", listener)
+        self.assertEqual(contributor[-1], daw)
+        self.assertTrue(contributor[0].endswith("/av-contrib"))
 
     def test_the_older_labs_load_hosts_are_not_listener_hosts(self):
         # topology-core.json and its kin name their one source and probe
@@ -613,8 +1590,8 @@ class LoadHosts(Base):
         with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
                 mock.patch.object(deploy.common, "ssh_text",
                                   lambda node, script, **k: sent.append(script) or ""):
-            deploy.install_node({"name": "lon-load", "role": "load", "site": "london"}, {},
-                                self.settings(), False)
+            deploy.install_tools({"name": "lon-load", "role": "load", "site": "london"},
+                                 self.settings(), False)
         self.assertNotIn("91-needletail-listeners.conf", sent[0])
 
 

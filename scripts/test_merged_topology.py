@@ -13,12 +13,15 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import shutil
+import subprocess
 import tempfile
+import time
 import unittest
 import sys
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -748,22 +751,40 @@ class Lifecycle(Base):
     def test_push_and_restart_stop_an_unused_backbone(self):
         sent = []
         node = {**lab.node("relay-primary"), "type": "g6-dedicated-2"}
-        with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
-                mock.patch.object(deploy.common, "ssh_text",
-                                  lambda node, script, **k: sent.append(script) or ""):
-            deploy.install_node(node, {}, self.settings(), False)
+        with mock.patch.object(deploy.common, "ssh_text",
+                               lambda node, script, **k: sent.append(script) or ""):
+            deploy.stop_service(node)
         self.assertIn("systemctl disable --now needletail-mesh.service", sent[-1])
-        # A rendered node is installed and restarted as before.
-        sent.clear()
-        with mock.patch.object(deploy.common, "rsync_to", lambda *a, **k: None), \
-                mock.patch.object(deploy.common, "ssh_text",
-                                  lambda node, script, **k: sent.append(script) or ""), \
-                mock.patch.object(deploy, "apply_host_qdisc", lambda *a, **k: ""):
-            deploy.install_node(node, {"relay-primary": {"service": "needletail-mesh",
-                                                         "rust_log": "info"}},
-                                self.settings(["topology=legacy"]), False)
-        self.assertNotIn("disable --now", sent[-1])
-        self.assertIn("systemctl restart needletail-mesh.service", sent[-1])
+
+    @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
+    def test_install_stages_and_activates_a_backbone_only_in_the_legacy_topology(self):
+        """push and restart --roles go through LinodeOps.install: a backbone
+        the merged topology does not use is stopped and gets no files; in
+        the legacy topology it is staged and activated as any node."""
+        state = lab.lab_state()
+        build = "aaaaaaaaaaaa-1000"
+        state["deployed"] = {"tiers": {"edges": build, "forwarders": build,
+                                       "contributors": build}, "nodes": {}}
+        for binary in ("av-mesh", "av-contrib"):
+            path = self.dir / "builds" / build / binary
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\n")
+            path.chmod(0o755)
+        (self.dir / "routes.json").write_text(json.dumps({**ROUTES, "topology": "merged"}))
+        for mode, staged in (("merged", False), ("legacy", True)):
+            calls = []
+            with mock.patch.object(deploy, "stage_node", lambda node, *a: calls.append(
+                    ("stage", node["name"]))), \
+                    mock.patch.object(deploy, "activate_node", lambda node, *a, **k: calls.append(
+                        ("activate", node["name"])) or {"ok": True, "why": "", "qdisc": None}), \
+                    mock.patch.object(deploy, "stop_service", lambda node, *a: calls.append(
+                        ("stop", node["name"]))), \
+                    mock.patch.object(deploy, "record_deployed", lambda *a, **k: None), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                ops = deploy.LinodeOps(state, self.settings([f"topology={mode}"]))
+                ops.install(["relay-primary"], None)
+            self.assertEqual(calls, [("stage", "relay-primary"), ("activate", "relay-primary")]
+                             if staged else [("stop", "relay-primary")], mode)
 
     def test_the_lab_starts_no_service_for_an_unused_backbone(self):
         with mock.patch.object(lab, "load", lambda name, default=None: {}):
@@ -771,6 +792,401 @@ class Lifecycle(Base):
                 lab.start_service("relay-primary")
         self.assertIn("topology=legacy", str(caught.exception))
 
+
+class Unit(unittest.TestCase):
+    def test_the_unit_restarts_at_once_without_a_start_limit_and_stops_within_b_s_bound(self):
+        """C 2.5 with B 3.12's stop bound: no start limit (with RestartSec=1,
+        five crashes in ten seconds would leave a media node failed for
+        good), a restart a second after an exit, a stop bounded by 20 s
+        (the edge's --stop-drain-ms 14000, its shutdown and a spare), and
+        /var/lib/needletail for the operator's drain."""
+        for service in ("needletail-mesh", "needletail-contrib"):
+            unit = deploy.unit_text(service, "info", dict(deploy.DEFAULT_SETTINGS))
+            head, _, body = unit.partition("[Service]")
+            self.assertIn("\nStartLimitIntervalSec=0\n", head, service)
+            for line in ("Restart=always", "RestartSec=1", "TimeoutStopSec=20",
+                         "StateDirectory=needletail",
+                         f"ExecStart=/usr/local/bin/needletail-run-args /etc/needletail/"
+                         f"{service}.args"):
+                self.assertIn(f"\n{line}\n", body, service)
+            self.assertNotIn("RestartSec=2", body)
+        self.assertEqual(deploy.mesh_ops.UNIT_TIMEOUT_STOP_S, 20)
+        self.assertGreaterEqual(deploy.mesh_ops.UNIT_TIMEOUT_STOP_S
+                                - deploy.EDGE_STOP_DRAIN_MS / 1000, 4)
+
+
+class Activation(unittest.TestCase):
+    """The activation script (C 2.5) run by bash on a directory tree that
+    stands for a node, with systemctl, sysctl and modprobe stubbed: a late
+    activation and a missing binary change nothing; an activation keeps
+    the previous arguments beside the previous binary and a rollback puts
+    them back; `.args` is never absent; old builds are pruned, never one
+    that is named."""
+
+    SERVICE = "needletail-mesh"
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.etc, self.run_dir = self.root / "etc", self.root / "run"
+        self.bin, self.units = self.root / "bin", self.root / "units"
+        self.sysctl = self.root / "sysctl.d" / "90-needletail.conf"
+        for folder in (self.etc, self.bin, self.units, self.sysctl.parent):
+            folder.mkdir(parents=True)
+        self.log = self.root / "calls.log"
+        self.args = self.etc / f"{self.SERVICE}.args"
+        script = deploy.ACTIVATE_SCRIPT
+        for line, path in (("ETC=/etc/needletail", self.etc), ("RUN=/run/needletail", self.run_dir),
+                           ("BIN=/usr/local/bin", self.bin),
+                           ("UNITS=/etc/systemd/system", self.units),
+                           ("SYSCTL=/etc/sysctl.d/90-needletail.conf", self.sysctl),
+                           ("BUILDS=/opt/needletail/builds", self.root / "builds")):
+            self.assertIn(f"\n{line}\n", script)
+            script = script.replace(f"\n{line}\n", f"\n{line.split('=')[0]}={path}\n")
+        self.script = self.root / "activate"
+        self.script.write_text(script)
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        # systemctl, sysctl and modprobe log their arguments; cp and mv run
+        # the real ones and log "absent" when .args is missing after them.
+        for name in ("systemctl", "sysctl", "modprobe"):
+            (stubs / name).write_text(f"#!/bin/sh\necho \"{name} $*\" >>{self.log}\n")
+        for name in ("cp", "mv"):
+            (stubs / name).write_text(
+                f"#!/bin/sh\n{shutil.which(name)} \"$@\"; status=$?\n"
+                f"if [ -f {self.args}.prev ] && [ ! -f {self.args} ]; then "
+                f"echo absent >>{self.log}; fi\nexit $status\n")
+        for path in stubs.iterdir():
+            path.chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}"}
+        for build in ("a", "b"):
+            binary = self.root / "builds" / build / "av-mesh"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o755)
+            (binary.parent / "aep1-48k-probe").write_text("probe\n")
+        # Build a is in force, with its unit.
+        self.args.write_text(self.text("a"))
+        (self.units / f"{self.SERVICE}.service").write_text("unit a\n")
+
+    def text(self, build: str) -> str:
+        return f"{self.root}/builds/{build}/av-mesh\n--node-id\nlon-edge-1\n--build\n{build}\n"
+
+    def stage(self, build: str, unit: str | None = None) -> None:
+        (self.etc / f"{self.SERVICE}.args.next").write_text(self.text(build))
+        (self.etc / f"{self.SERVICE}.unit.next").write_text(unit or f"unit {build}\n")
+
+    def activate(self, *extra: str, not_after_s: float = 10.0) -> tuple[int, dict]:
+        not_after = int((time.time() + not_after_s) * 1000)
+        result = subprocess.run(["bash", str(self.script), self.SERVICE, "--not-after",
+                                 str(not_after), *extra], env=self.env, capture_output=True,
+                                text=True, timeout=60)
+        outcome = json.loads((self.run_dir / f"activate-{self.SERVICE}.json").read_text())
+        return result.returncode, outcome
+
+    def calls(self) -> str:
+        return self.log.read_text() if self.log.is_file() else ""
+
+    def test_a_late_activation_changes_nothing(self):
+        self.stage("b")
+        code, outcome = self.activate(not_after_s=-1.0)
+        self.assertEqual((code, outcome["ok"], outcome["why"]), (1, False, "late"))
+        self.assertEqual(self.args.read_text(), self.text("a"))
+        self.assertTrue((self.etc / f"{self.SERVICE}.args.next").is_file())
+        self.assertFalse((self.etc / f"{self.SERVICE}.args.prev").exists())
+        self.assertEqual(self.calls(), "")
+
+    def test_a_missing_binary_is_refused(self):
+        for build in ("c", "plain"):
+            if build == "plain":
+                (self.root / "builds" / "plain").mkdir()
+                (self.root / "builds" / "plain" / "av-mesh").write_text("not executable\n")
+            self.stage(build)
+            code, outcome = self.activate()
+            self.assertEqual((code, outcome["ok"]), (1, False), build)
+            self.assertEqual(outcome["why"], f"not an executable on this node: "
+                                             f"{self.root}/builds/{build}/av-mesh")
+            self.assertEqual(self.args.read_text(), self.text("a"))
+            self.assertEqual(self.calls(), "")
+        (self.etc / f"{self.SERVICE}.args.next").unlink()
+        code, outcome = self.activate()
+        self.assertIn("nothing to put in force", outcome["why"])
+
+    def test_the_previous_arguments_stay_beside_the_previous_binary_and_come_back(self):
+        self.stage("b")
+        (self.etc / f"{self.SERVICE}.sysctl.next").write_text("net.core.rmem_max = 1\n")
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["why"]), (0, True, ""))
+        self.assertEqual((outcome["from"], outcome["to"]),
+                         (f"{self.root}/builds/a/av-mesh", f"{self.root}/builds/b/av-mesh"))
+        self.assertEqual(self.args.read_text(), self.text("b"))
+        self.assertEqual((self.etc / f"{self.SERVICE}.args.prev").read_text(), self.text("a"))
+        self.assertFalse((self.etc / f"{self.SERVICE}.args.next").exists())
+        self.assertEqual(os.readlink(self.bin / "av-mesh"), f"{self.root}/builds/b/av-mesh")
+        self.assertEqual(os.readlink(self.bin / "aep1-48k-probe"),
+                         f"{self.root}/builds/b/aep1-48k-probe")
+        self.assertEqual((self.units / f"{self.SERVICE}.service").read_text(), "unit b\n")
+        self.assertEqual((self.etc / f"{self.SERVICE}.unit.prev").read_text(), "unit a\n")
+        self.assertEqual(self.sysctl.read_text(), "net.core.rmem_max = 1\n")
+        self.assertEqual(self.calls().splitlines(), [
+            "modprobe tcp_bbr", f"sysctl -q -p {self.sysctl}", "systemctl daemon-reload",
+            f"systemctl enable --quiet {self.SERVICE}.service",
+            f"systemctl restart {self.SERVICE}.service"])
+        # Staged again with nothing that differs: no kernel setting, no
+        # daemon-reload.
+        self.log.unlink()
+        self.stage("b")
+        self.assertEqual(self.activate()[1]["ok"], True)
+        self.assertEqual(self.calls().splitlines(), [
+            f"systemctl enable --quiet {self.SERVICE}.service",
+            f"systemctl restart {self.SERVICE}.service"])
+        self.assertEqual((self.etc / f"{self.SERVICE}.args.prev").read_text(), self.text("b"))
+        # The rollback of a failed activation: a, then b, then back to a.
+        self.stage("a")
+        self.activate()
+        self.stage("b")
+        self.activate()
+        self.log.unlink()
+        code, outcome = self.activate("--rollback")
+        self.assertEqual((code, outcome["ok"]), (0, True))
+        self.assertEqual(self.args.read_text(), self.text("a"))
+        self.assertEqual((self.etc / f"{self.SERVICE}.args.failed").read_text(), self.text("b"))
+        self.assertEqual(os.readlink(self.bin / "av-mesh"), f"{self.root}/builds/a/av-mesh")
+        self.assertEqual((self.units / f"{self.SERVICE}.service").read_text(), "unit a\n")
+        self.assertIn(f"systemctl restart {self.SERVICE}.service", self.calls())
+
+    def test_the_arguments_are_never_absent(self):
+        for build in ("b", "a", "b"):
+            self.stage(build)
+            self.assertTrue(self.activate()[1]["ok"])
+        self.assertTrue(self.activate("--rollback")[1]["ok"])
+        self.assertTrue(self.activate("--rollback")[1]["ok"])
+        self.assertNotIn("absent", self.calls())
+        # The stub sees an absent file (the check itself is live).
+        os.rename(self.args, self.root / "away")
+        subprocess.run([str(self.root / "stubs" / "cp"), str(self.root / "away"),
+                        str(self.root / "copy")], env=self.env, check=True)
+        self.assertIn("absent", self.calls())
+
+    def test_arguments_of_the_layout_before_builds_are_never_put_back(self):
+        """A lab upgraded to builds: the first activation keeps the old
+        `.args` (line 1 /usr/local/bin/av-mesh) as `.args.prev`. Its
+        rollback is refused, and no file of /usr/local/bin is touched."""
+        self.args.write_text(f"{self.bin}/av-mesh\n--node-id\nlon-edge-1\n")
+        (self.bin / "av-mesh").write_text("#!/bin/sh\n")
+        (self.bin / "av-mesh").chmod(0o755)
+        (self.bin / "needletail-run-args").write_text("#!/bin/sh\n")
+        self.stage("b")
+        self.assertTrue(self.activate()[1]["ok"])
+        self.log.unlink()
+        code, outcome = self.activate("--rollback")
+        self.assertEqual((code, outcome["ok"]), (1, False))
+        self.assertEqual(outcome["why"],
+                         f"not a binary of a build in {self.root}/builds: {self.bin}/av-mesh")
+        self.assertEqual(self.args.read_text(), self.text("b"))
+        self.assertFalse((self.bin / "needletail-run-args").is_symlink())
+        self.assertEqual(self.calls(), "")
+
+    def test_the_host_qdisc_is_applied_once_and_a_failed_one_puts_nothing_in_force(self):
+        qdisc = self.etc / f"{self.SERVICE}.qdisc.next"
+        applied, output = self.run_dir / f"{self.SERVICE}.qdisc", \
+            self.run_dir / f"qdisc-{self.SERVICE}.txt"
+        qdisc.write_text("echo applied\n")
+        self.stage("b")
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (0, True, True))
+        self.assertEqual((output.read_text(), applied.read_text()), ("applied\n", "echo applied\n"))
+        # Staged again as it is: not run again (its copy in /run is the same).
+        output.unlink()
+        self.stage("a")
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (0, True, False))
+        self.assertFalse(output.exists())
+        # A qdisc that fails: its last line is the reason, nothing is put in
+        # force and nothing restarted.
+        qdisc.write_text('echo "starting"\necho "tc: \\"eth1\\" refused"\nexit 1\n')
+        self.stage("b")
+        self.log.unlink()
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (1, False, False))
+        self.assertEqual(outcome["why"], "the host qdisc failed: tc: eth1 refused")
+        self.assertEqual(self.args.read_text(), self.text("a"))
+        self.assertTrue((self.etc / f"{self.SERVICE}.args.next").is_file())
+        self.assertEqual(applied.read_text(), "echo applied\n")
+        self.assertNotIn("systemctl", self.calls())
+
+    def test_the_staged_host_qdisc_checks_every_nic(self):
+        """The qdisc the deploy stages (node_files) fails when a NIC does
+        not show it, so the activation refuses before it puts anything in
+        force; tc is stubbed, and so is /sys/class/net."""
+        net = self.root / "net"
+        for device in ("eth0", "eth1"):
+            (net / device / "device").mkdir(parents=True)
+        (net / "lo").mkdir()
+        shown = self.root / "tc-show"
+        tc = self.root / "stubs" / "tc"
+        tc.write_text(f"#!/bin/sh\ncase \"$*\" in *\"qdisc show\"*) cat {shown} ;; esac\n")
+        tc.chmod(0o755)
+        settings = dict(deploy.DEFAULT_SETTINGS)
+        text = deploy.node_files(["x"], "unit", settings)["qdisc"]
+        self.assertEqual(deploy.class_plan(settings)["host_qdisc"], "prio")
+        (self.etc / f"{self.SERVICE}.qdisc.next").write_text(
+            text.replace("/sys/class/net", str(net)))
+        prio = ("qdisc prio 1: root refcnt 2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n"
+                "qdisc pfifo 10: parent 1:1 limit 10000p\n"
+                "qdisc fq 20: parent 1:2 limit 65536p flow_limit 4096p\n")
+        for content, why in (("qdisc fq_codel 0: root refcnt 2\n",
+                              "the host qdisc prio is not the root of eth0"),
+                             (prio.replace("qdisc fq 20", "qdisc sfq 20"),
+                              "the host qdisc prio has no fq 20: on eth0")):
+            shown.write_text(content)
+            self.stage("b")
+            code, outcome = self.activate()
+            self.assertEqual((code, outcome["ok"]), (1, False), why)
+            self.assertEqual(outcome["why"], f"the host qdisc failed: {why}")
+            self.assertEqual(self.args.read_text(), self.text("a"))
+        shown.write_text(prio)
+        code, outcome = self.activate()
+        self.assertEqual((code, outcome["ok"], outcome["qdisc"]), (0, True, True))
+        output = (self.run_dir / f"qdisc-{self.SERVICE}.txt").read_text()
+        self.assertEqual(deploy.check_host_qdisc(output, "prio"), [])
+        # No NIC at all is no qdisc.
+        shutil.rmtree(net)
+        net.mkdir()
+        (self.run_dir / f"{self.SERVICE}.qdisc").unlink()
+        self.stage("a")
+        code, outcome = self.activate()
+        self.assertEqual(outcome["why"], "the host qdisc failed: the host qdisc: no NIC")
+
+    def test_old_builds_are_pruned_but_never_one_that_is_named(self):
+        builds = self.root / "opt-builds"
+        for index in range(1, 7):
+            folder = builds / f"b{index}"
+            folder.mkdir(parents=True)
+            os.utime(folder, (1_000 + index, 1_000 + index))
+        (self.etc / "needletail-mesh.args").write_text(f"{builds}/b1/av-mesh\n")
+        (self.etc / "needletail-mesh.args.prev").write_text(f"{builds}/b2/av-mesh\n")
+        script = deploy.PRUNE_BUILDS.replace("/etc/needletail", str(self.etc)) \
+            .replace("/opt/needletail/builds", str(builds))
+        subprocess.run(["bash", "-e", "-c", script], check=True, timeout=30)
+        self.assertEqual(sorted(path.name for path in builds.iterdir()),
+                         ["b1", "b2", "b4", "b5", "b6"])
+
+    def test_the_node_computes_the_render_digest_as_the_tool_does(self):
+        args = ["/opt/needletail/builds/k/av-contrib", "--relay-path-observed-at-unix-ms",
+                "1790000000123", "--relay-secondary-path-observed-at-unix-ms", "1790000000456",
+                "--x", "1"]
+        path = self.root / "contrib.args"
+        path.write_text(deploy.args_text(args))
+        result = subprocess.run(["bash", "-c", deploy.RENDER_SHA256.format(path=path)],
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), deploy.render_sha256(args))
+        later = list(args)
+        later[2] = "1790000999999"
+        self.assertEqual(deploy.render_sha256(later), deploy.render_sha256(args))
+        self.assertNotEqual(deploy.args_sha256(later), deploy.args_sha256(args))
+
+
+@unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
+class Rollable(Base):
+    """Every key of ROLLABLE_SETTINGS (C 2.6) renders local flags only: a
+    node that runs the new value next to one that runs the old needs no
+    peer to agree. Each key, set alone, changes only the flags named here
+    (and, for the unit's keys, the unit), never an address, a port, a peer,
+    a part or the relay DAG; and it reaches only the roles and the units
+    named in REACH. C 2.6 asks one role a key; twelve keys of C's own list
+    reach the edges and the forwarders both (a departure): what keeps a
+    roll safe is the scope check at run time (LinodeOps.changed_by_set),
+    and REACH makes a key that silently reaches another role show."""
+
+    LOCAL = "--test-local-flag"
+    CASES = {
+        "rust_log_mesh": ("av_mesh=debug", set()),
+        "rust_log_contrib": ("av_contrib=debug", set()),
+        "node_env": ({"MALLOC_ARENA_MAX": "4"}, set()),
+        "tokio_worker_threads": (2, set()),
+        "extra_edge_args": (["--test-local-flag", "1"], {LOCAL}),
+        "extra_distributor_args": (["--test-local-flag", "1"], {LOCAL}),
+        "extra_contributor_args": (["--test-local-flag", "1"], {LOCAL}),
+        "mlock_all": (True, {"--mlock-all"}),
+        "malloc_tune": (True, {"--malloc-tune"}),
+        "prefault": (True, {"--prefault"}),
+        "relay_class_cpus": ("2,3", {"--relay-class-cpus"}),
+        "relay_class_realtime": (False, {"--relay-class-realtime"}),
+        "audio_hot_cpu": (1, {"--audio-hot-cpu"}),
+        "cpu_load": (True, {"--cpu-load"}),
+        "cpu_load_full_percent": (80, {"--cpu-load-full-percent"}),
+        "client_udp_datagram_capacity": (200000, {"--client-udp-datagram-capacity"}),
+        "egress_capacity_bps": (2000000000, {"--egress-capacity-bps"}),
+        "client_udp_drain_spread_ms": (3000, {"--client-udp-drain-spread-ms"}),
+        "rebalance_target_permille": (700, {"--rebalance-target-permille"}),
+    }
+
+    MESH, CONTRIB = "needletail-mesh", "needletail-contrib"
+    EDGE_AND_FORWARDER = ({"edge", "distributor"}, set())
+    REACH = {
+        "rust_log_mesh": (set(), {MESH}),
+        "rust_log_contrib": (set(), {CONTRIB}),
+        "node_env": (set(), {MESH, CONTRIB}),
+        "tokio_worker_threads": (set(), {MESH, CONTRIB}),
+        "extra_edge_args": ({"edge"}, set()),
+        "extra_distributor_args": ({"distributor"}, set()),
+        "extra_contributor_args": ({"contributor"}, set()),
+        "mlock_all": ({"edge", "distributor"}, {MESH}),
+        "malloc_tune": EDGE_AND_FORWARDER,
+        "prefault": EDGE_AND_FORWARDER,
+        "relay_class_cpus": EDGE_AND_FORWARDER,
+        "relay_class_realtime": EDGE_AND_FORWARDER,
+        "audio_hot_cpu": ({"contributor"}, set()),
+        "cpu_load": EDGE_AND_FORWARDER,
+        "cpu_load_full_percent": EDGE_AND_FORWARDER,
+        "client_udp_datagram_capacity": EDGE_AND_FORWARDER,
+        "egress_capacity_bps": EDGE_AND_FORWARDER,
+        "client_udp_drain_spread_ms": EDGE_AND_FORWARDER,
+        "rebalance_target_permille": EDGE_AND_FORWARDER,
+    }
+
+    @staticmethod
+    def pairs(args: list[str]) -> list[tuple]:
+        """(flag, value) of every argument, the render's time masked."""
+        out = []
+        for index, arg in enumerate(args):
+            if not arg.startswith("--"):
+                continue
+            value = args[index + 1] if index + 1 < len(args) and \
+                not args[index + 1].startswith("--") else None
+            out.append((arg, "*" if arg.endswith(deploy.RENDER_TIME_FLAG) else value))
+        return out
+
+    render = Render.render
+
+    def units(self, overrides=()) -> dict:
+        settings = self.settings(overrides)
+        return {service: deploy.unit_text(service, settings[log], settings)
+                for service, log in (("needletail-mesh", "rust_log_mesh"),
+                                     ("needletail-contrib", "rust_log_contrib"))}
+
+    def test_each_rollable_setting_renders_local_flags_only(self):
+        self.assertEqual(set(self.CASES), set(deploy.ROLLABLE_SETTINGS))
+        self.assertEqual(set(self.REACH), set(deploy.ROLLABLE_SETTINGS))
+        _program, _plan, base = self.render()
+        base_units = self.units()
+        roles = {name: node["role"] for name, node in lab.lab_state()["nodes"].items()}
+        for key, (value, flags) in self.CASES.items():
+            with self.subTest(key=key):
+                override = [f"{key}={json.dumps(value)}"]
+                _program, _plan, args = self.render(override)
+                changed, reached = set(), set()
+                for name in base:
+                    before, after = self.pairs(base[name]), self.pairs(args[name])
+                    changed |= {flag for flag, _value in set(before) ^ set(after)}
+                    if before != after:
+                        reached.add(roles[name])
+                self.assertEqual(changed, flags)
+                units = self.units(override)
+                self.assertEqual((reached, {service for service in units
+                                            if units[service] != base_units[service]}),
+                                 self.REACH[key])
 
 
 class CompilerAge(unittest.TestCase):
