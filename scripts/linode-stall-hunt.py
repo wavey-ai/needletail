@@ -47,7 +47,7 @@ that is not dedicated, tags every instance and arms the watchdog before the
 first create), `remove` and `grow` for the replacement,
 `down` at the end, whatever happened before. The lab has its own state file
 (target/linode-qualification/hunt-lab.json) and its own ceilings
-(NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.50, NEEDLETAIL_LINODE_MAX_NODES=24), set
+(NEEDLETAIL_LINODE_MAX_HOURLY_USD=1.60, NEEDLETAIL_LINODE_MAX_NODES=26), set
 for every call. The Linode token is the lab tool's to read; this tool never
 reads, prints or stores it. Services are installed by
 scripts/linode-small-mesh-deploy.py (`push`, `restart --roles`), the survey

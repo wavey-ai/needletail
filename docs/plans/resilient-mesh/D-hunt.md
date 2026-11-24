@@ -639,14 +639,10 @@ wave 9 run" at the end of this section.
 
 ### 7.0 The commands, in order (the lead runs them; dry run first)
 
-**The lab cannot start yet.** A real run refuses (step 2 names each) until all of these exist; none is in this
-unit, and the lead decides whether to wait for them:
-- av-mesh `--relay-class-arena-warm-mb N` (the no_arena_warm arm; 7.8): `ClientSender::new` in
-  `fast_plane/edge_clients.rs`, the fan-out fix's code (rm/fanout's follow-up). Not on any av-mesh branch on 24 Nov.
-- `needletail-nodecheck touch --hold` (the touched arm; 7.8): av-mesh `bin/needletail-nodecheck.rs`, D2 (unit I).
-  Not in av-mesh `resilient-mesh` eb1f5c4 nor rm/av-mesh-di 7876bd7.
-- The watchdog's bounded collect: needletail rm/lab2 (the lab tool's `up --collect-timeout-s`) and rm/arch2 (the
-  deploy tool's `collect --run-id`, which that collect runs), merged into `resilient-mesh`.
+**All three prerequisites are in** (24 Nov): av-mesh `--relay-class-arena-warm-mb` and `needletail-nodecheck touch
+--hold` (av-mesh resilient-mesh, 24705e5 and before), and the watchdog's bounded collect (lab tool `up
+--collect-timeout-s`, deploy tool `collect --run-id`). The preflight of step 2 names none of them; the lab ran once
+as hunt11241537 (`.resilient/reports/hunt-lab.md`).
 
 From the integration worktree (`/home/jamieb/wavey.ai/needletail-resilient`, branch `resilient-mesh` with this
 work merged), in tmux:
