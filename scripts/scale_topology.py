@@ -168,6 +168,13 @@ def edge_host(index: int) -> int:
     return host
 
 
+def default_standby(sites: tuple[str, ...], edges: dict[str, int]) -> dict[str, int]:
+    """STANDBY_BY_SITE's counts for the sites of `sites` that keep an edge in
+    service with them (`edges`: a site's edges other than EDGES)."""
+    return {site: count for site, count in STANDBY_BY_SITE.items()
+            if site in sites and edges.get(site, EDGES) > count}
+
+
 def site_slots(sites: tuple[str, ...], slots: dict[str, dict[str, int]] | None) -> dict:
     """{site: {"edges": n, "forwarders": n}} of every site: SITE_SLOTS, with
     what `slots` gives for a site in place of the default's keys."""
@@ -208,10 +215,11 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
         edges = {site: count for site, count in EDGES_BY_SITE.items() if site in sites}
     edges = dict(edges)
     if standby is None:
-        standby = {site: count for site, count in STANDBY_BY_SITE.items()
-                   if site in sites and edges.get(site, EDGES) > count}
+        standby = default_standby(sites, edges)
     for site, count in standby.items():
-        if site not in sites or not 0 <= count < edges.get(site, EDGES):
+        if site not in sites:
+            raise ValueError(f"standby edges given for {site}, which is not in the topology")
+        if not 0 <= count < edges.get(site, EDGES):
             raise ValueError(f"{site}: {count} standby edges; it must keep one in service")
     for site, count in edges.items():
         if site not in sites:
@@ -225,9 +233,13 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
                              f"{value['edges']} edge slots; at most {MAX_EDGES}")
         if value["forwarders"] > len(FORWARDER_LETTERS):
             raise ValueError(f"{site}: at most {len(FORWARDER_LETTERS)} forwarder slots")
+    if load_by_site is None:
+        load_by_site = {site: value for site, value in LOAD_BY_SITE.items() if site in sites}
+    for site in load_by_site:
+        if site not in sites:
+            raise ValueError(f"load hosts given for {site}, which is not in the topology")
     load = {site: (load_hosts, load_type) for site in sites}
-    load.update({site: value for site, value in (LOAD_BY_SITE if load_by_site is None
-                                                  else load_by_site).items() if site in sites})
+    load.update(load_by_site)
     view = {site: VIEW_TYPE for site in sites}
     for site, kind in (view_by_site or {}).items():
         if site not in sites:
@@ -474,6 +486,12 @@ def party_plan(**given) -> dict:
     listeners = {site: int(p["listeners"].get(site, 0)) for site in sites}
     if set(p["listeners"]) - set(sites) or any(count < 0 for count in listeners.values()):
         raise ValueError(f"listeners {p['listeners']}: a count for sites of {', '.join(sites)}")
+    if "load_type_by_site" not in given:
+        p["load_type_by_site"] = {site: kind for site, kind in p["load_type_by_site"].items()
+                                  if site in sites}
+    for site in p["load_type_by_site"]:
+        if site not in sites:
+            raise ValueError(f"listener hosts given for {site}, which is not in the party")
     load_types = {site: p["load_type_by_site"].get(site, p["load_type"]) for site in sites}
     for site, kind in load_types.items():
         if kind not in LOAD_TYPES:
@@ -836,7 +854,12 @@ def parse_load(text: str) -> tuple[int, str]:
 
 def variant_arguments(args: argparse.Namespace) -> dict:
     """The arguments of scale_topology: the variant's, with the flags given
-    over them (a SITE=... flag changes that site only)."""
+    over them. A SITE=... flag changes that site only: it is merged over the
+    variant's values, or over scale_topology's per-site defaults where the
+    variant has none (and over the site's other slot counts for --slots). A
+    site that --sites leaves out takes the variant's values with it, but a
+    flag's site is passed on as given, so that scale_topology refuses a site
+    that is not in the topology."""
     if args.variant not in VARIANTS:
         raise SystemExit(f"--variant {args.variant}: one of {', '.join(VARIANTS)}")
     kwargs = dict(VARIANTS[args.variant])
@@ -849,11 +872,22 @@ def variant_arguments(args: argparse.Namespace) -> dict:
                        ("slots", site_values(args.slots, "--slots", parse_slots)),
                        ("load_by_site", site_values(args.load, "--load", parse_load)),
                        ("view_by_site", site_values(args.view, "--view", str))):
-        if given:
-            kwargs[key] = {**(kwargs.get(key) or {}), **given}
-        # A site that --sites leaves out takes its variant's values with it.
-        if kwargs.get(key) is not None:
-            kwargs[key] = {site: value for site, value in kwargs[key].items() if site in sites}
+        own = kwargs.get(key)
+        if own is not None:
+            own = {site: value for site, value in own.items() if site in sites}
+        if given and own is None:
+            # The per-site defaults scale_topology takes when the key is unset
+            # (the edges, merged above, decide the default standby).
+            if key == "standby":
+                own = default_standby(sites, kwargs.get("edges") or {})
+            elif key == "load_by_site":
+                own = {site: value for site, value in LOAD_BY_SITE.items() if site in sites}
+            else:
+                own = {}
+        if key == "slots" and own is not None:
+            given = {site: {**own.get(site, {}), **value} for site, value in given.items()}
+        if own is not None:
+            kwargs[key] = {**own, **given}
     if args.load_hosts is not None:
         kwargs["load_hosts"] = args.load_hosts
     if args.load_type is not None:

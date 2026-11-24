@@ -328,6 +328,57 @@ class Files(unittest.TestCase):
                     redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 printed(*argv)
 
+    def test_a_flag_for_a_site_not_in_the_topology_is_refused(self):
+        """Review of CT5, finding 1: a misspelt site, or one that --sites
+        left out, is refused by every SITE=... flag, not dropped."""
+        for variant in ("topology-scale.json", "topology-proving.json"):
+            for argv in (("--edges-in", "sydeny=8"), ("--standby", "sydeny=1"),
+                         ("--slots", "sydeny=edges:2"), ("--load", "londn=3:g6-dedicated-8"),
+                         ("--view", "londn=g6-dedicated-8"),
+                         ("--sites", "london,newyork,tokyo", "--edges-in", "sydney=3"),
+                         ("--sites", "london,newyork,tokyo", "--load",
+                          "sydney=1:g6-dedicated-8")):
+                out, err = io.StringIO(), io.StringIO()
+                with self.subTest(variant=variant, argv=argv), \
+                        mock.patch.object(sys, "argv", ["scale_topology.py", "--variant",
+                                                        variant, *argv]), \
+                        self.assertRaises(SystemExit) as caught, redirect_stdout(out), \
+                        redirect_stderr(err):
+                    scale_topology.main()
+                self.assertIn("not in the topology", str(caught.exception))
+                self.assertEqual(out.getvalue(), "")
+
+    def test_a_site_flag_keeps_the_other_sites_defaults(self):
+        """Review of CT5, finding 2: on topology-scale.json, whose variant
+        leaves the standby edges and the listener hosts to scale_topology's
+        per-site defaults, a flag for London changes London only."""
+        def printed(*argv: str) -> dict:
+            out = io.StringIO()
+            with mock.patch.object(sys, "argv", ["scale_topology.py", *argv]), \
+                    redirect_stdout(out):
+                scale_topology.main()
+            return json.loads(out.getvalue())
+
+        scale = json.loads(SCALE.read_text())
+        standby = printed("--standby", "london=2")
+        self.assertEqual(standby["standby_edges"],
+                         [name for name in STANDBY if not name.startswith("lon-")
+                          or name in ("lon-edge-9", "lon-edge-10")])
+        load = printed("--load", "london=4:g6-dedicated-8")["scale"]["load_hosts"]
+        self.assertEqual(load, {**scale["scale"]["load_hosts"],
+                                "london": {"count": 4, "type": "g6-dedicated-8"}})
+        self.assertEqual(load["sydney"], {"count": 16, "type": "g6-dedicated-4"})
+        # --slots changes the counts it names and keeps the site's others.
+        slots = printed("--slots", "london=forwarders:2")["autoscale_slots"]
+        self.assertEqual([name for name in slots if name.startswith("lon-")],
+                         ["lon-dist-c", "lon-dist-d", "lon-edge-11", "lon-edge-12"])
+        # Fewer edges in a site than its default standby: the default
+        # standby of that site goes, as scale_topology's own default does.
+        fewer = printed("--edges-in", "london=4", "--standby", "tokyo=2")
+        self.assertEqual(fewer["standby_edges"],
+                         [name for name in STANDBY if name.startswith(("syd-", "new-"))]
+                         + ["tok-edge-9", "tok-edge-10"])
+
 
 class Party(unittest.TestCase):
     """The listening party (owner, 23 Nov): the plan's figures, each an
@@ -440,7 +491,11 @@ class Party(unittest.TestCase):
                     {"load_type_by_site": {"sydney": "g6-nanode-1"}}, {"paths": 3},
                     {"lane": "pcm-1"}, {"sites": ("newyork", "tokyo")},
                     {"listeners": {"mars": 10}}, {"edge_fill": 0},
-                    {"listeners": {"london": 100_000}}, {"edge_slots": -1}, {"nodes": 3}):
+                    {"listeners": {"london": 100_000}}, {"edge_slots": -1}, {"nodes": 3},
+                    {"load_type_by_site": {"sydny": "g6-dedicated-8"}},
+                    {"sites": ("london", "newyork", "tokyo"),
+                     "listeners": {"london": 10, "newyork": 10, "tokyo": 10},
+                     "load_type_by_site": {"sydney": "g6-dedicated-8"}}):
             with self.assertRaises(ValueError, msg=bad):
                 scale_topology.party_plan(**bad)
 
@@ -467,6 +522,8 @@ class Party(unittest.TestCase):
         self.assertEqual(three["party"]["regions"]["london"]["listeners"], 100)
         for argv in (("plan", "--paths", "3"), ("plan", "--load-type", "g6-standard-8"),
                      ("plan", "--listeners-per-region", "london=many"),
+                     ("plan", "--load-type-in", "sydny=g6-dedicated-8"),
+                     ("plan", "--listeners-per-region", "londn=100"),
                      ("party", "--listeners", "1000000")):
             with self.subTest(argv=argv), self.assertRaises(SystemExit), \
                     redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
