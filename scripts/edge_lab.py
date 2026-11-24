@@ -2606,13 +2606,20 @@ def contributor_targets() -> list[str]:
     return small_mesh_common.contributor_targets(lab_state())
 
 
-def source_prefix() -> list[str]:
+def source_prefix(video: bool = False) -> list[str]:
     """Command prefix of a source: in lon-src's namespace and the lab's tools
     scope, on lon-src's own CPUs (a starved sender looks like a mesh stall),
-    or on the readers' CPUs in a lab without them."""
+    or on the readers' CPUs in a lab without them. `video`: a video feed. In
+    a layout that gives the audio sender a CPU of its own ("_source": own_cpus,
+    rt), a feed of hundreds of Mbit/s there starves the sender (local proof 3:
+    the AEP1 sender's lateness p99 0.35 -> 3.6 ms beside 4K at 247), so it
+    runs on the tools' CPUs of the rest (rest_split) instead."""
     prefix = nsenter(SOURCE_HOST)
     join_tools()
-    cpus = node_cpus(SOURCE_HOST) or load("cpus.json").get("_rest")
+    sets = load("cpus.json")
+    cpus = node_cpus(SOURCE_HOST) or sets.get("_rest")
+    if video and sets.get("_source"):
+        cpus = rest_split(sets).get("tools") or sets.get("_rest") or cpus
     if cpus:
         prefix += ["taskset", "-c", cpu_list(cpus)]
     return prefix
@@ -2641,7 +2648,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
         for index, (stream, *_rest) in enumerate(LADDER):
             command += ["-map", f"{index}:v:0", "-map", f"{index}:a:0", "-c", "copy",
                         "-f", "flv", f"rtmp://{{host}}:{RTMP_PORT}/live/{stream}"]
-        process = subprocess.Popen(source_prefix() + feed + command, stdout=log, stderr=log,
+        process = subprocess.Popen(source_prefix(video=True) + feed + command, stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()
@@ -2656,14 +2663,14 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                    + shlex.join(feed + ["-hide_banner", "-loglevel", "error", "-f", "flv",
                                         "-i", "pipe:0", "-c", "copy", "-f", "flv",
                                         f"rtmp://{{host}}:{RTMP_PORT}/live/needletail-lab"]))
-        process = subprocess.Popen(source_prefix() + ["sh", "-c", command], stdout=log, stderr=log,
+        process = subprocess.Popen(source_prefix(video=True) + ["sh", "-c", command], stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         sources["video"] = process.pid
         log.close()
     if video and "video" not in sources:
         log = open(WORK / "logs" / "source-video.log", "ab")
         process = subprocess.Popen(
-            source_prefix() + feed + [
+            source_prefix(video=True) + feed + [
                 "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
                 # A 4K clip of 120 Mbit/s or more holds its first audio
                 # packet past the default 5 MB probe: without a longer one

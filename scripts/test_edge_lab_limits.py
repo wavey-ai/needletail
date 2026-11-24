@@ -892,6 +892,20 @@ class RealTime(Isolated):
         first = lab.node_cpu_sets(STANDING, first=0, per_node=lab.RT_CPUS)
         self.assertEqual(first[CONTRIBUTOR], [0, 1])
 
+    def test_a_video_feed_never_takes_the_senders_own_cpu(self):
+        # Local proof 3: in the own-CPU layout the 4K feed ran on the
+        # sender's CPU 31 and the AEP1 sender's lateness went to 3.6 ms.
+        sets = lab.own_cpu_sets([name for name, role, *_ in lab.NODES if role != "backbone"])
+        self.a_lab_that_is_up(sets, [lab.SOURCE_HOST])
+        self.assertEqual(lab.source_prefix()[-3:], ["taskset", "-c", "31"])
+        tools = lab.cpu_list(lab.rest_split(sets)["tools"])
+        self.assertEqual(lab.source_prefix(video=True)[-3:], ["taskset", "-c", tools])
+        self.assertNotIn("31", tools.split(","))
+        # Without a CPU of the sender's own, a feed goes where the sender does.
+        plain = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31))
+        self.a_lab_that_is_up(plain, [lab.SOURCE_HOST])
+        self.assertEqual(lab.source_prefix(video=True), lab.source_prefix())
+
     def test_the_node_raises_its_own_limits_and_runs_as_the_user(self):
         sets = lab.node_cpu_sets(RT_STANDING, cpus=(16, 31), per_node=lab.RT_CPUS)
         lab.save("rendered.json", {EDGE: {"rust_log": "info", "args": [
