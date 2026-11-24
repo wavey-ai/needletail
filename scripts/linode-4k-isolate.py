@@ -175,6 +175,8 @@ RSS_START_LIMIT_MB = 2500
 RSS_GUARD_MB = 3300
 SOAK_GUARD_MB = 3200
 GUARD_EVERY_S = 3.0
+# A new instance's sshd answers some time after the API says running.
+SSH_WAIT_S = 300
 MESH_ROLES = ("contributor", "distributor", "edge")
 RESTART_ROLES = "distributor,edge,contributor"
 # Expected and worst seconds of a cell's parts, for the schedule: the
@@ -640,6 +642,7 @@ class Iso:
         self.budget_usd = budget_usd
         self.spent_before_usd = spent_before_usd
         self.clock, self.sleep = clock, sleep
+        self.resume = False
         self.up_started: float | None = None
         self.interrupted = False
         self.iso = topology["iso"]
@@ -740,6 +743,25 @@ class Iso:
             (self.out() / f"hosts-{label}.txt").write_text(output)
             self.use_lab_nodes()
 
+    def wait_ssh(self, patience_s: float = SSH_WAIT_S) -> None:
+        """Every node takes an ssh command: a new instance is `running` to
+        the API before its sshd answers (iso11242128: push's bootstrap met
+        two that did not, 30 s after up)."""
+        if self.runner.dry:
+            self.runner.say(f"# until ssh answers on every node (at most {patience_s:g} s)")
+            return
+        deadline = self.clock() + patience_s
+        pending = sorted(self.nodes)
+        while pending and self.clock() < deadline:
+            answered = self.runner.each(pending, lambda name: common.ssh(
+                self.nodes[name], "true", check=False, timeout=30).returncode == 0)
+            pending = [name for name in pending if not answered.get(name)]
+            if pending:
+                self.sleep(5.0)
+        if pending:
+            raise RuntimeError(f"ssh did not answer within {patience_s:g} s: {', '.join(pending)}")
+        self.runner.say("ssh answers on every node")
+
     def push(self) -> None:
         """The fresh deploy: every node, the warm pass on every host (the
         source and viewer hosts too: role load), slow hosts reported only,
@@ -750,6 +772,15 @@ class Iso:
                              "--set", "daw_hls_formats=flac,opus,pcm",
                              *[item for setting in arm_settings("default", held)
                                for item in ("--set", setting)])
+        if status != 0 and not self.runner.dry:
+            # Once more: a node's first minutes (apt, sshd) fail a push that
+            # the next one passes.
+            self.runner.say("deploy push failed: once more")
+            self.wait_ssh()
+            status = self.deploy("push", "--remeasure", "--slow-host", "report",
+                                 "--set", "daw_hls_formats=flac,opus,pcm",
+                                 *[item for setting in arm_settings("default", held)
+                                   for item in ("--set", setting)])
         if status != 0:
             raise RuntimeError("deploy push failed")
         self.shape = "one"
@@ -1320,8 +1351,18 @@ class Iso:
     # ---- the run
 
     def bring_up(self) -> None:
-        self.up()
+        if self.resume:
+            # The lab that `up` made earlier (a run cut before its push):
+            # its nodes and its creation, the plan's clock from there.
+            self.use_lab_nodes()
+            self.up_started = float(self.record.get("created_unix") or self.clock())
+            self.record["up_started_unix"] = self.up_started
+            self.record["resumed_unix"] = round(self.clock(), 3)
+            self.runner.say(f"resumed on the lab up since {self.elapsed() / 60:.1f} min")
+        else:
+            self.up()
         self.hosts("first")
+        self.wait_ssh()
         failures = []
         threads = []
         if not self.runner.dry:
@@ -1521,8 +1562,15 @@ def command_run(args: argparse.Namespace) -> None:
     elif problems:
         sys.exit("the isolation lab does not start (nothing was created):\n  "
                  + "\n  ".join(problems))
+    if args.resume:
+        problems = [problem for problem in problems if not problem.startswith(relative(STATE))]
+        if not STATE.exists() and not args.dry:
+            sys.exit("--resume: no isolation lab is up")
+        if STATE.exists() and json.loads(STATE.read_text()).get("run_id") != args.run_id:
+            sys.exit("--resume: the lab that is up is not run " + args.run_id)
     iso = Iso(Runner(args.dry, OUT / args.run_id), topology, path, args.run_id,
               args.budget_usd, args.spent_before_usd)
+    iso.resume = args.resume
     if not args.dry:
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGHUP, lambda *_: hung_up(iso.out()))
@@ -1571,6 +1619,9 @@ def main() -> None:
     run.add_argument("--budget-usd", type=float, default=None)
     run.add_argument("--spent-before-usd", type=float, default=None)
     run.add_argument("--dry", action="store_true", help="print every command and run none")
+    run.add_argument("--resume", action="store_true",
+                     help="go on with the lab of this run id that is up (no `up`): a run cut "
+                          "before its cells")
     run.set_defaults(handler=command_run)
     for name, handler, text in (("collect", lambda args: existing(args).collect(),
                                  "fetch the records of the lab that is up"),
