@@ -86,6 +86,8 @@ class SamplerFigures(unittest.TestCase):
         # 300 ms in one second; 10 ms is under the threshold; the restart
         # (pid 7 to 8) is no wait; 400 ms of the new process counts.
         self.assertAlmostEqual(stall_records.run_delay_ms(rows, 50.0), 700.0)
+        # Only the seconds that end inside the spans given.
+        self.assertAlmostEqual(stall_records.run_delay_ms(rows, 50.0, [(5, 5)]), 400.0)
 
     def test_a_counter_is_found_by_its_name_on_any_path(self):
         line = {"mesh": {"relay_session.fast_plane.audio_loop_busy_max_us": 812,

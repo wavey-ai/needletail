@@ -421,15 +421,25 @@ def attribute(found: list[dict], ideal_us, sides: list[tuple[str, list[dict]]],
 #    class_pass of its own over it), with voluntary switches (a wait) or
 #    without (a spin); the wait is named by the counter that rose to half
 #    the stop (the fan-out hand-off, the compact path, a send, a repair),
-#    else by page faults of the class thread or the guest's reclaim, else
+#    else by page faults in the long pass itself (the journal's class_pass
+#    carries the thread's faults since its last once-a-second reading; the
+#    sampler's fault counter is that reading, up to a second stale, so it
+#    is shown and never names the wait), else by the guest's reclaim, else
 #    "not named by a counter";
 #  - waited for input: run delay flat and no long pass (the thread slept
 #    in poll and nothing came: upstream, or the kernel did not deliver);
 #  - undetermined: anything between (run delay between a tenth and half).
+# Run delay is the growth between the two sampler lines around the stop
+# less the thread's own rate of it in the BASELINE_PAIRS seconds before
+# and after (its median): the window is the stop plus up to two seconds.
+# A node whose service could not pin every tick thread (tick_pinned below
+# tick_threads) has untrusted scope: its journal's ticks count only on the
+# class thread's own CPU, never by `scope: all` (D-hunt.md 4).
 
 NOT_RUN_SHARE = 0.5
 FLAT_SHARE = 0.1
 BUSY_SHARE = 0.5
+BASELINE_PAIRS = 10
 NAMED_WAITS = (("fanout_dispatch_max_us", "the hand-off to the fan-out threads"),
                ("class_compact_max_us", "the compact path (its store and ring locks, the "
                                         "part's encode)"),
@@ -476,11 +486,44 @@ def mesh_value(line: dict | None, key: str) -> int | None:
 def around(lines: list[dict], start_us: int, end_us: int) -> tuple[dict, dict] | None:
     """The last sampler line at or before `start_us` and the first at or
     after `end_us`."""
-    before = [line for line in lines if int(line["t_us"]) <= start_us]
-    after = [line for line in lines if int(line["t_us"]) >= end_us]
+    pair = around_index(lines, start_us, end_us)
+    return None if pair is None else (lines[pair[0]], lines[pair[1]])
+
+
+def around_index(lines: list[dict], start_us: int, end_us: int) -> tuple[int, int] | None:
+    """`around`, as indexes of `lines` (oldest first)."""
+    before = [index for index, line in enumerate(lines) if int(line["t_us"]) <= start_us]
+    after = [index for index, line in enumerate(lines) if int(line["t_us"]) >= end_us]
     if not before or not after:
         return None
     return before[-1], after[0]
+
+
+def same_thread(before: dict, after: dict) -> bool:
+    return bool(before.get("pid") == after.get("pid") and before.get("tid") == after.get("tid")
+                and before.get("tid") is not None and before.get("schedstat")
+                and after.get("schedstat"))
+
+
+def run_delay_rate(lines: list[dict], first: int, last: int,
+                   pairs: int = BASELINE_PAIRS) -> float | None:
+    """The class thread's usual run delay, ms a second: the median growth
+    a second over up to `pairs` consecutive lines before line `first` and
+    after line `last` (the same thread). None without one."""
+    rates = []
+    starts = list(range(max(0, first - pairs), first)) \
+        + list(range(last, min(len(lines) - 1, last + pairs)))
+    for at in starts:
+        before, after = lines[at], lines[at + 1]
+        seconds = (int(after["t_us"]) - int(before["t_us"])) / 1e6
+        if seconds <= 0 or not same_thread(before, after):
+            continue
+        rates.append((after["schedstat"][1] - before["schedstat"][1]) / 1e6 / seconds)
+    if not rates:
+        return None
+    rates.sort()
+    middle = len(rates) // 2
+    return rates[middle] if len(rates) % 2 else (rates[middle - 1] + rates[middle]) / 2
 
 
 def grew(before: dict, after: dict, key: str) -> int | None:
@@ -492,9 +535,8 @@ def deltas(before: dict, after: dict) -> dict:
     """What changed between two sampler lines."""
     out: dict = {"interval_ms": round((int(after["t_us"]) - int(before["t_us"])) / 1000, 3),
                  "cpu": after.get("cpu") if after.get("cpu") is not None else before.get("cpu")}
-    same = (before.get("pid") == after.get("pid") and before.get("tid") == after.get("tid")
-            and before.get("tid") is not None and before.get("schedstat") and after.get("schedstat"))
-    out["same_thread"] = bool(same)
+    same = same_thread(before, after)
+    out["same_thread"] = same
     if same:
         out["run_ms"] = round((after["schedstat"][0] - before["schedstat"][0]) / 1e6, 3)
         out["run_delay_ms"] = round((after["schedstat"][1] - before["schedstat"][1]) / 1e6, 3)
@@ -524,17 +566,24 @@ def realtime_neighbour(lines: tuple[dict, dict], cpu) -> str | None:
 
 
 def classify(start_us: int, end_us: int, lines: list[dict], journal: list[dict] = (),
-             watch: list[dict] = ()) -> dict:
+             watch: list[dict] = (), scope_trusted: bool = True) -> dict:
     """One stop of a class thread, [start_us, end_us], by the rules above:
-    {"class", "why", "where" (not run) or "wait" (blocked), "figures"}."""
+    {"class", "why", "where" (not run) or "wait" and "wait_kind" (blocked:
+    "counter", "faults", "reclaim" or "unnamed"), "figures"}.
+    `scope_trusted` False: the service ran a tick thread it could not pin,
+    so its journal's ticks count only on the class thread's own CPU."""
     length_ms = (end_us - start_us) / 1000
-    pair = around(lines, start_us, end_us)
+    index = around_index(lines, start_us, end_us)
+    pair = None if index is None else (lines[index[0]], lines[index[1]])
     figures = deltas(*pair) if pair else {}
     cpu = figures.get("cpu")
     half_us = (end_us - start_us) / 2
     for source, events in (("watch", watch), ("journal", journal)):
         for event in stopped_ticks(list(events), 0):
-            if cpu is not None and event.get("cpu") != cpu and event.get("scope") != "all":
+            if source == "journal" and not scope_trusted:
+                if cpu is None or event.get("cpu") != cpu:
+                    continue
+            elif cpu is not None and event.get("cpu") != cpu and event.get("scope") != "all":
                 continue
             if overlap(interval(event), (start_us, end_us)) >= half_us:
                 return {"class": "not run", "figures": figures,
@@ -548,7 +597,10 @@ def classify(start_us: int, end_us: int, lines: list[dict], journal: list[dict] 
     if not figures["same_thread"]:
         return {"class": "undetermined", "figures": figures,
                 "why": "the service or its class thread changed inside the stop"}
-    delay = figures["run_delay_ms"]
+    rate = run_delay_rate(lines, *index)
+    figures["run_delay_rate_ms_s"] = None if rate is None else round(rate, 3)
+    delay = max(0.0, figures["run_delay_ms"] - (rate or 0.0) * figures["interval_ms"] / 1000)
+    figures["run_delay_excess_ms"] = round(delay, 3)
     if delay >= NOT_RUN_SHARE * length_ms:
         neighbour = realtime_neighbour(pair, cpu)
         where = ("the guest kernel: direct reclaim or compaction" if figures["reclaim"] > 0
@@ -566,20 +618,28 @@ def classify(start_us: int, end_us: int, lines: list[dict], journal: list[dict] 
     if delay < FLAT_SHARE * length_ms and long_pass:
         named = [name for key, name in NAMED_WAITS
                  if (figures["waits"].get(key) or 0) >= BUSY_SHARE * length_ms * 1000]
+        minor = sum(int(event.get("minflt") or 0) for event in passes)
+        major = sum(int(event.get("majflt") or 0) for event in passes)
         if named:
-            wait = "; ".join(named)
-        elif (figures["minflt"] or 0) > 0 or (figures["majflt"] or 0) > 0:
-            wait = (f"page faults on the class thread ({figures['minflt']} minor, "
-                    f"{figures['majflt']} major)")
+            wait, kind = "; ".join(named), "counter"
+        elif minor or major:
+            wait, kind = (f"page faults on the class thread in the pass ({minor} minor, "
+                          f"{major} major)"), "faults"
         elif figures["reclaim"] > 0:
-            wait = "the guest's reclaim under an allocation"
+            wait, kind = "the guest's reclaim under an allocation", "reclaim"
         else:
-            wait = "a lock or wait that no counter names (fanout-stall.md items 1 to 6)"
+            wait, kind = "a lock or wait that no counter names (fanout-stall.md items 1 to 6)", \
+                "unnamed"
+            if (figures["minflt"] or 0) > 0 or (figures["majflt"] or 0) > 0:
+                wait += (f"; the thread's fault counter rose ({figures['minflt']} minor, "
+                         f"{figures['majflt']} major) but is its own once-a-second reading, "
+                         "up to a second stale: not evidence of faults in the stop")
         switched = (figures.get("voluntary") or 0) > 0
-        return {"class": "blocked in our code", "figures": figures,
+        return {"class": "blocked in our code", "figures": figures, "wait_kind": kind,
                 "wait": wait if switched else f"no switch: a spin or a long computation ({wait})",
-                "why": f"run delay {delay:.1f} ms, a pass of the class loop over half the "
-                       f"{length_ms:.0f} ms stop, {figures.get('voluntary')} voluntary switches"}
+                "why": f"run delay {delay:.1f} ms over its usual, a pass of the class loop "
+                       f"over half the {length_ms:.0f} ms stop, {figures.get('voluntary')} "
+                       "voluntary switches"}
     if delay < FLAT_SHARE * length_ms:
         return {"class": "waited for input", "figures": figures,
                 "why": f"run delay {delay:.1f} ms and no long pass: the thread slept and "

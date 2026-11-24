@@ -5,10 +5,14 @@ the unexplained rest; nodes grouped by physical host and their stops at one
 instant against chance; a stop of the class thread classified from the
 sampler by each rule of stall_records.classify (not run by run delay, by a
 stopped tick, by the guest's reclaim, by a real-time neighbour; blocked in
-our code on a named wait, on page faults; waited for input; undetermined;
-no sampler); one synthetic input for each decision rule H1 to H7; a run
-whose /api/hops pull fell inside a session is refused; unpinned tick
-threads make the scope untrusted; the first of two edges for every pair; a
+our code on a named wait, on page faults in the pass, never on a stale
+fault counter; waited for input, with run delay taken against the thread's
+own rate; undetermined; no sampler); one synthetic input for each decision
+rule H1 to H7 (H1: an edge no UDP client reached is not measured; H4: a
+touch that did not hold cleanly is left out); the UDP clients of each edge;
+a run whose /api/hops pull fell inside a session is refused; unpinned tick
+threads (from the sampler) make the scope untrusted; a replaced edge keeps
+its old journal; the first of two edges for every pair; a
 whole report from a synthetic run with an LL-HLS probe at each edge and a
 sampler; and, where the referee's files are on this machine, E1's table of
 wave 7 and the wave 9 first session's 13 stops of 100 ms or more with the
@@ -239,18 +243,67 @@ class Classify(unittest.TestCase):
                                               waits={"class_compact_max_us": 380_000}))
         self.assertEqual(found["class"], "blocked in our code")
         self.assertIn("the compact path", found["wait"])
-        # The fan-out hand-off counter that did not rise is not named.
-        found = sr.classify(*STOP, self.lines(
-            delay_ms=11.0, voluntary=53, over_50ms=1, minflt=2400,
-            waits={"fanout_dispatch_max_us": 900}))
+        self.assertEqual(found["wait_kind"], "counter")
+        # Faults in the long pass itself (the journal's class_pass carries
+        # the thread's faults since its last reading) name the wait; the
+        # fan-out hand-off counter that did not rise is not named.
+        journal = [{"kind": "class_pass", "thread": "audio", "cpu": 0, "t_us": STOP[1],
+                    "dur_us": 390 * MS, "cause": "own", "minflt": 2400, "majflt": 1}]
+        found = sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=53,
+                                              waits={"fanout_dispatch_max_us": 900}), journal)
         self.assertEqual(found["class"], "blocked in our code")
-        self.assertEqual(found["wait"], "page faults on the class thread (2400 minor, 0 major)")
+        self.assertEqual(found["wait"],
+                         "page faults on the class thread in the pass (2400 minor, 1 major)")
+        self.assertEqual(found["wait_kind"], "faults")
         # The journal's own long pass is evidence too; with no switch it is a spin.
         journal = [{"kind": "class_pass", "thread": "audio", "cpu": 0, "t_us": STOP[1],
                     "dur_us": 390 * MS, "cause": "own"}]
         found = sr.classify(*STOP, self.lines(delay_ms=11.0, run_ms=490.0), journal)
         self.assertEqual(found["class"], "blocked in our code")
         self.assertTrue(found["wait"].startswith("no switch: a spin"))
+
+    def test_a_fault_counter_that_rose_in_the_window_does_not_name_the_wait(self):
+        """One minor fault in the sampler's interval (the thread's own
+        once-a-second reading, up to a second stale) around a 300 ms block
+        with no class_pass faults: the wait is not "page faults", and H4
+        does not take it as evidence."""
+        found = sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=53, over_50ms=1,
+                                              minflt=1))
+        self.assertEqual(found["class"], "blocked in our code")
+        self.assertEqual(found["wait_kind"], "unnamed")
+        self.assertTrue(found["wait"].startswith("a lock or wait that no counter names"))
+        self.assertIn("not evidence of faults in the stop", found["wait"])
+
+    def test_run_delay_is_measured_against_the_thread_s_own_rate(self):
+        """A thread that waits 5 ms a second as a rule, sampled 2.5 s apart
+        around a 100 ms stop: 12.5 ms of run delay is its usual, so the
+        stop is not "undetermined" but "waited for input"."""
+        lines = [sample(T + k * 1_000_000, delay_ms=5.0 * k, voluntary=10 * k)
+                 for k in range(0, 10)]
+        lines += [sample(T + 11_500_000 + k * 1_000_000, delay_ms=57.5 + 5.0 * k,
+                         voluntary=115 + 10 * k) for k in range(0, 10)]
+        stop = (T + 10_500_000, T + 10_600_000)
+        found = sr.classify(*stop, lines)
+        self.assertAlmostEqual(found["figures"]["run_delay_ms"], 12.5)
+        self.assertAlmostEqual(found["figures"]["run_delay_rate_ms_s"], 5.0)
+        self.assertAlmostEqual(found["figures"]["run_delay_excess_ms"], 0.0)
+        self.assertEqual(found["class"], "waited for input")
+        # Without neighbours to measure the rate, the raw growth is used.
+        self.assertEqual(sr.classify(*stop, [lines[9], lines[10]])["class"], "undetermined")
+
+    def test_an_unpinned_service_s_ticks_count_only_on_the_class_thread_s_cpu(self):
+        """The service's journal has a stopped tick of CPU 1 marked `scope:
+        all`; the class thread is on CPU 0. Trusted, that is the
+        hypervisor; with a tick thread unpinned, the scope is not
+        believed."""
+        journal = [tick(1, STOP[1], 390 * MS, cause="stopped", scope="all")]
+        trusted = sr.classify(*STOP, self.lines(), journal)
+        self.assertEqual(trusted["class"], "not run")
+        untrusted = sr.classify(*STOP, self.lines(), journal, scope_trusted=False)
+        self.assertNotEqual(untrusted["class"], "not run")
+        own_cpu = [tick(0, STOP[1], 390 * MS, cause="stopped", scope="one")]
+        self.assertEqual(sr.classify(*STOP, self.lines(), own_cpu, scope_trusted=False)["class"],
+                         "not run")
 
     def test_waited_for_input_undetermined_and_no_sampler(self):
         self.assertEqual(sr.classify(*STOP, self.lines(delay_ms=11.0, voluntary=60))["class"],
@@ -272,12 +325,15 @@ def stop(edge: str, start_s: float, ms: float, cls: str = "not run", session: st
 EDGES = ["lon-edge-1", "lon-edge-2", "lon-edge-3", "lon-edge-4", "tok-edge-1", "tok-edge-2"]
 
 
-def table(*stops: dict, seen=EDGES, roles=None) -> dict:
-    """An edges table: {session: {"role", "seen", "stops", "twins", ...}}."""
+def table(*stops: dict, seen=EDGES, roles=None, clients=None) -> dict:
+    """An edges table: {session: {"role", "seen", "stops", "twins", ...}};
+    UDP clients reached every edge seen unless `clients` says otherwise."""
     out = {}
     for name, role in (roles or {"S1": "first"}).items():
         mine = [item for item in stops if item["session"] == name]
         out[name] = {"role": role, "seen": list(seen), "stops": mine, "over_20ms": {},
+                     "udp_clients": dict(clients if clients is not None
+                                         else {edge: 10 for edge in seen}),
                      "twins": report.twin_overlaps(mine), "first_of_two": {}}
     return out
 
@@ -291,8 +347,42 @@ class Rules(unittest.TestCase):
         self.assertFalse(found["fires"])
         self.assertEqual(found["stopped"], ["lon-edge-1"])
         self.assertEqual(found["unmeasured"], ["tok-edge-2"])
-        self.assertEqual(found["verdicts"]["lon-edge-2"], "no stop of 100 ms or more")
+        self.assertEqual(found["verdicts"]["lon-edge-2"],
+                         "no stop of 100 ms or more (10 UDP clients)")
         self.assertEqual(found["verdicts"]["lon-edge-1"], "1 stops: lon-edge-1 670 ms (not run)")
+
+    def test_h1_an_edge_no_udp_client_reached_is_not_measured(self):
+        """Every edge's LL-HLS probe saw its commits and none stopped, but
+        the crowd never reached lon-edge-3 and lon-edge-4 (an assignment
+        put every listener on the first two): H1 does not say that no stop
+        remains. A stop counts on an edge without a client all the same."""
+        clients = {edge: 10 for edge in EDGES if edge not in ("lon-edge-3", "lon-edge-4")}
+        found = report.rule_fix(table(clients=clients), EDGES)
+        self.assertFalse(found["fires"])
+        self.assertNotIn("NO STOP REMAINS", found["line"])
+        self.assertEqual(found["unmeasured"], ["lon-edge-3", "lon-edge-4"])
+        self.assertEqual(found["verdicts"]["lon-edge-3"], "not measured: no UDP client reached it")
+        self.assertIn("not measured: lon-edge-3, lon-edge-4", found["line"])
+        stopped = report.rule_fix(table(stop("lon-edge-4", 5, 300), clients=clients), EDGES)
+        self.assertEqual(stopped["stopped"], ["lon-edge-4"])
+        self.assertTrue(stopped["verdicts"]["lon-edge-4"].endswith("(no UDP client reached it)"))
+
+    def test_udp_clients_from_the_probes_and_the_crowd(self):
+        """A UDP probe's caches (node names) and a crowd's per-edge listeners
+        subscribed while parts came (by address), per edge."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = pathlib.Path(directory)
+            (folder / "lon-view" / "load").mkdir(parents=True)
+            (folder / "lon-view" / "uc-1.uc.json").write_text(json.dumps(
+                {"caches": ["lon-edge-2", "lon-edge-1"]}))
+            write_ndjson(folder / "lon-view" / "load" / "intervals.jsonl", [
+                {"t": 1.0, "edges": {"192.0.2.1:19446": {"up": 0, "parts": 0},
+                                     "192.0.2.3:19446": {"up": 10, "parts": 0}}},
+                {"t": 2.0, "edges": {"192.0.2.1:19446": {"up": 10, "parts": 900},
+                                     "192.0.2.3:19446": {"up": 10, "parts": 0}}}])
+            found = report.udp_clients(folder, {"192.0.2.1": "lon-edge-1",
+                                                "192.0.2.3": "lon-edge-3"})
+        self.assertEqual(found, {"lon-edge-1": 11, "lon-edge-2": 1})
 
     def test_h2_the_class_of_each_stop(self):
         roles = {"S1": "first", "S4": "repeat-first"}
@@ -353,11 +443,70 @@ class Rules(unittest.TestCase):
         # Stops on the untouched edges that are our own waits do not make
         # first touch the cause.
         ours = report.rule_touch(table(stop("lon-edge-2", 5, 700, "blocked in our code",
-                                            wait="the compact path")), arms, EDGES)
+                                            wait="the compact path", wait_kind="counter")),
+                                 arms, EDGES)
         self.assertFalse(ours["fires"])
+        # Faults in the pass are evidence; a stale fault counter is not.
+        faults = report.rule_touch(table(stop("lon-edge-2", 5, 700, "blocked in our code",
+                                              wait="page faults ...", wait_kind="faults")),
+                                   arms, EDGES)
+        self.assertTrue(faults["fires"])
+        stale = report.rule_touch(table(stop(
+            "lon-edge-2", 5, 700, "blocked in our code",
+            wait="a lock or wait ...; the thread's fault counter rose (1 minor, 0 major) ...",
+            wait_kind="unnamed")), arms, EDGES)
+        self.assertFalse(stale["fires"])
         touched_too = report.rule_touch(table(stop("lon-edge-2", 5, 700),
                                               stop("lon-edge-1", 5, 700)), arms, EDGES)
         self.assertFalse(touched_too["fires"])
+
+    def test_h4_leaves_out_a_touch_that_did_not_hold_cleanly(self):
+        """touch_checks over a run: lon-edge-1 released cleanly with no swap
+        or refault (its balloon reports free pages); lon-edge-3 swapped in
+        after its release; tok-edge-1 has no release mark. Only lon-edge-1
+        is the touched arm; the others are in neither arm."""
+        built = Builder({name: {"role": "edge"} for name in EDGES},
+                        [period("touch", "touch", 0, 270), period("S1", "session", 300, 370)],
+                        sessions=[{"name": "S1", "role": "first"}],
+                        arms={"touched": ["lon-edge-1", "lon-edge-3", "tok-edge-1"]},
+                        touch={"nodes": ["lon-edge-1", "lon-edge-3", "tok-edge-1"],
+                               "from_unix": S + 0, "released_unix": S + 270})
+        try:
+            clean = [sample(T + k * 10_000_000, vm={"pswpin": 0, "workingset_refault_file": 4})
+                     for k in range(-1, 40)]
+            swapped = [sample(T + k * 10_000_000,
+                              vm={"pswpin": 0 if k < 30 else 2048, "workingset_refault_file": 4})
+                       for k in range(-1, 40)]
+            for name, lines in (("lon-edge-1", clean), ("lon-edge-3", swapped),
+                                ("tok-edge-1", clean)):
+                built.node(name, "sampler.ndjson", lines)
+            marks = f"touch {S} 3000 3384 384\nreleased {S + 270} finished\n"
+            for name in ("lon-edge-1", "lon-edge-3"):
+                (built.dir / "nodes" / name / "touch-marks.txt").write_text(marks)
+            (built.dir / "nodes" / "tok-edge-1" / "touch-marks.txt").write_text(
+                f"touch {S} 3000 3384 384\n")
+            bits = "0" * 5 + "1" + "0" * 58
+            (built.dir / "nodes" / "lon-edge-1" / "system.txt").write_text(
+                f"thp: always\nballoon-features: {bits}\n")
+            checks = report.touch_checks(built.run())
+        finally:
+            built.close()
+        self.assertIsNone(checks["lon-edge-1"]["excluded"])
+        self.assertTrue(checks["lon-edge-1"]["reporting"])
+        self.assertIn("pswpin +2048", checks["lon-edge-3"]["excluded"])
+        self.assertIn("no release mark", checks["tok-edge-1"]["excluded"])
+        self.assertIsNone(checks["tok-edge-1"]["reporting"])
+        arms = {"touched": ["lon-edge-1", "lon-edge-3", "tok-edge-1"]}
+        found = report.rule_touch(table(stop("lon-edge-2", 5, 700), stop("lon-edge-4", 6, 300),
+                                        stop("lon-edge-3", 6, 900)), arms, EDGES, checks)
+        # lon-edge-3's 900 ms is in neither arm: 333 ms an untouched edge
+        # (lon-edge-2, -4, tok-edge-2) against 0 on lon-edge-1.
+        self.assertEqual((found["without"], found["with"]), (333.333, 0.0))
+        self.assertTrue(found["fires"])
+        self.assertIn("left out: lon-edge-3 (the kernel swapped", found["line"])
+        self.assertIn("tok-edge-1 (no release mark", found["line"])
+        self.assertIn("free page reporting on lon-edge-1", found["line"])
+        self.assertEqual(report.balloon_reporting("balloon-features: " + "0" * 64), False)
 
     def test_h5_twins_stopped_together(self):
         apart = report.rule_twins(table(stop("lon-edge-1", 5, 300), stop("lon-edge-2", 9, 300),
@@ -428,12 +577,16 @@ class Guards(unittest.TestCase):
             for name in ("lon-edge-1", "lon-edge-2"):
                 built.node(name, "watch.ndjson", seconds_of(T, T + 200 * 1_000_000)
                            + [tick(0, T + 120_000_000, 30 * MS)])
-            built.node("lon-edge-1", "mesh-local.ndjson", [
-                {"unix": S + 1, "body": {"stall": {"tick_threads": 2, "tick_pinned": 2}}},
-                {"unix": S + 6, "body": {"stall": {"tick_threads": 2, "tick_pinned": 1}}}])
-            built.node("lon-edge-2", "mesh-local.ndjson", [
-                {"unix": S + 1, "body": {"stall": {"tick_threads": 2, "tick_pinned": 2}}}])
-            rows = report.node_periods(built.run())
+            # The sampler's cut of /api/mesh/local carries the pinning.
+            pinned = sample(T + 1_000_000)
+            pinned["mesh"].update({"stall.tick_threads": 2, "stall.tick_pinned": 2})
+            one = sample(T + 6_000_000)
+            one["mesh"].update({"stall.tick_threads": 2, "stall.tick_pinned": 1})
+            built.node("lon-edge-1", "sampler.ndjson", [pinned, one])
+            built.node("lon-edge-2", "sampler.ndjson", [pinned])
+            run = built.run()
+            rows = report.node_periods(run)
+            self.assertEqual(run.unpinned(), {"lon-edge-1": "1 of 2"})
         finally:
             built.close()
         trusted = {(row["node"], row["scope_trusted"]) for row in rows}
@@ -441,6 +594,32 @@ class Guards(unittest.TestCase):
         # The time between the soak and the session is a period of its own.
         periods = [row["period"] for row in rows if row["node"] == "lon-edge-1"]
         self.assertEqual(periods, ["soak-1", "after soak-1", "S1", "run"])
+
+    def test_a_replaced_edge_keeps_its_old_instance_s_journal(self):
+        """lon-edge-1 was replaced: the old instance's stall journal (fetched
+        into before-replace/) holds the long class_pass of its S1 stop, with
+        its faults; the new instance's journal does not. The stop is still
+        "blocked in our code", on faults in the pass."""
+        built = Builder({"lon-edge-1": {"role": "edge"}}, [period("S1", "session", 0, 70)])
+        try:
+            built.node("lon-edge-1", "before-replace/stalls.ndjson", [
+                {"kind": "class_pass", "thread": "audio", "cpu": 0, "t_us": STOP[1],
+                 "dur_us": 390 * MS, "span_us": 390 * MS, "n": 1, "cause": "own",
+                 "minflt": 120, "majflt": 0}])
+            built.node("lon-edge-1", "stalls.ndjson", [
+                {"kind": "class_pass", "thread": "audio", "cpu": 0, "t_us": T + 900_000_000,
+                 "dur_us": 60 * MS, "span_us": 60 * MS, "n": 1, "cause": "own"}])
+            built.node("lon-edge-1", "before-replace/sampler.ndjson",
+                       [sample(T + k * 1_000_000, delay_ms=1.0, voluntary=10 * k)
+                        for k in range(0, 6)])
+            run = built.run()
+            journal = run.journal("lon-edge-1")
+            found = sr.classify(*STOP, run.sampler("lon-edge-1"), journal)
+        finally:
+            built.close()
+        self.assertEqual(len(journal), 2)
+        self.assertEqual(found["class"], "blocked in our code")
+        self.assertEqual(found["wait_kind"], "faults")
 
     def test_the_first_of_two_for_every_pair_of_edges(self):
         """Three edges of a region in the probes: each pair is reported; a
@@ -524,6 +703,11 @@ class WholeReport(unittest.TestCase):
                      for second in range(95, 175)]
             built.node("lon-edge-1", "sampler.ndjson", lines)
             built.node("lon-edge-2", "sampler.ndjson", lines[:1])
+            # The crowd reached both edges (by address, as needletail-load
+            # names them without an entry point).
+            write_ndjson(session / "lon-view" / "load" / "intervals.jsonl", [
+                {"t": 1.0, "edges": {"192.0.2.1:19446": {"up": 20, "parts": 990},
+                                     "192.0.2.2:19446": {"up": 20, "parts": 990}}}])
 
             class NoNull:
                 @staticmethod
@@ -546,7 +730,9 @@ class WholeReport(unittest.TestCase):
         self.assertAlmostEqual(found["ms"], 400.5, delta=1.5)
         rules = built_report["rules"]
         self.assertEqual(rules["H1"]["stopped"], ["lon-edge-1"])
-        self.assertEqual(rules["H1"]["verdicts"]["lon-edge-2"], "no stop of 100 ms or more")
+        self.assertEqual(rules["H1"]["verdicts"]["lon-edge-2"],
+                         "no stop of 100 ms or more (20 UDP clients)")
+        self.assertEqual(edges["udp_clients"], {"lon-edge-1": 20, "lon-edge-2": 20})
         self.assertTrue(rules["H2"]["fires"]["our_code"])
         self.assertFalse(rules["H5"]["fires"])
         # lon-edge-2 hides lon-edge-1's stop: nothing is late on both.
@@ -558,6 +744,7 @@ class WholeReport(unittest.TestCase):
             self.assertIn(f"{rule} (", text)
         self.assertIn("BLOCKED IN OUR CODE", text)
         self.assertIn("first session, lon-edge-2: no stop of 100 ms or more", text)
+        self.assertIn("UDP clients lon-edge-1 20, lon-edge-2 20", text)
 
 
 @unittest.skipUnless((WAVE7 / "lon-view" / "nt-popus.probe.json").is_file(),
@@ -629,15 +816,24 @@ class Wave9(unittest.TestCase):
         self.assertEqual(round(sum(item["ms"] for item in stops)), 5146)
         self.assertEqual({item["class"] for item in stops}, {"no sampler"})
         edges = sorted(commits)
+        # The UDP clients of the session: the referee's one nt-uc probe a
+        # host, by its caches. syd-edge-2 had none, and stopped all the same.
+        clients = report.udp_clients(WAVE9, addresses)
+        self.assertEqual(sorted(clients), ["lon-edge-1", "lon-edge-2", "new-edge-1",
+                                           "new-edge-2", "syd-edge-1", "tok-edge-1",
+                                           "tok-edge-2"])
         edges_table = {"S1": {"role": "first", "seen": edges, "stops": stops, "over_20ms": {},
+                              "udp_clients": clients,
                               "twins": report.twin_overlaps(stops), "first_of_two": {}}}
         twins = report.rule_twins(edges_table)
         self.assertTrue(twins["fires"])
         self.assertEqual([(item["edges"], round(item["both_ms"])) for item in twins["together"]],
                          [(["lon-edge-1", "lon-edge-2"], 31), (["lon-edge-1", "lon-edge-2"], 446)])
         fix = report.rule_fix(edges_table, edges)
-        self.assertEqual(fix["verdicts"]["new-edge-1"], "no stop of 100 ms or more")
+        self.assertEqual(fix["verdicts"]["new-edge-1"], "no stop of 100 ms or more (1 UDP clients)")
         self.assertEqual(len(fix["stopped"]), 6)
+        self.assertTrue(fix["verdicts"]["syd-edge-2"].endswith("(no UDP client reached it)"))
+        self.assertFalse(fix["fires"])
 
 
 if __name__ == "__main__":

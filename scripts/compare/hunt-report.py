@@ -9,9 +9,10 @@ the run archive): hunt.json (periods, sessions with their roles, nodes with
 their addresses and physical hosts, the arms, the replacement),
 nodes/<node>/ (sampler.ndjson of scripts/hunt-sampler.sh, stalls.ndjson of
 the service's /api/stalls, watch.ndjson of needletail-nodecheck watch,
-touch marks; the replaced instance's records under before-replace/),
-sessions/<S>/<host>/ (the probes, rounds.txt, the sender's lateness journal
-and source.start).
+touch marks, system.txt; the replaced instance's records under
+before-replace/), sessions/<S>/<host>/ (the probes, the crowd's
+intervals.jsonl, rounds.txt, the sender's lateness journal and
+source.start).
 
 It prints, in this order:
  1. per node and period (sessions, the time between two of them, the whole
@@ -19,15 +20,18 @@ It prints, in this order:
     (stopped ms a node-minute) from the watch and from the service's
     journal (they must agree within 10 %), starved ms, steal, the share of
     seconds that were mostly the guest kernel's; a node whose service could
-    not pin every tick thread has its scope marked untrusted;
+    not pin every tick thread (its sampler's tick_pinned) has its scope
+    marked untrusted, and its journal's ticks count only on the class
+    thread's own CPU;
  2. by physical host: the nodes that share one, and their stops within
     50 ms of each other against the count expected by chance;
  3. per session and edge, every commit stop of 100 ms or more (from the
     LL-HLS probe at that edge, in time order), each classified from the
     edge's sampler, journal and watch (stall_records.classify): not run
     (where), blocked in our code (which wait), waited for input, or
-    undetermined; and per region and pair of edges the first of the two
-    per part and the stops of both twins at once;
+    undetermined; the UDP clients that reached each edge; and per region
+    and pair of edges the first of the two per part and the stops of both
+    twins at once;
  4. per session and listener, every arrival silence of 3 ms or more (two
     unit spacings on the 2.5 ms lane) joined to its first cause;
  5. the null of every probe (scripts/compare/null-window.py);
@@ -38,7 +42,8 @@ session (a pull first-touches 50 to 100 MB on the node). Exit 0: a report.
 
 The rules:
  H1 the fix: per edge, does a stop of 100 ms or more remain in the first
-    session (on the fresh deploy)?
+    session (on the fresh deploy)? An edge without a probe of its commits,
+    or that no UDP client reached, is "not measured";
  H2 the class of every stop of 100 ms or more in the run: not run (the
     hypervisor or the guest kernel: the instances and their hosts compared,
     and the replaced instance against its predecessor), blocked in our
@@ -47,7 +52,9 @@ The rules:
  H3 the arena warm-up: in the first sessions of a process (the first
     session and the repeat), stop ms an edge without it against with it;
  H4 first touch: in the first session, stop ms an edge of the untouched
-    edges against the touched;
+    edges against the touched (a touched edge whose touch did not hold and
+    end cleanly, or made the kernel swap or evict, is left out; free page
+    reporting is stated);
  H5 twins: the stops of two edges of a region at once (overlapping or
     within 50 ms), and the parts late on both;
  H6 PCM first: after the restart, the PCM session's stops against the
@@ -118,6 +125,8 @@ class Run:
         self.periods: list[dict] = self.record.get("periods") or []
         self._watch: dict[str, list] = {}
         self._journal: dict[str, list] = {}
+        self._sampler: dict[str, list] = {}
+        self._unpinned: dict[str, str] | None = None
 
     def node_dir(self, name: str) -> pathlib.Path:
         return self.dir / "nodes" / name
@@ -131,9 +140,12 @@ class Run:
         return self._watch[name]
 
     def journal(self, name: str) -> list[dict]:
-        """The service's own stall journal, as polled."""
+        """The service's own stall journal, as polled, the replaced
+        instance's included."""
         if name not in self._journal:
-            self._journal[name] = sr.read_stalls(self.node_dir(name) / "stalls.ndjson")
+            items = sr.read_ndjson(self.node_dir(name) / "before-replace" / "stalls.ndjson")
+            items += sr.read_ndjson(self.node_dir(name) / "stalls.ndjson")
+            self._journal[name] = sr.dedupe(items)
         return self._journal[name]
 
     def role(self, name: str) -> str | None:
@@ -178,22 +190,33 @@ class Run:
 
     def unpinned(self) -> dict[str, str]:
         """{node: "pinned of threads"} for the nodes whose service ran a
-        tick thread it could not pin, at any poll of /api/mesh/local."""
-        out = {}
-        for name in self.mesh():
-            for item in sr.read_ndjson(self.node_dir(name) / "mesh-local.ndjson"):
-                stall = (item.get("body") or {}).get("stall") or {}
-                threads, pinned = stall.get("tick_threads"), stall.get("tick_pinned")
-                if threads is not None and pinned is not None and int(pinned) < int(threads):
-                    out[name] = f"{pinned} of {threads}"
-        return out
-
+        tick thread it could not pin, at any line of its sampler (its cut of
+        /api/mesh/local: stall.tick_threads and stall.tick_pinned)."""
+        if self._unpinned is None:
+            self._unpinned = {}
+            for name in self.mesh():
+                for line in self.sampler(name):
+                    threads = sr.mesh_value(line, "tick_threads")
+                    pinned = sr.mesh_value(line, "tick_pinned")
+                    if threads is not None and pinned is not None and pinned < threads:
+                        self._unpinned[name] = f"{pinned} of {threads}"
+        return self._unpinned
 
     def sampler(self, name: str) -> list[dict]:
         """The node's sampler lines, the replaced instance's included."""
-        return sr.sampler_lines(sr.read_ndjson(self.node_dir(name) / "before-replace"
-                                               / "sampler.ndjson")
-                                + sr.read_ndjson(self.node_dir(name) / "sampler.ndjson"))
+        if name not in self._sampler:
+            self._sampler[name] = sr.sampler_lines(
+                sr.read_ndjson(self.node_dir(name) / "before-replace" / "sampler.ndjson")
+                + sr.read_ndjson(self.node_dir(name) / "sampler.ndjson"))
+        return self._sampler[name]
+
+    def node_file(self, name: str, file: str) -> str | None:
+        """A small file of the node's records (the instance's own, else the
+        replaced one's)."""
+        for path in (self.node_dir(name) / file, self.node_dir(name) / "before-replace" / file):
+            if path.is_file():
+                return path.read_text(errors="replace")
+        return None
 
     def addresses(self) -> dict[str, str]:
         """{public address: node}, every address a node had (a replaced
@@ -565,6 +588,33 @@ def hls_probes(paths: list[pathlib.Path],
     return out
 
 
+def udp_clients(folder: pathlib.Path, addresses: dict[str, str] | None = None) -> dict[str, int]:
+    """The UDP clients that reached each edge in a session (its directory
+    of view hosts): every cache a UDP probe used (its uc.json `caches`, node
+    names) and, per edge of a needletail-load crowd (`*load/intervals.jsonl`,
+    edges keyed by address), the most of its listeners subscribed in an
+    interval in which they received parts. {edge: clients}."""
+    out: dict[str, int] = {}
+    for path in sorted(folder.glob("*/*.uc.json")):
+        try:
+            caches = json.loads(path.read_text()).get("caches") or []
+        except (OSError, ValueError):
+            continue
+        for cache in caches:
+            name = (addresses or {}).get(str(cache).rsplit(":", 1)[0], cache)
+            out[name] = out.get(name, 0) + 1
+    for path in sorted(folder.glob("*/*load/intervals.jsonl")):
+        most: dict[str, int] = {}
+        for line in sr.read_ndjson(path):
+            for key, figure in (line.get("edges") or {}).items():
+                name = (addresses or {}).get(key.rsplit(":", 1)[0], key)
+                if int(figure.get("parts") or 0) > 0:
+                    most[name] = max(most.get(name, 0), int(figure.get("up") or 0))
+        for name, count in most.items():
+            out[name] = out.get(name, 0) + count
+    return out
+
+
 def first_of_pairs(commits: dict[str, dict[int, int]], published: dict[int, int],
                    since_us: int | None, until_us: int | None) -> dict:
     """Per region (an edge's name up to its first dash), the first of two
@@ -602,6 +652,7 @@ def edges_table(run: Run) -> dict:
     out = {}
     roles = run.roles()
     addresses = run.addresses()
+    unpinned = run.unpinned()
     for name, start, end in run.periods_of("session"):
         commits, published = edge_commits(hls_probes(session_probes(run, name), addresses))
         stops = []
@@ -610,10 +661,11 @@ def edges_table(run: Run) -> dict:
                 stops.append({"session": name, "role": roles.get(name), "edge": edge,
                               "from_us": begin, "to_us": finish, "ms": ms,
                               **sr.classify(begin, finish, run.sampler(edge), run.journal(edge),
-                                            run.watch(edge))})
+                                            run.watch(edge), edge not in unpinned)})
         short = {edge: len(gaps) for edge, gaps
                  in commit_gaps(commits, SHORT_STOP_MS, start, end).items()}
         out[name] = {"role": roles.get(name), "seen": sorted(commits), "stops": stops,
+                     "udp_clients": udp_clients(session_dir(run, name), addresses),
                      "over_20ms": short, "twins": twin_overlaps(stops),
                      "first_of_two": first_of_pairs(commits, published, start, end)}
     return out
@@ -754,25 +806,36 @@ def stop_list(stops: list[dict]) -> str:
 
 
 def rule_fix(edges: dict, names: list[str]) -> dict:
-    """H1: per edge, a stop of 100 ms or more in the first session?"""
+    """H1: per edge, a stop of 100 ms or more in the first session? An edge
+    is measured when its LL-HLS probe saw its commits and UDP clients
+    reached it in that session (the fix is on the path to UDP clients); a
+    stop counts whether or not a client was there."""
     first = [item for item in edges.values() if item["role"] == "first"]
     if not first:
         return {"fires": False, "verdicts": {}, "line": "H1 (the fix): no first session in "
                                                         "the record"}
     item = first[0]
-    verdicts = {}
+    clients = item.get("udp_clients") or {}
+    verdicts, unmeasured, stopped = {}, [], []
     for edge in names:
         mine = [stop for stop in item["stops"] if stop["edge"] == edge]
-        verdicts[edge] = ("not measured: no probe of it" if edge not in item["seen"]
-                          else f"{len(mine)} stops: " + stop_list(mine) if mine
-                          else "no stop of 100 ms or more")
-    stopped = sorted(edge for edge in names if verdicts[edge][0].isdigit())
-    unmeasured = sorted(edge for edge in names if edge not in item["seen"])
+        if edge not in item["seen"]:
+            verdicts[edge] = "not measured: no probe of it"
+            unmeasured.append(edge)
+        elif mine:
+            verdicts[edge] = f"{len(mine)} stops: " + stop_list(mine) + (
+                "" if clients.get(edge) else " (no UDP client reached it)")
+            stopped.append(edge)
+        elif not clients.get(edge):
+            verdicts[edge] = "not measured: no UDP client reached it"
+            unmeasured.append(edge)
+        else:
+            verdicts[edge] = f"no stop of 100 ms or more ({clients[edge]} UDP clients)"
     fires = not stopped and not unmeasured
     line = "H1 (the fix): " + (
         "NO STOP REMAINS: no edge stopped for 100 ms or more in the first session on the fresh "
-        "deploy" if fires else
-        (f"stops remain on {', '.join(stopped)}" if stopped else "no stop on the edges seen")
+        "deploy, with UDP clients at every edge" if fires else
+        (f"stops remain on {', '.join(stopped)}" if stopped else "no stop on the edges measured")
         + (f"; not measured: {', '.join(unmeasured)}" if unmeasured else ""))
     return {"fires": fires, "verdicts": verdicts, "stopped": stopped,
             "unmeasured": unmeasured, "line": line}
@@ -891,16 +954,96 @@ def rule_arena(edges: dict, arms: dict, names: list[str]) -> dict:
     return found
 
 
-def rule_touch(edges: dict, arms: dict, names: list[str]) -> dict:
-    """H4: first touch of the guest's memory, in the first session."""
-    touched = [name for name in names if name in set(arms.get("touched") or [])]
+def rule_touch(edges: dict, arms: dict, names: list[str],
+               checks: dict[str, dict] | None = None) -> dict:
+    """H4: first touch of the guest's memory, in the first session. A
+    touched edge whose touch is not shown to have held and been given back
+    cleanly (`checks`, from touch_checks: no release mark, an unfinished
+    touch, swap or refaults during it) is in neither arm. Evidence on the
+    untouched edges: a stop not run, or blocked on faults in the pass or on
+    reclaim. Free page reporting on a touched edge is stated: the host may
+    take the given-back pages again before the session."""
+    checks = checks or {}
+    armed = [name for name in names if name in set(arms.get("touched") or [])]
+    left_out = {name: checks[name]["excluded"] for name in armed
+                if (checks.get(name) or {}).get("excluded")}
+    touched = [name for name in armed if name not in left_out]
     found = arm_rule("H4 (first touch, first session)", all_stops(edges, ("first",)), touched,
-                     [name for name in names if name not in set(touched)],
-                     lambda stop: stop["class"] == "not run" or "fault" in stop.get("wait", "")
-                     or "reclaim" in stop.get("wait", ""))
+                     [name for name in names if name not in set(armed)],
+                     lambda stop: stop["class"] == "not run"
+                     or stop.get("wait_kind") in ("faults", "reclaim"))
     if found["fires"]:
         found["line"] += ": node_warm (the whole guest) defaults true and is part of readiness"
+    if left_out:
+        found["line"] += "; left out: " + "; ".join(f"{name} ({why})" for name, why
+                                                     in sorted(left_out.items()))
+    reporting = sorted(name for name in touched if (checks.get(name) or {}).get("reporting"))
+    if reporting:
+        found["line"] += (f"; free page reporting on {', '.join(reporting)}: the host may take "
+                          "the given-back pages again before the session, so there the arm "
+                          "tests the guest's own first touch, not the host's backing (H10)")
+    unknown = sorted(name for name in touched if (checks.get(name) or {}).get("reporting") is None)
+    if unknown and checks:
+        found["line"] += f"; free page reporting not known on {', '.join(unknown)}"
+    found["left_out"] = left_out
+    found["reporting"] = reporting
     return found
+
+
+# A touch is held cleanly when none of these grew from its start to the end
+# of the first session (the kernel swapped or evicted for it).
+TOUCH_PRESSURE_KEYS = ("pswpin", "pswpout", "workingset_refault_anon", "workingset_refault_file")
+# virtio-balloon's free page reporting (VIRTIO_BALLOON_F_REPORTING, bit 5 of
+# the device's features file, a string of 0 and 1 by bit).
+BALLOON_REPORTING_BIT = 5
+
+
+def balloon_reporting(system: str | None) -> bool | None:
+    """Whether the guest's balloon reports free pages to the host, from the
+    `balloon-features:` line of the node's system.txt (None: not known)."""
+    for line in (system or "").splitlines():
+        if line.startswith("balloon-features:"):
+            bits = line.split(":", 1)[1].strip()
+            if len(bits) > BALLOON_REPORTING_BIT and set(bits) <= {"0", "1"}:
+                return bits[BALLOON_REPORTING_BIT] == "1"
+    return None
+
+
+def touch_checks(run: Run) -> dict[str, dict]:
+    """Per touched edge: {"excluded": why or None, "reporting": bool|None}.
+    Excluded: its touch-marks.txt has no `released` line or says
+    `unfinished`; or its sampler shows swap or refaults growing from the
+    touch's start to the end of the first session; or no sampler lines
+    span that time."""
+    touch = run.record.get("touch") or {}
+    first = [name for name, role in run.roles().items() if role == "first"]
+    span = run.period(first[0]) if first else None
+    out = {}
+    for name in (run.arms().get("touched") or []):
+        why = None
+        marks = run.node_file(name, "touch-marks.txt") or ""
+        released = [line.split() for line in marks.splitlines() if line.startswith("released ")]
+        if not released:
+            why = "no release mark: it may have held its memory through the session"
+        elif released[-1][-1] != "finished":
+            why = "the touch had not finished when it was given back"
+        elif touch.get("from_unix") is None or span is None:
+            why = "no touch time or first session in the record"
+        else:
+            pair = sr.around(run.sampler(name), int(touch["from_unix"] * 1e6), span[1])
+            if pair is None:
+                why = "no sampler line before the touch and after the first session"
+            else:
+                (vm_a, vm_b) = ((line.get("vm") or {}) for line in pair)
+                grown = {key: int(vm_b.get(key, 0)) - int(vm_a.get(key, 0))
+                         for key in TOUCH_PRESSURE_KEYS}
+                grown = {key: value for key, value in grown.items() if value > 0}
+                if grown:
+                    why = "the kernel swapped or evicted for it: " + ", ".join(
+                        f"{key} +{value}" for key, value in sorted(grown.items()))
+        out[name] = {"excluded": why,
+                     "reporting": balloon_reporting(run.node_file(name, "system.txt"))}
+    return out
 
 
 def rule_twins(edges: dict) -> dict:
@@ -992,7 +1135,8 @@ def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
     rules = {"H1": rule_fix(edges, names),
              "H2": rule_classes(edges, {name: run.host_uuid(name) for name in names},
                                 run.record.get("replaced") or []),
-             "H3": rule_arena(edges, arms, names), "H4": rule_touch(edges, arms, names),
+             "H3": rule_arena(edges, arms, names),
+             "H4": rule_touch(edges, arms, names, touch_checks(run)),
              "H5": rule_twins(edges), "H6": rule_pcm_first(edges),
              "H7": rule_churn(edges, {name: run.round_starts(name) for name, item
                                       in edges.items() if item["role"] == "churn"})}
@@ -1039,7 +1183,10 @@ def format_report(report: dict) -> str:
     lines += ["", "3. the edges' commit stops of 100 ms or more, each classified; the twins"]
     for session, item in report["edges"].items():
         lines.append(f"  {session} ({item['role']}): edges seen {', '.join(item['seen']) or 'none'}"
-                     "; stops of 20 ms or more " + (", ".join(
+                     "; UDP clients " + (", ".join(
+                         f"{edge} {count}" for edge, count
+                         in sorted((item.get("udp_clients") or {}).items())) or "none")
+                     + "; stops of 20 ms or more " + (", ".join(
                          f"{edge} {count}" for edge, count in sorted(item["over_20ms"].items())
                          if count) or "none"))
         for stop in item["stops"]:
