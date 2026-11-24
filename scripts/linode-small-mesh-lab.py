@@ -2315,7 +2315,8 @@ def host_check(nodes: dict[str, dict]) -> dict:
             for host, names in sorted(hosts.items()):
                 if len(names) > 1:
                     conflicts.append(f"SHARED HOST in {region}: {what} {', '.join(names)} on "
-                                     f"{host[:12]}; replace all but one")
+                                     f"{host[:12]}; replace all but one "
+                                     "(`replace NAME --mode new`)")
     edge_regions = {}
     for name, node in nodes.items():
         if node["role"] == "edge":
@@ -2324,7 +2325,7 @@ def host_check(nodes: dict[str, dict]) -> dict:
         edges = sorted(edge_regions[region])
         if len(edges) > 1 and len(hosts) < 2 and not set(edges) & set(unknown):
             conflicts.append(f"ONE HOST for the edges of {region}: {', '.join(edges)}; "
-                             "replace all but one")
+                             "replace all but one (`replace NAME --mode new`)")
             continue
         for host, names in sorted(hosts.items()):
             if len(names) > 1:
@@ -2351,9 +2352,10 @@ def command_hosts(args: argparse.Namespace) -> None:
     `grow` and `replace`, and before `push`.
 
     The GETs can take minutes, so the hosts are recorded on the state as it
-    is on disk afterwards (record_hosts), never by writing back the copy
-    read before them: what a push, a grow or the autoscaler wrote meanwhile
-    is kept, and a lab that `down` removed is not made again."""
+    is on disk afterwards (record_hosts, through change_state under the
+    state lock), never by writing back the copy read before them: what a
+    push, a grow or the autoscaler wrote meanwhile is kept, and a lab that
+    `down` removed is not made again."""
     path = pathlib.Path(args.state)
     state = read_state(path)
     if state is None:
@@ -2364,12 +2366,11 @@ def command_hosts(args: argparse.Namespace) -> None:
         node = state["nodes"][name]
         live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
         found[name] = (node["id"], live.get("host_uuid"))
-    current = read_state(path)
-    if current is None or current.get("run_id") != state.get("run_id"):
-        sys.exit("the lab was taken down while its hosts were read; nothing recorded")
-    record_hosts(current, found)
-    write_state(path, current)
-    state = current
+    try:
+        # Under the state lock (C CT3), on the state as it is now.
+        change_state(path, state, lambda current: record_hosts(current, found))
+    except LabGone as gone:
+        sys.exit(f"the lab was taken down while its hosts were read ({gone}); nothing recorded")
     check = host_check(state["nodes"])
     if args.json:
         print(json.dumps({**check, "nodes": {
@@ -2729,7 +2730,10 @@ def down_by_tag(api: "Api", run_id: str, last: dict | None) -> None:
           f"{tag} (${total['usd']:.2f} billed, in the ledger {LEDGER})", flush=True)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The lab tool's command line. Other tools that run it (the deploy's
+    replace, add and remove; the autoscaler's rebuild) are tested against
+    this parser, so a caller's arguments and the lab tool's cannot drift."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--state", default=os.environ.get(
         "NEEDLETAIL_LINODE_LAB_STATE", str(DEFAULT_STATE)))
@@ -2826,7 +2830,11 @@ def main() -> None:
     watchdog.add_argument("--run-id", default=None)
     watchdog.add_argument("--deadline-unix", type=int, default=None)
     watchdog.set_defaults(handler=command_watchdog)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     args.handler(args)
 
 

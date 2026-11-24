@@ -408,6 +408,32 @@ class Hosts(unittest.TestCase):
         self.assertNotIn("host_uuid", state["nodes"]["lon-edge-3"])
         self.assertEqual(state["nodes"]["lon-edge-1"]["host_uuid"], "h4")
 
+    def test_hosts_writes_under_the_lab_tool_s_state_lock(self):
+        """At the CT3 merge (D4 fix report): the one write goes through
+        change_state, which holds `<state>.lock` for its read-change-write;
+        a lab whose state became another run's during the reads is not
+        written."""
+        real = lab_tool.change_state
+        locked = []
+
+        def change_state(path, state, change, creating=False):
+            locked.append(pathlib.Path(path).name)
+            return real(path, state, change, creating)
+
+        with mock.patch.object(lab_tool, "change_state", change_state):
+            _code, _text, state = self.command({}, json_out=True)
+            self.assertEqual(locked, ["lab.json"])
+            self.assertTrue(all(node.get("host_uuid") for node in state["nodes"].values()))
+
+            def another_run(path):
+                document = json.loads(path.read_text())
+                document["run_id"] = "t2"
+                path.write_text(json.dumps(document))
+
+            code, _text, state = self.command({}, json_out=True, meanwhile=another_run)
+        self.assertIn("taken down", str(code))
+        self.assertFalse(any(node.get("host_uuid") for node in state["nodes"].values()))
+
     def test_hosts_does_not_make_again_a_lab_taken_down_during_its_reads(self):
         code, text, state = self.command({}, json_out=False,
                                          meanwhile=lambda path: path.unlink())
