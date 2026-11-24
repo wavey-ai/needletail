@@ -1555,6 +1555,9 @@ def command_run(args: argparse.Namespace) -> None:
     path = pathlib.Path(args.topology)
     topology = load_topology(path)
     problems = preflight(topology)
+    if args.resume:
+        # The lab up is this run's own (checked below).
+        problems = [problem for problem in problems if not problem.startswith(relative(STATE))]
     if args.dry:
         print_plan(topology)
         for problem in problems:
@@ -1563,7 +1566,6 @@ def command_run(args: argparse.Namespace) -> None:
         sys.exit("the isolation lab does not start (nothing was created):\n  "
                  + "\n  ".join(problems))
     if args.resume:
-        problems = [problem for problem in problems if not problem.startswith(relative(STATE))]
         if not STATE.exists() and not args.dry:
             sys.exit("--resume: no isolation lab is up")
         if STATE.exists() and json.loads(STATE.read_text()).get("run_id") != args.run_id:
