@@ -202,7 +202,13 @@ class Files(unittest.TestCase):
                     {"edges": {"london": 0}}, {"load_type": "g6-standard-8"},
                     {"standby": {"london": 10}}, {"slots": {"mars": {"edges": 1}}},
                     {"slots": {"london": {"edges": 31}}},
-                    {"slots": {"london": {"relays": 1}}}):
+                    {"slots": {"london": {"relays": 1}}},
+                    # Listener and view hosts g6-dedicated-4 or -8 only (owner).
+                    {"load_type": "g6-dedicated-2"},
+                    {"load_by_site": {"sydney": (2, "g6-dedicated-2")}},
+                    {"view_by_site": {"sydney": "g6-dedicated-2"}},
+                    {"load_by_site": {"mars": (1, "g6-dedicated-8")}},
+                    {"standby": {"mars": 1}}):
             with self.assertRaises(ValueError, msg=bad):
                 scale_topology.scale_topology(**bad)
 
@@ -272,23 +278,32 @@ class Files(unittest.TestCase):
                 mock.patch.object(lab_tool, "MAX_HOURLY_USD", 3.65), \
                 self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
             lab_tool.validate_topology(FakeTypesApi(), topology)
-        # Sydney with two g6-dedicated-2 listener hosts and a g6-dedicated-2
-        # view host; and the lab without Sydney (lab up --without-sites).
-        syd2 = json.loads((FILES / "topology-proving-syd2.json").read_text())
-        created = lab_tool.created_part(syd2)["nodes"]
-        self.assertEqual(sorted((node["name"], node["type"]) for node in created
-                                if node["site"] == "sydney" and node["role"] == "load"),
-                         [("syd-load-1", "g6-dedicated-2"), ("syd-load-2", "g6-dedicated-2"),
-                          ("syd-view", "g6-dedicated-2")])
-        hourly, _ = lab_tool.topology_cost({**syd2, "nodes": created}, LabTool.TYPES,
-                                           LabTool.REGIONS)
-        self.assertEqual(len(created), 41)
-        self.assertAlmostEqual(hourly, 3.024, places=3)
-        for document in (topology, syd2):
-            three = lab_tool.created_part(lab_tool.without_sites(document, ["sydney"]))
-            hourly, _ = lab_tool.topology_cost(three, LabTool.TYPES, LabTool.REGIONS)
-            self.assertEqual(len(three["nodes"]), 31)
-            self.assertAlmostEqual(hourly, 2.484, places=3)
+        # The file states its price and the ceilings it is run under
+        # (review of CT5, finding 3).
+        self.assertIn("Up creates 40 nodes at $3.186 an hour; with every slot 48 nodes at "
+                      "$3.618, so the lab's ceilings are NEEDLETAIL_LINODE_MAX_NODES=48 and "
+                      "NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.65 or more.", topology["description"])
+        # The variant without Sydney (lab up --without-sites sydney, or
+        # --optional-sites sydney when its core is refused); no -syd2 file.
+        self.assertEqual(sorted(scale_topology.VARIANTS),
+                         ["topology-proving.json", "topology-scale.json"])
+        self.assertFalse((FILES / "topology-proving-syd2.json").exists())
+        three = lab_tool.created_part(lab_tool.without_sites(topology, ["sydney"]))
+        hourly, _ = lab_tool.topology_cost(three, LabTool.TYPES, LabTool.REGIONS)
+        self.assertEqual(len(three["nodes"]), 31)
+        self.assertAlmostEqual(hourly, 2.484, places=3)
+
+    def test_every_file_states_its_price_from_the_lab_tool(self):
+        """Each committed file's description gives what `up` creates and
+        every node with its slots, priced as the lab tool prices them."""
+        for name in scale_topology.VARIANTS:
+            topology = json.loads((FILES / name).read_text())
+            created = lab_tool.created_part(topology)
+            hourly, _ = lab_tool.topology_cost(created, LabTool.TYPES, LabTool.REGIONS)
+            every, _ = lab_tool.topology_cost(topology, LabTool.TYPES, LabTool.REGIONS)
+            self.assertIn(f"Up creates {len(created['nodes'])} nodes at ${hourly:.3f} an hour; "
+                          f"with every slot {len(topology['nodes'])} nodes at ${every:.3f}",
+                          topology["description"], name)
 
     def test_the_flags_change_the_variant(self):
         def printed(*argv: str) -> dict:
@@ -301,10 +316,12 @@ class Files(unittest.TestCase):
         self.assertEqual(printed(), json.loads(SCALE.read_text()))
         proving = json.loads((FILES / "topology-proving.json").read_text())
         self.assertEqual(printed("--variant", "topology-proving.json"), proving)
-        self.assertEqual(printed("--variant", "topology-proving.json",
-                                 "--load", "sydney=2:g6-dedicated-2",
-                                 "--view", "sydney=g6-dedicated-2"),
-                         json.loads((FILES / "topology-proving-syd2.json").read_text()))
+        bigger = printed("--variant", "topology-proving.json", "--load",
+                         "sydney=2:g6-dedicated-4", "--view", "sydney=g6-dedicated-8")
+        self.assertEqual(sorted((node["name"], node["type"]) for node in bigger["nodes"]
+                                if node["site"] == "sydney" and node["role"] == "load"),
+                         [("syd-load-1", "g6-dedicated-4"), ("syd-load-2", "g6-dedicated-4"),
+                          ("syd-view", "g6-dedicated-8")])
         changed = printed("--variant", "topology-proving.json", "--sites",
                           "london,newyork,tokyo", "--standby", "london=2", "--slots",
                           "tokyo=edges:2,forwarders:0", "--contributors", "1", "--no-livekit",
@@ -323,7 +340,8 @@ class Files(unittest.TestCase):
                          {("tok-load-1", "g6-dedicated-4"), ("tok-load-2", "g6-dedicated-4")})
         for argv in (("--variant", "topology-nope.json"), ("--contributors", "3"),
                      ("--view", "london=g6-standard-4"), ("--load", "london=two"),
-                     ("--slots", "london=edges:x")):
+                     ("--slots", "london=edges:x"), ("--load", "sydney=2:g6-dedicated-2"),
+                     ("--view", "sydney=g6-dedicated-2")):
             with self.subTest(argv=argv), self.assertRaises(SystemExit), \
                     redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 printed(*argv)
@@ -804,9 +822,9 @@ class Render(Base):
         """topology-proving.json through the deploy's offline render and the
         compiler: both contributors on the London forwarders (workstream A's
         render), three serving edges a region on their two forwarders, the
-        standby edges and every slot in the peer lists; the same for the
-        Sydney variant, without Sydney, and after `up` left Sydney out part
-        way (its slots still recorded)."""
+        standby edges and every slot in the peer lists; the same without
+        Sydney, and after `up` left Sydney out part way (its slots still
+        recorded)."""
         proving = FILES / "topology-proving.json"
         topology = json.loads(proving.read_text())
         held = [f"standby_edges={json.dumps(topology['standby_edges'])}"]
@@ -830,9 +848,6 @@ class Render(Base):
         for name, node_args in args.items():
             sockets = {(socket, port) for socket, port, _ in deploy.udp_binds(node_args, classes)}
             self.assertEqual(len({port for _, port in sockets}), len(sockets), name)
-        syd2 = FILES / "topology-proving-syd2.json"
-        _state, _plan, args = self.render(syd2, held)
-        self.assertEqual(len(args), 22)
         without = [f"standby_edges={json.dumps(topology['standby_edges'][1:])}"]
         _state, _plan, args = self.render(proving, without, state=topology_state(
             lab_tool.without_sites(topology, ["sydney"])))
