@@ -49,6 +49,21 @@ published beside the change row, for both systems, as the bar's false-fail
 rate (on a stationary probe of 300 s or more, about 7% at the 97.5th, 12% at the 95th, plus
 any no-change loss; on short probes far more, which is why they are short).
 
+Two checks that the probe was really listening (lead, 24 Nov: a stuck listener,
+datagrams arriving but nothing accepted after its first parts, passed with
+almost no rows in the window):
+  coverage  the units sourced in the window against the window's length over
+            the frame (the probe's own report's audio_frame_ms, or --frame-ms);
+            under --min-coverage (0.98) fails the change
+  report    the probe's own report beside the CSV (LANE.probe.json, and the UDP
+            client's LANE.uc.json): units received over the probe's duration,
+            and the client's own missing parts. Under --min-coverage of the
+            units its duration allows fails every window of the probe
+            ("probe_invalid"): a listener that heard almost nothing cannot vouch
+            for a change.
+Without a report or --frame-ms the frame is inferred from the CSV, and the
+result says so.
+
 (Until 23 Nov the bar was "gap <= the single worst silence outside, plus one
 unit; p99 <= the outside p99 + 1 ms". About one clean no-change window in
 four failed it, for Needletail and LiveKit alike: lead's check, confirmed on
@@ -118,14 +133,64 @@ class Probe:
                 "p50_ms": pct(self.lat_ms[i:j], 50), "units": j - i}
 
 
-def score(rows, start_us, end_us, skip_us, percentile=97.5, min_null=120):
+def own_report(csv_path):
+    """The probe's own report beside its CSV: (frame_ms, received fraction over
+    its duration, the UDP client's missing parts), each None when absent."""
+    path = pathlib.Path(csv_path)
+    stem = path.name[:-4] if path.name.endswith(".csv") else path.name
+    out = {"frame_ms": None, "received_fraction": None, "client_missing_parts": None, "client_expected_parts": None}
+    report = path.with_name(stem + ".json")
+    if report.is_file():
+        try:
+            r = json.loads(report.read_text())
+            frame = r.get("audio_frame_ms")
+            out["frame_ms"] = float(frame) if frame else None
+            if frame and r.get("duration_seconds"):
+                out["received_fraction"] = round(
+                    (r.get("audio_packets") or 0) / (float(r["duration_seconds"]) * 1000.0 / float(frame)), 4)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    client = path.with_name(stem.split(".probe")[0] + ".uc.json")
+    if client.is_file():
+        try:
+            c = json.loads(client.read_text())
+            out["client_missing_parts"] = c.get("missing_parts")
+            out["client_expected_parts"] = c.get("expected_parts")
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return out
+
+
+def score(rows, start_us, end_us, skip_us, percentile=97.5, min_null=120, frame_ms=None, report=None,
+          min_coverage=0.98):
+    report = report or {}
     if not rows:
-        return {"error": "no audio units"}
+        return {"error": "no audio units", "pass": False}
+    frame = frame_ms or report.get("frame_ms")
+    inferred = False
+    if not frame:
+        # Source time per number over the whole probe: wrong for a stuck
+        # listener, hence said.
+        srt = sorted(rows, key=lambda r: r[0])
+        span = srt[-1][0] - srt[0][0]
+        frame = (srt[-1][3] - srt[0][3]) / 1000.0 / span if span > 0 else None
+        inferred = True
     probe = Probe(rows, skip_us)
+    invalid = []
+    fraction = report.get("received_fraction")
+    if fraction is not None and fraction < min_coverage:
+        invalid.append(f"the probe's own report: {fraction:.1%} of the units its duration allows")
+    missing_parts, expected_parts = report.get("client_missing_parts"), report.get("client_expected_parts")
+    if missing_parts and expected_parts and missing_parts > (1 - min_coverage) * expected_parts:
+        invalid.append(f"the UDP client's own report: {missing_parts} of {expected_parts} parts missing")
     change = probe.window(start_us, end_us)
     if change is None:
-        return {"error": "the probe does not cover the window with units on both sides"}
+        return {"error": "the probe does not cover the window with units on both sides", "pass": False,
+                "probe_invalid": invalid or None}
     length = end_us - start_us
+    expected = length / 1000.0 / frame if frame else None
+    change["units_expected_by_time"] = round(expected) if expected else None
+    change["coverage"] = round(change["units"] / expected, 4) if expected else None
     null = []
     a = probe.start
     while a + length + 1_000_000 < probe.end:
@@ -138,7 +203,17 @@ def score(rows, start_us, end_us, skip_us, percentile=97.5, min_null=120):
                 null.append(w)
         a += 1_000_000
     out = {"window_s": round(length / 1e6, 3), "unit_spacing_ms": round(probe.spacing_ms, 3),
-           "change": change, "null_windows": len(null)}
+           "frame_ms": round(frame, 4) if frame else None, "frame_ms_inferred": inferred,
+           "probe_report": report or None, "change": change, "null_windows": len(null)}
+    if invalid:
+        out["probe_invalid"] = invalid
+        out["pass"] = False
+        return out
+    if change["coverage"] is not None and change["coverage"] < min_coverage:
+        out["pass"] = False
+        out["note"] = (f"window coverage {change['coverage']:.1%}: {change['units']} units sourced in the window "
+                       f"against {change['units_expected_by_time']} that its length allows")
+        return out
     if len(null) < min_null:
         out["pass"] = None
         out["note"] = f"null too short: {len(null)} no-change windows of this length, {min_null} needed"
@@ -205,13 +280,17 @@ def main():
     ap.add_argument("--skip", type=float, default=5.0)
     ap.add_argument("--percentile", type=float, default=97.5)
     ap.add_argument("--min-null", type=int, default=120)
+    ap.add_argument("--frame-ms", type=float, default=None,
+                    help="the lane's unit length (default: the probe's own report, else inferred)")
+    ap.add_argument("--min-coverage", type=float, default=0.98)
     ap.add_argument("--json")
     args = ap.parse_args()
     loaded = {f: load(f) for f in args.frames}
     result = {}
     for label, (s, e) in windows(args).items():
         start_us, end_us = int((s - args.before) * 1e6), int((e + args.after) * 1e6)
-        result[label] = {f: score(rows, start_us, end_us, int(args.skip * 1e6), args.percentile, args.min_null)
+        result[label] = {f: score(rows, start_us, end_us, int(args.skip * 1e6), args.percentile, args.min_null,
+                                  args.frame_ms, own_report(f), args.min_coverage)
                          for f, rows in loaded.items()}
     text = json.dumps(result, indent=1)
     if args.json:
