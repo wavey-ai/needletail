@@ -623,6 +623,9 @@ def layout() -> str:
     sets = lab.load("cpus.json")
     if "_range" in sets:
         return f"cpus={sets['_range'][0]}-{sets['_range'][1]}"
+    if sets.get("_own"):
+        # The own-CPU layout: which nodes it holds is part of it.
+        return "own_cpus=1 leave_out=" + ",".join(sets.get("_left_out") or [])
     if "_first" in sets:
         return f"node_cpus={sets['_first']}"
     return "host"

@@ -894,6 +894,15 @@ class Runs(unittest.TestCase):
                                             "sender": [26, 27]})
         self.assertEqual(run["nice"], 10)
 
+    def test_the_own_cpu_layout_is_named_with_what_it_leaves_out(self):
+        self.fake.store["cpus.json"] = lab.own_cpu_sets(
+            [name for name, role, *_ in lab.NODES if role != "backbone"], 32,
+            {"lon-edge-4", "new-edge-3", "lon-dist-c", "new-dist-c"})
+        self.assertEqual(cr.layout(),
+                         "own_cpus=1 leave_out=lon-dist-c,lon-edge-4,new-dist-c,new-edge-3")
+        self.assertEqual(cr.cpu_roles(), {"probes": [22, 23, 24, 25],
+                                          "tools": [26, 27, 28, 29, 30], "sender": [31]})
+
     def test_without_a_layout_the_command_is_only_niced(self):
         code, _out = self.fake.main("run", "--name", "roll-edges", "--nice", "0", "--",
                                     "engine")

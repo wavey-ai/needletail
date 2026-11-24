@@ -1353,6 +1353,32 @@ Workstream A's contributor scenarios (`contrib-kill`, `contrib-restart`, `roll c
 `lab-parity`; then the tables. One run is about 2.7 minutes: the scored block is about 10 hours of one lab, the
 three extra cells 11, the lower block 2; half that with two labs if 6.1 allows.
 
+### 6.3.1 The own-CPU layout (added 24 Nov, after local proof 2)
+
+On shared CPUs half of local proof 2's nulls failed, so no verdict there meant anything. The change proofs
+run in `up own_cpus=1`: one lab on the whole 32-CPU host, every mesh node in it on two host CPUs of its own
+from CPU 0 (a g6-dedicated-2; the contributors too), the source host's sender on CPU 31 alone, and the CPUs
+between them split by change-run.py: the probes on the first half, the change's command, the crowd, the
+readers and the lab's own commands on the other (`edge_lab.rest_split`). Fourteen nodes with the source
+host do not fit (the sender, a probe CPU and a tool CPU are three beyond the nodes'), so each scenario group
+leaves out (`leave_out=`, node names or a site) what it does not need: a node left out is not rendered (no
+peer names it), not started and has no CPUs. The default leaves out the two dist-c slots.
+`edge_lab.py layout <settings>` prints the map without starting anything. NEEDLETAIL_EDGE_LAB_CPUS must be
+unset. Each command below is `change-run.py run --name <scenario> --repeat 10 <group's options> --
+<the scenario's command of 6.3>` (with `--null-sleep S` for a plain kill or crash).
+
+| Group | Scenarios | change-run options | Nodes (2 CPUs each) | Probes / tools / sender CPUs | Crowd |
+| --- | --- | --- | --- | --- | --- |
+| London edges | roll-edges, replace-edge, scale-up, scale-down, autoscale-edges, join-during-roll, upgrade-bad-edge, roll-with-a-dead-playlist, roll-interrupted, roll-killed, operator-drain-survives, sigterm-edge, autoscale-lost-edge, autoscale-blind | `--set own_cpus=1 --set slots=lon-edge-4 --set leave_out=newyork,lon-dist-c --hosts lon-readers` | 8: both contributors, lon-dist-a/b, lon-edge-1 to 3, lon-edge-4 (the surge slot) | 16-22 / 23-30 / 31 | `--load-listeners 40` |
+| Forwarders and contributors | roll-forwarders, forwarder-kill-return, gate-refuses-dead, -late, -lossy, upgrade-bad-forwarder, sibling-dies; A's contrib-kill, contrib-restart, roll contributors, ingress-kill-return | `--set own_cpus=1 --set leave_out=lon-edge-4,new-edge-3,lon-dist-c,new-dist-c` | 11: both contributors, the four forwarders, lon-edge-1 to 3, new-edge-1 and 2 | 22-25 / 26-30 / 31 | `--load-listeners 20` |
+| Forwarder slots | replace-forwarder, autoscale-forwarders | `--set own_cpus=1 --set leave_out=lon-edge-4,new-edge-3` | 13: as above with lon-dist-c and new-dist-c | 26-27 / 28-30 / 31 | `--load-listeners 10` |
+| Every tier | upgrade-all, upgrade-back | `--set own_cpus=1 --set slots=lon-edge-4` | 13: both contributors, the four forwarders, lon-edge-1 to 4, new-edge-1 to 3 | 26-27 / 28-30 / 31 | `--load-listeners 10` |
+
+The three extra cells (opus-2.5, client loss, WAN loss) run in their scenario's group. The crowd sizes keep
+the tools' CPUs at about half of what proof 2 saturated (40 two-path listeners an edge on six edges filled
+four shared CPUs). Interrupts and the veths' soft interrupts still run on any CPU; the floor of 6.1 is
+measured again in this layout (lab-parity Q1 with `own_cpus=1`).
+
 ## 7. Deploy and tooling: the Linode proving run
 
 ```sh
