@@ -8,15 +8,28 @@ collect its records, take it down.
     linode-stall-hunt.py down [--dry]
 
 Design: docs/plans/resilient-mesh/D-hunt.md, section 7 (as revised after the
-wave 9 run). The lab is deploy/low-latency/topology-hunt.json: 20
-dedicated-CPU instances, $1.296 an hour, two billed hours ($2.59; $2.70 with
-two replacement instances). Its questions, in order: on a fresh deploy of
-the build with the fan-out fix, does any edge still stop for 100 ms or more
-in the referee's first 1 ms Opus session, with UDP clients arriving at every
-edge; for each stop that remains, was the audio class thread runnable and
-not run (the hypervisor or the guest kernel) or blocked in our code (and on
-which wait); and do the arena warm-up, first touch of the guest's memory,
-the codec of the first session and listener churn change it.
+wave 9 run and the wave 9 4K run). The lab is
+deploy/low-latency/topology-hunt.json: 24 dedicated-CPU instances, $1.512
+an hour, two billed hours ($3.02; $3.13 with two replacement instances).
+Its questions, in order: on a fresh deploy of the build with the fan-out
+fix, does any edge still stop for 100 ms or more in the referee's first
+1 ms Opus session, with UDP clients arriving at every edge; for each stop
+that remains, was the vCPU not run, was an av-mesh thread in the kernel
+with interrupts off, or was it blocked in our code (and on which wait); do
+the arena warm-up, first touch of the guest's memory and listener churn
+change it; and (the wave 9 4K run: whole-node stops of 1.6 to 8.5 s on both
+New York forwarders, none with GSO off) do the senders' UDP GSO or the
+receivers' UDP GRO make them, for 4K at 25 and 80 Mbit/s and for the first
+audio session, in London and New York.
+
+Every node is sampled by the referee's own samplers (needletail-compare
+scripts/compare/compare-run.py `start_samplers` and `collect_samplers`,
+loaded by path from NEEDLETAIL_COMPARE_ROOT, never copied): NODE.sys.T.log
+at 1 s (per-CPU /proc/stat, interrupts, softirqs, softnet_stat, each
+av-mesh and av-contrib thread's raw stat), NODE.heartbeat.T.log (a
+SCHED_FIFO 99 heartbeat pinned to each vCPU, its late wakes), NODE.nic.T.txt
+(ethtool), NODE.meshlocal.T.log (/api/mesh/local each second) and the rest
+of the referee's files, in the run's samplers/.
 scripts/compare/hunt-report.py reads what `collect` leaves in
 target/stall-hunt/<run id>/ and applies the decision rules, which are fixed
 before the run.
@@ -48,8 +61,9 @@ refuses to start otherwise, before anything is billed.
 
 Timeline, minutes after `up` returns:
    0  `lab hosts`; on every node, first command: needletail-nodecheck watch;
-      push (the fresh deploy); on every mesh node the 1 s sampler
-      (scripts/hunt-sampler.sh); the route survey; media to the hosts
+      push (the fresh deploy); the referee's samplers on every mesh node,
+      source and view host; the route survey; media to the hosts (the 4K
+      clips and ffmpeg on the source host)
   15  the touched edges (half of them) touch all their free memory and hold it
   18  the referee's 20 s burn on the mesh nodes
   19.5 the touched edges give their memory back
@@ -58,14 +72,20 @@ Timeline, minutes after `up` returns:
   24  S2 PCM 1 ms, 70 s
   28  S3 listener churn on every edge: 3 rounds of 50 s, 12 s apart
   35  the edge that was not run most is replaced (remove, grow, hosts,
-      watch, push --nodes, sampler)
-  44  every forwarder and edge restarted at once (deploy restart --roles)
-  46  S4 PCM 1 ms, 70 s (the repeat, PCM first)   50  S5 Opus Custom 1 ms, 70 s
-  54  S6 Opus Custom 1 ms, 420 s   63  S7 PCM 1 ms, 420 s   72  S8 Opus 2.5 ms, 300 s
-  82  collect (samplers and watches stopped first; the deploy tool's collect
-      too: every node's journal since boot, its API and samplers into the
-      run archive); `lab hosts` again
-  88  down (inside the second billed hour; the watchdog is at 1.9 h)
+      watch, push --nodes, the referee's samplers)
+  44  M1, 57 M2, 70 M3, 83 M4: the GSO/GRO matrix, the defaults first (M1
+      sender GSO on, receiver GRO on; M2 GSO off; M3 GRO off; M4 both off).
+      Each: `deploy push` with relay_video_gso and client_udp_gso (the
+      senders) and relay_video_gro (the receivers) set, which restarts
+      every mesh node; the first audio session of those processes (Opus
+      Custom 1 ms, 120 s, the UDP probes with needletail-udp-client --gro
+      as the combination says); then 4K at 25 and at 80 Mbit/s, 120 s
+      each (the referee's clip over RTMP to the contributor, one HTTP/3
+      LL-HLS probe a view host through its site's entry)
+  96  collect (the referee's samplers collected, the watches stopped; the
+      deploy tool's collect too: every node's journal since boot, its API
+      and samplers into the run archive); `lab hosts` again
+ 101  down (inside the second billed hour; the watchdog is at 1.95 h)
 A session is the referee's: the contributor restarted, the AEP1 sender at
 the next 64 s boundary (with --lateness-journal), listeners from 12 s after
 it. /api/hops is never read inside a session. A step that fails is
@@ -80,6 +100,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import io
 import json
 import os
@@ -92,6 +113,7 @@ import sys
 import tarfile
 import threading
 import time
+import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import archived_run  # noqa: E402
@@ -109,9 +131,9 @@ TOPOLOGY = ROOT / "deploy" / "low-latency" / "topology-hunt.json"
 STATE = common.QUALIFICATION_ROOT / "hunt-lab.json"
 OUT = ROOT / "target" / "stall-hunt"
 # The lab's own ceilings and watchdog (7.1).
-MAX_HOURLY_USD = 1.50
-MAX_NODES = 24
-WATCHDOG_HOURS = 1.9
+MAX_HOURLY_USD = 1.60
+MAX_NODES = 26
+WATCHDOG_HOURS = 1.95
 BILLED_HOURS = 2
 # Instances made anew in a run, each billed an hour: the edge replaced at
 # REPLACE_MINUTE, and one grow tried again after a refusal part-way.
@@ -150,19 +172,42 @@ CONFIGS = {
 }
 # The sessions, each the referee's (a role says what it is for): the first
 # session on the fresh deploy; the PCM session after it, as the referee
-# runs it; listener churn; the repeat after every forwarder and edge was
-# restarted, PCM first; the steady probes of 3.1 (420 s, the referee's
-# change probes are 360 s or more) and the 2.5 ms lane.
+# runs it; listener churn. The repeat after a restart is the GSO/GRO
+# matrix's (MATRIX): each combination's first audio session is the first
+# of new processes. (The steady 420 s sessions and the 2.5 ms lane of the
+# plan before the 4K run were left out for the matrix within two billed
+# hours; 3.1's acceptance is the proving run's.)
 SESSIONS = (
     {"name": "S1", "minute": 20, "config": "opus-1", "seconds": 70, "role": "first"},
     {"name": "S2", "minute": 24, "config": "pcm-1", "seconds": 70, "role": "second"},
     {"name": "S3", "minute": 28, "config": "opus-1", "seconds": 50, "role": "churn"},
-    {"name": "S4", "minute": 46, "config": "pcm-1", "seconds": 70, "role": "repeat-first"},
-    {"name": "S5", "minute": 50, "config": "opus-1", "seconds": 70, "role": "repeat-second"},
-    {"name": "S6", "minute": 54, "config": "opus-1", "seconds": 420, "role": "steady"},
-    {"name": "S7", "minute": 63, "config": "pcm-1", "seconds": 420, "role": "steady"},
-    {"name": "S8", "minute": 72, "config": "opus-2.5", "seconds": 300, "role": "steady"},
 )
+# The wave 9 4K run (notes-stage2, "Wave 9 4K on Linode"): whole-node stops
+# on both New York forwarders at 25 to 120 Mbit/s, none with GSO off. Each
+# combination of the senders' UDP GSO (relay_video_gso on the contributor
+# and the relays, client_udp_gso on the edges' client fan-out) and the
+# receivers' UDP GRO (relay_video_gro on the relays' and edges' video
+# sockets, needletail-udp-client --gro at the listeners), the defaults
+# first, then each one off, then both: a push that restarts every mesh
+# node, the first audio session of those processes, then 4K at each rung.
+MATRIX = (
+    {"name": "M1", "minute": 44, "gso": True, "gro": True},
+    {"name": "M2", "minute": 57, "gso": False, "gro": True},
+    {"name": "M3", "minute": 70, "gso": True, "gro": False},
+    {"name": "M4", "minute": 83, "gso": False, "gro": False},
+)
+MATRIX_SECONDS = 120
+MATRIX_AUDIO = "opus-1"
+VIDEO_RUNGS = ("2160p25", "2160p80")
+# The referee's 4K lane: stream 1, RTMP into the contributor, its clips
+# (a rung's directory) and indexes; COMPARE_CLIPS as the referee names it.
+VIDEO_STREAM = 1
+VIDEO_RTMP_PORT = 19350
+VIDEO_WARM_S = 12
+CLIPS = os.environ.get("NEEDLETAIL_HUNT_CLIPS", "clips6-full")
+# A combination's push (skip bootstrap and binaries; every mesh node
+# staged and activated, parents first), at worst.
+APPLY_S = 180
 # Listener churn (the churn session): every listener of every view host
 # joins at once, for a round, then leaves; the next round 12 s later.
 CHURN_ROUNDS = 3
@@ -174,9 +219,8 @@ TOUCH_MINUTE = 15
 BURN_MINUTE = 18
 RELEASE_MINUTE = 19.5
 REPLACE_MINUTE = 35
-RESTART_MINUTE = 44
-COLLECT_MINUTE = 82
-DOWN_MINUTE = 88
+COLLECT_MINUTE = 96
+DOWN_MINUTE = 101
 BURN_SECONDS = 20
 # Listeners start this long after the sender's START, as the referee's do.
 LISTEN_AFTER_START_S = 12
@@ -187,15 +231,13 @@ TOUCH_LEAVE_MB = 384
 TOUCH_RATE_MB_S = 1024
 STALL_JOURNAL_CAPACITY = 65_536
 HOP_JOURNAL_LARGE = 2_097_152
-# An edge's "not run" milliseconds count the sampler's seconds in which its
-# audio class thread waited runnable this long or longer.
+# An edge's "not run" milliseconds count its heartbeats' late wakes of this
+# long or longer (the referee's FIFO 99 heartbeat on each vCPU).
 NOT_RUN_SECOND_MS = 50.0
-# The sampler (one a mesh node) and how it finds the service and its class
-# thread: {role: (process, class thread's name, HTTP port, slow path)}.
-SAMPLER = SCRIPTS / "hunt-sampler.sh"
-SAMPLED = {"contributor": ("av-contrib", "audio-hot-0", 19443, "/api/pacing"),
-           "distributor": ("av-mesh", "needletail-fast", HTTP_PORT, ""),
-           "edge": ("av-mesh", "needletail-fast", HTTP_PORT, "")}
+# The referee's samplers (needletail-compare scripts/compare/compare-run.py,
+# compare-cloudflare 472fb47 or later): loaded by path, never copied.
+REFEREE_RUN = pathlib.Path("scripts") / "compare" / "compare-run.py"
+REFEREE_SAMPLED_ROLES = ("contributor", "backbone", "distributor", "edge", "livekit", "load")
 # av-mesh's switch of the audio class thread's arena warm-up (MB; 0: none):
 # the no_arena_warm arm runs without it.
 ARENA_FLAG = "--relay-class-arena-warm-mb"
@@ -306,17 +348,65 @@ def sessions_end_minute() -> float:
     return round(end, 2)
 
 
+def matrix_audio(combination: dict) -> dict:
+    """A combination's first audio session, as a session of SESSIONS."""
+    return {"name": f"{combination['name']}-A", "minute": combination["minute"],
+            "config": MATRIX_AUDIO, "seconds": MATRIX_SECONDS, "role": "matrix-first",
+            "gro": combination["gro"], "combination": combination_of(combination)}
+
+
+def combination_of(combination: dict) -> dict:
+    return {"name": combination["name"], "gso": combination["gso"], "gro": combination["gro"]}
+
+
+def video_seconds() -> float:
+    """One rung, at worst: the contributor's restart, the feed's warm-up,
+    the probes and their end."""
+    return 5 + VIDEO_WARM_S + MATRIX_SECONDS + ROUND_OVERHEAD_S + 5
+
+
+def combination_seconds(combination: dict) -> float:
+    return (APPLY_S + session_seconds(matrix_audio(combination))
+            + len(VIDEO_RUNGS) * video_seconds())
+
+
+def matrix_end_minute() -> float:
+    """When the last combination has ended at worst (each at its minute
+    or when the one before it ended)."""
+    end = sessions_end_minute()
+    for combination in MATRIX:
+        end = max(end, combination["minute"]) + combination_seconds(combination) / 60
+    return round(end, 2)
+
+
+def combination_settings(combination: dict) -> list[str]:
+    """The deploy settings of a combination (`--set` values): the senders'
+    GSO, video (contributor, relays, the edges' fast-lane video) and the
+    edges' audio fan-out to clients; the receivers' video GRO."""
+    on = {True: "true", False: "false"}
+    return [f"relay_video_gso={on[combination['gso']]}",
+            f"client_udp_gso={on[combination['gso']]}",
+            f"relay_video_gro={on[combination['gro']]}"]
+
+
+def describe(combination: dict) -> str:
+    return (f"{combination['name']}: sender GSO {'on' if combination['gso'] else 'off'}, "
+            f"receiver GRO {'on' if combination['gro'] else 'off'}"
+            + (" (the defaults)" if combination["gso"] and combination["gro"] else ""))
+
+
 def timeline(hunt: "Hunt") -> list[dict]:
     """The steps of a run in order: {"minute", "name", "run"}; a step never
     starts before its minute (counted from the return of `up`). Nothing
     but the deploy, the watch and the sampler comes before the first
     session's listeners except what the referee's lab did (its idle and its
-    burn) and the touched arm's touch."""
+    burn) and the touched arm's touch. The GSO/GRO matrix follows the
+    replacement."""
     steps = [
         {"minute": 0, "name": "hosts", "run": lambda: hunt.hosts("first")},
         {"minute": 0, "name": "watch", "run": hunt.watch},
         {"minute": 0, "name": "push", "run": hunt.push},
-        {"minute": 0, "name": "sampler", "run": hunt.sample},
+        {"minute": 0, "name": "the referee's samplers", "run": hunt.sample},
         {"minute": 0, "name": "survey", "run": hunt.survey_start},
         {"minute": 0, "name": "media", "run": hunt.media},
         {"minute": TOUCH_MINUTE, "name": "touch the touched edges", "run": hunt.touch},
@@ -328,9 +418,9 @@ def timeline(hunt: "Hunt") -> list[dict]:
     steps += [step for step in sessions if step["minute"] < REPLACE_MINUTE]
     steps.append({"minute": REPLACE_MINUTE, "name": "replace the edge not run most",
                   "run": hunt.replace_worst})
-    steps.append({"minute": RESTART_MINUTE, "name": "restart every forwarder and edge",
-                  "run": hunt.restart_mesh})
-    steps += [step for step in sessions if step["minute"] > RESTART_MINUTE]
+    steps += [{"minute": combination["minute"], "name": describe(combination),
+               "run": lambda combination=combination: hunt.combination(combination)}
+              for combination in MATRIX]
     steps.append({"minute": COLLECT_MINUTE, "name": "collect", "run": hunt.collect})
     steps.append({"minute": DOWN_MINUTE, "name": "down", "run": hunt.down})
     return steps
@@ -362,12 +452,16 @@ def sender_command(config: str, target: str, seconds: int, directory: str) -> st
             f">{directory}/sender.json 2>{directory}/sender.log </dev/null & echo $START")
 
 
-def udp_probe_command(name: str, entry: str, config: str, seconds: int, tag: str) -> str:
+def udp_probe_command(name: str, entry: str, config: str, seconds: int, tag: str,
+                      gro: bool = True) -> str:
     """One full UDP probe, the referee's: needletail-udp-client with its
-    arrivals and parts, then `ntcmp udp-ingest` for the per-unit records."""
+    arrivals and parts, then `ntcmp udp-ingest` for the per-unit records.
+    `gro` False: the client's socket without UDP GRO (--gro false; the
+    matrix's receivers)."""
     cfg = CONFIGS[config]
     return (f"( date +%s.%N >{name}.launch; /usr/local/bin/needletail-udp-client "
             f"--entry https://{entry}:{HTTP_PORT} --stream {cfg['stream']} "
+            + ("" if gro else "--gro false ") +
             f"--tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
             f"--session {tag}-{name} --arrivals {name}.arrivals.csv "
             f"--write-parts {name}.parts.bin >{name}.uc.json 2>{name}.uc.err; "
@@ -410,6 +504,31 @@ def load_command(name: str, listeners: int, sample: int, edges: list[str],
             f">{name}.out 2>{name}.err )")
 
 
+def video_sender_command(rung: str, target: str, seconds: int, directory: str) -> str:
+    """The referee's 4K lane (compare-run.py Lane.start, "nt"): its clip of
+    `rung` as FLV, without audio, over RTMP into the contributor, for
+    `seconds`, detached; an earlier feed is stopped first."""
+    feed = (f"timeout {seconds} ntcmp flv --clip {REMOTE_MEDIA}/clips/{rung} --no-audio | "
+            "ffmpeg -hide_banner -loglevel warning -nostdin -f flv -i pipe:0 -c copy -f flv "
+            f"rtmp://{target}:{VIDEO_RTMP_PORT}/live/needletail-lab")
+    # The source host runs no other ntcmp (its probes are on the view
+    # hosts): `pkill -x` by name, never -f, which would match this shell.
+    return (f"mkdir -p {directory} && cd {directory} && {{ pkill -x ffmpeg; pkill -x ntcmp; true; }} && "
+            f"(setsid nohup sh -c {shlex.quote(feed)} >video-{rung}.log 2>&1 </dev/null &)")
+
+
+def video_probe_command(name: str, entry: str, rung: str, seconds: int, tag: str) -> str:
+    """The referee's 4K probe (compare-run.py Lane.probe, "nt", "h3"): an
+    HTTP/3 LL-HLS reader of stream 1 through the site's entry, eight part
+    requests in flight, measured by the rung's index."""
+    return (f"ntcmp hls --lane nt-h3 --mode chase --window 8 --http3 "
+            f"--url 'https://{entry}:{HTTP_PORT}/live/{VIDEO_STREAM}/master.m3u8"
+            f"?sid={tag}-{name}-{{i}}' --ca {CA} --server-name {SERVER_NAME} "
+            f"--index {REMOTE_MEDIA}/index/{rung}.index.json --duration {seconds} "
+            f"--report {name}.json --label {tag} --count 1 --frames {name}.csv "
+            f">{name}.log 2>&1")
+
+
 def listener_script(directory: str, rounds: list[list[str]], gap_s: int) -> str:
     """A host's probes of one session, round by round: each round's all at
     once, in the background, its start written to rounds.txt; the next
@@ -435,8 +554,9 @@ def touch_command() -> str:
     TOUCH_LEAVE_MB, or twice the zones' high watermarks when that is more:
     the kernel then has no reason to reclaim or swap for the touch. The
     mark (`touch <unix> <MB> <MemFree MB> <margin MB>`) and the pid are
-    kept beside it."""
-    return (f"mkdir -p {REMOTE} && cd {REMOTE} && "
+    kept beside it, and /proc/vmstat as the touch starts
+    (vmstat-touch.txt: the referee's samplers take no swap counters)."""
+    return (f"mkdir -p {REMOTE} && cd {REMOTE} && cat /proc/vmstat >vmstat-touch.txt && "
             "set -- $(awk -v least=" + str(TOUCH_LEAVE_MB) + " '"
             "FNR == NR && /^MemFree:/ { free = int($2 / 1024) } "
             "FNR != NR && $1 == \"high\" { high += $2 } "
@@ -457,19 +577,26 @@ def release_command() -> str:
             "echo \"released $(date +%s.%N) $F\" >>touch-marks.txt")
 
 
-def sampler_command(role: str, address: str) -> str:
-    """The node's 1 s sampler (scripts/hunt-sampler.sh, sent beside it),
-    started detached; an earlier one of this node is stopped first. It
-    needs curl and jq (the deploy's bootstrap installs jq; curl is in the
-    image, else installed here)."""
-    process, comm, port, slow = SAMPLED[role]
-    return (f"mkdir -p {REMOTE} && cd {REMOTE} && "
-            "{ command -v curl >/dev/null || DEBIAN_FRONTEND=noninteractive "
-            "apt-get install -y -q curl >/dev/null; } && "
-            "{ [ -f sampler.pid ] && kill $(cat sampler.pid) 2>/dev/null; true; } && "
-            f"(setsid nohup sh {REMOTE}/sampler.sh {REMOTE} {process} {comm} "
-            f"https://{address}:{port} {slow or chr(39) * 2} >sampler.log 2>&1 </dev/null & "
-            "echo $! >sampler.pid)")
+def referee_samplers(root: pathlib.Path | None = None):
+    """The referee's compare-run.py (needletail-compare, NEEDLETAIL_COMPARE_ROOT),
+    loaded by path as a module of its own: its `start_samplers` and
+    `collect_samplers` are called as they are. It imports small_mesh_common,
+    which is this checkout's (already loaded here) and compare_lab.py from
+    its own directory; sys.path is restored after."""
+    path = (root or compare_root()) / REFEREE_RUN
+    if not path.is_file():
+        raise RuntimeError(f"{path} is missing: the referee's samplers")
+    saved = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location("referee_compare_run", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = saved
+    for name in ("start_samplers", "collect_samplers"):
+        if not callable(getattr(module, name, None)):
+            raise RuntimeError(f"{path} has no {name}")
+    return module
 
 
 def node_overrides(topology: dict) -> dict:
@@ -858,19 +985,51 @@ class Hunt:
         if self.deploy(*args) != 0:
             raise RuntimeError("deploy push failed")
 
+    def sampled(self, names: list[str] | None = None) -> list[str]:
+        """The nodes the referee's samplers take: every node of its roles
+        (the mesh, the source and view hosts; no bare node)."""
+        return [name for name in (sorted(self.nodes) if names is None else names)
+                if self.nodes[name]["role"] in REFEREE_SAMPLED_ROLES]
+
+    def referee_session(self, names: list[str]):
+        """What the referee's start_samplers and collect_samplers take of a
+        session: its nodes and its directory (they write samplers/ there)."""
+        return types.SimpleNamespace(nodes={name: self.nodes[name] for name in names},
+                                     dir=self.out(), name=self.run_id)
+
     def sample(self, names: list[str] | None = None) -> None:
-        """The 1 s sampler on every mesh node (or on `names`): the class
-        thread's schedstat and switches, every thread's policy and CPU,
-        vmstat, MemFree and the fast plane's counters each second, the
-        stall journal every ten (D-hunt.md 7)."""
-        names = self.mesh if names is None else names
+        """The referee's samplers (compare-run.py start_samplers) on every
+        node it samples (or on `names`): NODE.sys.T.log at 1 s (per-CPU
+        /proc/stat, interrupts, softirqs, softnet_stat, every av-mesh and
+        av-contrib thread's raw stat), a SCHED_FIFO 99 heartbeat pinned to
+        each vCPU (NODE.heartbeat.T.log), /api/stats and /api/mesh/local
+        each second, and NODE.nic.T.txt (ethtool) now. They run until
+        collect_samplers."""
+        names = self.sampled(names)
+        if self.runner.dry:
+            self.runner.say(f"# the referee's samplers: {relative(compare_root() / REFEREE_RUN)}"
+                            f" start_samplers on {', '.join(names)} (sys, heartbeat, stats, "
+                            "meshlocal; nic now) into samplers/")
+            return
+        module = referee_samplers()
+        sampled = module.start_samplers(self.referee_session(names))
+        self.runner.journal("referee-samplers", action="start",
+                            nodes=[item["name"] for item in sampled])
 
-        def start(name: str) -> None:
-            self.runner.send_file(name, SAMPLER, f"{REMOTE}/sampler.sh", mode="644")
-            self.runner.ssh(name, sampler_command(self.nodes[name]["role"],
-                                                  self.nodes[name]["public_ipv4"]))
-
-        self.runner.each(names, start)
+    def collect_samplers(self, names: list[str] | None = None) -> None:
+        """The referee's collect_samplers: each node's samplers stopped and
+        their logs fetched into samplers/ (a file a node and kind for each
+        call), and the lab's hosts beside them."""
+        names = self.sampled(names)
+        if self.runner.dry:
+            self.runner.say(f"# the referee's samplers: collect_samplers on {', '.join(names)} "
+                            "(NODE.sys, NODE.heartbeat, NODE.stats, NODE.meshlocal, NODE.stalls "
+                            "into samplers/, hosts.T.txt)")
+            return
+        module = referee_samplers()
+        module.collect_samplers(self.referee_session(names),
+                                [self.nodes[name] for name in names])
+        self.runner.journal("referee-samplers", action="collect", nodes=names)
 
     def survey_start(self) -> None:
         directory = self.out() / ("survey" if not self.survey_dirs
@@ -898,14 +1057,25 @@ class Hunt:
         udp-ingest), its indexes and needletail-load."""
         media = compare_root() / "target" / "compare-media" / "audio"
         indexes = [media / f"{cfg['index']}.index.json" for cfg in CONFIGS.values()]
+        clips = clips_root()
 
         def source(name: str) -> None:
-            self.runner.ssh(name, f"mkdir -p {REMOTE} {REMOTE_MEDIA}/audio")
+            self.runner.ssh(name, f"mkdir -p {REMOTE} {REMOTE_MEDIA}/audio {REMOTE_MEDIA}/clips && "
+                                  "{ command -v ffmpeg >/dev/null || { export "
+                                  "DEBIAN_FRONTEND=noninteractive; apt-get update -q >/dev/null; "
+                                  "apt-get install -y -q ffmpeg >/dev/null; }; }", timeout=900)
             self.runner.rsync_to(name, [media / "audio.s24le"], f"{REMOTE_MEDIA}/audio/")
+            # The 4K lane's clips (each rung a directory) and ntcmp, which
+            # makes their FLV.
+            self.runner.rsync_to(name, [clips / rung for rung in VIDEO_RUNGS],
+                                 f"{REMOTE_MEDIA}/clips/")
+            self.runner.rsync_to(name, [compare_root() / "target" / "ntcmp"], "/usr/local/bin/")
 
         def view(name: str) -> None:
             self.runner.ssh(name, f"mkdir -p {REMOTE} {REMOTE_MEDIA}/index")
-            self.runner.rsync_to(name, indexes, f"{REMOTE_MEDIA}/index/")
+            self.runner.rsync_to(name, indexes + [clips / f"{rung}.index.json"
+                                                  for rung in VIDEO_RUNGS],
+                                 f"{REMOTE_MEDIA}/index/")
             self.runner.rsync_to(name, [compare_root() / "target" / "ntcmp",
                                         mesh_binary("needletail-load")], "/usr/local/bin/")
 
@@ -954,13 +1124,14 @@ class Hunt:
         return [name for name in self.names("edge") if self.nodes[name]["site"] == site]
 
     def listeners(self, host: str, plan: dict, config: str, seconds: int, tag: str,
-                  prefix: str) -> list[str]:
+                  prefix: str, gro: bool = True) -> list[str]:
         """A view host's listeners of one round: the UDP probes through the
-        site's entry, one LL-HLS probe at every edge of the site, and the
-        crowd over every edge of the site."""
+        site's entry (`gro` False: without UDP GRO), one LL-HLS probe at
+        every edge of the site, and the crowd over every edge of the site."""
         site_entry = self.entry(host)
         edges = self.site_edges(host)
-        commands = [udp_probe_command(f"{prefix}uc-{number}", site_entry, config, seconds, tag)
+        commands = [udp_probe_command(f"{prefix}uc-{number}", site_entry, config, seconds, tag,
+                                      gro)
                     for number in range(1, plan.get("udp", 0) + 1)]
         for edge in edges:
             for number in range(1, plan.get("hls_each_edge", 0) + 1):
@@ -982,7 +1153,8 @@ class Hunt:
         rounds = rounds_of(session)
         entry = {"name": name, "role": session["role"], "config": config,
                  "stream": CONFIGS[config]["stream"], "seconds": seconds, "rounds": rounds,
-                 "hosts": {}}
+                 "hosts": {}, **({"combination": session["combination"]}
+                                 if session.get("combination") else {})}
         # As the referee's Audio.start: the contributor restarted, then the
         # sender at the next 64 s boundary.
         self.runner.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
@@ -1002,7 +1174,7 @@ class Hunt:
             host_tag = f"{tag}-{host}"
             script = listener_script(directory, [
                 self.listeners(host, plans[host], config, seconds, host_tag,
-                               f"r{index}-" if rounds > 1 else "")
+                               f"r{index}-" if rounds > 1 else "", session.get("gro", True))
                 for index in range(1, rounds + 1)], CHURN_GAP_S)
             self.runner.ssh(host, script)
             entry["hosts"][host] = {**plans[host], "edges": self.site_edges(host)}
@@ -1013,6 +1185,10 @@ class Hunt:
             entry["probes_to_unix"] = round(launched + listening_seconds(session), 3)
         self.runner.ssh(source, "pkill -x aep1-48k-probe; true", check=False)
         if session["role"] == "first":
+            # The touched edges' /proc/vmstat at the end of the first
+            # session, against vmstat-touch.txt (H4: swap and refaults).
+            self.runner.each(self.touched, lambda name: self.runner.ssh(
+                name, f"cat /proc/vmstat >{REMOTE}/vmstat-after-first.txt", check=False))
             # Once in the run, after the first session has ended, never
             # inside one (a pull allocates 50 to 80 MB on the node); only
             # the session's own stream since its start.
@@ -1021,7 +1197,9 @@ class Hunt:
         self.record["sessions"].append(entry)
         self.period(name, "session", entry.get("probes_from_unix", launched),
                     entry.get("probes_to_unix", launched + listening_seconds(session)),
-                    config=config, role=session["role"])
+                    config=config, role=session["role"],
+                    **({"combination": session["combination"]}
+                       if session.get("combination") else {}))
 
     def wait_for_probes(self, hosts: list[str], directory: str, patience_s: float) -> None:
         deadline = self.clock() + patience_s
@@ -1080,24 +1258,25 @@ class Hunt:
         """Each edge's "not run" milliseconds in the sessions so far (not in
         the deploy, the burn or the touched arm's touch, which would choose
         a touched edge for its arm): its watch's stopped ticks that ended
-        in a session, and the sampler's seconds in a session in which the
-        audio class thread waited runnable NOT_RUN_SECOND_MS or more."""
+        in a session, and its vCPUs' heartbeats (the referee's, read where
+        they run) late by NOT_RUN_SECOND_MS or more in a session, the most
+        of any vCPU."""
         spans = self.session_spans()
         out = {}
         for name in self.names("edge"):
             try:
                 watch = self.runner.ssh(name, f"cat {REMOTE}/watch.ndjson", timeout=120)
-                rows = self.runner.ssh(name, (
-                    f"jq -c '[.t_us, .pid, .tid, (.schedstat // [])[1]]' {REMOTE}/sampler.ndjson"),
-                    timeout=120)
+                beats = self.runner.ssh(name, "cat /var/tmp/compare-heartbeat.*.log 2>/dev/null; "
+                                              "true", timeout=120)
             except Exception:  # noqa: BLE001 - a node that does not answer has no figure
                 continue
             events = stall_records.dedupe(stall_records.parse_ndjson(watch))
-            delays = [json.loads(line) for line in rows.splitlines() if line.strip()]
             cpus = len(stall_records.cpus_of(events)) or 1
             out[name] = round(sum(stall_records.stopped_ms(events, start, end, cpus)
                                   for start, end in spans)
-                              + stall_records.run_delay_ms(delays, NOT_RUN_SECOND_MS, spans), 3)
+                              + stall_records.heartbeat_late_ms(
+                                  stall_records.parse_heartbeat(beats), NOT_RUN_SECOND_MS, spans),
+                              3)
         return out
 
     def worst(self) -> tuple[str | None, dict[str, float]]:
@@ -1133,8 +1312,8 @@ class Hunt:
         """A new instance in an edge's place: its records fetched, remove,
         grow, hosts, the watch as its first command, `push --nodes` (an
         edge is named by its peers by VLAN address only, which the new
-        instance keeps), and its sampler. The lab's nodes are read again
-        whatever happened."""
+        instance keeps), and the referee's samplers. The lab's nodes are
+        read again whatever happened."""
         try:
             self.replace_instance(name, not_run_ms)
         finally:
@@ -1145,9 +1324,11 @@ class Hunt:
         dry = self.runner.dry
         before = None if dry else self.nodes[name].get("host_uuid")
         address = None if dry else self.nodes[name].get("public_ipv4")
-        # The instance's own records (its watch and sampler above all) go
-        # with it: they are fetched first, beside the new instance's.
+        # The instance's own records (its watch and the referee's samplers
+        # above all) go with it: they are fetched first, beside the new
+        # instance's.
         try:
+            self.collect_samplers([name])
             self.stop_recorders([name])
             self.runner.fetch_directory(name, REMOTE, self.out() / "nodes" / name / "before-replace")
         except Exception as error:  # noqa: BLE001 - a timeout too; the replace goes on
@@ -1184,7 +1365,7 @@ class Hunt:
                 self.sample([name])
                 entry["sampled"] = True
             except Exception as error:  # noqa: BLE001 - named in the step's failure
-                failures.append(f"{name}: no sampler: {error}")
+                failures.append(f"{name}: no samplers: {error}")
         elif not dry:
             failures.append(f"push --nodes {name} failed: the new instance runs the watch only")
         if not dry:
@@ -1192,29 +1373,87 @@ class Hunt:
         if failures:
             raise RuntimeError("; ".join(failures))
 
-    def restart_mesh(self) -> None:
-        """The repeat's start: every forwarder and edge restarted at once
-        (new processes on guests that have run a session; the replaced
-        edge on a new guest); its first session is PCM."""
+    # ---- the GSO/GRO matrix
+
+    def combination(self, combination: dict) -> None:
+        """One combination of the senders' GSO and the receivers' GRO: the
+        push that sets them (every mesh node staged and activated: new
+        processes), the first audio session of those processes, then 4K at
+        each rung. A part that fails is recorded and the next goes on."""
         started = self.clock()
-        status = self.deploy("restart", "--roles", "distributor,edge")
-        self.period("restart", "restart", started, self.clock(), ok=status == 0)
+        status = self.deploy("push", "--skip-bootstrap", "--skip-binaries",
+                             *[item for setting in combination_settings(combination)
+                               for item in ("--set", setting)])
+        self.period(f"{combination['name']}-apply", "apply", started, self.clock(),
+                    ok=status == 0, combination=combination_of(combination))
         if status != 0:
-            raise RuntimeError("deploy restart --roles distributor,edge failed")
+            raise RuntimeError(f"{combination['name']}: deploy push failed: the combination "
+                               "is not measured")
+        failures = []
+        for part, run in [("audio", lambda: self.session(matrix_audio(combination)))] + [
+                (rung, lambda rung=rung: self.video(combination, rung)) for rung in VIDEO_RUNGS]:
+            try:
+                run()
+            except Exception as error:  # noqa: BLE001 - the other parts go on
+                failures.append(f"{part}: {str(error)[-300:]}")
+        if failures:
+            raise RuntimeError(f"{combination['name']}: " + "; ".join(failures))
+
+    def video(self, combination: dict, rung: str) -> None:
+        """4K at one rung for MATRIX_SECONDS: the contributor restarted (as
+        the referee's Lane.start), the clip fed over RTMP, VIDEO_WARM_S to
+        settle, then one HTTP/3 probe a view host through its site's entry."""
+        name = f"{combination['name']}-V{rung.removeprefix('2160p')}"
+        directory = f"{REMOTE}/{name}"
+        tag = f"hunt-{self.run_id}-{name}"
+        contributor = self.names("contributor")[0]
+        source = self.purpose("source")[0]
+        self.runner.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
+                                     "systemctl is-active needletail-contrib.service")
+        self.runner.ssh(source, video_sender_command(
+            rung, self.nodes[contributor].get("vlan_ipv4") or self.nodes[contributor]["public_ipv4"],
+            int(VIDEO_WARM_S + MATRIX_SECONDS + ROUND_OVERHEAD_S + 5), directory))
+        if not self.runner.dry:
+            self.sleep(VIDEO_WARM_S)
+        launched = self.clock()
+        hosts = []
+        for host in self.present(sorted(self.topology["hunt"]["listeners"])):
+            entry = self.entry(host)
+            if entry is None:
+                continue
+            self.runner.ssh(host, listener_script(directory, [[video_probe_command(
+                "v", entry, rung, MATRIX_SECONDS, f"{tag}-{host}")]], 0))
+            hosts.append(host)
+        if not self.runner.dry:
+            self.sleep(MATRIX_SECONDS + 5)
+            self.wait_for_probes(hosts, directory, 60)
+        self.runner.ssh(source, "pkill -x ffmpeg; pkill -x ntcmp; true", check=False)
+        self.record.setdefault("video", []).append(
+            {"name": name, "rung": rung, "combination": combination_of(combination),
+             "hosts": hosts, "from_unix": round(launched, 3)})
+        self.period(name, "video", launched, launched + MATRIX_SECONDS, rung=rung,
+                    combination=combination_of(combination))
+
+    def session_names(self) -> list[str]:
+        """Every directory the sessions and the matrix leave on the hosts."""
+        return ([session["name"] for session in SESSIONS]
+                + [name for combination in MATRIX for name in (
+                    [matrix_audio(combination)["name"]]
+                    + [f"{combination['name']}-V{rung.removeprefix('2160p')}"
+                       for rung in VIDEO_RUNGS])])
 
     # ---- the end
 
     def stop_recorders(self, names: list[str]) -> None:
-        """The sampler and the watch of `names` stopped (SIGTERM: the watch
-        writes what it holds, the sampler pulls the stall journal a last
-        time), waited for up to 15 s, so that their files are whole when
-        fetched."""
+        """The watch of `names` stopped (SIGTERM: it writes what it holds),
+        waited for up to 15 s, so that its file is whole when fetched (the
+        referee's samplers are stopped by collect_samplers)."""
         self.runner.each(names, lambda name: self.runner.ssh(name, (
-            f"cd {REMOTE} 2>/dev/null && P=$(cat sampler.pid watch.pid 2>/dev/null); "
+            f"cd {REMOTE} 2>/dev/null && P=$(cat watch.pid 2>/dev/null); "
             "kill $P 2>/dev/null; n=0; while [ $n -lt 150 ]; do a=; for p in $P; do "
             "kill -0 $p 2>/dev/null && a=1; done; [ -z \"$a\" ] && break; sleep 0.1; "
             "n=$((n + 1)); done; true"),
-            check=False, what="stop the sampler and the watch"))
+            check=False, what="stop the watch"))
 
     def collect(self) -> None:
         """Everything the report reads, into target/stall-hunt/<run id>/."""
@@ -1226,17 +1465,21 @@ class Hunt:
                                   f">{REMOTE}/system.txt 2>&1", check=False,
                             what="the node's system facts >system.txt")
             self.runner.fetch_directory(name, REMOTE, nodes_dir / name,
-                                        exclude=tuple(session["name"] for session in SESSIONS))
+                                        exclude=tuple(self.session_names()))
 
         def sessions(name: str) -> None:
-            for session in SESSIONS:
+            for session in self.session_names():
                 try:
-                    self.runner.rsync_from(name, f"{REMOTE}/{session['name']}/",
-                                           self.out() / "sessions" / session["name"] / name)
+                    self.runner.rsync_from(name, f"{REMOTE}/{session}/",
+                                           self.out() / "sessions" / session / name)
                 except RuntimeError:
                     pass  # a session that did not run left no directory
 
         failures = []
+        try:
+            self.collect_samplers()
+        except Exception as error:  # noqa: BLE001 - the rest is collected all the same
+            failures.append(f"samplers: {str(error)[-300:]}")
         try:
             self.stop_recorders(sorted(self.nodes))
         except RuntimeError as error:
@@ -1418,6 +1661,11 @@ def compare_root() -> pathlib.Path:
                                        str(common.WORKSPACE / "needletail-compare")))
 
 
+def clips_root() -> pathlib.Path:
+    """The referee's 4K clips (a directory a rung) and their indexes."""
+    return compare_root() / "target" / "compare-media" / CLIPS
+
+
 def mesh_binary(name: str) -> pathlib.Path:
     return mesh_root() / "target" / "x86_64-unknown-linux-gnu" / "release" / name
 
@@ -1462,6 +1710,10 @@ def preflight(topology: dict) -> list[str]:
             problems.append(f"the deploy tool has no `collect {flag}`: the watchdog could not "
                             "collect the run before it deletes the lab")
     deploy_source = DEPLOY_TOOL.read_text()
+    for setting in ("relay_video_gso", "relay_video_gro", "client_udp_gso"):
+        if f'"{setting}"' not in deploy_source:
+            problems.append(f"the deploy tool has no setting {setting}: the GSO/GRO matrix "
+                            "cannot set it")
     for setting in DEPLOY_SETTINGS:
         if f'"{setting}"' not in deploy_source:
             problems.append(f"the deploy tool has no setting {setting} (D-hunt.md 2.9)")
@@ -1471,6 +1723,13 @@ def preflight(topology: dict) -> list[str]:
              compare_root() / "target" / "compare-media" / "audio" / "audio.s24le"]
     files += [compare_root() / "target" / "compare-media" / "audio" / f"{cfg['index']}.index.json"
               for cfg in CONFIGS.values()]
+    files += [clips_root() / f"{rung}.index.json" for rung in VIDEO_RUNGS]
+    files += [clips_root() / rung / "video.h264" for rung in VIDEO_RUNGS]
+    try:
+        referee_samplers()
+    except Exception as error:  # noqa: BLE001 - any failure to load them refuses the run
+        problems.append(f"the referee's samplers do not load ({error}): the hunt samples "
+                        "with them (NEEDLETAIL_COMPARE_ROOT, compare-cloudflare 472fb47 or later)")
     for path in files:
         if not path.is_file():
             problems.append(f"missing: {path}")
@@ -1478,6 +1737,11 @@ def preflight(topology: dict) -> list[str]:
         text = help_text([str(mesh_binary("av-mesh")), "--help"])
         problems += [f"av-mesh has no {flag}: {MESH_FLAG_NEEDS[flag]}"
                      for flag in MESH_FLAGS if flag not in text]
+    if mesh_binary("needletail-udp-client").is_file():
+        text = help_text([str(mesh_binary("needletail-udp-client")), "--help"])
+        if "--gro" not in text:
+            problems.append("needletail-udp-client has no --gro: the matrix's listeners cannot "
+                            "turn GRO off")
     if mesh_binary("needletail-nodecheck").is_file():
         text = help_text([str(mesh_binary("needletail-nodecheck")), "touch", "--help"])
         problems += [f"needletail-nodecheck touch has no {flag}: the touched edges' memory "
@@ -1513,9 +1777,20 @@ def print_plan(topology: dict) -> None:
     print(f"{BILLED_HOURS} billed hours ${figures['planned_usd']:.2f}; with {REPLACEMENTS} "
           f"replacement instances ${figures['run_usd']:.2f}; one repeat at most: "
           f"${figures['with_one_repeat_usd']:.2f}")
-    print(f"the sessions end by minute {sessions_end_minute():.1f} at worst; collect at "
-          f"{COLLECT_MINUTE}, down at {DOWN_MINUTE}, the watchdog at minute "
-          f"{WATCHDOG_HOURS * 60:.0f}")
+    print(f"the sessions end by minute {sessions_end_minute():.1f} at worst, the GSO/GRO "
+          f"matrix by minute {matrix_end_minute():.1f}; collect at {COLLECT_MINUTE}, down at "
+          f"{DOWN_MINUTE}, the watchdog at minute {WATCHDOG_HOURS * 60:.0f}")
+    regions = sorted({node["site"] for node in topology["nodes"]
+                      if node["role"] in ("distributor", "edge")})
+    print(f"the GSO/GRO matrix, the defaults first, on the mesh in {', '.join(regions)}: "
+          + "; ".join(f"minute {combination['minute']} {describe(combination)}"
+                      for combination in MATRIX))
+    print(f"  each: deploy push --set {' --set '.join(combination_settings(MATRIX[0]))} (as "
+          f"set), the first audio session ({MATRIX_AUDIO}, {MATRIX_SECONDS} s, "
+          "needletail-udp-client --gro as set), 4K "
+          + " and ".join(f"{rung.removeprefix('2160p')} Mbit/s" for rung in VIDEO_RUNGS)
+          + f" ({MATRIX_SECONDS} s each), the referee's samplers running; at worst "
+          f"{combination_seconds(MATRIX[0]) / 60:.1f} min")
 
 
 def command_plan(args: argparse.Namespace) -> None:

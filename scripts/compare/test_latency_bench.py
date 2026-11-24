@@ -700,6 +700,8 @@ class EdgeLoad(unittest.TestCase):
         self.assertTrue(all(entry.startswith("https://") and entry.endswith(":19444")
                             for entry in entries), entries)
         self.assertEqual(command[command.index("--tls-ca") + 1], bench.lab.ca_file())
+        # needletail-load refuses --edges with --entry.
+        self.assertNotIn("--edges", command)
         rows = [{"t": 1.0, "lon-edge-1": {"subscribers": 64, "load_permille": 700,
                                           "egress_observed_bps": 70e6,
                                           "advertised_free_bps": 15e6}},

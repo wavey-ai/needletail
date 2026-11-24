@@ -196,7 +196,7 @@ def sample(t_us: int, delay_ms: float = 0.0, run_ms: float = 0.0, voluntary: int
             "relay_session.fast_plane.audio_thread_minflt": minflt,
             "relay_session.fast_plane.audio_thread_majflt": 0}
     for key, value in (waits or {}).items():
-        mesh[f"relay_session.edge_clients.{key}"] = value
+        mesh[f"client_udp.fast_lane.{key}"] = value
     return {"t_us": int(t_us), "pid": pid, "tid": tid, "tid_by": "fifo", "cpu": cpu,
             "schedstat": [int(run_ms * 1e6), int(delay_ms * 1e6), 100],
             "csw": [voluntary, 0], "vm": {"pgfault": 1, "allocstall_normal": 0, **(vm or {})},
@@ -566,6 +566,221 @@ class Rules(unittest.TestCase):
         self.assertFalse(elsewhere["fires"])
         self.assertIn("not at the joins", elsewhere["line"])
         self.assertIn("churn is clean", report.rule_churn(table(roles=roles), starts)["line"])
+
+
+def beats(cpus=(0, 1), start_s: float = -5.0, end_s: float = 10.0,
+          late: dict | None = None) -> str:
+    """The referee's heartbeat logs: a line a second on each vCPU from
+    `start_s` to `end_s` (from S), and `late` {(cpu, wake_s): late_ms}."""
+    lines = []
+    second = start_s
+    while second <= end_s:
+        for cpu in cpus:
+            t = int((S + second) * 1e9)
+            lines.append(f"HB {cpu} {t} {t} {t} 0 fifo99")
+        second += 1.0
+    for (cpu, wake_s), late_ms in (late or {}).items():
+        t = int((S + wake_s) * 1e9)
+        lines.append(f"HB {cpu} {t} {t} {t} {int(late_ms * 1e6)} fifo99")
+    return "\n".join(lines) + "\n"
+
+
+def task_line(t_s: float, tid: int, comm: str, stime: int, cpu: int, policy: int = 1,
+              pid: int = 7) -> str:
+    """A `task` line of the referee's sys sampler (/proc/PID/task/TID/stat
+    raw: utime is field 14, stime 15, the CPU 39, the policy 41)."""
+    fields = ["S"] + ["0"] * 10 + ["5", str(stime)] + ["0"] * 23 + [str(cpu), "0", str(policy)]
+    return f"{S + t_s:.6f} S task {pid} {tid} ({comm}) {' '.join(fields)}"
+
+
+def sys_log(start_s: float = -5.0, end_s: float = 10.0, stime_at: dict | None = None,
+            skip: tuple[float, float] | None = None) -> str:
+    """The referee's sys sampler: a second's stat line and the class
+    threads' task lines (audio tid 9 FIFO on CPU 0, video tid 10 on CPU
+    1), stime rising as `stime_at` {second: ticks} says; no line inside
+    `skip`."""
+    lines, second, stime = [], start_s, 0
+    while second <= end_s:
+        if not (skip and skip[0] < second < skip[1]):
+            stime = max([stime] + [ticks for at, ticks in (stime_at or {}).items()
+                                   if at <= second])
+            lines.append(f"{S + second:.6f} S stat cpu0 1 2 3 4 0 0 0 0")
+            lines.append(task_line(second, 9, "needletail-fast", stime, 0))
+            lines.append(task_line(second, 10, "needletail-fast", 0, 1, policy=0))
+        second += 1.0
+    return "\n".join(lines) + "\n"
+
+
+def write_referee(built, name: str, heartbeat: str, system: str, meshlocal: str = "",
+                  nic: str = "") -> None:
+    folder = built.dir / "samplers"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.heartbeat.1795384100.log").write_text(heartbeat)
+    (folder / f"{name}.sys.1795384100.log").write_text(system)
+    if meshlocal:
+        (folder / f"{name}.meshlocal.1795384100.log").write_text(meshlocal)
+    if nic:
+        (folder / f"{name}.nic.1795384000.txt").write_text(nic)
+
+
+class RefereeSamplers(unittest.TestCase):
+    """A stop classified from the referee's samplers (D-hunt.md 7.5 as
+    revised after the 4K run): the heartbeat of the class thread's vCPU
+    and the service threads' system time."""
+
+    def classify(self, heartbeat: str, system: str, mesh: list[dict] = ()) -> dict:
+        return sr.classify_heartbeat(T + 2_000_000, T + 2_600_000, sr.parse_heartbeat(heartbeat),
+                                     sr.parse_sys_tasks(system), list(mesh))
+
+    def test_the_three_classes_and_no_sampler(self):
+        # CPU 0's heartbeat woke 600 ms late over the stop, no stime: not run.
+        late = beats(late={(0, 2.6): 600})
+        found = self.classify(late, sys_log())
+        self.assertEqual(found["class"], "not run")
+        self.assertEqual(found["figures"]["cpu"], 0)
+        self.assertIn("vCPU 0 was not run", found["where"])
+        # Every vCPU at once: the whole guest.
+        found = self.classify(beats(late={(0, 2.6): 600, (1, 2.65): 650}), sys_log())
+        self.assertIn("the whole guest", found["where"])
+        # Late, and the audio class thread's stime rose 60 ticks: in the
+        # kernel with interrupts off.
+        found = self.classify(late, sys_log(stime_at={3.0: 60}))
+        self.assertEqual(found["class"], "kernel, interrupts off")
+        self.assertIn("needletail-fast (9) stime +600 ms", found["where"])
+        # The heartbeat on time: the vCPU ran; blocked in our code, the
+        # wait unnamed without the node's counters.
+        found = self.classify(beats(), sys_log())
+        self.assertEqual(found["class"], "blocked in our code")
+        self.assertIn("no /api/mesh/local counters", found["wait"])
+        # With the counters: a long pass named by its counter, or none.
+        mesh = [{"t_us": T + 1_000_000, "mesh": {
+                    "relay_session.fast_plane.audio_loop_busy_max_us": 500,
+                    "client_udp.fast_lane.fanout_dispatch_max_us": 10}},
+                {"t_us": T + 3_000_000, "mesh": {
+                    "relay_session.fast_plane.audio_loop_busy_max_us": 590_000,
+                    "client_udp.fast_lane.fanout_dispatch_max_us": 580_000}}]
+        found = self.classify(beats(), sys_log(), mesh)
+        self.assertEqual((found["class"], found["wait"]),
+                         ("blocked in our code", "the hand-off to the fan-out threads"))
+        flat = [{"t_us": T + 1_000_000, "mesh": {
+                    "relay_session.fast_plane.audio_loop_busy_max_us": 500}},
+                {"t_us": T + 3_000_000, "mesh": {
+                    "relay_session.fast_plane.audio_loop_busy_max_us": 500}}]
+        self.assertEqual(self.classify(beats(), sys_log(), flat)["class"], "waited for input")
+        # No heartbeat of that vCPU after the stop.
+        self.assertEqual(self.classify(beats(end_s=1.0), sys_log())["class"], "no sampler")
+
+    def test_the_files_parse_as_the_referee_writes_them(self):
+        lines = sr.parse_heartbeat("HB 1 5 1795384000123456789 7 12000000 fifo99\nnoise\n")
+        self.assertEqual(lines, [{"cpu": 1, "t_us": 1795384000123456, "late_us": 12000,
+                                  "policy": "fifo99"}])
+        task = sr.parse_task_stat(task_line(0, 9, "needletail-fast", 42, 3).split(" ", 4)[4])
+        self.assertEqual((task["tid"], task["comm"], task["stime"], task["cpu"], task["policy"]),
+                         (9, "needletail-fast", 42, 3, 1))
+        # A name with a space and parentheses.
+        odd = sr.parse_task_stat("12 (tokio (rt) 1) " + " ".join(["S"] + ["0"] * 38))
+        self.assertEqual((odd["tid"], odd["comm"]), (12, "tokio (rt) 1"))
+        mesh = sr.parse_meshlocal(f"{S:.3f} " + json.dumps(
+            {"client_udp": {"fast_lane": {"fanout_started": 2}},
+             "relay_nodes": [{"relay_session": {"fast_plane": {"audio_loop_busy_max_us": 9}}}]}))
+        self.assertEqual(mesh[0]["mesh"], {"client_udp.fast_lane.fanout_started": 2})
+        self.assertEqual(sr.heartbeat_late_ms(sr.parse_heartbeat(beats(late={(0, 2.0): 300})),
+                                              50.0), 300.0)
+        nic = report.nic_offloads("== eth0 driver\ndriver: virtio_net\n== eth0 offloads\n"
+                                  "generic-receive-offload: on\nrx-udp-gro-forwarding: off "
+                                  "[fixed]\ntcp-segmentation-offload: on\n")
+        self.assertEqual(nic, {"eth0 generic-receive-offload": "on",
+                               "eth0 rx-udp-gro-forwarding": "off"})
+
+    def test_an_edge_s_commit_stop_is_classified_by_the_referee_s_samplers(self):
+        built = Builder({"lon-edge-1": {"role": "edge"}}, [period("S1", "session", 0, 10)],
+                        sessions=[{"name": "S1", "role": "first"}])
+        self.addCleanup(built.close)
+        write_referee(built, "lon-edge-1", beats(late={(0, 2.6): 600}), sys_log())
+        run = built.run()
+        self.assertTrue(run.has_referee("lon-edge-1"))
+        found = run.classify("lon-edge-1", T + 2_000_000, T + 2_600_000, True)
+        self.assertEqual(found["class"], "not run")
+
+    def test_h4_reads_the_vmstat_snapshots_without_the_hunt_s_sampler(self):
+        """With the referee's samplers (no swap counters) a touch is judged
+        from the hunt's /proc/vmstat at the touch and after S1."""
+        built = Builder({"lon-edge-1": {"role": "edge"}, "lon-edge-3": {"role": "edge"}},
+                        [period("touch", "touch", 0, 270), period("S1", "session", 300, 370)],
+                        sessions=[{"name": "S1", "role": "first"}],
+                        arms={"touched": ["lon-edge-1", "lon-edge-3"]},
+                        touch={"nodes": ["lon-edge-1", "lon-edge-3"], "from_unix": S,
+                               "released_unix": S + 270})
+        self.addCleanup(built.close)
+        marks = f"touch {S} 3000 3384 384\nreleased {S + 270} finished\n"
+        for name, after in (("lon-edge-1", 0), ("lon-edge-3", 512)):
+            folder = built.dir / "nodes" / name
+            folder.mkdir(parents=True)
+            (folder / "touch-marks.txt").write_text(marks)
+            (folder / "vmstat-touch.txt").write_text("pswpin 0\npgfault 10\n")
+            (folder / "vmstat-after-first.txt").write_text(f"pswpin {after}\npgfault 99\n")
+        checks = report.touch_checks(built.run())
+        self.assertIsNone(checks["lon-edge-1"]["excluded"])
+        self.assertIn("pswpin +512", checks["lon-edge-3"]["excluded"])
+
+    def test_h8_names_gso_gro_both_or_neither(self):
+        """The GSO/GRO matrix: a combination stops when a mesh node's
+        heartbeat was late 100 ms or more (or its sys sampler stopped)."""
+        def matrix(stopping: set) -> dict:
+            out = {}
+            for name, gso, gro in (("M1", True, True), ("M2", False, True),
+                                   ("M3", True, False), ("M4", False, False)):
+                stops = [{"node": "new-dist-a", "ms": 2000.0, "class": "not run"}] \
+                    if (gso, gro) in stopping else []
+                out[name] = {"gso": gso, "gro": gro, "parts": {"2160p25": {
+                    "stops": stops, "by_site": {"newyork": {"n": len(stops), "ms": 2000.0}}
+                    if stops else {}, "video": {"new-view": {"whole": not stops}}}}}
+            return out
+
+        cases = {frozenset({(True, True), (True, False)}): "SENDER GSO",
+                 frozenset({(True, True), (False, True)}): "RECEIVER GRO",
+                 frozenset({(True, True), (False, True), (True, False)}): "BOTH",
+                 frozenset({(True, True), (False, True), (True, False), (False, False)}):
+                     "EVERY COMBINATION STOPS",
+                 frozenset(): "not reproduced"}
+        for stopping, verdict in cases.items():
+            found = report.rule_gso_gro(matrix(set(stopping)))
+            self.assertIn(verdict, found["line"], stopping)
+        self.assertIn("no GSO/GRO matrix", report.rule_gso_gro({})["line"])
+        differ = report.rule_gso_gro(matrix({(True, True)}), {
+            "lon-dist-a": {"eth0 rx-udp-gro-forwarding": "off"},
+            "tok-dist-a": {"eth0 rx-udp-gro-forwarding": "off"},
+            "new-dist-a": {"eth0 rx-udp-gro-forwarding": "on"}})
+        self.assertIn("NIC offloads differ: eth0 rx-udp-gro-forwarding off but new-dist-a on",
+                      differ["line"])
+
+    def test_the_matrix_table_from_a_run(self):
+        """A combination's 4K rung: a 2 s stop of both vCPUs of a New York
+        forwarder (no stime: not run, the whole guest), and a sampler gap;
+        London clean; the view hosts' wholeness."""
+        combination = {"name": "M1", "gso": True, "gro": True}
+        built = Builder({"new-dist-a": {"role": "distributor", "site": "newyork"},
+                         "lon-dist-a": {"role": "distributor", "site": "london"}},
+                        [{**period("M1-V25", "video", 0, 10), "rung": "2160p25",
+                          "combination": combination}])
+        self.addCleanup(built.close)
+        write_referee(built, "new-dist-a", beats(late={(0, 4.0): 2000, (1, 4.05): 2050}),
+                      sys_log(skip=(1.5, 4.5)))
+        write_referee(built, "lon-dist-a", beats(), sys_log())
+        for host, missing in (("lon-view", 0), ("new-view", 41)):
+            path = built.dir / "sessions" / "M1-V25" / host / "v.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"readers": [{"parts_missing": missing,
+                                                     "stall_events": []}]}))
+        table = report.matrix_table(built.run())
+        part = table["M1"]["parts"]["2160p25"]
+        classes = sorted((stop["node"], stop["class"], stop["whole_guest"])
+                         for stop in part["stops"])
+        self.assertEqual(classes, [("new-dist-a", "not run", True),
+                                   ("new-dist-a", "sampler gap", True)])
+        self.assertEqual(sorted(part["by_site"]), ["newyork"])
+        self.assertEqual({host: item["whole"] for host, item in part["video"].items()},
+                         {"lon-view": True, "new-view": False})
 
 
 class Guards(unittest.TestCase):

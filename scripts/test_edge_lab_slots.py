@@ -769,6 +769,8 @@ class Campaign(Base):
                          "https://10.90.0.11:19444,https://10.90.0.12:19444")
         self.assertEqual(command[command.index("--tls-ca") + 1], "/ca.crt")
         self.assertEqual(command[command.index("--server-name") + 1], lab.SERVER_NAME)
+        # needletail-load refuses --edges with --entry.
+        self.assertNotIn("--edges", command)
 
     def test_the_udp_report_books_a_fault_on_the_edge_left(self):
         out = self.work / "udp"

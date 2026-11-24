@@ -7,12 +7,24 @@ after the wave 9 run), from what scripts/linode-stall-hunt.py collected.
 DIR is a hunt run's directory (target/stall-hunt/<run id>/, or its copy in
 the run archive): hunt.json (periods, sessions with their roles, nodes with
 their addresses and physical hosts, the arms, the replacement),
-nodes/<node>/ (sampler.ndjson of scripts/hunt-sampler.sh, stalls.ndjson of
-the service's /api/stalls, watch.ndjson of needletail-nodecheck watch,
-touch marks, system.txt; the replaced instance's records under
-before-replace/), sessions/<S>/<host>/ (the probes, the crowd's
-intervals.jsonl, rounds.txt, the sender's lateness journal and
-source.start).
+nodes/<node>/ (stalls.ndjson of the service's /api/stalls, watch.ndjson of
+needletail-nodecheck watch, touch marks and vmstat snapshots, system.txt;
+sampler.ndjson of scripts/hunt-sampler.sh in a run of the local lab; the
+replaced instance's records under before-replace/), samplers/ (the
+referee's samplers, compare-run.py collect_samplers: NODE.heartbeat.T.log,
+NODE.sys.T.log, NODE.meshlocal.T.log, NODE.nic.T.txt), sessions/<S>/<host>/
+(the probes, the crowd's intervals.jsonl, rounds.txt, the sender's lateness
+journal and source.start; the 4K probes' v.json of each rung of the
+GSO/GRO matrix).
+
+A stop is classified from the referee's samplers when the run has them
+(stall_records.classify_heartbeat: "not run" when the heartbeat of the
+class thread's vCPU woke late by about the stop's length and no service
+thread's system time rose; "kernel, interrupts off" when it was late and a
+service thread's stime rose; "blocked in our code" when the heartbeat was
+on time, the wait named from /api/mesh/local; "waited for input" when the
+counters show no long pass), else from the hunt's own sampler
+(stall_records.classify).
 
 It prints, in this order:
  1. per node and period (sessions, the time between two of them, the whole
@@ -60,7 +72,14 @@ The rules:
  H6 PCM first: after the restart, the PCM session's stops against the
     Opus session's after it;
  H7 churn: the churn session's stops within 5 s of a round's joins
-    against the rest.
+    against the rest;
+ H8 GSO and GRO (the wave 9 4K run): per combination of the senders' GSO
+    and the receivers' GRO (the defaults first), the mesh nodes' stops of
+    100 ms or more by their heartbeats (the whole guest when every vCPU's
+    heartbeat was late at once; in the kernel when a service thread's
+    stime rose), the sys sampler's gaps, by region, in the first audio
+    session and at each 4K rung, and whether each view host got the 4K
+    whole: which of GSO and GRO makes the stops, or neither.
 """
 
 from __future__ import annotations
@@ -101,8 +120,15 @@ F_NOISE = 1.0
 RATIO = 5.0
 # A churn stop "at a join" begins within this long after a round starts.
 JOIN_WINDOW_S = 5.0
-# The first session of a process: the fresh deploy's, and the repeat's.
-FIRST_OF_PROCESS = ("first", "repeat-first", "repeat-second")
+# The first session of a process: the fresh deploy's, the repeat's (a run
+# before the 4K run), and each GSO/GRO combination's after its push.
+FIRST_OF_PROCESS = ("first", "repeat-first", "repeat-second", "matrix-first")
+# A gap of the referee's sys sampler (one line a second) this long or more
+# is a stop of the whole guest's user space (the 4K run's finding).
+SAMPLER_GAP_MS = 2000.0
+# The NIC offloads that the GSO/GRO question is about (ethtool -k).
+NIC_OFFLOADS = ("generic-segmentation-offload", "generic-receive-offload",
+                "rx-gro-list", "rx-udp-gro-forwarding", "tx-udp-segmentation")
 SPLIT_25_MS = 0.05
 
 
@@ -126,6 +152,7 @@ class Run:
         self._watch: dict[str, list] = {}
         self._journal: dict[str, list] = {}
         self._sampler: dict[str, list] = {}
+        self._referee: dict[tuple[str, str], object] = {}
         self._unpinned: dict[str, str] | None = None
 
     def node_dir(self, name: str) -> pathlib.Path:
@@ -195,12 +222,61 @@ class Run:
         if self._unpinned is None:
             self._unpinned = {}
             for name in self.mesh():
-                for line in self.sampler(name):
+                for line in self.sampler(name) + self.meshlocal(name):
                     threads = sr.mesh_value(line, "tick_threads")
                     pinned = sr.mesh_value(line, "tick_pinned")
                     if threads is not None and pinned is not None and pinned < threads:
                         self._unpinned[name] = f"{pinned} of {threads}"
         return self._unpinned
+
+    def referee_text(self, name: str, kind: str, suffix: str = "log") -> str:
+        """The referee's sampler files of a node and kind, every call's
+        (samplers/NODE.KIND.T.log), in time order, joined."""
+        files = sorted((self.dir / "samplers").glob(f"{name}.{kind}.*.{suffix}"),
+                       key=lambda path: path.name)
+        return "\n".join(path.read_text(errors="replace") for path in files)
+
+    def has_referee(self, name: str) -> bool:
+        return any((self.dir / "samplers").glob(f"{name}.heartbeat.*.log"))
+
+    def heartbeat(self, name: str) -> list[dict]:
+        key = (name, "heartbeat")
+        if key not in self._referee:
+            self._referee[key] = sr.parse_heartbeat(self.referee_text(name, "heartbeat"))
+        return self._referee[key]
+
+    def tasks(self, name: str) -> list[dict]:
+        key = (name, "tasks")
+        if key not in self._referee:
+            self._referee[key] = sr.parse_sys_tasks(self.referee_text(name, "sys"))
+        return self._referee[key]
+
+    def sys_seconds(self, name: str) -> list[int]:
+        key = (name, "sys_times")
+        if key not in self._referee:
+            self._referee[key] = sr.sys_times(self.referee_text(name, "sys"))
+        return self._referee[key]
+
+    def meshlocal(self, name: str) -> list[dict]:
+        key = (name, "meshlocal")
+        if key not in self._referee:
+            self._referee[key] = sr.parse_meshlocal(self.referee_text(name, "meshlocal"))
+        return self._referee[key]
+
+    def nic(self, name: str) -> dict[str, str]:
+        """The node's offloads of NIC_OFFLOADS by interface (`ethtool -k`
+        of its last NIC file): {"eth0 generic-receive-offload": "on"}."""
+        files = sorted((self.dir / "samplers").glob(f"{name}.nic.*.txt"))
+        return nic_offloads(files[-1].read_text(errors="replace")) if files else {}
+
+    def classify(self, edge: str, begin: int, finish: int, trusted: bool) -> dict:
+        """A stop of an edge, by the referee's samplers when the run has
+        them, else by the hunt's own sampler."""
+        if self.has_referee(edge):
+            return sr.classify_heartbeat(begin, finish, self.heartbeat(edge), self.tasks(edge),
+                                         self.meshlocal(edge), self.journal(edge))
+        return sr.classify(begin, finish, self.sampler(edge), self.journal(edge),
+                           self.watch(edge), trusted)
 
     def sampler(self, name: str) -> list[dict]:
         """The node's sampler lines, the replaced instance's included."""
@@ -660,8 +736,7 @@ def edges_table(run: Run) -> dict:
             for begin, finish, ms in gaps:
                 stops.append({"session": name, "role": roles.get(name), "edge": edge,
                               "from_us": begin, "to_us": finish, "ms": ms,
-                              **sr.classify(begin, finish, run.sampler(edge), run.journal(edge),
-                                            run.watch(edge), edge not in unpinned)})
+                              **run.classify(edge, begin, finish, edge not in unpinned)})
         short = {edge: len(gaps) for edge, gaps
                  in commit_gaps(commits, SHORT_STOP_MS, start, end).items()}
         out[name] = {"role": roles.get(name), "seen": sorted(commits), "stops": stops,
@@ -913,6 +988,14 @@ def rule_classes(edges: dict, hosts: dict[str, str | None], replaced: list[dict]
                                  for edge, items in sorted(edges_hit.items()))
                      + (f"; co-hosted: {', '.join(shared)}" if shared else "")
                      + f"; {outcome}")
+    kernel = [stop for stop in stops if stop["class"] == "kernel, interrupts off"]
+    if kernel:
+        fires["kernel"] = True
+        parts.append(f"IN THE KERNEL WITH INTERRUPTS OFF ({len(kernel)}, "
+                     f"{sum(stop['ms'] for stop in kernel):.0f} ms): "
+                     + "; ".join(sorted({stop.get("where", "") for stop in kernel}))
+                     + ": an av-mesh thread's system call or the kernel's work for it (GSO, "
+                       "GRO, softirq), not the host")
     waited = [stop for stop in stops if stop["class"] == "waited for input"]
     if waited:
         fires["input"] = True
@@ -1031,8 +1114,15 @@ def touch_checks(run: Run) -> dict[str, dict]:
             why = "no touch time or first session in the record"
         else:
             pair = sr.around(run.sampler(name), int(touch["from_unix"] * 1e6), span[1])
+            snapshots = (vmstat_of(run.node_file(name, "vmstat-touch.txt")),
+                         vmstat_of(run.node_file(name, "vmstat-after-first.txt")))
+            if pair is None and None not in snapshots:
+                # The referee's samplers take no swap counters: the hunt's
+                # own /proc/vmstat at the touch and after the first session.
+                pair = tuple({"vm": snapshot} for snapshot in snapshots)
             if pair is None:
-                why = "no sampler line before the touch and after the first session"
+                why = ("no sampler line (or vmstat snapshot) before the touch and after the "
+                       "first session")
             else:
                 (vm_a, vm_b) = ((line.get("vm") or {}) for line in pair)
                 grown = {key: int(vm_b.get(key, 0)) - int(vm_a.get(key, 0))
@@ -1044,6 +1134,18 @@ def touch_checks(run: Run) -> dict[str, dict]:
         out[name] = {"excluded": why,
                      "reporting": balloon_reporting(run.node_file(name, "system.txt"))}
     return out
+
+
+def vmstat_of(text: str | None) -> dict | None:
+    """A /proc/vmstat snapshot as {key: value}; None without one."""
+    if not text:
+        return None
+    out = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("-").isdigit():
+            out[parts[0]] = int(parts[1])
+    return out or None
 
 
 def rule_twins(edges: dict) -> dict:
@@ -1100,6 +1202,171 @@ def rule_churn(edges: dict, rounds: dict[str, list[int]]) -> dict:
     return {"fires": fires, "at_join": len(at_join), "elsewhere": len(rest), "line": line}
 
 
+def nic_offloads(text: str) -> dict[str, str]:
+    """{"<interface> <offload>": "on"|"off"} of NIC_OFFLOADS from a node's
+    NIC file (the referee's NIC_INFO: "== eth0 offloads", then ethtool -k)."""
+    out, interface, section = {}, None, None
+    for line in (text or "").splitlines():
+        if line.startswith("== "):
+            words = line[3:].split()
+            interface, section = (words[0], words[1]) if len(words) >= 2 else (None, None)
+            continue
+        if section != "offloads" or ":" not in line:
+            continue
+        key, _, value = line.strip().partition(":")
+        if key in NIC_OFFLOADS:
+            out[f"{interface} {key}"] = value.split()[0] if value.split() else ""
+    return out
+
+
+def node_stops(run: Run, name: str, start: int, end: int) -> list[dict]:
+    """A node's stops of STOP_MS or more inside [start, end] by its
+    heartbeats (sr.heartbeat_stops), each with its class: "kernel,
+    interrupts off" when a service thread on one of its vCPUs had its
+    system time rise by half the stop or more, else "not run" ("whole
+    guest" when every vCPU's heartbeat was late at once); and its sys
+    sampler's gaps of SAMPLER_GAP_MS or more."""
+    beats = run.heartbeat(name)
+    cpus = sorted({beat["cpu"] for beat in beats})
+    out = []
+    for stop in sr.heartbeat_stops(beats, STOP_MS):
+        if not (start <= stop["from_us"] < end):
+            continue
+        hot = [item for cpu in stop["cpus"] for item in sr.kernel_threads(
+            run.tasks(name), cpu, stop["from_us"], stop["to_us"],
+            sr.STIME_SHARE * stop["ms"])]
+        out.append({"node": name, **stop, "whole_guest": len(cpus) > 1 and stop["cpus"] == cpus,
+                    "class": "kernel, interrupts off" if hot else "not run",
+                    "kernel_threads": hot})
+    seconds = [value for value in run.sys_seconds(name) if start - 5_000_000 <= value <= end]
+    for a, b in zip(seconds, seconds[1:]):
+        if (b - a) / 1000 >= SAMPLER_GAP_MS and a < end and b > start:
+            out.append({"node": name, "from_us": a, "to_us": b, "ms": round((b - a) / 1000, 3),
+                        "cpus": cpus, "whole_guest": True, "class": "sampler gap",
+                        "kernel_threads": []})
+    return out
+
+
+def video_wholeness(run: Run, session: str) -> dict[str, dict]:
+    """Each view host's 4K probe of a rung (sessions/<S>/<host>/v.json, the
+    referee's ntcmp report): parts missing, stalls and whether whole."""
+    out = {}
+    for path in sorted((run.dir / "sessions" / session).glob("*/v.json")):
+        try:
+            report = json.loads(path.read_text())
+        except (OSError, ValueError):
+            out[path.parent.name] = {"whole": None}
+            continue
+        readers = report.get("readers") or [report]
+        missing = sum(int(reader.get("parts_missing") or 0) for reader in readers)
+        stalls = sum(len(reader.get("stall_events") or []) for reader in readers)
+        out[path.parent.name] = {"parts_missing": missing, "stalls": stalls,
+                                 "whole": missing == 0 and stalls == 0}
+    return out
+
+
+def matrix_table(run: Run) -> dict:
+    """Per combination of the GSO/GRO matrix (its periods: the first audio
+    session and each 4K rung): every mesh node's heartbeat stops and sys
+    sampler gaps, by region; the audio session's edge commit stops are in
+    the edges table; and each view host's 4K wholeness."""
+    out: dict[str, dict] = {}
+    sites = {name: (run.nodes.get(name) or {}).get("site") for name in run.mesh()}
+    for item in run.periods:
+        combination = item.get("combination")
+        if not combination or item.get("kind") not in ("session", "video"):
+            continue
+        entry = out.setdefault(combination["name"], {
+            "gso": combination["gso"], "gro": combination["gro"], "parts": {}})
+        part = "audio" if item["kind"] == "session" else item.get("rung") or item["name"]
+        start, end = int(item["from_unix"] * 1e6), int(item["to_unix"] * 1e6)
+        stops = [stop for name in run.mesh() if run.has_referee(name)
+                 for stop in node_stops(run, name, start, end)]
+        by_site: dict[str, dict] = {}
+        for stop in stops:
+            slot = by_site.setdefault(sites.get(stop["node"]) or "-", {"n": 0, "ms": 0.0})
+            slot["n"] += 1
+            slot["ms"] = round(slot["ms"] + stop["ms"], 3)
+        entry["parts"][part] = {"session": item["name"], "stops": stops, "by_site": by_site,
+                                **({"video": video_wholeness(run, item["name"])}
+                                   if item["kind"] == "video" else {})}
+    return dict(sorted(out.items()))
+
+
+def rule_gso_gro(matrix: dict, nics: dict[str, dict] | None = None) -> dict:
+    """H8: which of the senders' GSO and the receivers' GRO makes the
+    stops (the wave 9 4K run). A combination "stops" when any mesh node
+    has a heartbeat stop or a sampler gap of 100 ms or more in any of its
+    parts. GSO is the cause when both combinations with it on stop and
+    both without it do not; GRO the same; both when only the one with
+    both off is clean; neither when every combination stops."""
+    if not matrix:
+        return {"fires": False, "line": "H8 (GSO and GRO): no GSO/GRO matrix in the record"}
+
+    def stopped(entry: dict) -> bool:
+        return any(part["stops"] for part in entry["parts"].values())
+
+    state = {(entry["gso"], entry["gro"]): stopped(entry) for entry in matrix.values()}
+    shown = "; ".join(
+        f"{name} GSO {'on' if entry['gso'] else 'off'} GRO {'on' if entry['gro'] else 'off'}: "
+        + (", ".join(f"{part} " + (", ".join(f"{site} {slot['n']} ({slot['ms']:.0f} ms)"
+                                              for site, slot in sorted(item["by_site"].items()))
+                                   or "clean")
+                     + ("" if "video" not in item else " [4K whole at "
+                        + (", ".join(host for host, figure in sorted(item["video"].items())
+                                     if figure.get("whole")) or "none") + "]")
+                     for part, item in entry["parts"].items()))
+        for name, entry in matrix.items())
+    if len(state) < 4:
+        verdict = "not every combination ran: no verdict"
+    elif not any(state.values()):
+        verdict = "no stop in any combination: not reproduced (one repeat, then stop)"
+    elif all(state.values()):
+        verdict = "EVERY COMBINATION STOPS: neither GSO nor GRO; the platform or another cause"
+    elif state[(True, True)] and state[(True, False)] and not state[(False, True)] \
+            and not state[(False, False)]:
+        verdict = "SENDER GSO: the stops come with GSO on and go with it off"
+    elif state[(True, True)] and state[(False, True)] and not state[(True, False)] \
+            and not state[(False, False)]:
+        verdict = "RECEIVER GRO: the stops come with GRO on and go with it off"
+    elif not state[(False, False)] and all(value for key, value in state.items()
+                                            if key != (False, False)):
+        verdict = "BOTH: only with GSO and GRO both off are there no stops"
+    elif not state[(True, True)]:
+        verdict = "the defaults are clean: " + ", ".join(
+            f"GSO {'on' if gso else 'off'} GRO {'on' if gro else 'off'} stops"
+            for (gso, gro), value in sorted(state.items(), reverse=True) if value)
+    else:
+        verdict = "no single cause: " + ", ".join(
+            f"GSO {'on' if gso else 'off'} GRO {'on' if gro else 'off'} "
+            + ("stops" if value else "clean") for (gso, gro), value
+            in sorted(state.items(), reverse=True))
+    kinds = sorted({stop["class"] for entry in matrix.values()
+                    for part in entry["parts"].values() for stop in part["stops"]})
+    line = f"H8 (GSO and GRO): {verdict}" + (f" ({', '.join(kinds)})" if kinds else "") + \
+        f": {shown}"
+    differ = nic_differences(nics or {})
+    if differ:
+        line += "; NIC offloads differ: " + "; ".join(differ)
+    return {"fires": any(state.values()), "state": {f"gso={k[0]},gro={k[1]}": v
+                                                     for k, v in state.items()},
+            "verdict": verdict, "line": line}
+
+
+def nic_differences(nics: dict[str, dict]) -> list[str]:
+    """The nodes whose offloads differ from most nodes', by offload."""
+    out = []
+    keys = sorted({key for offloads in nics.values() for key in offloads})
+    for key in keys:
+        values = {name: offloads.get(key) for name, offloads in nics.items() if key in offloads}
+        if len(set(values.values())) < 2:
+            continue
+        common = max(set(values.values()), key=list(values.values()).count)
+        odd = sorted(name for name, value in values.items() if value != common)
+        out.append(f"{key} {common} but " + ", ".join(f"{name} {values[name]}" for name in odd))
+    return out
+
+
 def acceptance(null: dict, source: dict) -> list[str]:
     """3.1, per component."""
     lines = []
@@ -1130,6 +1397,7 @@ def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
     null = null_table(run, lengths, null_window)
     source = source_table(run)
     edges = edges_table(run)
+    matrix = matrix_table(run)
     names = run.edges()
     arms = run.arms()
     rules = {"H1": rule_fix(edges, names),
@@ -1139,10 +1407,12 @@ def build(run: Run, lengths=(8, 30), null_window=None) -> dict:
              "H4": rule_touch(edges, arms, names, touch_checks(run)),
              "H5": rule_twins(edges), "H6": rule_pcm_first(edges),
              "H7": rule_churn(edges, {name: run.round_starts(name) for name, item
-                                      in edges.items() if item["role"] == "churn"})}
+                                      in edges.items() if item["role"] == "churn"}),
+             "H8": rule_gso_gro(matrix, {name: run.nic(name) for name in run.mesh()})}
     return {"schema": "needletail.hunt-report.v2", "run_id": run.record.get("run_id"),
             "periods": node_periods(run), "unpinned": run.unpinned(), "hosts": cohosting(run),
-            "edges": edges, "silences": silence_table(run), "null": null, "source": source,
+            "edges": edges, "matrix": matrix, "silences": silence_table(run), "null": null,
+            "source": source,
             "rules": rules, "acceptance": acceptance(null, source)}
 
 
@@ -1231,6 +1501,18 @@ def format_report(report: dict) -> str:
                      f"contributor receive to publish p50 {fmt(split['rx_to_publish_p50_us'], 0)} "
                      f"p99 {fmt(split['rx_to_publish_p99_us'], 0)} us")
     lines.append("  " + split_verdict(report["source"]))
+    lines += ["", "the GSO/GRO matrix: the mesh nodes' stops of 100 ms or more (heartbeats) "
+                  "and sampler gaps"]
+    for name, entry in (report.get("matrix") or {}).items():
+        for part, item in entry["parts"].items():
+            lines.append(f"  {name} GSO {'on' if entry['gso'] else 'off'} GRO "
+                         f"{'on' if entry['gro'] else 'off'} {part}: "
+                         + (", ".join(f"{stop['node']} {stop['ms']:.0f} ms {stop['class']}"
+                                      + (" whole guest" if stop.get("whole_guest") else "")
+                                      for stop in item["stops"]) or "no stop")
+                         + ("" if "video" not in item else "; 4K " + (", ".join(
+                             f"{host} {'whole' if figure.get('whole') else 'NOT whole'}"
+                             for host, figure in sorted(item["video"].items())) or "no probe")))
     lines += ["", "7. rules (fixed before the run)"]
     lines += [f"  {rule['line']}" for rule in report["rules"].values()]
     for edge, verdict in sorted(report["rules"]["H1"].get("verdicts", {}).items()):

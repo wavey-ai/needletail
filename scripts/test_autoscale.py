@@ -206,7 +206,11 @@ class Sim(auto.Backend):
                 "subscribers": node["udp"], "hls_sessions": node["hls"],
                 "hls_moved_active": node["moved"], "hls_requests_in_flight": node["reads"],
                 "refusals": node["refusals"], "rebalance_moves": node["moves"],
-                "load_permille": node["load"]}
+                "load_permille": node["load"], "parents_lost": False,
+                # B's gauges, as av-mesh serves them beside these (C 7).
+                "leaving": 0, "single_legs": node["udp"], "legs_by_other": {},
+                "moves_completed": 0, "moves_expired": 0, "moves_taken_back": 0,
+                "redundant_refusals": 0}
         return document
 
     def assignment(self, site: str):
