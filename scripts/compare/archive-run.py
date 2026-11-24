@@ -58,6 +58,7 @@ WHAT = [
     (r"\.(uc|udp)\.json$", "summary", "UDP client report: fast lane, FEC, repair counters", None),
     (r"analysis\.json$", "analysis", "cached analysis of the step (analysis_version inside)", "ms"),
     (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors | socket drops | vm (guest /proc/vmstat, MemFree) | /api/stats", None),
+    (r"samplers/[^/]+\.apinode\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/node JSON (relay_counters, fast lane and tee counters, missed_10s, warm)", None),
     (r"samplers/[^/]+\.meshlocal\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/mesh/local JSON (fast_plane faults, loop lag)", None),
     (r"samplers/[^/]+\.stalls\.\d+\.json$", "node-logs", "the node's stop journal (/api/stalls)", None),
     (r"samplers/[^/]+\.sys\.\d+\.log$", "samples", "1 s raw, 'unix_s S kind ...': per-CPU /proc/stat, /proc/interrupts, /proc/softirqs, /proc/net/softnet_stat, each service thread's /proc/<pid>/task/<tid>/stat (utime, stime, last CPU)", None),
@@ -104,6 +105,8 @@ def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     for path in sorted(samplers.glob("*.log")):
         name = path.name
+        if ".apinode." in name:
+            continue        # kept raw only (see WHAT)
         if ".meshlocal." in name:
             lines = []
             for line in path.read_text(errors="replace").splitlines():
@@ -182,11 +185,20 @@ def iso(unix: float | None) -> str | None:
 
 
 def cmd_create(args) -> None:
-    run = ra.RunArchive.create(args.run_id, "linode-lab", tool=TOOL,
-                               code_paths=[pathlib.Path(p).expanduser() for p in args.code or []],
-                               deploy_settings=json.loads(pathlib.Path(args.settings).read_text())
-                               if args.settings else None,
-                               topology=args.topology)
+    code_paths = [pathlib.Path(p).expanduser() for p in args.code or []]
+    try:
+        # Since resilient-mesh c818421 the lab tool's `up` opens the run under
+        # the lab's id before anything is billed: add to it.
+        run = ra.RunArchive.open(args.run_id, tool=TOOL)
+        if code_paths:
+            run.set_code_heads(code_paths)
+        if args.topology:
+            run.set_topology(args.topology)
+    except ra.ArchiveError:
+        run = ra.RunArchive.create(args.run_id, "linode-lab", tool=TOOL, code_paths=code_paths,
+                                   deploy_settings=json.loads(pathlib.Path(args.settings).read_text())
+                                   if args.settings else None,
+                                   topology=args.topology)
     if args.settings:
         run.add_file(args.settings, f"lab/{pathlib.Path(args.settings).name}", "settings", "deploy settings")
     print(run.path)

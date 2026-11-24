@@ -101,6 +101,8 @@ STATS_SAMPLER = (
     "[ -f /var/tmp/compare-stats.log ] && cat /var/tmp/compare-stats.log >>/var/tmp/compare-stats.carry; "
     "[ -f /var/tmp/compare-meshlocal.log ] && cat /var/tmp/compare-meshlocal.log >>/var/tmp/compare-meshlocal.carry; "
     "rm -f /var/tmp/compare-meshlocal.log; "
+    "[ -f /var/tmp/compare-apinode.log ] && cat /var/tmp/compare-apinode.log >>/var/tmp/compare-apinode.carry; "
+    "rm -f /var/tmp/compare-apinode.log; "
     "cat >/var/tmp/compare-stats.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-stats.pid\n"
     "while true; do\n"
@@ -116,7 +118,10 @@ STATS_SAMPLER = (
     "  echo \"$(date +%%s.%%N) | $udp| sockdrops $drops| vm $vm| $stats\"\n"
     # The node's own mesh view (relay_session.fast_plane: faults and loop lag per class
     # thread), in a file of its own: unix_s, a space, the JSON.
-    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(mesh)s' | tr -d '\\n')\" >>/var/tmp/compare-meshlocal.log; sleep 1\n"
+    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(mesh)s' | tr -d '\\n')\" >>/var/tmp/compare-meshlocal.log\n"
+    # The node's own report (lead, 24 Nov: relay_counters, the fast lane and tee
+    # counters, per-stream missed_10s, the warm figures), in a file of its own.
+    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(node)s' | tr -d '\\n')\" >>/var/tmp/compare-apinode.log; sleep 1\n"
     "done\n"
     "EOS\n"
     "(setsid nohup sh /var/tmp/compare-stats.sh >/var/tmp/compare-stats.log 2>&1 </dev/null &)")
@@ -204,7 +209,8 @@ def start_samplers(session: "Session") -> list[dict]:
     common.parallel(sampled, lambda item: common.ssh(item, SAMPLER, check=False))
     common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor", "edge")],
                     lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item),
-                                                                    "mesh": stats_url(item).replace("/api/stats", "/api/mesh/local")},
+                                                                    "mesh": stats_url(item).replace("/api/stats", "/api/mesh/local"),
+                                                                    "node": stats_url(item).replace("/api/stats", "/api/node")},
                                            check=False))
     common.parallel(sampled, lambda item: common.ssh(item, SYS_SAMPLER + "\n" + HEARTBEAT, check=False))
     (session.dir / "samplers").mkdir(parents=True, exist_ok=True)
@@ -244,6 +250,10 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                          "rm -f /var/tmp/compare-meshlocal.carry /var/tmp/compare-meshlocal.log",
                                    check=False, timeout=300)
             (session.dir / "samplers" / f"{item['name']}.meshlocal.{int(time.time())}.log").write_text(mesh + "\n")
+            node = common.ssh_text(item, "cat /var/tmp/compare-apinode.carry /var/tmp/compare-apinode.log 2>/dev/null; "
+                                         "rm -f /var/tmp/compare-apinode.carry /var/tmp/compare-apinode.log",
+                                   check=False, timeout=300)
+            (session.dir / "samplers" / f"{item['name']}.apinode.{int(time.time())}.log").write_text(node + "\n")
             # The node's own stop journal (per-CPU ticks, each stop classed as
             # stopped, starved or own work), on builds that serve it.
             url = stats_url(item).replace("/api/stats", "/api/stalls")

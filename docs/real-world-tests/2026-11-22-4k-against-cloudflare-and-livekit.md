@@ -22,11 +22,20 @@ A first pass on shared Nanodes is superseded and is not reported.
 
 ## Latest: wave 9 (24 November, morning)
 
-**Wave 9 carried 25 Mbit/s whole to Sydney only and 40 Mbit/s to Tokyo and
-Sydney; no region was whole at 80 or 120 Mbit/s, and the sweep ended there.**
-Wave 5 carried 247 Mbit/s to every region on the same plans. Every frame
-arrived at 25 and 40 Mbit/s. The regions failed the tail rule: a stall of
-0.8 to 2.4 s within the step, where the rule allows 0.5 s over the median.
+**By this record's rule, wave 9 carried nothing whole over UDP, and over
+LL-HLS only Sydney at 25 and 40 Mbit/s.** (The rule: the better of a region's
+two listeners had 99.5% of frames on time and no stall over 500 ms.) No
+region was whole at 80 or 120 Mbit/s, and the sweep ended there. Wave 5
+carried 247 Mbit/s to every region on the same plans.
+
+Every frame arrived at 25 and 40 Mbit/s; what failed was time.
+- Frames on time over UDP at 25 Mbit/s: 94.8% London, 93.2% New York, 98.4%
+  Tokyo, 98.6% Sydney.
+- Each region had a stall of 0.8 to 2.4 s within the step.
+
+Correction, 24 November evening: this section first gave the sweep tool's
+own check (whole at 25 in Sydney, at 40 in Tokyo and Sydney). That check only
+decides when to end the sweep, and it is looser than this record's rule.
 
 What changed since wave 7:
 - **There was no processor regression to recover.** The FLAC audio source of
@@ -102,8 +111,9 @@ What changed since wave 7:
 Two extra steps at 25 Mbit/s, asked for by the lead, used the minutes already
 billed. Both ran with the FLAC audio source off and with the hop journal of
 every mesh node.
-- GSO on, 120 s: whole in London, Tokyo and Sydney. New York failed on the
-  2,680 ms stop above.
+- GSO on, 120 s: whole in Tokyo and Sydney. London had 99.0% of frames on
+  time, just under the 99.5% bar. New York had 96.0%, failing on the 2,680 ms
+  stop above.
 - GSO off (`relay_video_gso=false`, UDP GRO still on), 60 s: whole in all four
   regions, with no sampler gap on any node.
 
