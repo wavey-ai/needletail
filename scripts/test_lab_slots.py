@@ -773,8 +773,10 @@ class Watchdog(Base):
             api = FakeApi()
             state = lab_state(self.tmp, api)
             path = pathlib.Path(self.args.state)
-            # Three labs of one run id, one after another.
-            state["created_unix"] -= index
+            # Labs of one run id, one after another: each made 100 s before
+            # the last (lab_state reads the wall clock, and one second apart
+            # was the same lab to the ledger whenever a pass took a second).
+            state["created_unix"] -= index * 100
             path.write_text(json.dumps(state))
             deadline = state["watchdog_deadline_unix"]
             api.firewalls[9] = {"id": 9, "tags": ["needletail-qualification", api.tag]}
