@@ -52,6 +52,9 @@ def identity(fingerprint: str, numbering: str = "51c0", envelope: str = "0be2",
 
 
 SAME = identity("9f2c41aa7d10e6b3")
+# The track of every audio row of av-mesh's parents[] (av-contrib's
+# OPAQUE_AUDIO_TRACK and COMPACT_TRACK).
+TRACK = "opaque-audio"
 
 
 class ContribSim(Sim):
@@ -60,10 +63,14 @@ class ContribSim(Sim):
     (else it is standing_by and publishes nothing); `ids[git]`: the identity
     a build computes; `xor[name]`: a contributor whose parts differ;
     `plane[forwarder]`: its counters, `rising`: counters that grow at every
-    read; `video`: contributors that publish stream 1."""
+    read; `video`: contributors that publish stream 1. Every `parents[]`
+    row has av-mesh's own shape (its golden src/tests/node_status.json at
+    d718b6d): `track` is the object key's RLS track, "opaque-audio" for a
+    contributor's audio, and `class` says "audio"."""
 
     def __init__(self, clock, tmp):
         super().__init__(clock, tmp)
+        self.track = TRACK
         self.hears = {"contrib-lon": True, "contrib-lon-b": True}
         self.ids = {OLD[0]: SAME, NEW[0]: SAME}
         self.xor: dict[str, str] = {}
@@ -83,6 +90,13 @@ class ContribSim(Sim):
             node = self.nodes_[parent]
             return node["running"] and self.hears[parent] and parent not in self.frozen
         return super().feeds(parent, lease)
+
+    def parent_rows(self, child):
+        out = super().parent_rows(child)
+        for entry in out:
+            for row in entry["streams"]:
+                row["track"] = self.track
+        return out
 
     def windows(self, name: str) -> list[dict]:
         """The last 8 windows of 256 parts closed since the node started
@@ -122,7 +136,10 @@ class ContribSim(Sim):
                     "process": {"boot_id": node["boot"], "args_sha256": f"args-{git}"},
                     "state": state, "ready": state == "ready",
                     "not_ready": [] if state == "ready" else ["no source heard"],
-                    "degraded": down, "identity": copy.deepcopy(self.ids[git]),
+                    # av-contrib names a lane in degraded only while another
+                    # carries: never when it hears no source.
+                    "degraded": down if self.hears[name] else [],
+                    "identity": copy.deepcopy(self.ids[git]),
                     "streams": streams}
         if name in self.patch:
             document = self.patch[name](copy.deepcopy(document))
@@ -267,6 +284,88 @@ class Seen(Base):
         self.assertEqual(cc.redundancy(lab, self.statuses()["lon-dist-b"]), "1 of 2")
 
 
+# One row of av-mesh's parents[].streams[], exactly as its golden
+# src/tests/node_status.json (d718b6d) has it.
+GOLDEN_ROW = {"stream_id": 3001, "track": "opaque-audio", "class": "audio", "source_age_ms": 0,
+              "repair_age_ms": None, "head_object": 5123456, "window_s": 10, "objects_1s": 1000,
+              "objects_10s": 10000, "skipped_10s": 0, "resets_10s": 0, "multi_symbol_10s": 0,
+              "slack_mean_us_1s": 993100, "slack_mean_us_10s": 993000,
+              "slack_min_us_10s": 990800}
+
+
+def golden_parent(address: str, lane_id: str, path: str, age, video_age=None) -> dict:
+    """A first forwarder's parents[] entry of one contributor in av-mesh's
+    shape: its audio row `age` ms old, and with `video_age` a video row."""
+    streams = [{**GOLDEN_ROW, "source_age_ms": age}]
+    if video_age is not None:
+        streams.append({**GOLDEN_ROW, "stream_id": 1, "track": "video", "class": "video",
+                        "source_age_ms": video_age})
+    return {"address": address, "id": lane_id, "path": path, "audio_age_ms": age,
+            "video_age_ms": video_age, "streams": streams}
+
+
+class AvMeshShape(Base):
+    """seen, redundancy and K2 on av-mesh's own parents[] rows: audio by
+    `class`, whatever the track is called."""
+
+    def stale_standby(self, *forwarders):
+        """contrib-lon fresh and contrib-lon-b 5 s stale at `forwarders`."""
+        lon, lon_b = (self.sim.nodes_[name]["vlan"] for name in ("contrib-lon", "contrib-lon-b"))
+        for forwarder in forwarders:
+            self.sim.patch[forwarder] = lambda doc: {
+                **doc, "parents": [golden_parent(lon, "contrib", "primary", 0),
+                                   golden_parent(lon_b, "contrib-b", "secondary", 5000)]}
+
+    def test_a_stale_standby_is_not_seen(self):
+        self.stale_standby("lon-dist-a")
+        lab, status = self.lab(), self.statuses()["lon-dist-a"]
+        self.assertEqual(cc.redundancy(lab, status), "1 of 2")
+        self.assertEqual(cc.seen(lab, status, "contrib-lon-b"), (False, [3001]))
+        self.assertEqual(cc.seen(lab, status, "contrib-lon"), (True, []))
+        before = (self.statuses(), self.planes())
+        _final, problems, _facts = cc.gate_check(lab, "contrib-lon", "contrib-lon-b", FIRSTS,
+                                                 self.statuses(), self.planes(), before, None)
+        self.assertIn("K2: contrib-lon-b is not seen at lon-dist-a for stream(s) [3001]",
+                      problems)
+
+    def test_the_sim_serves_av_mesh_s_track(self):
+        rows = [row for entry in self.sim.doc("lon-dist-a")["parents"] for row in entry["streams"]]
+        self.assertTrue(rows)
+        self.assertEqual({(row["track"], row["class"]) for row in rows}, {(TRACK, "audio")})
+        self.assertEqual(cc.redundancy(self.lab(), self.statuses()["lon-dist-a"]), "2 of 2")
+
+    def test_a_video_row_is_not_audio(self):
+        lon, lon_b = (self.sim.nodes_[name]["vlan"] for name in ("contrib-lon", "contrib-lon-b"))
+        self.sim.patch["lon-dist-a"] = lambda doc: {
+            **doc, "parents": [golden_parent(lon, "contrib", "primary", 0, video_age=0),
+                               golden_parent(lon_b, "contrib-b", "secondary", 0)]}
+        lab, status = self.lab(), self.statuses()["lon-dist-a"]
+        self.assertEqual(cc.redundancy(lab, status), "2 of 2")
+        self.assertEqual(cc.seen(lab, status, "contrib-lon-b"), (True, []))
+
+    def test_the_origin_is_not_killed_while_its_standby_misses_an_ingress(self):
+        self.stale_standby("lon-dist-a")
+        code = self.change("kill", "--node", "contrib-lon", "--gate-timeout-s", "2")
+        self.assertEqual(code, mesh_ops.EXIT_REFUSED)
+        self.assertIn("K2: contrib-lon-b is not seen at lon-dist-a", self.err.getvalue())
+        self.assertEqual((self.out.getvalue(), self.touched()), ("", []))
+
+    def test_an_ingress_is_not_killed_while_its_sibling_misses_a_contributor(self):
+        self.stale_standby("lon-dist-b")
+        code = self.change("kill", "--node", "lon-dist-a", "--gate-timeout-s", "2")
+        self.assertEqual(code, mesh_ops.EXIT_REFUSED)
+        self.assertIn("lon-dist-b sees contributors 1 of 2", self.err.getvalue())
+        self.assertEqual(self.touched(), [])
+
+    def test_a_returned_standby_heard_nowhere_is_not_ready(self):
+        self.sim.restart("contrib-lon-b", OLD)
+        self.stale_standby("lon-dist-a", "lon-dist-b")
+        ok, why, _ = cc.contrib_ready(self.sim, "contrib-lon-b", timeout_s=4, clock=self.clock,
+                                      sleep=self.clock.sleep)
+        self.assertFalse(ok)
+        self.assertIn("contrib-lon-b is not seen at lon-dist-a for stream(s) [3001]", why)
+
+
 # ----------------------------------------------------------------- K1 to K6
 
 class GateTable(Base):
@@ -378,6 +477,24 @@ class GateTable(Base):
         final, _problems, _facts = cc.gate_check(self.lab(), "contrib-lon", None, FIRSTS,
                                                  self.statuses(), self.planes(), None, None)
         self.assertTrue(final and final[0].startswith("K1: contrib-lon is the lab's only"))
+        # Unless unprotected: an outage by choice (K5 and K6 still apply).
+        self.assert_passes(cc.gate_check(self.lab(), "contrib-lon", None, FIRSTS,
+                                         self.statuses(), self.planes(), None, None,
+                                         unprotected=True))
+
+    def test_k3_needs_a_compared_window_of_every_stream_both_publish(self):
+        self.sim.patch["contrib-lon-b"] = lambda doc: {
+            **doc, "streams": [{key: value for key, value in row.items() if key != "windows"}
+                               for row in doc["streams"]]}
+        self.assertIn("K3: parity unknown: no window of stream(s) [3001] closed by both "
+                      "contributors with equal present", self.check()[1])
+        # Windows that never line up (other first parts) compare nothing.
+        self.sim.patch["contrib-lon-b"] = lambda doc: {
+            **doc, "streams": [{**row, "windows": [{**window, "first_part": window["first_part"] + 1}
+                                                   for window in row["windows"]]}
+                               for row in doc["streams"]]}
+        self.assertTrue(any(item.startswith("K3: parity unknown: no window")
+                            for item in self.check()[1]))
 
     def test_the_gate_passes_on_three_polls_in_a_row(self):
         ok, why, evidence = cc.contrib_gate(self.sim, "contrib-lon", clock=self.clock,
@@ -515,6 +632,111 @@ class Kill(Base):
         self.assertIn("lon-dist-a shows contrib-lon's audio 20 ms old", self.err.getvalue())
         self.assertEqual([line.split()[0] for line in self.marks()], ["start", "end"])
 
+    def test_both_contributors_down_and_back(self):
+        """A 6 `contrib-both-down-source-running`: kill --unprotected both,
+        3 s, return both. The first back has nobody to compare with."""
+        self.assertEqual(self.change("kill", "--node", "contrib-lon-b", "--unprotected"), 0,
+                         self.err.getvalue())
+        self.assertEqual(self.change("kill", "--node", "contrib-lon", "--unprotected"), 0,
+                         self.err.getvalue())
+        self.clock.sleep(3)
+        self.assertEqual(self.change("return", "--node", "contrib-lon"), 0, self.err.getvalue())
+        ready = json.loads(sorted(self.sim.evidence_dir.glob("return-contrib-lon-*.json"))[-1]
+                           .read_text())["contributor_ready"]
+        self.assertEqual((ready["alone"], ready["last"]["state"]), (True, "alone"))
+        self.assertEqual(self.change("return", "--node", "contrib-lon-b"), 0, self.err.getvalue())
+        ready = json.loads(sorted(self.sim.evidence_dir.glob("return-contrib-lon-b-*.json"))[-1]
+                           .read_text())["contributor_ready"]
+        self.assertEqual(ready["last"]["state"], "same")
+        self.assertIsNotNone(ready["last"]["windows"]["3001"])
+
+    def test_alone_a_returned_contributor_must_still_be_seen(self):
+        self.assertEqual(self.change("kill", "--node", "contrib-lon-b", "--unprotected"), 0)
+        self.assertEqual(self.change("kill", "--node", "contrib-lon", "--unprotected"), 0)
+        self.sim.row[("lon-dist-b", "contrib-lon")] = {"source_age_ms": 700}
+        self.assertEqual(self.change("return", "--node", "contrib-lon", "--ready-timeout-s", "5"),
+                         mesh_ops.EXIT_STOPPED)
+        self.assertIn("contrib-lon is not seen at lon-dist-b for stream(s) [3001]",
+                      self.err.getvalue())
+
+    def test_a_silent_other_that_is_not_held_down_is_waited_for(self):
+        statuses = self.statuses()
+        statuses["contrib-lon-b"] = None
+        _fatal, waiting, _unsettled, facts = cc.ready_check(
+            self.lab(), "contrib-lon", "contrib-lon-b", FIRSTS, statuses, self.planes(), None)
+        self.assertIn("contrib-lon-b does not answer /api/node: the parts cannot be compared",
+                      waiting)
+        self.assertIsNone(facts["state"])
+
+    def test_unprotected_kills_the_only_contributor(self):
+        alone = [record for record in Sim.nodes(self.sim) if record["name"] != "contrib-lon-b"]
+        with mock.patch.object(self.sim, "nodes", lambda: alone):
+            self.assertEqual(self.change("kill", "--node", "contrib-lon"), mesh_ops.EXIT_REFUSED)
+            self.assertIn("only contributor", self.err.getvalue())
+            self.assertEqual(self.touched(), [])
+            self.assertEqual(self.change("kill", "--node", "contrib-lon", "--unprotected"), 0,
+                             self.err.getvalue())
+            self.clock.sleep(3)
+            self.assertEqual(self.change("return", "--node", "contrib-lon"), 0,
+                             self.err.getvalue())
+
+    def test_an_ingress_kill_on_an_idle_mesh(self):
+        """No source: av-contrib lists no degraded lane, and the kill's end
+        does not wait for one."""
+        self.sim.hears.update({"contrib-lon": False, "contrib-lon-b": False})
+        self.assertEqual(self.change("kill", "--node", "lon-dist-a"), 0, self.err.getvalue())
+        self.assertEqual(self.sim.doc("contrib-lon")["degraded"], [])
+
+    def test_an_ingress_kill_waits_for_a_ready_contributor_s_degraded(self):
+        self.sim.patch["contrib-lon-b"] = lambda doc: {**doc, "degraded": []}
+        self.assertEqual(self.change("kill", "--node", "lon-dist-a"), mesh_ops.EXIT_STOPPED)
+        self.assertIn("contrib-lon-b does not list lon-dist-a in degraded", self.err.getvalue())
+
+    def test_a_kill_that_fails_on_a_running_node_takes_the_hold_away(self):
+        def broken(name):
+            self.sim.calls.append(("kill", name))
+            raise OSError("ssh: connection reset")
+        with mock.patch.object(self.sim, "kill", broken):
+            self.assertEqual(self.change("kill", "--node", "contrib-lon"), mesh_ops.EXIT_STOPPED)
+        self.assertEqual(self.touched(), [("hold_down", "contrib-lon"), ("kill", "contrib-lon"),
+                                          ("release", "contrib-lon")])
+        self.assertIsNone(cc.held_record(self.sim, "contrib-lon"))
+        self.assertIn("still runs on the same boot; the hold was taken away", self.err.getvalue())
+        self.assertEqual([line.split()[0] for line in self.marks()], ["start", "end"])
+
+    def test_a_kill_that_fails_after_the_node_died_says_it_is_held_down(self):
+        def dropped(name):
+            self.sim.nodes_[name]["running"] = False
+            raise OSError("ssh: timed out")
+        with mock.patch.object(self.sim, "kill", dropped):
+            self.assertEqual(self.change("kill", "--node", "contrib-lon"), mesh_ops.EXIT_STOPPED)
+        self.assertIsNotNone(cc.held_record(self.sim, "contrib-lon"))
+        self.assertIn("it is held down (Restart=no); return --node contrib-lon brings it back",
+                      self.err.getvalue())
+        self.assertEqual(self.change("return", "--node", "contrib-lon"), 0, self.err.getvalue())
+
+    def test_a_hold_that_fails_leaves_nothing_behind(self):
+        def refused(name):
+            raise OSError("ssh: connection refused")
+        with mock.patch.object(self.sim, "hold_down", refused):
+            self.assertEqual(self.change("kill", "--node", "contrib-lon"), mesh_ops.EXIT_STOPPED)
+        self.assertIn("nothing was killed; the hold was taken away", self.err.getvalue())
+        self.assertIsNone(cc.held_record(self.sim, "contrib-lon"))
+        self.assertEqual(self.out.getvalue(), "")
+        self.assertTrue(self.sim.nodes_["contrib-lon"]["running"])
+
+    def test_a_clock_too_far_off_refuses_before_the_first_mark(self):
+        self.sim.offsets["contrib-lon"] = 0.2
+        self.assertEqual(self.change("kill", "--node", "contrib-lon-b"), mesh_ops.EXIT_REFUSED)
+        self.assertIn("ms from this host's", self.err.getvalue())
+        self.assertEqual((self.out.getvalue(), self.touched()), ("", []))
+        self.sim.offsets.clear()
+        self.assertEqual(self.change("kill", "--node", "contrib-lon-b"), 0)
+        self.sim.offsets["new-dist-a"] = -0.08
+        self.assertEqual(self.change("return", "--node", "contrib-lon-b"), mesh_ops.EXIT_REFUSED)
+        self.assertEqual(len(self.marks()), 2)
+        self.assertIsNotNone(cc.held_record(self.sim, "contrib-lon-b"))
+
 
 class Freeze(Base):
     def test_freeze_stops_the_service_and_thaws_it(self):
@@ -605,6 +827,14 @@ class Engine(Base):
         self.assertEqual(self.sim.activations(), [("contrib-lon-b", False), ("contrib-lon", False)])
         for name in ("contrib-lon", "contrib-lon-b"):
             self.assertEqual(self.sim.nodes_[name]["build"], NEW)
+
+    def test_a_roll_at_one_of_two_is_refused_before_anything_changes(self):
+        """A 4: the source reaches one contributor only; the other is
+        standing_by beside a ready one, which is not an idle pair."""
+        self.sim.hears["contrib-lon"] = False
+        self.assertEqual(self.roll(), mesh_ops.EXIT_REFUSED, self.err.getvalue())
+        self.assertIn("contrib-lon (standing_by)", self.err.getvalue())
+        self.assertEqual(self.sim.activations(), [])
 
     def test_a_restart_bound_change_is_stopped_at_the_first_gate(self):
         self.sim.ids[NEW[0]] = identity("3333333333339999", generation=2)

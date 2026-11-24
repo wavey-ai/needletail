@@ -31,7 +31,9 @@ source), `identity` (fingerprint and the digests `numbering`, `envelope`,
 `windows[]` ({first_part, parts, present, xor}), `degraded` (the ids of its
 lanes that do not carry). What a first forwarder serves: av-mesh's
 `/api/node` `parents[]` (C's ParentFeeds: per sending address and stream,
-`source_age_ms`; per address `audio_age_ms`) and `/api/mesh/local`
+`source_age_ms`, a row of audio by its `class`, its `track` being the
+object key's, "opaque-audio"; per address `audio_age_ms`) and
+`/api/mesh/local`
 `relay_session.fast_plane.parent_lanes[].duplicate_mismatch`,
 `relay_session.fast_plane.not_admitted`,
 `relay_session.fast_plane.media_clock.stale_media`,
@@ -181,14 +183,24 @@ def entry_of(status: mesh_ops.Status | None, addresses) -> dict | None:
 
 def audio_ages(status: mesh_ops.Status | None, addresses) -> dict[int, float | None]:
     """{stream: source_age_ms} of the audio rows of the parent at
-    `addresses`; {} when it is not a parent there."""
+    `addresses`; {} when it is not a parent there. A row is audio by its
+    `class` (av-mesh's ParentStreamStatus), never by its `track`: the track
+    is the RLS track of the object key, "opaque-audio" for every audio
+    stream a contributor publishes. A stream with rows of several tracks
+    takes its freshest."""
     if status is None or status.parents is None:
         return {}
     for parent in status.parents:
         if parent.address in addresses:
-            return {stream: _age(row.get("source_age_ms"))
-                    for (stream, track), row in parent.rows.items()
-                    if track == "audio" and row.get("class", "audio") == "audio"}
+            ages: dict[int, float | None] = {}
+            for (stream, _track), row in parent.rows.items():
+                if row.get("class") != "audio":
+                    continue
+                age = _age(row.get("source_age_ms"))
+                if stream not in ages or (age is not None and (ages[stream] is None
+                                                               or age < ages[stream])):
+                    ages[stream] = age
+            return ages
     return {}
 
 
@@ -329,8 +341,9 @@ def gate_check(lab: mesh_ops.Lab, x: str, y: str | None, firsts: list[str], stat
     final, problems, facts = [], [], {}
     sx = statuses.get(x)
     sy = statuses.get(y) if y else None
-    if y is None:
-        final.append(f"K1: {x} is the lab's only contributor; stopping it is an outage")
+    if y is None and not unprotected:
+        final.append(f"K1: {x} is the lab's only contributor; stopping it is an outage "
+                     "(kill --unprotected stops it all the same)")
     # K6: video (C's rule).
     if video_gap != "accept":
         if sx is None:
@@ -397,6 +410,10 @@ def gate_check(lab: mesh_ops.Lab, x: str, y: str | None, firsts: list[str], stat
         mismatches, equal = windows_compared(sx, sy)
         facts["windows"] = equal
         problems += [f"K3: {item}" for item in mismatches]
+        missing = sorted(stream for stream, part in equal.items() if part is None)
+        if missing and not mismatches:
+            problems.append(f"K3: parity unknown: no window of stream(s) {missing} closed by "
+                            "both contributors with equal present")
     # K4: the other's contract counters still.
     total = contract_total(sy)
     facts["contract"] = total
@@ -422,9 +439,9 @@ def contrib_gate(ops, node: str, *, timeout_s: float = 30.0, poll_s: float = mes
     firsts = ingresses(lab)
     evidence = {"node": node, "other": y, "ingresses": firsts, "polls": 0,
                 "unprotected": unprotected, "unproven": unproven}
-    if y is None:
-        return False, f"K1: {node} is the lab's only contributor; stopping it is an outage", \
-            evidence
+    if y is None and not unprotected:
+        return False, (f"K1: {node} is the lab's only contributor; stopping it is an outage "
+                       "(kill --unprotected stops it all the same)"), evidence
     staged = None
     if change:
         try:
@@ -459,32 +476,49 @@ def contrib_gate(ops, node: str, *, timeout_s: float = 30.0, poll_s: float = mes
 # ----------------------------------------------------------------- readiness
 
 def ready_check(lab: mesh_ops.Lab, x: str, y: str | None, firsts: list[str], statuses: dict,
-                planes: dict, baseline: dict | None) -> tuple[list, list, list, dict]:
+                planes: dict, baseline: dict | None,
+                alone: bool = False) -> tuple[list, list, list, dict]:
     """One poll of `contrib_ready`: (fatal, waiting, unsettled, facts).
     `fatal`: other bytes under the same key (windows or duplicate_mismatch);
     `waiting`: X not seen yet, no window compared yet; `unsettled`: a
-    counter that must stay still grew since `baseline`."""
+    counter that must stay still grew since `baseline`. `alone`: Y is held
+    down by a kill (both contributors down) or there is none, so there is
+    nothing to compare X with: X must be seen at both first forwarders for
+    every audio stream it publishes itself, and the counters must stay
+    still."""
     fatal, waiting, unsettled, facts = [], [], [], {}
     sx = statuses.get(x)
     sy = statuses.get(y) if y else None
+    alone = alone or y is None
     if sx is None:
         waiting.append(f"{x} does not answer /api/node")
+    if not alone and sy is None:
+        waiting.append(f"{y} does not answer /api/node: the parts cannot be compared")
     for forwarder in firsts:
         status = statuses.get(forwarder)
         if status is None or status.parents is None:
             waiting.append(f"{forwarder}'s parents[] are not known")
             continue
-        ok, late = seen(lab, status, x, [x, y] if y else [x])
-        if not ok:
+        if alone:
+            own = audio_ages(status, lab.addresses(x))
+            late = sorted(stream for stream in publishing(sx)
+                          if own.get(stream) is None or own[stream] > SEEN_MS)
+        else:
+            _ok, late = seen(lab, status, x, [x, y])
+        if late:
             waiting.append(f"{x} is not seen at {forwarder} for stream(s) {late}")
     ix, iy = identity(sx), identity(sy)
-    if ix is None or (y is not None and iy is None):
+    if alone:
+        state = "alone"
+    elif sy is None:
+        state = None
+    elif ix is None or iy is None:
         waiting.append("an identity is not served: the parts cannot be compared")
         state = None
     else:
-        state = "same" if iy is None or ix["fingerprint"] == iy["fingerprint"] else "two-version"
+        state = "same" if ix["fingerprint"] == iy["fingerprint"] else "two-version"
     facts["state"] = state
-    if state == "same" and sy is not None:
+    if state == "same":
         mismatches, equal = windows_compared(sx, sy)
         facts["windows"] = equal
         fatal += mismatches
@@ -516,13 +550,16 @@ def contrib_ready(ops, node: str, *, timeout_s: float = 60.0, poll_s: float = me
     fingerprints a window of each stream both publish compared equal; and
     for 2 s at both first forwarders duplicate_mismatch, not_admitted and
     stale_media still (in the two-version state wide_hole_releases and
-    skipped_parts too; canonical_conflicts may grow). Other bytes under one
-    key fail at once; anything else fails at `timeout_s`. (ok, why,
-    evidence)."""
+    skipped_parts too; canonical_conflicts may grow). With the other held
+    down by a kill (its record in `held/`), or none: seen for its own
+    streams and the counters still (ready_check, `alone`).
+    Other bytes under one key fail at once; anything else fails at
+    `timeout_s`. (ok, why, evidence)."""
     lab = mesh_ops.Lab(ops.nodes())
     y = other_contributor(lab, node)
     firsts = ingresses(lab)
-    evidence = {"node": node, "other": y, "ingresses": firsts, "polls": 0}
+    alone = y is None or held_record(ops, y) is not None
+    evidence = {"node": node, "other": y, "ingresses": firsts, "polls": 0, "alone": alone}
     deadline = clock() + timeout_s
     baseline, since = None, None
     while True:
@@ -531,7 +568,7 @@ def contrib_ready(ops, node: str, *, timeout_s: float = 60.0, poll_s: float = me
         planes = _planes(ops, firsts)
         evidence["polls"] += 1
         fatal, waiting, unsettled, facts = ready_check(lab, node, y, firsts, statuses, planes,
-                                                       baseline)
+                                                       baseline, alone)
         evidence["last"] = {"fatal": fatal, "waiting": waiting, "unsettled": unsettled, **facts}
         if fatal:
             return False, "; ".join(fatal), evidence
@@ -609,6 +646,16 @@ def add_options(parser: argparse.ArgumentParser, verb: str, positional: bool = F
         parser.add_argument("--ms", type=int, required=True,
                             help="how long the service is stopped (SIGSTOP)")
     parser.add_argument("--marks", default=None, help="append the change's two marks here")
+
+
+def clock_check(ops, lab: mesh_ops.Lab) -> None:
+    """C 2.7 before the first mark: this host's clock against one serving
+    node of each region, Refused (exit 2) above 50 ms, since the marks are
+    scored against probes stamped on the view hosts. The engine's own check
+    (Engine.clock_check), on this lab."""
+    engine = mesh_ops.Engine(ops, "clock", mesh_ops.Options())
+    engine.lab = lab
+    engine.clock_check()
 
 
 def held_path(ops, node: str) -> pathlib.Path:
@@ -695,6 +742,7 @@ class Change:
         if not ok:
             self.keep("kill")
             raise mesh_ops.Refused(f"kill --node {node}: the {kind} gate refuses: {why}")
+        clock_check(self.ops, lab)
         status = mesh_ops.status_of(self.ops.status(node))
         before = None if status is None else {
             "boot_id": status.boot_id, "git": status.build_git, "unix": status.build_unix,
@@ -705,17 +753,24 @@ class Change:
             self.ops.hold_down(node)
         except Exception as error:  # noqa: BLE001 - nothing was killed; say so
             self.say(f"kill --node {node}: the hold could not be put in place ({error!r}); "
-                     f"nothing was killed (return --node {node} takes the hold away)")
+                     f"nothing was killed; {self.unhold(node)}")
             return mesh_ops.EXIT_STOPPED
         label = f"kill.{node}" + (".unprotected" if args.unprotected else "")
         self.marks.start(label)
+        failed = None
         try:
-            self.ops.kill(node)
-            check = self.contributor_gone if kind == "contributor" else self.ingress_gone
-            problems = self.poll_until(lambda: check(lab, node), END_S,
-                                       1 if kind == "contributor" else 3)
+            try:
+                self.ops.kill(node)
+            except Exception as error:  # noqa: BLE001 - whether it was killed is read below
+                failed = error
+            if failed is None:
+                check = self.contributor_gone if kind == "contributor" else self.ingress_gone
+                problems = self.poll_until(lambda: check(lab, node), END_S,
+                                           1 if kind == "contributor" else 3)
         finally:
             self.marks.close()
+        if failed is not None:
+            return self.kill_failed(node, before, failed)
         self.evidence["end"] = problems
         self.keep("kill")
         if problems:
@@ -725,6 +780,38 @@ class Change:
         self.say(f"kill --node {node}: killed and held down (return --node {node} brings it "
                  "back)")
         return mesh_ops.EXIT_DONE
+
+    def unhold(self, node: str) -> str:
+        """Take the hold away from a node that was not killed (the drop-in
+        removed, `daemon-reload`, `start`, which leaves a running unit as it
+        is) and forget its record; what became of the hold, in words."""
+        try:
+            self.ops.release(node)
+        except Exception as error:  # noqa: BLE001 - say where the hold stands
+            return (f"the hold is still in place and could not be taken away ({error!r}): "
+                    f"return --node {node} takes it away")
+        held_path(self.ops, node).unlink(missing_ok=True)
+        return "the hold was taken away"
+
+    def kill_failed(self, node: str, before: dict | None, error: Exception) -> int:
+        """The kill raised (ssh dropped, a timeout): a node that still
+        answers on the boot it had is running, and its hold is taken away;
+        otherwise it is held down, and the operator is told so."""
+        self.sleep(1.0)
+        status = mesh_ops.status_of(self.ops.status(node))
+        running = status is not None and before is not None and \
+            status.boot_id is not None and status.boot_id == before.get("boot_id")
+        self.evidence["end"] = [f"the kill failed: {error!r}"]
+        self.evidence["still_running"] = running
+        self.keep("kill")
+        if running:
+            self.say(f"kill --node {node}: the kill failed ({error!r}); {node} still runs on the "
+                     f"same boot; {self.unhold(node)}")
+        else:
+            self.say(f"kill --node {node}: the kill failed ({error!r}) and {node} no longer "
+                     f"answers on the boot it had: it is held down (Restart=no); return --node "
+                     f"{node} brings it back")
+        return mesh_ops.EXIT_STOPPED
 
     def contributor_gone(self, lab: mesh_ops.Lab, node: str) -> list[str]:
         """Both first forwarders show the contributor's audio 1 s old or more
@@ -742,9 +829,13 @@ class Change:
         return problems
 
     def ingress_gone(self, lab: mesh_ops.Lab, node: str) -> list[str]:
-        """The forwarder does not answer, both contributors name its lane
-        in `degraded`, and every child of it has the other first
-        forwarder's source within 100 ms for each audio stream it hears."""
+        """The forwarder does not answer, every contributor that is `ready`
+        names its lane in `degraded`, and every child of it has the other
+        first forwarder's source within 100 ms for each audio stream it
+        hears. av-contrib fills `degraded` only while a lane carries
+        (node_status.rs `evaluate`): a contributor that hears no source
+        (`standing_by`) or carries nothing lists none, and one held down
+        by a kill does not answer; neither is asked."""
         problems = []
         sibling = next((name for name in ingresses(lab) if name != node), None)
         children = sorted(set(lab.compiled_children(node)) | set(lab.edges(lab.site(node))),
@@ -754,7 +845,14 @@ class Change:
             problems.append(f"{node} still answers /api/node")
         for name in contributors(lab):
             status = statuses.get(name)
-            degraded = status.raw.get("degraded") if status else None
+            if status is None and held_record(self.ops, name) is not None:
+                continue
+            if status is None:
+                problems.append(f"{name} does not answer /api/node")
+                continue
+            if status.state != "ready":
+                continue
+            degraded = status.raw.get("degraded")
             if not isinstance(degraded, list) or node not in degraded:
                 problems.append(f"{name} does not list {node} in degraded")
         staying = lab.addresses(sibling) if sibling else set()
@@ -782,6 +880,7 @@ class Change:
         record = held_record(self.ops, node)
         if record is None:
             raise mesh_ops.Refused(f"{node} is not held down by kill (no {held_path(self.ops, node)})")
+        clock_check(self.ops, lab)
         self.evidence.update(kind=kind, record=record)
         self.marks.start(f"return.{node}")
         try:
@@ -833,6 +932,7 @@ class Change:
         kind_of(lab, node)
         if args.ms <= 0:
             raise mesh_ops.Refused("--ms must be positive")
+        clock_check(self.ops, lab)
         self.marks.start(f"freeze.{node}")
         try:
             self.ops.freeze(node, True)

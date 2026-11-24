@@ -1652,9 +1652,14 @@ class Engine:
 
     def all_ready(self, names) -> dict:
         statuses = self.poll(names)
+        # A 2.10: an idle pair (every contributor standing_by) may be
+        # changed; one standing_by beside a ready one is "1 of 2".
+        idle_pair = all(status is not None and idle_contributor(status)
+                        for name, status in statuses.items()
+                        if self.lab.tier(name) == "contributors")
         bad = [f"{name} ({'no answer' if status is None else status.state})"
                for name, status in statuses.items() if status is None or (
-                   status.ready is not True and not idle_contributor(status))]
+                   status.ready is not True and not (idle_pair and idle_contributor(status)))]
         if bad:
             raise Refused(f"not every node is ready: {', '.join(bad)}")
         self.seen_ready.update(statuses)
