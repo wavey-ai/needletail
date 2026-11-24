@@ -1,0 +1,249 @@
+{
+  "description": "The first-session stall hunt's lab (docs/plans/resilient-mesh/D-hunt.md, section 7.1): 21 dedicated-CPU instances, $1.350 an hour, two billed hours. A mesh in London (the contributor, the source host and a view host on g6-dedicated-4; two forwarders and four edges on g6-dedicated-2) and in Tokyo (two forwarders and one edge on g6-dedicated-2, a view host on g6-dedicated-4: the worst wave 7 instances were far -b distributors); and eight bare g6-dedicated-2 instances that run nothing of Needletail but needletail-nodecheck and the route survey's probes: role `bare`, which the lab tool creates, tags and puts behind the lab firewall like any node and on which the deploy tool installs nothing (its bootstrap gives them chrony). The `hunt` block is the experiment's design (7.2, 7.3, 7.6), read by scripts/linode-stall-hunt.py and scripts/linode-route-survey.py: the arms, the wave 7 control, the nodes with an enlarged hop journal, the echo pairs of the soak rounds, the bare nodes that touch memory, the listeners of each session on the view hosts (7.3: UDP probes, LL-HLS probes over HTTP/3, a needletail-load crowd) and the survey's ends. Sydney is created first and left out if it has no capacity (up --optional-sites sydney).",
+  "image": "linode/debian13",
+  "hunt": {
+    "warmed": [
+      "lon-edge-3",
+      "lon-dist-a",
+      "tok-dist-b",
+      "lon-bare-2",
+      "lon-bare-4"
+    ],
+    "control": {
+      "lon-edge-2": {
+        "malloc_tune": false,
+        "prefault": false,
+        "mlock": "off"
+      }
+    },
+    "hop_journal_large": [
+      "lon-edge-1",
+      "lon-edge-3",
+      "lon-dist-a",
+      "tok-dist-a",
+      "tok-edge-1"
+    ],
+    "soak_pairs": [
+      [
+        "lon-edge-1",
+        "lon-edge-2"
+      ],
+      [
+        "lon-edge-3",
+        "lon-edge-4"
+      ],
+      [
+        "lon-dist-a",
+        "lon-dist-b"
+      ],
+      [
+        "tok-dist-a",
+        "tok-dist-b"
+      ],
+      [
+        "lon-bare-1",
+        "lon-bare-2"
+      ],
+      [
+        "tok-edge-1",
+        "tok-bare-1"
+      ]
+    ],
+    "touch": [
+      "lon-bare-1",
+      "lon-bare-2",
+      "tok-bare-1"
+    ],
+    "listeners": {
+      "lon-view": {
+        "udp": 4,
+        "hls": 4,
+        "load": 40,
+        "sample": 8
+      },
+      "tok-view": {
+        "udp": 2,
+        "hls": 2
+      }
+    },
+    "survey": {
+      "senders": [
+        "lon-bare-3",
+        "lon-bare-4",
+        "ams-bare-1"
+      ],
+      "receivers": [
+        "tok-bare-1",
+        "new-bare-1",
+        "syd-bare-1",
+        "ams-bare-1"
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "name": "contrib-lon",
+      "role": "contributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4",
+      "vlan_ipv4": "10.78.1.5/24"
+    },
+    {
+      "name": "lon-src",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4",
+      "vlan_ipv4": "10.78.1.30/24",
+      "purpose": "source"
+    },
+    {
+      "name": "lon-view",
+      "role": "load",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-4",
+      "purpose": "view"
+    },
+    {
+      "name": "lon-dist-a",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.11/24"
+    },
+    {
+      "name": "lon-dist-b",
+      "role": "distributor",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.12/24"
+    },
+    {
+      "name": "lon-edge-1",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.21/24"
+    },
+    {
+      "name": "lon-edge-2",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.22/24"
+    },
+    {
+      "name": "lon-edge-3",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.23/24"
+    },
+    {
+      "name": "lon-edge-4",
+      "role": "edge",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.24/24"
+    },
+    {
+      "name": "tok-dist-a",
+      "role": "distributor",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.3.11/24"
+    },
+    {
+      "name": "tok-dist-b",
+      "role": "distributor",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.3.12/24"
+    },
+    {
+      "name": "tok-edge-1",
+      "role": "edge",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.3.21/24"
+    },
+    {
+      "name": "tok-view",
+      "role": "load",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-4",
+      "purpose": "view"
+    },
+    {
+      "name": "lon-bare-1",
+      "role": "bare",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.41/24"
+    },
+    {
+      "name": "lon-bare-2",
+      "role": "bare",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.1.42/24"
+    },
+    {
+      "name": "lon-bare-3",
+      "role": "bare",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2"
+    },
+    {
+      "name": "lon-bare-4",
+      "role": "bare",
+      "site": "london",
+      "region": "gb-lon",
+      "type": "g6-dedicated-2"
+    },
+    {
+      "name": "tok-bare-1",
+      "role": "bare",
+      "site": "tokyo",
+      "region": "ap-northeast",
+      "type": "g6-dedicated-2",
+      "vlan_ipv4": "10.78.3.41/24"
+    },
+    {
+      "name": "new-bare-1",
+      "role": "bare",
+      "site": "newyork",
+      "region": "us-east",
+      "type": "g6-dedicated-2"
+    },
+    {
+      "name": "syd-bare-1",
+      "role": "bare",
+      "site": "sydney",
+      "region": "ap-southeast",
+      "type": "g6-dedicated-2"
+    },
+    {
+      "name": "ams-bare-1",
+      "role": "bare",
+      "site": "amsterdam",
+      "region": "nl-ams",
+      "type": "g6-dedicated-2"
+    }
+  ]
+}
