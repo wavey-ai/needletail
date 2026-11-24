@@ -1139,7 +1139,7 @@ class FakeLab(Base):
         fake_binary(self.roots / "contrib" / "av-contrib", "av-contrib", CONTRIB)
         for tool in ("aep1-48k-probe", "daw-test-source", "soundkit-part-check",
                      "needletail-reader", "needletail-udp-client", "needletail-load",
-                     "h3-static-capacity", "ntcmp"):
+                     "h3-static-capacity", "ntcmp", "needletail-nodecheck"):
             fake_binary(self.roots / "tools" / tool, tool, CONTRIB)
         tls = self.dir / "tls"
         tls.mkdir()
@@ -1182,7 +1182,8 @@ class FakeLab(Base):
                     tools / "daw-test-source"]
         if role == "load":
             return [tools / name for name in ("aep1-48k-probe", "needletail-reader",
-                                              "needletail-udp-client", "daw-test-source")]
+                                              "needletail-udp-client", "daw-test-source",
+                                              "needletail-nodecheck")]
         return [self.roots / "mesh" / "av-mesh", tools / "aep1-48k-probe",
                 tools / "soundkit-part-check"]
 
@@ -1257,8 +1258,11 @@ class NodesByName(FakeLab):
         self.push()
         self.quietly(deploy.command_push, self.namespace(nodes="lon-edge-11"))
         self.assertEqual(set(self.hosts.touched), {"lon-edge-11"})
+        # The activation, then this boot's warm record read (node_warm).
         self.assertIn("/opt/needletail/activate needletail-mesh",
-                      self.hosts.scripts["lon-edge-11"][-1])
+                      self.hosts.scripts["lon-edge-11"][-2])
+        self.assertEqual(self.hosts.scripts["lon-edge-11"][-1],
+                         "cat /run/needletail/node-warm.json")
 
     def test_start_takes_a_standby_edge_in_and_touches_nothing_else(self):
         self.push()

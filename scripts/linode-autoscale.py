@@ -71,6 +71,15 @@ Safety, before anything else:
   slot that cannot be recovered is deleted by its recorded id (tag and
   label checked). A lost first forwarder is never touched: with
   --forwarders its region's slot joins until it is back.
+* The warm pass at boot (integration 4): a created slot's push waits for
+  it and the slot is not ready before it is complete, so a create's and a
+  recovery boot's or rebuild's deadlines have the plan's allowance on top
+  (120 s for every 4 GB). A new slot edge whose pass says slow_host
+  (/api/node node_warm) and that holds nobody is deleted (proof
+  "slow-host") and created again, once a slot (`slow_replaced`); a
+  forwarder slot, a standby edge or a slot replaced before is only
+  reported (`slow_host` events). The deploy's push is told `--slow-host
+  report`: this controller decides for its slots.
 * However it stops (SIGINT or SIGTERM, its --duration, its change, a
   failure), it hands the worker nothing more, waits for the worker's job in
   hand (up to 120 s, then ends that job's tool and names it), and resumes
@@ -158,7 +167,7 @@ import archived_run  # noqa: E402
 from mesh_ops import (CLOCK_LIMIT_S, EMPTY_HOLD_S, HTTP_PORT, LIVE_MS, Http,  # noqa: E402
                       Marks, Ops, OpsLock, Refused, address_of, control_accepted,
                       control_body, forwarder_gate, gauge, http_post, signals_held,
-                      status_of)
+                      status_of, warm_seconds)
 SCHEMA = "needletail.autoscale.v1"
 # Never touched, whatever a state file says.
 DENY = {"arch-us-east"}
@@ -179,7 +188,8 @@ CREATE_BACKOFF_S = 600.0
 SSH_DOWN_S = 60.0
 # How often a recovery probes a node that it waits on.
 PROBE_EVERY_S = 10.0
-# After a recovery step, how long the node has to answer `ready`.
+# After a recovery step, how long the node has to answer `ready` (a boot
+# or a rebuild runs the warm pass at boot first: warm_s on top).
 RECOVER_SETTLE_S = 120.0
 # The longest one recovery may take, a rebuild and a push included.
 RECOVER_TIMEOUT_S = 1800.0
@@ -461,7 +471,7 @@ class Guarded(Backend):
     rules against the backend's own roster before it lets a call through,
     and in a dry run lets no changing call through at all (it records it)."""
 
-    PROOFS = ("drained-to-zero", "warm", "never-served", "lost")
+    PROOFS = ("drained-to-zero", "warm", "never-served", "lost", "slow-host")
     STEPS = ("restart", "boot", "rebuild")
 
     def __init__(self, inner: Backend, config: Config, dry_run: bool = False):
@@ -580,7 +590,9 @@ class Guarded(Backend):
         gauges were seen at 0 after a drain and it was stopped), "warm" (a
         drained slot whose paid hour runs out), "never-served" (a join that
         never advertised) or "lost" (lost on in-mesh evidence and not
-        recovered). Anything else is refused."""
+        recovered) or "slow-host" (a new slot edge whose warm pass found its
+        host slow, still holding nobody: deleted and created again, once).
+        Anything else is refused."""
         node = self.node(name)
         if not node.get("slot"):
             raise Refused(f"delete {name}: not an autoscale slot (standby edges are only "
@@ -646,7 +658,7 @@ def node_view(name: str, document: dict | None, by_address: dict | None = None) 
                 "operator_drained": None, "udp_subscribers": None, "hls_sessions": None,
                 "hls_moved_active": None, "hls_requests_in_flight": None, "refusals": None,
                 "rebalance_moves": None, "lease_children": None, "cache_children": None,
-                "cpu": None, "heard": {}, "fed": {}}
+                "cpu": None, "heard": {}, "fed": {}, "slow_host": None, "warm_verdict": None}
     by_address = by_address or {}
     udp = status.client_udp or {}
     cpu = gauge(document, "process.cpu_permille")
@@ -679,7 +691,20 @@ def node_view(name: str, document: dict | None, by_address: dict | None = None) 
             "lease_children": gauge(document, "children.lease.children"),
             "cache_children": gauge(document, "cache_mesh.children"),
             "cpu": None if cpu is None else cpu / 1000,
-            "heard": heard, "fed": fed}
+            "heard": heard, "fed": fed, **warm_view(document)}
+
+
+def warm_view(document: dict) -> dict:
+    """The node's warm pass at boot, from its /api/node `node_warm`
+    ({configured, complete, verdict, slow_host, ...}): `slow_host` (None
+    when the node has no check configured or says nothing) and
+    `warm_verdict`."""
+    warm = document.get("node_warm") if isinstance(document, dict) else None
+    if not isinstance(warm, dict) or not warm.get("configured"):
+        return {"slow_host": None, "warm_verdict": None}
+    slow = warm.get("slow_host")
+    return {"slow_host": slow if isinstance(slow, bool) else None,
+            "warm_verdict": warm.get("verdict") if isinstance(warm.get("verdict"), str) else None}
 
 
 def merge_views(roster: dict[str, list[dict]], entries: dict[str, dict | None],
@@ -824,6 +849,7 @@ class LinodeBackend(Backend):
                 "created_unix": self.lab.created_unix(node, state.get("created_unix"))
                 if created else None,
                 "hourly_usd": node.get("hourly_usd", 0.054),
+                "type": node.get("type"),
                 "vlan": node.get("vlan_ipv4"),
                 "public": node.get("public_ipv4") if created else None})
         return out
@@ -896,9 +922,9 @@ class LinodeBackend(Backend):
             except ProcessLookupError:
                 pass
 
-    def deploy(self, verb: str, names: str) -> None:
+    def deploy(self, verb: str, names: str, *extra: str) -> None:
         command = [sys.executable, str(HERE / "linode-small-mesh-deploy.py"), verb,
-                   "--nodes", names]
+                   "--nodes", names, *extra]
         result = self.run_child(command, 1800)
         if result.returncode != 0:
             raise RuntimeError(f"deploy {verb} --nodes {names}: {result.stderr[-1500:]}")
@@ -1003,7 +1029,9 @@ class LinodeBackend(Backend):
         for name in names:
             if not self.lab.firewall_attached(self.api(), self.state(), name):
                 raise Refused(f"{name} is not attached to the lab's Cloud Firewall: not pushed")
-        self.deploy("push", ",".join(names))
+        # The controller decides what a slow host costs a slot it made
+        # (Controller.slow_host); the deploy only reports it.
+        self.deploy("push", ",".join(names), "--slow-host", "report")
 
     def start(self, name: str) -> None:
         self.deploy("start", name)
@@ -1777,7 +1805,8 @@ class Controller:
         identity = self.backend.identity()
         fresh = {"schema": SCHEMA, "backend": self.backend.name, **identity,
                  "regions": {}, "actions": {}, "warm": {}, "failures": [], "backoff": {},
-                 "lost": {}, "recovers": {}, "quarantined": {}, "replaced": {}, "covers": {}}
+                 "lost": {}, "recovers": {}, "quarantined": {}, "replaced": {}, "covers": {},
+                 "slow_replaced": {}}
         if self.state_path is None or not self.state_path.is_file():
             return fresh
         saved = json.loads(self.state_path.read_text())
@@ -1937,8 +1966,12 @@ class Controller:
         started = []
         for name, how in decision["targets"]:
             # A create's budget guard runs on the worker (Guarded.create).
+            # A new instance's push waits for its warm pass at boot, and a
+            # node is not ready before it: its allowance on top (a standby
+            # edge was warmed by the deploy's push and starts as fast as
+            # before; the allowance only bounds it).
             timeout = (self.config.create_timeout_s if how == "create"
-                       else self.config.join_timeout_s)
+                       else self.config.join_timeout_s) + self.warm_s(by_name.get(name) or {})
             self.state["warm"].pop(name, None)
             self.state["actions"][name] = {
                 "kind": "join", "site": site, "how": how, "phase": how,
@@ -2012,10 +2045,68 @@ class Controller:
                     self.park(name, node)
         self.save()
 
+    @staticmethod
+    def warm_s(node: dict) -> float:
+        """The allowance of a node's warm pass at boot (mesh_ops.warm_seconds
+        of its plan: 120 s for every 4 GB); 0 for a node without a Linode
+        plan (the local lab runs no warm pass)."""
+        return float(warm_seconds(node.get("type")) or 0)
+
+    def slow_host(self, name: str, action: dict, now: float, view: dict, node: dict) -> bool:
+        """A joining node whose warm pass says slow_host (its /api/node
+        node_warm), seen once per join. A slot edge that this controller
+        created, holds nobody yet and was never replaced for it is deleted
+        (proof "slow-host") and created again, once (`slow_replaced`); every
+        other node is only reported: a forwarder slot, a standby edge (the
+        deploy's push replaced it once already when its pass was fresh), a
+        slot taken back from the warm pool, one replaced before. True when
+        the replace began."""
+        role = node.get("role") or "edge"
+        why = None
+        if role != "edge":
+            why = "a forwarder is never replaced for slow_host: report only"
+        elif not node.get("slot"):
+            why = "a standby edge: the deploy's push replaces it once; report only"
+        elif action.get("how") != "create":
+            why = "a slot taken back from the warm pool was judged at its create: report only"
+        elif name in self.state["slow_replaced"]:
+            why = "replaced once for slow_host already: report only"
+        else:
+            empty, figures = drained("edge", view)
+            if not empty:
+                held = ", ".join(f"{key} {value}" for key, value in figures.items())
+                why = f"it holds listeners already ({held}): report only"
+        if why is not None:
+            self.events("slow_host", node=name, region=action["site"], action="report", why=why,
+                        verdict=view.get("warm_verdict"))
+            return False
+        self.state["slow_replaced"][name] = {"unix": now, "verdict": view.get("warm_verdict")}
+        self.events("slow_host", node=name, region=action["site"], action="replace",
+                    why="a new slot edge on a slow host: deleted and created again, once",
+                    verdict=view.get("warm_verdict"))
+        self.queue(action, "delete", [name], proof="slow-host")
+        action["phase"] = "slow-deleting"
+        return True
+
     def advance_join(self, name: str, action: dict, now: float, view: dict, node: dict) -> None:
         """create -> creating -> push -> pushing -> joining, or start ->
         starting -> joining; serving when the entry lists it fresh and not
-        draining and its /api/node says ready."""
+        draining and its /api/node says ready. A new slot edge on a slow
+        host: joining -> slow-deleting -> create, once (slow_host)."""
+        if action["phase"] == "slow-deleting":
+            result = self.take(action)
+            if result is None:
+                return
+            if result.get("orphaned"):
+                self.queue(action, "delete", [name], proof="slow-host")
+                return
+            if not result["ok"]:
+                raise Refused(f"the delete of a slow host failed: {result['error']}") \
+                    if result.get("refused") else RuntimeError(result["error"])
+            action.update(phase="create", slow_seen=False,
+                          deadline_unix=now + self.config.create_timeout_s + self.warm_s(node))
+            self.events("slow_host_deleted", node=name, region=action["site"])
+            return
         if action["phase"] == "create":
             if node.get("created"):
                 action["phase"] = "push"  # adopted, or the lab has it already
@@ -2067,6 +2158,10 @@ class Controller:
                     else RuntimeError(result["error"])
             action["phase"] = "joining"
         if action["phase"] == "joining":
+            if view.get("slow_host") is True and not action.get("slow_seen"):
+                action["slow_seen"] = True
+                if self.slow_host(name, action, now, view, node):
+                    return
             if view.get("advertised") and not view.get("draining") and view.get("ready") is True:
                 self.events("serving", node=name, region=action["site"], how=action["how"],
                             trigger_to_fresh_s=round(now - action["trigger_unix"], 3))
@@ -2508,8 +2603,9 @@ class Controller:
             return
         if phase == "settle":
             if now > action["settle_deadline_unix"]:
+                settle = self.settle_s(action, node)
                 self.recover_failed(name, action, node, f"{action['step']} done, not ready "
-                                                        f"within {RECOVER_SETTLE_S:.0f} s")
+                                                        f"within {settle:.0f} s")
             return
         if phase == "forget":
             if now >= action.get("next_probe_unix", 0):
@@ -2561,7 +2657,8 @@ class Controller:
             elif phase == "pushing":
                 self.queue(action, "push", [name])
             else:
-                action.update(phase="settle", settle_deadline_unix=now + RECOVER_SETTLE_S)
+                action.update(phase="settle",
+                              settle_deadline_unix=now + self.settle_s(action, node))
             return
         if not result["ok"]:
             self.recover_failed(name, action, node, f"{action['step']}: {result['error']}")
@@ -2570,7 +2667,14 @@ class Controller:
             self.queue(action, "push", [name])
             action["phase"] = "pushing"
             return
-        action.update(phase="settle", settle_deadline_unix=now + RECOVER_SETTLE_S)
+        action.update(phase="settle", settle_deadline_unix=now + self.settle_s(action, node))
+
+    def settle_s(self, action: dict, node: dict) -> float:
+        """How long a node has to answer `ready` after a recovery step:
+        RECOVER_SETTLE_S, and after a boot or a rebuild (its warm pass at
+        boot runs before its service) the warm allowance on top."""
+        warm = self.warm_s(node) if action.get("step") in ("boot", "rebuild") else 0.0
+        return RECOVER_SETTLE_S + warm
 
     def choose_step(self, name: str, action: dict, now: float, node: dict,
                     probe: dict) -> None:

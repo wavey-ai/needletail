@@ -501,6 +501,14 @@ DEFAULT_OVERRIDES = {
     # A small edge: 100 Mbit/s of egress, admission at 85 Mbit/s.
     "edge_egress_capacity_bps": 100_000_000,
     "steering_ttl_seconds": 1,
+    # No warm pass at boot here (the deploy's default since hunt11241537):
+    # every node of this lab shares the dev box's one kernel and memory
+    # (32 CPUs, one guest that was touched long ago), so a pass per node
+    # would write the box's free memory over and over and find nothing; the
+    # first-touch stops are a property of fresh Linode guests. This lab runs
+    # no check unit either, so --node-warm-file would point at a record
+    # that never comes and no node would be ready.
+    "node_warm": False,
 }
 
 

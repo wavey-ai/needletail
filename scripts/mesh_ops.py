@@ -100,6 +100,56 @@ SINGLE_LEGS_WAIT_S = 20.0
 SERVING_TIMEOUT_S = 15.0
 # On an interrupt after an activation: how long to wait for R1 and warm.
 INTERRUPT_WAIT_S = 15.0
+# The warm pass at boot (integration 4; .resilient/reports/hunt-lab.md (c)):
+# `needletail-nodecheck boot --warm` writes one byte in every page of
+# MemAvailable minus 300 MB once, before the service starts, and the node is
+# not ready until it is complete. The hunt lab took 43 to 79 s for 2.3 to
+# 2.5 GB on a 4 GB guest; the tools allow WARM_SECONDS_PER_4GB for every
+# 4 GB of the plan's memory (never less than that), as the pass's own limit
+# (--warm-max-seconds) and on top of every wait for a node's readiness after
+# a boot (push, roll, replace, the autoscaler's join and recovery).
+WARM_SECONDS_PER_4GB = 120
+# GB of memory of a Linode plan (GET /linode/types). A g6-dedicated-N not
+# listed has 2N GB, a g6-standard-N or g6-nanode-N is never a lab plan.
+LINODE_MEMORY_GB = {
+    "g6-nanode-1": 1, "g6-standard-1": 2, "g6-standard-2": 4, "g6-standard-4": 8,
+    "g6-standard-6": 16, "g6-standard-8": 32, "g6-standard-16": 64, "g6-standard-20": 96,
+    "g6-standard-24": 128, "g6-standard-32": 192,
+    "g6-dedicated-2": 4, "g6-dedicated-4": 8, "g6-dedicated-8": 16, "g6-dedicated-16": 32,
+    "g6-dedicated-32": 64, "g6-dedicated-48": 96, "g6-dedicated-50": 128,
+    "g6-dedicated-56": 256, "g6-dedicated-64": 512,
+}
+
+
+def plan_memory_gb(kind) -> int | None:
+    """GB of memory of a Linode plan; None for anything else (a node of the
+    namespace lab has no plan)."""
+    kind = str(kind or "")
+    if kind in LINODE_MEMORY_GB:
+        return LINODE_MEMORY_GB[kind]
+    match = re.match(r"^g[0-9]+-dedicated-([0-9]+)$", kind)
+    return 2 * int(match.group(1)) if match else None
+
+
+def warm_seconds(kind, per_4gb: float = WARM_SECONDS_PER_4GB) -> int | None:
+    """The seconds allowed for the boot warm pass of a host of plan `kind`:
+    `per_4gb` for every 4 GB of its memory, at least `per_4gb`
+    (g6-dedicated-2: 120, -4: 240, -8: 480); None when the plan is not
+    known."""
+    memory = plan_memory_gb(kind)
+    if memory is None:
+        return None
+    return int(max(per_4gb, -(-memory * per_4gb // 4)))
+
+
+def warm_allowance(ops, name: str) -> float:
+    """What a readiness wait of `name` adds for its boot warm pass: the
+    backend's `warm_allowance_s` (0 for a backend that has none)."""
+    allowance = getattr(ops, "warm_allowance_s", None)
+    try:
+        return float(allowance(name)) if allowance is not None else 0.0
+    except (KeyError, TypeError, ValueError):
+        return 0.0
 # A capacity cost is taken from edges carrying at least this many legs.
 COST_MIN_LEGS = 10
 # A surge edge has taken its share when the region's rebalance moves have
@@ -724,6 +774,14 @@ class Ops:
         """Delete a slot by its recorded id, whatever state it is in (one
         created part-way included); nothing to delete is not an error."""
         raise NotImplementedError
+
+    def warm_allowance_s(self, node: str) -> float:
+        """Seconds a readiness wait of `node` adds to `ready_timeout_s` for
+        the node's warm pass at boot (WARM_SECONDS_PER_4GB, scaled by its
+        plan's memory, plus its check's watch): after a push of a new
+        instance, a rebuild or a boot the node is not ready before the pass
+        is complete. 0: a backend with no warm pass (the local lab)."""
+        return 0.0
 
 
 class Lab:
@@ -2145,7 +2203,8 @@ class Engine:
             else:
                 self.say(f"{name}: activation: {why}; reading its boot id")
                 changed = self.boot_changed(name, before_boot, start_us,
-                                            not_after + UNIT_TIMEOUT_STOP_S)
+                                            not_after + UNIT_TIMEOUT_STOP_S
+                                            + warm_allowance(self.ops, name))
             if changed is True or changed is None:
                 self.phase(name, "activated")
                 return start_us, self.ops.unit_restarts(name)
@@ -2237,18 +2296,25 @@ class Engine:
         if not ok:
             raise Stop(EXIT_STOPPED, f"{name}: the contributor gate refuses: {why}")
 
+    def ready_timeout_s(self, name: str) -> float:
+        """--ready-timeout-s plus the node's warm allowance (warm_allowance)."""
+        return self.options.ready_timeout_s + warm_allowance(self.ops, name)
+
     def ready(self, name: str, expected: dict, before_boot: int, activation_us: int,
               restarts: int | None, gate_pairs=()) -> Ready:
         began = self.clock()
+        # A node whose activation booted its warm pass (a new instance, a
+        # rebuild, the first activation after the check unit was installed)
+        # is not ready before the pass is complete: its allowance on top.
         result = wait_ready(self.ops, name, expected=expected, before_boot=before_boot or 0,
                             activation_us=activation_us, lab=self.lab, before=self.before.get(name),
                             gate_pairs=gate_pairs, restarts_before=restarts,
-                            timeout_s=self.options.ready_timeout_s, poll_s=self.options.poll_s,
+                            timeout_s=self.ready_timeout_s(name), poll_s=self.options.poll_s,
                             clock=self.clock, sleep=self.sleep)
         if result.ok and self.lab.tier(name) == "contributors":
             _gate, contrib_ready = self.rules
             ok, why, evidence = contrib_ready(self.ops, name,
-                                              timeout_s=self.options.ready_timeout_s,
+                                              timeout_s=self.ready_timeout_s(name),
                                               poll_s=self.options.poll_s, clock=self.clock,
                                               sleep=self.sleep)
             self.record(name)["contributor_ready"] = evidence
@@ -3256,7 +3322,7 @@ def replace(ops: Ops, name: str, *, mode: str = "rebuild", no_slot: bool = False
             result = wait_ready(ops, slot, expected=ops.expected(slot), before_boot=0,
                                 activation_us=context["slot_began_us"], lab=engine.lab,
                                 restarts_before=ops.unit_restarts(slot),
-                                timeout_s=options.ready_timeout_s, poll_s=options.poll_s,
+                                timeout_s=engine.ready_timeout_s(slot), poll_s=options.poll_s,
                                 clock=clock, sleep=sleep)
             if not result.ok:
                 raise Stop(EXIT_STOPPED, f"the slot {slot} is not ready "

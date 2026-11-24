@@ -722,12 +722,34 @@ DEFAULT_SETTINGS = {
     # needletail-node-check.service (`needletail-nodecheck boot`: a warm
     # pass, then that many seconds of watching for stops and steal against
     # the two limits), their service Wants= it and starts After= it, and
-    # av-mesh reads its verdict (--node-warm-file) into its readiness. It runs once a boot, not
-    # on a restart or a roll. Off until the stall lab decides (no placebo).
-    "node_warm": False,
+    # av-mesh reads its verdict (--node-warm-file) into its readiness. It
+    # runs once a boot (the first activation after it is installed, then at
+    # every boot), not on a restart or a roll.
+    # node_warm is on by default since the stall lab hunt11241537 (24 Nov,
+    # .resilient/reports/hunt-lab.md (c)): fresh Linode guests are not run
+    # for seconds while the host backs their memory on first touch; edges
+    # whose free memory was written once before the first session had no
+    # stop of 100 ms or more afterwards, untouched ones 28 to 146. With it,
+    # the hosts without a service that push manages (load hosts: source,
+    # view, listeners; self-hosted LiveKit hosts) get the same unit enabled
+    # at boot and run once at push (warm only, no watch). The pass may take
+    # node_warm_seconds_per_4gb for every 4 GB of the plan's memory
+    # (--warm-max-seconds; mesh_ops.warm_seconds); the unit's
+    # TimeoutStartSec, push's wait for an activation and every readiness
+    # wait after a boot grow by as much. false turns it off everywhere.
+    "node_warm": True,
+    "node_warm_seconds_per_4gb": 120,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
+    # The experiment of hunt-lab.md (f): a 2 MB transparent huge page
+    # zeroed on first touch cost 3 to 4 s there. "madvise" or "never" is
+    # written to /sys/kernel/mm/transparent_hugepage/enabled at every boot
+    # on the mesh nodes and the contributor, before the warm pass (the check
+    # unit's ExecStartPre) and before the service (its ExecStartPre, as
+    # root). "unchanged" (the default) renders nothing; going back to it
+    # leaves what was written until the next boot.
+    "transparent_hugepage": "unchanged",
     # {node: {setting: value}}: settings of one node's render and units only
     # (D 2.9), for the node-local settings of NODE_SETTINGS.
     "node_overrides": {},
@@ -813,7 +835,8 @@ ROLLABLE_SETTINGS = (
 # the check at boot's.
 NODE_SETTINGS = ROLLABLE_SETTINGS + (
     "stall_tick_us", "stall_journal_capacity", "node_warm", "node_check_seconds",
-    "node_check_max_stop_ms", "node_check_max_steal_permille",
+    "node_check_max_stop_ms", "node_check_max_steal_permille", "node_warm_seconds_per_4gb",
+    "transparent_hugepage",
 )
 MLOCK_MODES = ("off", "rings")
 # LimitMEMLOCK of every service unit (D 2.3): the rings that --mlock rings
@@ -823,12 +846,32 @@ MEMLOCK_LIMIT = "512M"
 # The check at boot (D 2.4): its unit, its record, and the bound of its
 # watch. The first restart after the unit is new waits for the old
 # service's stop (up to TimeoutStopSec=20) and then for the check (up to
-# its TimeoutStartSec, 70 s plus the watch); push waits 150 s for an
-# activation (activate_node: the 120 s deadline, the stop's 20 s and 10 s).
-# A 50 s watch keeps the worst case, 20 + 120 = 140 s, 10 s inside it.
+# its TimeoutStartSec: the warm pass's limit, the watch and
+# NODE_CHECK_MARGIN_S); an activation's wait (activate_node: its deadline,
+# the stop's 20 s and 10 s) has the check's TimeoutStartSec on top. The
+# watch stays bounded at 50 s: it is time the node is not ready.
 NODE_CHECK_UNIT = "needletail-node-check.service"
 NODE_WARM_FILE = "/run/needletail/node-warm.json"
 NODE_CHECK_MAX_SECONDS = 50
+# What TimeoutStartSec allows beyond the warm pass's limit and the watch:
+# start-up, reading /proc, unmapping the touched memory and writing the
+# record. systemd killing the check leaves no record, and a node without
+# one is never ready.
+NODE_CHECK_MARGIN_S = 70
+# The warm pass's flags, rendered explicitly (av-mesh needletail-nodecheck
+# boot): memory left untouched (the referee's warm-guest.py leaves 300 MB
+# too), and the slow_host thresholds: one page write of a second or more,
+# or more than 40 s a GiB touched.
+NODE_WARM_LEAVE_MB = 300
+NODE_WARM_SLOW_WRITE_MS = 1000
+NODE_WARM_SLOW_SECONDS_PER_GIB = 40
+# transparent_hugepage: what may be written at boot; "unchanged" writes
+# nothing.
+THP_MODES = ("unchanged", "madvise", "never")
+THP_PATH = "/sys/kernel/mm/transparent_hugepage/enabled"
+# The roles whose hosts run no service of ours but get the warm pass at
+# push (host_check_unit_text): the load hosts and self-hosted LiveKit.
+WARM_ONLY_ROLES = ("load", "livekit")
 
 
 TOPOLOGIES = ("legacy", "merged")
@@ -983,6 +1026,51 @@ def check_stall_settings(settings: dict) -> None:
                          "70 s more), and push waits 150 s for an activation")
     for key in ("node_check_max_stop_ms", "node_check_max_steal_permille"):
         whole_or_zero(settings.get(key, DEFAULT_SETTINGS[key]), key)
+    per_4gb = settings.get("node_warm_seconds_per_4gb")
+    if per_4gb is not None and (isinstance(per_4gb, bool) or whole_or_zero(
+            per_4gb, "node_warm_seconds_per_4gb") < 1):
+        raise ValueError(f"node_warm_seconds_per_4gb {per_4gb!r} is not a whole number of 1 "
+                         "or more")
+    thp = settings.get("transparent_hugepage")
+    if thp is not None and thp not in THP_MODES:
+        raise ValueError(f"transparent_hugepage {thp!r} is not one of {', '.join(THP_MODES)}")
+
+
+def warm_max_seconds(settings: dict, node: dict | None) -> int:
+    """--warm-max-seconds of a node's warm pass: node_warm_seconds_per_4gb
+    for every 4 GB of its plan's memory (mesh_ops.warm_seconds:
+    g6-dedicated-2 120 s, -4 240 s, -8 480 s); a node without a known plan
+    (the namespace lab, a test) is taken as the smallest, 4 GB."""
+    per_4gb = int(settings.get("node_warm_seconds_per_4gb")
+                  or DEFAULT_SETTINGS["node_warm_seconds_per_4gb"])
+    seconds = mesh_ops.warm_seconds((node or {}).get("type"), per_4gb)
+    return per_4gb if seconds is None else seconds
+
+
+def check_timeout_s(settings: dict, node: dict | None) -> int:
+    """TimeoutStartSec of a node's check unit: the warm pass's limit (with
+    node_warm), the watch and NODE_CHECK_MARGIN_S; 0 when it has none."""
+    if not check_unit_wanted(settings):
+        return 0
+    seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
+    warm = warm_max_seconds(settings, node) if settings.get("node_warm") else 0
+    return warm + seconds + NODE_CHECK_MARGIN_S
+
+
+def warm_allowance_s(settings: dict, node: dict | None) -> int:
+    """What a readiness wait after a boot adds for the node's check at boot:
+    the warm pass's limit and the watch (0 without the check)."""
+    if not check_unit_wanted(settings):
+        return 0
+    seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
+    return (warm_max_seconds(settings, node) if settings.get("node_warm") else 0) + seconds
+
+
+def thp_mode(settings: dict) -> str | None:
+    """The transparent_hugepage value to write at boot, None for
+    "unchanged" (nothing rendered)."""
+    mode = settings.get("transparent_hugepage") or "unchanged"
+    return None if mode == "unchanged" else mode
 
 
 def whole_or_zero(value, name: str) -> int:
@@ -3472,6 +3560,13 @@ def unit_text(service: str, rust_log: str, settings: dict) -> str:
     # readiness keeps a node without a complete record out).
     check = (f"Wants={NODE_CHECK_UNIT}\nAfter={NODE_CHECK_UNIT}\n"
              if check_unit_wanted(settings) else "")
+    # transparent_hugepage: written as root (`+`: no sandbox, no User=)
+    # before every start, and a failed write never keeps the service down
+    # (`-`); the check unit wrote it already at boot, before its warm pass,
+    # when the node has one.
+    thp = thp_mode(settings)
+    if thp:
+        thread_line += thp_exec_line(thp, "-+")
     # C 2.5: no start limit (with RestartSec=1, five crashes in ten seconds
     # would leave a media node failed for good); a stop is bounded by B's
     # edge drain (--stop-drain-ms 14000) plus the shutdown and a spare
@@ -3503,23 +3598,41 @@ WantedBy=multi-user.target
 """
 
 
-def check_unit_text(settings: dict) -> str | None:
+def thp_exec_line(mode: str, prefix: str = "") -> str:
+    """The ExecStartPre that writes transparent_hugepage `mode` (a value of
+    THP_MODES, checked by check_settings)."""
+    if mode not in THP_MODES[1:]:
+        raise ValueError(f"transparent_hugepage {mode!r} is not one of {', '.join(THP_MODES)}")
+    return f"ExecStartPre={prefix}/bin/sh -c 'echo {mode} > {THP_PATH}'\n"
+
+
+def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
     """needletail-node-check.service of a node with these settings (D 2.4),
     or None when it has no check at boot. A oneshot that stays active, so
-    it runs once a boot (the services Want it and start after it): an
-    optional warm pass, then N seconds of watching for stops and steal; its
-    record is NODE_WARM_FILE. needletail-nodecheck exits 0 whatever its
-    verdict, and the `-` on ExecStart makes any other exit (an old build
-    that refuses a flag, a crash, a missing binary) a success too: the
-    service starts, and its readiness keeps a node with another verdict or
-    no record out."""
+    it runs once a boot (the services Want it and start after it): the warm
+    pass (node_warm, on by default: --warm-max-seconds from the node's plan,
+    warm_max_seconds), then N seconds of watching for stops and steal; its
+    record is NODE_WARM_FILE. TimeoutStartSec (check_timeout_s) is the
+    pass's limit, the watch and NODE_CHECK_MARGIN_S: systemd killing it
+    would leave no record, and the node never ready. With
+    transparent_hugepage set, it is written first (ExecStartPre).
+    needletail-nodecheck exits 0 whatever its verdict, and the `-` on
+    ExecStart makes any other exit (an old build that refuses a flag, a
+    crash, a missing binary) a success too: the service starts, and its
+    readiness keeps a node with another verdict or no record out."""
     if not check_unit_wanted(settings):
         return None
     seconds = whole_or_zero(settings.get("node_check_seconds") or 0, "node_check_seconds")
     stop_ms = whole_or_zero(settings["node_check_max_stop_ms"], "node_check_max_stop_ms")
     steal = whole_or_zero(settings["node_check_max_steal_permille"],
                           "node_check_max_steal_permille")
-    warm = " --warm" if settings.get("node_warm") else ""
+    warm = ""
+    if settings.get("node_warm"):
+        warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
+                f"{warm_max_seconds(settings, node)} --slow-write-ms {NODE_WARM_SLOW_WRITE_MS} "
+                f"--slow-seconds-per-gib {NODE_WARM_SLOW_SECONDS_PER_GIB}")
+    thp = thp_mode(settings)
+    pre = thp_exec_line(thp, "-") if thp else ""
     return f"""[Unit]
 Description=Needletail node check at boot (small-mesh lab)
 After=network-online.target
@@ -3530,10 +3643,22 @@ Type=oneshot
 RemainAfterExit=yes
 RuntimeDirectory=needletail
 RuntimeDirectoryPreserve=yes
-TimeoutStartSec={70 + seconds}
-ExecStart=-/usr/local/bin/needletail-nodecheck boot --out {NODE_WARM_FILE}{warm} \\
+TimeoutStartSec={check_timeout_s(settings, node)}
+{pre}ExecStart=-/usr/local/bin/needletail-nodecheck boot --out {NODE_WARM_FILE}{warm} \\
   --check-seconds {seconds} --max-stop-ms {stop_ms} --max-steal-permille {steal}
 """
+
+
+def host_check_unit_text(settings: dict, node: dict) -> str | None:
+    """The check unit of a host that runs no service of ours (WARM_ONLY_ROLES:
+    the source, view and listener hosts, self-hosted LiveKit), or None
+    without node_warm: the warm pass alone (no watch, no
+    transparent_hugepage: those are the mesh's), enabled at every boot
+    (WantedBy=multi-user.target) and started once by push (warm_host)."""
+    if not settings.get("node_warm"):
+        return None
+    own = {**settings, "node_check_seconds": 0, "transparent_hugepage": "unchanged"}
+    return check_unit_text(own, node) + "\n[Install]\nWantedBy=multi-user.target\n"
 
 
 def binaries_for(role: str, node: dict | None = None) -> list[pathlib.Path]:
@@ -3999,17 +4124,19 @@ HOST_QDISC_CHECK = {
 }
 
 
-def node_files(args: list[str], unit: str, settings: dict) -> dict[str, str]:
+def node_files(args: list[str], unit: str, settings: dict,
+               node: dict | None = None) -> dict[str, str]:
     """The `.next` files of a service: its arguments, its unit, the kernel
     settings and the host qdisc script, which checks what it put on every
-    NIC (HOST_QDISC_VERIFY)."""
+    NIC (HOST_QDISC_VERIFY); the check unit, its warm pass sized by the
+    node's plan, when the node has one."""
     sysctls = node_sysctls(settings)
     qdisc = class_plan(settings)["host_qdisc"]
     files = {"args": args_text(args), "unit": unit,
              "sysctl": "".join(f"{key} = {value}\n" for key, value in sysctls.items()),
              "qdisc": "set -e\n" + HOST_QDISC_SCRIPT[qdisc]
              + HOST_QDISC_VERIFY.replace("CHECK", HOST_QDISC_CHECK[qdisc])}
-    check = check_unit_text(settings)
+    check = check_unit_text(settings, node)
     if check is not None:
         files["check"] = check
     return files
@@ -4067,13 +4194,18 @@ def stage_node(node: dict, service: str, key: str, files: dict[str, str]) -> Non
         raise RuntimeError(f"{node['name']}: staged files differ on the node: {', '.join(wrong)}")
 
 
-def activate_node(node: dict, service: str, not_after_ms: int, rollback: bool = False) -> dict:
+def activate_node(node: dict, service: str, not_after_ms: int, rollback: bool = False,
+                  check_s: float = 0.0) -> dict:
     """Run the node's activation script detached and return once its result
     is written: {"ok", "why"} (why "late": refused at its deadline), with
     what is then in force: "args_sha256", "render_sha256", "binary",
     "unit_sha256", and the
-    host qdisc's output when it was applied ("qdisc", else None)."""
-    wait_s = max(0.0, not_after_ms / 1000 - time.time()) + mesh_ops.UNIT_TIMEOUT_STOP_S + 10
+    host qdisc's output when it was applied ("qdisc", else None). `check_s`
+    is the TimeoutStartSec of the node's check unit (check_timeout_s): the
+    restart waits for the check when it has not run since boot (a new
+    instance, a rebuild, the unit new), so the wait has it on top."""
+    wait_s = (max(0.0, not_after_ms / 1000 - time.time()) + mesh_ops.UNIT_TIMEOUT_STOP_S + 10
+              + check_s)
     result = f"/run/needletail/activate-{service}.json"
     command = (f"{ACTIVATE_PATH} {service} --not-after {int(not_after_ms)}"
                + (" --rollback" if rollback else ""))
@@ -4168,6 +4300,136 @@ def stop_service(node: dict, service: str = "needletail-mesh") -> str:
     deploy would still send to the distributors), a standby edge."""
     return common.ssh_text(node, f"systemctl disable --now {service}.service >/dev/null 2>&1 "
                                  "|| true")
+
+
+# ------------------------------------------------------------ the warm pass at boot (D 2.4)
+
+def parse_warm_record(text: str | None) -> dict | None:
+    """A node's NODE_WARM_FILE (needletail-nodecheck boot, schema
+    needletail.node-warm.v2), or None when there is none or it is not one."""
+    try:
+        record = json.loads((text or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    return record if isinstance(record, dict) and "verdict" in record else None
+
+
+def read_warm_record(node: dict) -> dict | None:
+    """This boot's warm record of a node, read over ssh; None when it has
+    none (no check yet, killed by its timeout, an old nodecheck)."""
+    try:
+        return parse_warm_record(common.ssh_text(node, f"cat {NODE_WARM_FILE}", check=False,
+                                                 timeout=60))
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None
+
+
+def warm_word(record: dict | None, settings: dict | None = None) -> str:
+    """One word or so for a node's warm record in push's and status's
+    lines: "warm ok 64.2s", "warm-timeout", "SLOW HOST page-stall", "warm
+    missing" (none written: a node that is never ready), "warm off"."""
+    if record is None:
+        return "warm off" if settings is not None and not check_unit_wanted(settings) \
+            else "warm missing"
+    warm = record.get("warm") or {}
+    seconds = warm.get("seconds")
+    text = f"warm {record.get('verdict')}" + (f" {seconds}s" if seconds is not None else "")
+    if warm.get("worst_page_us") is not None:
+        text += f" worst {warm['worst_page_us'] / 1000:.0f}ms"
+    if record.get("slow_host"):
+        text += f" SLOW HOST {','.join(record.get('slow_reasons') or [])}".rstrip()
+    return text
+
+
+# The flags of `needletail-nodecheck boot` that a check unit with the warm
+# pass renders (check_unit_text).
+NODECHECK_WARM_FLAGS = ("--warm-leave-mb", "--warm-max-seconds", "--slow-write-ms",
+                        "--slow-seconds-per-gib")
+
+
+def nodecheck_problem(path: pathlib.Path | None = None) -> str | None:
+    """Why the needletail-nodecheck that push installs cannot run the warm
+    pass as rendered: its `boot --help` lists `--out` but not every flag of
+    NODECHECK_WARM_FLAGS. Its ExecStart would fail (a success, by its `-`),
+    no record would be written and no node with --node-warm-file would ever
+    be ready. None when it can or when that cannot be told here (no such
+    file, it does not run on this host)."""
+    if path is None:
+        path = next((item for item in binaries_for("load")
+                     if item.name == "needletail-nodecheck"), None)
+    if path is None or not pathlib.Path(path).is_file():
+        return None
+    try:
+        result = subprocess.run([str(path), "boot", "--help"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    flags = set(re.findall(r"--[a-z0-9][a-z0-9-]*", result.stdout))
+    missing = [flag for flag in NODECHECK_WARM_FLAGS if flag not in flags]
+    if "--out" not in flags or not missing:
+        return None
+    return (f"{path} boot has no {', '.join(missing)}: the warm pass at boot would write no "
+            "record and no node would be ready. Build av-mesh's needletail-nodecheck with "
+            "them, or push with --set node_warm=false")
+
+
+def install_nodecheck(node: dict) -> None:
+    """needletail-nodecheck in /usr/local/bin of a host that gets no other
+    binary of ours (a self-hosted LiveKit host)."""
+    source = next((path for path in binaries_for("load") if path.name == "needletail-nodecheck"),
+                  None)
+    if source is None or not source.is_file():
+        raise RuntimeError(f"binary is missing: {source or 'needletail-nodecheck'}")
+    common.rsync_to(node, [str(source)], "/usr/local/bin/")
+
+
+# A host's check unit (WARM_ONLY_ROLES) put in place when it differs,
+# enabled, and started: a no-op once it ran this boot, else it blocks until
+# the warm pass is done.
+WARM_HOST_SCRIPT = """set -u
+unit=/etc/systemd/system/{unit}
+cat >"$unit.tmp" <<'UNIT'
+{text}UNIT
+if cmp -s "$unit.tmp" "$unit"; then rm -f "$unit.tmp"
+else mv -f "$unit.tmp" "$unit" && systemctl daemon-reload; fi
+systemctl enable --quiet {unit} 2>/dev/null
+systemctl start {unit} || true
+"""
+# Without node_warm: a host's check unit disabled and removed.
+UNWARM_HOST_SCRIPT = """unit=/etc/systemd/system/{unit}
+if [ -f "$unit" ]; then
+  systemctl disable --quiet {unit} 2>/dev/null; rm -f "$unit"; systemctl daemon-reload
+fi
+"""
+
+
+def warm_host(node: dict, settings: dict) -> dict | None:
+    """The warm pass of a host that runs no service of ours (load hosts:
+    the source, view and listener hosts; self-hosted LiveKit): its check
+    unit (host_check_unit_text) installed and enabled, so it runs at every
+    boot, and started now (once a boot), waited for; then this boot's
+    record. Without node_warm the unit is disabled and removed (None)."""
+    text = host_check_unit_text(settings, node)
+    if text is None:
+        common.ssh_text(node, UNWARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT), check=False,
+                        timeout=60)
+        return None
+    common.ssh_text(node, WARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT, text=text), check=False,
+                    timeout=check_timeout_s({**settings, "node_check_seconds": 0}, node) + 60)
+    return read_warm_record(node)
+
+
+def warm_staged(node: dict, service: str, check_s: float) -> dict | None:
+    """A standby edge's warm pass, held out: its staged check unit put in
+    place (as its activation will) and started now, so that taking it in
+    later (start, the autoscaler) waits for no warm pass; its record."""
+    staged = f"{NODE_ETC}/{service}.check.next"
+    unit = f"/etc/systemd/system/{NODE_CHECK_UNIT}"
+    script = (f"set -u\nif [ -f {staged} ] && ! cmp -s {staged} {unit}; then\n"
+              f"  cp {staged} {unit}.tmp && mv -f {unit}.tmp {unit} && systemctl daemon-reload\n"
+              f"fi\nsystemctl start {NODE_CHECK_UNIT} || true\n")
+    common.ssh_text(node, script, check=False, timeout=int(check_s) + 60)
+    return read_warm_record(node)
 
 
 # ------------------------------------------------------------ what is deployed (C 2.6)
@@ -4438,6 +4700,9 @@ class LinodeOps(mesh_ops.Ops):
         self.adopt = adopt
         self.adopting = False
         self.http = http or mesh_ops.Http()
+        # {node: its warm record of this boot (NODE_WARM_FILE) or None},
+        # read by install after each node's activation or warm pass.
+        self.warm_records: dict[str, dict | None] = {}
         path = common.state_path()
         self.lock_path = path.with_name(path.name + ".ops.lock")
         self.evidence_dir = common.ARTIFACT_DIR / "rolls"
@@ -4463,6 +4728,18 @@ class LinodeOps(mesh_ops.Ops):
         with `given` on top."""
         own = {} if self.held_out(name) else (self.entry(name).get("set") or {})
         return {**self.base, **own, **(given or {})}
+
+    def own_settings(self, name: str) -> dict:
+        """The settings node `name` is rendered with by this command:
+        node_settings with this command's `--set`, its node_overrides on
+        top."""
+        return node_own_settings(self.node_settings(name, self.given), name)
+
+    def warm_allowance_s(self, node: str) -> float:
+        """mesh_ops.Ops: the node's warm pass's limit (from its plan's
+        memory) and its watch, when it has the check at boot."""
+        record = self.full["nodes"].get(node) or lab_slots(self.full).get(node)
+        return float(warm_allowance_s(self.own_settings(node), record))
 
     def set_of(self, settings: dict) -> dict:
         """The values of a node's settings that are not the worktree's."""
@@ -4780,7 +5057,8 @@ class LinodeOps(mesh_ops.Ops):
             settings = self.node_settings(name, self.given)
             args, unit, service = self.node_args(name, settings, key)
             args = self.kept_stamp(name, key, args, unit)
-            plans[name] = (service, key, node_files(args, unit, node_own_settings(settings, name)))
+            plans[name] = (service, key, node_files(args, unit, node_own_settings(settings, name),
+                                                    self.full["nodes"].get(name)))
             self.staged[name] = self.intended(key, args, unit, settings)
         common.parallel([self.full["nodes"][name] for name in nodes],
                         lambda node: stage_node(node, *plans[node["name"]]))
@@ -4869,7 +5147,8 @@ class LinodeOps(mesh_ops.Ops):
         intended = self.activation_of(node, old, rollback)
         if intended is not None:
             record_deployed(self.full, {node: {**old, "activating": intended}})
-        result = activate_node(self.full["nodes"][node], self.service(node), not_after_ms, rollback)
+        result = activate_node(self.full["nodes"][node], self.service(node), not_after_ms, rollback,
+                               check_timeout_s(self.own_settings(node), self.full["nodes"][node]))
         self._ssh_at[node] = time.monotonic()
         entry = self.settled(old, intended, result)
         if entry is not None:
@@ -4897,9 +5176,16 @@ class LinodeOps(mesh_ops.Ops):
         settings; a backbone the topology does not use is stopped. Every
         node to activate is recorded as such first, and each node that
         activated is recorded even when another of its role failed; the
-        settings, routes and hunted ports with them."""
+        settings, routes and hunted ports with them.
+
+        The warm pass at boot (node_warm): an activation waits for it (the
+        first one after the check unit is installed); a standby edge runs
+        it at once, held out (warm_staged), so that it is warm when it is
+        taken in; a load host or a self-hosted LiveKit host gets its own
+        unit and runs it (warm_host). Each node's record of it (this boot's
+        NODE_WARM_FILE) is kept in `warm_records`."""
         standby = set(standby_edges(self.settings))
-        for role in ("backbone", "distributor", "edge", "contributor", "load"):
+        for role in ("backbone", "distributor", "edge", "contributor") + WARM_ONLY_ROLES:
             group = [node for node in common.nodes_by_role(self.full, role)
                      if names is None or node["name"] in names]
             if not group:
@@ -4909,7 +5195,7 @@ class LinodeOps(mesh_ops.Ops):
             plans: dict[str, tuple | None] = {}
             for node in group:
                 name = node["name"]
-                if role == "load":
+                if role in WARM_ONLY_ROLES:
                     plans[name] = None
                     continue
                 build = (builds or {}).get(mesh_ops.ROLE_TIER[role])
@@ -4925,7 +5211,7 @@ class LinodeOps(mesh_ops.Ops):
                     plans[name] = None
                     continue
                 plans[name] = (service, key, node_files(
-                    args, unit, node_own_settings(self.settings, name)))
+                    args, unit, node_own_settings(self.settings, name), node))
                 self.staged[name] = self.intended(key, args, unit, self.settings)
             olds = {name: self.entry(name) for name in plans}
             intended = {name: self.activation_of(name, olds[name], False) for name in plans
@@ -4937,23 +5223,40 @@ class LinodeOps(mesh_ops.Ops):
 
             def one(node: dict) -> str:
                 name = node["name"]
-                if role == "load":
-                    install_tools(node, self.settings, binaries)
-                    return "tools"
+                own = node_own_settings(self.settings, name)
+                if role in WARM_ONLY_ROLES:
+                    what = []
+                    if role == "load":
+                        install_tools(node, self.settings, binaries)
+                        what.append("tools")
+                    elif own.get("node_warm") and binaries:
+                        install_nodecheck(node)
+                    if role == "load" or own.get("node_warm"):
+                        self.warm_records[name] = warm_host(node, own)
+                        what.append(warm_word(self.warm_records[name], own))
+                    return ", ".join(what) or "untouched"
                 if plans[name] is None:
                     stop_service(node)
                     return "stopped (not in the topology)"
                 stage_node(node, *plans[name])
                 if name in standby:
                     stop_service(node)
+                    if check_unit_wanted(own):
+                        self.warm_records[name] = warm_staged(node, plans[name][0],
+                                                              check_timeout_s(own, node))
+                        return f"staged, held out, {warm_word(self.warm_records[name], own)}"
                     return "staged, held out"
-                result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000))
+                result = activate_node(node, plans[name][0], int((time.time() + 120) * 1000),
+                                       check_s=check_timeout_s(own, node))
                 entry = self.settled(olds[name], intended[name], result)
                 if entry is not None:
                     entries[name] = entry
                 if not result["ok"]:
                     raise RuntimeError(f"activation: {result['why']}")
                 qdisc_checked(name, result.get("qdisc"), self.settings)
+                if check_unit_wanted(own):
+                    self.warm_records[name] = read_warm_record(node)
+                    return f"activated, {warm_word(self.warm_records[name], own)}"
                 return "activated"
 
             try:
@@ -5262,6 +5565,28 @@ class LinodeOps(mesh_ops.Ops):
             self.hold(node, out=False)
         self.install([node], None)
 
+    def replace_slow_host(self, node: str) -> None:
+        """An edge whose warm pass found its host slow, once (react_to_slow_
+        hosts): the lab tool's `replace NODE --mode new` (another physical
+        host, the same VLAN address, a new public one; its own watchdog and
+        budget checks, the budget that `up` recorded), the host keys
+        forgotten, then bootstrap and install of that node alone on its
+        recorded build. It stays held out if it was (a standby edge is
+        warmed, not started)."""
+        old = (self.full["nodes"].get(node) or {}).get("public_ipv4")
+        try:
+            result = run_lab("replace", node, "--mode", "new")
+        finally:
+            self.reload()
+            common.forget_host(old, (self.full["nodes"].get(node) or {}).get("public_ipv4"))
+        if node not in self.full["nodes"]:
+            raise RuntimeError(f"the lab tool deleted {node} and did not create it again: "
+                               f"`linode-small-mesh-lab.py grow`, then `push --nodes {node}`")
+        if result.returncode != 0:
+            raise RuntimeError(f"the lab tool's replace of {node} failed")
+        bootstrap([self.full["nodes"][node]])
+        self.install([node], None)
+
     def add_slot(self, node: str) -> None:
         """The lab tool's `add` with the budget, then the slot pushed. Its
         address may have been another instance's (Linode gives released
@@ -5423,6 +5748,115 @@ def held_out_after(settings: dict, start: list[str] = (), stop: list[str] = ()) 
     return sorted(set(held) | set(stop))
 
 
+# The edges that push replaced for slow_host (react_to_slow_hosts), so that
+# none is replaced twice: {"run_id", "replaced": {node: {"unix", "reasons",
+# "host_uuid", "public_ipv4"}}}, in the worktree's artifacts beside the
+# deployed settings.
+SLOW_HOSTS_FILE = "slow-hosts.json"
+
+
+def slow_hosts_ledger(state: dict) -> dict:
+    """This lab's record of the edges replaced for slow_host (a file of
+    another lab counts for nothing)."""
+    path = common.ARTIFACT_DIR / SLOW_HOSTS_FILE
+    try:
+        ledger = json.loads(path.read_text())
+    except (OSError, ValueError):
+        ledger = {}
+    if ledger.get("run_id") != state.get("run_id") or not isinstance(ledger.get("replaced"), dict):
+        ledger = {"run_id": state.get("run_id"), "replaced": {}}
+    return ledger
+
+
+def save_slow_hosts(ledger: dict) -> None:
+    common.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    path = common.ARTIFACT_DIR / SLOW_HOSTS_FILE
+    path.with_suffix(".next").write_text(json.dumps(ledger, indent=2, sort_keys=True) + "\n")
+    path.with_suffix(".next").replace(path)
+
+
+def slow_host_decision(node: dict, replaced_before: bool, mode: str = "replace") -> tuple[str, str]:
+    """What push does with a node whose warm pass says slow_host: ("replace",
+    why) for an edge (a standby edge or an autoscale slot edge included)
+    not replaced for it before; ("report", why) for everything else: a
+    forwarder (a first distributor above all: other nodes' arguments name
+    it), the contributor, a host without a service, an edge replaced once
+    already, or `--slow-host report` (the autoscaler, which decides for its
+    slots itself)."""
+    role = node.get("role")
+    if role != "edge":
+        kind = {"distributor": "forwarder", "backbone": "forwarder"}.get(role, role)
+        return "report", f"a {kind} is never replaced for slow_host: report only"
+    if replaced_before:
+        return "report", "replaced once for slow_host already: report only"
+    if mode != "replace":
+        return "report", f"--slow-host {mode}"
+    return "replace", "an edge on a slow host: replaced once (lab replace --mode new, then push)"
+
+
+def fresh_slow_hosts(records: dict, since_unix: float) -> dict:
+    """The warm records written since `since_unix` (this push booted their
+    check) that say slow_host: {node: record}."""
+    return {name: record for name, record in records.items()
+            if record and record.get("slow_host") is True
+            and (record.get("unix_us") or 0) >= since_unix * 1_000_000}
+
+
+def react_to_slow_hosts(ops: "LinodeOps", since_unix: float, mode: str) -> list[str]:
+    """After push: every node whose warm pass of this push says slow_host is
+    named with its reasons, and an edge is replaced once
+    (slow_host_decision, LinodeOps.replace_slow_host; recorded in
+    SLOW_HOSTS_FILE before the lab tool runs, so a replace cut off counts
+    too). An edge whose public address other nodes' arguments name is
+    only reported. Returns the problems (a replace that failed)."""
+    slow = fresh_slow_hosts(ops.warm_records, since_unix)
+    if not slow:
+        return []
+    ledger = slow_hosts_ledger(ops.full)
+    problems = []
+    for name in sorted(slow, key=mesh_ops.natural):
+        record, node = slow[name], ops.full["nodes"][name]
+        action, why = slow_host_decision(node, name in ledger["replaced"], mode)
+        reasons = ",".join(record.get("slow_reasons") or []) or "-"
+        if action == "replace":
+            try:
+                dependents = ops.address_dependents(name)
+            except Exception as error:  # noqa: BLE001 - not replaced on a guess
+                dependents = [f"(the render failed: {error})"]
+            if dependents:
+                action, why = "report", (f"its public address is in the arguments of "
+                                         f"{', '.join(dependents)}: report only")
+        print(f"slow host: {name} ({node['role']}, host {host_tag(node) or '?'}) {reasons}: "
+              f"{action}: {why}", file=sys.stderr)
+        if action != "replace":
+            continue
+        ledger["replaced"][name] = {"unix": int(time.time()), "reasons": record.get("slow_reasons"),
+                                    "host_uuid": node.get("host_uuid"),
+                                    "public_ipv4": node.get("public_ipv4")}
+        save_slow_hosts(ledger)
+        try:
+            ops.replace_slow_host(name)
+        except Exception as error:  # noqa: BLE001 - named; the rest go on
+            problems.append(f"{name}: the replace for slow_host failed: {error}")
+            continue
+        print(f"slow host: {name} replaced: {warm_word(ops.warm_records.get(name))}",
+              file=sys.stderr)
+    return problems
+
+
+def warm_summary(records: dict) -> str:
+    """push's last line on the warm pass: how many hosts are complete, and
+    the ones that are not or are slow."""
+    done = sorted(name for name, record in records.items() if record and record.get("complete"))
+    other = sorted((name for name in records if name not in done), key=mesh_ops.natural)
+    slow = sorted((name for name, record in records.items() if record and record.get("slow_host")),
+                  key=mesh_ops.natural)
+    return (f"warm pass: {len(done)} of {len(records)} host(s) complete"
+            + ("; not complete: " + ", ".join(f"{name} ({warm_word(records[name])})"
+                                              for name in other) if other else "")
+            + (f"; slow_host: {', '.join(slow)}" if slow else ""))
+
+
 def command_push(args: argparse.Namespace) -> None:
     """Bootstrap, then stage and activate every node, role by role, parents
     first, on the roots' builds; the deployed record follows each role. Only
@@ -5449,9 +5883,16 @@ def command_push(args: argparse.Namespace) -> None:
             bootstrap(nodes)
         args.remeasure = args.remeasure or not (common.ARTIFACT_DIR / "routes.json").is_file()
         full, settings, _rendered = command_plan(args)
+        warmed = [name for name in full["nodes"]
+                  if node_own_settings(settings, name).get("node_warm")]
+        problem = nodecheck_problem() if warmed else None
+        if problem:
+            print(f"push refused: {problem}", file=sys.stderr)
+            sys.exit(mesh_ops.EXIT_REFUSED)
         ops = LinodeOps(full, settings)
         tiers = sorted({mesh_ops.ROLE_TIER[node["role"]] for node in nodes
                         if node["role"] in mesh_ops.ROLE_TIER})
+        began = time.time()
         try:
             builds = None if args.skip_binaries or only is not None else {
                 tier: ops.target(tier) for tier in tiers}
@@ -5459,6 +5900,11 @@ def command_push(args: argparse.Namespace) -> None:
         except mesh_ops.Refused as refused:
             print(refused, file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
+        problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "replace"))
+        if ops.warm_records:
+            print(warm_summary(ops.warm_records), file=sys.stderr)
+        if problems:
+            sys.exit("push: " + "; ".join(problems))
 
 
 def command_restart(args: argparse.Namespace) -> None:
@@ -5623,9 +6069,14 @@ for _ in range(3):
     best = max(best, 1500 * 65536 / 1e6 / (time.perf_counter() - start))
 print(round(best))")
 echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock_offset_ms=$offset steal_pct=$steal load=$(cut -d' ' -f1 /proc/loadavg) cpu_mb_s=$speed"
+echo "THP $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
+echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
 """, check=False, timeout=60)
 
     results = common.parallel(list(state["nodes"].values()), probe)
+    warm_lines = {}
+    for name, text in list(results.items()):
+        results[name], warm_lines[name] = split_status_probe(text)
     targets = {name: (node["public_ipv4"],
                       CONTRIB_HTTP_PORT if node["role"] == "contributor" else HTTP_PORT, "/api/node")
                for name, node in state["nodes"].items()
@@ -5645,12 +6096,59 @@ echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock
         if name in targets:
             code, document = answers.get(name, (None, None))
             served = node_summary(document if code == 200 else None, recorded.get(name))
-        print(f"{name:<18} {node['role']:<12} {results[name]}{served}{flag}")
+        print(f"{name:<18} {node['role']:<12} {results[name]}{served}{flag} "
+              f"{warm_lines[name][0]}")
     # Shared-CPU hosts vary by 2x in single-thread speed without reporting steal.
     print(f"median single-thread speed {median:.0f} MB/s; slow nodes "
           f"(<75% of median): {' '.join(slow) or 'none'}")
+    for line in warm_status(state, {name: item[1] for name, item in warm_lines.items()}):
+        print(line)
     for line in deployed_summary(state):
         print(line)
+
+
+def split_status_probe(text: str) -> tuple[str, tuple[str, dict | None]]:
+    """A node's status probe output: its service line, and ("warm=... thp=...",
+    its warm record) from the probe's THP and WARM lines."""
+    lines = (text or "").splitlines()
+    main = [line for line in lines if not line.startswith(("THP ", "WARM "))]
+    thp = next((line[4:].strip() for line in lines if line.startswith("THP ")), "") or "-"
+    record = next((parse_warm_record(line[5:]) for line in lines if line.startswith("WARM ")),
+                  None)
+    active = re.search(r"\[([a-z]+)\]", thp)
+    return " ".join(main), (f"[{warm_word(record)}] thp={active.group(1) if active else thp}",
+                            record)
+
+
+def warm_status(state: dict, records: dict) -> list[str]:
+    """status's lines on the warm pass: hosts whose record is not complete,
+    the slow hosts with what push does with each (slow_host_decision: an
+    edge replaced once, every other role reported) and the edges replaced
+    for it, and the deployed transparent_hugepage setting."""
+    ledger = slow_hosts_ledger(state)
+    lines = []
+    missing = sorted((name for name, record in records.items()
+                      if not (record or {}).get("complete")), key=mesh_ops.natural)
+    lines.append("warm pass: " + (f"not complete on {', '.join(missing)}" if missing
+                                  else f"complete on all {len(records)} host(s)"))
+    for name in sorted(records, key=mesh_ops.natural):
+        record = records[name]
+        if not (record or {}).get("slow_host"):
+            continue
+        action, why = slow_host_decision(state["nodes"][name], name in ledger["replaced"])
+        lines.append(f"slow host: {name} ({state['nodes'][name]['role']}) "
+                     f"{','.join(record.get('slow_reasons') or []) or '-'}: "
+                     + ("to replace once (push replaces it when its warm pass is fresh; "
+                        "else `replace --nodes " + name + " --mode new`)" if action == "replace"
+                        else why))
+    for name, item in sorted(ledger["replaced"].items()):
+        lines.append(f"slow host: {name} was replaced once for "
+                     f"{','.join(item.get('reasons') or []) or 'slow_host'} at "
+                     f"{time.strftime('%H:%M:%SZ', time.gmtime(item.get('unix') or 0))}")
+    deployed = (state.get("deployed") or {}).get("settings") or {}
+    lines.append("transparent_hugepage: deployed "
+                 + str(deployed.get("transparent_hugepage") or "unchanged"))
+    return lines
 
 
 def node_summary(document, entry: dict | None) -> str:
@@ -5668,8 +6166,13 @@ def node_summary(document, entry: dict | None) -> str:
         record = "record=same"
     else:
         record = f"record=DIFFERS({entry.get('build')})"
+    warm = (document or {}).get("node_warm") if isinstance(document, dict) else None
+    served = ""
+    if isinstance(warm, dict) and warm.get("configured"):
+        served = (f" node_warm={warm.get('verdict')}"
+                  + (" slow_host" if warm.get("slow_host") else ""))
     return (f" build={status.build_git}-{status.build_unix} state={status.state} "
-            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}")
+            f"drain={','.join(status.drain_reasons or []) or '-'} boot={boot} {record}{served}")
 
 
 def deployed_summary(state: dict) -> list[str]:
@@ -6301,6 +6804,10 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--remeasure", action="store_true")
     push.add_argument("--skip-bootstrap", action="store_true")
     push.add_argument("--skip-binaries", action="store_true")
+    push.add_argument("--slow-host", choices=("replace", "report"), default="replace",
+                      help="an edge whose warm pass at this push says slow_host: replaced "
+                           "once (lab replace --mode new, then pushed), or only reported; "
+                           "any other role is only reported")
     push.add_argument("--nodes", default=None,
                       help="comma-separated: bootstrap, install and start only these (taken "
                            "into service) on their tier's recorded build; every other node is "
