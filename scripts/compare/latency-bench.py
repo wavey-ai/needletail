@@ -2147,6 +2147,13 @@ def main(argv: list[str] | None = None) -> int:
             and not pathlib.Path(source["path"]).is_file():
         raise SystemExit(f"no 4K clip at {source['path']} (clips in {CLIPS}: "
                          f"{', '.join(sorted(path.stem for path in CLIPS.glob('*.ts'))) or 'none'})")
+    loop = pathlib.Path(steps["media"]["loop"])
+    if not pathlib.Path(steps["media"]["from"]).is_file() and \
+            not (loop.is_file() and loop.stat().st_size == LOOP_BYTES):
+        # Refused before the lab comes up, not a traceback in every pass
+        # (local proof 2: a gate whose every pass crashed on it).
+        raise SystemExit(f"--pcm {steps['media']['from']} is missing: give --pcm or export "
+                         "NEEDLETAIL_AUDIO_PCM (docs/lab-environment.md)")
     if args.dry_run:
         print(json.dumps(steps, indent=1))
         return 0

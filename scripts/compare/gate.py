@@ -28,7 +28,11 @@ Every pass's raw data goes into the run archive (~/needletail-data/<run id>/,
 kind local-lab; latency-bench.py writes its own files there, this adds the
 counters snapshot, the refused-part counts, its figures and the verdict), and
 summary.md there is the one-page result. Exit 0 = PASS, 1 = FAIL, 2 = could
-not run.
+not run: the preflight refused, or no pass gave a figure (every bench
+crashed); the verdict then reads COULD NOT RUN with each pass's cause, and
+`baseline` refuses such a run (and one with any pass that could not run).
+A pass that could not run beside passes that did is a failed check named
+"could not run" with its cause.
 
 Thresholds are in gate-thresholds.json beside this file; the audio baseline of
 this machine (p50/p99 of each audio pass on a known-good build) in
@@ -403,6 +407,32 @@ def analyze(directory: pathlib.Path) -> dict:
 
 # --------------------------------------------------------------- the verdict
 
+COULD_NOT_RUN = "COULD NOT RUN"
+EXIT_PASS, EXIT_FAIL, EXIT_COULD_NOT_RUN = 0, 1, 2
+
+
+def crash_cause(text: str) -> str:
+    """The line that says why a pass's bench stopped: the last line of its
+    output that is not blank (a traceback's exception, a refusal)."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1][:400] if lines else "no output"
+
+
+def could_not_run(result: dict) -> str | None:
+    """Why a pass gave nothing to judge, or None when it ran: its bench
+    exited with an error and left no audio client and no 4K viewer (local
+    proof 2's gate-lp2: every bench died on a missing file and the gate
+    said FAIL)."""
+    if result.get("could_not_run"):
+        return result["could_not_run"]
+    ran = bool(result.get("audio")) or bool((result.get("video") or {}).get("viewers"))
+    if ran:
+        return None
+    if result.get("bench_exit") not in (None, 0) or result.get("error"):
+        return result.get("error") or f"latency-bench exited {result.get('bench_exit')}"
+    return None
+
+
 def host_baseline(baseline: dict, host: str | None = None) -> dict:
     return (baseline.get("hosts") or {}).get(host or socket.gethostname(), {})
 
@@ -421,6 +451,14 @@ def verdict(results: list[dict], thresholds: dict, baseline: dict, host: str | N
         checks.append({"check": name, "ok": bool(ok), "value": value, "limit": limit,
                        **({"note": note} if note else {})})
 
+    crashed = {pass_key(item): could_not_run(item) for item in results if could_not_run(item)}
+    if not results or len(crashed) == len(results):
+        # Nothing ran: no verdict on the build at all.
+        return {"verdict": COULD_NOT_RUN, "checks": [], "failed": [],
+                "could_not_run": crashed or {"(no pass)": "no pass gave any figure"}}
+    for key, cause in crashed.items():
+        check(f"{key}: could not run", False, None, None, cause)
+    results = [item for item in results if pass_key(item) not in crashed]
     audio_t = thresholds["audio"]
     by_name = {pass_key(item): item for item in results}
     for item in results:
@@ -506,7 +544,12 @@ def verdict(results: list[dict], thresholds: dict, baseline: dict, host: str | N
                           delta <= audio_t[limit_key], delta, audio_t[limit_key])
     ok = all(item["ok"] for item in checks) and bool(checks)
     return {"verdict": "PASS" if ok else "FAIL", "checks": checks,
-            "failed": [item for item in checks if not item["ok"]]}
+            "failed": [item for item in checks if not item["ok"]],
+            **({"could_not_run": crashed} if crashed else {})}
+
+
+def exit_code(judged: dict) -> int:
+    return {"PASS": EXIT_PASS, COULD_NOT_RUN: EXIT_COULD_NOT_RUN}.get(judged["verdict"], EXIT_FAIL)
 
 
 # --------------------------------------------------------------- the summary
@@ -547,6 +590,12 @@ def summary_markdown(run_id: str, results: list[dict], judged: dict, meta: dict)
                 cells.append(f"{node.get('cpu_percent')} ({node.get('cpu_s_per_gbit')})"
                              + (f" drops {node['socket_drops_total']}" if node.get("socket_drops_total") else ""))
             lines.append(f"| {name} | " + " | ".join(cells) + " |")
+    if judged.get("could_not_run"):
+        lines += ["", "## Could not run", ""]
+        lines += [f"- {key}: {cause}" for key, cause in judged["could_not_run"].items()]
+        if judged["verdict"] == COULD_NOT_RUN:
+            lines += ["", "No pass ran, so the build was not judged and no baseline may be "
+                          "recorded from this run (exit 2)."]
     lines += ["", "## Checks", ""]
     for item in judged["checks"]:
         lines.append(f"- {'ok  ' if item['ok'] else 'FAIL'} {item['check']}: {item['value']}"
@@ -636,6 +685,9 @@ def run_pass(item: dict, run_id: str, media: pathlib.Path, seconds: int, extra: 
         figures = {"name": item["name"], "error": f"no figures: {error}", "audio": [], "nodes": {}}
     figures.update({"gate_pass": item["name"], "bench_exit": code,
                     "seconds_taken": round(time.time() - started, 1)})
+    if could_not_run(figures):
+        figures["could_not_run"] = crash_cause(text) if code not in (None, 0) else \
+            could_not_run(figures)
     archive.write_json(f"{item['name']}/gate-figures.json", figures, kind="result",
                        description="gate.py analyze: this pass's figures")
     return figures
@@ -705,10 +757,10 @@ def cmd_run(args) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     archive.add_file(path, "summary.md", kind="summary", description="gate.py: the one-page result")
-    archive.finish("complete")
+    archive.finish("complete" if judged["verdict"] != COULD_NOT_RUN else "failed")
     print(text)
     print(f"gate: {judged['verdict']} ({run_archive.data_root() / run_id})")
-    return 0 if judged["verdict"] == "PASS" else 1
+    return exit_code(judged)
 
 
 def load_run(run_id: str) -> list[dict]:
@@ -720,10 +772,23 @@ def load_run(run_id: str) -> list[dict]:
         else sorted(p.parent.name for p in root.glob("*/hops.json"))
     results = []
     for name in names:
+        kept = {}
+        try:
+            kept = json.loads((root / name / "gate-figures.json").read_text())
+        except (OSError, ValueError):
+            pass
         if not (root / name / "hops.json").is_file():
+            # A pass that left no figures: it could not run.
+            cause = kept.get("could_not_run") or kept.get("error") or "no hops.json"
+            log_file = root / name / "gate-bench.log"
+            if log_file.is_file() and kept.get("bench_exit") not in (None, 0):
+                cause = crash_cause(log_file.read_text(errors="replace"))
+            results.append({"name": name, "gate_pass": name, "audio": [], "nodes": {},
+                            "bench_exit": kept.get("bench_exit"), "could_not_run": cause})
             continue
         figures = analyze(root / name)
         figures["gate_pass"] = name
+        figures["bench_exit"] = kept.get("bench_exit")
         results.append(figures)
     return results
 
@@ -735,7 +800,7 @@ def cmd_verdict(args) -> int:
     results = load_run(args.run_id)
     judged = verdict(results, thresholds, baseline, args.host)
     print(summary_markdown(args.run_id, results, judged, {"host": args.host or socket.gethostname()}))
-    return 0 if judged["verdict"] == "PASS" else 1
+    return exit_code(judged)
 
 
 def baseline_from(results: list[dict]) -> dict:
@@ -760,7 +825,19 @@ def cmd_baseline(args) -> int:
     path = pathlib.Path(args.baseline)
     data = json.loads(path.read_text()) if path.is_file() else {}
     host = args.host or socket.gethostname()
-    entry = baseline_from(load_run(args.run_id))
+    results = load_run(args.run_id)
+    crashed = {pass_key(item): could_not_run(item) for item in results if could_not_run(item)}
+    if not results or len(crashed) == len(results):
+        print(f"gate: {args.run_id} could not run ({'; '.join(f'{key}: {cause}' for key, cause in crashed.items()) or 'no pass'}): "
+              "no baseline is recorded from it", file=sys.stderr)
+        return EXIT_COULD_NOT_RUN
+    if crashed:
+        # A pass that crashed gives no figure; one that ran beside it is
+        # not a known-good run either.
+        print(f"gate: {len(crashed)} pass(es) of {args.run_id} could not run "
+              f"({', '.join(sorted(crashed))}): no baseline is recorded from it", file=sys.stderr)
+        return EXIT_COULD_NOT_RUN
+    entry = baseline_from(results)
     if not entry:
         print("gate: no audio pass in that run", file=sys.stderr)
         return 2

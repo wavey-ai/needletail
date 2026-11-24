@@ -891,7 +891,7 @@ a stream S that X feeds C (X's row at C has `objects_1s > 0`) and another parent
 | | Check, on C's rows for P and X | Shows |
 | --- | --- | --- |
 | P1 live | P: `source_age_ms <= 100` | P's sources of S arrive now |
-| P2 complete | P: `window_s >= 10`, `skipped_10s == 0`, `resets_10s == 0`, and `objects_10s(P) >= objects_10s(X) - objects_1s(X) / 10` | In the last 10 s P delivered every object of S, and keeps X's pace to within 100 ms |
+| P2 complete | P: `window_s >= 10`, `resets_10s == 0`, `objects_10s(P) >= objects_10s(X) - objects_1s(X) / 10`; and (a) `skipped_10s(P) <= max(2, 0.1% of the objects)`, (b) the child itself missed nothing of S (its retained window has no gap: `head_part - first_part + 1 == window_parts`), (c) no object skipped by both P and X (proved when either skipped none; otherwise noted, judged on (a) and (b)) | Stopping X leaves C nothing short of what it gets today, and P keeps X's pace to within 100 ms. Amended 24 Nov (local proof 2, F4): a skip is an advance of one lane's head over a number, so a lane's ordinary loss that its burst copy, the other parent or the cache mesh repaired counts; healthy lab lanes skip 0 to 4 of 10,000 objects in 10 s, and `skipped_10s == 0` refused every ingress kill and forwarder roll. The exact figures (b) and (c) want are not served yet: `streams[].missed_10s` and `streams[].skipped_by_every_parent_10s` |
 | P3 on time | `slack_mean_us_10s(P) >= slack_mean_us_10s(X) - parity` and `slack_min_us_10s(P) >= slack_min_us_10s(X) - parity`, parity = `--parity-ms` (1.0) | With X gone, C's arrivals are at most 1 ms later on average (the rule's p99 margin) and its worst object of the last 10 s is at most 1 ms later (the rule's silence margin is one unit). Only differences of slack on one node are used: with workstream A the deadline is a point on the stream's own timeline, so a slack by itself says nothing; "past its deadline" is LG4's and CG4's counter |
 | P4 whole objects | When P feeds C on a repair lane (a compiled child's secondary): `multi_symbol_10s == 0` on X's row | A repair lane carries the source of one-symbol audio objects only (RL:728-746); an audio stream with larger objects is not covered by P, and the gate says so |
 
@@ -903,7 +903,7 @@ VLAN address:
 | LG1 | C's `/api/node` answers and C is not `stopping` | The child is there |
 | LG2 | Some parent P of C other than X passes P1 to P3 for S | The child's own record, end to end |
 | LG3 | P's `/api/node`: `ready`, not `hello_draining`, `children.lease.pairs_list` holds `(C, S)`, `children.lease.streams[S].fed_age_ms <= 100` | The other parent holds the lease and its class thread feeds it |
-| LG4 | P's own `parents[]`: a row for S with `source_age_ms <= 100` and `skipped_10s == 0`; and P's `ingest.audio_deadline_drops` is the same on the gate's first and last poll | The other parent is itself fed, complete and not late |
+| LG4 | P's own `parents[]`: a row for S with `source_age_ms <= 100` and `skipped_10s` within P2 (a)'s allowance; and P's `ingest.audio_deadline_drops` is the same on the gate's first and last poll | The other parent is itself fed, complete and not late |
 
 Compiled long-haul children. For every level-2 forwarder D that names X as primary or secondary in the relay
 tree (only a first forwarder has any), with Y the other first forwarder:
@@ -967,7 +967,12 @@ roll.<tier>`.
 
 Cadence. The operator host is in us-east. A poll asks every node it needs at once over kept-open connections
 and takes one round trip of the farthest: about 0.1 s for London, 0.2 s for Tokyo, 0.25 s for Sydney. Polls
-are 200 ms apart or one round trip, whichever is longer. A gate is two polls: 0.4 to 0.6 s. Activation is one
+are 1 s apart (`--poll-s`) or one round trip, whichever is longer; a gate that keeps refusing backs off
+by 1.5 times a poll to 4 s, and no node is read twice within a poll interval, whoever asks (amended 24
+Nov, local proof 2 F3: 200 ms polls through a curl process and a TLS handshake a request moved the
+probes' p99 by 2.5 to 3.4 ms while a gate refused). A gate is two polls: 1 to 1.5 s. The tools run
+at nice 10 (`--nice`), and the local lab's reach the nodes through one kept-open HTTPS helper in the
+lab's namespace (scripts/ns_http.py). Activation is one
 command on an open ssh connection, 0.2 to 0.6 s, carrying `--not-after` = the time of the last passing poll +
 1.5 s: a slow or re-opened ssh makes the node refuse (`late`), and the tool gates again and tries once more.
 After any error in activation the tool reads `process.boot_id`: changed means go on to readiness; unchanged
@@ -977,7 +982,7 @@ Edges, one at a time, region by region:
 
 | Step | What | Bound | Typical |
 | --- | --- | --- | --- |
-| 0 | Surge (`--surge auto`): if fewer than three edges of the region serve, start a standby edge or a created slot on the target build and wait R1, R2, R6, R7. With no such edge the roll refuses (exit 2) and names `--surge never`, which rolls with each listener on one path while its edge restarts | 60 s | 6 s |
+| 0 | Surge (`--surge auto`): if fewer than three edges of the region serve, or the capacity gate (step 1) would refuse X without it, start a standby edge or a created slot on the target build and wait R1, R2, R6, R7, then until it holds its share of the region's legs or the region's `rebalance_moves` have been still 5 s (at most 20 s). The reason and how it settled go into the journal (`surge_why`). With fewer than three edges and no such edge the roll refuses (exit 2) and names `--surge never`, which rolls with each listener on one path while its edge restarts; with three or more and no such edge the capacity gate decides. `--dry-marks` starts nothing: it prints the join and leave marks and its capacity gates count the surge edge as an empty serving edge (amended 24 Nov, local proof 2 F5: three serving edges at ordinary load were refused) | 60 s + 20 s | 6 s |
 | 1 | Capacity gate (below), on two polls | 30 s | 0.5 s |
 | 2 | `POST /api/control/drain-node {"node_id": X}` to X: reason `operator`, kept across the restart | | |
 | 3 | Wait until `subscribers`, `hls_sessions`, `hls_moved_active` and `hls_requests_in_flight` are all 0 on polls spanning 1 s. On timeout: `resume-node`, stop the roll, exit 3 | 30 s | 3 s + 4 r (B) + 1 s |
@@ -1347,6 +1352,32 @@ Workstream A's contributor scenarios (`contrib-kill`, `contrib-restart`, `roll c
 `ingress-kill-return`) run through the same runner once A lands. Order of proof: the tests of section 5;
 `lab-parity`; then the tables. One run is about 2.7 minutes: the scored block is about 10 hours of one lab, the
 three extra cells 11, the lower block 2; half that with two labs if 6.1 allows.
+
+### 6.3.1 The own-CPU layout (added 24 Nov, after local proof 2)
+
+On shared CPUs half of local proof 2's nulls failed, so no verdict there meant anything. The change proofs
+run in `up own_cpus=1`: one lab on the whole 32-CPU host, every mesh node in it on two host CPUs of its own
+from CPU 0 (a g6-dedicated-2; the contributors too), the source host's sender on CPU 31 alone, and the CPUs
+between them split by change-run.py: the probes on the first half, the change's command, the crowd, the
+readers and the lab's own commands on the other (`edge_lab.rest_split`). Fourteen nodes with the source
+host do not fit (the sender, a probe CPU and a tool CPU are three beyond the nodes'), so each scenario group
+leaves out (`leave_out=`, node names or a site) what it does not need: a node left out is not rendered (no
+peer names it), not started and has no CPUs. The default leaves out the two dist-c slots.
+`edge_lab.py layout <settings>` prints the map without starting anything. NEEDLETAIL_EDGE_LAB_CPUS must be
+unset. Each command below is `change-run.py run --name <scenario> --repeat 10 <group's options> --
+<the scenario's command of 6.3>` (with `--null-sleep S` for a plain kill or crash).
+
+| Group | Scenarios | change-run options | Nodes (2 CPUs each) | Probes / tools / sender CPUs | Crowd |
+| --- | --- | --- | --- | --- | --- |
+| London edges | roll-edges, replace-edge, scale-up, scale-down, autoscale-edges, join-during-roll, upgrade-bad-edge, roll-with-a-dead-playlist, roll-interrupted, roll-killed, operator-drain-survives, sigterm-edge, autoscale-lost-edge, autoscale-blind | `--set own_cpus=1 --set slots=lon-edge-4 --set leave_out=newyork,lon-dist-c --hosts lon-readers` | 8: both contributors, lon-dist-a/b, lon-edge-1 to 3, lon-edge-4 (the surge slot) | 16-22 / 23-30 / 31 | `--load-listeners 40` |
+| Forwarders and contributors | roll-forwarders, forwarder-kill-return, gate-refuses-dead, -late, -lossy, upgrade-bad-forwarder, sibling-dies; A's contrib-kill, contrib-restart, roll contributors, ingress-kill-return | `--set own_cpus=1 --set leave_out=lon-edge-4,new-edge-3,lon-dist-c,new-dist-c` | 11: both contributors, the four forwarders, lon-edge-1 to 3, new-edge-1 and 2 | 22-25 / 26-30 / 31 | `--load-listeners 20` |
+| Forwarder slots | replace-forwarder, autoscale-forwarders | `--set own_cpus=1 --set leave_out=lon-edge-4,new-edge-3` | 13: as above with lon-dist-c and new-dist-c | 26-27 / 28-30 / 31 | `--load-listeners 10` |
+| Every tier | upgrade-all, upgrade-back | `--set own_cpus=1 --set slots=lon-edge-4` | 13: both contributors, the four forwarders, lon-edge-1 to 4, new-edge-1 to 3 | 26-27 / 28-30 / 31 | `--load-listeners 10` |
+
+The three extra cells (opus-2.5, client loss, WAN loss) run in their scenario's group. The crowd sizes keep
+the tools' CPUs at about half of what proof 2 saturated (40 two-path listeners an edge on six edges filled
+four shared CPUs). Interrupts and the veths' soft interrupts still run on any CPU; the floor of 6.1 is
+measured again in this layout (lab-parity Q1 with `own_cpus=1`).
 
 ## 7. Deploy and tooling: the Linode proving run
 

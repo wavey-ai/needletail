@@ -26,6 +26,9 @@ the cgroups are scopes of the user's systemd manager.
 
   edge_lab.py up [key=value ...]        build the networks and start every service
   edge_lab.py down                      stop everything and remove the namespaces
+  edge_lab.py layout [up settings]      the CPU map `up` would make of its layout
+                                        settings (own_cpus, leave_out, node_cpus, cpus,
+                                        rt); nothing starts
   edge_lab.py status                    the labs on this host, and one line for each
                                         node: build set, build, state, drain reasons
   edge_lab.py sh <node> <command...>    run a command in the namespace of a node
@@ -77,6 +80,11 @@ the cgroups are scopes of the user's systemd manager.
   --drain-timeout-s 30 --ready-timeout-s 60 --on-failure stop|rollback-all
   --surge auto|never --parity-ms 1.0. Exit status is the engine's (0 done, 2
   refused, 3 stopped, 4 rolled back, 5 no answer, 130 interrupted).
+  roll, restart, replace, kill, return and freeze also take --nice 10 (the
+  tool's own priority, lowered to it) and --poll-s 1.0 (a node is read at
+  most once a poll; a refusing gate backs off to 4 s). They reach the nodes
+  through one kept-open HTTPS helper in the lab's namespace (ns_http.py),
+  not a curl process and a TLS handshake a request.
 
 Slot nodes (low-latency ops item 7): nodes that `up` renders, with every
 peer list naming them, but does not start, as the large mesh's autoscale
@@ -113,6 +121,14 @@ writes the lab into a registry that every worktree of the host shares
   new-edge-3 included, the two dist-c slots none: they cannot be taken in
   under it), the reader hosts on every other CPU of the host: 4 CPUs on the
   32 CPU host from 0.
+- `up own_cpus=1 [leave_out=a,b,site]` is the own-CPU layout of the whole
+  host for the change proofs (C 6.3.1): every mesh node two CPUs of its own
+  from CPU 0 (the contributors too), the source host's sender the last CPU
+  alone, the CPUs between them "_rest" (change-run.py splits it between its
+  probes and its tools). `leave_out=` names nodes, or a site for all of its
+  nodes, that the lab neither renders nor starts nor gives CPUs (default:
+  lon-dist-c and new-dist-c); a lab that does not fit is refused with what
+  to leave out. `edge_lab.py layout <settings>` prints the map only.
 - Whatever the lab runs beside a node's service is in one cgroup, the scope
   needletail-lab-...-tools.scope, the process that drives the lab included,
   so the lab's own CPU time can be read (scope_cpu_usec).
@@ -273,10 +289,55 @@ def ladder_renditions() -> list[str]:
             for stream, _path, peak, average, frame, rate in LADDER]
 
 
-AUDIO_PCM = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_AUDIO_PCM",
-    str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
-        / "daw-nexus-album-1-track-pcm-300s" / "source-track-00.s24le")))
+def main_checkout(root: pathlib.Path = ROOT) -> pathlib.Path | None:
+    """The repository's main checkout when `root` is a linked worktree (its
+    `.git` is a file naming .../<main>/.git/worktrees/<name>), else None."""
+    marker = root / ".git"
+    try:
+        text = marker.read_text() if marker.is_file() else ""
+    except OSError:
+        return None
+    match = re.match(r"gitdir:\s*(\S+)", text)
+    if not match:
+        return None
+    gitdir = pathlib.Path(match.group(1))
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    return gitdir.parents[2] if len(gitdir.parents) > 2 and gitdir.parent.name == "worktrees" \
+        else None
+
+
+# The lab's audio media, built in the main checkout's target/ by the
+# qualification tools; a worktree has none of its own (rm/<name>: its
+# WORKSPACE is rm/, local proof 2's gate crashed on it).
+MEDIA_DIR = ("target", "linode-qualification", "media")
+
+
+def media_path(variable: str, *parts: str, environ=os.environ,
+               root: pathlib.Path | None = None) -> pathlib.Path:
+    """`$variable`; else the first of WORKSPACE/needletail/<media>/<parts>,
+    this checkout's and its main checkout's <media>/<parts> that exists;
+    else the first of them (require_media then says what to export)."""
+    if environ.get(variable):
+        return pathlib.Path(environ[variable])
+    root = root or ROOT
+    bases = [root.parent / "needletail", root, main_checkout(root)]
+    found = [base.joinpath(*MEDIA_DIR, *parts) for base in dict.fromkeys(bases) if base]
+    return next((path for path in found if path.exists()), found[0])
+
+
+def require_media(path: pathlib.Path, variable: str) -> pathlib.Path:
+    """`path`, or LabError naming the variable to export (docs/lab-environment.md)."""
+    if not path.exists():
+        raise LabError(f"{path} is missing: export {variable} with the file or directory to "
+                       "use (the lab's environment is listed in docs/lab-environment.md; a "
+                       "worktree finds the main checkout's target/linode-qualification/media "
+                       "by itself)")
+    return path
+
+
+AUDIO_PCM = media_path("NEEDLETAIL_AUDIO_PCM", "daw-nexus-album-1-track-pcm-300s",
+                       "source-track-00.s24le")
 def newest_build(*paths: pathlib.Path) -> pathlib.Path:
     """The most recently built of `paths` that exists (else the first): a
     native build and a cross build (zigbuild, for Linode) of one checkout
@@ -293,10 +354,7 @@ DAW_SOURCE = pathlib.Path(os.environ.get(
         WORKSPACE / "daw-nexus" / "target" / "release" / "daw-test-source",
         WORKSPACE / "daw-nexus" / "target" / "x86_64-unknown-linux-gnu" / "release"
         / "daw-test-source"))))
-DAW_TRACKS = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_DAW_TRACKS",
-    str(WORKSPACE / "needletail" / "target" / "linode-qualification" / "media"
-        / "daw-nexus-album-1-track-pcm-600s")))
+DAW_TRACKS = media_path("NEEDLETAIL_DAW_TRACKS", "daw-nexus-album-1-track-pcm-600s")
 SERVER_NAME = "mesh.needletail.test"
 
 
@@ -305,7 +363,7 @@ def daw_tracks() -> pathlib.Path:
     of tracks that the settings of the lab name."""
     tracks = load("settings.json").get("daw_album_tracks") or 1
     if tracks == 1:
-        return DAW_TRACKS
+        return require_media(DAW_TRACKS, "NEEDLETAIL_DAW_TRACKS")
     found = sorted(DAW_TRACKS.parent.glob(f"daw-nexus-album-{tracks}-track-pcm-*"))
     if not found:
         raise LabError(f"no audio album with {tracks} tracks in {DAW_TRACKS.parent}")
@@ -499,11 +557,21 @@ def slots_in_service() -> set[str]:
     return set(saved) if isinstance(saved, list) else set()
 
 
+def left_out() -> set[str]:
+    """The nodes `up leave_out=` left out of this lab: not rendered (no peer
+    names them), no CPUs, never started."""
+    saved = load("left-out.json", [])
+    return set(saved) if isinstance(saved, list) else set()
+
+
 def held_slots() -> set[str]:
-    return set(slot_nodes()) - slots_in_service()
+    """Slots out of service, and the nodes left out of the lab."""
+    return (set(slot_nodes()) - slots_in_service()) | left_out()
 
 
 def set_slot_in_service(name: str, in_service: bool) -> None:
+    if name in left_out():
+        raise LabError(f"{name} is left out of this lab (up leave_out=); it has no service")
     if name not in SLOT_CANDIDATES:
         raise LabError(f"{name} is not a slot of this lab")
     made = slots_in_service()
@@ -583,9 +651,85 @@ def enter(name: str | None, source: bool = False) -> list[str]:
     join_tools()
     sets = load("cpus.json")
     rest = sets.get("_source") if source and sets.get("_source") else sets.get("_rest")
+    tools = os.environ.get(TOOL_CPUS_ENV)
+    if tools and not source and rest:
+        # A runner keeps its tools on CPUs apart from its probes
+        # (change-run.py): what they start stays there.
+        rest = [cpu for cpu in expand_cpus(tools) if cpu in rest] or rest
     if rest:
         prefix += ["taskset", "-c", cpu_list(rest)]
     return prefix
+
+
+# The CPUs (a kernel CPU list) that a runner gives the tools it starts, out
+# of the lab's "_rest": enter() keeps their commands there.
+TOOL_CPUS_ENV = "NEEDLETAIL_EDGE_LAB_TOOL_CPUS"
+
+
+def rest_split(sets: dict) -> dict[str, list[int]]:
+    """The CPUs a runner (change-run.py) gives its own processes out of a
+    layout's "_rest" (and "_source"), so that the tools and the sender do
+    not take the probes' CPUs: {"probes", "tools", "sender"}. The sender
+    keeps "_source" when the layout has one (rt=1), else the last CPU of
+    "_rest" when three or more are left; the probes take the first half of
+    the others (at least one), the tools (the change's command, the crowd,
+    the readers) the rest. With fewer CPUs they share. {} without a
+    layout."""
+    rest = list(sets.get("_rest") or [])
+    if not rest:
+        return {}
+    # The source host's own CPUs when the layout gives it some (rt=1's
+    # "_source"; node_cpus gives lon-src a window of its own).
+    sender = list(sets.get("_source") or sets.get(SOURCE_HOST) or [])
+    if not sender and len(rest) >= 3:
+        sender, rest = rest[-1:], rest[:-1]
+    if len(rest) >= 2:
+        half = max(1, len(rest) // 2)
+        probes, tools = rest[:half], rest[half:]
+    else:
+        probes = tools = rest
+    return {"probes": probes, "tools": tools, "sender": sender or probes}
+
+
+# The lab's kept-open HTTP helper (scripts/ns_http.py), one per process.
+_KEPT_HTTP = None
+
+
+def kept_open_http():
+    """The helper that keeps one connection to each node open, started
+    once in the lab's namespace under the prefix curl has (the tools' scope
+    and CPUs); None when it cannot be started."""
+    global _KEPT_HTTP
+    if _KEPT_HTTP is not None and _KEPT_HTTP.alive():
+        return _KEPT_HTTP
+    try:
+        import atexit
+        import ns_http
+        _KEPT_HTTP = ns_http.Client(enter(None) + [
+            sys.executable, str(pathlib.Path(__file__).resolve().parent / "ns_http.py"),
+            "--ca", str(ca_file()), "--server-name", SERVER_NAME])
+        atexit.register(_KEPT_HTTP.close)
+    except Exception:  # noqa: BLE001 - curl is still there
+        _KEPT_HTTP = None
+    return _KEPT_HTTP
+
+
+def kept_http_json(name: str, path: str, method: str = "GET", body: dict | None = None,
+                   timeout: float = 5.0):
+    """http_json through the kept-open helper (one connection a node, no
+    process and no TLS handshake a request); curl when the helper is not
+    running. (status, JSON); status 0 when the node did not answer."""
+    client = kept_open_http()
+    if client is not None:
+        import ns_http
+        port = CONTRIB_HTTP_PORT if node(name)["role"] == "contributor" else HTTP_PORT
+        try:
+            code, document = client.request(node(name)["public_ipv4"], port, method, path, body,
+                                             timeout)
+            return code or 0, document
+        except ns_http.HelperGone:
+            pass
+    return http_json(name, path, method, body, timeout)
 
 
 # ------------------------------------------------------------------ the labs of the host
@@ -929,6 +1073,125 @@ def node_cpu_sets(names: list[str], first: int | None = None,
     return out
 
 
+# The own-CPU layout of the whole host (`up own_cpus=1`, local proof 2: on
+# shared CPUs half the nulls failed and no verdict meant anything): every
+# mesh node in the lab owns OWN_CPUS host CPUs from CPU 0, as a
+# g6-dedicated-2 has (the contributors too: their limit follows), the
+# source host's sender owns the last CPU, and what is between is "_rest":
+# the probes on its first half and the crowd, the readers and the tools on
+# the other (rest_split). Nodes that a scenario does not need are left out
+# (`leave_out=`: names, or a site for all of its nodes) so that the lab fits;
+# by default the two dist-c slots, which only replace-forwarder and
+# autoscale-forwarders take in.
+OWN_CPUS = 2
+# The sender's own CPU, and at least one each for the probes and the tools.
+OWN_REST_MIN = 3
+OWN_DEFAULT_LEFT_OUT = DEFAULT_SLOTS
+
+
+def leave_out_names(text: str | None) -> set[str]:
+    """`leave_out=a,b,newyork`: node names, or a site for every node of it.
+    The source host, the contributor and the first forwarders cannot be
+    left out (no lab carries anything without them)."""
+    out: set[str] = set()
+    sites = {site for _name, _role, site, *_ in NODES}
+    for item in (text or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item in sites:
+            out |= {name for name, _role, site, *_ in NODES if site == item}
+        elif any(name == item for name, *_ in NODES):
+            out.add(item)
+        else:
+            raise LabError(f"leave_out: {item} is neither a node nor a site of the lab")
+    kept = {SOURCE_HOST, "contrib-lon", "lon-dist-a", "lon-dist-b"}
+    if out & kept:
+        raise LabError(f"leave_out: {', '.join(sorted(out & kept))} cannot be left out: the lab "
+                       "carries nothing without the source host, the contributor and the first "
+                       "forwarders")
+    return out
+
+
+def own_cpu_sets(names: list[str], total: int | None = None,
+                 leave_out: set[str] | None = None) -> dict:
+    """The own-CPU layout (`up own_cpus=1`) of the nodes `names` on a host
+    of `total` CPUs: each mesh node not left out OWN_CPUS CPUs from 0 in the
+    order of NODES, the source host's sender the last CPU ("_source"), the
+    CPUs between them "_rest". LabError, with what to leave out, when it
+    does not fit: OWN_REST_MIN CPUs beyond the nodes'."""
+    total = total or os.cpu_count() or 1
+    leave_out = set(OWN_DEFAULT_LEFT_OUT if leave_out is None else leave_out)
+    nodes = [name for name, role, *_ in NODES
+             if name in names and name not in leave_out and role not in ("backbone", "load")]
+    need = OWN_CPUS * len(nodes) + OWN_REST_MIN
+    if need > total:
+        short = need - total
+        spare = [name for name, role, *_ in reversed(NODES)
+                 if name in nodes and role == "edge"][:max(1, -(-short // OWN_CPUS))]
+        raise LabError(f"own_cpus=1: {len(nodes)} nodes take {OWN_CPUS * len(nodes)} CPUs and "
+                       f"the sender, the probes and the tools {OWN_REST_MIN} more: {need} of the "
+                       f"host's {total}. Leave {-(-short // OWN_CPUS)} node(s) out, for example "
+                       f"leave_out={','.join(sorted(leave_out | set(spare)))}")
+    out = {"_first": 0, "_total": total, "_own": True, "_left_out": sorted(leave_out),
+           "_next": OWN_CPUS * len(nodes)}
+    for index, name in enumerate(nodes):
+        out[name] = [OWN_CPUS * index + offset for offset in range(OWN_CPUS)]
+    out["_source"] = [total - 1]
+    out[SOURCE_HOST] = [total - 1]
+    out["_rest"] = list(range(OWN_CPUS * len(nodes), total - 1))
+    return out
+
+
+def layout_lines(sets: dict) -> list[str]:
+    """The CPU map of a layout, as `edge_lab.py layout` prints it."""
+    if not sets:
+        return ["no layout: every node shares every CPU of the host under its quota"]
+    roles = rest_split(sets)
+    lines = [f"{name:<16} cpus {cpu_ranges(sets[name])}" for name, *_ in NODES
+             if isinstance(sets.get(name), list) and name != SOURCE_HOST]
+    lines += [f"{'sender':<16} cpus {cpu_ranges(roles.get('sender', []))} ({SOURCE_HOST})",
+              f"{'probes':<16} cpus {cpu_ranges(roles.get('probes', []))}",
+              f"{'tools':<16} cpus {cpu_ranges(roles.get('tools', []))} (the change's command, "
+              "the crowd, the readers, the lab's own commands)"]
+    if sets.get("_left_out"):
+        lines.append(f"left out: {', '.join(sets['_left_out'])}")
+    return lines
+
+
+def layout_of(overrides: list[str], total: int | None = None) -> dict:
+    """The CPU layout that `up` makes of its layout settings (own_cpus,
+    leave_out, slots, node_cpus, cpus, rt), computed only."""
+    own = rt = False
+    first = cpus = None
+    leave_out = None
+    for item in overrides:
+        key, _, value = item.partition("=")
+        if key == "own_cpus":
+            own = switch(key, value)
+        elif key == "leave_out":
+            leave_out = leave_out_names(value)
+        elif key == "node_cpus":
+            first = int(value)
+        elif key == "cpus":
+            cpus = cpu_range(value)
+        elif key == "rt":
+            rt = value in ("1", "pin")
+    if own:
+        sets = own_cpu_sets([name for name, role, *_ in NODES if role != "backbone"], total,
+                            leave_out)
+        if rt:
+            sets["_per_node"] = RT_CPUS
+        return sets
+    leave_out = leave_out or set()
+    sets = node_cpu_sets([name for name, role, *_ in NODES
+                          if role != "backbone" and name not in leave_out],
+                         first=first, cpus=cpus, per_node=RT_CPUS if rt else None)
+    if leave_out and sets:
+        sets["_left_out"] = sorted(leave_out)
+    return sets
+
+
 def pinned_limits(sets: dict, limits: dict) -> dict:
     """`limits` (up's limit.<node>.*) with, in the `node_cpus` layout, each
     contributor's CPU limit that of its window (PINNED_CONTRIBUTOR_CPUS)
@@ -953,6 +1216,9 @@ def node_cpus(name: str) -> list[int] | None:
     `node_cpus` every node that has CPUs was given them at `up`; a backbone
     relay of the legacy topology runs under its quota alone, as before."""
     sets = load("cpus.json")
+    if name in sets.get("_left_out", []):
+        raise LabError(f"{name} is left out of this lab's layout (up leave_out=): it has no CPUs "
+                       "and no service")
     if "_first" in sets and name not in sets and name in DEFAULT_SLOTS:
         raise LabError(f"node_cpus={sets['_first']}: {name} has no CPUs of its own in this "
                        "layout (PINNED_CONTRIBUTOR_CPUS); a lab that takes a dist-c in runs in "
@@ -1676,10 +1942,12 @@ def lab_state() -> dict:
     (relay_class_cpus: the audio class thread on CPU 0, the video one on 1;
     service_args puts them on the node's own CPUs)."""
     kind = f"g6-dedicated-{RT_CPUS}" if load("rt.json").get("layout") else "local"
+    out_of_lab = left_out()
     return {"run_id": "edge-lab", "hourly_usd": 0.0,
-            "nodes": {name: {**node(name), "type": kind} for name, *_ in NODES},
+            "nodes": {name: {**node(name), "type": kind} for name, *_ in NODES
+                      if name not in out_of_lab},
             "slots": {name: {**node(name), "type": kind, "slot": True}
-                      for name in SLOT_CANDIDATES}}
+                      for name in SLOT_CANDIDATES if name not in out_of_lab}}
 
 
 def build_sources() -> dict:
@@ -2113,9 +2381,18 @@ def up(overrides: list[str], start: bool = True) -> dict:
     slots = set(DEFAULT_SLOTS)
     first_cpu = None
     cpus = os.environ.get("NEEDLETAIL_EDGE_LAB_CPUS") or None
-    take = overlap = realtime = layout = False
+    take = overlap = realtime = layout = own = False
+    leave_out = None
     for item in overrides:
         key, _, value = item.partition("=")
+        if key == "own_cpus":
+            # A lab setting: the own-CPU layout of the whole host.
+            own = switch(key, value)
+            continue
+        if key == "leave_out":
+            # A lab setting: nodes (or sites) not rendered, started or given CPUs.
+            leave_out = leave_out_names(value)
+            continue
         if key == "rt":
             # A lab setting: the nodes may use real-time scheduling
             # (RT_GRANT), on two CPUs each with their class threads pinned;
@@ -2155,7 +2432,8 @@ def up(overrides: list[str], start: bool = True) -> dict:
             if "b" not in sources:
                 raise LabError(f"{item}: this lab has one build set; set b needs "
                                "NEEDLETAIL_AV_MESH_BIN_NEXT or NEEDLETAIL_AV_CONTRIB_BIN_NEXT")
-            if key[2:] in ("node_cpus", "cpus", "take", "cpus_overlap", "slots", "rt") \
+            if key[2:] in ("node_cpus", "cpus", "take", "cpus_overlap", "slots", "rt", "own_cpus",
+                           "leave_out") \
                     or key[2:].startswith(("limit.", "b.")):
                 raise LabError(f"{item}: {key[2:].split('.')[0]} is the lab's, not a build "
                                "set's")
@@ -2165,8 +2443,14 @@ def up(overrides: list[str], start: bool = True) -> dict:
     if first_cpu is not None and cpus is not None:
         raise LabError(f"node_cpus={first_cpu} is the layout of one lab on the whole host and "
                        f"cpus={cpus} that of a lab in a range: give one")
+    if own and (first_cpu is not None or cpus is not None):
+        raise LabError("own_cpus=1 is the layout of one lab on the whole host: give it without "
+                       "node_cpus= or cpus= (and NEEDLETAIL_EDGE_LAB_CPUS unset)")
+    if leave_out is None:
+        leave_out = set(OWN_DEFAULT_LEFT_OUT) if own else set()
+    slots -= leave_out
     if layout:
-        if first_cpu is None and cpus is None:
+        if first_cpu is None and cpus is None and not own:
             raise LabError("rt=1 pins each node's class threads to CPUs of its own: give the "
                            "lab a layout, cpus=A-B (or NEEDLETAIL_EDGE_LAB_CPUS) or node_cpus=FIRST")
     if realtime:
@@ -2174,10 +2458,19 @@ def up(overrides: list[str], start: bool = True) -> dict:
     # In a range, a slot that is held out takes its window when it is taken
     # in; with node_cpus every slot has its own CPUs from the start, as the
     # reader hosts are pinned to what is left (node_cpu_sets).
-    sets = node_cpu_sets([name for name, role, *_ in NODES
-                          if role != "backbone" and (cpus is None or name not in slots)],
-                         first=first_cpu, cpus=None if cpus is None else cpu_range(cpus),
-                         per_node=RT_CPUS if layout else None)
+    if own:
+        sets = own_cpu_sets([name for name, role, *_ in NODES if role != "backbone"],
+                            leave_out=leave_out)
+        if layout:
+            sets["_per_node"] = RT_CPUS
+    else:
+        sets = node_cpu_sets([name for name, role, *_ in NODES
+                              if role != "backbone" and name not in leave_out
+                              and (cpus is None or name not in slots)],
+                             first=first_cpu, cpus=None if cpus is None else cpu_range(cpus),
+                             per_node=RT_CPUS if layout else None)
+        if leave_out:
+            sets["_left_out"] = sorted(leave_out)
     # Refused here, with nothing stopped yet, when the lab is another
     # owner's or its CPUs are another lab's; else the lab that ran in this
     # state directory is stopped.
@@ -2198,6 +2491,7 @@ def up(overrides: list[str], start: bool = True) -> dict:
     (WORK / "rt-check.json").unlink(missing_ok=True)
     save("slots.json", sorted(slots))
     save("slots-created.json", [])
+    save("left-out.json", sorted(leave_out))
     start_tools()
     join_tools()
     build_networks()
@@ -2406,7 +2700,7 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                 "--duration-seconds", str(seconds), "--payload", "flac",
                 "--epoch-samples", str(probe_epoch_samples("flac")),
                 "--channels", "2", "--group-channels", "8",
-                "--pcm-s24le-file", str(AUDIO_PCM),
+                "--pcm-s24le-file", str(require_media(AUDIO_PCM, "NEEDLETAIL_AUDIO_PCM")),
                 "--repair-percent", "12", "--min-repair-symbols", "1"],
             stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         sources["audio"] = process.pid
@@ -2965,8 +3259,17 @@ class EdgeLabOps(mesh_ops.Ops):
         return out
 
     # ---------------------------------------------------------- HTTP
+    def http(self, node: str, path: str, method: str = "GET", body: dict | None = None,
+             timeout: float = 2.0):
+        """The lab's kept-open HTTP when it has one (kept_http_json), else
+        curl (http_json)."""
+        call = getattr(self.lab, "kept_http_json", None) or self.lab.http_json
+        if method == "GET":
+            return call(node, path, timeout=timeout)
+        return call(node, path, method, body)
+
     def status(self, node: str):
-        code, body = self.lab.http_json(node, "/api/node", timeout=2.0)
+        code, body = self.http(node, "/api/node")
         return body if code == 200 and isinstance(body, dict) else None
 
     def statuses(self, nodes) -> dict:
@@ -2977,11 +3280,11 @@ class EdgeLabOps(mesh_ops.Ops):
             return dict(zip(nodes, pool.map(self.status, nodes)))
 
     def get(self, node: str, path: str) -> tuple:
-        code, body = self.lab.http_json(node, path, timeout=2.0)
+        code, body = self.http(node, path)
         return (code or None), body
 
     def post(self, node: str, path: str, body: dict) -> int | None:
-        code, _answer = self.lab.http_json(node, path, "POST", body)
+        code, _answer = self.http(node, path, "POST", body)
         return code or None
 
     # ---------------------------------------------------------- builds
@@ -3233,7 +3536,20 @@ def engine_parser(command: str) -> argparse.ArgumentParser:
     parser.add_argument("--on-failure", choices=("stop", "rollback-all"), default="stop")
     parser.add_argument("--surge", choices=("auto", "never"), default="auto")
     parser.add_argument("--parity-ms", type=float, default=1.0)
+    add_tool_options(parser)
     return parser
+
+
+def add_tool_options(parser: argparse.ArgumentParser) -> None:
+    """The change tools' own cost (local proof 2, F3): their priority and
+    how often they ask a node."""
+    parser.add_argument("--nice", type=int, default=mesh_ops.NICE,
+                        help=f"run at this nice level or lower priority (default "
+                             f"{mesh_ops.NICE}; 0 leaves it)")
+    parser.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S,
+                        help=f"seconds between a tool's reads of a node (default "
+                             f"{mesh_ops.POLL_S:g}; a refusing gate backs off to "
+                             f"{mesh_ops.POLL_MAX_S:g})")
 
 
 def names_of(text: str | None) -> list[str] | None:
@@ -3254,8 +3570,9 @@ def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
         drain_timeout_s=args.drain_timeout_s, ready_timeout_s=args.ready_timeout_s,
         on_failure=args.on_failure, surge=args.surge, parity_ms=args.parity_ms,
         hold_s=getattr(args, "hold_s", 0.0), rollback=getattr(args, "rollback", False),
-        marks_file=args.marks, node_marks_file=args.node_marks)
+        marks_file=args.marks, node_marks_file=args.node_marks, poll_s=args.poll_s)
     if ops is None:
+        mesh_ops.renice(args.nice)
         ops = EdgeLabOps(build=getattr(args, "build", None), gap_s=getattr(args, "gap_s", 30.0))
     if command == "roll":
         return mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes),
@@ -3275,7 +3592,11 @@ def change_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
     change's two marks only. Returns the change's exit status."""
     parser = argparse.ArgumentParser(prog=f"edge_lab.py {command}")
     contributor_changes.add_options(parser, command, positional=True)
+    add_tool_options(parser)
     args = parser.parse_args(arguments)
+    if ops is None:
+        mesh_ops.renice(args.nice)
+    change.setdefault("poll_s", args.poll_s)
     return contributor_changes.run(ops or EdgeLabOps(), command, args, **change)
 
 
@@ -3347,6 +3668,9 @@ def main() -> None:
             start_sources(int(arguments[0]) if arguments else 600)
         elif command == "start":
             name = arguments[0]
+            if name in left_out():
+                raise LabError(f"{name} is left out of this lab (up leave_out=); bring the lab up "
+                               "without it left out")
             if name in SLOT_CANDIDATES:
                 set_slot_in_service(name, True)
             pid = service_pid(name) or start_service(name)
@@ -3375,6 +3699,9 @@ def main() -> None:
                 restart_s = float(arguments[2])
             pid = crash_service(name, restart_s)
             print(f"{name} was killed and is back (pid {pid})")
+        elif command == "layout":
+            # The CPU map `up` would make of these settings; nothing starts.
+            print("\n".join(layout_lines(layout_of(arguments))))
         elif command in ENGINE_VERBS:
             sys.exit(engine_verb(command, arguments))
         elif command in contributor_changes.VERBS:
