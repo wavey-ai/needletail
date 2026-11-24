@@ -4413,6 +4413,35 @@ def read_warm_record(node: dict) -> dict | None:
         return None
 
 
+# A pass's touch is proved when it wrote nearly all it meant to (what
+# MemAvailable less the reserve allowed) and the process's peak resident
+# set held it (lead, 24 Nov: seven hosts of the referee's lab passed in 0.4 s
+# over 3.3 GB, about 6 GB/s, memory the host had backed already; such a pass
+# must be told from one that touched nothing).
+TOUCH_PROOF_SHARE = 0.9
+
+
+def touch_proof(record: dict | None) -> str | None:
+    """"proved", "NOT PROVED (why)", or None when the record carries no
+    proof (a nodecheck before the touch-proof fields: mapped_mb,
+    pages_written, vm_hwm_mb)."""
+    warm = (record or {}).get("warm") or {}
+    if not warm.get("ran", True) or warm.get("vm_hwm_mb") is None \
+            or warm.get("pages_written") is None:
+        return None
+    written_mb = int(warm["pages_written"]) * 4096 / (1 << 20)
+    meant_mb = max(0, int(warm.get("mem_available_before_mb") or 0)
+                   - int(warm.get("leave_mb") or NODE_WARM_LEAVE_MB))
+    why = []
+    if meant_mb and written_mb < TOUCH_PROOF_SHARE * meant_mb:
+        why.append(f"wrote {written_mb:.0f} of {meant_mb} MB")
+    if int(warm.get("mapped_mb") or 0) < TOUCH_PROOF_SHARE * written_mb:
+        why.append(f"mapped {warm.get('mapped_mb')} MB")
+    if int(warm["vm_hwm_mb"]) < TOUCH_PROOF_SHARE * written_mb:
+        why.append(f"peak RSS {warm['vm_hwm_mb']} MB")
+    return "proved" if not why else "NOT PROVED (" + ", ".join(why) + ")"
+
+
 def warm_word(record: dict | None, settings: dict | None = None) -> str:
     """One word or so for a node's warm record in push's and status's
     lines: "warm ok 64.2s", "warm-timeout", "SLOW HOST page-stall", "warm
@@ -4425,6 +4454,13 @@ def warm_word(record: dict | None, settings: dict | None = None) -> str:
     text = f"warm {record.get('verdict')}" + (f" {seconds}s" if seconds is not None else "")
     if warm.get("worst_page_us") is not None:
         text += f" worst {warm['worst_page_us'] / 1000:.0f}ms"
+    proof = touch_proof(record)
+    if proof is not None:
+        text += (f" wrote {int(warm['pages_written']) * 4096 >> 20}MB of "
+                 f"{warm.get('mem_available_before_mb')}MB available, mapped "
+                 f"{warm.get('mapped_mb')}MB, peak RSS {warm.get('vm_hwm_mb')}MB")
+        if proof != "proved":
+            text += f" TOUCH {proof}"
     if record.get("slow_host"):
         text += f" SLOW HOST {','.join(record.get('slow_reasons') or [])}".rstrip()
     return text
@@ -4472,10 +4508,23 @@ def warm_entry(record: dict | None) -> dict:
     out = {"verdict": record.get("verdict"), "complete": record.get("complete") is True,
            "slow_host": record.get("slow_host") is True,
            "slow_reasons": record.get("slow_reasons") or [], "unix_us": record.get("unix_us")}
+    # Every figure the slow-host rule is made of, for every host whether or
+    # not it is called slow, so that the rule can be tuned from the data.
     for key in ("seconds", "worst_page_us", "touched_mb", "mem_total_mb",
-                "slow_bound_seconds", "max_seconds", "pages_over_100ms"):
+                "slow_bound_seconds", "max_seconds", "pages_over_1ms", "pages_over_100ms",
+                "stalls_dropped", "stalled_us", "threads", "finished", "thp",
+                "mem_available_before_mb", "leave_mb", "mapped_mb", "pages_written",
+                "vm_hwm_mb"):
         if warm.get(key) is not None:
             out[key] = warm[key]
+    stalls = warm.get("stalls")
+    if isinstance(stalls, list):
+        out["stalls"] = len(stalls)
+        out["stalls_ms"] = round(sum(float(item.get("ms") or 0) for item in stalls), 1)
+    for key in ("nodecheck_slow_host", "nodecheck_slow_reasons", "stall_share_permille"):
+        if key in record:
+            out[key] = record[key]
+    out["touch"] = touch_proof(record)
     return out
 
 
@@ -4692,6 +4741,17 @@ def record_deployed(full: dict, entries: dict, settings: dict | None = None,
             deployed["warm"] = {name: item for name, item in
                                 {**(deployed.get("warm") or {}), **(warm or {})}.items()
                                 if name in created}
+            # Every pass of every instance, kept (a replaced instance's
+            # too, with the host it ran on): the rule is tuned from these.
+            history = deployed.setdefault("warm_history", [])
+            seen = {(item.get("node"), item.get("unix_us")) for item in history}
+            for name, item in sorted((warm or {}).items()):
+                if item.get("unix_us") is None or (name, item.get("unix_us")) in seen:
+                    continue
+                node = created.get(name) or {}
+                history.append({"node": name, "role": node.get("role"), "type": node.get("type"),
+                                "host_uuid": node.get("host_uuid"),
+                                "public_ipv4": node.get("public_ipv4"), **item})
 
     lab_tool().change_state(common.state_path(), full, change)
 
@@ -5649,6 +5709,16 @@ class LinodeOps(mesh_ops.Ops):
                 "rebuild --resume`")
         if result.returncode != 0:
             raise RuntimeError(f"the lab tool's replace of {node} failed")
+        self.wait_booted(node)
+
+    def wait_booted(self, node: str) -> None:
+        """A new or rebuilt instance is `running` to the API before its
+        sshd answers: wait for it (common.wait_ssh, bounded), or fail for
+        this node alone, named."""
+        if not common.wait_ssh([self.full["nodes"][node]]):
+            raise RuntimeError(f"{node}: the new instance's ssh did not answer within "
+                               f"{common.SSH_WAIT_S:g} s; it is not pushed (push --nodes "
+                               f"{node} once it answers)")
 
     def address_dependents(self, node: str) -> list[str]:
         """The running nodes (recorded, not held out) whose arguments name
@@ -5702,6 +5772,7 @@ class LinodeOps(mesh_ops.Ops):
                                f"`linode-small-mesh-lab.py grow`, then `push --nodes {node}`")
         if result.returncode != 0:
             raise RuntimeError(f"the lab tool's replace of {node} failed")
+        self.wait_booted(node)
         bootstrap([self.full["nodes"][node]])
         self.install([node], None)
 
@@ -5893,7 +5964,7 @@ def save_slow_hosts(ledger: dict) -> None:
     path.with_suffix(".next").replace(path)
 
 
-def slow_host_decision(node: dict, replaced_before: bool, mode: str = "replace") -> tuple[str, str]:
+def slow_host_decision(node: dict, replaced_before: bool, mode: str = "report") -> tuple[str, str]:
     """What push does with a node whose warm pass says slow_host: ("replace",
     why) for an edge (a standby edge or an autoscale slot edge included)
     not replaced for it before; ("report", why) for everything else: a
@@ -5908,7 +5979,8 @@ def slow_host_decision(node: dict, replaced_before: bool, mode: str = "replace")
     if replaced_before:
         return "report", "replaced once for slow_host already: report only"
     if mode != "replace":
-        return "report", f"--slow-host {mode}"
+        return "report", ("reported only (the default; push --slow-host replace replaces an "
+                          "edge once)")
     return "replace", "an edge on a slow host: replaced once (lab replace --mode new, then push)"
 
 
@@ -6018,7 +6090,7 @@ def command_push(args: argparse.Namespace) -> None:
         except mesh_ops.Refused as refused:
             print(refused, file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
-        problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "replace"))
+        problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "report"))
         if ops.warm_records:
             print(warm_summary(ops.warm_records), file=sys.stderr)
         if problems:
@@ -6256,6 +6328,17 @@ def warm_status(state: dict, records: dict) -> list[str]:
                       if not (record or {}).get("complete")), key=mesh_ops.natural)
     lines.append("warm pass: " + (f"not complete on {', '.join(missing)}" if missing
                                   else f"complete on all {len(records)} host(s)"))
+    proofs = {name: touch_proof(record) for name, record in records.items()}
+    unproved = sorted((name for name, proof in proofs.items() if proof and proof != "proved"),
+                      key=mesh_ops.natural)
+    unknown = sorted((name for name, proof in proofs.items() if proof is None
+                      and (records[name] or {}).get("warm")), key=mesh_ops.natural)
+    if unproved:
+        lines.append("warm touch NOT proved on " + ", ".join(
+            f"{name} {proofs[name][len('NOT PROVED '):]}" for name in unproved))
+    if unknown:
+        lines.append("warm touch unknown (a nodecheck without mapped_mb, pages_written, "
+                     "vm_hwm_mb) on " + ", ".join(unknown))
     for name in sorted(records, key=mesh_ops.natural):
         record = records[name]
         if not (record or {}).get("slow_host"):
@@ -6668,6 +6751,14 @@ def collect_lab(run: archived_run.Run, state: dict, stamp: str) -> list[str]:
                                              mesh_ops.natural(item[0]))},
                    "lab", "the physical Linode host of every node (host_uuid as the lab tool's "
                           "`hosts` recorded it in the lab state; null: never recorded)")
+    if deployed.get("warm") or deployed.get("warm_history"):
+        run.write_json(f"lab/warm.{stamp}.json",
+                       {"current": deployed.get("warm") or {},
+                        "history": deployed.get("warm_history") or []},
+                       "lab", "every host's boot warm pass: seconds, worst write (us), stalls, "
+                              "the stall share (per mille), nodecheck's and the deploy's "
+                              "slow-host reasons; `history` every pass of every instance, "
+                              "replaced ones with their host, whether or not called slow")
     if deployed:
         run.write_json(f"lab/deployed.{stamp}.json", scrubbed_record(deployed), "lab",
                        "the deployed record: settings in force, routes and ports digests, each "
@@ -6934,10 +7025,12 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--remeasure", action="store_true")
     push.add_argument("--skip-bootstrap", action="store_true")
     push.add_argument("--skip-binaries", action="store_true")
-    push.add_argument("--slow-host", choices=("replace", "report"), default="replace",
-                      help="an edge whose warm pass at this push says slow_host: replaced "
-                           "once (lab replace --mode new, then pushed), or only reported; "
-                           "any other role is only reported")
+    push.add_argument("--slow-host", choices=("replace", "report"), default="report",
+                      help="an edge whose warm pass at this push says slow_host: only "
+                           "reported (the default, lead 24 Nov: until Linode data shows a rule "
+                           "that picks out hosts that misbehave after warming), or replaced "
+                           "once (lab replace --mode new, then pushed); any other role is "
+                           "only reported")
     push.add_argument("--nodes", default=None,
                       help="comma-separated: bootstrap, install and start only these (taken "
                            "into service) on their tier's recorded build; every other node is "

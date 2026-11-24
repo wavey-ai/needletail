@@ -8,6 +8,7 @@ import os
 import pathlib
 import re
 import subprocess
+import time
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -125,6 +126,39 @@ def ssh(node: dict, command: str, check: bool = True, timeout: int = 600,
 
 def ssh_text(node: dict, command: str, **kwargs) -> str:
     return ssh(node, command, **kwargs).stdout.decode(errors="replace").strip()
+
+
+# How long a new or rebuilt instance gets for its sshd to answer: Linode
+# says `running` before the guest has booted (the referee's lab, 24 Nov: a
+# push that bootstrapped a replacement at once timed out on three of four).
+SSH_WAIT_S = 300.0
+SSH_WAIT_POLL_S = 5.0
+
+
+def wait_ssh(nodes: list[dict], patience_s: float = SSH_WAIT_S, poll_s: float = SSH_WAIT_POLL_S,
+             clock=time.time, sleep=time.sleep, probe=None) -> list[str]:
+    """The names of `nodes` whose sshd answers a command (`true`) within
+    `patience_s`, tried every `poll_s` (each try bounded by ssh's own
+    ConnectTimeout); the rest are not in the list."""
+    def answers(node: dict) -> bool:
+        # Through ssh_text (looked up at the call), as every other remote
+        # command of the tools: a test's fake lab stands in for it.
+        try:
+            ssh_text(node, "true", check=True, timeout=30)
+            return True
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return False
+
+    probe = probe or answers
+    deadline = clock() + patience_s
+    pending = list(nodes)
+    while True:
+        pending = [node for node in pending if not probe(node)]
+        if not pending or clock() >= deadline:
+            break
+        sleep(poll_s)
+    missing = {node["name"] for node in pending}
+    return [node["name"] for node in nodes if node["name"] not in missing]
 
 
 def forget_host(*addresses: str | None) -> None:

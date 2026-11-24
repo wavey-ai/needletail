@@ -404,9 +404,10 @@ takes the sum of each role's largest pass: at about 90 s for every 4 GB,
 1,200 + 300 s (45 minutes). `push --nodes` of a created slot, `replace` (its
 push) and the autoscaler's join of a new instance take one host's pass more. A
 roll or a restart does not repeat it (once a boot). A host whose pass says
-`slow_host` (longer than 180 s for every 4 GB, or one page write of a
-second) is replaced once by push when it is an edge, and only reported
-otherwise. Every measured window starts only once every host of the lab
+`slow_host` (longer than 180 s for every 4 GB, one page write of 5 s or
+more, or over a quarter of the pass in stalls of 100 ms or more) is only
+reported by default (24 Nov: the old 1 s rule flagged 16 of 31 hosts in the
+referee's lab); `push --slow-host replace` replaces an edge once. Every measured window starts only once every host of the lab
 reports warm (`linode-small-mesh-deploy.py status`: `warm pass: complete on
 all N host(s)`).
 
@@ -1003,11 +1004,11 @@ L = the lead's tools run by the referee):
 | --- | --- | --- |
 | 0-8 | `lab up` (45 nodes, Sydney first; the archive run of the lab's id is created here) | L |
 | 8-9 | `lab hosts` (the hosts map) | L |
-| 9-23 | `deploy push` with the settings below: bootstrap, then role by role, each node's boot warm pass behind its readiness (about 90 s on a 4 GB guest, bound 300 s per 4 GB); slow edges replaced once | L |
-| 12-27 | after push's "bootstrapped" line: `compare_lab.py prepare`, `livekit`, `clips`, `audio`, `secrets` | R |
-| 23-25 | `deploy hunt`, `deploy restart --roles distributor` (a restart, no new warm pass) | L |
-| 27-30 | `compare_lab.py warm` (every host that is not the mesh's: source, view, nano, listener, LiveKit) | R |
-| 30-35 | `deploy status` (`warm pass: complete on all N host(s)`), `steal-check.py 3`, samplers on every node | L, R |
+| 9-27 | `deploy push` with the settings below: bootstrap, then role by role, each node's boot warm pass behind its readiness (about 90 s for every 4 GB: the roles one after another, about 13.5 min of it; bound 300 s per 4 GB); slow hosts reported, not replaced | L |
+| 12-29 | after push's "bootstrapped" line: `compare_lab.py prepare`, `livekit`, `clips`, `audio`, `secrets` | R |
+| 27-29 | `deploy hunt`, `deploy restart --roles distributor` (a restart, no new warm pass) | L |
+| 29-32 | `compare_lab.py warm` (every host that is not the mesh's: source, view, nano, listener, LiveKit) | R |
+| 32-35 | `deploy status` (`warm pass: complete on all N host(s)`), `steal-check.py 3`, samplers on every node | L, R |
 | 35-41 | the throwaway warm-up session: 60 s of audio, 4K at 25 and 80 for 20 s each; archived, not scored | R |
 | 41-56 | audio headline 1: 1 ms Opus Custom and 1 ms PCM, lkregion, lkcloud and Needletail (two-path UDP client by default): baseline, joins, 1%, 5%, burst, 100 ms delay; host-stops.py flags | R |
 | 56-64 | audio headline 2: standard 2.5 ms Opus, the same lanes and phases | R |
@@ -1100,7 +1101,17 @@ through `node_overrides`; scale-run's settings for this topology
 matter: `node_warm` true (the boot warm pass, bound 300 s per 4 GB) and the
 slow-host rule (`node_warm_slow_seconds_per_4gb` 180,
 `node_warm_slow_write_ms` 5000, `node_warm_slow_stall_share_permille` 250;
-an edge replaced once); `net.core.rmem_max=134217728` (rendered by default
+reported only: push's `--slow-host` and the autoscaler default to report
+since 24 Nov, `--slow-host replace` replaces an edge once, waiting for its
+new instance's ssh; every host's warm figures go into the deployed record's
+`warm` and `warm_history` and the archive's `lab/warm.*.json`; with
+av-mesh's nodecheck patch of 24 Nov the record also proves the touch, the
+bytes mapped, the pages written and the peak RSS, and `status` names a pass
+whose touch is not proved). On the referee's lab of 24 Nov (31 hosts) the
+pass and the 5 s write flag tok-edge-1 and tok-lk only; the quarter clause,
+counting each write of 100 ms or more at 100 ms, flags ten more (the hosts
+that passed fastest spent most of their pass in long writes): it does not
+pick out the slow hosts, so read it as data, not as a verdict; `net.core.rmem_max=134217728` (rendered by default
 since integration 4); the UDP client's two paths and spare
 (`--paths 2 --spare true`), the one-path control `--paths 1 --spare false`.
 

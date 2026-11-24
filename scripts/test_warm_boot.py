@@ -248,7 +248,7 @@ class Push(scale.FakeLab):
                    "lon-edge-2": record(slow=False),
                    # Written before this push (an earlier boot): not judged now.
                    "lon-edge-3": record(slow=True, unix_us=1_000_000)})
-        replaced = self.slow_push()
+        replaced = self.slow_push(("slow_host", "replace"))
         self.assertEqual(replaced, ["lon-edge-1", "lon-edge-6"])   # a standby edge too
         self.assertIn("slow host: lon-dist-a (distributor", self.stderr)
         self.assertIn("a forwarder is never replaced for slow_host: report only", self.stderr)
@@ -258,7 +258,7 @@ class Push(scale.FakeLab):
         self.assertEqual(sorted(ledger["replaced"]), ["lon-edge-1", "lon-edge-6"])
         self.assertEqual(ledger["replaced"]["lon-edge-1"]["reasons"], ["page-stall"])
         # The new instance is slow again: reported, never replaced twice.
-        replaced = self.slow_push()
+        replaced = self.slow_push(("slow_host", "replace"))
         self.assertEqual(replaced, [])
         self.assertIn("replaced once for slow_host already: report only", self.stderr)
 
@@ -280,11 +280,75 @@ class Push(scale.FakeLab):
         self.assertIs(warm["slow_host"], False)
         self.assertEqual(warm["slow_reasons"], [])
 
+    def test_a_replacement_that_never_answers_fails_that_node_only(self):
+        """Lead, 24 Nov (the referee's lab): a push that replaced four edges
+        timed out on ssh to instances still booting. A replacement that does
+        not answer fails for that node alone: the others are replaced, the
+        push completes and names it."""
+        self.seed({"lon-edge-1": record(slow=True), "lon-edge-6": record(slow=True)})
+        replaced = []
+
+        def replace(ops, name):
+            if name == "lon-edge-1":
+                raise RuntimeError(f"{name}: the new instance's ssh did not answer within 300 s")
+            replaced.append(name)
+
+        with mock.patch.object(deploy.LinodeOps, "replace_slow_host", replace), \
+                mock.patch.object(deploy.LinodeOps, "address_dependents", lambda ops, name: []):
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True,
+                                                                 slow_host="replace"))
+        self.assertEqual(replaced, ["lon-edge-6"])
+        self.assertIn("lon-edge-1: the replace for slow_host failed", str(caught.exception))
+        self.assertNotIn("lon-edge-6", str(caught.exception))
+        self.assertIn("warm pass:", self.stderr)          # the push's summary still printed
+
+    def test_every_pass_is_recorded_whether_slow_or_not(self):
+        """Every host's warm figures in the deployed record and its history
+        (a replaced instance's pass kept with its host), so that the rule
+        can be tuned from the data."""
+        fine = record()
+        fine["warm"].update({"stalls": [{"ms": 400.0}, {"ms": 1930.0}], "stalls_dropped": 0,
+                             "pages_over_100ms": 2, "worst_page_us": 1_930_000})
+        self.seed({"lon-edge-1": fine, "lon-load-1": record()})
+        self.slow_push()
+        deployed = self.state()["deployed"]
+        entry = deployed["warm"]["lon-edge-1"]
+        self.assertIs(entry["slow_host"], False)
+        self.assertEqual((entry["seconds"], entry["worst_page_us"], entry["stalls"],
+                          entry["stalls_ms"]), (71.4, 1_930_000, 2, 2330.0))
+        self.assertEqual(entry["nodecheck_slow_reasons"], [])
+        self.assertIn("stall_share_permille", entry)
+        history = [item for item in deployed["warm_history"] if item["node"] == "lon-edge-1"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["role"], "edge")
+        self.assertIn("host_uuid", history[0])
+        # The same record read again is not a second pass; a new boot's is.
+        self.slow_push()
+        again = record(unix_us=int((time.time() + 7200) * 1e6))
+        self.seed({"lon-edge-1": again})
+        self.slow_push()
+        history = [item for item in self.state()["deployed"]["warm_history"]
+                   if item["node"] == "lon-edge-1"]
+        self.assertEqual(len(history), 2)
+
     def test_the_autoscaler_s_push_only_reports(self):
         self.seed({"lon-edge-1": record(slow=True)})
         replaced = self.slow_push(("slow_host", "report"))
         self.assertEqual(replaced, [])
-        self.assertIn("--slow-host report", self.stderr)
+        self.assertIn("reported only (the default", self.stderr)
+
+    def test_push_only_reports_by_default(self):
+        """Lead, 24 Nov: the referee's lab replaced four edges under the old
+        rule and a replacement then warmed in 0.4 s. Push's default is to
+        report; `--slow-host replace` asks for the replace."""
+        self.seed({"lon-edge-1": record(slow=True)})
+        self.assertEqual(deploy.build_parser().parse_args(["push"]).slow_host, "report")
+        replaced = self.slow_push()
+        self.assertEqual(replaced, [])
+        self.assertIn("slow host: lon-edge-1 (edge", self.stderr)
+        self.assertIn("reported only", self.stderr)
+        self.assertIs(self.state()["deployed"]["warm"]["lon-edge-1"]["slow_host"], True)
 
     def test_an_edge_whose_address_others_name_is_only_reported(self):
         self.seed({"lon-edge-1": record(slow=True)})
@@ -292,7 +356,8 @@ class Push(scale.FakeLab):
                                lambda ops, name: ["lon-dist-a"]), \
                 mock.patch.object(deploy.LinodeOps, "replace_slow_host",
                                   lambda ops, name: self.fail("replaced")):
-            self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+            self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True,
+                                                             slow_host="replace"))
         self.assertIn("in the arguments of lon-dist-a: report only", self.stderr)
 
     def test_the_deployed_record_keeps_each_host_s_warm_pass(self):
@@ -324,12 +389,174 @@ class Push(scale.FakeLab):
 
     def test_the_decision(self):
         decide = deploy.slow_host_decision
-        self.assertEqual(decide({"role": "edge"}, False)[0], "replace")
-        self.assertEqual(decide({"role": "edge", "slot": True}, False)[0], "replace")
-        self.assertEqual(decide({"role": "edge"}, True)[0], "report")
+        self.assertEqual(decide({"role": "edge"}, False)[0], "report")      # the default
+        self.assertEqual(decide({"role": "edge"}, False, "replace")[0], "replace")
+        self.assertEqual(decide({"role": "edge", "slot": True}, False, "replace")[0], "replace")
+        self.assertEqual(decide({"role": "edge"}, True, "replace")[0], "report")
         self.assertEqual(decide({"role": "edge"}, False, "report")[0], "report")
         for role in ("distributor", "backbone", "contributor", "load", "livekit"):
             self.assertEqual(decide({"role": role}, False)[0], "report", role)
+
+
+class TouchProof(unittest.TestCase):
+    """A pass's touch proved by what it wrote, mapped and held (peak RSS):
+    a 0.4 s pass over memory the host had backed is told from one that
+    touched nothing (the referee's lab, 24 Nov: seven hosts at 0.4 s)."""
+
+    def record(self, **warm):
+        item = record()
+        item["warm"].update({"seconds": 0.394, "worst_page_us": 1843,
+                             "mem_available_before_mb": 3557, "leave_mb": 300,
+                             "mapped_mb": 3264, "pages_written": 3257 * 256, "vm_hwm_mb": 3270,
+                             **warm})
+        return item
+
+    def test_a_fast_pass_that_held_its_memory_is_proved(self):
+        item = self.record()
+        self.assertEqual(deploy.touch_proof(item), "proved")
+        word = deploy.warm_word(item)
+        self.assertIn("wrote 3257MB of 3557MB available, mapped 3264MB, peak RSS 3270MB", word)
+        self.assertNotIn("TOUCH", word)
+        self.assertEqual(deploy.warm_entry(item)["touch"], "proved")
+        self.assertEqual(deploy.warm_entry(item)["vm_hwm_mb"], 3270)
+
+    def test_a_pass_that_touched_nothing_is_named(self):
+        nothing = self.record(pages_written=10, vm_hwm_mb=40, mapped_mb=3264)
+        proof = deploy.touch_proof(nothing)
+        self.assertTrue(proof.startswith("NOT PROVED"), proof)
+        self.assertIn("wrote 0 of 3257 MB", proof)
+        self.assertIn("TOUCH NOT PROVED", deploy.warm_word(nothing))
+        unheld = self.record(vm_hwm_mb=200)
+        self.assertEqual(deploy.touch_proof(unheld), "NOT PROVED (peak RSS 200 MB)")
+        lines = deploy.warm_status({"run_id": "r", "nodes": {"e": {"role": "edge"},
+                                                             "f": {"role": "edge"}}},
+                                   {"e": unheld, "f": record()})
+        self.assertTrue(any(line.startswith("warm touch NOT proved on e (peak RSS 200 MB)")
+                            for line in lines), lines)
+        self.assertTrue(any(line.startswith("warm touch unknown") and line.endswith(" f")
+                            for line in lines), lines)
+        self.assertIsNone(deploy.touch_proof(record()))     # an older nodecheck
+
+
+class ThereferesLab(unittest.TestCase):
+    """The new rule on the referee's lab of 24 Nov (31 hosts, the default
+    warm pass; per-node seconds, worst write and writes of 100 ms or more
+    from its deployed record): the pass and the 5 s write flag tok-edge-1
+    (5.30 s write) and tok-lk (212.9 s and a 7.48 s write) and nothing
+    else; the quarter-of-the-pass clause, with each write of 100 ms or more
+    counted at 100 ms (a lower bound), flags ten more."""
+
+    TABLE = {  # node: (plan, seconds, worst ms, writes of 100 ms or more, MemTotal MB)
+        "contrib-lon": ("g6-dedicated-4", 40.45, 1174, 505, 7947),
+        "lon-dist-a": ("g6-dedicated-2", 20.53, 506, 142, 3921),
+        "lon-edge-2": ("g6-dedicated-2", 0.394, 1, 0, 3921),
+        "new-edge-2": ("g6-dedicated-2", 21.964, 204, 28, 3921),
+        "tok-edge-1": ("g6-dedicated-2", 97.437, 5301, 144, 3921),
+        "tok-lk": ("g6-dedicated-2", 212.881, 7479, 151, 3921),
+        "tok-nano": ("g6-dedicated-2", 83.615, 4847, 157, 3921),
+        "tok-view": ("g6-dedicated-4", 49.948, 1199, 511, 7947),
+    }
+
+    def test_what_the_rule_flags(self):
+        flagged = {}
+        for name, (kind, seconds, worst, over, total) in self.TABLE.items():
+            item = record()
+            item["warm"] = {"ran": True, "finished": True, "seconds": seconds,
+                            "worst_page_us": worst * 1000, "mem_total_mb": total,
+                            "stall_ms": 100, "stalls": [{"ms": 100.0}] * over,
+                            "stalls_dropped": 0}
+            judged = deploy.judge_warm(item, deploy.DEFAULT_SETTINGS,
+                                       {"name": name, "type": kind})
+            flagged[name] = judged["slow_reasons"]
+        self.assertEqual(flagged["tok-edge-1"], ["page-stall"])
+        self.assertEqual(flagged["tok-lk"], ["slow-pass", "page-stall"])
+        self.assertEqual(flagged["tok-nano"], [])           # 4.85 s: under the 5 s write
+        self.assertEqual(flagged["lon-edge-2"], [])         # 0.4 s, backed already
+        self.assertEqual(flagged["new-edge-2"], [])
+        # The quarter clause: the hosts that passed fastest spent most of
+        # their pass in long writes.
+        self.assertEqual(flagged["lon-dist-a"], ["stall-share"])
+        self.assertEqual(flagged["contrib-lon"], ["stall-share"])
+        self.assertEqual(flagged["tok-view"], ["stall-share"])
+
+
+class Boot(unittest.TestCase):
+    """A new or rebuilt instance is waited for until its sshd answers."""
+
+    def test_wait_ssh_is_bounded_and_names_who_answered(self):
+        clock = [0.0]
+        tries = {"a": 0, "b": 0}
+
+        def probe(node):
+            tries[node["name"]] += 1
+            return node["name"] == "a" and tries["a"] >= 3
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        answered = deploy.common.wait_ssh([{"name": "a"}, {"name": "b"}], patience_s=60,
+                                          poll_s=5, clock=lambda: clock[0], sleep=sleep,
+                                          probe=probe)
+        self.assertEqual(answered, ["a"])
+        self.assertEqual(tries["a"], 3)
+        self.assertGreaterEqual(clock[0], 60)
+        self.assertEqual(deploy.common.wait_ssh([], probe=probe), [])
+
+    def test_a_replace_waits_for_ssh_before_its_push(self):
+        import types  # noqa: PLC0415
+        calls = []
+        ops = types.SimpleNamespace(full={"nodes": {"lon-edge-1": {"name": "lon-edge-1",
+                                                                   "public_ipv4": "192.0.2.9"}}},
+                                    reload=lambda: None, install=lambda names, build: calls.append(
+                                        ("install", names)))
+        ops.wait_booted = lambda node: deploy.LinodeOps.wait_booted(ops, node)
+        result = types.SimpleNamespace(returncode=0)
+        with mock.patch.object(deploy, "run_lab", lambda *a: result), \
+                mock.patch.object(deploy.common, "forget_host", lambda *a: None), \
+                mock.patch.object(deploy, "bootstrap", lambda nodes: calls.append("bootstrap")), \
+                mock.patch.object(deploy.common, "wait_ssh", lambda nodes, **k: []):
+            with self.assertRaisesRegex(RuntimeError, "lon-edge-1: the new instance's ssh did "
+                                                      "not answer"):
+                deploy.LinodeOps.replace_slow_host(ops, "lon-edge-1")
+        self.assertEqual(calls, [])                      # nothing pushed to it
+        with mock.patch.object(deploy, "run_lab", lambda *a: result), \
+                mock.patch.object(deploy.common, "forget_host", lambda *a: None), \
+                mock.patch.object(deploy, "bootstrap", lambda nodes: calls.append("bootstrap")), \
+                mock.patch.object(deploy.common, "wait_ssh",
+                                  lambda nodes, **k: [node["name"] for node in nodes]):
+            deploy.LinodeOps.replace_slow_host(ops, "lon-edge-1")
+        self.assertEqual(calls, ["bootstrap", ("install", ["lon-edge-1"])])
+        # The engine's replace (rebuild or new) waits the same way.
+        ops.budget_args = []
+        with mock.patch.object(deploy, "run_lab", lambda *a: result), \
+                mock.patch.object(deploy.common, "forget_host", lambda *a: None), \
+                mock.patch.object(deploy.common, "wait_ssh", lambda nodes, **k: []):
+            with self.assertRaisesRegex(RuntimeError, "did not answer"):
+                deploy.LinodeOps.rebuild(ops, "lon-edge-1", "rebuild")
+
+    def test_collect_writes_the_warm_table(self):
+        written = {}
+
+        class Run:
+            def write_json(self, path, document, *rest):
+                written[path] = document
+
+            def guarded(self, *a, **k):
+                return None
+
+        state = {"run_id": "r", "nodes": {"e": {"role": "edge"}},
+                 "deployed": {"warm": {"e": {"seconds": 70.0, "slow_host": False}},
+                              "warm_history": [{"node": "e", "seconds": 70.0,
+                                                "host_uuid": "h1"}]}}
+        with mock.patch.object(deploy, "topology_path", lambda state: None), \
+                mock.patch.object(deploy, "deployed_builds", lambda state: {}), \
+                mock.patch.object(deploy, "scrubbed_record", lambda record: record):
+            try:
+                deploy.collect_lab(Run(), state, "s")
+            except Exception:  # noqa: BLE001 - only the warm table is looked at
+                pass
+        self.assertEqual(written["lab/warm.s.json"]["history"][0]["host_uuid"], "h1")
+        self.assertIs(written["lab/warm.s.json"]["current"]["e"]["slow_host"], False)
 
 
 class SlowHostRule(unittest.TestCase):
@@ -444,7 +671,7 @@ class Status(unittest.TestCase):
             lines = deploy.warm_status(state, {"e": record(slow=True), "d": record(slow=True),
                                                "l": None})
         self.assertIn("warm pass: not complete on l", lines)
-        self.assertTrue(any(line.startswith("slow host: e (edge) page-stall: to replace once")
+        self.assertTrue(any(line.startswith("slow host: e (edge) page-stall: reported only")
                             for line in lines), lines)
         self.assertTrue(any("slow host: d (distributor)" in line and "report only" in line
                             for line in lines), lines)
@@ -558,7 +785,7 @@ class Autoscaler(autoscale_tests.Base):
         self.sim.slow = {"lon-edge-11", "lon-edge-12"}
         for name in ("lon-edge-11", "lon-edge-12"):
             self.sim.nodes[name].update(udp=0)
-        controller = self.controller()
+        controller = self.controller(config=auto.Config(slow_host_replace=True))
         self.sim.set_load(950)
         self.ticks(controller, 12)
         events = self.of("slow_host")
@@ -579,7 +806,7 @@ class Autoscaler(autoscale_tests.Base):
 
     def test_a_standby_edge_on_a_slow_host_is_only_reported(self):
         self.sim.slow = {f"lon-edge-{index}" for index in range(6, 11)}
-        controller = self.controller()
+        controller = self.controller(config=auto.Config(slow_host_replace=True))
         self.sim.set_load(950)
         self.ticks(controller, 6)
         events = self.of("slow_host")
@@ -591,13 +818,29 @@ class Autoscaler(autoscale_tests.Base):
     def test_a_slow_slot_that_holds_listeners_is_only_reported(self):
         self.fill_standby()
         self.sim.slow = {"lon-edge-11", "lon-edge-12"}
-        controller = self.controller()
+        controller = self.controller(config=auto.Config(slow_host_replace=True))
         self.sim.set_load(950)
         self.ticks(controller, 8)
         events = self.of("slow_host")
         self.assertTrue(events)
         self.assertTrue(all(item["action"] == "report" for item in events), events)
         self.assertTrue(all("holds listeners" in item["why"] for item in events), events)
+
+    def test_the_controller_only_reports_a_slow_slot_by_default(self):
+        self.fill_standby()
+        self.sim.slow = {"lon-edge-11", "lon-edge-12"}
+        for name in ("lon-edge-11", "lon-edge-12"):
+            self.sim.nodes[name].update(udp=0)
+        controller = self.controller()
+        self.assertIs(self.config.slow_host_replace, False)
+        self.sim.set_load(950)
+        self.ticks(controller, 12)
+        events = self.of("slow_host")
+        self.assertTrue(events)
+        self.assertTrue(all(item["action"] == "report" and "reported only by default"
+                            in item["why"] for item in events), events)
+        self.assertFalse([call for call in self.mutating() if call[0] == "delete"])
+        self.assertEqual(controller.state["slow_replaced"], {})
 
     def test_the_guard_takes_the_slow_host_proof_for_slots_only(self):
         backend = auto.Guarded(self.sim, self.config)
