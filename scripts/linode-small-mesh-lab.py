@@ -1237,6 +1237,7 @@ def create_lab(args: argparse.Namespace) -> None:
             time.sleep(5)
     if pending:
         sys.exit(f"Linodes did not become ready: {sorted(pending)}")
+    separate_after(args, api, state_path, "up")
     command_status(args)
 
 
@@ -1678,6 +1679,7 @@ def command_grow(args: argparse.Namespace) -> None:
         refresh_listeners_missing(state_path, str(error))
         sys.exit(f"grow: {error}")
     refresh_listeners_missing(state_path)
+    separate_after(args, api, state_path, "grow", scope={node["name"] for node in missing})
     command_status(args)
 
 
@@ -1879,26 +1881,38 @@ def command_replace(args: argparse.Namespace) -> None:
         for spec in specs:
             rebuild_node(api, state_path, state, spec, key)
         return
+    replace_new(args, api, state_path, state, specs, live, "replace")
+    separate_after(args, api, state_path, "replace", scope=set(args.names))
+
+
+def replace_new(args: argparse.Namespace, api: Api, state_path: pathlib.Path, state: dict,
+                specs: list[dict], live: dict, verb: str) -> None:
+    """`replace --mode new` of `specs` (priced topology nodes of the lab,
+    `_hourly` set; `live`: {name: its live instance, {} when gone}): within
+    the hourly ceiling that up recorded and the budget, each deleted by its
+    recorded id and created again at the same VLAN address, on another
+    physical host, a new billed hour each."""
+    names = [spec["name"] for spec in specs]
     # The same nodes again: only the hourly ceiling can be passed (a plan
     # changed in the topology).
     _max_nodes, max_hourly = lab_ceilings(state)
     hourly = lab_hourly(state) + sum(spec["_hourly"] - state["nodes"][spec["name"]].get(
         "hourly_usd", 0.0) for spec in specs)
     if hourly > max_hourly + 1e-9:
-        sys.exit(f"replace refused: the lab would cost ${hourly:.4f}/hour; the ceiling that up "
+        sys.exit(f"{verb} refused: the lab would cost ${hourly:.4f}/hour; the ceiling that up "
                  f"recorded is ${max_hourly:.2f}")
     # Priced as it will be: the named instances deleted now (billed to now,
     # not to the deadline) and their new ones kept to the deadline.
     now = time.time()
     after = {**state,
              "nodes": {name: node for name, node in state["nodes"].items()
-                       if name not in args.names},
+                       if name not in names},
              "removed": list(state.get("removed", []))
-             + [removed_record(state, state["nodes"][name], now) for name in args.names]}
-    held_to_budget("replace", api, after,
+             + [removed_record(state, state["nodes"][name], now) for name in names]}
+    held_to_budget(verb, api, after,
                    [{"name": spec["name"], "hourly_usd": spec["_hourly"]} for spec in specs],
                    getattr(args, "budget_usd", None), getattr(args, "spent_before_usd", None))
-    for name in args.names:
+    for name in names:
         old = state["nodes"][name]
         if live[name]:
             api.call("DELETE", f"/linode/instances/{old['id']}", allow_404=True)
@@ -1917,6 +1931,173 @@ def command_replace(args: argparse.Namespace) -> None:
     for spec in specs:
         spec["name_suffix"] = f"r{len(state['replaced'])}"
     add_nodes(args, api, state, specs)
+
+
+# ------------------------------------------------------------ host separation
+#
+# cmpd8 (25 Nov): Linode put both New York forwarders and one New York edge
+# on one physical host; that edge's NIC stalls came with its co-hosted
+# forwarder's WouldBlock in the same second. At up, grow and replace the lab
+# tool reads every instance's host (host_uuid, as `hosts` does), reports every
+# group of a region's mesh nodes that share one, and (--separate-hosts, on by
+# default) makes the later-created node of a pair that must not share one anew
+# on another host (replace --mode new: a new billed hour each), at most
+# SEPARATE_ATTEMPTS times a node, within the lab's hourly and node ceilings
+# and its budget. Pairs that must not share a host: two forwarders of a
+# region, and an edge with either of its parents (its site's first two
+# distributors by name, which feed it on the fast plane).
+SEPARATE_ATTEMPTS = int(os.environ.get("NEEDLETAIL_LINODE_SEPARATE_ATTEMPTS", "2"))
+MESH_ROLES = ("contributor", "backbone", "distributor", "edge")
+
+
+def edge_parents(nodes: dict[str, dict], edge: dict) -> list[str]:
+    """The fast-plane parents of an edge: the first two distributors of its
+    site by name that have a VLAN address, autoscale slots aside (the
+    deploy's fast_plane_feed)."""
+    return sorted(name for name, node in nodes.items()
+                  if node.get("role") == "distributor" and node.get("site") == edge.get("site")
+                  and node.get("vlan_ipv4") and not node.get("slot"))[:2]
+
+
+def shared_host_groups(nodes: dict[str, dict]) -> list[tuple[str, str, list[str]]]:
+    """Every group of two or more of a region's mesh nodes on one physical
+    host: (region, host, names)."""
+    groups: dict[tuple[str, str], list[str]] = {}
+    for name in sorted(nodes):
+        node = nodes[name]
+        if node.get("role") in MESH_ROLES and node.get("host_uuid"):
+            groups.setdefault((node["region"], node["host_uuid"]), []).append(name)
+    return [(region, host, names) for (region, host), names in sorted(groups.items())
+            if len(names) > 1]
+
+
+def created_order(node: dict) -> tuple:
+    return (created_unix(node) or 0.0, int(node.get("id") or 0), node["name"])
+
+
+def separation_pairs(nodes: dict[str, dict]) -> list[dict]:
+    """The pairs on one host that must not be: {"keep", "move", "host",
+    "why"}, `move` the later-created of the two."""
+    pairs, seen = [], set()
+
+    def add(a: str, b: str, why: str) -> None:
+        first, second = sorted((a, b), key=lambda name: created_order(nodes[name]))
+        if (first, second) in seen:
+            return
+        seen.add((first, second))
+        pairs.append({"keep": first, "move": second, "host": nodes[a]["host_uuid"], "why": why})
+
+    hosted = {name: node for name, node in nodes.items() if node.get("host_uuid")}
+    forwarders = sorted(name for name, node in hosted.items() if node["role"] == "distributor")
+    for index, a in enumerate(forwarders):
+        for b in forwarders[index + 1:]:
+            if (hosted[a]["region"] == hosted[b]["region"]
+                    and hosted[a]["host_uuid"] == hosted[b]["host_uuid"]):
+                add(a, b, f"two forwarders of {hosted[a]['region']}")
+    for name, node in sorted(hosted.items()):
+        if node["role"] != "edge":
+            continue
+        for parent in edge_parents(nodes, node):
+            if parent in hosted and hosted[parent]["host_uuid"] == node["host_uuid"]:
+                add(name, parent, f"the edge {name} with its parent {parent}")
+    return pairs
+
+
+def read_hosts(api: "Api", state_path: pathlib.Path, state: dict) -> dict:
+    """Every node's host_uuid read from the API and recorded on the state
+    as `hosts` does (record_hosts, under the state lock); the state as it
+    is then."""
+    found = {}
+    for name in sorted(state["nodes"]):
+        node = state["nodes"][name]
+        live = api.call("GET", f"/linode/instances/{node['id']}", allow_404=True)
+        found[name] = (node["id"], (live or {}).get("host_uuid"))
+    change_state(state_path, state, lambda current: record_hosts(current, found))
+    return read_state(state_path) or state
+
+
+def separate_after(args: argparse.Namespace, api: "Api", state_path: pathlib.Path,
+                   verb: str, scope=None) -> None:
+    """After up, grow or replace: read every node's host, print every group
+    of a region's mesh nodes sharing one, and with --separate-hosts (the
+    default) make the later-created node of each pair that must not share
+    a host anew (replace_new), until no pair is left or every node to move
+    was made anew SEPARATE_ATTEMPTS times (--separate-attempts); each
+    replacement's billed hour is printed first and held to the lab's
+    ceilings and budget. `scope` (grow's new nodes, replace's): only those
+    are ever moved; a pair whose later-created node is outside it is
+    reported (`hosts`). What was done is kept in the state's
+    `host_separation`."""
+    separate = getattr(args, "separate_hosts", True)
+    bound = getattr(args, "separate_attempts", None)
+    bound = SEPARATE_ATTEMPTS if bound is None else int(bound)
+    state = read_state(state_path)
+    if state is None:
+        return
+    while True:
+        state = read_hosts(api, state_path, state)
+        for region, host, names in shared_host_groups(state["nodes"]):
+            print(f"SHARED HOST in {region}: {', '.join(names)} on {host[:12]}")
+        pairs = separation_pairs(state["nodes"])
+        record = state.get("host_separation") or {"replaced": {}, "log": []}
+        if not pairs:
+            if record["log"]:
+                print("host separation: every forwarder pair and every edge with its parents "
+                      "are on different hosts")
+            return
+        for pair in pairs:
+            print(f"  {pair['why']} share host {pair['host'][:12]}: {pair['move']} (made later) "
+                  "is to move")
+        if not separate:
+            print("host separation off (--no-separate-hosts): the pairs above are left",
+                  file=sys.stderr)
+            return
+        movable = [pair for pair in pairs if scope is None or pair["move"] in scope]
+        outside = sorted({pair["move"] for pair in pairs} - {pair["move"] for pair in movable})
+        if outside:
+            print(f"host separation: {', '.join(outside)} not made by this {verb}: left where "
+                  "they are (`replace NAME --mode new` moves one)", file=sys.stderr)
+        moving = sorted({pair["move"] for pair in movable
+                         if record["replaced"].get(pair["move"], 0) < bound})
+        left = sorted({pair["move"] for pair in movable} - set(moving))
+        if left:
+            print(f"host separation: {', '.join(left)} made anew {bound} time(s) already "
+                  "(--separate-attempts): left where they are", file=sys.stderr)
+        if not moving:
+            return
+        topology = json.loads(pathlib.Path(state["topology_file"]).read_text())
+        by_name = {node["name"]: node for node in topology["nodes"]}
+        specs = []
+        for name in moving:
+            spec = dict(by_name[name])
+            if spec.get("vlan_ipv4") and "/" not in spec["vlan_ipv4"]:
+                spec["vlan_ipv4"] += "/24"
+            spec["_hourly"] = state["nodes"][name].get("hourly_usd", 0.0)
+            specs.append(spec)
+        cost = sum(spec["_hourly"] for spec in specs)
+        problems = watchdog_problems(state, time.time(), MAX_LIFE_HOURS)
+        if problems:
+            print(f"host separation: {', '.join(moving)} not made anew: "
+                  + "; ".join(problems), file=sys.stderr)
+            return
+        print(f"host separation: making {', '.join(moving)} anew on other hosts (each a new "
+              f"billed hour: ${cost:.3f} in all)")
+        live = {name: owned_instance(api, state, name, verb) for name in moving}
+
+        def note(current: dict) -> None:
+            entry = current.setdefault("host_separation", {"replaced": {}, "log": []})
+            for name in moving:
+                entry["replaced"][name] = entry["replaced"].get(name, 0) + 1
+            for pair in pairs:
+                if pair["move"] in moving:
+                    entry["log"].append({**pair, "verb": verb, "unix": int(time.time()),
+                                         "attempt": entry["replaced"][pair["move"]],
+                                         "hourly_usd": state["nodes"][pair["move"]].get(
+                                             "hourly_usd", 0.0)})
+
+        change_state(state_path, state, note)
+        replace_new(args, api, state_path, state, specs, live, f"{verb} (host separation)")
+        state = read_state(state_path) or state
 
 
 # ------------------------------------------------------------------ billing
@@ -3473,6 +3654,16 @@ def down_by_tag(api: "Api", run_id: str, last: dict | None) -> None:
           f"{tag} (${total['usd']:.2f} billed, in the ledger {LEDGER})", flush=True)
 
 
+def separate_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--separate-hosts", action=argparse.BooleanOptionalAction, default=True,
+                        help="make anew (a new billed hour each) the later-created of two "
+                             "forwarders of a region, or of an edge and either of its parents, "
+                             "that Linode put on one physical host (default on)")
+    parser.add_argument("--separate-attempts", type=int, default=SEPARATE_ATTEMPTS,
+                        help="at most this many times a node (default "
+                             f"{SEPARATE_ATTEMPTS}, NEEDLETAIL_LINODE_SEPARATE_ATTEMPTS)")
+
+
 def egress_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plan-stream-mbit", type=float, default=None,
                         help="the heaviest stream the lab is planned for, Mbit/s (default: the "
@@ -3518,6 +3709,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "out when one of its nodes cannot be created (no capacity), when the "
                          "account refuses the core, or when none of its listener hosts is")
     egress_options(up)
+    separate_options(up)
     up.add_argument("--listener-batches", type=int, default=LISTENER_BATCHES,
                     help="the listener hosts are created after the core in this many batches; "
                          "a refusal among them keeps the lab and records the hosts missing")
@@ -3532,6 +3724,7 @@ def build_parser() -> argparse.ArgumentParser:
     grow.add_argument("--topology", required=True)
     grow.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
     egress_options(grow)
+    separate_options(grow)
     grow.add_argument("--without-sites", default="",
                       help="sites not to create, besides those the lab already does without")
     replace = sub.add_parser("replace", help="rebuild lab nodes in place, or make them anew")
@@ -3542,6 +3735,7 @@ def build_parser() -> argparse.ArgumentParser:
                               "create again at the same VLAN address (another host, a new "
                               "public address, a new billed hour)")
     replace.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
+    separate_options(replace)
     add = sub.add_parser("add", help="create autoscale slots of the lab (never anything else)")
     add.add_argument("names", nargs="+")
     add.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
