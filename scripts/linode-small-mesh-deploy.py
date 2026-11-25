@@ -6881,9 +6881,10 @@ PART_REPAIR_FIELDS = (
     "requests", "retries", "symbols_asked", "whole_parts_asked", "gap_parts",
     "recovered_parts", "gave_up_parts", "asks", "answers", "answer_symbols", "busy",
     "stored_parts", "link_repair_symbols", "regenerated_symbols",
-    "refused_not_admitted", "refused_limited", "refused_stale")
+    "refused_not_admitted", "refused_limited", "refused_stale", "window_spent",
+    "repair_panics")
 DECODE_POOL_FIELDS = ("workers", "decodes", "failures", "decode_us_max", "inline",
-                      "queued_max")
+                      "queued_max", "inline_bytes_limited", "queue_bytes", "queue_budget_bytes")
 FAST_PLANE_REPAIR_FIELDS = (
     "video_parent_loss_ppm", "parent_loss_ppm", "repair_trimmed", "not_admitted",
     "audio_tee_cpu_us", "video_tee_cpu_us", "video_tee_lag_max_us", "audio_tee_lag_max_us",
@@ -6894,6 +6895,8 @@ MEMORY_REPAIR_FIELDS = ("part_store_bytes", "part_store_budget_bytes", "decode_q
 # (a run's usage takes their value at the end, not a difference).
 REPAIR_LEVELS = {"part_repair.stored_parts", "decode_pool.workers",
                  "decode_pool.decode_us_max", "decode_pool.queued_max",
+                 "decode_pool.queue_bytes", "decode_pool.queue_budget_bytes",
+                 "parent_lanes.not_admitted",
                  "video_parent_loss_ppm", "parent_loss_ppm", "video_tee_lag_max_us",
                  "audio_tee_lag_max_us", *(f"memory.{key}" for key in MEMORY_REPAIR_FIELDS)}
 # The contributor's /metrics names (av-contrib 4k-repair) and their keys
@@ -6936,6 +6939,14 @@ def repair_fields(fast_plane, memory=None) -> dict:
                 out[name] = values
         elif _number(value) is not None:
             out[name] = value
+    # Datagrams no session admitted, per parent lane of the audio class
+    # (parent_lanes[].not_admitted): [primary, secondary].
+    lanes = plane.get("parent_lanes")
+    if isinstance(lanes, list) and lanes:
+        values = [_number(lane.get("not_admitted")) if isinstance(lane, dict) else None
+                  for lane in lanes]
+        if all(value is not None for value in values):
+            out["parent_lanes.not_admitted"] = values
     if isinstance(memory, dict):
         for name in MEMORY_REPAIR_FIELDS:
             if _number(memory.get(name)) is not None:
@@ -7012,7 +7023,16 @@ def repair_summary(fields: dict) -> str:
                for kind in ("not_admitted", "limited", "stale")]
     loss = (f"{get('video_parent_loss_ppm')}ppm" if "video_parent_loss_ppm" in fields else "-")
     lag = "/".join((get("audio_tee_lag_max_us", 1000.0), get("video_tee_lag_max_us", 1000.0)))
-    return (f" repair req={get('part_repair.requests')}/{get('part_repair.retries')}"
+    # First, for it must be 0 in a run (review M5: a primary that is not
+    # promoted has every answer and link repair dropped here).
+    admitted = f" not_admitted={get('not_admitted')}"
+    if "parent_lanes.not_admitted" in fields:
+        admitted += f"(lanes {get('parent_lanes.not_admitted')})"
+    if (fields.get("not_admitted") or 0) > 0 or any(fields.get("parent_lanes.not_admitted") or []):
+        admitted += " <-- NOT ADMITTED (must be 0)"
+    panics = (f" PANICS={fields['part_repair.repair_panics']}"
+              if fields.get("part_repair.repair_panics") else "")
+    return (f"{admitted} repair req={get('part_repair.requests')}/{get('part_repair.retries')}"
             f" asks={get('part_repair.asks')} answers={get('part_repair.answers')}"
             f" sym={get('part_repair.answer_symbols')}"
             f" link={get('part_repair.link_repair_symbols')}"
@@ -7025,7 +7045,7 @@ def repair_summary(fields: dict) -> str:
             f" tee lag a/v={lag}ms drop={get('tee_dropped')}"
             f" shed={get('video_tee_parts_shed')}"
             f" loss p/s={loss} small={get('parent_loss_ppm')}ppm"
-            f" trimmed={get('repair_trimmed')} not_admitted={get('not_admitted')}"
+            f" trimmed={get('repair_trimmed')} spent={get('part_repair.window_spent')}{panics}"
             f" store={get('memory.part_store_bytes', 1048576.0)}"
             f"/{get('memory.part_store_budget_bytes', 1048576.0)}MB"
             f" queue={get('memory.decode_queue_bytes', 1048576.0)}"
@@ -7122,7 +7142,7 @@ def deployed_summary(state: dict) -> list[str]:
 # buffer and memory errors (/proc/net/snmp, cumulative). One JSON line a
 # second in NODE_RUNS/memory/, which `collect` brings home under the node's
 # samplers/. 4k-repair: also, as served, a mesh node's fast plane repair
-# fields (`fast_plane`: part_repair and decode_pool whole, and
+# fields (`fast_plane`: part_repair, decode_pool and parent_lanes whole, and
 # FAST_PLANE_REPAIR_FIELDS, from /api/mesh/local relay_session.fast_plane;
 # its /api/node `memory` carries the repair stores) and the contributor's
 # /metrics samples of CONTRIB_REPAIR_METRICS (`contrib_repair`). A field a
@@ -7170,8 +7190,8 @@ def fast_plane_repair():
     plane = ((get("/api/mesh/local") or {}).get("relay_session") or {}).get("fast_plane")
     if not isinstance(plane, dict):
         return None
-    return {key: plane[key] for key in ("part_repair", "decode_pool", *FAST_FIELDS)
-            if key in plane}
+    return {key: plane[key] for key in ("part_repair", "decode_pool", "parent_lanes",
+                                        *FAST_FIELDS) if key in plane}
 
 
 def contrib_repair():

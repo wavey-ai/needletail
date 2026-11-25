@@ -43,9 +43,14 @@ NEW_PLANE = {
                     "gave_up_parts": 0, "asks": 12, "answers": 11, "answer_symbols": 140,
                     "busy": 0, "stored_parts": 128, "link_repair_symbols": 900,
                     "regenerated_symbols": 55, "refused_not_admitted": 1,
-                    "refused_limited": 2, "refused_stale": 3, "probes": 9},
+                    "refused_limited": 2, "refused_stale": 3, "window_spent": 4,
+                    "repair_panics": 0, "probes": 9},
     "decode_pool": {"workers": 1, "decodes": 40, "failures": 1, "decode_us": 5,
-                    "decode_us_max": 31_000, "inline": 0, "queued_max": 3},
+                    "decode_us_max": 31_000, "inline": 0, "queued_max": 3,
+                    "inline_bytes_limited": 0, "queue_bytes": 1_000_000,
+                    "queue_budget_bytes": 64 * MB},
+    "parent_lanes": [{"lane": "primary", "received": 9, "not_admitted": 5},
+                     {"lane": "secondary", "received": 9, "not_admitted": 2}],
 }
 NEW_MEMORY = {"state": "ready", "rss_bytes": 900 * MB, "part_store_bytes": 100 * MB,
               "part_store_budget_bytes": 160 * MB, "decode_queue_bytes": 2 * MB,
@@ -67,12 +72,15 @@ class MeshFields(unittest.TestCase):
         self.assertEqual(fields["video_parent_loss_ppm"], [10_000, 500])
         self.assertEqual(fields["audio_tee_lag_max_us"], 600)
         self.assertEqual(fields["memory.part_store_budget_bytes"], 160 * MB)
+        self.assertEqual(fields["parent_lanes.not_admitted"], [5, 2])
+        self.assertEqual(fields["part_repair.window_spent"], 4)
+        self.assertEqual(fields["decode_pool.queue_budget_bytes"], 64 * MB)
         # Only the listed fields: not the pool's sum, the asker's probes.
         self.assertNotIn("decode_pool.decode_us", fields)
         self.assertNotIn("part_repair.probes", fields)
         self.assertEqual(len(fields), len(deploy.PART_REPAIR_FIELDS)
                          + len(deploy.DECODE_POOL_FIELDS) + len(deploy.FAST_PLANE_REPAIR_FIELDS)
-                         + len(deploy.MEMORY_REPAIR_FIELDS))
+                         + len(deploy.MEMORY_REPAIR_FIELDS) + 1)
 
     def test_an_older_binary_s_fields_are_absent_not_zero(self):
         fields = deploy.repair_fields(OLD_PLANE, OLD_MEMORY)
@@ -104,13 +112,24 @@ class MeshFields(unittest.TestCase):
         line = deploy.repair_summary(deploy.repair_fields(NEW_PLANE, NEW_MEMORY))
         self.assertEqual(
             line,
+            " not_admitted=7(lanes 5/2) <-- NOT ADMITTED (must be 0)"
             " repair req=30/4 asks=12 answers=11 sym=140 link=900 regen=55 rec=29 gaveup=0"
             " refused=1/2/3 pool=40/0/1 tee lag a/v=1/12ms drop=3 shed=2"
-            " loss p/s=10000/500ppm small=120ppm trimmed=44 not_admitted=7"
+            " loss p/s=10000/500ppm small=120ppm trimmed=44 spent=4"
             " store=100/160MB queue=2/64MB repair_shed=0MB")
         old = deploy.repair_summary(deploy.repair_fields(OLD_PLANE, OLD_MEMORY))
-        self.assertTrue(old.startswith(" repair req=-/- asks=- "), old)
+        self.assertTrue(old.startswith(" not_admitted=7 <-- NOT ADMITTED (must be 0) repair "
+                                       "req=-/- asks=- "), old)
         self.assertIn(" loss p/s=- small=120ppm ", old)
+        # A clean node: 0, no warning; a repair thread's panic is shouted.
+        clean = json.loads(json.dumps(NEW_PLANE))
+        clean["not_admitted"] = 0
+        clean["parent_lanes"][0]["not_admitted"] = 0
+        clean["parent_lanes"][1]["not_admitted"] = 0
+        clean["part_repair"]["repair_panics"] = 1
+        line = deploy.repair_summary(deploy.repair_fields(clean, NEW_MEMORY))
+        self.assertTrue(line.startswith(" not_admitted=0(lanes 0/0) repair "), line)
+        self.assertIn(" spent=4 PANICS=1 store=", line)
 
 
 class Contributor(unittest.TestCase):
@@ -184,7 +203,8 @@ class Sampler(unittest.TestCase):
         self.assertEqual(listed, list(deploy.FAST_PLANE_REPAIR_FIELDS))
         metrics = json.loads(re.search(r"^CONTRIB_METRICS = (.*)$", sampler, re.M).group(1))
         self.assertEqual(sorted(metrics), sorted(deploy.CONTRIB_REPAIR_METRICS))
-        for text in ('"/api/mesh/local"', '"part_repair", "decode_pool"', '"/metrics"',
+        for text in ('"/api/mesh/local"', '"part_repair", "decode_pool", "parent_lanes"',
+                     '"/metrics"',
                      'row["fast_plane"]', 'row["contrib_repair"]', 'row["memory"]'):
             self.assertIn(text, sampler)
         contrib = deploy.memory_sampler_start_script({"role": "contributor"}, "T", 1.0)
@@ -238,7 +258,10 @@ class AvMeshServes(unittest.TestCase):
     ones being added in this round (PENDING), which may not be yet."""
 
     PENDING = {"part_repair/refused_not_admitted", "part_repair/refused_limited",
-               "part_repair/refused_stale", "audio_tee_lag_max_us"}
+               "part_repair/refused_stale", "part_repair/window_spent",
+               "part_repair/repair_panics", "decode_pool/inline_bytes_limited",
+               "decode_pool/queue_bytes", "decode_pool/queue_budget_bytes",
+               "audio_tee_lag_max_us"}
 
     def test_against_the_av_mesh_checkout(self):
         import av_mesh_contract
@@ -263,8 +286,9 @@ class AvMeshServes(unittest.TestCase):
         memory = declared.get("MemorySnapshot", {})
         self.assertEqual([name for name in deploy.MEMORY_REPAIR_FIELDS if name not in memory], [])
         # The fast plane is served at relay_session/fast_plane of /api/mesh/local.
-        self.assertIn("relay_session/fast_plane/part_repair",
-                      av_mesh_contract.mesh_local_paths(root))
+        served = av_mesh_contract.mesh_local_paths(root)
+        self.assertIn("relay_session/fast_plane/part_repair", served)
+        self.assertIn("relay_session/fast_plane/parent_lanes[]/not_admitted", served)
 
 
 if __name__ == "__main__":
