@@ -551,6 +551,39 @@ def schedstat(pid: int) -> tuple[int, int] | None:
     return run, wait
 
 
+def client_kind(item: dict) -> str:
+    """A client's kind in client-cpu.json: "4k-udp" (a 4K UDP viewer),
+    "4k-hls" (a 4K LL-HLS reader), "udp" (an audio probe), "reader"."""
+    if item.get("kind") == "udp":
+        return "4k-udp" if ".4k." in pathlib.Path(str(item.get("report", ""))).name else "udp"
+    return "4k-hls" if item.get("kind") == "hls" else "reader"
+
+
+def socket_drops(pid: int) -> int | None:
+    """The drops of a process's own UDP sockets so far (/proc/PID/net/udp
+    and udp6, the `drops` column of the sockets its fds hold), so that a
+    viewer's drops are told from its namespace's other clients'. None when
+    the process is gone."""
+    try:
+        inodes = set()
+        for fd in pathlib.Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                inodes.add(target[8:-1])
+        total = 0
+        for table in ("udp", "udp6"):
+            for line in pathlib.Path(f"/proc/{pid}/net/{table}").read_text().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 13 and fields[9] in inodes:
+                    total += int(fields[12])
+        return total
+    except (OSError, ValueError):
+        return None
+
+
 def planned_nodes(args, role: str, site: str) -> list[str]:
     """A site's nodes of `role` in the run's lab: the running lab's with
     --no-up (slots taken in count), else the planned layout's (no slot)."""
@@ -2185,13 +2218,15 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
         log(f"{len(readers)} reader processes for {args.seconds} s")
-        if getattr(args, "split_client_cpus", False):
-            # Each client's CPU and run-queue wait and each client
-            # namespace's UDP drops over the window (integration 6: a 4K
-            # viewer that waits behind the crowd measures the host).
+        if loads or steps["readers"] or steps["udp_clients"] or video["viewers"]:
+            # Every pass (integration 6): each client's CPU and run-queue
+            # wait, its own UDP sockets' drops, and each client namespace's
+            # UDP drops over the window. A 4K viewer that waits behind the
+            # other clients measures the host, not the mesh: a site whose
+            # clients dropped is unreadable for that pass.
             import threading
             named = ([("load", item["host"], proc) for item, proc in zip(loads, load_processes)]
-                     + [("client", item["host"], proc)
+                     + [(client_kind(item), item["host"], proc)
                         for item, proc in zip(steps["readers"] + steps["udp_clients"]
                                               + video["viewers"],
                                               readers[len(load_processes):])])
@@ -2206,10 +2241,12 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
                 rows = []
                 for kind, host, proc in named:
                     a, b = first.get(proc.pid), last.get(proc.pid)
+                    row = {"kind": kind, "host": host, "pid": proc.pid,
+                           "socket_drops": socket_drops(proc.pid)}
                     if a and b:
-                        rows.append({"kind": kind, "host": host, "pid": proc.pid,
-                                     "cpu_s": round((b[0] - a[0]) / 1e9, 3),
-                                     "wait_s": round((b[1] - a[1]) / 1e9, 3)})
+                        row.update({"cpu_s": round((b[0] - a[0]) / 1e9, 3),
+                                    "wait_s": round((b[1] - a[1]) / 1e9, 3)})
+                    rows.append(row)
                 drops = {host: {key: after[host].get(key, 0) - before[host].get(key, 0)
                                 for key in ("RcvbufErrors", "InErrors", "InDatagrams")}
                          for host in hosts if before.get(host) and after.get(host)}

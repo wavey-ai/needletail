@@ -131,6 +131,28 @@ class BusyReasks(unittest.TestCase):
         self.assertFalse([line for line in bench.load_lines(report) if "busy" in line])
 
 
+class ClientDrops(unittest.TestCase):
+    """Integration 6: every pass records each client's own UDP sockets'
+    drops (/proc/PID/net/udp, the sockets its fds hold), so a 4K viewer's
+    drops are told from its namespace's other clients'."""
+
+    def test_a_process_s_own_socket_drops(self):
+        import socket as sockets
+        sock = sockets.socket(sockets.AF_INET, sockets.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        sock.bind(("127.0.0.1", 0))
+        self.assertEqual(bench.socket_drops(os.getpid()), 0)
+        self.assertIsNone(bench.socket_drops(2 ** 22 + 7))
+
+    def test_client_kinds(self):
+        self.assertEqual(bench.client_kind({"kind": "udp", "report": "/x/4k-crowd/a.uc0.uc.json"}),
+                         "udp")
+        self.assertEqual(bench.client_kind({"kind": "udp", "report": "/x/s/a.4k.udp1.json"}),
+                         "4k-udp")
+        self.assertEqual(bench.client_kind({"kind": "hls"}), "4k-hls")
+        self.assertEqual(bench.client_kind({"lane": "h3"}), "reader")
+
+
 class ClientCpus(unittest.TestCase):
     """Integration 6: --split-client-cpus puts the crowd's load tool on the
     layout's tool CPUs and the readers, probes and 4K viewers on its probe
