@@ -2691,6 +2691,15 @@ def source_prefix(video: bool = False) -> list[str]:
     return prefix
 
 
+def source_alive(pid) -> bool:
+    """Whether source process `pid` runs (and is not a zombie)."""
+    try:
+        state = pathlib.Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, ValueError, TypeError, IndexError):
+        return False
+    return state != "Z"
+
+
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
     """Start the sources in lon-src, an encoder on the contributors' VLAN as
@@ -2700,6 +2709,11 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
     `audio` is `probe` (lossless FLAC), `daw` (FLAC and HQ SoundKit Opus) or
     None."""
     sources = load("sources.json")
+    # A source whose process has ended (the last pass's feed ran its
+    # seconds out) is started again (integration 6: a --no-up pass found
+    # the ended feed still listed and never started the 4K source).
+    for name in [name for name, pid in sources.items() if not source_alive(pid)]:
+        del sources[name]
     targets = contributor_targets()
     feed = [str(VIDEO_FEED), "--seconds", str(seconds),
             *[target.rsplit(":", 1)[0] for target in targets], "--"]
