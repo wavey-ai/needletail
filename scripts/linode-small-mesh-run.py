@@ -99,7 +99,7 @@ local_json=$(curl -sk --max-time 4 https://127.0.0.1:$port/api/mesh/local 2>/dev
 node_json=$(curl -sk --max-time 4 https://127.0.0.1:$port/api/node 2>/dev/null | jq -c '{memory: (.memory // null), part_store_bytes: (.part_store_bytes // null), part_store_budget_bytes: (.part_store_budget_bytes // null)}' 2>/dev/null || true)
 [ -n "$node_json" ] || node_json=null
 metrics=
-[ "$service" = needletail-contrib ] && metrics=$(curl -sk --max-time 4 https://127.0.0.1:$port/metrics 2>/dev/null | grep -E '^av_contrib_(relay_asks_answered|relay_answer_symbols|relay_part_store|part_store)' | tr '\n' ';')
+[ "$service" = needletail-contrib ] && metrics=$(curl -sk --max-time 4 https://127.0.0.1:$port/metrics 2>/dev/null | grep -E '^av_contrib_(relay_asks_answered|relay_answer_symbols|relay_answer_refused|relay_answer_panics|relay_part_store|part_store)' | tr '\n' ';')
 jq -n \
   --argjson timestamp_ns "$(date +%s%N)" \
   --arg service "$service" \

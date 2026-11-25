@@ -6756,8 +6756,10 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
     deployed_settings = {**DEFAULT_SETTINGS,
                          **((state.get("deployed") or {}).get("settings") or {})}
     measured = {}
+    lanes = {}
     for name, text in list(results.items()):
         text, measured[name] = split_net_probe(text)
+        text, lanes[name] = split_lane_probe(text)
         text, repair_probes[name] = split_repair_probe(text)
         results[name], warm_lines[name] = split_status_probe(
             text, node_own_settings(deployed_settings, name), state["nodes"][name])
@@ -6790,6 +6792,11 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
             served = node_summary(document if code == 200 else None, recorded.get(name))
             served += status_repair(node["role"], repair_probes.get(name),
                                     document if code == 200 else None)
+            if node["role"] != "contributor":
+                plane = repair_probes.get(name)
+                served += send_summary(send_fields(plane if isinstance(plane, dict) else None,
+                                                   lanes.get(name),
+                                                   document if code == 200 else None))
         print(f"{name:<18} {node['role']:<12} {results[name]}"
               f"{egress_summary(measured.get(name), planned.get(name))}{served}{flag} "
               f"{warm_lines[name][0]}")
@@ -6979,6 +6986,16 @@ def memory_summary(document) -> str:
     counts = [f"{key}={memory[key]}" for key in ("soft_entries", "hard_entries",
                                                   "refused_large_playlists", "socket_clamped")
               if memory.get(key)]
+    if _number(memory.get("socket_budget_bytes")) is not None:
+        counts.append(f"sockets={mb('socket_asked_bytes')}/{mb('socket_budget_bytes')}")
+    classes = memory.get("socket_classes")
+    if isinstance(classes, list) and classes and all(isinstance(item, dict) for item in classes):
+        # av-mesh rm/send240: each socket class's share (video receive,
+        # cache mesh), what it asked and its clamped growths.
+        counts.append("socket_classes=" + ",".join(
+            f"{round((item.get('asked_bytes') or 0) / 1048576)}/"
+            f"{round((item.get('reserve_bytes') or 0) / 1048576)}MB"
+            + (f"!{item['clamped']}" if item.get("clamped") else "") for item in classes))
     return text + (" " + " ".join(counts) if counts else "")
 
 
@@ -7017,12 +7034,21 @@ REPAIR_LEVELS = {"part_repair.stored_parts", "decode_pool.workers",
 CONTRIB_REPAIR_METRICS = {
     "av_contrib_relay_asks_answered": "asks_answered",
     "av_contrib_relay_answer_symbols": "answer_symbols",
+    # av-contrib rm/int6 (review M1): asks dropped unanswered (not from the
+    # lane's forwarder), answered Busy (the asker had its share) or Missing
+    # (the part's answer window spent), and answers that panicked.
+    "av_contrib_relay_answer_refused_not_admitted": "answer_refused_not_admitted",
+    "av_contrib_relay_answer_refused_limited": "answer_refused_limited",
+    "av_contrib_relay_answer_refused_window_spent": "answer_refused_window_spent",
+    "av_contrib_relay_answer_panics": "answer_panics",
     "av_contrib_part_store_bytes": "memory.part_store_bytes",
     "av_contrib_relay_part_store_bytes": "memory.part_store_bytes",
     "av_contrib_part_store_budget_bytes": "memory.part_store_budget_bytes",
     "av_contrib_relay_part_store_budget_bytes": "memory.part_store_budget_bytes",
 }
 CONTRIB_REPAIR_LEVELS = {"memory.part_store_bytes", "memory.part_store_budget_bytes"}
+CONTRIB_ANSWER_KEYS = ("asks_answered", "answer_symbols", "answer_refused_not_admitted",
+                       "answer_refused_limited", "answer_refused_window_spent", "answer_panics")
 
 
 def _number(value):
@@ -7094,12 +7120,19 @@ def contributor_repair_fields(metrics, document=None) -> dict:
         if _number(samples.get(name)) is not None:
             out[key] = samples[name]
     if isinstance(document, dict):
-        for block in (document.get("memory"), document):
+        for block in (document.get("memory"), document.get("relay_answers"), document):
             if not isinstance(block, dict):
                 continue
             for name in ("part_store_bytes", "part_store_budget_bytes"):
                 if f"memory.{name}" not in out and _number(block.get(name)) is not None:
                     out[f"memory.{name}"] = block[name]
+        # Its /api/node `relay_answers` (av-contrib rm/int6) where /metrics
+        # did not give a count.
+        answers = document.get("relay_answers")
+        if isinstance(answers, dict):
+            for key in CONTRIB_ANSWER_KEYS:
+                if key not in out and _number(answers.get(key)) is not None:
+                    out[key] = answers[key]
     return out
 
 
@@ -7172,9 +7205,82 @@ def contributor_repair_summary(fields: dict) -> str:
     if not fields:
         return ""
     get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
-    return (f" repair answered={get('asks_answered')} sym={get('answer_symbols')}"
+    refused = ""
+    if any(f"answer_refused_{kind}" in fields for kind in ("not_admitted", "limited",
+                                                          "window_spent")):
+        refused = (f" refused={get('answer_refused_not_admitted')}"
+                   f"/{get('answer_refused_limited')}/{get('answer_refused_window_spent')}")
+    panics = (f" PANICS={fields['answer_panics']}" if fields.get("answer_panics") else "")
+    return (f" repair answered={get('asks_answered')} sym={get('answer_symbols')}{refused}"
+            f"{panics}"
             f" store={get('memory.part_store_bytes', 1048576.0)}"
             f"/{get('memory.part_store_budget_bytes', 1048576.0)}MB")
+
+
+# ------------------------------------------------------------ send side
+# What a node's send path refused or held (cmpd8: the fast lane's WouldBlock
+# was what failed a viewer), from what it serves today: the fast plane's
+# relay and lease senders (/api/mesh/local relay_session.fast_plane:
+# would_block, send_errors, lease_children's), the client fast lane
+# (/api/assignment client_udp.fast_lane: would_block, send_errors,
+# given_back) and, when a build serves them (av-mesh rm/send240), the class
+# threads' kept datagrams (`child_send_defer` in the fast plane, `send_defer`
+# in the fast lane: deferred, expired) and /api/node's `pulls` and
+# memory.send_defer_bytes. A field not served is absent, never 0.
+SEND_DEFER_FIELDS = ("would_block", "deferred", "deferred_sent", "expired", "expired_parts",
+                     "refused", "errors", "kept_bytes", "high_water_bytes", "handed_parts")
+PULL_FIELDS = ("holes", "requests", "requested_parts", "second_parent", "not_requested_shed",
+               "not_requested_lagging", "not_requested_budget", "pulled_bytes",
+               "pulled_bps_1s", "budget_bps")
+
+
+def send_fields(fast_plane=None, fast_lane=None, document=None) -> dict:
+    """A node's send-side fields, flat (`relay.*`, `lease.*`, `relay_defer.*`,
+    `lane.*`, `lane_defer.*`, `node_defer.*`, `pulls.*`,
+    `memory.send_defer_bytes`); absent when not served."""
+    out: dict = {}
+
+    def take(prefix: str, block, names) -> None:
+        if isinstance(block, dict):
+            for name in names:
+                if _number(block.get(name)) is not None:
+                    out[f"{prefix}.{name}"] = block[name]
+
+    plane = fast_plane if isinstance(fast_plane, dict) else {}
+    take("relay", plane, ("would_block", "send_errors"))
+    take("lease", plane.get("lease_children"), ("would_block", "send_errors"))
+    take("relay_defer", plane.get("child_send_defer"), SEND_DEFER_FIELDS)
+    lane = fast_lane if isinstance(fast_lane, dict) else {}
+    take("lane", lane, ("would_block", "send_errors", "given_back"))
+    take("lane_defer", lane.get("send_defer"), SEND_DEFER_FIELDS)
+    node = document if isinstance(document, dict) else {}
+    take("node_defer", node.get("send_defer"), SEND_DEFER_FIELDS)
+    take("pulls", node.get("pulls"), PULL_FIELDS)
+    take("memory", node.get("memory"), ("send_defer_bytes",))
+    return out
+
+
+def send_summary(fields: dict) -> str:
+    """status's segment of a node's send side (send_fields); "" when it
+    serves none."""
+    if not fields:
+        return ""
+    get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
+    text = (f" send wb relay/lease/lane={get('relay.would_block')}/{get('lease.would_block')}"
+            f"/{get('lane.would_block')} err={get('relay.send_errors')}/"
+            f"{get('lease.send_errors')}/{get('lane.send_errors')}"
+            f" given_back={get('lane.given_back')}")
+    for prefix in ("relay_defer", "lane_defer", "node_defer"):
+        if any(key.startswith(prefix + ".") for key in fields):
+            text += (f" {prefix}={get(prefix + '.deferred')}/{get(prefix + '.expired')}"
+                     f"(deferred/expired)")
+    if any(key.startswith("pulls.") for key in fields):
+        text += (f" pulls={get('pulls.requests')} shed_not_asked="
+                 f"{get('pulls.not_requested_shed')} pulled={get('pulls.pulled_bps_1s', 1e6)}"
+                 "Mbit/s")
+    if "memory.send_defer_bytes" in fields:
+        text += f" defer_pool={get('memory.send_defer_bytes', 1048576.0)}MB"
+    return text
 
 
 # status's probe reads a node's own repair counters: a mesh node's fast
@@ -7184,6 +7290,9 @@ STATUS_REPAIR_PROBE = (
     'if [ "$service" = needletail-mesh ]; then\n'
     f'  echo "REPAIR $(curl -sk --max-time 3 https://127.0.0.1:{HTTP_PORT}/api/mesh/local '
     "2>/dev/null | jq -c '.relay_session.fast_plane // null' 2>/dev/null)\"\n"
+    f'  echo "LANE $(curl -sk --max-time 3 https://127.0.0.1:{HTTP_PORT}/api/assignment '
+    "2>/dev/null | jq -c '[.. | objects | select(has(\"given_back\") and "
+    "has(\"would_block\"))][0] // null' 2>/dev/null)\"\n"
     'elif [ "$service" = needletail-contrib ]; then\n'
     f'  echo "REPAIR $(curl -sk --max-time 3 https://127.0.0.1:{CONTRIB_HTTP_PORT}/metrics '
     "2>/dev/null | grep -E '^(" + "|".join(CONTRIB_REPAIR_METRICS) + ")[ {]' "
@@ -7206,6 +7315,23 @@ def split_repair_probe(text: str) -> tuple[str, object]:
                     found = None
             elif body and body != "null":
                 found = parse_metrics(body) or None
+            continue
+        lines.append(line)
+    return "\n".join(lines), found
+
+
+def split_lane_probe(text: str) -> tuple[str, dict | None]:
+    """status's probe output less its LANE line, and that line's client fast
+    lane counters (a dict), or None."""
+    lines, found = [], None
+    for line in (text or "").splitlines():
+        if line == "LANE" or line.startswith("LANE "):
+            body = line[len("LANE"):].strip()
+            if body.startswith("{"):
+                try:
+                    found = json.loads(body)
+                except ValueError:
+                    found = None
             continue
         lines.append(line)
     return "\n".join(lines), found
@@ -7307,6 +7433,38 @@ def fast_plane_repair():
                                         *FAST_FIELDS) if key in plane}
 
 
+def fast_lane():
+    # The client fast lane's counters (would_block, given_back, send_defer
+    # when served) wherever /api/assignment nests them.
+    def find(value):
+        if isinstance(value, dict):
+            if "given_back" in value and "would_block" in value:
+                return value
+            for item in value.values():
+                found = find(item)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = find(item)
+                if found is not None:
+                    return found
+        return None
+    return find(get("/api/assignment"))
+
+
+def net_bytes():
+    # Every interface but lo: [received, sent] bytes, cumulative
+    # (/proc/net/dev); a second's Mbit/s is the difference of two rows.
+    out = {}
+    for line in (read("/proc/net/dev") or "").splitlines()[2:]:
+        name, _, rest = line.partition(":")
+        fields = rest.split()
+        if name.strip() and name.strip() != "lo" and len(fields) >= 9:
+            out[name.strip()] = [int(fields[0]), int(fields[8])]
+    return out
+
+
 def contrib_repair():
     found = {}
     for line in get("/metrics", parse=False).splitlines():
@@ -7366,6 +7524,9 @@ with open(out, "a", buffering=1) as sink:
                                         context=context) as answer:
                 document = json.load(answer)
             row["memory"] = document.get("memory")
+            for key in ("pulls", "send_defer", "relay_answers"):
+                if document.get(key) is not None:
+                    row[key] = document[key]
             row["streams"] = [{key: item.get(key) for key in
                                ("stream_id", "window_parts", "head_part")}
                               for item in document.get("streams") or []]
@@ -7376,8 +7537,10 @@ with open(out, "a", buffering=1) as sink:
                 row["contrib_repair"] = contrib_repair()
             else:
                 row["fast_plane"] = fast_plane_repair()
+                row["fast_lane"] = fast_lane()
         except Exception as error:
             row["repair_error"] = str(error)[:160]
+        row["net"] = net_bytes()
         row["udp_sockstat"] = sockstat_udp()
         row["udp_snmp"] = snmp_udp()
         sink.write(json.dumps(row, separators=(",", ":")) + "\n")

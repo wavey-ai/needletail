@@ -14,6 +14,7 @@ import pathlib
 import re
 import sys
 import unittest
+import unittest.mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -163,6 +164,107 @@ class Contributor(unittest.TestCase):
             "av_contrib_relay_lane_reported_loss_primary_ppm 5\n", {"state": "ready"}), {})
         self.assertEqual(deploy.contributor_repair_fields(None, None), {})
         self.assertEqual(deploy.contributor_repair_summary({}), "")
+
+
+class ContributorAnswersRefused(unittest.TestCase):
+    """tools6: the contributor's refusals and panics (av-contrib rm/int6),
+    from /metrics or its /api/node relay_answers."""
+
+    METRICS = ("av_contrib_relay_asks_answered 17\nav_contrib_relay_answer_symbols 230\n"
+               "av_contrib_relay_answer_refused_not_admitted 3\n"
+               "av_contrib_relay_answer_refused_limited 4\n"
+               "av_contrib_relay_answer_refused_window_spent 5\n"
+               "av_contrib_relay_answer_panics 0\n")
+
+    def test_metrics(self):
+        fields = deploy.contributor_repair_fields(self.METRICS)
+        self.assertEqual(fields["answer_refused_limited"], 4)
+        self.assertEqual(deploy.contributor_repair_summary(fields),
+                         " repair answered=17 sym=230 refused=3/4/5 store=-/-MB")
+        fields["answer_panics"] = 2
+        self.assertIn(" PANICS=2 ", deploy.contributor_repair_summary(fields))
+
+    def test_api_node_relay_answers(self):
+        document = {"relay_answers": {"asks_answered": 2, "answer_symbols": 9,
+                                      "answer_refused_not_admitted": 0,
+                                      "answer_refused_limited": 1,
+                                      "answer_refused_window_spent": 0, "answer_panics": 1,
+                                      "part_store_bytes": 10 * MB,
+                                      "part_store_budget_bytes": 48 * MB}}
+        fields = deploy.contributor_repair_fields({}, document)
+        self.assertEqual(deploy.contributor_repair_summary(fields),
+                         " repair answered=2 sym=9 refused=0/1/0 PANICS=1 store=10/48MB")
+        # /metrics wins where it gives a count.
+        fields = deploy.contributor_repair_fields(self.METRICS, document)
+        self.assertEqual(fields["asks_answered"], 17)
+        self.assertIn("relay_answer_refused", run.SNAPSHOT)
+        self.assertIn("relay_answer_panics", run.SNAPSHOT)
+
+
+class SendSide(unittest.TestCase):
+    """tools6: the send side per node in status: the fast plane's relay and
+    lease WouldBlock, the client fast lane's (and what it gave back), and
+    av-mesh rm/send240's kept datagrams and pulls where served."""
+
+    def test_today_s_fields(self):
+        plane = {"would_block": 5, "send_errors": 0,
+                 "lease_children": {"would_block": 7273, "send_errors": 1}}
+        lane = {"would_block": 2801, "send_errors": 0, "given_back": 2801}
+        fields = deploy.send_fields(plane, lane, {"memory": {}})
+        self.assertEqual(fields, {"relay.would_block": 5, "relay.send_errors": 0,
+                                  "lease.would_block": 7273, "lease.send_errors": 1,
+                                  "lane.would_block": 2801, "lane.send_errors": 0,
+                                  "lane.given_back": 2801})
+        self.assertEqual(deploy.send_summary(fields),
+                         " send wb relay/lease/lane=5/7273/2801 err=0/1/0 given_back=2801")
+        self.assertEqual(deploy.send_summary(deploy.send_fields(None, None, None)), "")
+
+    def test_send240_s_fields_when_served(self):
+        plane = {"would_block": 1, "child_send_defer": {"would_block": 9, "deferred": 40,
+                                                        "expired": 2}}
+        lane = {"would_block": 3, "given_back": 0, "send_defer": {"deferred": 12, "expired": 0}}
+        document = {"pulls": {"requests": 8, "not_requested_shed": 30,
+                              "pulled_bps_1s": 12_000_000},
+                    "memory": {"send_defer_bytes": 8 * MB}}
+        text = deploy.send_summary(deploy.send_fields(plane, lane, document))
+        for piece in (" relay_defer=40/2(deferred/expired)", " lane_defer=12/0(deferred/expired)",
+                      " pulls=8 shed_not_asked=30 pulled=12Mbit/s", " defer_pool=8MB"):
+            self.assertIn(piece, text)
+
+    def test_the_lane_line_and_the_memory_section(self):
+        text = 'svc\nLANE {"would_block": 1, "given_back": 1}\nREPAIR null'
+        rest, lane = deploy.split_lane_probe(text)
+        self.assertEqual(lane, {"would_block": 1, "given_back": 1})
+        self.assertEqual(rest, "svc\nREPAIR null")
+        self.assertIsNone(deploy.split_lane_probe("svc\nLANE null")[1])
+        self.assertIn("/api/assignment", deploy.STATUS_REPAIR_PROBE)
+        self.assertIn('select(has("given_back") and has("would_block"))',
+                      deploy.STATUS_REPAIR_PROBE)
+        memory = {"state": "ok", "rss_bytes": 900 * MB, "socket_budget_bytes": 118 * MB,
+                  "socket_asked_bytes": 118 * MB, "socket_clamped": 4,
+                  "socket_classes": [{"reserve_bytes": 56 * MB, "asked_bytes": 56 * MB,
+                                      "clamped": 3},
+                                     {"reserve_bytes": 28 * MB, "asked_bytes": 4 * MB,
+                                      "clamped": 0}]}
+        line = deploy.memory_summary({"memory": memory})
+        self.assertIn(" socket_clamped=4 sockets=118MB/118MB socket_classes=56/56MB!3,4/28MB",
+                      line)
+
+    def test_the_sampler_keeps_the_send_side_and_the_interfaces(self):
+        sampler = deploy.MEMORY_SAMPLER
+        for text in ('row["fast_lane"] = fast_lane()', 'row["net"] = net_bytes()',
+                     '"/api/assignment"', '("pulls", "send_defer", "relay_answers")',
+                     '"/proc/net/dev"'):
+            self.assertIn(text, sampler)
+        namespace: dict = {}
+        source = sampler[:sampler.index("next_at = time.time()")]
+        exec(compile(source.replace("port, out, interval = int(sys.argv[1]), sys.argv[2], "
+                                    "float(sys.argv[3])", "port, out, interval = 1, '', 1.0"),
+                     "sampler", "exec"), namespace)
+        with unittest.mock.patch.dict(namespace, {"read": lambda path: (
+                "Inter-|   Receive\n face |bytes\n    lo: 5 1 0 0 0 0 0 0 5 1 0 0 0 0 0 0\n"
+                "  eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n")}):
+            self.assertEqual(namespace["net_bytes"](), {"eth0": [1000, 2000]})
 
 
 class StatusProbe(unittest.TestCase):
