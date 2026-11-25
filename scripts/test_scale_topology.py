@@ -977,6 +977,35 @@ class FakeHosts:
         self.drained: set[str] = set()
         # The engine's clock: a node's boot id is the activation's time on it.
         self.clock = time.time
+        # The check unit at boot (needletail-node-check.service): it writes
+        # this boot's warm record when it runs with needletail-nodecheck in
+        # /usr/local/bin; on a host of `no_warm_record` it writes none (its
+        # nodecheck dies), on one of `warm_incomplete` one not complete.
+        self.no_warm_record: set[str] = set()
+        self.warm_incomplete: set[str] = set()
+        self.warm_runs: dict[str, int] = {}
+
+    WARM_FILE = "/run/needletail/node-warm.json"
+    NODECHECK = "/usr/local/bin/needletail-nodecheck"
+    CHECK_UNIT = "/etc/systemd/system/needletail-node-check.service"
+
+    def warm_record_complete(self, name: str) -> bool:
+        return b'"complete": true' in self.fs(name).get(self.WARM_FILE, b"")
+
+    def run_check(self, name: str) -> None:
+        """The check unit runs: a record only with nodecheck in place."""
+        files = self.fs(name)
+        self.warm_runs[name] = self.warm_runs.get(name, 0) + 1
+        if self.NODECHECK not in files or name in self.no_warm_record:
+            return
+        complete = name not in self.warm_incomplete
+        files[self.WARM_FILE] = json.dumps({
+            "schema": "needletail.node-warm.v2", "complete": complete,
+            "verdict": "ok" if complete else "warm-timeout",
+            "unix_us": int(time.time() * 1e6), "slow_host": False, "slow_reasons": [],
+            "warm": {"ran": True, "finished": complete, "seconds": 12.5,
+                     "worst_page_us": 4000, "touched_mb": 3200, "stalls": []},
+            "check": {}}).encode()
 
     def fs(self, name: str) -> dict[str, bytes]:
         return self.files.setdefault(name, {})
@@ -1014,6 +1043,20 @@ class FakeHosts:
             return f"eth1={node.get('vlan_ipv4')}/24"
         if "systemd-run" in script:
             return self.activate(name, script)
+        if "WantedBy=multi-user.target" in script and "needletail-node-check" in script:
+            # warm_host: its own unit, run unless this boot's record is complete.
+            files[self.CHECK_UNIT] = b"host check"
+            if not self.warm_record_complete(name):
+                self.run_check(name)
+            return ""
+        staged = re.search(r"ln -sfn (/opt/needletail/builds/\S+/needletail-nodecheck)", script)
+        if staged:
+            # warm_staged: the staged build's nodecheck linked, the check run.
+            if staged.group(1) in files:
+                files[self.NODECHECK] = files[staged.group(1)]
+            if not self.warm_record_complete(name):
+                self.run_check(name)
+            return ""
         if script.startswith("cat "):
             return files.get(script.split()[1], b"").decode()
         if "systemctl disable --now" in script:
@@ -1060,6 +1103,8 @@ class FakeHosts:
             files[args + ".failed"] = files[args]
             files[args] = files[source]
         else:
+            if f"{self.ETC}/{service}.check.next" in files:
+                files[self.CHECK_UNIT] = files[f"{self.ETC}/{service}.check.next"]
             if f"{self.ETC}/{service}.unit.next" in files:
                 if unit in files:
                     files[f"{self.ETC}/{service}.unit.prev"] = files[unit]
@@ -1067,6 +1112,14 @@ class FakeHosts:
             if args in files:
                 files[args + ".prev"] = files[args]
             files[args] = files.pop(source)
+            # The build's binaries linked into /usr/local/bin, then the
+            # check run when this boot's record is not complete (before the
+            # service: stopped first when it runs).
+            build = binary.rsplit("/", 1)[0] + "/"
+            for path in [path for path in files if path.startswith(build)]:
+                files["/usr/local/bin/" + path[len(build):]] = files[path]
+            if self.CHECK_UNIT in files and not self.warm_record_complete(name):
+                self.run_check(name)
         self.running[name] = True
         self.boots[name] = int(self.clock() * 1_000_000)
         return result(True)
@@ -1188,13 +1241,13 @@ class FakeLab(Base):
         tools = self.roots / "tools"
         if role == "contributor":
             return [self.roots / "contrib" / "av-contrib", tools / "aep1-48k-probe",
-                    tools / "daw-test-source"]
+                    tools / "needletail-nodecheck", tools / "daw-test-source"]
         if role == "load":
             return [tools / name for name in ("aep1-48k-probe", "needletail-reader",
                                               "needletail-udp-client", "daw-test-source",
                                               "needletail-nodecheck")]
         return [self.roots / "mesh" / "av-mesh", tools / "aep1-48k-probe",
-                tools / "soundkit-part-check"]
+                tools / "soundkit-part-check", tools / "needletail-nodecheck"]
 
     @staticmethod
     def change_state(path, state, change):
@@ -1277,8 +1330,11 @@ class NodesByName(FakeLab):
         self.push()
         self.quietly(deploy.command_start, self.namespace(nodes="lon-edge-6"))
         self.assertEqual(set(self.hosts.touched), {"lon-edge-6"})
+        # The activation, then this boot's warm record read (node_warm).
         self.assertIn("/opt/needletail/activate needletail-mesh",
-                      self.hosts.scripts["lon-edge-6"][-1])
+                      self.hosts.scripts["lon-edge-6"][-2])
+        self.assertEqual(self.hosts.scripts["lon-edge-6"][-1],
+                         "cat /run/needletail/node-warm.json")
         self.assertNotIn("lon-edge-6", self.saved_standby())
         self.assertIn("lon-edge-7", self.saved_standby())
 

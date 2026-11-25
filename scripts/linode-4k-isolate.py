@@ -809,9 +809,20 @@ class Iso:
         missing = [name for name in self.nodes if not (warm.get(name) or {}).get("complete")]
         if missing:
             self.runner.say(f"warm pass not complete on {', '.join(missing)}: warming them now")
-            self.runner.each(missing, lambda name: self.runner.ssh(
-                name, "needletail-nodecheck warm --leave-mb 300 2>&1 | tail -1 || "
-                      "/bin/true", check=False, timeout=900))
+            # cmpd8: the contributor had no needletail-nodecheck, and the
+            # `|| /bin/true` here passed over it in silence. A host without
+            # one is named and recorded as unwarmed.
+            said = self.runner.each(missing, lambda name: self.runner.ssh(
+                name, "if command -v needletail-nodecheck >/dev/null; then "
+                      "needletail-nodecheck warm --leave-mb 300 2>&1 | tail -1; "
+                      "else echo NO-NODECHECK; fi", check=False, timeout=900))
+            unwarmed = sorted(name for name, text in (said or {}).items()
+                              if "NO-NODECHECK" in (text or ""))
+            if unwarmed:
+                self.record["unwarmed"] = unwarmed
+                self.save()
+                self.runner.say(f"UNWARMED (no needletail-nodecheck on the host): "
+                                f"{', '.join(unwarmed)}")
 
     def media(self) -> None:
         """What the cells need on the hosts: the referee's clips, the loop's

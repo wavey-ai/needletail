@@ -4118,10 +4118,19 @@ done
 # installed, exited 203, stayed "active" and never ran again, so the node
 # never became ready). Blocks until the pass is done or its unit's
 # TimeoutStartSec; the activation's wait has that on top.
+# A node whose service runs without a complete record (cmpd8: the
+# contributor, whose check had run with no nodecheck on the node and stayed
+# "active", so its restarts never ran it again) is stopped first and then
+# warmed, as a node whose check unit is new is: never with its service
+# running (the pass takes nearly all free memory), never on a rollback.
 if [ -f "$UNITS/needletail-node-check.service" ] \
-    && ! grep -qs '"complete": *true' "$RUN/node-warm.json" \
-    && ! systemctl is-active --quiet "$service.service"; then
-  systemctl restart needletail-node-check.service || true
+    && ! grep -qs '"complete": *true' "$RUN/node-warm.json"; then
+  if ! systemctl is-active --quiet "$service.service"; then
+    systemctl restart needletail-node-check.service || true
+  elif [ "$rollback" = 0 ] && [ -x "$BIN/needletail-nodecheck" ]; then
+    systemctl stop "$service.service" || true
+    systemctl restart needletail-node-check.service || true
+  fi
 fi
 systemctl enable --quiet "$service.service" 2>/dev/null
 systemctl restart "$service.service" || finish false "systemctl restart failed"
@@ -4241,9 +4250,54 @@ def cache_build(role: str) -> dict:
             raise mesh_ops.Refused(
                 f"{files[0]} names build {build['key']}, and {target} holds another "
                 f"{files[0].name} of that build: a build id names one binary (rebuild it)")
+        # A build cached by an older deploy tool lacks the companions added
+        # since (cmpd8: the contributor's build 703fe825245f, cached before
+        # binaries_for gave the contributor needletail-nodecheck, was used
+        # again whole, so the contributor never had a nodecheck and its warm
+        # pass never ran). Its service binary stays; a missing companion is
+        # added, never one replaced.
+        complete_build(build["key"], files[1:])
         return build
     finally:
         shutil.rmtree(copy, ignore_errors=True)
+
+
+def complete_build(key: str, companions) -> list[str]:
+    """Add to builds/<key>/ each of `companions` (paths of the roots) that
+    it lacks, each by a rename; the names added. A file the build already
+    has is never written again."""
+    target = builds_dir() / key
+    added = []
+    for path in companions:
+        path = pathlib.Path(path)
+        if (target / path.name).exists() or not path.is_file():
+            continue
+        handle, name = tempfile.mkstemp(prefix=f".add-{path.name}-", dir=target)
+        os.close(handle)
+        temporary = pathlib.Path(name)
+        shutil.copy2(path, temporary)
+        temporary.replace(target / path.name)
+        added.append(path.name)
+    return added
+
+
+def ensure_nodecheck(key: str) -> None:
+    """Build `key` holds needletail-nodecheck, which its node's check unit
+    runs (the activation links it into /usr/local/bin): taken from the
+    roots when the cached build lacks it (a build cached by an older tool,
+    or fetched from a node that had none). Refused when there is none to
+    take: the node's warm pass would write no record."""
+    if (builds_dir() / key / "needletail-nodecheck").is_file():
+        return
+    source = next((path for path in binaries_for("load") if path.name == "needletail-nodecheck"),
+                  None)
+    if source is not None:
+        complete_build(key, [source])
+    if not (builds_dir() / key / "needletail-nodecheck").is_file():
+        raise mesh_ops.Refused(
+            f"build {key} has no needletail-nodecheck and {source or 'the av-mesh root'} has "
+            "none to add: the node's warm pass at boot would not run (build av-mesh's "
+            "needletail-nodecheck, or push with --set node_warm=false)")
 
 
 def cached(key: str, binary: str) -> bool:
@@ -4350,7 +4404,10 @@ def stage_node(node: dict, service: str, key: str, files: dict[str, str]) -> Non
     <key>/, the TLS files, the service's `.next` files and the activation
     script. Nothing is restarted, no kernel setting or qdisc is applied.
     Every file is checked on the node by its sha256; old builds are pruned
-    (PRUNE_BUILDS)."""
+    (PRUNE_BUILDS). A node with the check unit gets its build's
+    needletail-nodecheck (ensure_nodecheck)."""
+    if "check" in files:
+        ensure_nodecheck(key)
     binaries = build_files(key)
     staging = common.ARTIFACT_DIR / "stage" / node["name"]
     staging.mkdir(parents=True, exist_ok=True)
@@ -4653,8 +4710,9 @@ def install_nodecheck(node: dict) -> None:
 
 
 # A host's check unit (WARM_ONLY_ROLES) put in place when it differs,
-# enabled, and started: a no-op once it ran this boot, else it blocks until
-# the warm pass is done.
+# enabled, and started: a no-op once this boot's record is complete, else
+# run (again: a check that ran without a record stays active) and waited
+# for until the warm pass is done.
 WARM_HOST_SCRIPT = """set -u
 unit=/etc/systemd/system/{unit}
 cat >"$unit.tmp" <<'UNIT'
@@ -4662,7 +4720,8 @@ cat >"$unit.tmp" <<'UNIT'
 if cmp -s "$unit.tmp" "$unit"; then rm -f "$unit.tmp"
 else mv -f "$unit.tmp" "$unit" && systemctl daemon-reload; fi
 systemctl enable --quiet {unit} 2>/dev/null
-systemctl start {unit} || true
+if grep -qs '"complete": *true' {record}; then systemctl start {unit} || true
+else systemctl restart {unit} || true; fi
 """
 # Without node_warm: a host's check unit disabled and removed.
 UNWARM_HOST_SCRIPT = """unit=/etc/systemd/system/{unit}
@@ -4683,7 +4742,8 @@ def warm_host(node: dict, settings: dict) -> dict | None:
         common.ssh_text(node, UNWARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT), check=False,
                         timeout=60)
         return None
-    common.ssh_text(node, WARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT, text=text), check=False,
+    common.ssh_text(node, WARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT, text=text,
+                                                  record=NODE_WARM_FILE), check=False,
                     timeout=check_timeout_s({**settings, "node_check_seconds": 0}, node) + 60)
     return read_warm_record(node)
 
@@ -5007,6 +5067,9 @@ class LinodeOps(mesh_ops.Ops):
         # {node: its warm record of this boot (NODE_WARM_FILE) or None},
         # read by install after each node's activation or warm pass.
         self.warm_records: dict[str, dict | None] = {}
+        # The hosts this command gave the warm pass to (node_warm on): each
+        # must end with a complete record (unwarmed_hosts, warm_gate).
+        self.warm_wanted: set[str] = set()
         path = common.state_path()
         self.lock_path = path.with_name(path.name + ".ops.lock")
         self.evidence_dir = common.ARTIFACT_DIR / "rolls"
@@ -5536,6 +5599,8 @@ class LinodeOps(mesh_ops.Ops):
                     elif own.get("node_warm") and binaries:
                         install_nodecheck(node)
                     if role == "load" or own.get("node_warm"):
+                        if own.get("node_warm"):
+                            self.warm_wanted.add(name)
                         self.warm_records[name] = judge_warm(warm_host(node, own), own, node)
                         what.append(warm_word(self.warm_records[name], own))
                     return ", ".join(what) or "untouched"
@@ -5543,6 +5608,8 @@ class LinodeOps(mesh_ops.Ops):
                     stop_service(node)
                     return "stopped (not in the topology)"
                 stage_node(node, *plans[name])
+                if own.get("node_warm"):
+                    self.warm_wanted.add(name)
                 if name in standby:
                     stop_service(node)
                     if check_unit_wanted(own):
@@ -5651,6 +5718,19 @@ class LinodeOps(mesh_ops.Ops):
         else:
             common.ssh_text(record, f"systemctl enable --now {self.service(node)}.service")
         self.hold(node, out=False)
+        self.read_warm(node)
+
+    def read_warm(self, node: str) -> None:
+        """A node taken into service (start, a roll's surge edge, the
+        autoscaler's standby): this boot's warm record, judged and kept in
+        warm_records and the deployed record, when it has the warm pass."""
+        own = self.own_settings(node)
+        if not own.get("node_warm"):
+            return
+        record = self.full["nodes"][node]
+        self.warm_wanted.add(node)
+        self.warm_records[node] = judge_warm(read_warm_record(record), own, record)
+        record_deployed(self.full, {}, warm={node: warm_entry(self.warm_records[node])})
 
     def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
         record = self.full["nodes"][node]
@@ -6179,6 +6259,48 @@ def warm_summary(records: dict) -> str:
             + (f"; slow_host: {', '.join(slow)}" if slow else ""))
 
 
+# The exit status of a push, start or replace that did everything else but
+# left a host it manages without a complete warm record (node_warm on).
+EXIT_UNWARMED = 6
+
+
+def warm_complete(record: dict | None) -> bool:
+    """Whether a warm record is complete: written this boot, `complete`,
+    with a warm pass that ran and finished within its limit."""
+    if not record or record.get("complete") is not True:
+        return False
+    warm = record.get("warm")
+    return isinstance(warm, dict) and warm.get("ran", True) is not False \
+        and warm.get("finished") is not False
+
+
+def unwarmed_hosts(ops: "LinodeOps") -> dict:
+    """{host: its warm word} of the hosts this command gave the warm pass
+    (ops.warm_wanted) whose record is missing or not complete."""
+    return {name: warm_word(ops.warm_records.get(name))
+            for name in sorted(ops.warm_wanted, key=mesh_ops.natural)
+            if not warm_complete(ops.warm_records.get(name))}
+
+
+def warm_gate(ops: "LinodeOps", verb: str, allow: bool) -> str | None:
+    """The end of a push, start or replace with node_warm: None when every
+    host it manages has a complete warm record; else the problem that makes
+    it exit EXIT_UNWARMED, naming them (cmpd8: an unwarmed contributor's
+    guest stopped 1.03 s in a measured 4K run). With `allow`
+    (--allow-unwarmed) the hosts are printed and it goes on."""
+    missing = unwarmed_hosts(ops)
+    if not missing:
+        return None
+    named = ", ".join(f"{name} ({word})" for name, word in missing.items())
+    if allow:
+        print(f"{verb}: UNWARMED hosts, allowed by --allow-unwarmed (do not measure on them): "
+              f"{named}", file=sys.stderr)
+        return None
+    return (f"UNWARMED: {named}: no complete warm record. Everything else is done; run the "
+            f"check again (`push --nodes {','.join(missing)}`), or go on with "
+            "--allow-unwarmed")
+
+
 def ssh_silent(nodes: list[dict]) -> list[str]:
     """The names of `nodes` whose sshd does not answer within the bound
     (common.wait_ssh), in the tools' usual order."""
@@ -6246,8 +6368,12 @@ def command_push(args: argparse.Namespace) -> None:
         problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "report"))
         if ops.warm_records:
             print(warm_summary(ops.warm_records), file=sys.stderr)
+        unwarmed = warm_gate(ops, "push", getattr(args, "allow_unwarmed", False))
         if problems:
-            sys.exit("push: " + "; ".join(problems))
+            sys.exit("push: " + "; ".join(problems + ([unwarmed] if unwarmed else [])))
+        if unwarmed:
+            print(f"push: {unwarmed}", file=sys.stderr)
+            sys.exit(EXIT_UNWARMED)
 
 
 def command_restart(args: argparse.Namespace) -> None:
@@ -6321,9 +6447,15 @@ def command_replace(args: argparse.Namespace) -> None:
         sys.exit(mesh_ops.EXIT_REFUSED)
     ops.replacing = {"mode": args.mode, "no_slot": args.no_slot, "resume": args.resume,
                      "budget_usd": args.budget_usd, "spent_before_usd": args.spent_before_usd}
-    sys.exit(mesh_ops.replace(ops, name, mode=args.mode, no_slot=args.no_slot,
-                              keep_slot=args.keep_slot, resume=args.resume,
-                              options=engine_options(args)))
+    code = mesh_ops.replace(ops, name, mode=args.mode, no_slot=args.no_slot,
+                            keep_slot=args.keep_slot, resume=args.resume,
+                            options=engine_options(args))
+    unwarmed = warm_gate(ops, "replace", getattr(args, "allow_unwarmed", False))
+    if unwarmed:
+        print(f"replace: {unwarmed}", file=sys.stderr)
+        if code == mesh_ops.EXIT_DONE:
+            code = EXIT_UNWARMED
+    sys.exit(code)
 
 
 def command_change(args: argparse.Namespace) -> None:
@@ -6370,6 +6502,10 @@ def command_start(args: argparse.Namespace) -> None:
     print(f"started {', '.join(names)} on "
           + ", ".join(sorted({ops.staged[name]['build'] for name in names}))
           + "; no other node was restarted")
+    unwarmed = warm_gate(ops, "start", getattr(args, "allow_unwarmed", False))
+    if unwarmed:
+        print(f"start: {unwarmed}", file=sys.stderr)
+        sys.exit(EXIT_UNWARMED)
 
 
 def command_stop(args: argparse.Namespace) -> None:
@@ -6436,9 +6572,12 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
             speeds[name] = float(found.group(1))
     median = sorted(speeds.values())[len(speeds) // 2] if speeds else 0
     slow = sorted(name for name, speed in speeds.items() if speed < 0.75 * median)
+    wanted = status_warm_wanted(state)
     for name in sorted(results):
         node = state["nodes"][name]
         flag = "  <-- SLOW shared CPU" if name in slow else ""
+        if name in wanted and not warm_complete(warm_lines[name][1]):
+            flag += "  <-- UNWARMED (no complete warm record: do not measure)"
         served = ""
         if name in targets:
             code, document = answers.get(name, (None, None))
@@ -6448,7 +6587,8 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
     # Shared-CPU hosts vary by 2x in single-thread speed without reporting steal.
     print(f"median single-thread speed {median:.0f} MB/s; slow nodes "
           f"(<75% of median): {' '.join(slow) or 'none'}")
-    for line in warm_status(state, {name: item[1] for name, item in warm_lines.items()}):
+    for line in warm_status(state, {name: item[1] for name, item in warm_lines.items()},
+                            wanted):
         print(line)
     for line in deployed_summary(state):
         print(line)
@@ -6476,16 +6616,40 @@ def split_status_probe(text: str, settings: dict | None = None,
                             record)
 
 
-def warm_status(state: dict, records: dict) -> list[str]:
-    """status's lines on the warm pass: hosts whose record is not complete,
-    the slow hosts with what push does with each (slow_host_decision: an
-    edge replaced once, every other role reported) and the edges replaced
-    for it, and the deployed transparent_hugepage setting."""
+def status_warm_wanted(state: dict) -> set[str]:
+    """The hosts that should have a complete warm record by the deployed
+    settings (node_warm on for the host): every load and LiveKit host, and
+    every node of a tier that is deployed or held out (a backbone the
+    topology does not use runs nothing and is not one)."""
+    deployed = state.get("deployed") or {}
+    settings = {**DEFAULT_SETTINGS, **(deployed.get("settings") or {})}
+    running = set(deployed.get("nodes") or {}) | set(standby_edges(settings))
+    return {name for name, node in state["nodes"].items()
+            if node_own_settings(settings, name).get("node_warm")
+            and (node.get("role") in WARM_ONLY_ROLES or name in running)}
+
+
+def warm_status(state: dict, records: dict, wanted: set[str] | None = None) -> list[str]:
+    """status's lines on the warm pass: the UNWARMED hosts (`wanted`, which
+    should have one, without a complete record) and other hosts whose
+    record is not complete, the slow hosts with what push does with each
+    (slow_host_decision: an edge replaced once, every other role reported)
+    and the edges replaced for it, and the deployed transparent_hugepage
+    setting."""
     ledger = slow_hosts_ledger(state)
     lines = []
-    missing = sorted((name for name, record in records.items()
-                      if not (record or {}).get("complete")), key=mesh_ops.natural)
+    wanted = set(wanted or ())
+    unwarmed = sorted((name for name in records if name in wanted
+                       and not warm_complete(records[name])), key=mesh_ops.natural)
+    missing = sorted((name for name, record in records.items() if name not in unwarmed
+                      and not (record or {}).get("complete")), key=mesh_ops.natural)
+    if unwarmed:
+        lines.append(f"warm pass: UNWARMED {', '.join(unwarmed)}: no complete warm record; "
+                     "do not measure on this lab until `push --nodes "
+                     f"{','.join(unwarmed)}` warms them")
     lines.append("warm pass: " + (f"not complete on {', '.join(missing)}" if missing
+                                  else f"complete on all {len(records) - len(unwarmed)} "
+                                       "other host(s)" if unwarmed
                                   else f"complete on all {len(records)} host(s)"))
     proofs = {name: touch_proof(record) for name, record in records.items()}
     unproved = sorted((name for name, proof in proofs.items() if proof and proof != "proved"),
@@ -7356,10 +7520,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help="comma-separated: bootstrap, install and start only these (taken "
                            "into service) on their tier's recorded build; every other node is "
                            "left as it runs")
+    push.add_argument("--allow-unwarmed", action="store_true",
+                      help="with node_warm: go on (exit 0) when a host this command manages "
+                           "ends without a complete warm record; the hosts are printed. "
+                           "Without it such a push exits 6 naming them, after doing "
+                           "everything else")
     push.set_defaults(handler=command_push)
     start = sub.add_parser("start", help="take held-out nodes into service, nothing else")
     start.add_argument("--nodes", required=True)
     start.add_argument("--set", action="append", default=[])
+    start.add_argument("--allow-unwarmed", action="store_true",
+                      help="with node_warm: go on (exit 0) when a host this command manages "
+                           "ends without a complete warm record; the hosts are printed. "
+                           "Without it such a start exits 6 naming them, after doing "
+                           "everything else")
     start.set_defaults(handler=command_start)
     stop = sub.add_parser("stop", help="hold nodes out and stop them, nothing else")
     stop.add_argument("--nodes", required=True)
@@ -7407,6 +7581,11 @@ def build_parser() -> argparse.ArgumentParser:
     replace.add_argument("--ready-timeout-s", type=float, default=60.0)
     replace.add_argument("--surge", choices=("auto", "never"), default="auto")
     replace.add_argument("--parity-ms", type=float, default=1.0)
+    replace.add_argument("--allow-unwarmed", action="store_true",
+                         help="with node_warm: go on (exit 0) when a host this command manages "
+                              "ends without a complete warm record; the hosts are printed. "
+                              "Without it such a replace exits 6 naming them, after doing "
+                              "everything else")
     replace.set_defaults(handler=command_replace, on_failure="stop", video_gap="refuse")
     for verb, text in (("kill", "a contributor or a first forwarder killed and held down, "
                                 "gated (A 2.10)"),

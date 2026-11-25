@@ -12,7 +12,9 @@ python3 -m unittest scripts/test_warm_boot.py"""
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -394,9 +396,12 @@ class Push(scale.FakeLab):
         self.assertEqual(warm["lon-edge-1"]["slow_reasons"], ["page-stall"])
         self.assertEqual(warm["lon-load-1"]["verdict"], "ok")
         self.assertEqual(warm["lon-edge-6"]["verdict"], "ok")      # a standby edge
-        self.assertEqual(warm["lon-edge-2"], {"verdict": "missing", "complete": False})
-        self.assertNotIn("contrib-lon", {name for name, item in warm.items()
-                                         if item["verdict"] == "ok"})
+        # Not seeded: the check unit ran at this push and wrote its record,
+        # the contributor's too (cmpd8: it had none).
+        self.assertEqual((warm["lon-edge-2"]["verdict"], warm["lon-edge-2"]["complete"]),
+                         ("ok", True))
+        self.assertEqual((warm["contrib-lon"]["verdict"], warm["contrib-lon"]["complete"]),
+                         ("ok", True))
 
     def test_collect_takes_every_node_s_warm_record(self):
         for name in ("lon-edge-1", "lon-load-1", "lon-lk"):
@@ -416,6 +421,212 @@ class Push(scale.FakeLab):
         self.assertEqual(decide({"role": "edge"}, False, "report")[0], "report")
         for role in ("distributor", "backbone", "contributor", "load", "livekit"):
             self.assertEqual(decide({"role": role}, False)[0], "report", role)
+
+
+class ContributorUnit(unittest.TestCase):
+    """cmpd8 (24 Nov): the contributor ended a whole push without a warm
+    record. Its unit, its check unit and its build's nodecheck, as push
+    renders them (no fake: the real binaries_for)."""
+
+    def test_the_contributor_s_unit_wants_the_check_and_starts_after_it(self):
+        settings = dict(deploy.DEFAULT_SETTINGS)
+        unit = deploy.unit_text("needletail-contrib", "info", settings)
+        self.assertIn(f"Wants={CHECK}\nAfter={CHECK}\n", unit)
+        node = {"name": "contrib-lon", "role": "contributor", "type": "g6-dedicated-4"}
+        files = deploy.node_files(["/opt/needletail/builds/k-1/av-contrib"], unit, settings, node)
+        self.assertIn("needletail-nodecheck boot --out /run/needletail/node-warm.json --warm",
+                      files["check"])
+        self.assertIn("--warm-max-seconds 600 ", files["check"])   # 8 GB: 2 x 300 s
+        names = [path.name for path in deploy.binaries_for("contributor")]
+        self.assertEqual(names[0], "av-contrib")
+        self.assertIn("needletail-nodecheck", names)
+
+
+class ContributorWarm(scale.FakeLab):
+    """push, start and replace on FakeHosts, whose check unit writes a warm
+    record only with needletail-nodecheck in /usr/local/bin (FakeHosts.
+    run_check): every managed host ends with a complete record, the
+    contributor included; a host without one makes the command exit
+    EXIT_UNWARMED naming it, after everything else, unless
+    --allow-unwarmed."""
+
+    def push(self, **kwargs):
+        return self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True, **kwargs))
+
+    def wanted(self) -> set:
+        state = self.state()
+        return deploy.status_warm_wanted(state)
+
+    def test_a_push_ends_with_a_complete_record_on_every_role(self):
+        self.push()
+        state = self.state()
+        warm = state["deployed"]["warm"]
+        wanted = self.wanted()
+        roles = {state["nodes"][name]["role"] for name in wanted}
+        self.assertTrue({"edge", "distributor", "contributor", "load", "livekit"} <= roles, roles)
+        for name in wanted:
+            with self.subTest(name):
+                self.assertTrue(warm[name]["complete"], warm[name])
+                self.assertTrue(self.hosts.warm_record_complete(name))
+        # The contributor's build carries nodecheck, linked on the node.
+        self.assertIn("/usr/local/bin/needletail-nodecheck", self.hosts.fs("contrib-lon"))
+        self.assertIn("warm pass: ", self.stderr)
+        self.assertNotIn("UNWARMED", self.stderr)
+
+    def cache_old_contributor_build(self) -> pathlib.Path:
+        """The contributor's build as an older deploy tool cached it: its
+        av-contrib, the probe and the source, no needletail-nodecheck (cmpd8:
+        703fe825245f cached before 68eaaaf gave the contributor one)."""
+        build = deploy.build_of(self.roots / "contrib" / "av-contrib")
+        target = deploy.builds_dir() / build["key"]
+        target.mkdir(parents=True)
+        for path in (self.roots / "contrib" / "av-contrib", self.roots / "tools" / "aep1-48k-probe",
+                     self.roots / "tools" / "daw-test-source"):
+            (target / path.name).write_bytes(path.read_bytes())
+            (target / path.name).chmod(0o755)
+        return target
+
+    def test_cmpd8_a_contributor_build_cached_without_nodecheck_is_completed(self):
+        target = self.cache_old_contributor_build()
+        self.push()
+        self.assertTrue((target / "needletail-nodecheck").is_file())
+        self.assertTrue(self.state()["deployed"]["warm"]["contrib-lon"]["complete"])
+        self.assertIn("/usr/local/bin/needletail-nodecheck", self.hosts.fs("contrib-lon"))
+
+    def test_a_build_without_nodecheck_and_none_to_add_is_refused_at_its_stage(self):
+        """No nodecheck in the roots either: the stage of a node with the
+        check unit is refused, rather than leave the node unwarmed."""
+        target = self.cache_old_contributor_build()
+        with mock.patch.object(deploy, "binaries_for", lambda role, node=None: []):
+            with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+                deploy.ensure_nodecheck(target.name)
+        self.assertIn(f"build {target.name} has no needletail-nodecheck", str(caught.exception))
+        deploy.ensure_nodecheck(target.name)           # the roots have one: added
+        self.assertTrue((target / "needletail-nodecheck").is_file())
+
+    def test_a_running_contributor_without_a_record_is_warmed_by_the_next_push(self):
+        """cmpd8's lab after the fix: the contributor runs, its check ran
+        with no nodecheck and left no record. The next push's activation
+        runs it again (stopping the service first, ACTIVATE_SCRIPT)."""
+        self.hosts.no_warm_record.add("contrib-lon")
+        with self.assertRaises(SystemExit):
+            self.push()
+        self.assertTrue(self.hosts.running["contrib-lon"])
+        self.hosts.no_warm_record.clear()
+        self.push(nodes="contrib-lon")
+        self.assertTrue(self.state()["deployed"]["warm"]["contrib-lon"]["complete"])
+
+    def test_a_push_that_leaves_one_host_unwarmed_exits_naming_it(self):
+        self.hosts.no_warm_record.add("contrib-lon")
+        self.hosts.warm_incomplete.add("lon-edge-2")
+        with self.assertRaises(SystemExit) as caught:
+            self.push()
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+        self.assertIn("push: UNWARMED: contrib-lon (warm missing), lon-edge-2 (warm "
+                      "warm-timeout", self.stderr)
+        self.assertNotIn("lon-edge-1 (", self.stderr.split("UNWARMED")[-1])
+        # Everything else was done: every node is recorded, its warm pass too.
+        state = self.state()
+        self.assertIn("contrib-lon", state["deployed"]["nodes"])
+        self.assertEqual(state["deployed"]["warm"]["contrib-lon"]["verdict"], "missing")
+        self.assertTrue(state["deployed"]["warm"]["lon-load-1"]["complete"])
+        # status marks them plainly.
+        records = {name: deploy.judge_warm(deploy.parse_warm_record(
+            self.hosts.fs(name).get(WARM_FILE, b"").decode()), deploy.DEFAULT_SETTINGS, None)
+            for name in state["nodes"]}
+        with mock.patch.object(deploy.common, "ARTIFACT_DIR", pathlib.Path("/nonexistent")):
+            lines = deploy.warm_status(state, records, self.wanted())
+        self.assertTrue(lines[0].startswith("warm pass: UNWARMED contrib-lon, lon-edge-2: "),
+                        lines)
+
+    def test_allow_unwarmed_goes_on_and_names_the_hosts(self):
+        self.hosts.no_warm_record.add("contrib-lon")
+        self.push(allow_unwarmed=True)
+        self.assertIn("UNWARMED hosts, allowed by --allow-unwarmed", self.stderr)
+        self.assertIn("contrib-lon (warm missing)", self.stderr)
+        self.assertFalse(deploy.build_parser().parse_args(["push"]).allow_unwarmed)
+        for verb in (["push", "--allow-unwarmed"], ["start", "--nodes", "x", "--allow-unwarmed"],
+                     ["replace", "--nodes", "x", "--budget-usd", "1", "--allow-unwarmed"]):
+            self.assertTrue(deploy.build_parser().parse_args(verb).allow_unwarmed, verb)
+
+    def test_without_node_warm_nothing_is_asked(self):
+        self.hosts.no_warm_record.update(self.state()["nodes"])
+        self.push(set=["node_warm=false"])
+        self.assertNotIn("UNWARMED", self.stderr)
+
+    def test_start_of_a_standby_edge_without_a_record_exits_naming_it(self):
+        standby = sorted(self.saved_standby())[0]
+        self.hosts.no_warm_record.add(standby)
+        self.push(allow_unwarmed=True)
+        start = lambda **kwargs: self.quietly(deploy.command_start,
+                                               self.namespace(nodes=standby, **kwargs))
+        with self.assertRaises(SystemExit) as caught:
+            start()
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+        self.assertIn(f"start: UNWARMED: {standby} (warm missing)", self.stderr)
+        self.assertTrue(self.hosts.running[standby])           # started all the same
+        self.assertNotIn(standby, self.saved_standby())
+        # Its record written later (the check run again): a start is clean.
+        self.hosts.no_warm_record.clear()
+        self.quietly(deploy.command_stop, self.namespace(nodes=standby))
+        self.hosts.fs(standby).pop(WARM_FILE, None)
+        start()
+        self.assertNotIn("UNWARMED", self.stderr)
+        self.assertTrue(self.state()["deployed"]["warm"][standby]["complete"])
+
+    def test_replace_ends_strict_on_the_hosts_it_pushed(self):
+        self.push()
+
+        def replace(ops, name, **kwargs):
+            ops.warm_wanted.add(name)
+            ops.warm_records[name] = None
+            return deploy.mesh_ops.EXIT_DONE
+
+        args = self.namespace(nodes="contrib-lon", mode="rebuild", no_slot=False, keep_slot=False,
+                              budget_usd=1.0, spent_before_usd=None)
+        with mock.patch.object(deploy, "REPLACE_LAB_CALLS", ()), \
+                mock.patch.object(deploy.mesh_ops, "replace", replace):
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(deploy.command_replace, args)
+            self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+            self.assertIn("replace: UNWARMED: contrib-lon (warm missing)", self.stderr)
+            args.allow_unwarmed = True
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(deploy.command_replace, args)
+            self.assertEqual(caught.exception.code, 0)
+
+
+class DualContributorWarm(scale.FakeLab):
+    """The proving lab's two contributors (contrib-lon and its standby
+    contrib-lon-b): both warmed, judged and named."""
+
+    push = ContributorWarm.push
+
+    def setUp(self):
+        super().setUp()
+        topology = json.loads((scale.FILES / "topology-proving.json").read_text())
+        full = scale.topology_state(topology)
+        self.state_file.write_text(json.dumps(full))
+        self.hosts.by_address = {node["public_ipv4"]: node for node in full["nodes"].values()}
+        self.hosts.by_address_name = dict(full["nodes"])
+        (self.dir / "settings.json").unlink()
+        with contextlib.redirect_stderr(io.StringIO()):
+            deploy.load_settings([f"standby_edges={json.dumps(topology['standby_edges'])}"],
+                                 lab_run_id="test")
+
+    def test_both_contributors_are_warmed_and_judged(self):
+        self.push()
+        warm = self.state()["deployed"]["warm"]
+        for name in ("contrib-lon", "contrib-lon-b"):
+            self.assertTrue(warm[name]["complete"], name)
+        self.hosts.no_warm_record.add("contrib-lon-b")
+        for name in ("contrib-lon", "contrib-lon-b"):
+            self.hosts.fs(name).pop(WARM_FILE)
+        with self.assertRaises(SystemExit) as caught:
+            self.push()
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+        self.assertIn("UNWARMED: contrib-lon-b (warm missing)", self.stderr)
+        self.assertTrue(self.state()["deployed"]["warm"]["contrib-lon"]["complete"])
 
 
 class TouchProof(unittest.TestCase):

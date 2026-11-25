@@ -1697,8 +1697,11 @@ class Activation(unittest.TestCase):
         was started. Its activation (start, the autoscaler's standby, a
         roll's surge edge: the service not running) reruns the check after
         the build's binaries are linked and before the service starts, when
-        this boot's record is missing or not complete; never on a node whose
-        service runs, nor with a complete record."""
+        this boot's record is missing or not complete; never with a complete
+        record. cmpd8: a node whose service runs without a complete record
+        (the contributor, whose check had run with no nodecheck and stayed
+        active) is stopped first and then warmed; not on a rollback, and not
+        while no nodecheck is on the node."""
         check = self.units / "needletail-node-check.service"
         check.write_text("check\n")
         inactive = self.root / "inactive"
@@ -1708,11 +1711,18 @@ class Activation(unittest.TestCase):
         (self.root / "builds" / "b" / "needletail-nodecheck").write_text("#!/bin/sh\n")
         (self.root / "builds" / "b" / "needletail-nodecheck").chmod(0o755)
         rerun = "systemctl restart needletail-node-check.service"
-        for record, held_out, wanted in ((None, True, True),
-                                         ('{"complete":false,"verdict":"stops"}', True, True),
-                                         ('{"complete":true,"verdict":"ok"}', True, False),
-                                         (None, False, False)):
-            with self.subTest(record=record, held_out=held_out):
+        for record, held_out, wanted, build, extra in (
+                (None, True, True, "b", ()),
+                ('{"complete":false,"verdict":"stops"}', True, True, "b", ()),
+                ('{"complete":true,"verdict":"ok"}', True, False, "b", ()),
+                ('{"complete":true,"verdict":"ok"}', False, False, "b", ()),
+                (None, False, True, "b", ()),
+                (None, False, False, "b", ("--rollback",)),
+                (None, False, False, "a", ())):
+            with self.subTest(record=record, held_out=held_out, build=build, extra=extra):
+                if build == "a":
+                    # No nodecheck on the node: warming would write nothing.
+                    (self.bin / "needletail-nodecheck").unlink(missing_ok=True)
                 warm = self.run_dir / "node-warm.json"
                 warm.unlink(missing_ok=True)
                 if record is not None:
@@ -1722,10 +1732,16 @@ class Activation(unittest.TestCase):
                 if held_out:
                     inactive.write_text("")
                 self.log.unlink(missing_ok=True)
-                self.stage("b")
-                self.assertTrue(self.activate()[1]["ok"])
+                self.stage(build)
+                if extra:
+                    shutil.copy(self.args, f"{self.args}.prev")
+                self.assertTrue(self.activate(*extra)[1]["ok"])
                 calls = self.calls().splitlines()
                 self.assertEqual(rerun in calls, wanted, calls)
+                stop = f"systemctl stop {self.SERVICE}.service"
+                self.assertEqual(stop in calls, wanted and not held_out, calls)
+                if wanted and not held_out:
+                    self.assertLess(calls.index(stop), calls.index(rerun))
                 if wanted:
                     # After the binaries are linked, before the service.
                     self.assertEqual(os.readlink(self.bin / "needletail-nodecheck"),
