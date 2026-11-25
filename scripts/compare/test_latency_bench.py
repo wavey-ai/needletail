@@ -97,6 +97,40 @@ class ReaderHosts(unittest.TestCase):
             ["lon-readers", "lon-readers"])
 
 
+class BusyReasks(unittest.TestCase):
+    """rm/cpuadmit 156fa2a: the crowd's re-asks after edge-busy, summed from
+    needletail-load's interval lines into the run's crowd report and lines,
+    per listener per 10 s, so the ramp shows the back-off."""
+
+    def test_the_crowd_report_shows_the_back_off(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        (directory / "summary.json").write_text(json.dumps(
+            {"duration_s": 20.0, "total": {"listeners_started": 100, "parts": 5}}))
+        rows = [{"t": 1.0, "total": {"active": 100, "busy_reasks": 30}},
+                {"t": 2.0, "total": {"active": 100, "busy_reasks": 50}},
+                {"t": 20.0, "total": {"active": 100, "busy_reasks": 20}},
+                {"t": 20.5, "phase": "final", "total": {"active": 0, "busy_reasks": 0}}]
+        (directory / "intervals.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n")
+        item = {"site": "london", "per_edge": 50, "ramp": "100@0", "edges": {},
+                "out": str(directory)}
+        report = bench.load_report([item])
+        self.assertEqual(report[0]["busy_reasks"], 100)
+        # 100 re-asks / 100 listeners over 20 s: 0.5 a listener per 10 s;
+        # the worst second 50 of 100 listeners: 5 per 10 s.
+        self.assertEqual(report[0]["busy_reasks_per_listener_10s"], 0.5)
+        self.assertEqual(report[0]["busy_reasks_per_listener_10s_max"], 5.0)
+        self.assertIn("    busy re-asks 100 (per listener per 10 s 0.5, worst interval 5.0)",
+                      bench.load_lines(report))
+        # A tool before 156fa2a says nothing: no line.
+        (directory / "intervals.jsonl").write_text(json.dumps(
+            {"t": 1.0, "total": {"active": 1}}) + "\n")
+        report = bench.load_report([item])
+        self.assertNotIn("busy_reasks", report[0])
+        self.assertFalse([line for line in bench.load_lines(report) if "busy" in line])
+
+
 class ClientCpus(unittest.TestCase):
     """Integration 6: --split-client-cpus puts the crowd's load tool on the
     layout's tool CPUs and the readers, probes and 4K viewers on its probe

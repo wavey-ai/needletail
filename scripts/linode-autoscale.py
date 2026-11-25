@@ -685,7 +685,8 @@ def node_view(name: str, document: dict | None, by_address: dict | None = None) 
                 "operator_drained": None, "udp_subscribers": None, "hls_sessions": None,
                 "hls_moved_active": None, "hls_requests_in_flight": None, "refusals": None,
                 "rebalance_moves": None, "lease_children": None, "cache_children": None,
-                "cpu": None, "heard": {}, "fed": {}, "slow_host": None, "warm_verdict": None}
+                "cpu": None, "heard": {}, "fed": {}, "slow_host": None, "warm_verdict": None,
+                "nothing_to_shed": None}
     by_address = by_address or {}
     udp = status.client_udp or {}
     cpu = gauge(document, "process.cpu_permille")
@@ -718,7 +719,18 @@ def node_view(name: str, document: dict | None, by_address: dict | None = None) 
             "lease_children": gauge(document, "children.lease.children"),
             "cache_children": gauge(document, "cache_mesh.children"),
             "cpu": None if cpu is None else cpu / 1000,
+            "nothing_to_shed": nothing_to_shed(document),
             "heard": heard, "fed": fed, **warm_view(document)}
+
+
+def nothing_to_shed(document: dict) -> bool | None:
+    """av-mesh rm/cpuadmit: the edge is over its CPU full point with no
+    two-leg listener to shed (/api/node cpu_admit.nothing_to_shed), so only
+    a new edge relieves it. None when the node says nothing (no cpu_admit,
+    or a build before 156fa2a)."""
+    admit = document.get("cpu_admit") if isinstance(document, dict) else None
+    value = admit.get("nothing_to_shed") if isinstance(admit, dict) else None
+    return value if isinstance(value, bool) else None
 
 
 def warm_view(document: dict) -> dict:
@@ -1610,9 +1622,14 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
            and (movable is None or movable >= hottest - REBALANCE_TARGET_PERMILLE))
     region["hot_streak"] = region.get("hot_streak", 0) + 1 if hot else 0
     region["refusal_streak"] = region.get("refusal_streak", 0) + 1 if refused else 0
+    # rm/cpuadmit: an edge over its CPU full point with nothing to shed
+    # (every listener on one leg): one sample is enough to add an edge, the
+    # region's mean load aside; never a scale-down while one says so.
+    shedless = sorted((node["name"] for node in serving
+                       if obs[node["name"]].get("nothing_to_shed") is True), key=natural)
     projected = total / (count - 1) if count > 1 else None
     low = (count > config.min_edges and projected is not None
-           and projected <= config.down_permille and not refused)
+           and projected <= config.down_permille and not refused and not shedless)
     if low:
         region.setdefault("low_since_unix", now)
     else:
@@ -1624,6 +1641,7 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
               "high_streak": region["high_streak"], "hot_streak": region["hot_streak"],
               "max_permille": hottest, "hot_movable_permille": movable,
               "refusal_streak": region["refusal_streak"],
+              "nothing_to_shed": shedless,
               "low_for_s": round(now - region["low_since_unix"], 1) if low else 0.0}
     if blocked:
         inputs["blocked"] = sorted(blocked, key=natural)
@@ -1637,10 +1655,12 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
     since_action = now - region.get("last_action_unix", -math.inf)
     trigger_up = (region["high_streak"] >= config.up_samples
                   or region["hot_streak"] >= config.up_samples
-                  or region["refusal_streak"] >= config.refusal_samples)
+                  or region["refusal_streak"] >= config.refusal_samples
+                  or bool(shedless))
     if trigger_up:
         desired = math.ceil(total / config.target_permille) if count else config.min_edges
-        if (refused or region["hot_streak"] >= config.up_samples) and desired <= count:
+        if (refused or shedless or region["hot_streak"] >= config.up_samples) \
+                and desired <= count:
             desired = count + 1
         inputs["desired"] = desired
         want = min(config.max_per_action, desired - (count + len(joining)))
@@ -1653,7 +1673,8 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
                                   "serves (the slots included) or is held back")
         if since_action < config.cooldown_s:
             return result("hold", f"cooldown: {since_action:.0f} s since the last action")
-        if now - region.get("last_remove_unix", -math.inf) < config.no_flap_s and not refused:
+        if now - region.get("last_remove_unix", -math.inf) < config.no_flap_s and not refused \
+                and not shedless:
             return result("hold", "a node left this region less than "
                                   f"{config.no_flap_s:.0f} s ago")
         chosen = candidates[:want]
@@ -1662,7 +1683,9 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
                else f"an edge at {hottest} >= {config.up_max_permille} with the mean "
                     f"{mean:.0f} >= {config.target_permille} for {region['hot_streak']} samples"
                if region["hot_streak"] >= config.up_samples
-               else f"refusals in {region['refusal_streak']} samples")
+               else f"refusals in {region['refusal_streak']} samples"
+               if region["refusal_streak"] >= config.refusal_samples
+               else f"{', '.join(shedless)} over CPU full with nothing to shed")
         return result("join", f"{why}: {count} serving, target {desired}", chosen)
     if joining:
         return result("wait", "edges of this region are joining")

@@ -1475,10 +1475,55 @@ def load_report(items: list[dict]) -> list[dict]:
                         if key in row}
                         for edge, row in (summary.get("per_edge") or {}).items()},
                     "saturated": summary.get("load_host_saturated"),
+                    **busy_reasks(pathlib.Path(item["out"]) / "intervals.jsonl",
+                                  total.get("listeners_started"), summary.get("duration_s")),
                     **{key: slim(summary.get(key)) for key in (
                         "paths", "spare", "listeners_interrupted", "listeners_with_missing",
                         "longest_silence_ms", "never_resumed", "bytes_per_listener_second")
                        if key in summary}})
+    return out
+
+
+def busy_reasks(path: pathlib.Path, listeners, duration_s) -> dict:
+    """rm/cpuadmit 156fa2a: the crowd's re-asks put off by its back-off
+    after edge-busy/edge-full, from needletail-load's interval lines (each
+    a delta; summary.json does not carry them): {"busy_reasks": total,
+    "busy_reasks_per_listener_10s": over the run, "_max": the worst
+    interval's, per active listener, scaled to 10 s}. A refused crowd that
+    backs off re-asks a few times per listener per 10 s, not hundreds. {}
+    when the tool says nothing (a build before 156fa2a)."""
+    total, worst, seen, last_t = 0, None, False, 0.0
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        counts = row.get("total") if isinstance(row, dict) else None
+        if not isinstance(counts, dict) or not isinstance(counts.get("busy_reasks"), int):
+            continue
+        seen = True
+        value = counts["busy_reasks"]
+        total += value
+        t = row.get("t") if isinstance(row.get("t"), (int, float)) else None
+        active = counts.get("active") or counts.get("up")
+        if row.get("phase") != "final" and t is not None and t > last_t \
+                and isinstance(active, int) and active > 0:
+            rate = value / active * 10.0 / (t - last_t)
+            worst = rate if worst is None else max(worst, rate)
+        if t is not None:
+            last_t = t
+    if not seen:
+        return {}
+    out = {"busy_reasks": total}
+    if isinstance(listeners, int) and listeners > 0 and isinstance(duration_s, (int, float)) \
+            and duration_s > 0:
+        out["busy_reasks_per_listener_10s"] = round(total / listeners * 10.0 / duration_s, 2)
+    if worst is not None:
+        out["busy_reasks_per_listener_10s_max"] = round(worst, 2)
     return out
 
 
@@ -1506,6 +1551,10 @@ def load_lines(report: list[dict]) -> list[str]:
         lines.append(f"  {item['site']}: {item['per_edge']} a edge (ramp {item['ramp']}), "
                      f"saturated {item.get('saturated')}: "
                      + " ".join(f"{key} {dist(value)}" for key, value in total.items()))
+        if "busy_reasks" in item:
+            lines.append(f"    busy re-asks {item['busy_reasks']} (per listener per 10 s "
+                         f"{item.get('busy_reasks_per_listener_10s')}, worst interval "
+                         f"{item.get('busy_reasks_per_listener_10s_max')})")
         for edge, row in sorted(item["edges"].items()):
             lines.append(f"    {edge:<11} " + " ".join(f"{key} {dist(value)}"
                                                     for key, value in row.items()))

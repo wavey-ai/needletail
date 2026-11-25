@@ -215,6 +215,9 @@ class Sim(auto.Backend):
                 "leaving": 0, "single_legs": node["udp"], "legs_by_other": {},
                 "moves_completed": 0, "moves_expired": 0, "moves_taken_back": 0,
                 "redundant_refusals": 0}
+            if node.get("nothing_to_shed") is not None:
+                document["cpu_admit"] = {"load_permille": 1000, "shedding": True,
+                                         "nothing_to_shed": node["nothing_to_shed"]}
         return document
 
     def assignment(self, site: str):
@@ -581,6 +584,45 @@ class Decide(Base):
         decisions = self.ticks(controller, 1)
         self.assertEqual(decisions[0][0]["action"], "join")
         self.assertEqual(decisions[0][0]["targets"], [("lon-edge-6", "start")])
+
+    def test_an_edge_with_nothing_to_shed_adds_an_edge_in_one_sample(self):
+        """rm/cpuadmit 156fa2a: an edge over its CPU full point with no
+        two-leg listener to shed says cpu_admit.nothing_to_shed in /api/node;
+        one sample adds an edge, with the region's mean (500) far under the
+        band, and no scale-down while it says so. Without it (false, or a
+        build that says nothing) the mean decides as before."""
+        controller = self.controller()
+        self.sim.set_load(500)
+        self.sim.nodes["lon-edge-3"]["nothing_to_shed"] = False
+        decisions = self.ticks(controller, 2)
+        self.assertTrue(all(item[0]["action"] == "hold" for item in decisions), decisions)
+        self.assertEqual(decisions[-1][0]["inputs"]["nothing_to_shed"], [])
+        self.sim.nodes["lon-edge-3"]["nothing_to_shed"] = True
+        (decision,), = self.ticks(controller, 1)
+        self.assertEqual(decision["action"], "join", decision)
+        self.assertEqual(decision["targets"], [("lon-edge-6", "start")])
+        self.assertIn("lon-edge-3 over CPU full with nothing to shed", decision["reason"])
+        self.assertEqual(decision["inputs"]["nothing_to_shed"], ["lon-edge-3"])
+        self.assertEqual(decision["inputs"]["mean_permille"], 500)
+
+    def test_nothing_to_shed_blocks_a_scale_down(self):
+        for index in range(6, 9):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.nodes["lon-edge-2"]["nothing_to_shed"] = True
+        controller = self.controller()
+        self.sim.set_load(300)
+        # The low load would drain after 300 s; the edge with nothing to
+        # shed asks for one more instead (8 serving, the roster's 9th).
+        decisions = self.ticks(controller, 160)
+        self.assertNotIn("drain", [item[0]["action"] for item in decisions])
+        self.assertEqual(decisions[0][0]["action"], "join", decisions[0])
+
+    def test_node_view_reads_nothing_to_shed(self):
+        view = auto.node_view
+        self.assertIsNone(auto.nothing_to_shed({}))
+        self.assertIsNone(auto.nothing_to_shed({"cpu_admit": {"load_permille": 900}}))
+        self.assertTrue(auto.nothing_to_shed({"cpu_admit": {"nothing_to_shed": True}}))
+        self.assertIsNone(view("lon-edge-1", None)["nothing_to_shed"])
 
     def test_after_the_standby_edges_a_slot_is_created_then_pushed(self):
         for index in range(6, 11):
