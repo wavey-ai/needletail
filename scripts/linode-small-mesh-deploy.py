@@ -6632,13 +6632,15 @@ print(round(best))")
 echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock_offset_ms=$offset steal_pct=$steal load=$(cut -d' ' -f1 /proc/loadavg) cpu_mb_s=$speed"
 echo "THP $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
-""", check=False, timeout=60)
+""" + STATUS_REPAIR_PROBE, check=False, timeout=60)
 
     results = common.parallel(list(state["nodes"].values()), probe)
     warm_lines = {}
+    repair_probes = {}
     deployed_settings = {**DEFAULT_SETTINGS,
                          **((state.get("deployed") or {}).get("settings") or {})}
     for name, text in list(results.items()):
+        text, repair_probes[name] = split_repair_probe(text)
         results[name], warm_lines[name] = split_status_probe(
             text, node_own_settings(deployed_settings, name), state["nodes"][name])
     targets = {name: (node["public_ipv4"],
@@ -6664,6 +6666,8 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
         if name in targets:
             code, document = answers.get(name, (None, None))
             served = node_summary(document if code == 200 else None, recorded.get(name))
+            served += status_repair(node["role"], repair_probes.get(name),
+                                    document if code == 200 else None)
         print(f"{name:<18} {node['role']:<12} {results[name]}{served}{flag} "
               f"{warm_lines[name][0]}")
     # Shared-CPU hosts vary by 2x in single-thread speed without reporting steal.
@@ -6811,6 +6815,225 @@ def memory_summary(document) -> str:
     return text + (" " + " ".join(counts) if counts else "")
 
 
+# ------------------------------------------------------------ repair counters
+# 4k-repair: what a mesh node serves of its part repair, decode pool, tees
+# and repair stores, and what the contributor serves of its answers. A
+# mesh node's are in /api/mesh/local `relay_session.fast_plane`
+# (FastPlaneSnapshot) and /api/node `memory` (mem_guard MemorySnapshot);
+# the contributor's in its /metrics (and its store, when served, in its
+# /api/node). A field an older binary does not serve is absent, never 0.
+PART_REPAIR_FIELDS = (
+    "requests", "retries", "symbols_asked", "whole_parts_asked", "gap_parts",
+    "recovered_parts", "gave_up_parts", "asks", "answers", "answer_symbols", "busy",
+    "stored_parts", "link_repair_symbols", "regenerated_symbols",
+    "refused_not_admitted", "refused_limited", "refused_stale")
+DECODE_POOL_FIELDS = ("workers", "decodes", "failures", "decode_us_max", "inline",
+                      "queued_max")
+FAST_PLANE_REPAIR_FIELDS = (
+    "video_parent_loss_ppm", "parent_loss_ppm", "repair_trimmed", "not_admitted",
+    "audio_tee_cpu_us", "video_tee_cpu_us", "video_tee_lag_max_us", "audio_tee_lag_max_us",
+    "tee_dropped", "video_tee_parts_shed")
+MEMORY_REPAIR_FIELDS = ("part_store_bytes", "part_store_budget_bytes", "decode_queue_bytes",
+                        "decode_queue_budget_bytes", "repair_shed_bytes")
+# The fields above that are a level or a maximum, not a count since start
+# (a run's usage takes their value at the end, not a difference).
+REPAIR_LEVELS = {"part_repair.stored_parts", "decode_pool.workers",
+                 "decode_pool.decode_us_max", "decode_pool.queued_max",
+                 "video_parent_loss_ppm", "parent_loss_ppm", "video_tee_lag_max_us",
+                 "audio_tee_lag_max_us", *(f"memory.{key}" for key in MEMORY_REPAIR_FIELDS)}
+# The contributor's /metrics names (av-contrib 4k-repair) and their keys
+# here; its store's bytes under either name it may serve them by.
+CONTRIB_REPAIR_METRICS = {
+    "av_contrib_relay_asks_answered": "asks_answered",
+    "av_contrib_relay_answer_symbols": "answer_symbols",
+    "av_contrib_part_store_bytes": "memory.part_store_bytes",
+    "av_contrib_relay_part_store_bytes": "memory.part_store_bytes",
+    "av_contrib_part_store_budget_bytes": "memory.part_store_budget_bytes",
+    "av_contrib_relay_part_store_budget_bytes": "memory.part_store_budget_bytes",
+}
+CONTRIB_REPAIR_LEVELS = {"memory.part_store_bytes", "memory.part_store_budget_bytes"}
+
+
+def _number(value):
+    """`value` if a JSON number (not a bool), else None."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def repair_fields(fast_plane, memory=None) -> dict:
+    """A mesh node's repair fields, flat: `part_repair.<f>`, `decode_pool.<f>`,
+    the fast plane's own (`video_parent_loss_ppm` a [primary, secondary]
+    list) and `memory.<f>`, from its fast plane snapshot and its /api/node
+    `memory`. A field not served, or not a number, is left out."""
+    out: dict = {}
+    plane = fast_plane if isinstance(fast_plane, dict) else {}
+    for group, names in (("part_repair", PART_REPAIR_FIELDS),
+                         ("decode_pool", DECODE_POOL_FIELDS)):
+        block = plane.get(group)
+        if isinstance(block, dict):
+            for name in names:
+                if _number(block.get(name)) is not None:
+                    out[f"{group}.{name}"] = block[name]
+    for name in FAST_PLANE_REPAIR_FIELDS:
+        value = plane.get(name)
+        if isinstance(value, list):
+            values = [_number(item) for item in value]
+            if values and all(item is not None for item in values):
+                out[name] = values
+        elif _number(value) is not None:
+            out[name] = value
+    if isinstance(memory, dict):
+        for name in MEMORY_REPAIR_FIELDS:
+            if _number(memory.get(name)) is not None:
+                out[f"memory.{name}"] = memory[name]
+    return out
+
+
+def parse_metrics(text) -> dict[str, float]:
+    """Prometheus text: {metric name: value} of each sample line without
+    labels (comments, labelled and malformed lines left out)."""
+    out = {}
+    for line in (text or "").replace(";", "\n").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or line.startswith("#") or "{" in parts[0]:
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError:
+            continue
+        out[parts[0]] = int(value) if value.is_integer() else value
+    return out
+
+
+def contributor_repair_fields(metrics, document=None) -> dict:
+    """The contributor's repair fields: `asks_answered`, `answer_symbols` and
+    `memory.part_store_bytes`/`_budget_bytes` from its /metrics (text, or
+    parse_metrics' dict), the store also from its /api/node `memory` or top
+    level when served there. Absent when not served."""
+    samples = metrics if isinstance(metrics, dict) else parse_metrics(metrics)
+    out = {}
+    for name, key in CONTRIB_REPAIR_METRICS.items():
+        if _number(samples.get(name)) is not None:
+            out[key] = samples[name]
+    if isinstance(document, dict):
+        for block in (document.get("memory"), document):
+            if not isinstance(block, dict):
+                continue
+            for name in ("part_store_bytes", "part_store_budget_bytes"):
+                if f"memory.{name}" not in out and _number(block.get(name)) is not None:
+                    out[f"memory.{name}"] = block[name]
+    return out
+
+
+def repair_usage(before: dict, after: dict, levels=None) -> dict:
+    """Over a run: each count's difference, each level's (REPAIR_LEVELS) value
+    at the end; a field missing at either end is left out (a count) or
+    taken from the end (a level)."""
+    levels = REPAIR_LEVELS | CONTRIB_REPAIR_LEVELS if levels is None else levels
+    out = {}
+    for key, value in after.items():
+        if key in levels or isinstance(value, list):
+            out[key] = value
+        elif _number(before.get(key)) is not None:
+            out[key] = value - before[key]
+    return out
+
+
+def _field(fields: dict, key: str, scale: float = 1.0) -> str:
+    value = fields.get(key)
+    if value is None:
+        return "-"
+    if isinstance(value, list):
+        return "/".join(str(round(item / scale)) for item in value)
+    return str(round(value / scale)) if scale != 1.0 else str(value)
+
+
+def repair_summary(fields: dict) -> str:
+    """status's one line of a mesh node's repair fields (repair_fields);
+    "" when it serves none (an older build, a node off the fast plane)."""
+    if not fields:
+        return ""
+    get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
+    refused = [get(f"part_repair.refused_{kind}")
+               for kind in ("not_admitted", "limited", "stale")]
+    loss = (f"{get('video_parent_loss_ppm')}ppm" if "video_parent_loss_ppm" in fields else "-")
+    lag = "/".join((get("audio_tee_lag_max_us", 1000.0), get("video_tee_lag_max_us", 1000.0)))
+    return (f" repair req={get('part_repair.requests')}/{get('part_repair.retries')}"
+            f" asks={get('part_repair.asks')} answers={get('part_repair.answers')}"
+            f" sym={get('part_repair.answer_symbols')}"
+            f" link={get('part_repair.link_repair_symbols')}"
+            f" regen={get('part_repair.regenerated_symbols')}"
+            f" rec={get('part_repair.recovered_parts')}"
+            f" gaveup={get('part_repair.gave_up_parts')}"
+            f" refused={'/'.join(refused)}"
+            f" pool={get('decode_pool.decodes')}/{get('decode_pool.inline')}"
+            f"/{get('decode_pool.failures')}"
+            f" tee lag a/v={lag}ms drop={get('tee_dropped')}"
+            f" shed={get('video_tee_parts_shed')}"
+            f" loss p/s={loss} small={get('parent_loss_ppm')}ppm"
+            f" trimmed={get('repair_trimmed')} not_admitted={get('not_admitted')}"
+            f" store={get('memory.part_store_bytes', 1048576.0)}"
+            f"/{get('memory.part_store_budget_bytes', 1048576.0)}MB"
+            f" queue={get('memory.decode_queue_bytes', 1048576.0)}"
+            f"/{get('memory.decode_queue_budget_bytes', 1048576.0)}MB"
+            f" repair_shed={get('memory.repair_shed_bytes', 1048576.0)}MB")
+
+
+def contributor_repair_summary(fields: dict) -> str:
+    """status's line of the contributor's answers and store
+    (contributor_repair_fields); "" when it serves none."""
+    if not fields:
+        return ""
+    get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
+    return (f" repair answered={get('asks_answered')} sym={get('answer_symbols')}"
+            f" store={get('memory.part_store_bytes', 1048576.0)}"
+            f"/{get('memory.part_store_budget_bytes', 1048576.0)}MB")
+
+
+# status's probe reads a node's own repair counters: a mesh node's fast
+# plane snapshot (jq -c, one line) and the contributor's /metrics lines of
+# CONTRIB_REPAIR_METRICS (joined by ";"), as one "REPAIR ..." line.
+STATUS_REPAIR_PROBE = (
+    'if [ "$service" = needletail-mesh ]; then\n'
+    f'  echo "REPAIR $(curl -sk --max-time 3 https://127.0.0.1:{HTTP_PORT}/api/mesh/local '
+    "2>/dev/null | jq -c '.relay_session.fast_plane // null' 2>/dev/null)\"\n"
+    'elif [ "$service" = needletail-contrib ]; then\n'
+    f'  echo "REPAIR $(curl -sk --max-time 3 https://127.0.0.1:{CONTRIB_HTTP_PORT}/metrics '
+    "2>/dev/null | grep -E '^(" + "|".join(CONTRIB_REPAIR_METRICS) + ")[ {]' "
+    "| tr '\\n' ';')\"\n"
+    "fi\n")
+
+
+def split_repair_probe(text: str) -> tuple[str, object]:
+    """status's probe output less its REPAIR line, and that line's content:
+    a mesh node's fast plane snapshot (a dict), the contributor's metrics
+    (a dict of parse_metrics), or None (no line, empty, not JSON)."""
+    lines, found = [], None
+    for line in (text or "").splitlines():
+        if line == "REPAIR" or line.startswith("REPAIR "):
+            body = line[len("REPAIR"):].strip()
+            if body.startswith("{"):
+                try:
+                    found = json.loads(body)
+                except ValueError:
+                    found = None
+            elif body and body != "null":
+                found = parse_metrics(body) or None
+            continue
+        lines.append(line)
+    return "\n".join(lines), found
+
+
+def status_repair(role: str, probed, document) -> str:
+    """status's repair segment of a node: its probe's REPAIR content
+    (split_repair_probe) and its /api/node (memory)."""
+    memory = document.get("memory") if isinstance(document, dict) else None
+    if role == "contributor":
+        return contributor_repair_summary(contributor_repair_fields(
+            probed if isinstance(probed, dict) else {}, document))
+    plane = probed if isinstance(probed, dict) else None
+    return repair_summary(repair_fields(plane, memory))
+
+
 def deployed_summary(state: dict) -> list[str]:
     """The deployed record (tiers, settings against this worktree's) and
     every change command that did not finish, with the nodes it left."""
@@ -6843,12 +7066,20 @@ def deployed_summary(state: dict) -> list[str]:
 # oom_kill), the host's UDP memory (/proc/net/sockstat) and UDP receive
 # buffer and memory errors (/proc/net/snmp, cumulative). One JSON line a
 # second in NODE_RUNS/memory/, which `collect` brings home under the node's
-# samplers/.
+# samplers/. 4k-repair: also, as served, a mesh node's fast plane repair
+# fields (`fast_plane`: part_repair and decode_pool whole, and
+# FAST_PLANE_REPAIR_FIELDS, from /api/mesh/local relay_session.fast_plane;
+# its /api/node `memory` carries the repair stores) and the contributor's
+# /metrics samples of CONTRIB_REPAIR_METRICS (`contrib_repair`). A field a
+# binary does not serve is left out.
 MEMORY_SAMPLER_DIR = "/var/lib/needletail-runs/memory"  # under NODE_RUNS
 MEMORY_SAMPLER_PID = "/run/needletail-memory-sampler.pid"
 MEMORY_SAMPLER = r"""
 import json, os, ssl, subprocess, sys, time, urllib.request
 port, out, interval = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+role = sys.argv[4] if len(sys.argv) > 4 else "mesh"
+FAST_FIELDS = @FAST_FIELDS@
+CONTRIB_METRICS = @CONTRIB_METRICS@
 context = ssl.create_default_context()
 context.check_hostname = False
 context.verify_mode = ssl.CERT_NONE
@@ -6870,6 +7101,32 @@ def pairs(text, keys, separator=" "):
             try:
                 found[key.strip()] = int(value.split()[0])
             except (IndexError, ValueError):
+                pass
+    return found
+
+
+def get(path, parse=True):
+    with urllib.request.urlopen(f"https://127.0.0.1:{port}{path}",
+                                timeout=max(0.5, interval * 0.4), context=context) as answer:
+        return json.load(answer) if parse else answer.read().decode("utf-8", "replace")
+
+
+def fast_plane_repair():
+    plane = ((get("/api/mesh/local") or {}).get("relay_session") or {}).get("fast_plane")
+    if not isinstance(plane, dict):
+        return None
+    return {key: plane[key] for key in ("part_repair", "decode_pool", *FAST_FIELDS)
+            if key in plane}
+
+
+def contrib_repair():
+    found = {}
+    for line in get("/metrics", parse=False).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in CONTRIB_METRICS:
+            try:
+                found[parts[0]] = float(parts[1])
+            except ValueError:
                 pass
     return found
 
@@ -6926,12 +7183,22 @@ with open(out, "a", buffering=1) as sink:
                               for item in document.get("streams") or []]
         except Exception as error:
             row["api_error"] = str(error)[:160]
+        try:
+            if role == "contributor":
+                row["contrib_repair"] = contrib_repair()
+            else:
+                row["fast_plane"] = fast_plane_repair()
+        except Exception as error:
+            row["repair_error"] = str(error)[:160]
         row["udp_sockstat"] = sockstat_udp()
         row["udp_snmp"] = snmp_udp()
         sink.write(json.dumps(row, separators=(",", ":")) + "\n")
         next_at += interval
         time.sleep(max(0.0, next_at - time.time()))
 """
+MEMORY_SAMPLER = (MEMORY_SAMPLER
+                  .replace("@FAST_FIELDS@", json.dumps(list(FAST_PLANE_REPAIR_FIELDS)))
+                  .replace("@CONTRIB_METRICS@", json.dumps(sorted(CONTRIB_REPAIR_METRICS))))
 
 
 def memory_sampler_start_script(node: dict, stamp: str, interval_s: float) -> str:
@@ -6942,6 +7209,7 @@ def memory_sampler_start_script(node: dict, stamp: str, interval_s: float) -> st
     return (f"{memory_sampler_stop_script()}; mkdir -p {MEMORY_SAMPLER_DIR} && "
             f"cat >{MEMORY_SAMPLER_DIR}/sampler.py <<'EOS'\n{MEMORY_SAMPLER}EOS\n"
             f"(setsid nohup python3 {MEMORY_SAMPLER_DIR}/sampler.py {port} {out} {interval_s} "
+            f"{'contributor' if node['role'] == 'contributor' else 'mesh'} "
             f">{MEMORY_SAMPLER_DIR}/sampler.log 2>&1 </dev/null & echo $! >{MEMORY_SAMPLER_PID}); "
             f"echo {out}")
 
