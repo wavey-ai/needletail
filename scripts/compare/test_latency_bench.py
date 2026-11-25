@@ -56,6 +56,42 @@ def dry_run(*argv: str) -> dict:
     return json.loads(out.getvalue())
 
 
+class ReaderHosts(unittest.TestCase):
+    """Integration 6: the reader hosts follow the layout. A London-only lab
+    (leave_out=newyork) has no New York distributor: its reader host is
+    dropped from the default hosts, refused when named, and a --no-up pass
+    reads what the running lab left out (every pass after the first used
+    to fail on new-readers' entry point)."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        patcher = mock.patch.object(bench.lab, "WORK", self.dir / "lab")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_left_out_site_s_host_is_dropped_or_refused(self):
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        self.assertEqual(bench.reader_hosts(parse()), ["lon-readers", "new-readers"])
+        with quiet as err:
+            hosts = bench.reader_hosts(parse("--set", "own_cpus=1",
+                                             "--set", "leave_out=newyork,lon-edge-3"))
+        self.assertEqual(hosts, ["lon-readers"])
+        self.assertIn("new-readers", err.getvalue())
+        with self.assertRaises(SystemExit):
+            bench.reader_hosts(parse("--hosts", "new-readers", "--set", "leave_out=newyork"))
+        # own_cpus's default leaves out only the slots: both sites keep theirs.
+        self.assertEqual(bench.reader_hosts(parse("--set", "own_cpus=1")),
+                         ["lon-readers", "new-readers"])
+        # --no-up: the running lab's record of what it left out.
+        bench.lab.save("left-out.json", sorted(bench.lab.leave_out_names("newyork")))
+        with quiet:
+            self.assertEqual(bench.reader_hosts(parse("--no-up")), ["lon-readers"])
+        self.assertEqual(
+            [item["host"] for item in bench.reader_commands(parse("--no-up"), self.dir, "0")],
+            ["lon-readers", "lon-readers"])
+
+
 class Arguments(unittest.TestCase):
     def test_flags_reach_every_role(self):
         args = parse("--mesh-args", "--relay-forward-nonblocking false", "--edge-args", "--x 1",

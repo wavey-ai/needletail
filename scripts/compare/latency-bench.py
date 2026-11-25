@@ -479,13 +479,54 @@ def sender_command(args, start: int, loop_file: str) -> list[str]:
             *split(args.sender_args)]
 
 
+def planned_left_out(args) -> set[str]:
+    """The nodes that the run's lab leaves out: the running lab's with
+    --no-up, else those of its `up` settings (`leave_out=`, or own_cpus's
+    default when own_cpus=1 names none)."""
+    if args.no_up:
+        return lab.left_out()
+    sets = dict(item.partition("=")[::2] for item in args.set)
+    if sets.get("leave_out"):
+        return lab.leave_out_names(sets["leave_out"])
+    if str(sets.get("own_cpus", "")).lower() in ("1", "true"):
+        return set(lab.OWN_DEFAULT_LEFT_OUT)
+    return set()
+
+
+def reader_hosts(args) -> list[str]:
+    """The reader hosts of the run: those of --hosts whose site has a
+    distributor in the lab (not left out, not a slot), the entry point of
+    the host's readers and viewers. With the default hosts a host of a site
+    the layout leaves out is dropped (logged); a host named in
+    --hosts whose site is left out is refused. (Integration 6: a London-only
+    layout made every pass after the first fail on new-readers' entry.)"""
+    named = [item for item in args.hosts.split(",") if item]
+    out = planned_left_out(args)
+    slots = set(lab.slot_nodes())
+    kept, dropped = [], []
+    for host in named:
+        site = lab.node(host)["site"]
+        entries = [name for name in lab.names("distributor", site)
+                   if name not in out and name not in slots]
+        (kept if entries else dropped).append(host)
+    if dropped:
+        if args.hosts != ",".join(READER_HOSTS):
+            raise SystemExit(f"--hosts {','.join(dropped)}: the lab leaves out every distributor "
+                             "of its site (leave_out); name hosts of the sites it runs")
+        log(f"reader hosts {', '.join(dropped)} left out: their site has no distributor in "
+            "this layout")
+    if not kept:
+        raise SystemExit("no reader host: the layout leaves out every site's distributors")
+    return kept
+
+
 def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
     """ntcmp hls readers: --h2-window-ms of parts in flight over HTTP/2 and
     --h3-window parts over HTTP/3 on each reader host, through the first
     distributor of the host's site."""
     readers = []
     stream = PAYLOAD_STREAM[args.payload]
-    for host in [item for item in args.hosts.split(",") if item]:
+    for host in reader_hosts(args):
         site = lab.node(host)["site"]
         entry = lab.distributors(site)[0]
         windows = reader_windows(args)
@@ -638,7 +679,7 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
     needletail-udp-client viewers (its JSON report on standard output)."""
     viewers = video_viewers(args)
     items = []
-    for host in [item for item in args.hosts.split(",") if item]:
+    for host in reader_hosts(args):
         site = lab.node(host)["site"]
         entry = lab.distributors(site)[0]
         if viewers["readers"]:
@@ -877,7 +918,7 @@ def audio_udp_commands(args, out: pathlib.Path) -> list[dict]:
     arrival (--arrivals) and its JSON report on standard output."""
     stream = PAYLOAD_STREAM[args.payload]
     items = []
-    for host in [item for item in args.hosts.split(",") if item]:
+    for host in reader_hosts(args):
         site = lab.node(host)["site"]
         entry = lab.distributors(site)[0]
         for index in range(args.udp_clients):
