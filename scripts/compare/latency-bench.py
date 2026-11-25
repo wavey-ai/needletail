@@ -271,6 +271,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(always on with 4K)")
     parser.add_argument("--udp-client-args", default="", metavar="ARGS",
                         help="extra arguments of every audio UDP client (e.g. \"--fast-lane false\")")
+    parser.add_argument("--video-udp-client-args", default="", metavar="ARGS",
+                        help="extra arguments of every 4K UDP viewer (e.g. "
+                             "\"--quality-moves-per-minute 0\": an A/B of place240's moves)")
     parser.add_argument("--unread-payloads", default="", metavar="LIST",
                         help="more renditions that nobody reads (e.g. \"pcm,flac\"): each has a "
                              "sender of its own and is published beside --payload (wave 7 item 5: "
@@ -662,7 +665,8 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
                               "--session", f"bench-{args.name}-{host}-udp-{index}",
                               # Each 4K part's arrival, bytes and publication
                               # time (wave 9 D: the loop points, the tail).
-                              "--arrivals", str(out / f"{host}.4k.udp{index}.arrivals.csv")]})
+                              "--arrivals", str(out / f"{host}.4k.udp{index}.arrivals.csv"),
+                              *split(getattr(args, "video_udp_client_args", "") or "")]})
     return items
 
 
