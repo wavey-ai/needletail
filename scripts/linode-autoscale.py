@@ -80,7 +80,11 @@ Safety, before anything else:
   "slow-host") and created again, once a slot (`slow_replaced`); a
   forwarder slot, a standby edge or a slot replaced before is only
   reported (`slow_host` events). The deploy's push is told `--slow-host
-  report`: this controller decides for its slots.
+  report`: this controller decides for its slots. A start or push that
+  exits 6 (the deploy's UNWARMED: done, but no complete warm record) leaves
+  its node not ready (`unwarmed` event): its check runs again by a push of
+  it, at most WARM_RERUNS (2) times, then the join fails and the node is
+  parked. --allow-unwarmed is never passed.
 * However it stops (SIGINT or SIGTERM, its --duration, its change, a
   failure), it hands the worker nothing more, waits for the worker's job in
   hand (up to 120 s, then ends that job's tool and names it), and resumes
@@ -206,6 +210,20 @@ WIND_DOWN_WAIT_S = 120.0
 # Exit status of the change verbs (as mesh_ops): done, refused before
 # anything changed, the change failed, interrupted.
 EXIT_DONE, EXIT_REFUSED, EXIT_FAILED, EXIT_INTERRUPTED = 0, 2, 3, 130
+# The deploy's exit status (its EXIT_UNWARMED) when a start or push did
+# everything else but the host ends without a complete warm record.
+DEPLOY_EXIT_UNWARMED = 6
+# How many times a join runs an unwarmed node's warm check again (the
+# deploy's push --nodes: its activation stops the service, runs the check
+# and starts the service again, as push's held-out warm pass runs it on a
+# standby) before the join fails and the node is parked. --allow-unwarmed
+# is never passed: an unwarmed node is not ready.
+WARM_RERUNS = 2
+
+
+class Unwarmed(RuntimeError):
+    """A deploy start or push that did everything else, but left its node
+    without a complete warm record (exit DEPLOY_EXIT_UNWARMED)."""
 
 
 def load_module(name: str, file: str):
@@ -933,6 +951,8 @@ class LinodeBackend(Backend):
         command = [sys.executable, str(HERE / "linode-small-mesh-deploy.py"), verb,
                    "--nodes", names, *extra]
         result = self.run_child(command, 1800)
+        if result.returncode == DEPLOY_EXIT_UNWARMED and verb in ("start", "push"):
+            raise Unwarmed(f"deploy {verb} --nodes {names}: unwarmed: {result.stderr[-1500:]}")
         if result.returncode != 0:
             raise RuntimeError(f"deploy {verb} --nodes {names}: {result.stderr[-1500:]}")
 
@@ -1475,6 +1495,9 @@ class Worker:
             result = {"ok": True, "value": value}
         except Refused as error:
             result = {"ok": False, "refused": True, "error": str(error)[-1500:], "value": value}
+        except Unwarmed as error:
+            result = {"ok": False, "refused": False, "unwarmed": True,
+                      "error": str(error)[-1500:], "value": value}
         except Exception as error:  # noqa: BLE001 - the result says what failed
             result = {"ok": False, "refused": False, "error": str(error)[-1500:],
                       "value": value}
@@ -2164,6 +2187,9 @@ class Controller:
                 self.queue(action, {"pushing": "push", "starting": "start"}[action["phase"]],
                            [name])
                 return
+            if result.get("unwarmed"):
+                self.rerun_warm(name, action, now, node, result["error"])
+                return
             if not result["ok"]:
                 raise Refused(result["error"]) if result.get("refused") \
                     else RuntimeError(result["error"])
@@ -2185,6 +2211,29 @@ class Controller:
                                         "deadline")
                 self.done(name, "failed")
                 self.park(name, node, proof="never-served")
+
+    def rerun_warm(self, name: str, action: dict, now: float, node: dict, detail: str) -> None:
+        """A start or push that left its node without a complete warm record
+        (the deploy's exit 6): the node is not ready. Its warm check is run
+        again by a push of it (its activation stops the service first and
+        starts it after the check), up to WARM_RERUNS times, the join's
+        deadline moved by the pass's allowance; then the join fails and the
+        node is parked (stopped; a slot held in the warm pool)."""
+        reruns = action.get("warm_reruns", 0)
+        if reruns >= WARM_RERUNS:
+            self.fail(name, "warm", f"no complete warm record after {reruns} rerun(s) of its "
+                                    f"check: not taken into service; {detail}")
+            self.done(name, "failed")
+            self.park(name, node, proof="never-served")
+            return
+        action["warm_reruns"] = reruns + 1
+        action["deadline_unix"] = max(action["deadline_unix"],
+                                      now + self.config.join_timeout_s + self.warm_s(node))
+        self.events("unwarmed", node=name, region=action["site"], rerun=reruns + 1,
+                    why="its warm record is not complete: not ready; its check runs again "
+                        "(push --nodes)", detail=detail[-500:])
+        self.queue(action, "push", [name])
+        action["phase"] = "pushing"
 
     def advance_drain(self, name: str, action: dict, now: float, view: dict, node: dict) -> None:
         if action["phase"] == "drain":

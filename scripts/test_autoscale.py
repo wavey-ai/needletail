@@ -32,6 +32,7 @@ import os
 import pathlib
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -99,6 +100,9 @@ class Sim(auto.Backend):
         # Prints as the lab tool does (its "Adding ..." and "created ...").
         self.chatty = False
         self.start_gate: threading.Event | None = None
+        # {node: how many more starts or pushes end unwarmed} (the deploy's
+        # exit 6: everything else done, the warm record not complete).
+        self.unwarmed: dict[str, int] = {}
         self.stop_gate: threading.Event | None = None
         self.known: dict[str, int] = {}            # host -> the key ssh learned
         self.forgotten: list[str] = []
@@ -276,12 +280,21 @@ class Sim(auto.Backend):
         self.record("push", ",".join(names))
         for name in names:
             self.nodes[name].update(running=True, crashed_unix=None, unpushed=False)
+        self.warm_or_raise(names)
 
     def start(self, name):
         self.record("start", name)
         if self.start_gate is not None:
             self.start_gate.wait(30)
         self.nodes[name].update(running=True, unpushed=False)
+        self.warm_or_raise([name])
+
+    def warm_or_raise(self, names):
+        cold = [name for name in names if self.unwarmed.get(name, 0) > 0]
+        for name in cold:
+            self.unwarmed[name] -= 1
+        if cold:
+            raise auto.Unwarmed(f"UNWARMED: {', '.join(cold)}: no complete warm record")
 
     def stop(self, name):
         self.record("stop", name)
@@ -430,6 +443,43 @@ class Decide(Base):
         self.assertEqual(third[0]["inputs"]["desired"], 7)
         self.assertEqual(third[0]["targets"], [("lon-edge-6", "start"), ("lon-edge-7", "start")])
         self.assertEqual(self.mutating(), [("start", "lon-edge-6"), ("start", "lon-edge-7")])
+
+    def test_an_unwarmed_standby_is_not_ready_and_its_check_runs_again(self):
+        """The deploy's start exits 6 (the node started, its warm record not
+        complete): the join does not count it as ready; a push of it runs
+        its check again (its activation stops the service first), and it
+        serves once that push ends warm. --allow-unwarmed is never asked."""
+        self.sim.unwarmed["lon-edge-6"] = 1
+        controller = self.controller()
+        self.sim.set_load(760)
+        self.ticks(controller, 3)
+        self.assertEqual(self.touching("lon-edge-6"), [("start", "lon-edge-6")])
+        self.ticks(controller, 1)
+        unwarmed = self.of("unwarmed")
+        self.assertEqual([(item["node"], item["rerun"]) for item in unwarmed],
+                         [("lon-edge-6", 1)])
+        # Not serving though its service runs: its check runs again.
+        self.assertNotIn("lon-edge-6", [item["node"] for item in self.of("serving")])
+        self.assertEqual(self.touching("lon-edge-6"), [("start", "lon-edge-6"),
+                                                      ("push", "lon-edge-6")])
+        self.ticks(controller, 2)
+        self.assertIn("lon-edge-6", [item["node"] for item in self.of("serving")])
+        self.assertEqual(len(self.touching("lon-edge-6")), 2)
+        self.assertEqual([item for item in self.of("failure") if item["node"] == "lon-edge-6"],
+                         [])
+
+    def test_a_node_that_stays_unwarmed_fails_its_join_and_is_parked(self):
+        self.sim.unwarmed["lon-edge-6"] = 10
+        controller = self.controller()
+        self.sim.set_load(760)
+        self.ticks(controller, 8)
+        self.assertEqual(self.touching("lon-edge-6"),
+                         [("start", "lon-edge-6"), ("push", "lon-edge-6"),
+                          ("push", "lon-edge-6"), ("stop", "lon-edge-6")])
+        self.assertEqual(len(self.of("unwarmed")), auto.WARM_RERUNS)
+        failures = [item for item in self.of("failure") if item["node"] == "lon-edge-6"]
+        self.assertEqual([item["what"] for item in failures], ["warm"])
+        self.assertNotIn("lon-edge-6", [item["node"] for item in self.of("serving")])
 
     def test_the_band_between_450_and_700_does_nothing(self):
         controller = self.controller()
@@ -2329,6 +2379,33 @@ class LinodeBackendTests(unittest.TestCase):
         # One push of the batch; the controller, not the deploy, decides
         # what a slow host costs its slots.
         self.assertEqual(deployed, [("push", "lon-edge-1,lon-edge-2", "--slow-host", "report")])
+
+    def test_the_deploy_s_exit_6_is_unwarmed_never_allowed(self):
+        """A start or push that exits 6 (EXIT_UNWARMED) is Unwarmed, not a
+        failed step; any other failure stays a RuntimeError, and the
+        controller never asks the deploy for --allow-unwarmed."""
+        commands = []
+
+        def child(code):
+            def run_child(command, timeout):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, code, "", "UNWARMED: lon-edge-6")
+            return run_child
+
+        with mock.patch.object(self.backend, "run_child", child(auto.DEPLOY_EXIT_UNWARMED)):
+            with self.assertRaises(auto.Unwarmed):
+                self.backend.start("lon-edge-6")
+            with self.assertRaises(auto.Unwarmed):
+                self.backend.deploy("push", "lon-edge-6", "--slow-host", "report")
+            # stop's exit 6 is no warm verdict.
+            with self.assertRaises(RuntimeError) as caught:
+                self.backend.stop("lon-edge-6")
+            self.assertNotIsInstance(caught.exception, auto.Unwarmed)
+        with mock.patch.object(self.backend, "run_child", child(1)):
+            with self.assertRaises(RuntimeError) as caught:
+                self.backend.start("lon-edge-6")
+            self.assertNotIsInstance(caught.exception, auto.Unwarmed)
+        self.assertTrue(all("--allow-unwarmed" not in command for command in commands))
 
     def test_a_state_without_a_run_tag_is_refused(self):
         self.state["tag"] = ""
