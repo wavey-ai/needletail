@@ -231,6 +231,19 @@ class SendSide(unittest.TestCase):
                       " pulls=8 shed_not_asked=30 pulled=12Mbit/s", " defer_pool=8MB"):
             self.assertIn(piece, text)
 
+    def test_cpuadmit_s_fields_when_served(self):
+        """Integration 6: rm/cpuadmit's term, refusals by reason, sheds and
+        spills, from /api/node `cpu_admit`."""
+        document = {"cpu_admit": {"load_permille": 912, "cpus_busy_permille": 730,
+                                  "datagram_ns": 6400, "admitted": 220, "shed_hints": 12,
+                                  "spilled": 3, "refused": {"cpus": 40, "thread": 2,
+                                                            "http": 1, "pending": 5}}}
+        fields = deploy.send_fields(None, None, document)
+        self.assertEqual(fields["cpu_admit.refused.cpus"], 40)
+        text = deploy.send_summary(fields)
+        self.assertIn(" cpu_admit=912\u2030 busy=730\u2030 dgram=6400ns", text)
+        self.assertIn(" refused cpus/thread/http/pending=40/2/1/5 shed=12 spilled=3", text)
+
     def test_the_lane_line_and_the_memory_section(self):
         text = 'svc\nLANE {"would_block": 1, "given_back": 1}\nREPAIR null'
         rest, lane = deploy.split_lane_probe(text)
@@ -253,7 +266,7 @@ class SendSide(unittest.TestCase):
     def test_the_sampler_keeps_the_send_side_and_the_interfaces(self):
         sampler = deploy.MEMORY_SAMPLER
         for text in ('row["fast_lane"] = fast_lane()', 'row["net"] = net_bytes()',
-                     '"/api/assignment"', '("pulls", "send_defer", "relay_answers")',
+                     '"/api/assignment"', '("pulls", "send_defer", "relay_answers", "cpu_admit", "heavy")',
                      '"/proc/net/dev"'):
             self.assertIn(text, sampler)
         namespace: dict = {}

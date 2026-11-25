@@ -78,6 +78,16 @@ class Defaults(merged.Base):
             self.assertEqual(merged.values_of(item, "--send-defer-mb"), ["auto"], name)
             self.assertEqual(merged.values_of(item, "--send-pacing"), ["0"], name)
             self.assertEqual(merged.values_of(item, "--edge-pull-budget-mbit"), ["48"], name)
+            # rm/cpuadmit's admission, explicit, and place240's busiest-CPU
+            # distress off.
+            for flag_name, value in (("--cpu-admit", "true"),
+                                     ("--cpu-admit-cpus-full-percent", "80"),
+                                     ("--cpu-admit-thread-full-percent", "70"),
+                                     ("--cpu-admit-datagram-ns", "3000"),
+                                     ("--cpu-admit-pending-max-permille", "100"),
+                                     ("--cpu-admit-shed-after-ms", "2000"),
+                                     ("--heavy-distress-core-permille", "0")):
+                self.assertEqual(merged.values_of(item, flag_name), [value], (name, flag_name))
             # No hop-journal override (integrate-5a: +161.5 MB a node).
             self.assertNotIn("--hop-journal-capacity", item, name)
         for name, item in args.items():

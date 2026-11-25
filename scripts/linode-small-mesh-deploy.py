@@ -605,6 +605,22 @@ DEFAULT_SETTINGS = {
     "send_pacing_floor_mbit": None,
     "edge_pull_budget_mbit": 48,
     "heavy_egress_max_mbps": "plan",
+    # CPU admission (av-mesh rm/cpuadmit, integration 6), rendered on every
+    # mesh service so that the record shows it: --cpu-admit (on), the term
+    # full at --cpu-admit-cpus-full-percent 80 of the node's CPUs (softirq
+    # included) or --cpu-admit-thread-full-percent 70 of one send thread, a
+    # datagram charged at least --cpu-admit-datagram-ns 3000 until measured,
+    # a cold edge's pending legs capped at --cpu-admit-pending-max-permille
+    # 100, two-leg listeners shed after --cpu-admit-shed-after-ms 2000 over
+    # full. heavy_distress_core_permille: place240's busiest-CPU distress,
+    # off (0) since cpuadmit's term covers it. None renders nothing.
+    "cpu_admit": True,
+    "cpu_admit_cpus_full_percent": 80,
+    "cpu_admit_thread_full_percent": 70,
+    "cpu_admit_datagram_ns": 3000,
+    "cpu_admit_pending_max_permille": 100,
+    "cpu_admit_shed_after_ms": 2000,
+    "heavy_distress_core_permille": 0,
     # Edges fed by the fast plane (low-latency B5/B6/B9; wave 5 W0): each
     # distributor of a site is a forwarder of the site's edges as well. A
     # cache-mesh lease that it serves to an edge makes the edge a lease
@@ -2903,6 +2919,17 @@ def send_path_args(node: dict, settings: dict) -> list[str]:
     if settings.get("edge_pull_budget_mbit") is not None:
         out += ["--edge-pull-budget-mbit",
                 str(whole(settings["edge_pull_budget_mbit"], "edge_pull_budget_mbit"))]
+    if settings.get("cpu_admit") is not None:
+        out += ["--cpu-admit", flag(bool(settings["cpu_admit"]))]
+    for key in ("cpu_admit_cpus_full_percent", "cpu_admit_thread_full_percent",
+                "cpu_admit_datagram_ns", "cpu_admit_pending_max_permille",
+                "cpu_admit_shed_after_ms", "heavy_distress_core_permille"):
+        value = settings.get(key)
+        if value is not None:
+            # 0 is a value here (heavy_distress_core_permille: off).
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{key}={value!r} is not a whole number")
+            out += ["--" + key.replace("_", "-"), str(value)]
     cap = settings.get("heavy_egress_max_mbps")
     if node.get("role") == "edge" and cap is not None:
         if cap == "plan":
@@ -7489,7 +7516,16 @@ def send_fields(fast_plane=None, fast_lane=None, document=None) -> dict:
     take("node_defer", node.get("send_defer"), SEND_DEFER_FIELDS)
     take("pulls", node.get("pulls"), PULL_FIELDS)
     take("memory", node.get("memory"), ("send_defer_bytes",))
+    # rm/cpuadmit's admission term and its refusals and sheds.
+    admit = node.get("cpu_admit") if isinstance(node.get("cpu_admit"), dict) else None
+    take("cpu_admit", admit, CPU_ADMIT_FIELDS)
+    if admit is not None:
+        take("cpu_admit.refused", admit.get("refused"), ("cpus", "thread", "http", "pending"))
     return out
+
+
+CPU_ADMIT_FIELDS = ("load_permille", "measured_permille", "cpus_busy_permille", "datagram_ns",
+                    "admitted", "shed_rounds", "shed_hints", "spilled")
 
 
 def send_summary(fields: dict) -> str:
@@ -7512,6 +7548,13 @@ def send_summary(fields: dict) -> str:
                  "Mbit/s")
     if "memory.send_defer_bytes" in fields:
         text += f" defer_pool={get('memory.send_defer_bytes', 1048576.0)}MB"
+    if "cpu_admit.load_permille" in fields:
+        text += (f" cpu_admit={get('cpu_admit.load_permille')}\u2030 busy="
+                 f"{get('cpu_admit.cpus_busy_permille')}\u2030 dgram={get('cpu_admit.datagram_ns')}ns"
+                 f" refused cpus/thread/http/pending={get('cpu_admit.refused.cpus')}/"
+                 f"{get('cpu_admit.refused.thread')}/{get('cpu_admit.refused.http')}/"
+                 f"{get('cpu_admit.refused.pending')} shed={get('cpu_admit.shed_hints')}"
+                 f" spilled={get('cpu_admit.spilled')}")
     return text
 
 
@@ -7756,7 +7799,7 @@ with open(out, "a", buffering=1) as sink:
                                         context=context) as answer:
                 document = json.load(answer)
             row["memory"] = document.get("memory")
-            for key in ("pulls", "send_defer", "relay_answers"):
+            for key in ("pulls", "send_defer", "relay_answers", "cpu_admit", "heavy"):
                 if document.get(key) is not None:
                     row[key] = document[key]
             row["streams"] = [{key: item.get(key) for key in
