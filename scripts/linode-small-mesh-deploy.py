@@ -295,9 +295,11 @@ DEFAULT_SETTINGS = {
     # (the binaries' defaults, which are the settings below); each is
     # rendered only where the binary lists the flag (binary_takes).
     # - relay_part_repair: av-mesh --relay-part-repair (asks, answers);
-    #   also renders --relay-primary-promoted on the merged topology's
-    #   regional relays (primary lane "source"), whose primary must admit the
-    #   repair intent of answers and link repair. False leaves it off.
+    #   also renders --relay-primary-promoted on every compiled fast-plane
+    #   child whose primary lane is "source" (the merged topology's regional
+    #   relays, the legacy one's first forwarders under a backbone), whose
+    #   primary must admit the repair intent of answers, link repair and
+    #   regenerated sources. False leaves it off.
     # - relay_link_repair: av-mesh --relay-link-repair (ledgers to children,
     #   repair sized to each child's loss).
     # - relay_trim_forwarded_repair, relay_regenerate_sources,
@@ -3587,13 +3589,16 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
                     and "--relay-primary-promoted" not in flag_names(
                         args + list(settings[f"extra_{role}_args"]))):
                 args.append("--relay-primary-promoted")
-            # 4k-repair: a regional relay of the merged topology, fed sources
-            # only by its primary forwarder (lane "source"), takes the answers to its asks and its
-            # link repair from that primary too, repair symbols that a
-            # primary session refuses unless promoted.
+            # 4k-repair: a fast-plane child fed sources only by its primary
+            # (lane "source": a regional relay of the merged topology, a
+            # first forwarder under a backbone of the legacy one, a first
+            # forwarder of the contributor without repair on both lanes)
+            # takes the answers to its asks, its link repair and the
+            # regenerated sources from that primary too, which carry repair
+            # intent: a primary session refuses them unless promoted (review
+            # M5: every answer dropped as not_admitted, the child asking
+            # again). Lease children are promoted already (fast_edge_args).
             if (settings.get("relay_part_repair") is not False
-                    and settings.get("topology") == "merged"
-                    and service["primary_parent"]["parent_node_id"] not in contributor_ids
                     and service["primary_parent"].get("lane") == "source"
                     and "--relay-primary-promoted" not in flag_names(
                         args + list(settings[f"extra_{role}_args"]))):

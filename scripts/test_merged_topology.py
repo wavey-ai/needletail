@@ -1163,6 +1163,33 @@ class TwoContributors(Base):
         rendered = deploy.render(state, settings, plan)
         return state, rendered, {name: item["args"] for name, item in rendered.items()}
 
+    def test_every_source_lane_child_of_the_local_lab_admits_repair(self):
+        """Review M5 on the local lab's topology (edge_lab): one contributor
+        and two, merged and legacy, its slots and standby edges rendered:
+        every fast-plane child whose primary lane is `source`, and every
+        lease child, takes --relay-primary-promoted exactly once (none for
+        a compiled source-lane child of a forwarder with part repair off)."""
+        from test_scale_topology import primary_promotion_problems
+        for state_of in (one_contributor_state, two_contributor_state):
+            for mode in ("merged", "legacy"):
+                for part_repair in ("true", "false"):
+                    with self.subTest(state=state_of.__name__, mode=mode,
+                                      part_repair=part_repair):
+                        settings = self.settings([f"topology={mode}",
+                                                  f"relay_part_repair={part_repair}"])
+                        state = state_of()
+                        with mock.patch.object(deploy.time, "time",
+                                               return_value=1_763_900_000.0):
+                            program = deploy.build_program(state, settings, ROUTES)
+                        plan = deploy.compile_plan(program)
+                        with redirect_stderr(io.StringIO()):
+                            rendered = deploy.render(state, settings, plan)
+                        args = {name: item["args"] for name, item in rendered.items()}
+                        self.assertTrue(any("--relay-controlled-local" in item
+                                            for item in args.values()))
+                        self.assertEqual(primary_promotion_problems(
+                            state, plan, args, part_repair == "true"), [])
+
     def test_the_ports_of_two_contributors_at_the_first_forwarders(self):
         """Workstream A 2.7: each first forwarder takes contrib-lon on its
         primary socket and contrib-lon-b on its secondary socket, crossed."""

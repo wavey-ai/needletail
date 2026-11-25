@@ -627,8 +627,71 @@ class Base(unittest.TestCase):
             return deploy.load_settings(list(overrides))
 
 
+def primary_promotion_problems(full: dict, plan: dict, args: dict, part_repair: bool) -> list:
+    """M5 of the 4k-repair review: every fast-plane child (rendered with
+    --relay-controlled-local) whose primary lane is `source`, or that is a
+    lease child, takes --relay-primary-promoted exactly once, for answers,
+    link repair and regenerated sources from its primary carry repair
+    intent; with relay_part_repair=false a compiled child whose source
+    lane's parent is not a contributor takes none. A problem a node."""
+    services = {item["node_id"]: item for item in plan["services"]
+                if item["service"] == "av_mesh"}
+    contributors = {deploy.relay_node_id(node) for node in deploy.common.contributors(full)}
+    problems = []
+    for name, node_args in sorted(args.items()):
+        if "--relay-controlled-local" not in node_args:
+            continue
+        count = node_args.count("--relay-primary-promoted")
+        service = services.get(deploy.relay_node_id(full["nodes"][name]))
+        primary = (service or {}).get("primary_parent") or {}
+        lane = primary.get("lane", "lease")
+        wanted = 1
+        if (not part_repair and lane == "source"
+                and primary.get("parent_node_id") not in contributors):
+            wanted = 0
+        if count != wanted and not (not part_repair and lane == "source" and count <= 1):
+            problems.append(f"{name} (primary lane {lane}): --relay-primary-promoted x{count}")
+        if count > 1:
+            problems.append(f"{name}: --relay-primary-promoted x{count}")
+    return problems
+
+
 @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
 class Render(Base):
+    def test_every_source_lane_child_admits_repair_from_its_primary(self):
+        """Every topology the deploy renders, legacy and merged, its standby
+        edges and every autoscale slot created (held out or in service)."""
+        topologies = sorted(FILES.glob("topology-*.json"))
+        self.assertGreaterEqual(len(topologies), 5)
+        checked = set()
+        for path in topologies:
+            topology = json.loads(path.read_text())
+            slots = tuple(lab_tool.slot_specs(topology))
+            standby = [node["name"] for node in topology["nodes"]
+                       if node["role"] == "edge" and node.get("standby")]
+            for mode in ("merged", "legacy"):
+                for created, held in (((), []), (slots, list(standby) + list(slots))):
+                    for part_repair in (True, False):
+                        overrides = [f"topology={mode}",
+                                     f"relay_part_repair={'true' if part_repair else 'false'}"]
+                        if held:
+                            overrides.append(f"standby_edges={json.dumps(held)}")
+                        label = (path.name, mode, bool(created), part_repair)
+                        with self.subTest(label):
+                            try:
+                                full, plan, args = self.render(
+                                    path, overrides, topology_state(topology, created))
+                            except (ValueError, SystemExit) as error:
+                                # A topology one mode does not take (refused
+                                # as the deploy refuses it): not rendered.
+                                self.assertIn(mode, ("legacy", "merged"), error)
+                                continue
+                            checked.add(path.name)
+                            self.assertEqual(primary_promotion_problems(
+                                self.active, plan, args, part_repair), [])
+        self.assertIn("topology-scale.json", checked)
+        self.assertIn("topology-proving.json", checked)
+
     def render(self, path: pathlib.Path, overrides=(), state: dict | None = None):
         settings = self.settings(overrides)
         full = state or topology_state(json.loads(path.read_text()))
