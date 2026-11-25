@@ -109,6 +109,7 @@ logged; see the workspace's AGENTS.md). The tools read it from `LINODE_TOKEN`,
 | `NEEDLETAIL_LINODE_MAX_NODES` | 40 | instances a lab may have |
 | `NEEDLETAIL_LINODE_MAX_HOURLY_USD` | 1.00 | the lab's hourly cost limit |
 | `NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS` | 6.0 | the longest watchdog |
+| `NEEDLETAIL_LINODE_SEPARATE_ATTEMPTS` | 2 | how many times `up`, `grow` and `replace` make one node anew to separate it from a forwarder of its region or an edge's parent on one physical host (`--separate-attempts`) |
 | `NEEDLETAIL_LINODE_LEDGER` | `needletail-linode-ledger.jsonl` beside the token file | what each finished lab cost |
 | `NEEDLETAIL_LINODE_SSH_KEY` | `~/.ssh/id_ed25519` | the key the lab's hosts take |
 

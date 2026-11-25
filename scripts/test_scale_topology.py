@@ -2857,6 +2857,7 @@ class LabTool(unittest.TestCase):
                 mock.patch.object(lab_tool, "add_nodes",
                                   lambda args, api, state, nodes: added.extend(nodes)), \
                 mock.patch.object(lab_tool, "command_status", lambda args: None), \
+                mock.patch.object(lab_tool, "separate_after", lambda *a, **k: None), \
                 redirect_stdout(io.StringIO()):
             lab_tool.command_grow(args)
         # Never an autoscale slot: only `add` creates one.
