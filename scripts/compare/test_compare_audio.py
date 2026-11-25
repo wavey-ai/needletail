@@ -254,8 +254,11 @@ class Scoreboard(unittest.TestCase):
 
 class Joins(unittest.TestCase):
     def test_every_join_is_a_new_listener_with_its_own_session(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+
         class Session(FakeSession):
-            dir = pathlib.Path(tempfile.mkdtemp())
+            dir = directory
             steps: list = []
 
             def ip(self, name):
@@ -364,7 +367,9 @@ class ChangeWindow(unittest.TestCase):
             if stall and stall[0] <= n <= stall[1]:
                 at = self.T0 + stall[0] * 1000 + stall[2] * 1000
             lines.append(f"a,{n % 1000},{at - source},{at},{n},80,0,1,,,,,{n}")
-        path = pathlib.Path(tempfile.mkdtemp()) / "f.csv"
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = directory / "f.csv"
         path.write_text("\n".join(lines) + "\n")
         return self.cw.load(str(path))
 
@@ -395,7 +400,9 @@ class ChangeWindow(unittest.TestCase):
         self.assertFalse(r["pass"])
 
     def test_marks(self):
-        path = pathlib.Path(tempfile.mkdtemp()) / "marks.txt"
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = directory / "marks.txt"
         path.write_text("start 100.5 drain lon-edge-1\nend 103 drain lon-edge-1\nstart 200 kill ingress\nend 201 kill ingress\n")
         w = self.cw.windows(type("A", (), {"window": None, "marks": str(path)})())
         self.assertEqual(w, {"drain lon-edge-1": (100.5, 103.0), "kill ingress": (200.0, 201.0)})
