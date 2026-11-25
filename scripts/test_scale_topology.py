@@ -232,8 +232,9 @@ class Files(unittest.TestCase):
         serving edges and one standby a region), as the one-lab proving run
         of 24 Nov has it (the referee's -nano probe host a region, two
         g6-dedicated-8 listener hosts in London for the capacity curve, one
-        g6-dedicated-4 elsewhere): 45 nodes at $3.510 an hour, the eight
-        slots $0.432 more if all exist."""
+        g6-dedicated-4 elsewhere): 45 nodes at $3.834 an hour (tools6:
+        London's first-hop forwarders on g6-dedicated-8, their heavy egress
+        at 247 Mbit/s), the eight slots $0.432 more if all exist."""
         topology = json.loads((FILES / "topology-proving.json").read_text())
         self.assertEqual(topology["nodes"][0]["site"], "sydney")
         self.assertTrue(all(node["type"].startswith("g6-dedicated-") for node in topology["nodes"]))
@@ -244,7 +245,8 @@ class Files(unittest.TestCase):
             roles[key] = roles.get(key, 0) + 1
         self.assertEqual(roles, {("contributor", "g6-dedicated-4"): 2,
                                  ("source", "g6-dedicated-4"): 1,
-                                 ("distributor", "g6-dedicated-2"): 8,
+                                 ("distributor", "g6-dedicated-2"): 6,
+                                 ("distributor", "g6-dedicated-8"): 2,
                                  ("edge", "g6-dedicated-2"): 16,
                                  ("listeners", "g6-dedicated-8"): 2,
                                  ("listeners", "g6-dedicated-4"): 3,
@@ -259,7 +261,7 @@ class Files(unittest.TestCase):
         hourly, problems = lab_tool.topology_cost({**topology, "nodes": created},
                                                   LabTool.TYPES, LabTool.REGIONS)
         self.assertEqual(problems, [])
-        self.assertAlmostEqual(hourly, 3.510, places=3)
+        self.assertAlmostEqual(hourly, 3.834, places=3)
         every, _ = lab_tool.topology_cost(topology, LabTool.TYPES, LabTool.REGIONS)
         self.assertAlmostEqual(every - hourly, 8 * 0.054, places=3)
         self.assertEqual(topology["standby_edges"],
@@ -280,18 +282,18 @@ class Files(unittest.TestCase):
         # The run's ceilings (C 7, with the agreed edges): every node and
         # slot, and their hourly price; `up` itself counts the 45 it creates.
         with mock.patch.object(lab_tool, "MAX_NODES", 53), \
-                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 3.95):
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 4.30):
             _topology, checked = lab_tool.validate_topology(FakeTypesApi(), topology)
-        self.assertAlmostEqual(checked, 3.510, places=3)
+        self.assertAlmostEqual(checked, 3.834, places=3)
         with mock.patch.object(lab_tool, "MAX_NODES", 44), \
-                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 3.95), \
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 4.30), \
                 self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
             lab_tool.validate_topology(FakeTypesApi(), topology)
         # The file states its price and the ceilings it is run under
         # (review of CT5, finding 3).
-        self.assertIn("Up creates 45 nodes at $3.510 an hour; with every slot 53 nodes at "
-                      "$3.942, so the lab's ceilings are NEEDLETAIL_LINODE_MAX_NODES=53 and "
-                      "NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95 or more.", topology["description"])
+        self.assertIn("Up creates 45 nodes at $3.834 an hour; with every slot 53 nodes at "
+                      "$4.266, so the lab's ceilings are NEEDLETAIL_LINODE_MAX_NODES=53 and "
+                      "NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30 or more.", topology["description"])
         # The variant without Sydney (lab up --without-sites sydney, or
         # --optional-sites sydney when its core is refused); no -syd2 file.
         self.assertEqual(sorted(scale_topology.VARIANTS),
@@ -300,7 +302,7 @@ class Files(unittest.TestCase):
         three = lab_tool.created_part(lab_tool.without_sites(topology, ["sydney"]))
         hourly, _ = lab_tool.topology_cost(three, LabTool.TYPES, LabTool.REGIONS)
         self.assertEqual(len(three["nodes"]), 35)
-        self.assertAlmostEqual(hourly, 2.808, places=3)
+        self.assertAlmostEqual(hourly, 3.132, places=3)
 
     def test_every_file_states_its_price_from_the_lab_tool(self):
         """Each committed file's description gives what `up` creates and
@@ -463,8 +465,8 @@ class Party(unittest.TestCase):
         # run's 5 billed hours (one lab) of its 53 nodes and slots.
         self.assertEqual(plan["billed_hours"], 4)
         self.assertAlmostEqual(plan["run_usd"], 4 * 19.062, places=3)
-        self.assertAlmostEqual(plan["proving_usd"], 5 * (3.510 + 0.432), places=3)
-        self.assertAlmostEqual(plan["left_usd"], 300 - 63.48 - 38.50 - 5 * 3.942, places=3)
+        self.assertAlmostEqual(plan["proving_usd"], 5 * (3.834 + 0.432), places=3)
+        self.assertAlmostEqual(plan["left_usd"], 300 - 63.48 - 38.50 - 5 * 4.266, places=3)
         self.assertTrue(plan["fits_budget"])
         self.assertEqual(plan["max_edges_per_forwarder"], 40)
         self.assertEqual(plan["max_nodes"], 226 + 12)
@@ -481,7 +483,7 @@ class Party(unittest.TestCase):
         text = scale_topology.plan_text(base)
         for figure in ("400,000", "0.70", "1.031", "1.2 Mbit/s", "0.0055", "271 legs",
                        "g6-dedicated-8", "$7.182 an hour", "266 vCPUs", "Gbit/s",
-                       "GB an hour", "$178.31 left", "NEEDLETAIL_LINODE_MAX_NODES=95"):
+                       "GB an hour", "$176.69 left", "NEEDLETAIL_LINODE_MAX_NODES=95"):
             self.assertIn(figure, text)
         for key, value, moved in (("edge_datagrams_per_s", 200_000, "serving_edges"),
                                   ("edge_fill", 0.35, "serving_edges"),

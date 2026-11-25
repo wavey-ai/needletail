@@ -125,6 +125,7 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_archive  # noqa: E402
+import egress_plan  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 API_BASE = "https://api.linode.com/v4"
@@ -712,6 +713,31 @@ def drop_site(api: "Api", state: dict, state_path: pathlib.Path, site: str, why:
           f"created: ${cost:.2f} billed for them (an hour each at least)", file=sys.stderr)
 
 
+def egress_checked(topology: dict, args: argparse.Namespace, verb: str) -> dict:
+    """The topology's heavy egress plan (egress_plan: each mesh node's
+    planned egress at the heaviest stream, `--plan-stream-mbit` or the
+    file's plan_stream_mbit or 247, against its plan's limit), printed.
+    Exits (`verb` refused) when a node passes its limit, unless
+    `--allow-egress-over`. The autoscale slots are not created by up or
+    grow: their parents' figures with every slot fed are printed apart."""
+    planned = egress_plan.topology_plan(topology, getattr(args, "plan_stream_mbit", None))
+    for line in egress_plan.lines(planned):
+        print(line)
+    with_slots = egress_plan.topology_plan(topology, getattr(args, "plan_stream_mbit", None),
+                                           include_slots=True)
+    if with_slots["over"] and set(with_slots["over"]) != set(planned["over"]):
+        print("with every autoscale slot made and fed, over the limit: " + ", ".join(
+            f"{name} {with_slots['nodes'][name]['mbit']:.0f}" for name in with_slots["over"])
+              + " Mbit/s (not refused: up and grow create no slot)")
+    refused = egress_plan.refusal(planned)
+    if refused:
+        if getattr(args, "allow_egress_over", False):
+            print(f"--allow-egress-over: {refused}", file=sys.stderr)
+        else:
+            sys.exit(f"{verb} refused: {refused}")
+    return planned
+
+
 def command_check(args: argparse.Namespace) -> None:
     """Price a topology and check it against today's plans, regions and
     capacity, from the API's public endpoints (no token, nothing created).
@@ -720,6 +746,9 @@ def command_check(args: argparse.Namespace) -> None:
     api = Api(public=True)
     topology = json.loads(pathlib.Path(args.topology).read_text())
     topology = without_sites(topology, (args.without_sites or "").split(","))
+    planned = egress_plan.topology_plan(topology, getattr(args, "plan_stream_mbit", None))
+    for line in egress_plan.lines(planned):
+        print(line)
     types = {item["id"]: item for item in api.list_all("/linode/types")}
     regions = {item["id"]: item for item in api.list_all("/regions")}
     availability = region_availability(api, {node["region"] for node in topology["nodes"]})
@@ -742,6 +771,9 @@ def command_check(args: argparse.Namespace) -> None:
         problems.append(f"{len(topology['nodes'])} nodes is above the ceiling of {MAX_NODES}")
     if hourly > MAX_HOURLY_USD:
         problems.append(f"${hourly:.3f}/hour is above the ceiling of ${MAX_HOURLY_USD:.2f}")
+    refused = egress_plan.refusal(planned)
+    if refused and not getattr(args, "allow_egress_over", False):
+        problems.append(refused)
     if problems:
         print("\n".join(problems))
         sys.exit(1)
@@ -1085,6 +1117,7 @@ def create_lab(args: argparse.Namespace) -> None:
         sys.exit("up refused: " + "; ".join(marked_wrong))
     topology = without_sites(topology, (args.without_sites or "").split(","))
     topology, hourly = validate_topology(api, topology)
+    planned = egress_checked(topology, args, "up")
     optional = [site for site in (args.optional_sites or "").split(",") if site]
     tag = f"needletail-small-mesh-{run_id}"
     carried = [item for item in api.list_all("/linode/instances", tag)
@@ -1138,6 +1171,13 @@ def create_lab(args: argparse.Namespace) -> None:
         # The ports that the topology marks public (public_ports), and the
         # extra inbound rules of the firewall (`allow`).
         "public_ports": marks, "allow": [],
+        # The heavy egress plan that up checked (egress_plan): deploy status
+        # shows each node's measured egress beside it.
+        "egress_plan": {"settings": {key: value for key, value in planned["settings"].items()
+                                     if key != "max_heavy_egress_mbit"},
+                        "allowed_over": planned["over"],
+                        "nodes": {name: {"mbit": item["mbit"], "limit": item["limit"]}
+                                  for name, item in planned["nodes"].items()}},
     }
     with state_lock(state_path):
         if state_path.exists():
@@ -1598,6 +1638,7 @@ def command_grow(args: argparse.Namespace) -> None:
     known = {node["site"] for node in topology["nodes"]}
     topology = without_sites(topology, [site for site in left_out if site in known])
     topology, hourly = validate_topology(api, topology, lab_ceilings(state))
+    egress_checked(topology, args, "grow")
     slots = slot_specs(topology)
     # Autoscale slots are never grown: only `add` creates one.
     missing = [node for node in created_part(topology)["nodes"]
@@ -3432,6 +3473,16 @@ def down_by_tag(api: "Api", run_id: str, last: dict | None) -> None:
           f"{tag} (${total['usd']:.2f} billed, in the ledger {LEDGER})", flush=True)
 
 
+def egress_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--plan-stream-mbit", type=float, default=None,
+                        help="the heaviest stream the lab is planned for, Mbit/s (default: the "
+                             "topology's plan_stream_mbit, else 247)")
+    parser.add_argument("--allow-egress-over", action="store_true",
+                        help="go on when a node's planned heavy egress passes its plan's "
+                             "limit (max_heavy_egress_mbit: 600 g6-dedicated-2, 1200 -4, "
+                             "2400 -8); the nodes are printed")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The lab tool's command line. Other tools that run it (the deploy's
     replace, add and remove; the autoscaler's rebuild) are tested against
@@ -3466,6 +3517,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="comma-separated sites whose core is created first; the site is left "
                          "out when one of its nodes cannot be created (no capacity), when the "
                          "account refuses the core, or when none of its listener hosts is")
+    egress_options(up)
     up.add_argument("--listener-batches", type=int, default=LISTENER_BATCHES,
                     help="the listener hosts are created after the core in this many batches; "
                          "a refusal among them keeps the lab and records the hosts missing")
@@ -3474,10 +3526,12 @@ def build_parser() -> argparse.ArgumentParser:
                                          "capacity; creates nothing, needs no token")
     check.add_argument("--topology", default=str(DEFAULT_TOPOLOGY))
     check.add_argument("--without-sites", default="")
+    egress_options(check)
     check.set_defaults(handler=command_check)
     grow = sub.add_parser("grow")
     grow.add_argument("--topology", required=True)
     grow.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
+    egress_options(grow)
     grow.add_argument("--without-sites", default="",
                       help="sites not to create, besides those the lab already does without")
     replace = sub.add_parser("replace", help="rebuild lab nodes in place, or make them anew")

@@ -106,6 +106,7 @@ import zlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import archived_run  # noqa: E402
 import contributor_changes  # noqa: E402
+import egress_plan  # noqa: E402
 import mesh_ops  # noqa: E402
 import run_archive  # noqa: E402
 import small_mesh_common as common  # noqa: E402
@@ -558,6 +559,18 @@ DEFAULT_SETTINGS = {
     # past it the site would need a level of regional relays, which the
     # deploy does not build yet, so plan refuses.
     "max_edges_per_forwarder": 16,
+    # The heavy egress plan (tools6; scripts/egress_plan.py): each node's
+    # planned egress at the heaviest stream, rate x (children fed in full +
+    # plan_repair_share x children fed repair only + plan_edge_viewers on an
+    # edge), against its plan's max_heavy_egress_mbit ({plan: Mbit/s} over
+    # 600 g6-dedicated-2, 1200 -4, 2400 -8). None: the topology file's key
+    # of the same name, else 247 Mbit/s, 0.2 and 2. `plan` prints it and
+    # refuses a node over its limit (--allow-egress-over); push and restart
+    # print it; status shows each node's measured egress beside it.
+    "plan_stream_mbit": None,
+    "plan_repair_share": None,
+    "plan_edge_viewers": None,
+    "max_heavy_egress_mbit": None,
     # Edges fed by the fast plane (low-latency B5/B6/B9; wave 5 W0): each
     # distributor of a site is a forwarder of the site's edges as well. A
     # cache-mesh lease that it serves to an edge makes the edge a lease
@@ -6205,6 +6218,44 @@ def bootstrap(nodes: list[dict]) -> None:
     print(f"bootstrapped {len(nodes)} hosts; every VLAN address is present", file=sys.stderr)
 
 
+def lab_topology(state: dict) -> dict:
+    """The lab's topology file (its plan_stream_mbit and other plan keys),
+    or {} when it is not there."""
+    path = pathlib.Path(state.get("topology_file") or "")
+    try:
+        return json.loads(path.read_text()) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def lab_egress_plan(full: dict, settings: dict, include_slots: bool = False) -> dict:
+    """egress_plan.plan of the lab: every node of the roster (the standby
+    edges and, with `include_slots`, the autoscale slots fed), by the
+    topology and fast-plane settings, the plan's rate and limits from the
+    settings over the topology file's."""
+    planned_state = active_state(full, settings)
+    nodes = list(roster(planned_state).values())
+    plan_settings = egress_plan.settings_from(lab_topology(full), settings)
+    fast = class_plan(settings).get("edge_fast_plane", False)
+    return egress_plan.plan(nodes, plan_settings, mode=topology_mode(settings),
+                            fast_plane=bool(fast), slots=slot_names(planned_state),
+                            include_slots=include_slots)
+
+
+def egress_report(full: dict, settings: dict, refuse: bool, allow: bool = False) -> dict:
+    """Print the lab's heavy egress plan; with `refuse`, exit when a node
+    passes its plan's limit unless `allow` (--allow-egress-over)."""
+    planned = lab_egress_plan(full, settings)
+    for line in egress_plan.lines(planned):
+        print(line)
+    refused = egress_plan.refusal(planned)
+    if refused:
+        if refuse and not allow:
+            sys.exit(f"plan refused: {refused}")
+        print(f"egress: {refused}", file=sys.stderr)
+    return planned
+
+
 def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     """Plan and render the services of every node but the standby edges;
     returns the whole lab state (push installs the tools on every node and
@@ -6237,6 +6288,8 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
           + (f"; standby edges (stopped): {', '.join(standby_edges(settings))}"
              if standby_edges(settings) else ""))
     print("contributor targets: " + " ".join(common.contributor_targets(state)))
+    egress_report(full, settings, refuse=getattr(args, "command", None) == "plan",
+                  allow=getattr(args, "allow_egress_over", False))
     return full, settings, rendered
 
 
@@ -6687,14 +6740,16 @@ print(round(best))")
 echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock_offset_ms=$offset steal_pct=$steal load=$(cut -d' ' -f1 /proc/loadavg) cpu_mb_s=$speed"
 echo "THP $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
-""" + STATUS_REPAIR_PROBE, check=False, timeout=60)
+""" + STATUS_NET_PROBE + STATUS_REPAIR_PROBE, check=False, timeout=60)
 
     results = common.parallel(list(state["nodes"].values()), probe)
     warm_lines = {}
     repair_probes = {}
     deployed_settings = {**DEFAULT_SETTINGS,
                          **((state.get("deployed") or {}).get("settings") or {})}
+    measured = {}
     for name, text in list(results.items()):
+        text, measured[name] = split_net_probe(text)
         text, repair_probes[name] = split_repair_probe(text)
         results[name], warm_lines[name] = split_status_probe(
             text, node_own_settings(deployed_settings, name), state["nodes"][name])
@@ -6712,6 +6767,10 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
     median = sorted(speeds.values())[len(speeds) // 2] if speeds else 0
     slow = sorted(name for name, speed in speeds.items() if speed < 0.75 * median)
     wanted = status_warm_wanted(state)
+    try:
+        planned = lab_egress_plan(state, deployed_settings)["nodes"]
+    except (Exception, SystemExit):  # noqa: BLE001 - status reads what it can
+        planned = {}
     for name in sorted(results):
         node = state["nodes"][name]
         flag = "  <-- SLOW shared CPU" if name in slow else ""
@@ -6723,7 +6782,8 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
             served = node_summary(document if code == 200 else None, recorded.get(name))
             served += status_repair(node["role"], repair_probes.get(name),
                                     document if code == 200 else None)
-        print(f"{name:<18} {node['role']:<12} {results[name]}{served}{flag} "
+        print(f"{name:<18} {node['role']:<12} {results[name]}"
+              f"{egress_summary(measured.get(name), planned.get(name))}{served}{flag} "
               f"{warm_lines[name][0]}")
     # Shared-CPU hosts vary by 2x in single-thread speed without reporting steal.
     print(f"median single-thread speed {median:.0f} MB/s; slow nodes "
@@ -6733,6 +6793,50 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
         print(line)
     for line in deployed_summary(state):
         print(line)
+
+
+# status's probe of a node's interfaces: every interface but lo, received and
+# sent bytes, twice a second apart (/proc/net/dev), as one "NET" line:
+# "NET <t0> <rx0> <tx0> <t1> <rx1> <tx1>".
+STATUS_NET_PROBE = (
+    "net_sample() { printf '%s ' \"$(date +%s.%N)\"; awk 'NR>2 {gsub(\":\", \" \"); "
+    "if ($1 != \"lo\") {rx += $2; tx += $10}} END {printf \"%.0f %.0f\", rx, tx}' "
+    "/proc/net/dev; }\n"
+    'echo "NET $(net_sample) $(sleep 1; net_sample)"\n')
+
+
+def split_net_probe(text: str) -> tuple[str, tuple[float, float] | None]:
+    """status's probe output less its NET line, and the node's measured
+    (egress, ingress) in Mbit/s over that second; None when the line is
+    absent or does not parse."""
+    lines, found = [], None
+    for line in (text or "").splitlines():
+        if line == "NET" or line.startswith("NET "):
+            try:
+                t0, rx0, tx0, t1, rx1, tx1 = (float(item) for item in line.split()[1:7])
+                span = t1 - t0
+                if span > 0:
+                    found = (round((tx1 - tx0) * 8 / 1e6 / span, 1),
+                             round((rx1 - rx0) * 8 / 1e6 / span, 1))
+            except ValueError:
+                found = None
+            continue
+        lines.append(line)
+    return "\n".join(lines), found
+
+
+def egress_summary(measured: tuple[float, float] | None, planned: dict | None) -> str:
+    """status's egress segment of a node: what it sent and received over a
+    second (Mbit/s), beside its planned heavy egress and its plan's limit
+    (lab_egress_plan)."""
+    text = (" net out=- in=-" if measured is None
+            else f" net out={measured[0]:.1f} in={measured[1]:.1f}Mbit/s")
+    if planned:
+        limit = "-" if planned.get("limit") is None else f"{planned['limit']:.0f}"
+        text += f" plan={planned['mbit']:.0f}/{limit}"
+        if measured is not None and planned.get("limit") and measured[0] > planned["limit"]:
+            text += " <-- EGRESS OVER LIMIT"
+    return text
 
 
 def split_status_probe(text: str, settings: dict | None = None,
@@ -7930,6 +8034,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan")
     plan.add_argument("--set", action="append", default=[])
     plan.add_argument("--remeasure", action="store_true")
+    plan.add_argument("--allow-egress-over", action="store_true",
+                      help="go on when a node's planned heavy egress passes its plan's limit "
+                           "(the nodes are printed); push and restart only print it")
     plan.set_defaults(handler=command_plan)
     push = sub.add_parser("push")
     push.add_argument("--set", action="append", default=[])

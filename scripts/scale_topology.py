@@ -206,7 +206,8 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
                    view_hosts: bool = True, view_by_site: dict[str, str] | None = None,
                    nano_hosts: bool = False, livekit: bool = True, standby: dict[str, int] | None = None,
                    slots: dict[str, dict[str, int]] | None = None, contributors: int = 1,
-                   about: tuple[str, str] = SCALE_ABOUT) -> dict:
+                   about: tuple[str, str] = SCALE_ABOUT, first_hop_type: str = MESH_TYPE,
+                   plan_stream_mbit: float | None = None) -> dict:
     """The topology document for `sites` (London must be one: the contributor
     is there), `edges` per site (default EDGES), `load_hosts` listener hosts
     of `load_type` per site, or (count, type) of a site in `load_by_site`
@@ -218,7 +219,14 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
     site's view host another plan than VIEW_TYPE; `nano_hosts` adds the
     referee's second probe host `<s>-nano` a region (purpose view, the view
     host's plan: a listener host is -4 or -8). `contributors` 2 adds the
-    standby contributor. `about` is the description's opening and close."""
+    standby contributor. `about` is the description's opening and close.
+    `first_hop_type` is the plan of London's two forwarders, the first hop
+    that feeds every other region and London's edges (tools6: their heavy
+    egress at 247 Mbit/s passes a g6-dedicated-2's 600 Mbit/s, egress_plan);
+    `plan_stream_mbit`, when given, is the heaviest stream the lab is
+    planned for (the lab tool's egress check reads it from the file)."""
+    if first_hop_type not in PRICES:
+        raise ValueError(f"first-hop forwarders {first_hop_type}: one of {', '.join(PRICES)}")
     if "london" not in sites:
         raise ValueError("the contributor's site, london, must be in the topology")
     unknown = [site for site in sites if site not in SITES]
@@ -296,8 +304,9 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
                 add(STANDBY_CONTRIBUTOR[0], "contributor", CONTRIBUTOR_TYPE,
                     STANDBY_CONTRIBUTOR[1], standby_contributor=True)
             add("lon-src", "load", SOURCE_TYPE, 30, "source")
-        add(f"{short}-dist-a", "distributor", MESH_TYPE, 11)
-        add(f"{short}-dist-b", "distributor", MESH_TYPE, 12)
+        forwarder = first_hop_type if site == "london" else MESH_TYPE
+        add(f"{short}-dist-a", "distributor", forwarder, 11)
+        add(f"{short}-dist-b", "distributor", forwarder, 12)
         for index in range(1, edges.get(site, EDGES) + 1):
             add(f"{short}-edge-{index}", "edge", MESH_TYPE, edge_host(index))
         for index in range(slots[site]["forwarders"]):
@@ -330,7 +339,10 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
     description = (
         about[0]
         + f"in each region two forwarders and {', '.join(f'{n} edges in {s}' for s, n in counts.items())}, "
-        "all g6-dedicated-2; listener load hosts "
+        + ("all g6-dedicated-2" if first_hop_type == MESH_TYPE else
+           f"all g6-dedicated-2 but London's two forwarders, the first hop, on {first_hop_type} "
+           "(their heavy egress, scripts/egress_plan.py)")
+        + "; listener load hosts "
         + ", ".join(f"{load[s][0]} x {load[s][1]} in {s}" for s in ordered) + " "
         "(needletail-load for the UDP listeners, ntcmp for the LL-HLS ones)"
         + (f" and {view_text} for the full probes" if view_hosts else "")
@@ -362,6 +374,7 @@ def scale_topology(sites: tuple[str, ...] = DEFAULT_SITES, edges: dict[str, int]
     return {
         "description": description,
         "image": "linode/debian13",
+        **({"plan_stream_mbit": plan_stream_mbit} if plan_stream_mbit is not None else {}),
         "standby_edges": held,
         "autoscale_slots": slot_names,
         "scale": {"sites": ordered, "edges": counts,
@@ -385,10 +398,18 @@ PROVING = {"edges": {site: 4 for site in DEFAULT_SITES},
            "standby": {site: 1 for site in DEFAULT_SITES},
            "load_hosts": 1, "load_type": "g6-dedicated-4",
            "load_by_site": {"london": (2, "g6-dedicated-8")}, "nano_hosts": True,
-           "contributors": 2, "about": PROVING_ABOUT}
+           "contributors": 2, "about": PROVING_ABOUT,
+           # tools6: the proving run's 4K sweep at 247 Mbit/s. London's first
+           # hop feeds three regions (three in full, three repair) and four
+           # edges (two in full, two repair): 1,482 Mbit/s planned, over a
+           # g6-dedicated-4's 1,200; a g6-dedicated-8 pair (+$0.324/h).
+           "first_hop_type": "g6-dedicated-8", "plan_stream_mbit": 247}
+# The audio-only labs' heaviest stream: 1 ms PCM, about 2.6 Mbit/s a leg.
+AUDIO_STREAM_MBIT = 2.6
 # The committed files: (file name, arguments of scale_topology).
 VARIANTS = {
-    "topology-scale.json": {"slots": {"london": {"edges": 2}}},
+    "topology-scale.json": {"slots": {"london": {"edges": 2}},
+                            "plan_stream_mbit": AUDIO_STREAM_MBIT},
     "topology-proving.json": PROVING,
 }
 # The party's committed files (party_plan at PARTY_DEFAULTS).
@@ -571,7 +592,8 @@ def party_plan(**given) -> dict:
         slots={site: {"edges": r["edge_slots"], "forwarders": r["forwarder_slots"]}
                for site, r in regions.items()},
         load_by_site={site: (r["load_hosts"], r["load_type"]) for site, r in regions.items()},
-        livekit=p["livekit"], contributors=2, about=party_about(p, sites, listeners))
+        livekit=p["livekit"], contributors=2, about=party_about(p, sites, listeners),
+        plan_stream_mbit=AUDIO_STREAM_MBIT)
     created = [node for node in document["nodes"] if not node.get("slot")]
     slots = [node for node in document["nodes"] if node.get("slot")]
     table: dict[str, dict[str, int]] = {}

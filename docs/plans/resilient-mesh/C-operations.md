@@ -1382,8 +1382,10 @@ measured again in this layout (lab-parity Q1 with `own_cpus=1`).
 ## 7. Deploy and tooling: the Linode proving run
 
 **As run (lead, 24 Nov): one lab of 5 billed hours, `deploy/low-latency/SCALE.md` "The proving
-run".** 45 nodes at $3.510 an hour (53 at $3.942 with every slot; ceilings
-`NEEDLETAIL_LINODE_MAX_NODES=53` and `NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95`), up to down about 4 h 15
+run".** 45 nodes at $3.834 an hour (53 at $4.266 with every slot; ceilings
+`NEEDLETAIL_LINODE_MAX_NODES=53` and `NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30`; tools6: London's two
+first-hop forwarders on g6-dedicated-8, +$0.324 an hour, for their heavy egress at 247 Mbit/s,
+`scripts/egress_plan.py`), up to down about 4 h 15
 min, the watchdog at 5 h, `--budget-usd 100`; the changes are two real runs each in shared probes
 (`phases-proving.json`, groups C1 and C2), scored by change-window.py with its shared-probe patch. The
 commands are in `~/wavey.ai/.resilient/proving-run-message.md`. What follows is the first design, kept
@@ -1392,7 +1394,7 @@ for its reasoning; its phase plan is `phases-proving-full.json`.
 ```sh
 cd ~/wavey.ai/needletail-resilient
 export NEEDLETAIL_AV_MESH_ROOT=~/wavey.ai/av-mesh-resilient NEEDLETAIL_AV_CONTRIB_ROOT=~/wavey.ai/av-contrib-resilient
-export NEEDLETAIL_LINODE_MAX_NODES=53 NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95     # recorded in the state by up
+export NEEDLETAIL_LINODE_MAX_NODES=53 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30     # recorded in the state by up
 scripts/linode-small-mesh-lab.py check --topology deploy/low-latency/topology-proving.json
 scripts/linode-small-mesh-lab.py up --topology deploy/low-latency/topology-proving.json --run-id prove1 \
     --optional-sites sydney --watchdog-hours 5 --budget-usd 100
