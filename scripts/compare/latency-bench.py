@@ -259,9 +259,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "to itself (default), or the source host, sending every epoch to "
                              "each contributor (A 6, with the standby contributor)")
     parser.add_argument("--load-assign", action="store_true",
-                        help="needletail-load listeners subscribe and move through the site's "
+                        help="the default since integration 6 (kept for old command lines): "
+                             "needletail-load listeners subscribe and move through the site's "
                              "/api/assignment (every distributor and edge of the site an entry "
-                             "point; Phase AM 10), not edge i mod n")
+                             "point; Phase AM 10), as real clients do")
+    parser.add_argument("--split-client-cpus", action="store_true",
+                        help="the readers, probes and 4K viewers on one half of the layout's "
+                             "client CPUs and the crowd's load tool on the other "
+                             "(edge_lab.rest_split), and each client's run-queue wait and its "
+                             "namespace's UDP receive drops recorded (client-cpu.json): a 4K "
+                             "viewer then does not wait behind the crowd (integration 6)")
+    parser.add_argument("--load-direct", action="store_true",
+                        help="needletail-load listener i starts at edge i mod n and never asks "
+                             "an entry (before integration 6 the default: refused listeners "
+                             "re-asked full edges 10-80k times)")
     parser.add_argument("--sample-gauges", action="store_true",
                         help="sample every serving edge's client UDP gauges (/api/assignment: "
                              "subscribers, load_permille, egress_observed_bps, draining) once a "
@@ -491,6 +502,65 @@ def planned_left_out(args) -> set[str]:
     if str(sets.get("own_cpus", "")).lower() in ("1", "true"):
         return set(lab.OWN_DEFAULT_LEFT_OUT)
     return set()
+
+
+def client_prefix(args, host: str, kind: str) -> list[str]:
+    """lab.enter for a client of `kind` ("load" or "client"): with
+    --split-client-cpus the load tool on the layout's tool CPUs and every
+    other client on its probe CPUs."""
+    if not getattr(args, "split_client_cpus", False):
+        return lab.enter(host)
+    split = lab.rest_split(lab.load("cpus.json"))
+    cpus = split.get("tools" if kind == "load" else "probes")
+    if not cpus:
+        return lab.enter(host)
+    saved = os.environ.get(lab.TOOL_CPUS_ENV)
+    os.environ[lab.TOOL_CPUS_ENV] = ",".join(str(cpu) for cpu in cpus)
+    try:
+        return lab.enter(host)
+    finally:
+        if saved is None:
+            os.environ.pop(lab.TOOL_CPUS_ENV, None)
+        else:
+            os.environ[lab.TOOL_CPUS_ENV] = saved
+
+
+def namespace_udp(host: str) -> dict:
+    """A namespace's UDP counters (/proc/net/snmp): RcvbufErrors and others."""
+    try:
+        text = lab.run_in(host, ["cat", "/proc/net/snmp"], check=False, timeout=10)
+    except Exception:  # noqa: BLE001 - a record, never a failure
+        return {}
+    rows = [line.split() for line in text.splitlines() if line.startswith("Udp:")]
+    if len(rows) < 2:
+        return {}
+    return {key: int(value) for key, value in zip(rows[0][1:], rows[1][1:]) if value.isdigit()}
+
+
+def schedstat(pid: int) -> tuple[int, int] | None:
+    """A process's CPU time and run-queue wait so far (ns), its threads
+    summed (/proc/PID/task/*/schedstat)."""
+    run = wait = 0
+    try:
+        for task in pathlib.Path(f"/proc/{pid}/task").iterdir():
+            fields = (task / "schedstat").read_text().split()
+            run += int(fields[0])
+            wait += int(fields[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return run, wait
+
+
+def planned_nodes(args, role: str, site: str) -> list[str]:
+    """A site's nodes of `role` in the run's lab: the running lab's with
+    --no-up (slots taken in count), else the planned layout's (no slot)."""
+    # A caller without a layout of its own (change-run's crowd on a running
+    # lab) reads the running lab's.
+    if getattr(args, "no_up", True) or not hasattr(args, "set"):
+        return lab.edges(site) if role == "edge" else lab.distributors(site)
+    out = planned_left_out(args)
+    slots = set(lab.slot_nodes())
+    return [name for name in lab.names(role, site) if name not in out and name not in slots]
 
 
 def reader_entry(args, site: str) -> str:
@@ -972,15 +1042,16 @@ def load_ramp(spec: str, edges: int) -> str:
 
 def load_commands(args, out: pathlib.Path) -> list[dict]:
     """--load-listeners needletail-load listeners for each serving edge of
-    each --load-sites site, from the site's load host: listener i starts at
-    edge i mod n, so each edge gets its share."""
+    each --load-sites site, from the site's load host, asking the site's
+    entry points (/api/assignment) as real clients do; with --load-direct
+    listener i starts at edge i mod n."""
     if args.load_listeners <= 0 and not args.load_ramp:
         return []
     items = []
     for site in [item for item in args.load_sites.split(",") if item]:
         if site not in LOAD_HOSTS:
             raise SystemExit(f"--load-sites: no load host in {site}")
-        edges = lab.edges(site)
+        edges = planned_nodes(args, "edge", site)
         targets = [f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}" for name in edges]
         count = args.load_listeners * len(edges)
         ramp = load_ramp(args.load_ramp, len(edges)) if args.load_ramp else f"{count}@0"
@@ -988,11 +1059,13 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
         # needletail-load takes --edges or --entry, never both: the edges
         # only without entry points.
         assign = ["--edges", ",".join(targets)]
-        if getattr(args, "load_assign", False):
+        if not getattr(args, "load_direct", False):
             # Phase AM 10: every distributor and edge of the site answers
-            # /api/assignment.
+            # /api/assignment; the crowd asks it as real clients do, and a
+            # refused listener is spilled by the entry (integration 6: the
+            # direct crowd re-asked full edges).
             entries = [f"https://{lab.node(name)['public_ipv4']}:{lab.HTTP_PORT}"
-                       for name in [*lab.distributors(site), *edges]]
+                       for name in [*planned_nodes(args, "distributor", site), *edges]]
             assign = ["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
                       "--server-name", lab.SERVER_NAME]
         items.append({"site": site, "host": LOAD_HOSTS[site], "edges": dict(zip(targets, edges)),
@@ -2042,13 +2115,14 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             handle = open(pathlib.Path(item["out"]) / "load.log", "ab")
             handles.append(handle)
             load_processes.append(subprocess.Popen(
-                lab.enter(item["host"]) + item["command"], stdout=handle, stderr=handle,
-                stdin=subprocess.DEVNULL, start_new_session=True))
+                client_prefix(args, item["host"], "load") + item["command"], stdout=handle,
+                stderr=handle, stdin=subprocess.DEVNULL, start_new_session=True))
         readers += load_processes
         for item in steps["readers"]:
             handle = open(out / f"{item['host']}.{item['lane']}.log", "ab")
             handles.append(handle)
-            readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=handle,
+            readers.append(subprocess.Popen(client_prefix(args, item["host"], "client")
+                                            + item["command"], stdout=handle,
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
         for item in steps["udp_clients"] + video["viewers"]:
@@ -2057,10 +2131,44 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             handle = open(log_path, "ab")
             stdout = open(item["report"], "wb") if item["kind"] == "udp" else handle
             handles += [handle, stdout]
-            readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=stdout,
+            readers.append(subprocess.Popen(client_prefix(args, item["host"], "client")
+                                            + item["command"], stdout=stdout,
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
         log(f"{len(readers)} reader processes for {args.seconds} s")
+        if getattr(args, "split_client_cpus", False):
+            # Each client's CPU and run-queue wait and each client
+            # namespace's UDP drops over the window (integration 6: a 4K
+            # viewer that waits behind the crowd measures the host).
+            import threading
+            named = ([("load", item["host"], proc) for item, proc in zip(loads, load_processes)]
+                     + [("client", item["host"], proc)
+                        for item, proc in zip(steps["readers"] + steps["udp_clients"]
+                                              + video["viewers"],
+                                              readers[len(load_processes):])])
+            hosts = sorted({host for _, host, _ in named})
+            before = {host: namespace_udp(host) for host in hosts}
+            first = {proc.pid: schedstat(proc.pid) for _, _, proc in named}
+
+            def record_clients() -> None:
+                time.sleep(max(1.0, args.seconds - 2))
+                last = {proc.pid: schedstat(proc.pid) for _, _, proc in named}
+                after = {host: namespace_udp(host) for host in hosts}
+                rows = []
+                for kind, host, proc in named:
+                    a, b = first.get(proc.pid), last.get(proc.pid)
+                    if a and b:
+                        rows.append({"kind": kind, "host": host, "pid": proc.pid,
+                                     "cpu_s": round((b[0] - a[0]) / 1e9, 3),
+                                     "wait_s": round((b[1] - a[1]) / 1e9, 3)})
+                drops = {host: {key: after[host].get(key, 0) - before[host].get(key, 0)
+                                for key in ("RcvbufErrors", "InErrors", "InDatagrams")}
+                         for host in hosts if before.get(host) and after.get(host)}
+                (out / "client-cpu.json").write_text(json.dumps(
+                    {"window_s": args.seconds - 2, "split": lab.rest_split(lab.load("cpus.json")),
+                     "processes": rows, "namespace_udp": drops}, indent=1) + "\n")
+
+            threading.Thread(target=record_clients, daemon=True).start()
         if args.stall_edge:
             import threading
             began = began_us / 1e6

@@ -97,6 +97,34 @@ class ReaderHosts(unittest.TestCase):
             ["lon-readers", "lon-readers"])
 
 
+class ClientCpus(unittest.TestCase):
+    """Integration 6: --split-client-cpus puts the crowd's load tool on the
+    layout's tool CPUs and the readers, probes and 4K viewers on its probe
+    CPUs (edge_lab.rest_split), so a viewer does not wait behind the crowd."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        for target, name, value in ((bench.lab, "WORK", self.dir / "lab"),
+                                    (bench.lab, "nsenter", lambda name: ["ns", str(name)]),
+                                    (bench.lab, "join_tools", lambda: None)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        bench.lab.save("cpus.json", {"_rest": [26, 27, 28, 29, 30], "lon-src": [31]})
+
+    def test_the_load_tool_and_the_viewers_on_their_own_cpus(self):
+        split = parse("--split-client-cpus")
+        self.assertEqual(bench.client_prefix(split, "lon-readers-2", "load"),
+                         ["ns", "lon-readers-2", "taskset", "-c", "28,29,30"])
+        self.assertEqual(bench.client_prefix(split, "lon-readers", "client"),
+                         ["ns", "lon-readers", "taskset", "-c", "26,27"])
+        # Without the option every client shares the layout's rest.
+        self.assertEqual(bench.client_prefix(parse(), "lon-readers", "client"),
+                         ["ns", "lon-readers", "taskset", "-c", bench.lab.cpu_list([26, 27, 28, 29, 30])])
+        self.assertNotIn(bench.lab.TOOL_CPUS_ENV, os.environ)
+
+
 class Arguments(unittest.TestCase):
     def test_flags_reach_every_role(self):
         args = parse("--mesh-args", "--relay-forward-nonblocking false", "--edge-args", "--x 1",
@@ -716,7 +744,8 @@ class EdgeLoad(unittest.TestCase):
 
     def test_a_crowd_for_each_site_over_its_edges(self):
         args = parse("--load-listeners", "64", "--load-sites", "london,newyork",
-                     "--load-args=--silence-nack false", "--payload", "opus")
+                     "--load-args=--silence-nack false", "--payload", "opus",
+                     "--load-direct", "--no-up")
         edges = {"london": ["lon-edge-1", "lon-edge-2"], "newyork": ["new-edge-1"]}
         with mock.patch.object(bench.lab, "edges", side_effect=lambda site: edges[site]):
             items = bench.load_commands(args, pathlib.Path("/x"))
@@ -732,7 +761,7 @@ class EdgeLoad(unittest.TestCase):
     def test_a_crowd_through_the_assignment_and_the_gauges(self):
         """Phase AM 10: --load-assign gives needletail-load every distributor
         and edge of the site as entry points; AM 8: the gauge lines."""
-        args = parse("--load-listeners", "8", "--load-assign")
+        args = parse("--load-listeners", "8", "--load-assign", "--no-up")
         with mock.patch.object(bench.lab, "edges", return_value=["lon-edge-1"]), \
                 mock.patch.object(bench.lab, "distributors", return_value=["lon-dist-a"]):
             command = bench.load_commands(args, pathlib.Path("/x"))[0]["command"]
@@ -743,6 +772,18 @@ class EdgeLoad(unittest.TestCase):
         self.assertEqual(command[command.index("--tls-ca") + 1], bench.lab.ca_file())
         # needletail-load refuses --edges with --entry.
         self.assertNotIn("--edges", command)
+        # Integration 6: the entry is the default (no --load-assign), and a
+        # run that brings its own lab up takes the planned layout's nodes,
+        # not the last lab's record (no slot, nothing left out).
+        default = bench.load_commands(parse("--load-listeners", "8",
+                                            "--set", "leave_out=lon-edge-3"),
+                                      pathlib.Path("/x"))[0]["command"]
+        self.assertNotIn("--edges", default)
+        entries = default[default.index("--entry") + 1].split(",")
+        names = {bench.lab.node(name)["public_ipv4"]: name
+                 for name in bench.lab.names(site="london")}
+        self.assertEqual(sorted(names[entry.split("//")[1].split(":")[0]] for entry in entries),
+                         ["lon-dist-a", "lon-dist-b", "lon-edge-1", "lon-edge-2", "lon-edge-4"])
         rows = [{"t": 1.0, "lon-edge-1": {"subscribers": 64, "load_permille": 700,
                                           "egress_observed_bps": 70e6,
                                           "advertised_free_bps": 15e6}},
