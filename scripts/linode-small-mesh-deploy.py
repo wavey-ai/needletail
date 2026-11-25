@@ -315,6 +315,16 @@ DEFAULT_SETTINGS = {
     #   decoded parts it answers asks from): av-mesh --relay-part-store-mb on
     #   a fast-plane node, av-contrib's flag of the same name on the
     #   contributor.
+    # - part_repair_group (integration 6): "off" (the default: the headline
+    #   build, "cheap tee + tee per lane", the tested combination of
+    #   integrate-5b) renders --relay-part-repair false --relay-link-repair
+    #   false --relay-trim-forwarded-repair false; "on" renders all three
+    #   true (the A/B cell with repair); None leaves the three to their own
+    #   settings (None: the binaries' defaults, which are on). Each of the
+    #   three set on its own wins over the group. The group's flags are
+    #   rendered whatever the binary (no binary_takes): the flags probe
+    #   refuses a binary that lacks them.
+    "part_repair_group": "off",
     "relay_part_repair": None,
     "relay_link_repair": None,
     "relay_trim_forwarded_repair": None,
@@ -571,6 +581,30 @@ DEFAULT_SETTINGS = {
     "plan_repair_share": None,
     "plan_edge_viewers": None,
     "max_heavy_egress_mbit": None,
+    # The send path (av-mesh send240, integration 6), rendered on every mesh
+    # service so that the lab's record shows them:
+    # - send_defer_ms, send_defer_mb: --send-defer-ms (200, the binary's
+    #   default; 0 turns the keep-and-resend off) and --send-defer-mb
+    #   ("auto": 0.8% of the node, 31 MB on a g6-dedicated-2).
+    # - send_pacing: --send-pacing k (0, off: the headline). Above 0 each
+    #   heavy socket is paced at k times its egress (send240 B; the A/B cell
+    #   is 4), which needs fq: with host_qdisc "prio" the video band is fq
+    #   already; with host_qdisc "none" a root fq goes on every NIC (the
+    #   public one included) while it is on, and comes off when it is off.
+    # - send_pacing_floor_mbit: --send-pacing-floor-mbit (None: 100).
+    # - edge_pull_budget_mbit: --edge-pull-budget-mbit (48, the binary's
+    #   default: what an edge may pull over the cache mesh).
+    # - heavy_egress_max_mbps: an edge's --heavy-egress-max-mbps (place240's
+    #   cap of its heavy sessions' bytes). "plan" (the default) takes the
+    #   egress plan's limit of the edge's Linode plan (max_heavy_egress_mbit:
+    #   600 on a g6-dedicated-2, the binary's default), so placement and the
+    #   egress plan agree; a number sets it; None renders nothing.
+    "send_defer_ms": 200,
+    "send_defer_mb": "auto",
+    "send_pacing": 0,
+    "send_pacing_floor_mbit": None,
+    "edge_pull_budget_mbit": 48,
+    "heavy_egress_max_mbps": "plan",
     # Edges fed by the fast plane (low-latency B5/B6/B9; wave 5 W0): each
     # distributor of a site is a forwarder of the site's edges as well. A
     # cache-mesh lease that it serves to an edge makes the edge a lease
@@ -1064,6 +1098,7 @@ def check_settings(settings: dict) -> None:
     class isolation settings (class_plan)."""
     part_plan(settings)
     standby_edges(settings)
+    repair_switches(settings)
     if settings.get("client_udp_max_subscribers") is not None:
         whole(settings["client_udp_max_subscribers"], "client_udp_max_subscribers")
     mode = topology_mode(settings)
@@ -1268,6 +1303,9 @@ def check_unit_wanted(settings: dict) -> bool:
 # priomap (TC_PRIO_INTERACTIVE). Priority 0, every other socket, is band 1.
 AUDIO_SOCKET_PRIORITY = 6
 HOST_QDISCS = ("prio", "none")
+# The qdisc class_plan gives a host with host_qdisc "none" and send_pacing
+# on: a root fq on every NIC (send240 B: SO_MAX_PACING_RATE needs fq).
+PACING_QDISC = "fq"
 CLASS_CPUS = re.compile(r"^(auto|[0-9]+,[0-9]+|)$")
 
 
@@ -1356,7 +1394,16 @@ def class_plan(settings: dict) -> dict:
     if qdisc not in HOST_QDISCS:
         raise ValueError(f"host_qdisc {qdisc!r} is not one of {', '.join(HOST_QDISCS)}")
     plan["host_qdisc"] = "none" if baseline else qdisc
+    plan["send_pacing"] = send_pacing_of(settings)
+    if plan["host_qdisc"] == "none" and plan["send_pacing"] > 0:
+        plan["host_qdisc"] = PACING_QDISC
     return plan
+
+
+def send_pacing_of(settings: dict) -> int:
+    """send_pacing as a whole number (0: off)."""
+    value = settings.get("send_pacing")
+    return 0 if value in (None, False) else whole(value, "send_pacing")
 
 
 def node_vcpus(node: dict) -> int | None:
@@ -2646,6 +2693,86 @@ def binary_takes(kind: str, pairs: list[str]) -> list[str]:
     return out
 
 
+@functools.lru_cache(maxsize=None)
+def binary_is_clap(path: str, mtime_ns: int) -> bool:
+    """Whether `path --help` is a clap build's (a `Usage:` line): every
+    av-mesh and av-contrib is; the tools' tests stand in binaries that list
+    a few flags, which the flags probe does not judge."""
+    del mtime_ns  # part of the cache key only
+    try:
+        result = subprocess.run([path, "--help"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return "Usage:" in result.stdout
+
+
+@functools.lru_cache(maxsize=None)
+def binary_build_id(path: str, mtime_ns: int) -> str:
+    """What `path --version` prints (its head and build time), or why not."""
+    del mtime_ns  # part of the cache key only
+    try:
+        result = subprocess.run([path, "--version"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"--version did not run: {error}"
+    text = (result.stdout or result.stderr).strip()
+    return text.splitlines()[0] if text else f"--version exited {result.returncode}"
+
+
+SERVICE_KINDS = {"needletail-mesh": "av-mesh", "needletail-contrib": "av-contrib"}
+
+
+def check_rendered_flags(rendered: dict[str, dict], strict: bool = False) -> None:
+    """The flags probe (integration 6): every long flag rendered for a
+    service must be one that the binary the render is for lists in its
+    --help, or the render refuses, naming each flag, its nodes and the
+    binary's build id, so that a tools/binary mismatch never reaches a lab
+    (cmpd8's round: the tools rendered --relay-primary-promoted to binaries
+    that lacked it). A render that names no binary (unit tests, a tool that
+    renders without one) is not probed, nor a stand-in whose --help is not
+    clap's (binary_is_clap). A binary that is missing or does not run here
+    is not probed by a render (binary_takes renders none of the new flags
+    for it); `strict` (plan, push, restart: the binaries they deploy)
+    refuses it."""
+    missing: dict[tuple[str, str], list[str]] = {}
+    unreadable = set()
+    for name, item in rendered.items():
+        kind = SERVICE_KINDS.get(item["service"])
+        path = RENDER_BINARIES.get(kind) if kind else None
+        if path is None:
+            continue
+        path = pathlib.Path(path)
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            if strict:
+                unreadable.add((kind, str(path)))
+            continue
+        flags = binary_flags(str(path), mtime_ns)
+        if flags is None:
+            if strict:
+                unreadable.add((kind, str(path)))
+            continue
+        if not binary_is_clap(str(path), mtime_ns):
+            continue
+        for flag_name in sorted(flag_names(item["args"])):
+            if flag_name not in flags:
+                missing.setdefault((kind, flag_name), []).append(name)
+    if not missing and not unreadable:
+        return
+    lines = []
+    for kind, path in sorted(unreadable):
+        lines.append(f"{kind} at {path} does not run here (--help): its flags cannot be checked")
+    for (kind, flag_name), nodes in sorted(missing.items()):
+        path = pathlib.Path(RENDER_BINARIES[kind])
+        build = binary_build_id(str(path), path.stat().st_mtime_ns)
+        lines.append(f"{kind} at {path} ({build}) does not know {flag_name}, rendered for "
+                     f"{', '.join(sorted(nodes, key=mesh_ops.natural))}")
+    raise ValueError("flags probe: refused, the binaries do not match the tools' render:\n  "
+                     + "\n  ".join(lines))
+
+
 def report_unrendered(settings: dict, rendered: dict[str, dict]) -> None:
     """One stderr line naming each setting not at its default whose flag
     binary_takes left out of every node, with why: the binary runs on its
@@ -2723,14 +2850,69 @@ def part_repair_args(node_args: list[str], settings: dict) -> list[str]:
         return binary_takes("av-contrib", pairs)
     if "--relay-controlled-local" not in node_args:
         return []
-    for key in ("relay_part_repair", "relay_link_repair", "relay_trim_forwarded_repair",
-                "relay_regenerate_sources", "relay_trim_to_margin"):
+    # The group's three (integration 6): rendered whatever the binary, so
+    # the flags probe refuses a binary without them.
+    switches = repair_switches(settings)
+    explicit = []
+    for key, value in switches.items():
+        if value is not None:
+            explicit += ["--" + key.replace("_", "-"), flag(value)]
+    for key in ("relay_regenerate_sources", "relay_trim_to_margin"):
         if given(key):
             pairs += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
     for key in ("relay_decode_workers", "relay_part_repair_rtt_ms", "relay_part_store_mb"):
         if given(key):
             pairs += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
-    return binary_takes("av-mesh", pairs)
+    return explicit + binary_takes("av-mesh", pairs)
+
+
+REPAIR_GROUP_KEYS = ("relay_part_repair", "relay_link_repair", "relay_trim_forwarded_repair")
+
+
+def repair_switches(settings: dict) -> dict:
+    """{key: True | False | None} of the three part repair switches: each
+    set on its own, else part_repair_group's ("off": False, "on": True,
+    None: None, the binaries' default)."""
+    group = settings.get("part_repair_group", DEFAULT_SETTINGS["part_repair_group"])
+    if group not in (None, "off", "on"):
+        raise ValueError(f"part_repair_group {group!r} is not off, on or None")
+    base = None if group is None else group == "on"
+    return {key: base if settings.get(key) is None else bool(settings[key])
+            for key in REPAIR_GROUP_KEYS}
+
+
+def send_path_args(node: dict, settings: dict) -> list[str]:
+    """The send path's flags of every av-mesh service (send240 and
+    place240, integration 6), each given explicitly so that the lab's
+    record shows it: the keep-and-resend, the pacing, the pull budget, and
+    an edge's heavy egress cap from the egress plan's limit of its plan.
+    Rendered whatever the binary: the flags probe refuses one without
+    them."""
+    out = []
+    if settings.get("send_defer_ms") is not None:
+        out += ["--send-defer-ms", str(whole(settings["send_defer_ms"], "send_defer_ms"))]
+    if settings.get("send_defer_mb") is not None:
+        value = settings["send_defer_mb"]
+        out += ["--send-defer-mb",
+                "auto" if value == "auto" else str(whole(value, "send_defer_mb"))]
+    if settings.get("send_pacing") is not None:
+        out += ["--send-pacing", str(send_pacing_of(settings))]
+    if settings.get("send_pacing_floor_mbit") is not None:
+        out += ["--send-pacing-floor-mbit",
+                str(whole(settings["send_pacing_floor_mbit"], "send_pacing_floor_mbit"))]
+    if settings.get("edge_pull_budget_mbit") is not None:
+        out += ["--edge-pull-budget-mbit",
+                str(whole(settings["edge_pull_budget_mbit"], "edge_pull_budget_mbit"))]
+    cap = settings.get("heavy_egress_max_mbps")
+    if node.get("role") == "edge" and cap is not None:
+        if cap == "plan":
+            limits = egress_plan.parse_limits(settings.get("max_heavy_egress_mbit"))
+            limit = limits.get(str(node.get("type") or ""))
+            if limit is not None:
+                out += ["--heavy-egress-max-mbps", str(int(limit))]
+        else:
+            out += ["--heavy-egress-max-mbps", str(whole(cap, "heavy_egress_max_mbps"))]
+    return out
 
 
 def wave7_args(node_args: list[str], settings: dict) -> list[str]:
@@ -3618,6 +3800,9 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
             # intent: a primary session refuses them unless promoted (review
             # M5: every answer dropped as not_admitted, the child asking
             # again). Lease children are promoted already (fast_edge_args).
+            # Integration 6: part_repair_group leaves relay_part_repair
+            # None, so the headline (group off) keeps integrate-5b's render
+            # and the A/B cells differ in the repair switches alone.
             if (settings.get("relay_part_repair") is not False
                     and service["primary_parent"].get("lane") == "source"
                     and "--relay-primary-promoted" not in flag_names(
@@ -3677,11 +3862,13 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
         args += yield_to(extra, wave7_args(args, settings))
         args += yield_to(extra, mesh_memory_args(node, settings))
         args += yield_to(extra, part_repair_args(args, settings))
+        args += yield_to(extra, send_path_args(node, settings))
         args += yield_to(extra, stall_args("av-mesh", node, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     report_unrendered(lab_settings, rendered)
+    check_rendered_flags(rendered)
     check_class_agreement(rendered)
     check_cache_mesh_peers(state, rendered, lab_settings)
     check_class_ports(rendered, class_plan(lab_settings))
@@ -4035,9 +4222,21 @@ done
 for path in /sys/class/net/*; do
   [ -e "$path/device" ] || continue
   dev=${path##*/}
-  if tc qdisc show dev "$dev" | head -1 | grep -q '^qdisc prio 1: root'; then
+  if tc qdisc show dev "$dev" | head -1 | grep -Eq '^qdisc (prio 1|fq 30): root'; then
     tc qdisc del dev "$dev" root
   fi
+  echo "== $dev"
+  tc -s qdisc show dev "$dev"
+done
+""",
+    # send_pacing on without the prio root (send240 B): a root fq, handle
+    # 30:, with the band's per-flow limit; "none" takes it off again.
+    "fq": r"""
+modprobe sch_fq 2>/dev/null || true
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] || continue
+  dev=${path##*/}
+  tc qdisc replace dev "$dev" root handle 30: fq limit 65536 flow_limit 4096
   echo "== $dev"
   tc -s qdisc show dev "$dev"
 done
@@ -4058,11 +4257,14 @@ def check_host_qdisc(output: str, qdisc: str) -> list[str]:
     for device, shown in sorted(sections.items()):
         lines = [line for line in shown.splitlines() if line.startswith("qdisc ")]
         has_prio = bool(lines) and lines[0].startswith("qdisc prio 1: root")
+        has_fq = bool(lines) and lines[0].startswith("qdisc fq 30: root")
         if qdisc == "prio":
             ok = (has_prio and any(line.startswith("qdisc pfifo 10: parent 1:1") for line in lines)
                   and any(line.startswith("qdisc fq 20: parent 1:2") for line in lines))
+        elif qdisc == PACING_QDISC:
+            ok = has_fq
         else:
-            ok = not has_prio
+            ok = not has_prio and not has_fq
         if not ok:
             wrong.append(device)
     return wrong
@@ -4485,7 +4687,8 @@ HOST_QDISC_CHECK = {
     || { echo "the host qdisc prio has no pfifo 10: on $dev"; exit 1; }
   printf '%s\n' "$shown" | grep -q '^qdisc fq 20: parent 1:2' \
     || { echo "the host qdisc prio has no fq 20: on $dev"; exit 1; }""",
-    "none": r"""case "$root" in "qdisc prio 1: root"*) echo "the host qdisc prio is still on $dev"; exit 1 ;; esac""",
+    "none": r"""case "$root" in "qdisc prio 1: root"*|"qdisc fq 30: root"*) echo "the host qdisc $root is still on $dev"; exit 1 ;; esac""",
+    "fq": r"""case "$root" in "qdisc fq 30: root"*) ;; *) echo "the pacing qdisc fq is not the root of $dev"; exit 1 ;; esac""",
 }
 
 
@@ -6287,6 +6490,14 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     RENDER_BINARIES.update({"av-mesh": binaries_for("edge")[0],
                             "av-contrib": binaries_for("contributor")[0]})
     rendered = render(state, settings, plan)
+    # The flags probe (integration 6): every flag rendered must be known to
+    # its binary (render did that); push and restart also refuse binaries
+    # that do not run here, which `plan`, offline, names only.
+    try:
+        check_rendered_flags(rendered,
+                             strict=getattr(args, "command", None) in ("push", "restart"))
+    except ValueError as error:
+        raise SystemExit(f"error: {error}") from None
     unused = relay_tree(state, settings)["unused"]
     print(f"compiled {len(plan['services'])} relay services ({topology_mode(settings)} "
           f"topology); rendered {len(rendered)} service argument files; primary route "

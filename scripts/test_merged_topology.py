@@ -51,6 +51,11 @@ RELAY_ARGS = ("--fec-bind", "--mesh-fec-target", "--mesh-media-fec-target",
               "--audio-epoch-ingress-target", "--audio-epoch-redundant-ingress-target")
 
 
+# part_repair_group "off", the headline of integration 6.
+HEADLINE_REPAIR = ["--relay-part-repair", "false", "--relay-link-repair", "false",
+                   "--relay-trim-forwarded-repair", "false"]
+
+
 def value_of(args: list[str], flag: str) -> str | None:
     return args[args.index(flag) + 1] if flag in args else None
 
@@ -229,20 +234,27 @@ class Render(Base):
             contrib = deploy.part_repair_args(["--daw-media-bind", "x"], settings)
             # A node off the fast plane keeps no parts: nothing.
             self.assertEqual(deploy.part_repair_args(["--edge-http3"], settings), [])
-            # All at their defaults (None): nothing, even where the binaries
-            # list every flag.
+            # At their defaults: part_repair_group "off" (integration 6)
+            # renders its three switches off on a fast-plane node; None
+            # renders nothing, even where the binaries list every flag.
             self.assertEqual(deploy.part_repair_args(["--relay-controlled-local"],
-                                                     self.settings()), [])
+                                                     self.settings()), HEADLINE_REPAIR)
+            self.assertEqual(deploy.part_repair_args(
+                ["--relay-controlled-local"], self.settings(["part_repair_group=null"])), [])
             self.assertEqual(deploy.part_repair_args(["--daw-media-bind", "x"],
                                                      self.settings()), [])
-        self.assertEqual(mesh, ["--relay-trim-to-margin", "true",
-                                "--relay-decode-workers", "1",
-                                "--relay-part-store-mb", "96"])
+        self.assertEqual(mesh, HEADLINE_REPAIR + ["--relay-trim-to-margin", "true",
+                                                  "--relay-decode-workers", "1",
+                                                  "--relay-part-store-mb", "96"])
         self.assertEqual(contrib, ["--relay-repair-sizing", "measured",
                                    "--relay-repair-floor-permille", "5",
                                    "--relay-part-store-mb", "96"])
         with mock.patch.object(deploy, "binary_has", return_value=False):
-            self.assertEqual(deploy.part_repair_args(["--relay-controlled-local"], settings), [])
+            # The group's switches are rendered whatever the binary (the
+            # flags probe refuses one without them); the rest only where
+            # the binary has them.
+            self.assertEqual(deploy.part_repair_args(["--relay-controlled-local"], settings),
+                             HEADLINE_REPAIR)
             self.assertEqual(deploy.part_repair_args(["--daw-media-bind", "x"], settings), [])
         with self.assertRaises(ValueError):
             deploy.part_repair_args(["--daw-media-bind", "x"],

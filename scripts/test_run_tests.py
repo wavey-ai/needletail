@@ -28,11 +28,17 @@ class RunTests(unittest.TestCase):
         patcher = mock.patch.object(runner, "ROOT", self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The roots are DefaultRoots' to test; here none is looked for.
+        roots = mock.patch.object(runner, "default_roots", lambda environment: {})
+        roots.start()
+        self.addCleanup(roots.stop)
 
     def fake(self, leave: bool, code: int = 0):
         seen = {}
 
-        def run(command, cwd=None, env=None):
+        def run(command, cwd=None, env=None, **_kwargs):
+            if command[-1] == "--help":
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
             seen.update(command=command, env=env)
             if leave:
                 (pathlib.Path(env["TMPDIR"]) / "tmpabc").mkdir()
@@ -67,6 +73,49 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(runner.subprocess, "run", run), redirect_stderr(io.StringIO()):
             self.assertEqual(runner.main([]), 0)
         self.assertEqual(commands, ["scripts", "scripts/compare"])
+
+
+class DefaultRoots(unittest.TestCase):
+    """Integration 6: without NEEDLETAIL_AV_MESH_ROOT the av-mesh worktree
+    beside this one is taken, else the workspace's -resilient checkout; a
+    binary too old for the render's flags is passed over for a fresh one,
+    and when none is fresh the tests are told why (they skip)."""
+
+    def setUp(self):
+        self.space = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.space, True)
+        self.root = self.space / "rm" / "needletail-x"
+        self.root.mkdir(parents=True)
+        patcher = mock.patch.object(runner, "ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def binary(self, root: pathlib.Path, flags: tuple[str, ...]) -> None:
+        path = root / "target" / "release" / "av-mesh"
+        path.parent.mkdir(parents=True)
+        path.write_text("#!/bin/sh\necho '" + " ".join(flags) + "'\n")
+        path.chmod(0o755)
+
+    def test_the_worktree_beside_comes_first_and_an_old_binary_is_passed_over(self):
+        beside = self.space / "rm" / "av-mesh-x"
+        resilient = self.space / "av-mesh-resilient"
+        self.binary(resilient, runner.REQUIRED_MESH_FLAGS)
+        self.binary(beside, ("--node-warm-file",))
+        roots = runner.default_roots({})
+        self.assertEqual(roots["NEEDLETAIL_AV_MESH_ROOT"], str(resilient))
+        self.assertNotIn("NEEDLETAIL_AV_MESH_TOO_OLD", roots)
+        shutil.rmtree(resilient)
+        roots = runner.default_roots({})
+        self.assertEqual(roots["NEEDLETAIL_AV_MESH_ROOT"], str(beside))
+        self.assertIn("lacks --send-defer-ms", roots["NEEDLETAIL_AV_MESH_TOO_OLD"])
+
+    def test_a_root_given_is_kept_and_judged(self):
+        given = self.space / "mine"
+        self.binary(given, runner.REQUIRED_MESH_FLAGS)
+        roots = runner.default_roots({"NEEDLETAIL_AV_MESH_ROOT": str(given)})
+        self.assertEqual(roots, {})
+        roots = runner.default_roots({"NEEDLETAIL_AV_MESH_ROOT": str(self.space / "none")})
+        self.assertIn("no built av-mesh", roots["NEEDLETAIL_AV_MESH_TOO_OLD"])
 
 
 if __name__ == "__main__":
