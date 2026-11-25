@@ -1374,33 +1374,53 @@ class Iso:
             self.up()
         self.hosts("first")
         self.wait_ssh()
-        failures = []
-        threads = []
-        if not self.runner.dry:
-            # The clips (about 10 GB to lon-src) go while push bootstraps
-            # and warms; push writes nothing to /var/lib/compare.
-            media_error: list[str] = []
-
-            def media() -> None:
-                try:
-                    self.media()
-                except Exception as error:  # noqa: BLE001 - named below
-                    media_error.append(str(error))
-            threads.append(threading.Thread(target=media))
-            threads[0].start()
-        else:
-            self.media()
-        self.push()
-        for thread in threads:
-            thread.join()
-        if not self.runner.dry and media_error:
-            failures.append("media: " + "; ".join(media_error))
-            self.media()
+        self.media_beside_push()
         self.warm_table()
         self.start_samplers()
         module = self.referee or load_by_path(
             "iso_referee_run", compare_root() / "scripts" / "compare" / "compare-run.py")
         self.lane = referee_lane(self.nodes["lon-dist-a"]["public_ipv4"], module)
+
+    def media_beside_push(self) -> None:
+        """The clips (about 10 GB to lon-src) go while push bootstraps and
+        warms (push writes nothing to /var/lib/compare). A copy that fails
+        there is named with its error text (said, journalled, and kept in
+        the record's failures and media_errors), then copied once more after
+        push; a second failure fails the step with both texts. A dry run
+        copies first, then pushes."""
+        if self.runner.dry:
+            self.media()
+            self.push()
+            return
+        errors: list[str] = []
+
+        def media() -> None:
+            try:
+                self.media()
+            except Exception as error:  # noqa: BLE001 - named below
+                errors.append(str(error) or repr(error))
+
+        thread = threading.Thread(target=media)
+        thread.start()
+        try:
+            self.push()
+        finally:
+            thread.join()
+        if not errors:
+            return
+        text = "; ".join(errors)
+        self.record.setdefault("media_errors", []).append(text[-1500:])
+        self.record["failures"].append(f"media beside push: {text[-500:]}")
+        self.runner.journal("media-failed", error=text[-1500:])
+        self.runner.say(f"the media copy beside push failed: {text[-600:]}; copying it again")
+        try:
+            self.media()
+        except Exception as error:  # noqa: BLE001 - the step fails with both texts
+            again = str(error) or repr(error)
+            self.record["media_errors"].append(again[-1500:])
+            raise RuntimeError(f"media: the copy failed beside push ({text[-600:]}) and again "
+                               f"after it ({again[-600:]})") from None
+        self.runner.say("media: copied after push")
 
     def run(self) -> int:
         failed = 0
