@@ -65,9 +65,9 @@ WHAT = [
     (r"samplers/[^/]+\.heartbeat\.\d+\.log$", "samples", "SCHED_FIFO-99 heartbeat pinned to each vCPU: 'HB cpu monotonic_ns realtime_ns boottime_ns late_ns policy', a line on each wake over 5 ms late and one a second", None),
     (r"samplers/[^/]+\.nic\.\d+\.txt$", "node-logs", "uname -a and ethtool -i/-k/-l/-S of eth0 and eth1 at sampler start", None),
     (r"samplers/hosts\.\d+\.txt$", "lab", "physical Linode host of every node", None),
-    (r"samplers/[^/]+\.\d+\.log$", "samples", "1 s raw (5 s before 24 Nov): /proc/stat ticks, /proc/net/dev bytes, service ticks, RSS", None),
-    (r"samplers-csv/.*\.cpu-net\.csv$", "samples", "5 s samples as CSV (ticks at 100/s, bytes cumulative)",
-     {"unix_s": "s", "*_ticks": "1/100 s", "*_bytes": "bytes", "*_rss_kb": "kB"}),
+    (r"samplers/[^/]+\.\d+\.log$", "samples", "1 s raw (5 s before 24 Nov): /proc/stat ticks, 'net iface:tx_bytes:tx_packets' from /proc/net/dev, service ticks, RSS", None),
+    (r"samplers-csv/.*\.cpu-net\.csv$", "samples", "the 1 s samples as CSV (ticks at 100/s, tx bytes and packets cumulative)",
+     {"unix_s": "s", "*_ticks": "1/100 s", "*_bytes": "bytes", "*_packets": "packets", "*_rss_kb": "kB"}),
     (r"samplers-csv/.*\.ndjson$", "samples", "1 s samples as NDJSON", {"unix_s": "s"}),
     (r"session\.json$", "session", "the session's steps, times, LiveKit Cloud egress", None),
     (r"\.player\.json$", "summary", "Chrome player's report (WebRTC stats, latency)", "ms"),
@@ -175,10 +175,13 @@ def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
             for part in parts[1:]:
                 fields = part.split()
                 if fields and fields[0] == "net":
+                    # The sampler writes iface:tx_bytes:tx_packets (/proc/net/dev fields 9 and 10;
+                    # no receive counters). Archives written before 25 Nov labelled these two
+                    # columns rx_bytes and tx_bytes (see NOTE-net-columns.md in those runs).
                     for item in fields[1:]:
                         bits = item.split(":")
                         if len(bits) == 3:
-                            row[f"net_{bits[0]}_rx_bytes"], row[f"net_{bits[0]}_tx_bytes"] = bits[1], bits[2]
+                            row[f"net_{bits[0]}_tx_bytes"], row[f"net_{bits[0]}_tx_packets"] = bits[1], bits[2]
                 elif len(fields) == 4:
                     service, _pid, ticks, rss = fields
                     row[f"{service}_cpu_ticks"], row[f"{service}_rss_kb"] = ticks, rss
