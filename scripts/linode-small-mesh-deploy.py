@@ -5152,6 +5152,9 @@ class LinodeOps(mesh_ops.Ops):
         # The hosts this command gave the warm pass to (node_warm on): each
         # must end with a complete record (unwarmed_hosts, warm_gate).
         self.warm_wanted: set[str] = set()
+        # The nodes this command's activations ran on (a roll's, a restart's):
+        # their warm records are read at its end (read_activated_warm).
+        self.activated: set[str] = set()
         path = common.state_path()
         self.lock_path = path.with_name(path.name + ".ops.lock")
         self.evidence_dir = common.ARTIFACT_DIR / "rolls"
@@ -5596,6 +5599,7 @@ class LinodeOps(mesh_ops.Ops):
         intended = self.activation_of(node, old, rollback)
         if intended is not None:
             record_deployed(self.full, {node: {**old, "activating": intended}})
+        self.activated.add(node)
         result = activate_node(self.full["nodes"][node], self.service(node), not_after_ms, rollback,
                                check_timeout_s(self.own_settings(node), self.full["nodes"][node]))
         self._ssh_at[node] = time.monotonic()
@@ -5813,6 +5817,27 @@ class LinodeOps(mesh_ops.Ops):
         self.warm_wanted.add(node)
         self.warm_records[node] = judge_warm(read_warm_record(record), own, record)
         record_deployed(self.full, {}, warm={node: warm_entry(self.warm_records[node])})
+
+    def read_activated_warm(self) -> None:
+        """The end of a roll or restart: this boot's warm record of every node
+        its activations ran on that has the warm pass (each activation runs
+        the check again when the record is not complete), read at once,
+        judged and kept as read_warm keeps one."""
+        names = sorted((name for name in self.activated if name in self.full["nodes"]
+                        and self.own_settings(name).get("node_warm")), key=mesh_ops.natural)
+        if not names:
+            return
+        nodes = [self.full["nodes"][name] for name in names]
+        try:
+            read = common.parallel(nodes, read_warm_record)
+        except RuntimeError:
+            read = {}
+        for name in names:
+            own, record = self.own_settings(name), self.full["nodes"][name]
+            self.warm_wanted.add(name)
+            self.warm_records[name] = judge_warm(read.get(name), own, record)
+        record_deployed(self.full, {}, warm={name: warm_entry(self.warm_records[name])
+                                             for name in names})
 
     def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
         record = self.full["nodes"][node]
@@ -6341,8 +6366,9 @@ def warm_summary(records: dict) -> str:
             + (f"; slow_host: {', '.join(slow)}" if slow else ""))
 
 
-# The exit status of a push, start or replace that did everything else but
-# left a host it manages without a complete warm record (node_warm on).
+# The exit status of a push, start, replace, roll or restart that did
+# everything else but left a host it manages (for a roll or restart --nodes:
+# a node it activated) without a complete warm record (node_warm on).
 EXIT_UNWARMED = 6
 
 
@@ -6470,8 +6496,9 @@ def command_restart(args: argparse.Namespace) -> None:
             sys.exit("restart takes --nodes or --roles, not both")
         names = names_of(args.nodes)
         ops = linode_ops(args)
-        sys.exit(mesh_ops.restart_nodes(ops, names, options=engine_options(args),
-                                        resume=args.resume))
+        code = mesh_ops.restart_nodes(ops, names, options=engine_options(args),
+                                      resume=args.resume)
+        sys.exit(engine_warm_exit(ops, "restart", code, args))
     if args.rollback or args.hold_s or args.resume:
         sys.exit("--rollback, --hold-s and --resume go with --nodes")
     print("restart --roles restarts every node of a role at once; it is not a rolling restart "
@@ -6483,20 +6510,43 @@ def command_restart(args: argparse.Namespace) -> None:
         roles = args.roles.split(",") if args.roles else list(SERVICE_ROLES)
         names = [node["name"] for role in SERVICE_ROLES if role in roles
                  for node in common.nodes_by_role(full, role)]
+        ops = LinodeOps(full, settings)
         try:
-            LinodeOps(full, settings).install(names, None)
+            ops.install(names, None)
         except mesh_ops.Refused as refused:
             print(refused, file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
+        unwarmed = warm_gate(ops, "restart", getattr(args, "allow_unwarmed", False))
+        if unwarmed:
+            print(f"restart: {unwarmed}", file=sys.stderr)
+            sys.exit(EXIT_UNWARMED)
+
+
+def engine_warm_exit(ops: "LinodeOps", verb: str, code: int, args: argparse.Namespace) -> int:
+    """The exit status of an engine change (roll, restart --nodes) after
+    the warm gate of push: the records of the nodes its activations ran on
+    are read, and those without a complete one named; a change that was
+    done exits EXIT_UNWARMED for them unless --allow-unwarmed (another
+    status stays, the hosts named)."""
+    ops.read_activated_warm()
+    unwarmed = warm_gate(ops, verb, getattr(args, "allow_unwarmed", False))
+    if unwarmed:
+        print(f"{verb}: {unwarmed}", file=sys.stderr)
+        if code == mesh_ops.EXIT_DONE:
+            return EXIT_UNWARMED
+    return code
 
 
 def command_roll(args: argparse.Namespace) -> None:
     """`roll edges|forwarders|contributors|all` (C 3.5): one node at a time
     onto the roots' build, through the engine (mesh_ops.roll). stdout
-    carries the change's two marks only; the exit status is the engine's."""
+    carries the change's two marks only; the exit status is the engine's,
+    or EXIT_UNWARMED when it was done but left a node it activated without
+    a complete warm record (engine_warm_exit)."""
     ops = linode_ops(args)
-    sys.exit(mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
-                           options=engine_options(args), resume=args.resume))
+    code = mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
+                         options=engine_options(args), resume=args.resume)
+    sys.exit(engine_warm_exit(ops, "roll", code, args))
 
 
 def command_replace(args: argparse.Namespace) -> None:
@@ -7899,12 +7949,22 @@ def build_parser() -> argparse.ArgumentParser:
                          help="put .args.prev in force: the rollback of a node an earlier "
                               "command left")
     change_options(restart)
+    restart.add_argument("--allow-unwarmed", action="store_true",
+                         help="with node_warm: go on (the engine's exit) when a node this "
+                              "command activated ends without a complete warm record; the "
+                              "hosts are printed. Without it a restart that was done exits 6 "
+                              "naming them")
     restart.set_defaults(handler=command_restart)
     roll = sub.add_parser("roll", help="one node at a time onto the roots' build (C 3.5)")
     roll.add_argument("tier", choices=("edges", "forwarders", "contributors", "all"))
     roll.add_argument("--nodes", default=None)
     roll.add_argument("--sites", default=None)
     change_options(roll)
+    roll.add_argument("--allow-unwarmed", action="store_true",
+                      help="with node_warm: go on (the engine's exit) when a node this "
+                           "command activated ends without a complete warm record; the "
+                           "hosts are printed. Without it a roll that was done exits 6 "
+                           "naming them")
     roll.set_defaults(handler=command_roll)
     replace = sub.add_parser("replace", help="one node on a new disk or a new instance, "
                                              "gated (C 3.7)")

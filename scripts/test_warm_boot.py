@@ -596,6 +596,99 @@ class ContributorWarm(scale.FakeLab):
             self.assertEqual(caught.exception.code, 0)
 
 
+class EngineWarm(scale.FakeLab):
+    """roll and restart end as push does: the records of the nodes their
+    activations ran on are read, and a change that was done exits
+    EXIT_UNWARMED naming a node without a complete one, unless
+    --allow-unwarmed. The engine runs on a fake clock (the real
+    mesh_ops.roll and restart_nodes, given it)."""
+
+    def engine(self):
+        clock = scale.types.SimpleNamespace(now=max(time.time(), getattr(self, "last_now", 0.0)))
+        clock_now = lambda: clock.now  # noqa: E731
+
+        def sleep(seconds):
+            clock.now += max(seconds, 0.001)
+            self.last_now = clock.now
+
+        self.hosts.clock = clock_now
+        return {"out": io.StringIO(), "err": io.StringIO(), "clock": clock_now, "sleep": sleep}
+
+    def command(self, handler, verb, **kwargs):
+        real = getattr(deploy.mesh_ops, verb)
+
+        def on_fake_clock(*args, **given):
+            return real(*args, **given, **self.engine())
+
+        with mock.patch.object(deploy.mesh_ops, verb, on_fake_clock):
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(handler, self.namespace(**kwargs))
+        return caught.exception.code
+
+    def cold(self, name: str) -> None:
+        """The host's check writes no record from now on, and this boot's
+        is gone."""
+        self.hosts.no_warm_record.add(name)
+        self.hosts.fs(name).pop(WARM_FILE, None)
+
+    def test_a_roll_names_a_node_it_left_unwarmed(self):
+        ContributorWarm.push(self)
+        self.set_root("av-mesh", scale.NEW)
+        self.cold("lon-edge-1")
+        code = self.command(deploy.command_roll, "roll", tier="edges", nodes="lon-edge-1")
+        self.assertEqual(code, deploy.EXIT_UNWARMED, self.stderr)
+        self.assertIn("roll: UNWARMED: lon-edge-1 (warm missing)", self.stderr)
+        # Everything else was done: it runs the new build, recorded.
+        self.assertEqual(self.state()["deployed"]["nodes"]["lon-edge-1"]["build"],
+                         scale.key(scale.NEW))
+        self.assertEqual(self.state()["deployed"]["warm"]["lon-edge-1"]["verdict"], "missing")
+        # Its check was run again by the activation (the record was gone).
+        self.assertGreaterEqual(self.hosts.warm_runs.get("lon-edge-1", 0), 2)
+
+    def test_a_restart_names_a_node_it_left_unwarmed_and_allow_goes_on(self):
+        ContributorWarm.push(self)
+        self.cold("lon-edge-2")
+        code = self.command(deploy.command_restart, "restart_nodes", nodes="lon-edge-2")
+        self.assertEqual(code, deploy.EXIT_UNWARMED, self.stderr)
+        self.assertIn("restart: UNWARMED: lon-edge-2 (warm missing)", self.stderr)
+        code = self.command(deploy.command_restart, "restart_nodes", nodes="lon-edge-2",
+                            allow_unwarmed=True)
+        self.assertEqual(code, 0, self.stderr)
+        self.assertIn("restart: UNWARMED hosts, allowed by --allow-unwarmed", self.stderr)
+        # Warm again: a clean restart, and the record says so.
+        self.hosts.no_warm_record.clear()
+        code = self.command(deploy.command_restart, "restart_nodes", nodes="lon-edge-2")
+        self.assertEqual(code, 0, self.stderr)
+        self.assertNotIn("UNWARMED", self.stderr)
+        self.assertTrue(self.state()["deployed"]["warm"]["lon-edge-2"]["complete"])
+
+    def test_a_restart_of_a_role_names_a_node_it_left_unwarmed(self):
+        ContributorWarm.push(self)
+        self.cold("contrib-lon")
+        with self.assertRaises(SystemExit) as caught:
+            self.quietly(deploy.command_restart, self.namespace(roles="contributor"))
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED, self.stderr)
+        self.assertIn("restart: UNWARMED: contrib-lon (warm missing)", self.stderr)
+        self.hosts.no_warm_record.clear()
+        self.quietly(deploy.command_restart, self.namespace(roles="contributor"))
+        self.assertNotIn("UNWARMED", self.stderr)
+
+    def test_a_failed_change_keeps_its_status_and_names_the_hosts(self):
+        ops = mock.Mock()
+        with mock.patch.object(deploy, "unwarmed_hosts", lambda ops: {"lon-edge-1": "missing"}):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                code = deploy.engine_warm_exit(ops, "roll", deploy.mesh_ops.EXIT_STOPPED,
+                                               self.namespace())
+        self.assertEqual(code, deploy.mesh_ops.EXIT_STOPPED)
+        self.assertIn("roll: UNWARMED: lon-edge-1 (missing)", err.getvalue())
+
+    def test_roll_and_restart_take_the_flag(self):
+        parser = deploy.build_parser()
+        for verb in (["roll", "edges"], ["restart", "--nodes", "x"]):
+            self.assertFalse(parser.parse_args(verb).allow_unwarmed, verb)
+            self.assertTrue(parser.parse_args(verb + ["--allow-unwarmed"]).allow_unwarmed, verb)
+
+
 class DualContributorWarm(scale.FakeLab):
     """The proving lab's two contributors (contrib-lon and its standby
     contrib-lon-b): both warmed, judged and named."""
