@@ -56,7 +56,7 @@ export NEEDLETAIL_EDGE_LAB_ID=lp3 NEEDLETAIL_EDGE_LAB_CPUS=2-15
 | `NEEDLETAIL_NODECHECK_BIN` | `$NEEDLETAIL_AV_MESH_ROOT/target/release/needletail-nodecheck` | first-session, source-check |
 | `NEEDLETAIL_H3_CAPACITY_BIN` | `<workspace>/av-mesh/<target>/h3-static-capacity` | the deploy tool's capacity probe |
 | `NEEDLETAIL_DAW_SOURCE_BIN` | the newer of daw-nexus's native and cross `daw-test-source` | the DAW source |
-| `NEEDLETAIL_NTCMP_BIN` | `<workspace>/needletail-compare/target/ntcmp` | the referee's `ntcmp` (edge_lab's referee clips) |
+| `NEEDLETAIL_NTCMP_BIN` | `$NEEDLETAIL_COMPARE_ROOT/target/ntcmp`, else `<workspace>/needletail-compare/target/ntcmp` | the referee's `ntcmp` (edge_lab's referee clips) |
 
 A run takes its binaries from a frozen set (`scripts/freeze-binaries.py`,
 `lab_guard`); `NEEDLETAIL_ALLOW_LIVE=1` lets it take live build outputs.

@@ -262,8 +262,16 @@ LADDER = [
 RTMP_PORT = 19350
 # ntcmp of the referee's harness (needletail-compare), which sends a clip of
 # its prepare-media to a contributor (`ntcmp flv`).
+# The referee's ntcmp (the 4K feed's FLV sender and the LL-HLS readers):
+# NEEDLETAIL_NTCMP_BIN, else NEEDLETAIL_COMPARE_ROOT's, else the
+# workspace's needletail-compare (integration 6: from a worktree under rm/
+# the workspace default named rm/needletail-compare, which does not exist,
+# and the 4K source never started).
 NTCMP = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_NTCMP_BIN", str(WORKSPACE / "needletail-compare" / "target" / "ntcmp")))
+    "NEEDLETAIL_NTCMP_BIN",
+    str(pathlib.Path(os.environ.get("NEEDLETAIL_COMPARE_ROOT",
+                                    str(WORKSPACE / "needletail-compare")))
+        / "target" / "ntcmp")))
 
 
 def referee_clip(path: pathlib.Path) -> dict | None:
