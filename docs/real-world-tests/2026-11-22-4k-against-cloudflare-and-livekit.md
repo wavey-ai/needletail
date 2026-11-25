@@ -21,7 +21,144 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Latest: the resilient-mesh build against LiveKit (24 November, evening)
+## Latest: the memory-bound resilient-mesh build (25 November, night)
+
+**With memory bounded, Needletail's UDP client carried 240 Mbit/s of 4K
+whole to all four regions in a 120 s step, run straight after the rest of
+the ladder with no restart of any mesh node. av-mesh stayed at 1.5 GB or
+less on every 4 GB node.** It was also whole everywhere in a 100 s step with
+no LL-HLS 4K readers on the edges.
+
+The rule is this record's: the better of a region's two listeners had 99.5%
+of frames on time and no stall over 500 ms. Self-hosted LiveKit was not
+re-measured (see below); its figures on this topology are the previous
+section's: 80, 80, 40 and 120 Mbit/s.
+
+Under sustained 240 with the LL-HLS 4K readers also on the edges, it was
+not always whole. Three back-to-back 100 s steps each failed somewhere:
+- step a: London and Sydney;
+- step b: New York;
+- step c: New York, Tokyo and Sydney.
+
+The 2-vCPU edges were the limit, as the lead's isolation lab found.
+
+Highest rate carried whole over UDP (Mbit/s), by session in order:
+
+| Session (no mesh restart between any) | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Ladder `video-w11`: 80 (40 s), 160, 240, 320 (120 s); contributor not warmed | 320 (160) | 160 | 160 | 160 |
+| Soak `video-w11-soak`: 240 for 300 s | void | void | void | void |
+| Repeat `video-w11-240b`: 240 for 120 s, contributor warmed | **240** | **240** | **240** | **240** |
+| `video-w11-s100a`: 240 for 100 s | no | 240 | 240 | no |
+| `video-w11-s100b`: 240 for 100 s | 240 | no | 240 | 240 |
+| `video-w11-s100c`: 240 for 100 s | 240 | no | no | no |
+| A/B cell `video-w11-s100d-udponly`: 240 for 100 s, UDP 4K viewers only | 240 | 240 | 240 | 240 |
+
+What explains the rows:
+- **The ladder's 240 failed everywhere on one event: the contributor was not
+  warmed.** The deploy's warm pass skipped it (a cached contributor build
+  without the check tool; fixed in needletail `d376755`).
+  - One of its vCPUs was not run for about 0.86 to 1.03 s at 23:49:40 UTC: a
+    heartbeat 855 ms late, and the kernel's "clocksource: Long readout"
+    line.
+  - av-contrib packaged that part 839 ms late, and every region's viewers
+    held on it.
+  - Nothing in the London forwarders moved: their memory trims, releases,
+    shed bytes, RSS and cgroup memory were flat across it, and no heartbeat
+    stopped there.
+  - The contributor was warmed after the ladder (7.2 GB in 89 s, worst write
+    1.1 s); the soak and every step after ran with it warm.
+- **The ladder's 320 in Sydney was not measured over UDP.** Both Sydney
+  viewers' probe clients were killed by their own hosts for memory (see the
+  soak). London was whole at 320 for 120 s, New York and Tokyo were not.
+- **The soak's UDP delivery is void.** The referee's 4K UDP probe client
+  keeps the whole stream in memory, about 9 GB for 300 s at 240 Mbit/s.
+  - Each host's kernel killed it (lon-view: "Killed process
+    needletail-udp-client, anon-rss 7,596,016 kB"). lon-nano hung and was
+    rebooted.
+  - The mesh's own samples through the 300 s are kept: memory below.
+  - The lead is changing the client to write parts out as they complete.
+  - In its place: the repeat and the three 100 s steps, a new source
+    session each.
+  - lon-nano was a fresh, unwarmed host from its reboot on. Its UDP viewer
+    had late frames over about 10 s early in the repeat (worst 3.9 s);
+    London's other listener was whole.
+- **The back-to-back 100 s steps: the edges give way.** In step b New York's
+  two UDP viewers held together, up to 5.7 s.
+  - Both were on new-edge-1 alone: one leg each, as this build gives streams
+    over 8 Mbit/s. They had no moves, lost 11 parts each and recovered 2 to
+    3.
+  - new-edge-1's busiest core was 96%. Its cache-mesh video socket (:30101)
+    dropped 236,099 datagrams and its tee dropped 927,073 in the step.
+  - syd-edge-1 (98%, 399,090 drops) and tok-edge-1 (87%) were also giving
+    way.
+  - New York's mesh nodes had no heartbeat stop and 0 to 2 steal ticks at
+    the holds, so it was not their shared host.
+  - The edges ran just as hot when the viewers were whole: new-edge-1 was
+    at 92% to 98% with 792,069 and 845,133 drops in the UDP-only cell and
+    the repeat. So drops on :30101 alone do not decide it.
+  - The UDP-only cell (no LL-HLS 4K reader on any edge) was whole
+    everywhere. In the three steps with them, a region failed in each.
+  - Per-edge figures for every step: `evidence/20261125-4k-wave11-*-scoreboard.md`.
+  - **New York's two forwarders and new-edge-1 shared one physical host**
+    (59b0fb272e67). new-edge-1 was the hottest edge in every 240 step.
+
+Memory (av-mesh resident, 1 s samples; the lead's statement in brackets):
+- **Peak RSS:** at 240, 1,289 MB on forwarders and 1,012 MB on edges; at
+  320, 1,499 and 1,018 MB (about 1.2 GB at most). The forwarders were above
+  the lead's figure; no node passed 1.5 GB.
+- **Video window:** 272 to 323 parts at 240 (about 320) and 217 to 246 at
+  320 (about 245), against 1,117 on the previous build at every rate. The
+  video cache stayed at or under 408 MB.
+- **Guard and kernel:** the guard was `ok` throughout, with no soft or hard
+  entries. There was no OOM kill and the cgroup's `oom_kill` was 0 after
+  every step.
+- **The idle minute after the ladder:** forwarders released from 0.95–1.50
+  GB to 0.80–0.85 GB; edges stayed at 0.52–0.64 GB (back near 0.7 GB).
+- **The soak:** forwarders at most 1.47 GB and edges 1.05 GB through 300 s
+  at 240.
+
+The 1 ms audio lane beside the 4K:
+- PCM, 48-sample parts, two-path listeners. Each audio listener's two legs
+  covered both of its region's edges, so one always shared the 4K edge; this
+  run has no audio listener on an edge without 4K.
+- The UDP listener lost nothing in all 36 region-steps.
+- Its p99 mouth to ear matched the audio-only reference session
+  (`audioref-4k11`, same lab, no 4K): London 2.07 to 2.82 ms against 2.35,
+  New York 35.5 against 33.2, Tokyo 110 against 110, Sydney 131 to 132
+  against 134. The exceptions:
+  - the ladder's 240, 225 to 356 ms, the contributor's stop above;
+  - the ladder's 320 in Sydney, 6.8 s, on the host that was killing its own
+    4K probe.
+- The LL-HLS audio listener lost next to nothing but slowed with the 4K rate
+  on its edges, as on the previous build (p99 up to tens of seconds).
+
+LiveKit was not re-measured. Its ladder was queued last. The referee's run
+script waited 28 minutes on its own mistake (a process check that matched
+its own shell), and then there was time only for the A/B cell. The topology
+is the previous section's, so its LiveKit ladder (80, 80, 40, 120 Mbit/s) is
+the comparison.
+
+Build, lab and cost:
+- Build: av-mesh `df00f0a`, playlists `da3a677`, needletail `6a57e04`
+  (merged as `c1ec137`), av-contrib `703fe82`, daw-nexus `852b0e7`.
+- Settings: deploy defaults, which now render the memory bounds
+  (`--video-cache-mb 392 --memory-soft-mb 1960 --memory-hard-mb 2548`;
+  MemoryHigh 75%, MemoryMax 85%, no swap), plus PCM in `daw_hls_formats`.
+  The hop journal was not enlarged.
+- Lab `cmpd8`, 23:16 to 01:02 UTC: 31 dedicated instances, four regions,
+  same topology. The watchdog was set to 2 h, because 2.5 h would bill three
+  hours over the $5 cap.
+- Every guest was warmed by the deploy (all of MemAvailable), except the
+  contributor until the ladder ended; then the harness's pass. Sessions,
+  before the scored ones: an audio-only reference and an unscored 4K warm-up
+  at 25 and 80.
+- Cost: $3.89 (62 instance-hours).
+- Evidence: `evidence/20261125-4k-wave11-*` (a scoreboard with memory, window
+  and per-edge tables for each session; `-video-audio`). Raw data in the
+  archive, run `cmpd8`.
+
+## The resilient-mesh build against LiveKit (24 November, evening)
 
 **On the lead's resilient-mesh build, Needletail's UDP client carried 4K
 whole to every region at every rate up to 160 Mbit/s. In London, New York and

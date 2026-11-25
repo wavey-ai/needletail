@@ -669,6 +669,7 @@ def step(session: Session, lane: Lane, phase: str, detail: str, rung: str, scrip
         # epoch later), and which; None: off.
         meta["audio"] = session.audio
         meta["audio_start_unix"] = getattr(lane, "audio_start", None)
+        meta["udp_only"] = bool(getattr(session, "udp_only", False))
     (session.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     session.steps.append({"step": name, "seconds": result["seconds"],
                           "host_errors": len(result["host_errors"])})
@@ -821,15 +822,19 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
         scripts = {}
         for site in SITES:
             tag = f"{session.name}-{lane.name}-{site}"
-            nano = [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")]
-            view = [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")]
+            # --udp-only (lead, 25 Nov, an A/B cell): Needletail's UDP 4K viewers only,
+            # no LL-HLS 4K reader of any kind on the edges (the audio listeners stay).
+            udp_only = lane.name == "nt" and getattr(session, "udp_only", False)
+            nano = [] if udp_only else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")]
+            view = [] if udp_only else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")]
             if lane.name == "nt":
-                view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
+                if not udp_only:
+                    view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
                 view.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-view", "uc"))
                 nano.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-nano", "uc"))
-            if rung in CHROME_UP_TO:
+            if rung in CHROME_UP_TO and not udp_only:
                 view.append(lane.player(site, seconds, "player", tag))
-            if lane.name == "nt":
+            if lane.name == "nt" and not udp_only:
                 view.append(lane.reader(site, seconds, "reader", tag))
             if lane.name == "nt" and session.audio == "pcm":
                 # What 4K costs an audio listener: the audio headline's 1 ms PCM
@@ -922,6 +927,9 @@ def main() -> None:
                         help="throughput steps of this many seconds from --long-from-mbit up (0: all at the "
                              "base length, 40 s)")
     parser.add_argument("--long-from-mbit", type=int, default=160)
+    parser.add_argument("--udp-only", action="store_true",
+                        help="Needletail's throughput steps with its UDP 4K viewers only: no LL-HLS, HTTP/3, "
+                             "Chrome or needletail-reader 4K viewer (an A/B cell; the audio listeners stay)")
     parser.add_argument("--idle-after-seconds", type=int, default=0,
                         help="after Needletail's last throughput rung, stop the sources and record an idle "
                              "step of this many seconds (nt.idle.after) with the samplers running")
@@ -938,6 +946,7 @@ def main() -> None:
     session.rungs = args.rungs.split(",") if args.rungs else None
     session.long_seconds, session.long_from_mbit = args.long_seconds, args.long_from_mbit
     session.idle_after_seconds = args.idle_after_seconds
+    session.udp_only = args.udp_only
     # Name and addresses of every node, so that a listener's edge (the LL-HLS
     # probe's playlist_url_host) can be named afterwards.
     (session.dir / "lab-nodes.json").write_text(json.dumps(
