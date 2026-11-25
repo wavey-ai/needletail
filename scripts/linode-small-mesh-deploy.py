@@ -289,6 +289,41 @@ DEFAULT_SETTINGS = {
     #   reader of a held rendition does not start cleanly yet (wave 7 item 5
     #   in the low-latency results).
     "relay_audio_copies": None,
+    # 4k-repair (av-mesh rm/4k-repair, av-contrib rm/4k-repair): repair of
+    # any part of several symbols sized to each link's measured loss, asks
+    # for only what a part lacks, decodes off the tees. None renders nothing
+    # (the binaries' defaults, which are the settings below); each is
+    # rendered only where the binary lists the flag (binary_takes).
+    # - relay_part_repair: av-mesh --relay-part-repair (asks, answers);
+    #   also renders --relay-primary-promoted on the merged topology's
+    #   regional relays (primary lane "source"), whose primary must admit the
+    #   repair intent of answers and link repair. False leaves it off.
+    # - relay_link_repair: av-mesh --relay-link-repair (ledgers to children,
+    #   repair sized to each child's loss).
+    # - relay_trim_forwarded_repair, relay_regenerate_sources,
+    #   relay_trim_to_margin: av-mesh's flags of those names.
+    # - relay_decode_workers: av-mesh --relay-decode-workers (default: CPUs
+    #   less the class threads, 1 on g6-dedicated-2).
+    # - relay_part_repair_rtt_ms: av-mesh --relay-part-repair-rtt-ms.
+    # - relay_repair_sizing ("measured" | "policy"),
+    #   relay_repair_floor_permille, relay_repair_cap_percent,
+    #   relay_repair_measured_min_symbols: av-contrib's flags of those names.
+    # - relay_part_store_mb: the byte bound of a node's kept-parts store (the
+    #   decoded parts it answers asks from): av-mesh --relay-part-store-mb on
+    #   a fast-plane node, av-contrib's flag of the same name on the
+    #   contributor.
+    "relay_part_repair": None,
+    "relay_link_repair": None,
+    "relay_trim_forwarded_repair": None,
+    "relay_regenerate_sources": None,
+    "relay_trim_to_margin": None,
+    "relay_decode_workers": None,
+    "relay_part_repair_rtt_ms": None,
+    "relay_repair_sizing": None,
+    "relay_repair_floor_permille": None,
+    "relay_repair_cap_percent": None,
+    "relay_repair_measured_min_symbols": None,
+    "relay_part_store_mb": None,
     "cache_mesh_fast_plane_push": None,
     "relay_demand_renditions": None,
     # Wave 8 stage 3. cache_mesh_fast_plane_video_push: av-mesh
@@ -2506,6 +2541,7 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
                                                             "--region", node["region"]]))
     args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
     args += yield_to(extra, wave7_args(args, settings))
+    args += yield_to(extra, part_repair_args(args, settings))
     return args + extra
 
 
@@ -2638,6 +2674,40 @@ def two_path_args(node_args: list[str], settings: dict) -> list[str]:
                       flag(bool(settings["client_udp_rebalance_to_mean"]))]
         if given("client_udp_gso"):
             pairs += ["--client-udp-gso", flag(bool(settings["client_udp_gso"]))]
+    return binary_takes("av-mesh", pairs)
+
+
+def part_repair_args(node_args: list[str], settings: dict) -> list[str]:
+    """The `--flag value` pairs of 4k-repair for a service rendered with
+    `node_args`: the contributor's repair sizing, and a fast-plane node's
+    (--relay-controlled-local) part repair, link repair, trim, regenerated
+    sources, decode workers, and the kept-parts store's bound, which both
+    take. Only the settings that are given, and only the flags the binary of
+    this render lists."""
+    def given(key: str) -> bool:
+        return settings.get(key) is not None
+
+    pairs = []
+    if is_contributor_args(node_args):
+        if given("relay_repair_sizing"):
+            sizing = str(settings["relay_repair_sizing"])
+            if sizing not in ("measured", "policy"):
+                raise ValueError(f"relay_repair_sizing {sizing!r} is not measured or policy")
+            pairs += ["--relay-repair-sizing", sizing]
+        for key in ("relay_repair_floor_permille", "relay_repair_cap_percent",
+                    "relay_repair_measured_min_symbols", "relay_part_store_mb"):
+            if given(key):
+                pairs += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
+        return binary_takes("av-contrib", pairs)
+    if "--relay-controlled-local" not in node_args:
+        return []
+    for key in ("relay_part_repair", "relay_link_repair", "relay_trim_forwarded_repair",
+                "relay_regenerate_sources", "relay_trim_to_margin"):
+        if given(key):
+            pairs += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+    for key in ("relay_decode_workers", "relay_part_repair_rtt_ms", "relay_part_store_mb"):
+        if given(key):
+            pairs += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
     return binary_takes("av-mesh", pairs)
 
 
@@ -3517,6 +3587,17 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
                     and "--relay-primary-promoted" not in flag_names(
                         args + list(settings[f"extra_{role}_args"]))):
                 args.append("--relay-primary-promoted")
+            # 4k-repair: a regional relay of the merged topology, fed sources
+            # only by its primary forwarder (lane "source"), takes the answers to its asks and its
+            # link repair from that primary too, repair symbols that a
+            # primary session refuses unless promoted.
+            if (settings.get("relay_part_repair") is not False
+                    and settings.get("topology") == "merged"
+                    and service["primary_parent"]["parent_node_id"] not in contributor_ids
+                    and service["primary_parent"].get("lane") == "source"
+                    and "--relay-primary-promoted" not in flag_names(
+                        args + list(settings[f"extra_{role}_args"]))):
+                args.append("--relay-primary-promoted")
             args += direct_mesh.get(node["name"], [])
         if slot_forwarder:
             # dist-c: a cache-mesh parent of its site's edges, fed as a
@@ -3570,6 +3651,7 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
         args += yield_to(extra, two_path_args(args, settings))
         args += yield_to(extra, wave7_args(args, settings))
         args += yield_to(extra, mesh_memory_args(node, settings))
+        args += yield_to(extra, part_repair_args(args, settings))
         args += yield_to(extra, stall_args("av-mesh", node, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
