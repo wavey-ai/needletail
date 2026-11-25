@@ -493,6 +493,17 @@ def planned_left_out(args) -> set[str]:
     return set()
 
 
+def reader_entry(args, site: str) -> str:
+    """The entry point of a site's readers and viewers: its first
+    distributor in the run's layout (planned_left_out; never a slot). Not
+    the lab's record of what it left out, which is the last lab's until
+    this run's `up`."""
+    out = planned_left_out(args)
+    slots = set(lab.slot_nodes())
+    return next(name for name in lab.names("distributor", site)
+                if name not in out and name not in slots)
+
+
 def reader_hosts(args) -> list[str]:
     """The reader hosts of the run: those of --hosts whose site has a
     distributor in the lab (not left out, not a slot), the entry point of
@@ -528,7 +539,7 @@ def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
     stream = PAYLOAD_STREAM[args.payload]
     for host in reader_hosts(args):
         site = lab.node(host)["site"]
-        entry = lab.distributors(site)[0]
+        entry = reader_entry(args, site)
         windows = reader_windows(args)
         for lane, window, http3 in (("h2", windows["h2"], False), ("h3", windows["h3"], True)):
             stem = out / f"{host}.{lane}"
@@ -681,7 +692,7 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
     items = []
     for host in reader_hosts(args):
         site = lab.node(host)["site"]
-        entry = lab.distributors(site)[0]
+        entry = reader_entry(args, site)
         if viewers["readers"]:
             stem = out / f"{host}.4k.h3"
             items.append({"host": host, "site": site, "kind": "hls", "entry": entry,
@@ -920,7 +931,7 @@ def audio_udp_commands(args, out: pathlib.Path) -> list[dict]:
     items = []
     for host in reader_hosts(args):
         site = lab.node(host)["site"]
-        entry = lab.distributors(site)[0]
+        entry = reader_entry(args, site)
         for index in range(args.udp_clients):
             stem = out / f"{host}.uc{index}"
             items.append({"host": host, "site": site, "kind": "udp", "entry": entry,

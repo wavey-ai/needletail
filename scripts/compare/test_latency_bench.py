@@ -83,8 +83,13 @@ class ReaderHosts(unittest.TestCase):
         # own_cpus's default leaves out only the slots: both sites keep theirs.
         self.assertEqual(bench.reader_hosts(parse("--set", "own_cpus=1")),
                          ["lon-readers", "new-readers"])
-        # --no-up: the running lab's record of what it left out.
+        # --no-up: the running lab's record of what it left out; a pass
+        # that brings its own lab up ignores the last lab's record.
         bench.lab.save("left-out.json", sorted(bench.lab.leave_out_names("newyork")))
+        self.assertEqual(
+            [item["entry"] for item in bench.reader_commands(parse("--set", "own_cpus=1"),
+                                                            self.dir, "0")],
+            ["lon-dist-a", "lon-dist-a", "new-dist-a", "new-dist-a"])
         with quiet:
             self.assertEqual(bench.reader_hosts(parse("--no-up")), ["lon-readers"])
         self.assertEqual(
