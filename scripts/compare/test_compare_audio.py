@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -101,6 +102,7 @@ class Lanes(unittest.TestCase):
 class Analysis(unittest.TestCase):
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
 
     def test_frame_of_a_lane(self):
         meta = {"nt_frame_ms": {"nt-popus": 2.5, "nt-pcm": 1.0}}
@@ -300,6 +302,7 @@ class Indexes(unittest.TestCase):
         sys.path.insert(0, str(HERE))
         import compare_lab
         media = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, media, True)
         (media / "audio.s24le").symlink_to(LOOP)
         made = compare_lab.needletail_indexes(media, NTCMP)
         self.assertEqual([path.name for path in made],
@@ -325,7 +328,9 @@ class Indexes(unittest.TestCase):
 
 class Report(unittest.TestCase):
     def evidence(self, lanes: list[str]) -> pathlib.Path:
-        path = pathlib.Path(tempfile.mkdtemp()) / "evidence.json"
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = directory / "evidence.json"
         path.write_text(json.dumps({"sessions": {"s": {"steps": {"audio.opus-2.5.baseline.clean": {
             "hosts": {"lon-view": {"lanes": {lane: {} for lane in lanes}}}}}}}}))
         return path

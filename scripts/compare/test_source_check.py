@@ -15,6 +15,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -350,7 +351,9 @@ class CommitStops(unittest.TestCase):
     def test_a_stop_is_found_and_typed(self):
         import tempfile
         bench = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, bench, True)
         lab_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, lab_dir, True)
         events = [{"_meta": {}}]
         base = 1_000_000_000
         for seq in range(400):

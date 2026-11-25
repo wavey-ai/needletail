@@ -158,3 +158,13 @@ before the window starts.
 | `NEEDLETAIL_ENDURANCE_SECONDS` | 10800 | edge-campaign: the endurance run's length |
 | `NEEDLETAIL_LOAD_EXTRA_ARGS` | none | edge-campaign: more needletail-load arguments |
 | `NEEDLETAIL_PROBE_H3_RECONNECT_LIMIT` | the soak's | linode-small-mesh-soak: the probe's HTTP/3 reconnects |
+
+## The offline tests
+
+`scripts/run-tests.py` runs both discoveries (`scripts/`, `scripts/compare/`),
+each with `TMPDIR` (and `TMP`, `TEMP`) set to a fresh directory of its own under
+the worktree's `target/test-tmp/`, and exits 3 when a run leaves anything there:
+every test removes the directories it makes, pass or fail (`addCleanup`), and
+gives the code under test an explicit directory. `NEEDLETAIL_AV_MESH_ROOT` and
+`NEEDLETAIL_COMPARE_ROOT` (above) pass through. Run the suites this way, never
+with the shared `/tmp` as their temp root.

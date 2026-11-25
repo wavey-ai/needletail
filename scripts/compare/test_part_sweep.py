@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -99,6 +100,7 @@ class Commands(unittest.TestCase):
 class Table(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
         patcher = mock.patch.object(sweep, "OUT_ROOT", self.root)
         patcher.start()
         self.addCleanup(patcher.stop)

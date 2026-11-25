@@ -48,6 +48,14 @@ STANDBY = [f"{short}-edge-{index}" for short in ("syd", "lon", "new", "tok")
            for index in range(6, 11)]
 
 
+def scratch(case: unittest.TestCase) -> pathlib.Path:
+    """A directory of the test's own, removed when it ends, pass or fail
+    (the runner's scenario files: never the temp root's)."""
+    directory = pathlib.Path(tempfile.mkdtemp())
+    case.addCleanup(shutil.rmtree, directory, True)
+    return directory
+
+
 def lab(without=()) -> dict:
     return scale.topology_state(TOPOLOGY, list(without))
 
@@ -1726,7 +1734,7 @@ class Phases(unittest.TestCase):
                     (node["name"], path, body["node_id"])) or 200), \
                 mock.patch.object(scale, "http_get", lambda node, path, **k: {}):
             runner = scale.PhaseRunner(state, timeline, time.time() - 10_000, logged.append,
-                                       args)
+                                       args, directory=scratch(self))
             runner.run()
             runner.finish()
         self.assertEqual(done, [
@@ -1744,7 +1752,8 @@ class Phases(unittest.TestCase):
         done.clear()
         with mock.patch.object(scale, "ssh", lambda node, command, **k: done.append(
                 (node["name"], command.split(";")[0])) or ""):
-            runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args)
+            runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                       directory=scratch(self))
             runner.act(timeline["scenarios"][0]["actions"][0])
             runner.owed.append(timeline["scenarios"][0]["actions"][0])
             runner.finish()
@@ -1766,7 +1775,8 @@ class Phases(unittest.TestCase):
         state = lab()
         done, logged = [], []
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
-        runner = scale.PhaseRunner(state, timeline, time.time() - 10_000, logged.append, args)
+        runner = scale.PhaseRunner(state, timeline, time.time() - 10_000, logged.append, args,
+                                   directory=scratch(self))
 
         def ssh(node, command, **kwargs):
             done.append((node["name"], command.split(";")[0]))
@@ -1795,7 +1805,8 @@ class Phases(unittest.TestCase):
         barrier = threading.Barrier(len(targets), timeout=5)
         logged = []
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
-        runner = scale.PhaseRunner(lab(), timeline, time.time(), logged.append, args)
+        runner = scale.PhaseRunner(lab(), timeline, time.time(), logged.append, args,
+                                   directory=scratch(self))
         # Each kill waits for every other to begin: only concurrent kills pass.
         with mock.patch.object(scale, "ssh", lambda node, command, **k: barrier.wait() and ""), \
                 mock.patch.object(scale, "http_post", lambda node, path, body, **k:
@@ -1836,7 +1847,8 @@ class Phases(unittest.TestCase):
         args = argparse.Namespace(stream=4001, budget_usd=None, spent_before_usd=0.0)
         state = lab()
         state["nodes"]["lon-edge-11"] = {**state["nodes"]["lon-edge-10"], "name": "lon-edge-11"}
-        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args)
+        runner = scale.PhaseRunner(state, timeline, time.time(), logged.append, args,
+                                   directory=scratch(self))
         with mock.patch.object(scale, "deploy_nodes", lambda verb, name: called.append(verb)), \
                 mock.patch.object(scale, "lab_tool_slot", lambda verb, name, a: called.append(verb)):
             runner.act(timeline["scenarios"][0]["actions"][1])

@@ -40,6 +40,7 @@ ATTACH, KILL_LAB, LAB_SCOPES, ACTIVE_SCOPES = (lab.attach, lab.kill_lab, lab.lab
 class Limits(unittest.TestCase):
     def setUp(self):
         self.work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work, True)
         patcher = mock.patch.object(lab, "WORK", self.work)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -95,6 +96,7 @@ class CpuSets(unittest.TestCase):
 
     def setUp(self):
         self.work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work, True)
         patcher = mock.patch.object(lab, "WORK", self.work)
         patcher.start()
         self.addCleanup(patcher.stop)
