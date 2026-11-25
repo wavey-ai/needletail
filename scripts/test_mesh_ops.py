@@ -541,19 +541,52 @@ class Parity(unittest.TestCase):
         self.assertEqual(self.parity(), [])
 
     def test_a_parent_that_is_alive_but_4_ms_late_is_refused(self):
-        problems = self.parity(staying={"slack_mean_us_10s": 989_000, "slack_min_us_10s": 986_800})
-        self.assertEqual(len(problems), 2, problems)
-        self.assertTrue(all(item.startswith("P3 on time") for item in problems))
-        self.assertIn("989000", problems[0])
-        self.assertIn("993000", problems[0])
-        # Only its worst object late: refused all the same.
-        self.assertEqual(len(self.parity(staying={"slack_min_us_10s": 986_800})), 1)
+        figures: list = []
+        problems = self.parity(staying={"slack_mean_us_10s": 989_000, "slack_min_us_10s": 986_800},
+                               figures=figures)
+        # The mean 4 ms later: refused. Its 10 s minimum 4 ms later is within
+        # max(5 ms, 1% of 993 ms) = 9.93 ms (lead's decision, tools6).
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("P3 on time: the mean is late"))
+        for figure in ("989000", "993000", "4000 us later, 1000 allowed", "986800", "990800",
+                       "4000 us later, 9930 allowed"):
+            self.assertIn(figure, problems[0])
+        self.assertEqual(figures, [{"stream_id": 3001, "mean_us": [989_000, 993_000],
+                                    "min_us": [986_800, 990_800], "mean_later_us": 4000,
+                                    "mean_allowed_us": 1000, "min_later_us": 4000,
+                                    "min_allowed_us": 9930, "mean_ok": False, "min_ok": True}])
         # Within the 1 ms of the rule: passes.
         self.assertEqual(self.parity(staying={"slack_mean_us_10s": 992_100,
                                               "slack_min_us_10s": 989_900}), [])
         # --parity-ms widens it knowingly.
         self.assertEqual(self.parity(staying={"slack_mean_us_10s": 989_000,
                                               "slack_min_us_10s": 986_800}, parity_ms=4.5), [])
+
+    def test_p3_the_minimum_moves_within_its_tolerance(self):
+        """Local proof 3: equal means (998.3 ms), the 10 s minimum 1 to 4 ms
+        apart: passes; a minimum past max(5 ms, 1% of the mean) is refused,
+        and so is a mean more than 1 ms later however good the minimum."""
+        equal = {"slack_mean_us_10s": 998_300}
+        for apart in (1_000, 2_500, 4_000, 9_983):
+            self.assertEqual(self.parity(leaving={**equal, "slack_min_us_10s": 992_737},
+                                         staying={**equal, "slack_min_us_10s": 992_737 - apart}),
+                             [], apart)
+        problems = self.parity(leaving={**equal, "slack_min_us_10s": 992_737},
+                               staying={**equal, "slack_min_us_10s": 992_737 - 9_984})
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("P3 on time: the worst object is late"))
+        self.assertIn("9983 allowed", problems[0])
+        # The floor: with a small mean slack, 5 ms.
+        small = {"slack_mean_us_10s": 100_000}
+        self.assertEqual(self.parity(leaving={**small, "slack_min_us_10s": 90_000},
+                                     staying={**small, "slack_min_us_10s": 85_000}), [])
+        self.assertEqual(len(self.parity(leaving={**small, "slack_min_us_10s": 90_000},
+                                         staying={**small, "slack_min_us_10s": 84_999})), 1)
+        problems = self.parity(staying={"slack_mean_us_10s": 991_999,
+                                        "slack_min_us_10s": 999_000})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("the mean is late", problems[0])
+        self.assertIsNone(mesh_ops.p3_summary([]))
 
     def test_p2a_ordinary_repaired_skips_pass_and_more_are_refused(self):
         # 10,000 objects in 10 s: 0.1 % is 10. Local proof 2's lanes skipped
@@ -773,6 +806,15 @@ class ForwarderGate(Base):
         self.assertEqual(sorted(pair[0] for pair in gate.pairs),
                          ["new-edge-1", "new-edge-2", "new-edge-3"])
         self.assertEqual(gate.evidence["video_children"], 0)
+        # The gate's output names P3's two figures (pass or refuse), and its
+        # evidence keeps every pair's.
+        summary = [note for note in gate.notes if note.startswith("P3 over ")]
+        self.assertEqual(len(summary), 1, gate.notes)
+        self.assertIn("mean slack at most 0 us later (allowed 1000", summary[0])
+        self.assertIn("10 s minimum at most 0 us later (allowed 9930", summary[0])
+        self.assertEqual(len(gate.evidence["p3"]), 3)
+        self.assertEqual({item["child"] for item in gate.evidence["p3"]},
+                         {"new-edge-1", "new-edge-2", "new-edge-3"})
 
     def test_lg2_the_child_s_record_of_the_other_parent(self):
         self.sim.row[("new-edge-2", "new-dist-a")] = {"slack_mean_us_10s": 989_000}

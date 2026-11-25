@@ -1178,8 +1178,50 @@ def stream_figure(status: Status | None, stream_id: int, field: str):
     return None if row is None else _num(row, field)
 
 
+# P3 (lead's decision, tools6, 25 Nov): the mean slack of the last 10 s within
+# --parity-ms (1 ms), and the 10-second minimum within max(P3_MIN_FLOOR_US, 1%
+# of the leaving parent's mean slack). The minimum is one object's arrival and
+# moves 1 to 4 ms between equal parents (local proof 3: means equal at 998.3
+# ms), so a 1 ms bound on it refused healthy pairs while dry nulls passed.
+P3_MIN_FLOOR_US = 5_000
+P3_MIN_SHARE = 0.01
+
+
+def p3_figures(staying_row: dict, leaving_row: dict, parity_ms: float = 1.0) -> dict:
+    """P3's figures of one pair: each parent's 10 s mean and minimum slack,
+    how much later the staying parent is on each (us; negative: earlier) and
+    what is allowed: the mean `parity_ms`, the minimum max(5 ms, 1% of the
+    leaving parent's mean slack, `parity_ms`)."""
+    mean_allowed = parity_ms * 1000
+    min_allowed = max(P3_MIN_FLOOR_US, P3_MIN_SHARE * abs(leaving_row["slack_mean_us_10s"]),
+                      mean_allowed)
+    mean_later = leaving_row["slack_mean_us_10s"] - staying_row["slack_mean_us_10s"]
+    min_later = leaving_row["slack_min_us_10s"] - staying_row["slack_min_us_10s"]
+    return {"mean_us": [staying_row["slack_mean_us_10s"], leaving_row["slack_mean_us_10s"]],
+            "min_us": [staying_row["slack_min_us_10s"], leaving_row["slack_min_us_10s"]],
+            "mean_later_us": mean_later, "mean_allowed_us": round(mean_allowed),
+            "min_later_us": min_later, "min_allowed_us": round(min_allowed),
+            "mean_ok": mean_later <= mean_allowed, "min_ok": min_later <= min_allowed}
+
+
+def p3_summary(figures: list[dict]) -> str | None:
+    """The gate's line on P3 over every pair it judged: the largest lateness
+    of a staying parent on the mean and on the 10 s minimum, each with what
+    was allowed; None when no pair was judged."""
+    if not figures:
+        return None
+    mean = max(figures, key=lambda item: item["mean_later_us"] - item["mean_allowed_us"])
+    worst = max(figures, key=lambda item: item["min_later_us"] - item["min_allowed_us"])
+    return (f"P3 over {len(figures)} pair(s): mean slack at most {mean['mean_later_us']} us later "
+            f"(allowed {mean['mean_allowed_us']}; {mean['mean_us'][0]} against "
+            f"{mean['mean_us'][1]} us), 10 s minimum at most {worst['min_later_us']} us later "
+            f"(allowed {worst['min_allowed_us']}; {worst['min_us'][0]} against "
+            f"{worst['min_us'][1]} us)")
+
+
 def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_ms: float = 1.0,
-                repair_lane: bool = False, notes: list | None = None) -> list[str]:
+                repair_lane: bool = False, notes: list | None = None,
+                figures: list | None = None) -> list[str]:
     """P1 to P4 of 3.3 on the child's own record: may the parent at
     `leaving` (addresses) go, with the parent at `staying` left to feed
     `stream_id` to this child? [] passes; every problem is named, a missing
@@ -1243,13 +1285,17 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
     if p["objects_10s"] < behind:
         problems.append(f"P2 complete: the other parent delivered {p['objects_10s']} objects in "
                         f"10 s, the leaving one {x['objects_10s']}")
-    parity_us = parity_ms * 1000
-    if p["slack_mean_us_10s"] < x["slack_mean_us_10s"] - parity_us:
-        problems.append(f"P3 on time: mean slack {p['slack_mean_us_10s']} us against "
-                        f"{x['slack_mean_us_10s']} us of the leaving parent")
-    if p["slack_min_us_10s"] < x["slack_min_us_10s"] - parity_us:
-        problems.append(f"P3 on time: worst slack {p['slack_min_us_10s']} us against "
-                        f"{x['slack_min_us_10s']} us of the leaving parent")
+    p3 = p3_figures(p, x, parity_ms)
+    if figures is not None:
+        figures.append({"stream_id": stream_id, **p3})
+    both = (f"mean slack {p['slack_mean_us_10s']} against {x['slack_mean_us_10s']} us "
+            f"({p3['mean_later_us']} us later, {p3['mean_allowed_us']} allowed), 10 s minimum "
+            f"{p['slack_min_us_10s']} against {x['slack_min_us_10s']} us "
+            f"({p3['min_later_us']} us later, {p3['min_allowed_us']} allowed)")
+    if not p3["mean_ok"]:
+        problems.append(f"P3 on time: the mean is late: {both}")
+    if not p3["min_ok"]:
+        problems.append(f"P3 on time: the worst object is late: {both}")
     if repair_lane and x["multi_symbol_10s"] != 0:
         problems.append(f"P4 whole objects: {x['multi_symbol_10s']} audio objects of more than one "
                         "symbol, which a repair lane does not carry")
@@ -1301,6 +1347,7 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
     notes: list[str] = []
     evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": [], "notes": notes}
     pairs: list = []
+    p3: list[dict] = []
     sx = statuses.get(x)
     if sx is None:
         return [f"{x} does not answer /api/node"], evidence, pairs
@@ -1371,9 +1418,11 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
             failed = []
             if not light:
                 said: list = []
+                judged: list = []
                 failed += [f"LG2 {child} <- {other} {stream_id}: {item}" for item in
                            feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms,
-                                       notes=said)]
+                                       notes=said, figures=judged)]
+                p3 += [{"child": child, "other": other, **item} for item in judged]
                 notes += [f"LG2 {child} <- {other}: {item}" for item in said]
             if sp is None:
                 failed.append(f"LG3: {other} does not answer /api/node")
@@ -1445,10 +1494,13 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                 repair = lab.records[child].get("secondary") == other
                 staying = lab.addresses(other) if other else set()
                 said = []
+                judged = []
                 failed = feed_parity(sd, stream_id, x_addresses, staying, parity_ms,
-                                     repair_lane=repair, notes=said)
+                                     repair_lane=repair, notes=said, figures=judged)
                 notes += [f"CG2 {child} <- {other}: {item}" for item in said]
-                entry["streams"].append({"stream_id": stream_id, "problems": failed})
+                p3 += [{"child": child, "other": other, **item} for item in judged]
+                entry["streams"].append({"stream_id": stream_id, "problems": failed,
+                                         **({"p3": judged[0]} if judged else {})})
                 problems += [f"CG2 {child} <- {other} {stream_id}: {item}" for item in failed]
         sy = statuses.get(other) if other else None
         if idle:
@@ -1501,6 +1553,12 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
         elif theirs < mine:
             problems.append(f"entry: {sibling} lists {theirs} fresh caches, {x} {mine}")
     evidence["video_children"] = len(evidence["video"])
+    # P3's figures of every pair judged, and the gate's line on them (its
+    # output names the mean and the 10 s minimum, pass or refuse).
+    evidence["p3"] = p3
+    summary = p3_summary(p3)
+    if summary:
+        notes.append(summary)
     return problems, evidence, pairs
 
 
