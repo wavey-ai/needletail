@@ -54,7 +54,8 @@ NEW_PLANE = {
 }
 NEW_MEMORY = {"state": "ready", "rss_bytes": 900 * MB, "part_store_bytes": 100 * MB,
               "part_store_budget_bytes": 160 * MB, "decode_queue_bytes": 2 * MB,
-              "decode_queue_budget_bytes": 64 * MB, "repair_shed_bytes": 0}
+              "decode_queue_budget_bytes": 64 * MB, "repair_plans_bytes": 34 * MB,
+              "repair_plans_budget_bytes": 48 * MB, "repair_shed_bytes": 0}
 # The same node's binary before 4k-repair: no part_repair, decode_pool,
 # per-lane loss, audio tee lag; memory without the repair stores.
 OLD_PLANE = {"enabled": True, "tee_dropped": 3, "not_admitted": 7, "parent_loss_ppm": 120,
@@ -254,14 +255,10 @@ class RunUsage(unittest.TestCase):
 
 
 class AvMeshServes(unittest.TestCase):
-    """Each field read is declared where av-mesh serves it, but for the
-    ones being added in this round (PENDING), which may not be yet."""
+    """Each field read is declared where av-mesh serves it (av-mesh rm/int6
+    serves all of them; PENDING names any a newer round adds)."""
 
-    PENDING = {"part_repair/refused_not_admitted", "part_repair/refused_limited",
-               "part_repair/refused_stale", "part_repair/window_spent",
-               "part_repair/repair_panics", "decode_pool/inline_bytes_limited",
-               "decode_pool/queue_bytes", "decode_pool/queue_budget_bytes",
-               "audio_tee_lag_max_us"}
+    PENDING: set = set()
 
     def test_against_the_av_mesh_checkout(self):
         import av_mesh_contract

@@ -6890,7 +6890,8 @@ FAST_PLANE_REPAIR_FIELDS = (
     "audio_tee_cpu_us", "video_tee_cpu_us", "video_tee_lag_max_us", "audio_tee_lag_max_us",
     "tee_dropped", "video_tee_parts_shed")
 MEMORY_REPAIR_FIELDS = ("part_store_bytes", "part_store_budget_bytes", "decode_queue_bytes",
-                        "decode_queue_budget_bytes", "repair_shed_bytes")
+                        "decode_queue_budget_bytes", "repair_plans_bytes",
+                        "repair_plans_budget_bytes", "repair_shed_bytes")
 # The fields above that are a level or a maximum, not a count since start
 # (a run's usage takes their value at the end, not a difference).
 REPAIR_LEVELS = {"part_repair.stored_parts", "decode_pool.workers",
