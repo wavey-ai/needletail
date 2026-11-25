@@ -40,7 +40,11 @@ the cgroups are scopes of the user's systemd manager.
                                         service)
   edge_lab.py stop <node>               stop a node's service (SIGTERM; a slot: out of
                                         service again)
-  edge_lab.py drain <node>              POST /api/control/drain-node for that node
+  edge_lab.py drain <node> [--surge]    drain an edge when the site's other serving edges
+                                        have room for its load (mesh_ops.drain), else
+                                        refused with the numbers (exit 2); --surge starts
+                                        a standby edge or slot first; --no-room-check:
+                                        POST /api/control/drain-node and nothing else
   edge_lab.py resume <node>             POST /api/control/resume-node for that node
   edge_lab.py crash <node> [--restart-s 1]
                                         SIGKILL a node's service, start it again
@@ -3654,6 +3658,27 @@ def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
                             resume=args.resume, options=options, **engine)
 
 
+def drain_verb(arguments: list[str], ops: EdgeLabOps | None = None, **engine) -> int:
+    """`drain NODE [--surge]` through the engine (mesh_ops.drain): refused
+    (exit 2) with the numbers when the site's other serving edges have no
+    room, or with --surge after its standby edge or slot is started and
+    ready. stdout carries the change's two marks only."""
+    parser = argparse.ArgumentParser(prog="edge_lab.py drain")
+    parser.add_argument("node")
+    parser.add_argument("--surge", action="store_true")
+    parser.add_argument("--gate-timeout-s", type=float, default=30.0)
+    parser.add_argument("--ready-timeout-s", type=float, default=60.0)
+    parser.add_argument("--marks", default=None)
+    parser.add_argument("--node-marks", default=None)
+    parser.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S)
+    args = parser.parse_args(arguments)
+    options = mesh_ops.Options(gate_timeout_s=args.gate_timeout_s,
+                               ready_timeout_s=args.ready_timeout_s, marks_file=args.marks,
+                               node_marks_file=args.node_marks, poll_s=args.poll_s)
+    return mesh_ops.drain(ops or EdgeLabOps(), args.node, surge=args.surge, options=options,
+                          **engine)
+
+
 def change_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = None,
                 **change) -> int:
     """`kill`, `return` and `freeze` on this lab (workstream A, A 2.10):
@@ -3750,6 +3775,11 @@ def main() -> None:
             if name in slot_nodes():
                 set_slot_in_service(name, False)
             print(f"{name} stopped")
+        elif command == "drain" and "--no-room-check" not in arguments:
+            # tools6: the room on the site's other serving edges first
+            # (mesh_ops.drain); --surge starts its standby edge or slot
+            # first; --no-room-check is the bare control command.
+            sys.exit(drain_verb(arguments))
         elif command in ("drain", "resume"):
             name = arguments[0]
             # Not `status`: that name is the status command's function, and

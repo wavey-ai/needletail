@@ -135,6 +135,7 @@ import urllib.request
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import small_mesh_common as common  # noqa: E402
+import mesh_ops  # noqa: E402
 
 ROOT = common.ROOT
 OUT = ROOT / "target" / "compare"
@@ -4557,6 +4558,13 @@ class PhaseRunner:
 
     # -------------------------------------------------------------- acting
 
+    def drain_room(self, target: str) -> list[str]:
+        """Room for the edge `target` on its site's other serving edges
+        (mesh_ops.load_room: their reported load under the rebalance
+        target must hold its load), from one /api/node of each edge of the
+        site: an edge serves when it answers ready and not draining."""
+        return drain_room_problems(self.lab, target, lambda node: http_get(node, "/api/node"))
+
     def node(self, name: str) -> dict:
         """A node of the lab, of any role (a contributor, an ingress, a
         forwarder, an edge); its service is its role's (NODE_COMMANDS)."""
@@ -4623,6 +4631,13 @@ class PhaseRunner:
                 ssh(self.node(target), node_command(kind, self.node(target), item), timeout=60,
                     check=True)
             elif kind in ("drain", "resume"):
+                if kind == "drain" and item.get("room") != "ignore":
+                    # tools6 (local proof 3): never a drain the other edges
+                    # have no room for; a scenario that means to overload
+                    # says "room": "ignore".
+                    problems = self.drain_room(target)
+                    if problems:
+                        raise RuntimeError(f"drain of {target} refused: " + "; ".join(problems))
                 # Always naming the node: av-mesh takes a request with no
                 # node_id and no region as global.
                 http_post(self.node(target), f"/api/control/{kind}-node",
@@ -5088,6 +5103,37 @@ def ssh_quiet(node: dict, command: str, timeout: int = 30) -> str:
         return ssh(node, command, timeout=timeout)
     except Exception:  # noqa: BLE001 - one host's probe; the next poll tries again
         return ""
+
+
+def drain_room_problems(lab: dict, target: str, fetch) -> list[str]:
+    """What stops a drain of edge `target` (scale-run's plain drain):
+    mesh_ops.load_room over the edges of its site that answer `fetch`
+    (/api/node) ready and not draining; [] when there is room. Only a
+    measured want of room refuses: a figure an edge does not serve (an
+    older build, a node that does not answer) is no refusal here, as the
+    scenario's own fault is what is measured; the engine's `drain` verbs
+    refuse on it."""
+    node = lab["nodes"].get(target)
+    if node is None or node.get("role") != "edge":
+        # A forwarder's drain is the forwarder gate's matter, not room.
+        return []
+    statuses, records = {}, []
+    for name, other in sorted(lab["nodes"].items()):
+        if other.get("role") != "edge" or other.get("site") != node["site"]:
+            continue
+        document = fetch(other)
+        status = mesh_ops.status_of(document if isinstance(document, dict)
+                                    and "error" not in document else None)
+        if status is None:
+            continue
+        statuses[name] = status
+        serving = name == target or (status.ready is True and not status.drain_reasons)
+        records.append({"name": name, "role": "edge", "site": node["site"],
+                        "serving": serving})
+    if target not in statuses:
+        return []
+    problems, _evidence = mesh_ops.load_room(mesh_ops.Lab(records), target, statuses)
+    return [item for item in problems if item.startswith("capacity: no room")]
 
 
 def http_get(node: dict, path: str, timeout: float = 5.0):

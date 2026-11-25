@@ -6615,6 +6615,27 @@ def command_roll(args: argparse.Namespace) -> None:
     sys.exit(engine_warm_exit(ops, "roll", code, args))
 
 
+def command_drain(args: argparse.Namespace) -> None:
+    """`drain --nodes X [--surge]` (tools6): a serving edge drained only when
+    the other serving edges of its site have room for it (mesh_ops.drain:
+    the legs at their cost and the reported load under the target); without
+    room refused (exit 2) with the numbers, or with --surge after the site's
+    standby edge or slot is started, ready and warmed (and with a surge
+    edge started, an unwarmed one exits 6 as roll does). The edge stays
+    drained: resume-node takes it back."""
+    names = names_of(args.nodes) or []
+    if len(names) != 1:
+        sys.exit("drain --nodes takes one edge")
+    ops = linode_ops(args)
+    if getattr(args, "nice", 0):
+        mesh_ops.renice(args.nice)
+    options = mesh_ops.Options(gate_timeout_s=args.gate_timeout_s,
+                               ready_timeout_s=args.ready_timeout_s, marks_file=args.marks,
+                               node_marks_file=args.node_marks, poll_s=args.poll_s)
+    code = mesh_ops.drain(ops, names[0], surge=args.surge, options=options)
+    sys.exit(engine_warm_exit(ops, "drain", code, args) if args.surge else code)
+
+
 def command_replace(args: argparse.Namespace) -> None:
     """`replace --nodes X` (C 3.7): one node on a new disk (`--mode
     rebuild`, the default: both addresses kept) or a new instance (`--mode
@@ -8270,6 +8291,22 @@ def build_parser() -> argparse.ArgumentParser:
                            "hosts are printed. Without it a roll that was done exits 6 "
                            "naming them")
     roll.set_defaults(handler=command_roll)
+    drain = sub.add_parser("drain", help="one serving edge drained when the others have "
+                                         "room (or after a surge edge with --surge)")
+    drain.add_argument("--nodes", required=True, help="the edge to drain (one)")
+    drain.add_argument("--surge", action="store_true",
+                       help="without room, start the site's standby edge or slot first and "
+                            "wait for it to be ready and warmed; it stays serving")
+    drain.add_argument("--gate-timeout-s", type=float, default=30.0)
+    drain.add_argument("--ready-timeout-s", type=float, default=60.0)
+    drain.add_argument("--marks", default=None, help="append the change's two marks here")
+    drain.add_argument("--node-marks", default=None, help="per-node marks go here")
+    drain.add_argument("--nice", type=int, default=mesh_ops.NICE)
+    drain.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S)
+    drain.add_argument("--allow-unwarmed", action="store_true",
+                       help="with --surge: go on (the engine's exit) when the surge edge ends "
+                            "without a complete warm record")
+    drain.set_defaults(handler=command_drain)
     replace = sub.add_parser("replace", help="one node on a new disk or a new instance, "
                                              "gated (C 3.7)")
     replace.add_argument("--nodes", required=True, help="the node to replace (one)")

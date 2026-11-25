@@ -1251,3 +1251,39 @@ class Autoscaler(autoscale_tests.Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeployDrain(unittest.TestCase):
+    """tools6: deploy `drain --nodes X [--surge]` runs mesh_ops.drain (room
+    first) and exits with its status; with --surge, a surge edge left
+    unwarmed exits 6 as roll does."""
+
+    def run_drain(self, argv, code, unwarmed=False):
+        seen = []
+        ops = mock.Mock()
+
+        def engine_drain(ops_, name, surge=False, options=None):
+            seen.append((name, surge, options.gate_timeout_s))
+            return code
+
+        args = deploy.build_parser().parse_args(["drain", *argv])
+        with mock.patch.object(deploy, "linode_ops", lambda args: ops), \
+                mock.patch.object(deploy.mesh_ops, "drain", engine_drain), \
+                mock.patch.object(deploy, "warm_gate",
+                                  lambda ops_, verb, allow: "UNWARMED lon-edge-4" if unwarmed
+                                  else None), \
+                mock.patch.object(deploy.mesh_ops, "renice", lambda nice: None), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as caught:
+            args.handler(args)
+        return caught.exception.code, seen
+
+    def test_the_exit_is_the_engine_s(self):
+        self.assertEqual(self.run_drain(["--nodes", "lon-edge-1"], 2),
+                         (2, [("lon-edge-1", False, 30.0)]))
+        self.assertEqual(self.run_drain(["--nodes", "lon-edge-1", "--surge"], 0)[0], 0)
+        self.assertEqual(self.run_drain(["--nodes", "lon-edge-1", "--surge"], 0,
+                                        unwarmed=True)[0], deploy.EXIT_UNWARMED)
+        with self.assertRaises(SystemExit):
+            deploy.command_drain(deploy.build_parser().parse_args(
+                ["drain", "--nodes", "a,b"]))

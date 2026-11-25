@@ -1679,10 +1679,33 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
                                   "listeners are unknown is never drained to be removed")
         victim = victims[0][-1]
         inputs["victim_listeners"] = victims[0][0]
+        short = no_room(victim, loads)
+        if short:
+            inputs["room"] = short
+            return result("hold", f"no room to drain {victim}: it carries "
+                                  f"{short['load_permille']} permille, the other serving edges "
+                                  f"have {short['room_permille']} under "
+                                  f"{REBALANCE_TARGET_PERMILLE}")
         return result("drain", f"{projected:.0f} <= {config.down_permille} with one edge "
                                f"fewer for {now - region['low_since_unix']:.0f} s", [(victim,
                                                                                     "drain")])
     return result("hold", "within the band" if count else "no serving edge advertised")
+
+
+def no_room(victim: str, loads: dict[str, int],
+            target: int = REBALANCE_TARGET_PERMILLE) -> dict | None:
+    """tools6: whether the other serving edges have no room for the edge
+    `victim`'s load (their target - load, none below 0, under its own, as
+    the deploy's drain counts it: mesh_ops.load_room); the figures when they
+    have none, else None. A scale-down never drains into no room."""
+    load = loads.get(victim)
+    if load is None:
+        return None
+    others = {name: value for name, value in loads.items() if name != victim}
+    room = sum(max(0, target - value) for value in others.values())
+    if room >= load:
+        return None
+    return {"victim": victim, "load_permille": load, "room_permille": room, "others": others}
 
 
 def forwarder_slot_candidate(forwarders: list[dict], obs: dict, actions: dict,
@@ -3001,6 +3024,15 @@ def command_scale(controller: Controller, direction: str, site: str, tier: str,
                               f"{controller.config.min_edges}")
             victims = edge_victims(serving, obs, controller.config, now)
             found = [victims[0][-1]] if victims else []
+            if found:
+                short = no_room(found[0], {
+                    node["name"]: int((obs.get(node["name"]) or {}).get("load_permille") or 0)
+                    for node in serving})
+                if short:
+                    raise Refused(f"no room to drain {found[0]}: it carries "
+                                  f"{short['load_permille']} permille, the other serving edges "
+                                  f"of {site} have {short['room_permille']} under "
+                                  f"{REBALANCE_TARGET_PERMILLE} ({json.dumps(short['others'])})")
         else:
             found = [node["name"] for node in serving if node.get("slot")
                      and (obs.get(node["name"]) or {}).get("lease_children") is not None

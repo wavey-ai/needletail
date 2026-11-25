@@ -1052,8 +1052,13 @@ class Capacity(Base):
         self.assertEqual(evidence["one_path"],
                          {"single_legs": 30, "unadvertised_legs": 25, "legs": 55})
         # Room 10 + 30: the 55 do not fit; the 60 on lon-edge-2 are not counted.
-        self.assertEqual(problems, ["capacity: the other edges have room for 40 legs, "
-                                    "lon-edge-1 holds 55"])
+        # The room by load agrees: 55 of 120 legs' share of 600 permille is
+        # 275, and 50 + 150 is all the room there is (tools6).
+        self.assertEqual(problems[0], "capacity: the other edges have room for 40 legs, "
+                                      "lon-edge-1 holds 55")
+        self.assertEqual(len(problems), 2)
+        self.assertIn("(275\u2030 of it to move)", problems[1])
+        self.assertIn("have 200\u2030 of room", problems[1])
         self.sim.nodes_["lon-edge-2"]["legs"] = 100
         problems, _ = mesh_ops.capacity_check(
             lab, "lon-edge-1", {name: self.status(name) for name in lab.edges("london")}, 5.0,
@@ -1687,6 +1692,65 @@ class Roll(Base):
         self.assertIn(why["settled_on"], ("its share", "rebalance still", "bound"))
         self.assertIn("left_unix", why)
         self.assertTrue(journal["finished"])
+
+    def drain(self, name, **kwargs) -> int:
+        return mesh_ops.drain(self.sim, name, options=self.options(), out=self.out, err=self.err,
+                              clock=self.clock, sleep=self.clock.sleep, **kwargs)
+
+    def test_a_drain_with_no_room_is_refused_with_the_numbers(self):
+        """Local proof 3 (a drain): the other edges at 843-879 permille; the
+        drain ended at its grace and overloaded them. Now refused (exit 2),
+        nothing touched, the room in the refusal."""
+        self.busy_london()
+        self.assertEqual(self.drain("lon-edge-1"), 2)
+        text = self.err.getvalue()
+        self.assertIn("drain of lon-edge-1 refused: capacity:", text)
+        self.assertIn("capacity: no room: lon-edge-1 carries 750\u2030 (150 UDP legs, 0 LL-HLS "
+                      "sessions); the other serving edges of london have 100\u2030 of room under "
+                      "the 800\u2030 target (lon-edge-2 750\u2030, lon-edge-3 750\u2030)", text)
+        self.assertIn("--surge starts a standby edge or slot first", text)
+        self.assertFalse([call for call in self.sim.calls
+                          if call[0] in ("post", "start", "stage")], self.sim.calls)
+        self.assertFalse(self.sim.nodes_["lon-edge-1"]["drained"])
+
+    def test_a_drain_with_room_drains_and_stays_drained(self):
+        self.assertEqual(self.drain("lon-edge-1"), 0, self.err.getvalue())
+        self.assertTrue(self.sim.nodes_["lon-edge-1"]["drained"])
+        self.assertNotIn("start", [call[0] for call in self.sim.calls])
+        self.assertIn("lon-edge-1 is drained and stays drained", self.err.getvalue())
+        journal = self.journals()[-1]
+        self.assertTrue(journal["finished"])
+        self.assertEqual(journal["exit"], 0)
+
+    def test_a_drain_with_surge_starts_the_standby_edge_first(self):
+        self.busy_london()
+        self.assertEqual(self.drain("lon-edge-1", surge=True), 0, self.err.getvalue())
+        starts = [index for index, call in enumerate(self.sim.calls) if call[:2] ==
+                  ("start", "lon-edge-4")]
+        drains = [index for index, call in enumerate(self.sim.calls)
+                  if call == ("post", "lon-edge-1", "drain-node")]
+        self.assertTrue(starts and drains and starts[0] < drains[0], self.sim.calls)
+        self.assertTrue(self.sim.nodes_["lon-edge-1"]["drained"])
+        # The surge edge stays serving: the drained edge does not come back.
+        self.assertTrue(self.sim.nodes_["lon-edge-4"]["serving"])
+        self.assertIn("the surge edge lon-edge-4 serves", self.err.getvalue())
+
+    def test_a_drain_of_what_is_not_a_serving_edge_is_refused(self):
+        self.assertEqual(self.drain("lon-dist-a"), 2)
+        self.assertEqual(self.drain("lon-edge-4"), 2)
+
+    def test_load_room_counts_reported_load_and_an_idle_edge_needs_none(self):
+        self.busy_london()
+        lab = self.lab()
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+        problems, evidence = mesh_ops.load_room(lab, "lon-edge-1", statuses)
+        self.assertEqual(evidence["room_permille"], 100)
+        self.assertEqual(len(problems), 1)
+        self.sim.nodes_["lon-edge-1"]["legs"] = 0
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+        self.assertEqual(mesh_ops.load_room(lab, "lon-edge-1", statuses)[0], [])
+        # The byte-load model's hook (av-mesh rm/place240) is not filled yet.
+        self.assertIsNone(mesh_ops.byte_room(statuses["lon-edge-1"], {}))
 
     def test_three_edges_at_ordinary_load_roll_without_a_surge(self):
         self.assertEqual(self.roll("edges", sites=["london"]), 0, self.err.getvalue())

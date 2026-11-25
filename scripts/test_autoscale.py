@@ -634,6 +634,27 @@ class Decide(Base):
         self.assertGreaterEqual(drained[0]["inputs"]["low_for_s"], 300)
         self.assertLessEqual(drained[0]["inputs"]["projected_one_fewer"], 450)
 
+    def test_scale_down_never_drains_into_no_room(self):
+        """tools6: even when the mean with one edge fewer is under the
+        band (here a band of 900 a test sets), the victim is drained only
+        when the other serving edges have room for its load under the
+        rebalance target (800): seven others at 750 have 350 for its 750."""
+        for index in range(6, 9):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        controller = self.controller(config=auto.Config(down_permille=900, up_permille=950,
+                                                        up_max_permille=990))
+        self.sim.set_load(750)
+        self.sim.nodes["lon-edge-3"]["udp"] = 7
+        decisions = self.ticks(controller, 200)
+        self.assertEqual(self.mutating(), [])
+        held = [item[0] for item in decisions if item[0]["reason"].startswith("no room")]
+        self.assertTrue(held)
+        self.assertIn("no room to drain lon-edge-3: it carries 750 permille, the other serving "
+                      "edges have 350 under 800", held[-1]["reason"])
+        self.assertEqual(held[-1]["inputs"]["room"]["victim"], "lon-edge-3")
+        self.assertEqual(auto.no_room("a", {"a": 300, "b": 500}), None)
+        self.assertEqual(auto.no_room("a", {"a": 300, "b": 600})["room_permille"], 200)
+
     def test_never_fewer_than_three_edges(self):
         """B's seam: a listener holds two edges and needs a third to move
         to, so the controller never drains a region below three."""
@@ -1838,6 +1859,17 @@ class Scale(Base):
         self.assertEqual(self.touching("lon-dist-c")[2:], [("drain", "lon-dist-c"),
                                                            ("stop", "lon-dist-c")])
         self.assertTrue(self.of("gate")[-1]["ok"])
+
+    def test_scale_down_is_refused_without_room_and_prints_no_mark(self):
+        for index in range(6, 8):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.set_load(780)
+        self.sim.nodes["lon-edge-4"]["udp"] = 3
+        controller = self.controller()
+        with self.assertRaises(auto.Refused) as caught:
+            self.run_scale(controller, "down")
+        self.assertIn("no room to drain lon-edge-4: it carries 780 permille", str(caught.exception))
+        self.assertEqual(self.mutating(), [])
 
     def test_scale_down_never_below_three_edges_and_prints_no_mark(self):
         for index in (4, 5):

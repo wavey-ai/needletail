@@ -1625,8 +1625,109 @@ def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
     return statistics.median(ratios) if ratios else None
 
 
+def byte_room(x_status: "Status", others: dict) -> dict | None:
+    """HOOK (av-mesh rm/place240, the byte-load model): when /api/node serves
+    each edge's load in bits a second against its capacity, the room of a
+    drain is counted in bits; until then None, and load_room counts in
+    load_permille, the figure the entry admits by (max of bytes over the
+    edge capacity and CPU over 85%: edge_admission.rs). Fill this in with
+    the fields rm/place240 serves; nothing else changes."""
+    return None
+
+
+def load_room(lab: Lab, x: str, statuses: dict,
+              target_permille: int = REBALANCE_TARGET_PERMILLE, share: float = 1.0,
+              extra: int = 0) -> tuple[list[str], dict]:
+    """Room for edge X's load on the other serving edges of its site, from
+    the load each reports (client_udp.load_permille, what the entry places
+    by): the sum over them of (target - load), none below 0, must hold X's
+    load. An X that serves nobody (no UDP subscriber, no LL-HLS session)
+    needs none. Every other edge must answer and be ready; a figure missing
+    is "capacity unknown". `share`: the part of X's load that must move
+    (one-path mode); `extra`: room of an edge counted as serving and empty
+    (permille). (problems, evidence); a problem for want of room starts
+    "capacity: no room"."""
+    site = lab.site(x)
+    others = [name for name in lab.edges(site) if name != x]
+    sx = statuses.get(x)
+    if sx is None:
+        return [f"{x} does not answer /api/node"], {}
+    load = sx.udp("load_permille")
+    legs, sessions = sx.udp("subscribers"), sx.udp("hls_sessions")
+    evidence: dict = {"target_permille": target_permille, "load_permille": load,
+                      "subscribers": legs, "hls_sessions": sessions, "others": {}}
+    if legs == 0 and sessions == 0:
+        evidence["room_permille"] = None
+        return [], evidence
+    problems = []
+    if load is None:
+        problems.append(f"capacity unknown: {x}'s client_udp.load_permille")
+    loads = {}
+    for name in others:
+        status = statuses.get(name)
+        if status is None:
+            problems.append(f"{name} does not answer /api/node")
+            continue
+        if status.ready is not True:
+            problems.append(f"{name} is not ready ({status.state})")
+            continue
+        value = status.udp("load_permille")
+        if value is None:
+            problems.append(f"capacity unknown: {name}'s client_udp.load_permille")
+            continue
+        loads[name] = value
+    evidence["others"] = loads
+    bytes_room = byte_room(sx, {name: statuses.get(name) for name in loads})
+    if bytes_room is not None:
+        evidence["bytes"] = bytes_room
+    if problems:
+        return problems, evidence
+    room = sum(max(0, target_permille - value) for value in loads.values()) + extra
+    need = round(load * share)
+    evidence.update(room_permille=room, need_permille=need)
+    if room < need:
+        listed = ", ".join(f"{name} {value}\u2030" for name, value in sorted(
+            loads.items(), key=lambda item: natural(item[0]))) or "none"
+        problems.append(f"capacity: no room: {x} carries {load}\u2030"
+                        + (f" ({need}\u2030 of it to move)" if need != load else "")
+                        + f" ({legs} UDP legs, "
+                        f"{sessions} LL-HLS sessions); the other serving edges of {site} have "
+                        f"{room}\u2030 of room under the {target_permille}\u2030 target "
+                        f"({listed})")
+    return problems, evidence
+
+
 def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
                    one_path: bool = False, extra_room: dict | None = None):
+    """legs_capacity_check, and then the room by load (tools6, local proof
+    3's drain with no room): when X and every other serving edge report
+    load_permille, the others' room under the target must hold X's load
+    (in one-path mode only the share of it whose legs need room; an edge
+    counted as serving by `extra_room`, the dry surge, is empty)."""
+    problems, evidence = legs_capacity_check(lab, x, statuses, cost, one_path, extra_room)
+    sx = statuses.get(x)
+    others = [name for name in lab.edges(lab.site(x)) if name != x]
+    if sx is None or sx.udp("load_permille") is None or not all(
+            statuses.get(name) is not None and statuses[name].udp("load_permille") is not None
+            for name in others):
+        return problems, evidence
+    share = 1.0
+    if one_path:
+        needed = (evidence.get("one_path") or {}).get("legs")
+        total = sx.udp("subscribers")
+        if needed is None or not total:
+            return problems, evidence
+        share = needed / total
+    extra = sum(REBALANCE_TARGET_PERMILLE for name in (extra_room or {})
+                if name != x and name not in others)
+    room_problems, room_evidence = load_room(lab, x, statuses, share=share, extra=extra)
+    evidence["load_room"] = room_evidence
+    problems = problems + [item for item in room_problems if item.startswith("capacity: no room")]
+    return problems, evidence
+
+
+def legs_capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
+                        one_path: bool = False, extra_room: dict | None = None):
     """One poll of the edge capacity gate (3.5 with B's seam): every other
     serving edge is ready; the others together have room for X's legs; and
     for every other edge E, the edges other than X and E have room for the
@@ -3282,6 +3383,70 @@ def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None,
 
     def open_journal():
         return open_change(engine, label, list(names), state["previous"], state["finish"])
+
+    return engine.run(label, body, open_journal)
+
+
+def drain(ops: Ops, name: str, *, surge: bool = False, options: Options | None = None,
+          out=None, err=None, clock=time.time, sleep=time.sleep) -> int:
+    """`drain --nodes X` of a serving edge (tools6, local proof 3): first
+    the room on the other serving edges of its site (capacity_check: the
+    legs at their cost, and the reported load under the rebalance target,
+    load_room). Without room it is refused (exit 2) with the numbers, and
+    nothing is touched; with `surge` the site's standby edge or slot is
+    started first, as a roll's surge edge (staged, started, ready with its
+    warm record, resumed, settled), and stays serving. Then the capacity
+    gate on two polls, and drain-node: X stays drained (resume-node takes
+    it back)."""
+    options = dataclasses.replace(options or Options(), surge="auto" if surge else "never")
+    engine = Engine(ops, "drain", options, out, err, clock, sleep)
+    label = f"drain.{name}"
+    engine.resume_command = f"drain --nodes {name}"
+
+    def body(step: str):
+        if step == "prepare":
+            engine.lab = Lab(ops.nodes())
+            record = engine.lab.records.get(name)
+            if not record or record.get("role") != "edge" or not record.get("serving"):
+                raise Refused(f"{name} is not a serving edge of the lab")
+            site = engine.lab.site(name)
+            statuses = engine.poll(sorted(set(engine.lab.edges(site)) | {name}, key=natural))
+            problems, evidence = capacity_check(engine.lab, name, statuses,
+                                                engine.site_cost(site))
+            engine.record(name)["room"] = evidence
+            short = [item for item in problems if item.startswith("capacity: ")]
+            if short and not surge:
+                raise Refused(f"drain of {name} refused: " + "; ".join(short)
+                              + "; --surge starts a standby edge or slot first")
+            if surge:
+                engine.surge_prepare([name], None)
+            engine.print_plan([name], [])
+            return
+        site = engine.lab.site(name)
+        if surge:
+            engine.surge_join(site, name)
+        engine.phase(name, "gate")
+        site_cost = engine.costs.get(site)
+        virtual = engine.virtual_surge.get(site)
+        extra = {virtual: REBALANCE_TARGET_PERMILLE / site_cost} \
+            if virtual and virtual != name and site_cost else None
+        gate = edge_gate(ops, name, lab=engine.lab, cost=site_cost, one_path=False,
+                         timeout_s=options.gate_timeout_s, poll_s=options.poll_s,
+                         clock=engine.clock, sleep=engine.sleep, extra_room=extra)
+        engine.record(name)["gate"] = gate.evidence
+        if not gate.ok:
+            engine.release_hand(name, "not drained")
+            raise Stop(EXIT_STOPPED, f"{name} was not drained: the capacity gate refuses "
+                                     f"({'; '.join(gate.problems)})")
+        engine.phase(name, "drain")
+        engine.control(name, "drain-node")
+        engine.release_hand(name, "drained")
+        engine.say(f"{name} is drained and stays drained (resume-node takes it back)"
+                   + (f"; the surge edge {engine.surge[site]} serves" if site in engine.surge
+                      else ""))
+
+    def open_journal():
+        return open_change(engine, label, [name], None, [])
 
     return engine.run(label, body, open_journal)
 
