@@ -1749,8 +1749,44 @@ class Roll(Base):
         self.sim.nodes_["lon-edge-1"]["legs"] = 0
         statuses = {name: self.status(name) for name in lab.edges("london")}
         self.assertEqual(mesh_ops.load_room(lab, "lon-edge-1", statuses)[0], [])
-        # The byte-load model's hook (av-mesh rm/place240) is not filled yet.
+        # Without place240's heavy figures the byte room is not counted.
         self.assertIsNone(mesh_ops.byte_room(statuses["lon-edge-1"], {}))
+
+    def test_byte_room_counts_place240_s_heavy_egress_and_refuses_without_it(self):
+        """Integration 6: tools6's byte_room hook reads the heavy room each
+        edge serves in /api/node (place240): X's heavy bytes must fit in the
+        others' heavy egress left; an edge in distress gives none."""
+        self.busy_london(legs=20)  # room by load_permille for any of them
+        lab = self.lab()
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+
+        def heavy(committed_bps, distress=None):
+            return {"cpus": 2, "budget_permille": 1500, "committed_permille": 600,
+                    "measured_permille": 500, "egress_max_bps": 600_000_000,
+                    "committed_bps": committed_bps, "heavy_streams": 1,
+                    "distress": distress}
+
+        statuses["lon-edge-1"].raw["heavy"] = heavy(494_000_000)
+        others = [name for name in statuses if name != "lon-edge-1"]
+        for name in others:
+            statuses[name].raw["heavy"] = heavy(247_000_000)
+        room = mesh_ops.byte_room(statuses["lon-edge-1"],
+                                  {name: statuses[name] for name in others})
+        self.assertEqual(room["need_bps"], 494_000_000)
+        self.assertEqual(room["room_bps"], 353_000_000 * len(others))
+        self.assertTrue(room["fits"])
+        self.assertEqual(mesh_ops.load_room(lab, "lon-edge-1", statuses)[0], [])
+        # Every other edge full or in distress: no room for 494 Mbit/s.
+        for name in others:
+            statuses[name].raw["heavy"] = heavy(494_000_000, distress="send-deferred")
+        problems, evidence = mesh_ops.load_room(lab, "lon-edge-1", statuses)
+        self.assertEqual(evidence["bytes"]["room_bps"], 0)
+        self.assertTrue(problems and problems[0].startswith("capacity: no room"), problems)
+        self.assertIn("heavy egress left", problems[0])
+        # One edge that does not serve the figures: not counted in bytes.
+        del statuses[others[0]].raw["heavy"]
+        self.assertIsNone(mesh_ops.byte_room(statuses["lon-edge-1"],
+                                             {name: statuses[name] for name in others}))
 
     def test_three_edges_at_ordinary_load_roll_without_a_surge(self):
         self.assertEqual(self.roll("edges", sites=["london"]), 0, self.err.getvalue())

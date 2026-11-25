@@ -1625,14 +1625,52 @@ def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
     return statistics.median(ratios) if ratios else None
 
 
+def _heavy(status: "Status | None") -> dict | None:
+    """The `heavy` block of an edge's /api/node (av-mesh place240 and
+    integration 6): its heavy CPU budget and what is committed of it
+    (thousandths of one CPU), its heavy egress cap and what is committed of
+    it (bits a second), distress. None when the node does not serve it."""
+    block = status.raw.get("heavy") if status is not None else None
+    if not isinstance(block, dict):
+        return None
+    needed = ("budget_permille", "committed_permille", "egress_max_bps", "committed_bps")
+    if any(_num(block, key) is None for key in needed):
+        return None
+    return block
+
+
 def byte_room(x_status: "Status", others: dict) -> dict | None:
-    """HOOK (av-mesh rm/place240, the byte-load model): when /api/node serves
-    each edge's load in bits a second against its capacity, the room of a
-    drain is counted in bits; until then None, and load_room counts in
-    load_permille, the figure the entry admits by (max of bytes over the
-    edge capacity and CPU over 85%: edge_admission.rs). Fill this in with
-    the fields rm/place240 serves; nothing else changes."""
-    return None
+    """The room of a drain in place240's heavy figures, when X and every
+    other serving edge serve them (`heavy` in /api/node); else None, and
+    load_room counts in load_permille alone.
+
+    X's heavy sessions move: their bytes (`committed_bps`) must fit in the
+    others' heavy egress left (`egress_max_bps - committed_bps`; an edge in
+    distress has none), as the entry places them. The CPU figures are given
+    as evidence: X's committed CPU includes its base and the tees it pays,
+    which do not move, so they are not a test."""
+    x = _heavy(x_status)
+    if x is None:
+        return None
+    rooms = {}
+    for name, status in others.items():
+        heavy = _heavy(status)
+        if heavy is None:
+            return None
+        used = max(heavy["committed_permille"], _num(heavy, "measured_permille") or 0)
+        rooms[name] = {
+            "bps": 0 if heavy.get("distress") else max(
+                0, int(heavy["egress_max_bps"]) - int(heavy["committed_bps"])),
+            "permille": 0 if heavy.get("distress") else max(
+                0, int(heavy["budget_permille"]) - int(used)),
+            "distress": heavy.get("distress"),
+        }
+    need = int(x["committed_bps"])
+    room = sum(item["bps"] for item in rooms.values())
+    return {"need_bps": need, "room_bps": room, "fits": need <= room,
+            "x_committed_permille": int(x["committed_permille"]),
+            "room_permille": sum(item["permille"] for item in rooms.values()),
+            "others": rooms}
 
 
 def load_room(lab: Lab, x: str, statuses: dict,
@@ -1681,6 +1719,17 @@ def load_room(lab: Lab, x: str, statuses: dict,
     if bytes_room is not None:
         evidence["bytes"] = bytes_room
     if problems:
+        return problems, evidence
+    if bytes_room is not None and round(bytes_room["need_bps"] * share) > bytes_room["room_bps"]:
+        problems.append(
+            f"capacity: no room: {x}'s heavy sessions take "
+            f"{bytes_room['need_bps'] * share / 1e6:.0f} Mbit/s; the other serving edges of "
+            f"{site} have {bytes_room['room_bps'] / 1e6:.0f} Mbit/s of heavy egress left ("
+            + (", ".join(f"{name} {item['bps'] / 1e6:.0f}"
+                         + (f" distress {item['distress']}" if item["distress"] else "")
+                         for name, item in sorted(bytes_room["others"].items(),
+                                                  key=lambda item: natural(item[0])))
+               or "none") + ")")
         return problems, evidence
     room = sum(max(0, target_permille - value) for value in loads.values()) + extra
     need = round(load * share)
