@@ -84,7 +84,9 @@ Safety, before anything else:
   exits 6 (the deploy's UNWARMED: done, but no complete warm record) leaves
   its node not ready (`unwarmed` event): its check runs again by a push of
   it, at most WARM_RERUNS (2) times, then the join fails and the node is
-  parked. --allow-unwarmed is never passed.
+  parked. A recovery's push after a rebuild that exits 6 is the same: not
+  a failed step; the push runs again up to WARM_RERUNS times, then the
+  recovery fails ("warm"). --allow-unwarmed is never passed.
 * However it stops (SIGINT or SIGTERM, its --duration, its change, a
   failure), it hands the worker nothing more, waits for the worker's job in
   hand (up to 120 s, then ends that job's tool and names it), and resumes
@@ -2720,6 +2722,9 @@ class Controller:
                 action.update(phase="settle",
                               settle_deadline_unix=now + self.settle_s(action, node))
             return
+        if phase == "pushing" and result.get("unwarmed"):
+            self.rerun_recovery_warm(name, action, now, node, result["error"])
+            return
         if not result["ok"]:
             self.recover_failed(name, action, node, f"{action['step']}: {result['error']}")
             return
@@ -2728,6 +2733,30 @@ class Controller:
             action["phase"] = "pushing"
             return
         action.update(phase="settle", settle_deadline_unix=now + self.settle_s(action, node))
+
+    def rerun_recovery_warm(self, name: str, action: dict, now: float, node: dict,
+                            detail: str) -> None:
+        """The recovery's push (after a rebuild) did everything but left the
+        node without a complete warm record (the deploy's exit 6): the node
+        is not ready, the step is not failed. Its check runs again by a push
+        of it, up to WARM_RERUNS times, the recovery's deadline moved by the
+        pass's allowance (as a join's, rerun_warm); then the recovery fails
+        ("warm")."""
+        reruns = action.get("warm_reruns", 0)
+        if reruns >= WARM_RERUNS:
+            self.recover_failed(name, action, node,
+                                f"warm: no complete warm record after {reruns} rerun(s) of its "
+                                f"check; {detail}")
+            return
+        action["warm_reruns"] = reruns + 1
+        action["deadline_unix"] = max(action["deadline_unix"],
+                                      now + RECOVER_SETTLE_S + self.warm_s(node))
+        self.events("unwarmed", node=name, region=action["site"], rerun=reruns + 1,
+                    step=action.get("step"),
+                    why="recovery: its warm record is not complete: not ready; its check runs "
+                        "again (push --nodes)", detail=detail[-500:])
+        self.queue(action, "push", [name])
+        action["phase"] = "pushing"
 
     def settle_s(self, action: dict, node: dict) -> float:
         """How long a node has to answer `ready` after a recovery step:

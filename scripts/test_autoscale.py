@@ -293,6 +293,12 @@ class Sim(auto.Backend):
         cold = [name for name in names if self.unwarmed.get(name, 0) > 0]
         for name in cold:
             self.unwarmed[name] -= 1
+            # A node without a complete warm record is never ready (its
+            # service waits for the record).
+            self.nodes[name].update(ready=False, cold=True)
+        for name in names:
+            if name not in cold and self.nodes[name].pop("cold", False):
+                self.nodes[name]["ready"] = True
         if cold:
             raise auto.Unwarmed(f"UNWARMED: {', '.join(cold)}: no complete warm record")
 
@@ -1443,6 +1449,50 @@ class Lost(Base):
                                                         ("push", "lon-edge-11")])
         self.assertEqual(self.sim.forgotten, ["lon-edge-11"])
         self.assertEqual(self.of("recovered")[0]["node"], "lon-edge-11")
+
+    def rebuilt_slot(self, unwarmed: int):
+        """A lost slot whose ssh stays down is rebuilt and pushed; that push
+        ends unwarmed `unwarmed` times (the deploy's exit 6)."""
+        node = self.sim.nodes["lon-edge-11"]
+        node.update(created=True, running=True)
+        controller = self.controller()
+        self.ticks(controller, 2)
+        self.crash("lon-edge-11")
+        node["ssh"] = False
+        self.sim.unwarmed["lon-edge-11"] = unwarmed
+        self.lost_at(controller, "lon-edge-11")
+        for _ in range(80):
+            self.ticks(controller, 1)
+            if ("rebuild", "lon-edge-11") in self.mutating():
+                break
+        self.assertIn(("rebuild", "lon-edge-11"), self.mutating())
+        node.update(instance="running", ssh=True)
+        return controller
+
+    def test_an_unwarmed_push_after_a_rebuild_runs_the_check_again(self):
+        """tools6: the recovery's push after a rebuild exits 6 once: not a
+        failed step; its check runs again (another push), then the node is
+        recovered."""
+        controller = self.rebuilt_slot(unwarmed=1)
+        self.ticks(controller, 12)
+        self.assertEqual(self.touching("lon-edge-11"), [("rebuild", "lon-edge-11"),
+                                                        ("push", "lon-edge-11"),
+                                                        ("push", "lon-edge-11")])
+        unwarmed = [item for item in self.of("unwarmed") if item["node"] == "lon-edge-11"]
+        self.assertEqual([(item["rerun"], item["step"]) for item in unwarmed], [(1, "rebuild")])
+        self.assertEqual(self.of("recover_failed"), [])
+        self.assertEqual(self.of("recovered")[0]["node"], "lon-edge-11")
+
+    def test_a_rebuilt_node_that_stays_unwarmed_fails_its_recovery_on_warm(self):
+        controller = self.rebuilt_slot(unwarmed=10)
+        self.ticks(controller, 20)
+        pushes = [call for call in self.touching("lon-edge-11") if call[0] == "push"]
+        self.assertEqual(len(pushes), 1 + auto.WARM_RERUNS)
+        failed = self.of("recover_failed")
+        self.assertEqual([item["node"] for item in failed], ["lon-edge-11"])
+        self.assertTrue(failed[0]["why"].startswith("warm: no complete warm record after 2"),
+                        failed[0]["why"])
+        self.assertEqual(self.of("recovered"), [])
 
     def test_more_than_two_newly_silent_across_the_mesh_is_blind(self):
         """One node silent in each of three sites in one tick: the mesh,
