@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -41,6 +42,7 @@ def contributor_service() -> dict:
 class Settings(unittest.TestCase):
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
         for target, value in ((deploy, "SETTINGS_FILE"), ):
             patcher = mock.patch.object(target, value, self.dir / "settings.json")
             patcher.start()
@@ -317,6 +319,7 @@ class Lab(unittest.TestCase):
 
     def test_the_probe_sender_follows_the_lab_settings(self):
         work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work, True)
         with mock.patch.object(lab, "WORK", work):
             lab.save("settings.json", {"pcm_epoch_samples": 24, "opus_epoch_samples": 240})
             self.assertEqual(lab.probe_epoch_samples("pcm"), 24)

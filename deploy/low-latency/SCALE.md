@@ -1599,9 +1599,12 @@ kill -INT %1; wait; scripts/edge_lab.py status
 scripts/edge_lab.py down
 ```
 
-And the offline tests (no lab, no Linode):
+And the offline tests (no lab, no Linode), each discovery with its own temp
+root under `target/test-tmp/` that must be empty afterwards (exit 3 and the
+leftovers listed when it is not; never /tmp, the dev box's shared RAM tmpfs,
+which leaked test directories filled on 25 Nov):
 
 ```sh
-python3 -m unittest discover -s scripts -p 'test_*.py'
-(cd scripts/compare && python3 -m unittest discover -s . -p 'test_*.py')
+scripts/run-tests.py                       # scripts/ and scripts/compare/
+scripts/run-tests.py scripts -- -k Drain   # one discovery, unittest's own arguments after --
 ```

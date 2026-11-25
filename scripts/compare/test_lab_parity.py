@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import threading
@@ -191,6 +192,7 @@ class Comparison(unittest.TestCase):
 class Figures(unittest.TestCase):
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
 
     def test_the_figures_of_a_clean_pass(self):
         hosts = {"lon-readers": {"unit_latency_ms": {"p50": 6.0, "p99": 7.1, "max": 9.0},
@@ -299,6 +301,7 @@ class Running(unittest.TestCase):
 
     def test_q0_and_q1_refuse_another_lab_and_record_one_that_came(self):
         out = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
         entry = {"id": "x", "owner": "someone", "worktree": "/w"}
         with mock.patch.object(parity, "OUT", out), \
                 mock.patch.object(parity, "execute", self.execute), \
@@ -361,8 +364,10 @@ class Plan(unittest.TestCase):
         self.assertIn("--no-up", video)
 
     def test_plan_and_compare_run_nothing(self):
+        out_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, True)
         with mock.patch.object(parity, "execute", side_effect=AssertionError("ran")), \
-                mock.patch.object(parity, "OUT", pathlib.Path(tempfile.mkdtemp())), \
+                mock.patch.object(parity, "OUT", out_dir), \
                 mock.patch.object(parity, "collect", lambda state:
                                   {key: copy.deepcopy(value) for key, value in agreeing().items()}):
             with contextlib.redirect_stdout(io.StringIO()) as out:
@@ -381,7 +386,9 @@ class Plan(unittest.TestCase):
     def test_an_incomplete_q1_writes_no_floor(self):
         results = agreeing()
         results["Q1"]["changes"]["roll-edges"]["null"].pop()
-        with mock.patch.object(parity, "OUT", pathlib.Path(tempfile.mkdtemp())), \
+        out_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        with mock.patch.object(parity, "OUT", out_dir), \
                 mock.patch.object(parity, "collect", lambda state: copy.deepcopy(results)), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(parity.main(["--compare"]), 1)

@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -155,6 +156,7 @@ class Numbers(unittest.TestCase):
 class Join(unittest.TestCase):
     def setUp(self):
         self.directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, True)
 
     def test_merged_topology_first_forwarders_are_the_primary(self):
         """Low-latency item 4: no backbone journals. The first forwarders
@@ -445,6 +447,7 @@ class FastPlane(unittest.TestCase):
 
     def setUp(self):
         self.directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, True)
 
     def test_a_part_that_the_tee_committed_first_follows_the_fast_path(self):
         result = analyse(NODES, fast_plane_journal(), [], STREAM, START_US)
@@ -575,6 +578,7 @@ class Epochs(unittest.TestCase):
 
     def setUp(self):
         self.directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, True)
 
     def test_epoch_of_samples(self):
         self.assertEqual(hops.epoch_us_of(48), 1000.0)

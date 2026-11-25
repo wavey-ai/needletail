@@ -22,6 +22,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,8 +122,9 @@ class Cost(unittest.TestCase):
 class Timeline(unittest.TestCase):
     def test_the_first_session_is_the_first_act(self):
         topology = hunt_tool.load_topology()
-        hunt = hunt_tool.Hunt(hunt_tool.Runner(True, pathlib.Path(tempfile.mkdtemp())),
-                              topology, TOPOLOGY, "hunttest")
+        out = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
+        hunt = hunt_tool.Hunt(hunt_tool.Runner(True, out), topology, TOPOLOGY, "hunttest")
         steps = hunt_tool.timeline(hunt)
         names = [step["name"] for step in steps]
         matrix = [hunt_tool.describe(combination) for combination in hunt_tool.MATRIX]
@@ -228,6 +230,7 @@ class DryRun(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.printed, cls.out = dry_run()
+        cls.addClassCleanup(shutil.rmtree, cls.out.parent, True)
         cls.lines = cls.printed.splitlines()
 
     def commands(self, needle: str) -> list[str]:
@@ -551,8 +554,9 @@ def watch_text(stops_ms: list[float], at_us: int = 2_000_000) -> str:
 class Replacement(unittest.TestCase):
     def hunt(self):
         topology = hunt_tool.load_topology()
-        hunt = hunt_tool.Hunt(hunt_tool.Runner(False, pathlib.Path(tempfile.mkdtemp())),
-                              topology, TOPOLOGY, "hunttest")
+        out = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
+        hunt = hunt_tool.Hunt(hunt_tool.Runner(False, out), topology, TOPOLOGY, "hunttest")
         # The sessions so far: the first 10 s of the test's clock; the
         # touched arm's touch long before them.
         hunt.record["periods"] = [

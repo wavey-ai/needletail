@@ -7,6 +7,7 @@ python3 -m unittest scripts/test_lab_environment.py"""
 from __future__ import annotations
 
 import pathlib
+import shutil
 import re
 import sys
 import tempfile
@@ -34,6 +35,7 @@ class Listed(unittest.TestCase):
 class Media(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def tree(self):
         """~/wavey.ai with the main checkout `needletail` (its media built)

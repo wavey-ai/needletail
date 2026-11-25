@@ -11,6 +11,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import re
 import shlex
 import signal
@@ -315,6 +316,7 @@ class Commands(unittest.TestCase):
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
         self.fake = FakeLab(self, self.dir)
 
     def test_the_commands_of_a_run(self):
@@ -440,7 +442,9 @@ class Arguments(unittest.TestCase):
         self.assertEqual(cr.expected_exit(parse("--expect-exit", "3", "--", "sleep", "20")), 0)
 
     def test_a_command_that_is_not_executable_is_refused_before_anything_starts(self):
-        script = pathlib.Path(tempfile.mkdtemp()) / "edge_lab.py"
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        script = directory / "edge_lab.py"
         script.write_text("print('x')\n")
         script.chmod(0o644)
         with mock.patch.object(cr, "runnable", RUNNABLE):
@@ -532,6 +536,7 @@ class Runs(unittest.TestCase):
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
         self.fake = FakeLab(self, self.dir)
         self.scenario = self.dir / "out" / "roll-edges"
 
@@ -1025,6 +1030,7 @@ class Archive(unittest.TestCase):
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
         self.fake = FakeLab(self, self.dir)
         self.data = self.dir / "data"
         (self.dir / "work" / "logs").mkdir(parents=True)
@@ -1138,6 +1144,7 @@ class Referee(unittest.TestCase):
 
     def test_the_referee_scores_the_runner_s_marks(self):
         directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
         start_us = T0 // 1000
         frames = directory / "f.csv"
         with frames.open("w", newline="") as handle:
@@ -1160,6 +1167,7 @@ class Referee(unittest.TestCase):
 
     def test_the_seconds_a_long_change_needs_are_enough_for_the_referee(self):
         directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
         span = (T0 + 45 * 10**9, T0 + 145 * 10**9)
         needed = cr.seconds_needed(span, T0)
         self.assertEqual(needed, 390)

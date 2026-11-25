@@ -2122,7 +2122,9 @@ class Plumbing(unittest.TestCase):
             mesh_ops.plan_order(mesh_ops.Lab(records), "forwarders", nodes=["contrib-lon"])
 
     def test_all_takes_named_nodes_of_every_tier_in_tier_order(self):
-        sim = Sim(Clock(), pathlib.Path(tempfile.gettempdir()))
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        sim = Sim(Clock(), directory)
         lab = mesh_ops.Lab(sim.nodes())
         self.assertEqual(mesh_ops.plan_order(lab, "all", nodes=["new-dist-a", "lon-edge-1"]),
                          ["lon-edge-1", "new-dist-a"])
