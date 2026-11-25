@@ -797,9 +797,9 @@ class ThereferesLab(unittest.TestCase):
         self.assertEqual(flagged["tok-nano"], [])           # 4.85 s: under the 5 s write
         self.assertEqual(flagged["lon-edge-2"], [])         # 0.4 s, backed already
         self.assertEqual(flagged["new-edge-2"], [])
-        # The stall-share clause at half (the lead, 24 Nov): none of the
-        # table's hosts. At a quarter it flagged ten fast first-touch hosts
-        # (the fastest spent most of their pass in long writes).
+        # The stall-share clause is off (tools6): none of the table's hosts.
+        # At a quarter it flagged ten fast first-touch hosts (the fastest
+        # spent most of their pass in long writes).
         self.assertEqual(flagged["lon-dist-a"], [])
         self.assertEqual(flagged["contrib-lon"], [])
         self.assertEqual(flagged["tok-view"], [])
@@ -912,8 +912,10 @@ class SlowHostRule(unittest.TestCase):
 
     def test_the_defaults(self):
         self.assertEqual(self.SETTINGS["node_warm_slow_write_ms"], 5000)
-        # The lead, 24 Nov: half (at a quarter it flagged ten fast first-touch hosts).
-        self.assertEqual(self.SETTINGS["node_warm_slow_stall_share_permille"], 500)
+        # tools6: the stall-share clause is off (cmpd8's table: no value
+        # separates the hosts that stopped later); at a quarter it flagged
+        # ten fast first-touch hosts, at half 22 of cmpd8's 30.
+        self.assertIsNone(self.SETTINGS["node_warm_slow_stall_share_permille"])
         self.assertEqual(self.SETTINGS["node_warm_slow_seconds_per_4gb"], 180)
 
     def test_the_hunt_s_touched_edge_is_not_slow(self):
@@ -942,18 +944,54 @@ class SlowHostRule(unittest.TestCase):
                          [])
 
     def test_half_of_the_pass_in_stalls(self):
+        # Off by default: the share is recorded, never a reason.
+        out = self.judged(stalled_us=139_000_000, threads=2)
+        self.assertEqual(out["slow_reasons"], [])
+        self.assertEqual(out["stall_share_permille"], 993)
+        half = {**self.SETTINGS, "node_warm_slow_stall_share_permille": 500}
         # 70 s on two threads: 140 thread-s; half is 70 s.
         many = [{"ms": 300.0}] * 230                       # 69 s
-        self.assertEqual(self.judged(stalls=many)["slow_reasons"], [])
-        self.assertEqual(self.judged(stalls=many + [{"ms": 3000.0}])["slow_reasons"],
+        self.assertEqual(self.judged(half, stalls=many)["slow_reasons"], [])
+        self.assertEqual(self.judged(half, stalls=many + [{"ms": 3000.0}])["slow_reasons"],
                          ["stall-share"])
         # Dropped stalls count at 100 ms each (a lower bound).
-        self.assertEqual(self.judged(stalls=many, stalls_dropped=11)["slow_reasons"],
+        self.assertEqual(self.judged(half, stalls=many, stalls_dropped=11)["slow_reasons"],
                          ["stall-share"])
         # nodecheck's own total and thread count win when it gives them.
-        self.assertEqual(self.judged(stalled_us=36_000_000, threads=1)["slow_reasons"],
+        self.assertEqual(self.judged(half, stalled_us=36_000_000, threads=1)["slow_reasons"],
                          ["stall-share"])
-        self.assertEqual(self.judged(stalls=many, stalled_us=1_000_000)["slow_reasons"], [])
+        self.assertEqual(self.judged(half, stalls=many, stalled_us=1_000_000)["slow_reasons"],
+                         [])
+
+    # cmpd8 (25 Nov): each host's warm pass at push (lab state's
+    # deployed.warm: stall_share_permille, seconds) and its worst heartbeat
+    # stop in any step afterwards (needletail-compare evidence
+    # 20261125-4k-wave11-host-stops.json, every session; 0: none of 20 ms).
+    CMPD8 = {
+        "lon-dist-a": (0, 25), "syd-dist-b": (0, 0), "syd-edge-2": (0, 0), "new-view": (0, 492),
+        "syd-nano": (0, 1122), "syd-view": (0, 3291), "new-lk": (58, 0), "new-edge-2": (189, 27),
+        "new-nano": (354, 1020), "new-dist-b": (540, 47), "new-dist-a": (549, 20),
+        "lon-lk": (638, 0), "tok-edge-2": (649, 0), "syd-dist-a": (656, 20),
+        "tok-dist-b": (661, 0), "new-edge-1": (661, 70), "tok-view": (680, 2870),
+        "lon-edge-1": (717, 63), "lon-src": (748, 0), "tok-edge-1": (759, 0),
+        "lon-edge-2": (811, 546), "tok-lk": (845, 0), "tok-dist-a": (849, 42),
+        "syd-lk": (869, 0), "lon-nano": (880, 1640), "lon-view": (884, 2955),
+        "tok-nano": (884, 1811), "syd-edge-1": (891, 231), "lon-dist-b": (918, 506),
+        "lk-redis": (924, 0)}
+
+    def test_no_share_separates_cmpd8_s_hosts_that_stopped(self):
+        """Why the clause is off: for every threshold of the share, hosts
+        that later stopped for 100 ms or more fall on both sides, or hosts
+        that never did are flagged; the best threshold still misjudges 7 of
+        30."""
+        bad = {name for name, (_share, stop) in self.CMPD8.items() if stop >= 100}
+        best = len(self.CMPD8)
+        for threshold in range(0, 1001):
+            flagged = {name for name, (share, _stop) in self.CMPD8.items() if share > threshold}
+            best = min(best, len(flagged ^ bad))
+        self.assertEqual(best, 7)
+        self.assertEqual(sorted(name for name in bad if self.CMPD8[name][0] == 0),
+                         ["new-view", "syd-nano", "syd-view"])
 
     def test_a_timeout_and_the_settings(self):
         self.assertIn("warm-timeout", self.judged(finished=False, seconds=300.0)["slow_reasons"])

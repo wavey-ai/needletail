@@ -1102,7 +1102,7 @@ through `node_overrides`; scale-run's settings for this topology
 `transparent_hugepage=madvise`. At their defaults and named because they
 matter: `node_warm` true (the boot warm pass, bound 300 s per 4 GB) and the
 slow-host rule (`node_warm_slow_seconds_per_4gb` 180,
-`node_warm_slow_write_ms` 5000, `node_warm_slow_stall_share_permille` 250;
+`node_warm_slow_write_ms` 5000; `node_warm_slow_stall_share_permille` off since tools6, the share kept in every record;
 reported only: push's `--slow-host` and the autoscaler default to report
 since 24 Nov, `--slow-host replace` replaces an edge once, waiting for its
 new instance's ssh; every host's warm figures go into the deployed record's
@@ -1113,7 +1113,8 @@ whose touch is not proved). On the referee's lab of 24 Nov (31 hosts) the
 pass and the 5 s write flag tok-edge-1 and tok-lk only; the quarter clause,
 counting each write of 100 ms or more at 100 ms, flags ten more (the hosts
 that passed fastest spent most of their pass in long writes): it does not
-pick out the slow hosts, so read it as data, not as a verdict; `net.core.rmem_max=134217728` (rendered by default
+pick out the slow hosts, so read it as data, not as a verdict (on cmpd8's 30 hosts no value of the
+share separates the hosts that stopped later, three of them at share 0, so the clause left the verdict); `net.core.rmem_max=134217728` (rendered by default
 since integration 4); the UDP client's two paths and spare
 (`--paths 2 --spare true`), the one-path control `--paths 1 --spare false`.
 

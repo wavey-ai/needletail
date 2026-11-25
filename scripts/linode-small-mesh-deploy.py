@@ -810,15 +810,21 @@ DEFAULT_SETTINGS = {
     # deploy judges each warm record itself (judge_warm) and a host is slow
     # when the pass took more than node_warm_slow_seconds_per_4gb for every
     # 4 GB of its memory, or one page write stalled
-    # node_warm_slow_write_ms or more, or more than
-    # node_warm_slow_stall_share_permille of the pass's thread time went in
-    # writes of 100 ms or more. An edge (standby and slot edges included)
-    # that is slow is replaced once; any other host is reported.
+    # node_warm_slow_write_ms or more. An edge (standby and slot edges
+    # included) that is slow is replaced once; any other host is reported.
+    # The stall-share clause (more than node_warm_slow_stall_share_permille
+    # of the pass's thread time in writes of 100 ms or more) is off (None):
+    # tools6, on cmpd8's warm table (30 hosts, the whole of MemAvailable
+    # written), no value of the share separates the hosts that stopped
+    # later (heartbeat stops of 0.1 to 3.3 s; three of them at share 0) from
+    # those that did not (share up to 924); at 500 it flagged 22 of 30.
+    # Every record keeps the figure (stall_share_permille); a value from 1
+    # to 1000 puts the clause back for a run.
     "node_warm": True,
     "node_warm_max_seconds_per_4gb": 300,
     "node_warm_slow_seconds_per_4gb": 180,
     "node_warm_slow_write_ms": 5000,
-    "node_warm_slow_stall_share_permille": 500,
+    "node_warm_slow_stall_share_permille": None,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
@@ -1171,12 +1177,14 @@ def judge_warm(record: dict | None, settings: dict, node: dict | None) -> dict |
                     for every 4 GB of its memory (MemTotal as the record
                     gives it, else its plan's);
       page-stall    one page write took node_warm_slow_write_ms or more;
-      stall-share   more than node_warm_slow_stall_share_permille of the
+      stall-share   only when node_warm_slow_stall_share_permille is set
+                    (off by default, tools6): more than that share of the
                     pass's thread time (seconds x threads) went in writes of
                     100 ms or more: the record's stalled_us when nodecheck
                     gives it, else its listed stalls plus every dropped one
                     at 100 ms (a lower bound); threads from the record, else
-                    the plan's vCPUs;
+                    the plan's vCPUs. The share is recorded either way
+                    (stall_share_permille);
       warm-timeout  the pass did not finish within its limit.
     A record without a warm pass is returned as it is; None stays None."""
     if not record or not isinstance(record.get("warm"), dict) or not record["warm"].get("ran", True):
@@ -1204,9 +1212,8 @@ def judge_warm(record: dict | None, settings: dict, node: dict | None) -> dict |
         stall_ms = float(warm.get("stall_ms") or NODE_WARM_STALL_MS)
         stalled_us = (sum(float(item.get("ms") or 0.0) for item in warm.get("stalls") or [])
                       + int(warm.get("stalls_dropped") or 0) * stall_ms) * 1000.0
-    share = int(settings.get("node_warm_slow_stall_share_permille")
-                or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
-    if seconds > 0 and float(stalled_us) > share / 1000.0 * seconds * 1e6 * threads:
+    share = settings.get("node_warm_slow_stall_share_permille")
+    if share and seconds > 0 and float(stalled_us) > int(share) / 1000.0 * seconds * 1e6 * threads:
         reasons.append("stall-share")
     if warm.get("finished") is False:
         reasons.append("warm-timeout")
@@ -3917,8 +3924,9 @@ def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
     if settings.get("node_warm"):
         slow = int(settings.get("node_warm_slow_seconds_per_4gb")
                    or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
-        share = int(settings.get("node_warm_slow_stall_share_permille")
-                    or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
+        # The clause off (None): 1000, which no pass can pass (more than all
+        # of its thread time), so that nodecheck's own slow_host agrees.
+        share = int(settings.get("node_warm_slow_stall_share_permille") or 1000)
         warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
                 f"{warm_max_seconds(settings, node)} --slow-write-ms {slow_write_ms(settings)} "
                 f"--slow-seconds-per-4gb {slow} --slow-stall-share-permille {share}")

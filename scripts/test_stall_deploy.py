@@ -189,7 +189,7 @@ class Units(Base):
                 self.assertIn(
                     "needletail-nodecheck boot --out /run/needletail/node-warm.json --warm \\\n"
                     f"  --warm-leave-mb 300 --warm-max-seconds {warm} --slow-write-ms 5000 "
-                    "--slow-seconds-per-4gb 180 --slow-stall-share-permille 500 \\\n"
+                    "--slow-seconds-per-4gb 180 --slow-stall-share-permille 1000 \\\n"
                     "  --check-seconds 0 --max-stop-ms 20 --max-steal-permille 10\n", check)
                 self.assertIn(f"\nTimeoutStartSec={timeout}\n", check)
                 self.assertEqual(deploy.check_timeout_s(settings, node), timeout)
