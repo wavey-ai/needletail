@@ -39,6 +39,7 @@ import pathlib
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -103,6 +104,8 @@ STATS_SAMPLER = (
     "rm -f /var/tmp/compare-meshlocal.log; "
     "[ -f /var/tmp/compare-apinode.log ] && cat /var/tmp/compare-apinode.log >>/var/tmp/compare-apinode.carry; "
     "rm -f /var/tmp/compare-apinode.log; "
+    "[ -f /var/tmp/compare-assign.log ] && cat /var/tmp/compare-assign.log >>/var/tmp/compare-assign.carry; "
+    "rm -f /var/tmp/compare-assign.log; "
     "cat >/var/tmp/compare-stats.sh <<'EOS'\n"
     "echo $$ >/var/tmp/compare-stats.pid\n"
     "while true; do\n"
@@ -133,7 +136,10 @@ STATS_SAMPLER = (
     "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(mesh)s' | tr -d '\\n')\" >>/var/tmp/compare-meshlocal.log\n"
     # The node's own report (lead, 24 Nov: relay_counters, the fast lane and tee
     # counters, per-stream missed_10s, the warm figures), in a file of its own.
-    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(node)s' | tr -d '\\n')\" >>/var/tmp/compare-apinode.log; sleep 1\n"
+    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(node)s' | tr -d '\\n')\" >>/var/tmp/compare-apinode.log\n"
+    # Assignment as the node serves it (lead, 26 Nov: fast_lane.send_defer, subscribers
+    # per edge), stream 1 (4K), in a file of its own.
+    "  echo \"$(date +%%s.%%N) $(curl -sk --max-time 0.5 '%(assign)s' | tr -d '\\n')\" >>/var/tmp/compare-assign.log; sleep 1\n"
     "done\n"
     "EOS\n"
     "(setsid nohup sh /var/tmp/compare-stats.sh >/var/tmp/compare-stats.log 2>&1 </dev/null &)")
@@ -208,6 +214,30 @@ NIC_INFO = ("uname -a; for i in eth0 eth1; do [ -e /sys/class/net/$i ] || contin
             "echo \"== $i channels\"; ethtool -l $i 2>&1; echo \"== $i statistics\"; ethtool -S $i 2>&1; done")
 
 
+# Once a second on the measurement (load) hosts (lead, 26 Nov: the viewers' own
+# losses and scheduling): the kernel's UDP counters, every UDP socket's drop
+# counter (skmem d) with its owning process, and for each client process its
+# CPU ticks and /proc/<pid>/schedstat (run time ns, run-queue wait ns, slices).
+VIEWER_SAMPLER = (
+    "[ -f /var/tmp/compare-viewer.pid ] && kill $(cat /var/tmp/compare-viewer.pid) 2>/dev/null; "
+    "[ -f /var/tmp/compare-viewer.log ] && cat /var/tmp/compare-viewer.log >>/var/tmp/compare-viewer.carry; "
+    "cat >/var/tmp/compare-viewer.sh <<'EOS'\n"
+    "echo $$ >/var/tmp/compare-viewer.pid\n"
+    "while true; do\n"
+    "  udp=\"$(nstat -az UdpInDatagrams UdpRcvbufErrors UdpSndbufErrors UdpInErrors UdpMemErrors 2>/dev/null | awk 'NR>1{printf \"%s=%s \", $1, $2}')\"\n"
+    "  drops=\"$(ss -uampn 2>/dev/null | awk 'NR>1{a=$4; p=\"\"; if (match($0,/pid=[0-9]+/)) p=substr($0,RSTART+4,RLENGTH-4); "
+    "getline; if (p != \"\" && match($0,/,d[0-9]+\\)/)) printf \"%s/%s=%s \", a, p, substr($0,RSTART+2,RLENGTH-3)}')\"\n"
+    # Process names as the kernel keeps them (15 characters): needletail-udp-client is
+    # needletail-udp-.
+    "  procs=\"\"; for name in needletail-udp- ntcmp needletail-load ntcmp-lk; do for pid in $(pgrep -x $name); do\n"
+    "    procs=\"$procs $name/$pid=$(awk '{print $14+$15}' /proc/$pid/stat 2>/dev/null):$(tr ' ' ':' </proc/$pid/schedstat 2>/dev/null)\"\n"
+    "  done; done\n"
+    "  echo \"$(date +%s.%N) | $udp| sockdrops $drops| procs$procs\"; sleep 1\n"
+    "done\n"
+    "EOS\n"
+    "(setsid nohup sh /var/tmp/compare-viewer.sh >/var/tmp/compare-viewer.log 2>&1 </dev/null &)")
+
+
 def stats_url(item: dict) -> str:
     port = 19443 if item["role"] == "contributor" else 19444
     return f"https://{item['public_ipv4']}:{port}/api/stats"
@@ -222,8 +252,11 @@ def start_samplers(session: "Session") -> list[dict]:
     common.parallel([item for item in sampled if item["role"] in ("contributor", "distributor", "edge")],
                     lambda item: common.ssh(item, STATS_SAMPLER % {"url": stats_url(item),
                                                                     "mesh": stats_url(item).replace("/api/stats", "/api/mesh/local"),
-                                                                    "node": stats_url(item).replace("/api/stats", "/api/node")},
+                                                                    "node": stats_url(item).replace("/api/stats", "/api/node"),
+                                                                    "assign": stats_url(item).replace("/api/stats", "/api/assignment?stream=1")},
                                            check=False))
+    common.parallel([item for item in sampled if item["role"] == "load"],
+                    lambda item: common.ssh(item, VIEWER_SAMPLER, check=False))
     common.parallel(sampled, lambda item: common.ssh(item, SYS_SAMPLER + "\n" + HEARTBEAT, check=False))
     (session.dir / "samplers").mkdir(parents=True, exist_ok=True)
 
@@ -253,6 +286,12 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                       "2>/dev/null; rm -f $f; done; cat /var/tmp/compare-heartbeat.*.log 2>/dev/null; "
                                       "rm -f /var/tmp/compare-heartbeat.*.log", check=False, timeout=120)
         (session.dir / "samplers" / f"{item['name']}.heartbeat.{int(time.time())}.log").write_text(beats + "\n")
+        if item["role"] == "load":
+            viewer = common.ssh_text(item, "kill $(cat /var/tmp/compare-viewer.pid) 2>/dev/null; "
+                                           "cat /var/tmp/compare-viewer.carry /var/tmp/compare-viewer.log 2>/dev/null; "
+                                           "rm -f /var/tmp/compare-viewer.carry /var/tmp/compare-viewer.log",
+                                     check=False, timeout=300)
+            (session.dir / "samplers" / f"{item['name']}.viewer.{int(time.time())}.log").write_text(viewer + "\n")
         if item["role"] in ("contributor", "distributor", "edge"):
             stats = common.ssh_text(item, "kill $(cat /var/tmp/compare-stats.pid) 2>/dev/null; "
                                           "cat /var/tmp/compare-stats.carry /var/tmp/compare-stats.log 2>/dev/null; "
@@ -266,6 +305,10 @@ def collect_samplers(session: "Session", sampled: list[dict]) -> None:
                                          "rm -f /var/tmp/compare-apinode.carry /var/tmp/compare-apinode.log",
                                    check=False, timeout=300)
             (session.dir / "samplers" / f"{item['name']}.apinode.{int(time.time())}.log").write_text(node + "\n")
+            assign = common.ssh_text(item, "cat /var/tmp/compare-assign.carry /var/tmp/compare-assign.log 2>/dev/null; "
+                                           "rm -f /var/tmp/compare-assign.carry /var/tmp/compare-assign.log",
+                                     check=False, timeout=300)
+            (session.dir / "samplers" / f"{item['name']}.assign.{int(time.time())}.log").write_text(assign + "\n")
             # The node's own stop journal (per-CPU ticks, each stop classed as
             # stopped, starved or own work), on builds that serve it.
             url = stats_url(item).replace("/api/stats", "/api/stalls")
@@ -392,11 +435,8 @@ class Lane:
             contributor = s.node("contrib-lon")
             common.ssh(contributor, "systemctl restart needletail-contrib.service; sleep 3; "
                                     "systemctl is-active needletail-contrib.service")
-            target = f"rtmp://{contributor['vlan_ipv4']}:19350/live/needletail-lab"
             video_started = time.time()
-            src(s, background("nt", (
-                f"ntcmp flv --clip {clip} --no-audio | ffmpeg -hide_banner -loglevel warning "
-                f"-nostdin -f flv -i pipe:0 -c copy -f flv {target}")))
+            src(s, background("nt", self.nt_video(rung)))
             self.audio_start = None
             if s.audio != "off":
                 # The 1 ms audio lane, from the same 64-second PCM, started on a
@@ -482,6 +522,29 @@ class Lane:
             raise RuntimeError(f"{self.name}: the source is not running: "
                                + src(s, "tail -c 600 *.log", check=False))
 
+    def nt_video(self, rung: str) -> str:
+        """Needletail's video sender: the clip as FLV, published over RTMP to the contributor."""
+        contributor = self.session.node("contrib-lon")
+        target = f"rtmp://{contributor['vlan_ipv4']}:19350/live/needletail-lab"
+        return (f"ntcmp flv --clip {REMOTE}/clips/{rung} --no-audio | ffmpeg -hide_banner -loglevel warning "
+                f"-nostdin -f flv -i pipe:0 -c copy -f flv {target}")
+
+    def restart_video(self, rung: str) -> dict:
+        """A new publish of the video on a running mesh and contributor (lead, 26 Nov:
+        cell 4's back-to-back sessions): the video sender alone is stopped and
+        started again; the contributor service and the audio sender keep running.
+        Returns the stop and start times (Unix s)."""
+        s = self.session
+        stopped = time.time()
+        src(s, "pkill -x ntcmp; pkill -x ffmpeg; sleep 0.5; "
+               "for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x ffmpeg >/dev/null || break; sleep 0.2; done; "
+               "mv -f nt.log nt.prev.log 2>/dev/null; true", check=False)
+        started = time.time()
+        src(s, background("nt", self.nt_video(rung)))
+        time.sleep(1)
+        alive = src(s, "pgrep -c -x ntcmp", check=False).strip()
+        return {"stopped_unix": stopped, "started_unix": started, "sender_running": alive not in ("", "0")}
+
     def wait_hls(self) -> None:
         deadline = time.time() + 90
         while time.time() < deadline:
@@ -528,7 +591,8 @@ class Lane:
             # RaptorQ FEC over UDP from the assigned edge, measured by the same index.
             return (f"date +%s.%N >{out}.launch; /usr/local/bin/needletail-udp-client --entry {self.entry(site)} "
                     f"--stream 1 --tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
-                    f"--session {tag}uc --arrivals {out}.arrivals.csv --write-parts {out}.parts.bin "
+                    + (f"--receive-buffer-bytes {s.uc_receive_buffer} " if getattr(s, "uc_receive_buffer", 0) else "")
+                    + f"--session {tag}uc --arrivals {out}.arrivals.csv --write-parts {out}.parts.bin "
                     f">{out}.uc.json 2>{out}.uc.err; ntcmp udp-ingest --arrivals {out}.arrivals.csv "
                     f"--parts {out}.parts.bin --started $(cat {out}.launch) --index {index} --lane nt-uc "
                     f"--label {tag} --client {out}.uc.json --report {out}.json "
@@ -633,8 +697,9 @@ def run_hosts(session: Session, step: str, scripts: dict[str, str], seconds: int
             note = result.stderr.decode(errors="replace")[-400:]
         except subprocess.TimeoutExpired:
             # Keep what the host has: stop its probes, then copy the results.
-            common.ssh(item, "for p in ntcmp ntcmp-lk node chrome needletail-udp-client aep1-48k-probe "
-                             "needletail-reader; do pkill -x $p; done; compare-netem clear >/dev/null 2>&1; true",
+            # By the kernel's 15-character names: needletail-udp-client is needletail-udp-.
+            common.ssh(item, "for p in ntcmp ntcmp-lk node chrome needletail-udp- aep1-48k-probe "
+                             "needletail-read needletail-load; do pkill -x $p; done; compare-netem clear >/dev/null 2>&1; true",
                        check=False, timeout=60)
             note = f"timed out after {seconds + 150} s; its probes were stopped and the results copied"
         try:
@@ -803,10 +868,50 @@ def rung_seconds(session: Session, rung: str, seconds: int) -> int:
     return max(seconds, long) if long and rate >= getattr(session, "long_from_mbit", 160) else seconds
 
 
+def idle_step(session: Session, name: str, seconds: int) -> None:
+    """The sources stopped and the samplers running for `seconds`: a step of its own."""
+    stop_sources(session)
+    step_dir = session.dir / name
+    step_dir.mkdir(exist_ok=True)
+    started = time.time()
+    log(f"{name}: {seconds} s with no source, samplers running")
+    time.sleep(seconds)
+    (step_dir / "meta.json").write_text(json.dumps(
+        {"step": name, "lane": "nt", "phase": "idle", "detail": name.split(".")[-1],
+         "rung": None, "session": session.name, "started_unix": started,
+         "seconds": round(time.time() - started, 1)}, indent=1) + "\n")
+    session.steps.append({"step": name, "seconds": seconds, "host_errors": 0})
+
+
+def restarter(lane: Lane, rung: str, every: int, count: int, record: list) -> threading.Thread:
+    """Restart the video sender `count` times, every `every` s from now (held sessions)."""
+    origin = time.time()
+
+    def run() -> None:
+        for i in range(1, count + 1):
+            time.sleep(max(0.0, origin + i * every - time.time()))
+            try:
+                record.append({"session": i + 1, **lane.restart_video(rung)})
+                log(f"  video sender restarted: session {i + 1} of {count + 1}")
+            except Exception as error:  # noqa: BLE001
+                record.append({"session": i + 1, "error": f"{type(error).__name__}: {error}"[:400]})
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
 def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str] | None = None) -> None:
     failed = 0
-    for rung in rungs or THROUGHPUT:
+    rungs = rungs or THROUGHPUT
+    held = getattr(session, "held_sessions", 0) or 0
+    lean = lane.name == "nt" and getattr(session, "lean", False)
+    for number, rung in enumerate(rungs):
+        if number and getattr(session, "idle_between_seconds", 0) and lane.name == "nt":
+            idle_step(session, f"nt.idle.before-{rung}", session.idle_between_seconds)
         seconds = rung_seconds(session, rung, base_seconds)
+        each = seconds
+        if held > 1:
+            seconds = each * held
         try:
             lane.start(rung)
         except RuntimeError as error:
@@ -825,16 +930,19 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
             # --udp-only (lead, 25 Nov, an A/B cell): Needletail's UDP 4K viewers only,
             # no LL-HLS 4K reader of any kind on the edges (the audio listeners stay).
             udp_only = lane.name == "nt" and getattr(session, "udp_only", False)
-            nano = [] if udp_only else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")]
+            # --lean (lead, 26 Nov, integration 6): two UDP 4K viewers a region (-view and
+            # -nano) and exactly one LL-HLS 4K reader (the HTTP/2 chase probe on -view);
+            # no HTTP/3 probe, needletail-reader or Chrome.
+            nano = [] if udp_only or lean else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")]
             view = [] if udp_only else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")]
             if lane.name == "nt":
-                if not udp_only:
+                if not udp_only and not lean:
                     view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
                 view.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-view", "uc"))
                 nano.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-nano", "uc"))
-            if rung in CHROME_UP_TO and not udp_only:
+            if rung in CHROME_UP_TO and not udp_only and not lean:
                 view.append(lane.player(site, seconds, "player", tag))
-            if lane.name == "nt" and not udp_only:
+            if lane.name == "nt" and not udp_only and not lean:
                 view.append(lane.reader(site, seconds, "reader", tag))
             if lane.name == "nt" and session.audio == "pcm":
                 # What 4K costs an audio listener: the audio headline's 1 ms PCM
@@ -849,7 +957,15 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
             scripts[f"{site}-view"] = sample.format(body=together(*view))
         audio_meta = ({"config": "pcm", "lanes": ["nt-pcm", "nt-uc"], "nt_uc_base": "nt-pcm",
                        "nt_pcm_epoch_samples": 48, "nt_frame_ms": {"nt-pcm": 1.0}}
-                      if lane.name == "nt" and session.audio == "pcm" else None)
+                      if lane.name == "nt" and session.audio == "pcm" else None) or {}
+        audio_meta.update({"lean": lean, "uc_receive_buffer_bytes": getattr(session, "uc_receive_buffer", 0) or None})
+        restarts: list = []
+        if held > 1 and lane.name == "nt":
+            # Held sessions (lead, 26 Nov, cell 4): the probes run through `held` sessions
+            # of `each` s; the video sender alone restarts between them.
+            audio_meta.update({"held_sessions": held, "session_seconds": each,
+                               "session1_started_unix": time.time(), "restarts": restarts})
+            restarter(lane, rung, each, held - 1, restarts)
         step(session, lane, "throughput", rung, rung, scripts, seconds, audio_meta)
         verdict = carried(session, f"{lane.name}.throughput.{rung}", seconds)
         log(f"  carried whole: {' '.join(site for site, ok in verdict.items() if ok) or 'nowhere'}")
@@ -938,6 +1054,18 @@ def main() -> None:
                              "pcm (the audio headline's lane, stream 4001, with an LL-HLS and a UDP "
                              "audio probe in each region of a throughput step), flac (waves 5 to 9's "
                              "lane, no audio probes) or off (pure video: label the session so)")
+    parser.add_argument("--lean", action="store_true",
+                        help="Needletail's throughput steps with two UDP 4K viewers a region (-view, -nano) and "
+                             "one LL-HLS 4K reader (the HTTP/2 probe on -view); no HTTP/3, needletail-reader "
+                             "or Chrome (lead, 26 Nov)")
+    parser.add_argument("--uc-receive-buffer-bytes", type=int, default=0,
+                        help="--receive-buffer-bytes of the 4K UDP viewers (0: the client's default)")
+    parser.add_argument("--idle-between-seconds", type=int, default=0,
+                        help="Needletail's throughput rungs with this long idle between them (sources stopped, "
+                             "samplers running; steps nt.idle.before-RUNG)")
+    parser.add_argument("--held-sessions", type=int, default=0,
+                        help="each Needletail throughput step holds its probes through this many sessions of "
+                             "the step's length; the video sender alone restarts between them")
     parser.add_argument("--pace", type=float, default=2.5,
                         help="a WebRTC sender spreads a frame at this multiple of the clip bit rate")
     args = parser.parse_args()
@@ -947,6 +1075,8 @@ def main() -> None:
     session.long_seconds, session.long_from_mbit = args.long_seconds, args.long_from_mbit
     session.idle_after_seconds = args.idle_after_seconds
     session.udp_only = args.udp_only
+    session.lean, session.uc_receive_buffer = args.lean, args.uc_receive_buffer_bytes
+    session.idle_between_seconds, session.held_sessions = args.idle_between_seconds, args.held_sessions
     # Name and addresses of every node, so that a listener's edge (the LL-HLS
     # probe's playlist_url_host) can be named afterwards.
     (session.dir / "lab-nodes.json").write_text(json.dumps(

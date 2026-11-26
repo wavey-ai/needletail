@@ -59,6 +59,8 @@ WHAT = [
     (r"analysis\.json$", "analysis", "cached analysis of the step (analysis_version inside)", "ms"),
     (r"samplers/[^/]+\.stats\.\d+\.log$", "samples", "1 s raw: unix_s | UDP errors (with UdpMemErrors) | socket drops | vm (guest /proc/vmstat, MemFree) | cg (the service cgroup: memory.current, memory.events) | sockstat (UDP inuse, mem pages) | qdisc (root dropped:overlimits:requeues per device) | /api/stats", None),
     (r"samplers/[^/]+\.apinode\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/node JSON (relay_counters, fast lane and tee counters, missed_10s, warm)", None),
+    (r"samplers/[^/]+\.assign\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/assignment?stream=1 JSON (fast_lane.send_defer, subscribers per edge)", None),
+    (r"samplers/[^/]+\.viewer\.\d+\.log$", "samples", "1 s raw on a measurement host: unix_s | kernel UDP counters | each UDP socket's drops (address/pid=drops) | client processes name/pid=cpu_ticks:run_ns:runqueue_wait_ns:slices", None),
     (r"samplers/[^/]+\.meshlocal\.\d+\.log$", "samples", "1 s raw: unix_s, then the node's /api/mesh/local JSON (fast_plane faults, loop lag)", None),
     (r"samplers/[^/]+\.stalls\.\d+\.json$", "node-logs", "the node's stop journal (/api/stalls)", None),
     (r"samplers/[^/]+\.sys\.\d+\.log$", "samples", "1 s raw, 'unix_s S kind ...': per-CPU /proc/stat, /proc/interrupts, /proc/softirqs, /proc/net/softnet_stat, each service thread's /proc/<pid>/task/<tid>/stat (utime, stime, last CPU)", None),
@@ -105,7 +107,7 @@ def convert_samplers(samplers: pathlib.Path, out: pathlib.Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     for path in sorted(samplers.glob("*.log")):
         name = path.name
-        if ".apinode." in name:
+        if ".apinode." in name or ".assign." in name or ".viewer." in name:
             continue        # kept raw only (see WHAT)
         if ".meshlocal." in name:
             lines = []
