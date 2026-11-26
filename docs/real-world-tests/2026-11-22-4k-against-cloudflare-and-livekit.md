@@ -59,7 +59,7 @@ The lead stated its claims before the run:
 | Ladder 80 / 164 / 247 / 333, 120 s each, 60 s idle between | 80, 164 whole; **247 not whole** (99.44%, 0 missing, 15 late, 122 ms); 333 whole | whole to 247; 333 not (90.8%) | whole to 247; 333 not (97.6%) | whole to 247; 333 not (66.8%) |
 | 247 for 300 s | whole on lon-nano only; lon-view joined 211 s late (see below) | whole (new-view 99.70%, 395 ms) | whole | whole (syd-nano joined 98 s late; syd-view 92.8%) |
 | 247 for 300 s, -nano viewer 20 s after -view (lead's extra cell) | whole (both 100%) | not whole (98.1%, 804 ms) | not whole (97.5%, 3.6 s) | not whole (96.9%, 3.6 s) |
-| Three 100 s sessions at 247, viewers held, video sender restarted | not whole in any session | not whole in any session | not whole in any session | not whole in any session |
+| Three 100 s sessions at 247, viewers held, video sender restarted | session 1 not whole; 2 and 3 unscored | session 1 not whole; 2 and 3 unscored | session 1 not whole; 2 and 3 unscored | session 1 not whole; 2 and 3 unscored |
 | A/B: part_repair_group on, 247 for 120 s | whole | not whole (93.7%) | not whole (94.4%) | not whole (93.2%) |
 
 - **Claim (a) does not hold as stated.** The ladder was whole to 247 in New York,
@@ -82,15 +82,21 @@ The lead stated its claims before the run:
     remembered while lon-edge-2 had room.
   - Staggering the second viewer by 20 s ended the refusals but not the packing:
     London's two viewers still shared lon-edge-1.
-  - Held sessions: after the first restart of the video sender, every UDP 4K
-    viewer stopped receiving. All 8 clients report two session restarts, a
-    longest silence of 59–72 s and 80–97 s of silence at the end of 207 s of
-    sessions 2 and 3. The LL-HLS readers in New York and Tokyo were served in
-    session 2 (100%) and session 3 (88–93%), so the mesh carried the new
-    sessions and the UDP fast lane did not deliver them to held viewers. The
-    clients' arrivals files hold session 1 only, so sessions 2 and 3 cannot be
-    scored frame by frame; the client counters are the evidence. Session 1 was
-    97.0–98.5% for the better viewer everywhere.
+  - Held sessions: session 1 was not whole anywhere (97.0–98.5% for the better
+    viewer). Sessions 2 and 3 cannot be scored. *Corrected 26 November:* an
+    earlier version of this section said the held viewers went silent after
+    the restarts. That was wrong, an artefact of the UDP client's recorder.
+    - Each restart of the video sender is a new publish, and its parts are
+      numbered from 0 again. The client kept its ledger, its ordered writer and
+      its silence clock by part number alone. So the later sessions' parts were
+      counted as duplicates (3,638–3,683 per viewer) and never reached the
+      silence clock or the arrivals file.
+    - Each client's per-edge receipt counts add up to 7,034–7,079 parts over the
+      three sessions. That is 8–55 parts per viewer short of what was due, by the
+      lead's count of the due parts.
+    - Delivery was therefore nearly whole, not silent. It cannot be scored by the
+      record's rule, because the parts were never written to disk. The lead has
+      fixed the recorder for its next build.
 - **Claim (c): nothing missing holds; "no worse than cmpd8" does not, for p99.**
   The 1 ms PCM UDP listener lost no part in any region in any 4K cell, the held
   one included (its sender was not restarted). Beside 4K its p99 was London
@@ -104,25 +110,34 @@ The lead stated its claims before the run:
   300 s cell the forwarders' RSS rose and only partly fell back: lon-dist-a went
   from 1,074 MB to a peak of 1,494 and ended at 1,197; lon-dist-b from 1,055 to
   1,486, ending at 1,200; new-dist-a from 1,075 to 1,220, ending at 1,146.
-- **The long-haul stalls come from London's first hop.** In the stagger cell
-  both London forwarders hit fast-plane WouldBlock in bursts at 02:33:39–41,
-  02:34:55–58, 02:36:07, 02:37:44–45 and 02:37:59–02:38:02. Their send-defer pools
-  expired about 86,500 and 90,400 entries in those bursts. The other three regions'
-  late frames fall in the same seconds, and London's viewers had none. The
-  forwarders' egress (eth0 plus VLAN, from raw transmit bytes) ran at a median
-  1,222 Mbit/s with p95 1,350 and peaks of about 1,700. That is above the plan of
-  1,186 and the 1,200 limit for a g6-dedicated-4. Some blocked seconds fell to
-  650–740 Mbit/s, which looks like a stalled send path rather than a full one.
-  The lead is analysing the ladder's 247 rung and the A/B cell, which show the
-  same pattern of London whole and the others late.
+- **The long-haul stalls come from London's first hop.**
+  - In the stagger cell London's forwarders hit fast-plane WouldBlock in bursts,
+    taking turns: lon-dist-a at 02:34:55–58 and 02:37:44–45, lon-dist-b at 02:36:07
+    and 02:37:59–02:38:02. Both blocked together only at 02:33:39–41, which was
+    before the scored step.
+  - Their send-defer pools expired about 86,500 and 90,400 entries in those bursts.
+  - The other three regions' late frames fall in the same seconds; London's
+    viewers, fed over the VLAN, had none.
+  - Egress per forwarder (eth0 plus VLAN, from raw transmit bytes): median 1,222
+    Mbit/s, p95 1,350, peaks about 1,700. In a blocked second one forwarder's
+    egress fell to 650–740 Mbit/s while the other's did not.
+  - The lead's analysis of the same data finds the dips 4–9 s long, about once a
+    minute, whenever a node sends about 0.9 Gbit/s or more on its public
+    interface, with 40–75% of its CPU idle and no qdisc drops. eth0 ran at
+    1.25–1.29 Gbit/s straight after a dip, so it is not a fixed ceiling.
+  - The lead also traces London's 247 rung to the same kind of dip on lon-edge-2's
+    public interface (lon-edge-1 delivered the same parts 20–50 ms after
+    publication). I have not checked that against the data.
 - **LL-HLS 4K.** The one reader per region was refused with HTTP 429 at the
   playlist on edges already carrying a UDP viewer: London, Tokyo and Sydney in
   the 300 s cell, London at 247 in the ladder. Where admitted it was 88–100% on
   time. It is shown, not scored.
-- **The datagram loss figure is unexplained.** Every UDP client reported
-  datagram_loss of about 0.30 while receiving every part. The lead suspects
-  repair symbols the edge does not forward, counted as loss, and has not
-  confirmed it.
+- **The datagram loss figure is an accounting artefact.** Every UDP client
+  reported datagram_loss of about 0.30 while receiving every part. By the lead's
+  reading of its code, requested repair is counted as sent, and the request then
+  ratchets up to its 30% cap: a feedback loop, not loss.
+- **The hop journals cover only the last two minutes of the lab** (the ring had
+  wrapped), so they say nothing about the cells.
 
 **LiveKit, the control, on the same lab** (60 s rungs, sweep ended after two
 rungs with no region whole): whole at 40 everywhere, at 80 in Tokyo and Sydney
